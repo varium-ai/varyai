@@ -230,22 +230,6 @@ jobs:
         shell: bash
         run: mkdir -p dist
 
-      - name: Prepare WSL2-backed test environment
-        shell: pwsh
-        run: |
-          wsl.exe -d Ubuntu-24.04 -- bash -lc "rm -rf /tmp/cc-switch-windows-test-root && mkdir -p /tmp/cc-switch-windows-test-root/{home,temp} && chmod -R 0777 /tmp/cc-switch-windows-test-root"
-          $testRoot = "\\wsl.localhost\Ubuntu-24.04\tmp\cc-switch-windows-test-root"
-          $testHome = Join-Path $testRoot "home"
-          $testTemp = Join-Path $testRoot "temp"
-          foreach ($path in @($testRoot, $testHome, $testTemp)) {
-            if (-not (Test-Path -LiteralPath $path)) {
-              throw "WSL2-backed test path is unavailable: $path"
-            }
-          }
-          "CC_SWITCH_TEST_HOME=$testHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CC_SWITCH_WSL_TEST_DIR=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CC_SWITCH_WSL_TEST_TEMP=$testTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
       - name: Compile backend tests with native temp
         # link.exe/mt.exe cannot create manifests when TEMP points at a WSL UNC path.
         # Record the built test binary path so the run step below can execute
@@ -272,6 +256,31 @@ jobs:
           }
           "CC_SWITCH_TEST_EXE=$testBinary" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Prepare WSL2-backed test environment
+        shell: pwsh
+        run: |
+          # Keep the distro alive while Windows accesses its UNC filesystem.
+          $keepAlive = Start-Process -FilePath wsl.exe -ArgumentList @('-d', 'Ubuntu-24.04', '--', 'sleep', 'infinity') -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP/wsl-keepalive.log" -RedirectStandardError "$env:RUNNER_TEMP/wsl-keepalive-error.log"
+          "CC_SWITCH_WSL_KEEPALIVE_PID=$($keepAlive.Id)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          wsl.exe -d Ubuntu-24.04 -- bash -lc "rm -rf /tmp/cc-switch-windows-test-root && mkdir -p /tmp/cc-switch-windows-test-root/{home,temp} && chmod -R 0777 /tmp/cc-switch-windows-test-root"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to prepare the WSL2 test directories"
+          }
+          if ($keepAlive.HasExited) {
+            throw "WSL2 keepalive exited before the filesystem tests"
+          }
+          $testRoot = "\\wsl.localhost\Ubuntu-24.04\tmp\cc-switch-windows-test-root"
+          $testHome = Join-Path $testRoot "home"
+          $testTemp = Join-Path $testRoot "temp"
+          foreach ($path in @($testRoot, $testHome, $testTemp)) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "WSL2-backed test path is unavailable: $path"
+            }
+          }
+          "CC_SWITCH_TEST_HOME=$testHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CC_SWITCH_WSL_TEST_DIR=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CC_SWITCH_WSL_TEST_TEMP=$testTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Run Windows-to-WSL2 filesystem contract
         # Run the test binary built in the previous step directly. Invoking cargo
         # here with TEMP pointing at a WSL UNC path can re-link the crate, and
@@ -292,6 +301,14 @@ jobs:
           & $env:CC_SWITCH_TEST_EXE $testName --ignored --exact --nocapture
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
+          }
+
+      - name: Stop WSL2 keepalive
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CC_SWITCH_WSL_KEEPALIVE_PID) {
+            Stop-Process -Id ([int]$env:CC_SWITCH_WSL_KEEPALIVE_PID) -ErrorAction SilentlyContinue
           }
 
   required:

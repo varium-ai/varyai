@@ -418,12 +418,12 @@ fn edit_models_at<T>(
     }
 }
 
-fn secure_file(path: &Path) -> Result<(), AppError> {
+fn secure_file(_path: &Path) -> Result<(), AppError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|error| AppError::io(path, error))?;
+        std::fs::set_permissions(_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| AppError::io(_path, error))?;
     }
     Ok(())
 }

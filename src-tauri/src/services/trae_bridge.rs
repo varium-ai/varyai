@@ -2,12 +2,12 @@
 //! Only explicit message text reaches VaryAI; the helper never exports login credentials.
 use crate::{error::AppError, provider::Provider};
 use serde_json::{json, Value};
+#[cfg(unix)]
 use std::{
     io::{BufRead, BufReader, Write},
-    path::PathBuf,
-    sync::Mutex,
     time::Duration,
 };
+use std::{path::PathBuf, sync::Mutex};
 pub(crate) const ENABLED_KEY: &str = "trae_audit_enabled";
 pub(crate) const CONSENT_KEY: &str = "trae_local_connection_consent";
 static AUDIT_TOKEN: Mutex<Option<String>> = Mutex::new(None);
@@ -163,6 +163,7 @@ pub(crate) fn authorized(value: &str) -> bool {
                     == 0
         })
 }
+#[cfg(any(target_os = "macos", test))]
 fn install_runtime(directory: &std::path::Path) -> Result<PathBuf, AppError> {
     let runtime = directory.join("runtime");
     std::fs::create_dir_all(&runtime).map_err(|_| unavailable())?;
