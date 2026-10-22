@@ -1,6 +1,7 @@
 import { resolveUsageRange } from "@/lib/usageRange";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { securityApi } from "@/lib/api";
+import { invalidateSecurityEventDomains } from "@/hooks/useSecurityEvents";
 import type {
   SecurityAuditSettings,
   CustomSecurityRule,
@@ -153,10 +154,11 @@ export function useSecurityAuditLogs(
   });
 
   const clearMutation = useMutation({
+    mutationKey: ["security", "clearLogs"],
     mutationFn: (beforeTimestamp?: number) =>
       securityApi.clearAuditLogs(beforeTimestamp),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: securityKeys.all });
+      void invalidateSecurityEventDomains(queryClient);
       toast.success(
         t("security.logsCleared", { defaultValue: "安全事件已清空" }),
       );

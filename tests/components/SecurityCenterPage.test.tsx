@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import postcss from "postcss";
 import zh from "@/i18n/locales/zh.json";
@@ -9,6 +15,15 @@ import zhTW from "@/i18n/locales/zh-TW.json";
 import tailwindcss from "tailwindcss";
 import { resolveUsageRange } from "@/lib/usageRange";
 import { SecurityCenterPage } from "@/components/security/SecurityCenterPage";
+import type { SecurityEvent } from "@/types/securityEvents";
+import type { ToolRiskRuleSeed } from "@/types/toolRisk";
+
+const toolRiskFlow = vi.hoisted(() => ({
+  useRealPanel: false,
+  events: [] as SecurityEvent[],
+  seeds: [] as Array<ToolRiskRuleSeed | null | undefined>,
+  saveRule: vi.fn().mockResolvedValue("custom-from-event"),
+}));
 
 const auditRows = vi.hoisted(() => ({
   items: [] as Array<Record<string, unknown>>,
@@ -111,6 +126,127 @@ vi.mock("@/hooks/useSecurityAudit", () => ({
   },
 }));
 
+vi.mock("@/hooks/useSecurityEvents", () => ({
+  useSecurityEvents: (
+    filter: Record<string, unknown>,
+    page: number,
+    pageSize: number,
+  ) => {
+    auditRows.queries.push({ filter, page, pageSize });
+    auditRows.filters.push(filter);
+    return {
+      eventsResult: {
+        items: [
+          ...toolRiskFlow.events,
+          ...auditRows.items.map((record) => ({
+            key: `dlp:${record.id}`,
+            eventType: "dlp",
+            timestamp: record.timestamp,
+            lastSeenAt: record.lastSeenAt ?? record.timestamp,
+            triggerCount: record.triggerCount ?? 1,
+            appType: record.appType,
+            sessionId: record.sessionId ?? null,
+            riskLevel: record.riskLevel,
+            result:
+              record.actionTaken === "block"
+                ? "blocked"
+                : record.actionTaken === "redact"
+                  ? "redacted"
+                  : "warning",
+            record,
+          })),
+        ],
+        total: auditRows.total ?? 1,
+        page,
+        pageSize,
+      },
+      isLoading: auditRows.isLoading,
+      isError: auditRows.isError,
+      refetch: auditRows.refetchByAction.audit,
+      clearEvents: vi.fn(),
+      isClearing: false,
+    };
+  },
+  useSecurityEventsSummary: (filter: Record<string, unknown>) => {
+    auditRows.queries.push({ filter, page: 1, pageSize: 0 });
+    return {
+      data: {
+        total: auditRows.total ?? 10,
+        dlpCount: 8,
+        toolRiskCount: 2,
+        redacted: 3,
+        warnings: 2,
+        protectiveBlocked: 4,
+        other: 1,
+      },
+      isLoading: auditRows.redactedLoading,
+      isError: auditRows.isError,
+      refetch: auditRows.refetchByAction.redact,
+    };
+  },
+  useSecurityEventsLiveRefresh: () => ({
+    hasUpdates: false,
+    resetUpdates: vi.fn(),
+  }),
+}));
+vi.mock("@/components/security/ToolRiskRulesPanel", async (importOriginal) => {
+  const { ToolRiskRulesPanel: RealToolRiskRulesPanel } =
+    await importOriginal<
+      typeof import("@/components/security/ToolRiskRulesPanel")
+    >();
+  return {
+    ToolRiskRulesPanel: (props: {
+      pendingRuleSeed?: ToolRiskRuleSeed | null;
+      onRuleSeedConsumed?: () => void;
+    }) => {
+      if (toolRiskFlow.useRealPanel) {
+        toolRiskFlow.seeds.push(props.pendingRuleSeed);
+        return <RealToolRiskRulesPanel {...props} />;
+      }
+      return (
+        <div>
+          {props.pendingRuleSeed ? (
+            <button onClick={props.onRuleSeedConsumed}>consume-seed</button>
+          ) : null}
+        </div>
+      );
+    },
+  };
+});
+
+vi.mock("@/hooks/useToolRisk", () => ({
+  useToolRiskSettings: () => ({
+    settings: { enabled: true, policyVersion: 1 },
+    isLoading: false,
+    updateSettings: vi.fn(),
+    isUpdating: false,
+  }),
+  useToolRiskRules: () => ({
+    rules: [],
+    isLoading: false,
+    toggleRule: vi.fn(),
+    resetBuiltinRule: vi.fn(),
+    saveRule: toolRiskFlow.saveRule,
+    deleteRule: vi.fn(),
+    isSaving: false,
+  }),
+  useToolRiskSandbox: () => ({
+    test: vi.fn(),
+    result: undefined,
+    isTesting: false,
+    reset: vi.fn(),
+  }),
+  useToolRiskCommandLists: () => ({
+    entries: [],
+    isLoading: false,
+    isError: false,
+    saveEntry: vi.fn(),
+    deleteEntry: vi.fn(),
+    isSaving: false,
+    isDeleting: false,
+  }),
+}));
+
 vi.mock("@/lib/api", () => ({
   securityApi: {
     testRuleMatch: vi.fn(),
@@ -121,7 +257,7 @@ describe("SecurityCenterPage", () => {
   it.each([
     ["empty", "security.noFilteredRecords"],
     ["loading", "security.loadingLogs"],
-    ["error", "common.error"],
+    ["error", "securityEvents.queryError"],
   ])(
     "centers the %s state within the visible table panel",
     async (state, key) => {
@@ -194,7 +330,7 @@ describe("SecurityCenterPage", () => {
     ]);
     expect(Array.from(cards[0].parentElement!.children)).toEqual(cards);
     expect(screen.queryByText("securityStats.blocked")).not.toBeInTheDocument();
-    const summary = screen.getByText("securityStats.sensitiveTypesSummary");
+    const summary = screen.getByTestId("security-events-summary-dlp");
     for (const card of cards) expect(card).not.toContainElement(summary);
   });
 
@@ -212,20 +348,23 @@ describe("SecurityCenterPage", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "security.refreshLogs" }),
     );
-    for (const refetch of Object.values(auditRows.refetchByAction)) {
-      expect(refetch).toHaveBeenCalledOnce();
-    }
+    expect(auditRows.refetchByAction.audit).toHaveBeenCalledOnce();
+    expect(auditRows.refetchByAction.redact).toHaveBeenCalledOnce();
   });
 
-  it("labels sensitive type counts as a sample when the summary is paginated", () => {
+  it("shows a true source split instead of a first-page sensitive-type sample", () => {
     auditRows.total = 150;
     render(<SecurityCenterPage />);
     expect(
-      screen.getByText("securityStats.sensitiveTypesSample"),
-    ).toBeInTheDocument();
+      screen.getByTestId("security-events-summary-total"),
+    ).toHaveTextContent("150");
+    expect(screen.getByTestId("security-events-summary-dlp")).toHaveTextContent(
+      "8",
+    );
     expect(
-      screen.queryByText("securityStats.sensitiveTypesSummary"),
-    ).not.toBeInTheDocument();
+      screen.getByTestId("security-events-summary-tool-risk"),
+    ).toHaveTextContent("2");
+    expect(screen.queryByText("securityStats.sensitiveTypesSample")).toBeNull();
   });
 
   it.each([
@@ -252,8 +391,8 @@ describe("SecurityCenterPage", () => {
     );
     expect(
       auditRows.queries.filter((query) => query.pageSize === 20).at(-1)?.filter
-        .action,
-    ).toBe("block");
+        .result,
+    ).toBe("blocked");
   });
 
   it("does not render the removed global policy controls", () => {
@@ -443,6 +582,10 @@ describe("SecurityCenterPage", () => {
 });
 
 afterEach(() => {
+  toolRiskFlow.useRealPanel = false;
+  toolRiskFlow.events = [];
+  toolRiskFlow.seeds = [];
+  toolRiskFlow.saveRule.mockClear();
   auditRows.items = [];
   auditRows.filters = [];
   auditRows.queries = [];
@@ -622,7 +765,7 @@ it("keeps audit headers on one line with reserved column widths and bounded long
     const widths = Array.from(table.querySelectorAll("col"), (col) =>
       pixels(getComputedStyle(col).width),
     );
-    expect(widths).toHaveLength(10);
+    expect(widths).toHaveLength(11);
     expect(widths[0]).toBeGreaterThanOrEqual(208);
     expect(widths[1]).toBeGreaterThanOrEqual(208);
     expect(widths[2]).toBeGreaterThanOrEqual(112);
@@ -680,8 +823,8 @@ describe("security event date ranges", () => {
       );
       const startTimestamp =
         resolveUsageRange({ preset }, now).startDate * 1000;
-      const queries = auditRows.queries.slice(-5);
-      expect(queries).toHaveLength(5);
+      const queries = auditRows.queries.slice(-2);
+      expect(queries).toHaveLength(2);
       for (const query of queries) {
         expect(query.filter.startTimestamp).toBe(startTimestamp);
         expect(query.filter.endTimestamp).toBeUndefined();
@@ -693,7 +836,7 @@ describe("security event date ranges", () => {
       expect(
         screen.getByRole("textbox", { name: "security.sessionFilter" }),
       ).toHaveValue("");
-      expect(auditRows.queries.slice(-5)[0].filter.startTimestamp).toBe(
+      expect(auditRows.queries.slice(-2)[0].filter.startTimestamp).toBe(
         startTimestamp,
       );
     },
@@ -716,7 +859,7 @@ describe("security event date ranges", () => {
       target: { value: "18:45" },
     });
     fireEvent.click(screen.getByRole("button", { name: "common.confirm" }));
-    for (const query of auditRows.queries.slice(-5)) {
+    for (const query of auditRows.queries.slice(-2)) {
       expect(query.filter.startTimestamp).toBe(
         new Date(2026, 9, 1, 9, 30).getTime(),
       );
@@ -730,7 +873,7 @@ describe("security event date ranges", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "security.todayFilter" }),
     );
-    for (const query of auditRows.queries.slice(-5)) {
+    for (const query of auditRows.queries.slice(-2)) {
       expect(query.filter.startTimestamp).toBe(
         resolveUsageRange({ preset: "today" }, now).startDate * 1000,
       );
@@ -749,10 +892,148 @@ describe("security event date ranges", () => {
     expect(
       screen.getByRole("button", { name: "security.todayFilter" }),
     ).toBeInTheDocument();
-    for (const query of auditRows.queries.slice(-5)) {
+    for (const query of auditRows.queries.slice(-2)) {
       expect(query.filter.startTimestamp).toBe(
         resolveUsageRange({ preset: "today" }, now).startDate * 1000,
       );
     }
+  });
+});
+
+it("keeps all tool calls in security events without an extra rules-page link", () => {
+  toolRiskFlow.useRealPanel = true;
+  render(<SecurityCenterPage />);
+  fireEvent.click(screen.getByTestId("security-tab-tool-risk"));
+  expect(
+    screen.queryByRole("button", { name: "securityEvents.openToolCalls" }),
+  ).toBeNull();
+  fireEvent.click(screen.getByTestId("security-tab-records"));
+  fireEvent.click(screen.getByText("securityEvents.toolCallsView"));
+  expect(
+    auditRows.queries.filter((q) => q.pageSize === 50).at(-1)?.filter,
+  ).toMatchObject({ view: "tool_calls", eventType: "tool_risk" });
+});
+
+describe("real tool-event rule seed navigation", () => {
+  const boundedSummary = "curl https://example.com <redacted>";
+  const event: SecurityEvent = {
+    key: "tool_risk:707",
+    eventType: "tool_risk",
+    timestamp: 1000,
+    lastSeenAt: 1000,
+    triggerCount: 1,
+    appType: "codex",
+    sessionId: null,
+    riskLevel: "HIGH",
+    result: "warning",
+    record: {
+      id: 707,
+      timestamp: 1000,
+      source: "model_response",
+      stage: "proposed",
+      clientCategory: "codex",
+      operationCategory: "network_request",
+      commandClass: "network_egress",
+      commandSummary: boundedSummary,
+      detectionScope: "in_scope",
+      integrityStatus: "complete",
+      verdict: "risky",
+      riskCategory: "data_exfiltration",
+      severity: "medium",
+      reasonCode: "exfil_to_remote",
+      policyVersion: 1,
+      ruleIds: ["builtin-exfil"],
+      suppressedCount: 0,
+    },
+  };
+
+  it("opens the real top-level editor with only enum metadata, consumes the seed and does not reopen after remount", async () => {
+    toolRiskFlow.useRealPanel = true;
+    toolRiskFlow.events = [event];
+    render(<SecurityCenterPage />);
+    fireEvent.click(screen.getByText("toolRisk.category.data_exfiltration"));
+    expect(screen.getByRole("dialog")).toHaveTextContent(boundedSummary);
+    fireEvent.click(screen.getByText("toolRisk.createRuleFromEvent"));
+
+    expect(screen.getByTestId("security-tab-tool-risk")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    const editor = screen.getByRole("dialog");
+    expect(within(editor).getByLabelText("toolRisk.fieldName")).toHaveValue(
+      "toolRisk.eventRuleName",
+    );
+    expect(
+      within(editor).getByRole("combobox", {
+        name: "toolRisk.fieldCommandClass",
+      }),
+    ).toHaveTextContent("toolRisk.commandClass.network_egress");
+    expect(editor).not.toHaveTextContent(boundedSummary);
+    expect(editor.innerHTML).not.toContain("https://example.com");
+    const seed = {
+      operationCategory: "network_request",
+      commandClass: "network_egress",
+      riskCategory: "data_exfiltration",
+      severity: "medium",
+      reasonCode: "exfil_to_remote",
+    };
+    expect(toolRiskFlow.seeds.filter(Boolean)).toEqual([seed]);
+    expect(toolRiskFlow.seeds.at(-1)).toBeNull();
+    expect(toolRiskFlow.saveRule).not.toHaveBeenCalled();
+    fireEvent.click(
+      within(editor).getByRole("button", { name: "common.save" }),
+    );
+    await waitFor(() => expect(toolRiskFlow.saveRule).toHaveBeenCalledOnce());
+    expect(toolRiskFlow.saveRule).toHaveBeenCalledWith({
+      id: null,
+      name: "toolRisk.eventRuleName",
+      description: "",
+      enabled: false,
+      selector: { target: { kind: "operation", types: ["network_request"] } },
+      conditions: [
+        { field: "/command_class", op: "eq", value: "network_egress" },
+      ],
+      riskCategory: "data_exfiltration",
+      severity: "medium",
+      reasonCode: "exfil_to_remote",
+      localReview: "off",
+      expectedRevision: null,
+    });
+    expect(JSON.stringify(toolRiskFlow.saveRule.mock.calls)).not.toContain(
+      boundedSummary,
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getByTestId("security-tab-records"));
+    fireEvent.click(screen.getByTestId("security-tab-tool-risk"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(toolRiskFlow.seeds.at(-1)).toBeNull();
+    expect(toolRiskFlow.saveRule).toHaveBeenCalledOnce();
+  });
+
+  it("drops arbitrary event metadata before opening the editor and leaves an explicit incomplete draft", () => {
+    toolRiskFlow.useRealPanel = true;
+    toolRiskFlow.events = [
+      {
+        ...event,
+        record: {
+          ...event.record,
+          operationCategory: "future-operation-never-seed",
+          commandClass: "future-class-never-seed" as never,
+          riskCategory: "future-category-never-seed",
+          severity: "future-severity-never-seed",
+          reasonCode: "future-reason-never-seed",
+        },
+      } as SecurityEvent,
+    ];
+    render(<SecurityCenterPage />);
+    fireEvent.click(screen.getByTestId("security-event-tool_risk:707"));
+    fireEvent.click(screen.getByText("toolRisk.createRuleFromEvent"));
+    expect(toolRiskFlow.seeds.filter(Boolean)).toEqual([{}]);
+    expect(toolRiskFlow.seeds.at(-1)).toBeNull();
+    const editor = screen.getByRole("dialog");
+    expect(editor.innerHTML).not.toContain("never-seed");
+    expect(editor.innerHTML).not.toContain(boundedSummary);
+    expect(within(editor).getByTestId("tool-risk-save")).toBeDisabled();
+    expect(toolRiskFlow.saveRule).not.toHaveBeenCalled();
   });
 });
