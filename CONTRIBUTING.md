@@ -9,7 +9,7 @@ Use this repository's Issues and Pull requests tabs for VaryAI changes and repor
 ### Set up the toolchain
 
 - Use the Node.js version in [.node-version](.node-version), currently 22.12.0.
-- Use the pnpm version in [package.json](package.json), currently 10.12.3. With Corepack available, run `corepack enable` before using pnpm.
+- Use the pnpm version in [package.json](package.json), currently 10.12.3. Follow the [pnpm installation guide](https://pnpm.io/installation). If using Corepack, update it before running `corepack enable`: the version bundled with Node 22.12.0 has outdated signing keys and cannot install this pnpm version.
 - Install Rust and Cargo. [rust-toolchain.toml](rust-toolchain.toml) selects stable with rustfmt and Clippy; [Cargo.toml](src-tauri/Cargo.toml) declares the minimum Rust version.
 - Install the native dependencies required by [Tauri](https://v2.tauri.app/start/prerequisites/) for your operating system.
 
