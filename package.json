@@ -84,7 +84,7 @@
     "codemirror": "^6.0.2",
     "flexsearch": "^0.8.212",
     "framer-motion": "^12.23.25",
-    "i18next": "^25.5.2",
+    "i18next": "^26.5.2",
     "lucide-react": "^0.542.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
