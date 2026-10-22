@@ -21,6 +21,8 @@ New directions support JSON and SSE, text, images, parallel function calls, argu
 
 Claude Chat/Responses key authentication uses Bearer; Anthropic retains explicit API-key/Bearer selection. Gemini conversion requires a real finish reason and rejects malformed events, upstream errors, and multiple candidates. Usage-only tail frames update final accounting. Rebuilt responses remove invalid entity headers; converted tool observations use ConvertedUnknown quality. New Chat/Gemini streams cap each event and tool arguments at 2 MiB and concurrent active tools at 256. Interrupted streams never synthesize successful completion. Conversion errors do not echo request bodies, keys, or opaque history.
 
+Gemini CLI 0.65.0 sends `generationConfig.thinkingConfig` by default. Cross-protocol requests accept `includeThoughts` as a response-summary preference, map automatic budgets (`-1`) to adaptive thinking, zero to disabled thinking, and positive budgets to explicit thinking budgets. Named levels map to the existing low/medium/high effort and budget conversion (MINIMAL uses low). These are approximate reasoning controls across model families, not identical token guarantees. Unknown fields, invalid values, simultaneous budget/level controls, and opaque signed history remain rejected. Chat reasoning controls are emitted only for models supported by the existing adapter.
+
 ## Automated coverage and limits
 
 | Area | Coverage |

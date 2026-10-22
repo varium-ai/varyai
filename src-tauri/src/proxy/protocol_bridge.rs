@@ -728,10 +728,14 @@ fn gemini_request(body: Value, endpoint: &str) -> Result<Value, ProxyError> {
                 "topK",
                 "stopSequences",
                 "candidateCount",
+                "thinkingConfig",
             ],
         )?;
         if config["candidateCount"].as_u64().is_some_and(|n| n != 1) {
             return Err(invalid("Multiple candidates cannot cross protocols"));
+        }
+        if let Some(thinking) = config.get("thinkingConfig") {
+            gemini_thinking_config(thinking, &mut out)?;
         }
         for (from, to) in [
             ("maxOutputTokens", "max_tokens"),
@@ -781,6 +785,45 @@ fn gemini_request(body: Value, endpoint: &str) -> Result<Value, ProxyError> {
     }
     Ok(out)
 }
+fn gemini_thinking_config(config: &Value, out: &mut Value) -> Result<(), ProxyError> {
+    reject_unknown(
+        config,
+        &["includeThoughts", "thinkingBudget", "thinkingLevel"],
+    )?;
+    // includeThoughts requests a summary in the response; it does not enable
+    // reasoning by itself. The response bridge already exposes thinking parts.
+    if config
+        .get("includeThoughts")
+        .is_some_and(|v| !v.is_boolean())
+    {
+        return Err(invalid("Invalid Gemini includeThoughts"));
+    }
+    if config.get("thinkingBudget").is_some() && config.get("thinkingLevel").is_some() {
+        return Err(invalid("Ambiguous Gemini thinking configuration"));
+    }
+    if let Some(budget) = config.get("thinkingBudget") {
+        out["thinking"] = match budget.as_i64() {
+            Some(-1) => json!({"type":"adaptive"}),
+            Some(0) => json!({"type":"disabled"}),
+            Some(n) if n > 0 => json!({"type":"enabled","budget_tokens":n}),
+            _ => return Err(invalid("Invalid Gemini thinking budget")),
+        };
+    }
+    if let Some(level) = config.get("thinkingLevel") {
+        let effort = match level.as_str() {
+            Some("MINIMAL" | "LOW") => "low",
+            Some("MEDIUM") => "medium",
+            Some("HIGH") => "high",
+            _ => return Err(invalid("Unsupported Gemini thinking level")),
+        };
+        let budget = providers::transform_codex_anthropic::effort_to_thinking_budget(effort)
+            .ok_or_else(|| invalid("Unsupported Gemini thinking level"))?;
+        out["thinking"] = json!({"type":"enabled","budget_tokens":budget});
+        out["output_config"] = json!({"effort":effort});
+    }
+    Ok(())
+}
+
 fn gemini_schema_to_json_schema(mut schema: Value) -> Value {
     fn visit(schema: &mut Value) {
         let Some(object) = schema.as_object_mut() else {
@@ -887,6 +930,49 @@ fn gemini_response(body: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gemini_cli_default_thinking_configuration_crosses_protocols() {
+        for (config, expected) in [
+            (json!({"includeThoughts":true}), Value::Null),
+            (
+                json!({"includeThoughts":true,"thinkingBudget":-1}),
+                json!({"type":"adaptive"}),
+            ),
+            (json!({"thinkingBudget":0}), json!({"type":"disabled"})),
+            (
+                json!({"thinkingBudget":2048}),
+                json!({"type":"enabled","budget_tokens":2048}),
+            ),
+            (
+                json!({"includeThoughts":true,"thinkingLevel":"HIGH"}),
+                json!({"type":"enabled","budget_tokens":16384}),
+            ),
+        ] {
+            let body = json!({"contents":[{"role":"user","parts":[{"text":"Synthetic CLI prompt"}]}],"generationConfig":{"temperature":1,"topP":0.95,"topK":64,"thinkingConfig":config}});
+            let converted =
+                gemini_request(body, "/v1beta/models/fixture:streamGenerateContent").unwrap();
+            assert_eq!(converted["thinking"], expected);
+            assert_eq!(converted["temperature"], 1);
+            assert_eq!(converted["stream"], true);
+        }
+    }
+
+    #[test]
+    fn gemini_thinking_configuration_rejects_invalid_or_unknown_semantics() {
+        for config in [
+            json!({"includeThoughts":"true"}),
+            json!({"thinkingBudget":-2}),
+            json!({"thinkingBudget":1.5}),
+            json!({"thinkingLevel":"unknown"}),
+            json!({"thinkingLevel":"HIGH","thinkingBudget":2048}),
+            json!({"unknown":"synthetic-sensitive-value"}),
+        ] {
+            let body = json!({"contents":[],"generationConfig":{"thinkingConfig":config}});
+            let error = gemini_request(body, "/v1beta/models/fixture:generateContent").unwrap_err();
+            assert!(!error.to_string().contains("synthetic-sensitive-value"));
+        }
+    }
+
     #[test]
     fn legacy_chat_clients_keep_native_routing_without_a_format_override() {
         let provider = Provider::with_id(

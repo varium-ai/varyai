@@ -218,7 +218,7 @@ async fn four_protocol_matrix_preserves_text_and_usage_in_json_and_sse() {
                         json!({"model":"fixture","stream":stream,"input":[{"role":"user","content":[{"type":"input_text","text":"fixture-user ghp_111122223333444455556666777788889999"}]}]})
                     }
                     _ => {
-                        json!({"contents":[{"role":"user","parts":[{"text":"fixture-user ghp_111122223333444455556666777788889999"}]}]})
+                        json!({"generationConfig":{"thinkingConfig":{"includeThoughts":true,"thinkingBudget":-1}},"contents":[{"role":"user","parts":[{"text":"fixture-user ghp_111122223333444455556666777788889999"}]}]})
                     }
                 };
                 if tools {
