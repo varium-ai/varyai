@@ -610,7 +610,14 @@ fn gemini_request(body: Value, endpoint: &str) -> Result<Value, ProxyError> {
         let mut role = base_role;
         let mut blocks = Vec::new();
         for part in array(&content["parts"], "Invalid Gemini parts")? {
-            if part.get("thoughtSignature").is_some() || part["thought"] == true {
+            // Gemini CLI synthesizes this marker for unsigned tool calls.
+            // It contains no opaque reasoning state and can be omitted.
+            let synthetic_signature = part["thoughtSignature"]
+                == "skip_thought_signature_validator"
+                && part.get("functionCall").is_some();
+            if (part.get("thoughtSignature").is_some() && !synthetic_signature)
+                || part["thought"] == true
+            {
                 return Err(invalid(
                     "Opaque Gemini thought history cannot cross protocols",
                 ));
@@ -624,6 +631,7 @@ fn gemini_request(body: Value, endpoint: &str) -> Result<Value, ProxyError> {
                     "functionCall",
                     "functionResponse",
                     "thought",
+                    "thoughtSignature",
                 ],
             )?;
             if [
@@ -930,6 +938,29 @@ fn gemini_response(body: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gemini_cli_unsigned_tool_marker_is_not_opaque_thought_history() {
+        for signature in ["skip_thought_signature_validator", "opaque"] {
+            let body = json!({"contents":[
+                {"role":"model","parts":[{"functionCall":{"id":"read-a","name":"read_file","args":{"file_path":"first.txt"}},"thoughtSignature":signature}]},
+                {"role":"user","parts":[{"functionResponse":{"id":"read-a","name":"read_file","response":{"output":"17"}}}]}
+            ]});
+            let result = gemini_request(body, "/v1beta/models/fixture:generateContent");
+            if signature == "opaque" {
+                assert!(result.is_err());
+            } else {
+                let converted = result.unwrap();
+                assert_eq!(converted["messages"][0]["content"][0]["id"], "read-a");
+                assert_eq!(
+                    converted["messages"][1]["content"][0]["tool_use_id"],
+                    "read-a"
+                );
+                assert!(!converted.to_string().contains(signature));
+            }
+        }
+        assert!(gemini_request(json!({"contents":[{"parts":[{"text":"fixture","thoughtSignature":"skip_thought_signature_validator"}]}]}), "/v1beta/models/fixture:generateContent").is_err());
+    }
+
     #[test]
     fn gemini_cli_default_thinking_configuration_crosses_protocols() {
         for (config, expected) in [

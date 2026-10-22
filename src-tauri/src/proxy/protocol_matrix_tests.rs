@@ -512,3 +512,149 @@ async fn four_protocol_matrix_preserves_text_and_usage_in_json_and_sse() {
     proxy.stop().await.unwrap();
     server.abort();
 }
+
+/// Opt-in acceptance check with an installed CLI and a synthetic Chat upstream.
+#[tokio::test]
+#[ignore = "requires VARYAI_GEMINI_CLI pointing to an installed Gemini CLI"]
+async fn installed_gemini_cli_uses_chat_bridge() {
+    let cli = std::env::var("VARYAI_GEMINI_CLI").expect("set VARYAI_GEMINI_CLI");
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(home.path().join(".gemini")).unwrap();
+    std::fs::write(
+        home.path().join(".gemini/settings.json"),
+        r#"{"security":{"auth":{"selectedType":"gemini-api-key"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(home.path().join("first.txt"), "17").unwrap();
+    std::fs::write(home.path().join("second.txt"), "25").unwrap();
+    {
+        use base64::Engine;
+        let png = base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ioAAAAASUVORK5CYII=").unwrap();
+        std::fs::write(home.path().join("fixture.png"), png).unwrap();
+    }
+    let requests = Arc::new(tokio::sync::Mutex::new(Vec::<Value>::new()));
+    let capture = requests.clone();
+    let mock = Router::new().fallback(post(move |axum::Json(body): axum::Json<Value>| {
+        let capture = capture.clone();
+        async move {
+            capture.lock().await.push(body.clone());
+            let messages = body["messages"].as_array().unwrap();
+            let tool_results = messages.iter().filter(|m| m["role"] == "tool").collect::<Vec<_>>();
+            let needs_files = messages.iter().any(|m| m["content"].to_string().contains("READ_FIXTURES"));
+            let subtract = messages.iter().rev().find(|m| m["role"] == "user").is_some_and(|m| m["content"].to_string().contains("SUBTRACT_FIXTURES"));
+            let needs_image = messages.iter().any(|m| m["content"].to_string().contains("READ_IMAGE"));
+            let (delta, finish) = if needs_image && tool_results.is_empty() {
+                (json!({"role":"assistant","tool_calls":[{"index":0,"id":"read-image","type":"function","function":{"name":"read_file","arguments":json!({"file_path":"fixture.png"}).to_string()}}]}), "tool_calls")
+            } else if needs_image {
+                assert!(body.to_string().contains("data:image/png;base64,"), "CLI tool image did not reach Chat upstream");
+                (json!({"role":"assistant","content":"IMAGE_RECEIVED"}), "stop")
+            } else if needs_files && tool_results.is_empty() {
+                (json!({"role":"assistant","tool_calls":[
+                    {"index":0,"id":"read-first","type":"function","function":{"name":"read_file","arguments":json!({"file_path":"first.txt"}).to_string()}},
+                    {"index":1,"id":"read-second","type":"function","function":{"name":"read_file","arguments":json!({"file_path":"second.txt"}).to_string()}}
+                ]}), "tool_calls")
+            } else if needs_files {
+                assert_eq!(tool_results.len(), 2);
+                assert!(tool_results.iter().any(|m| m["content"].to_string().contains("17")));
+                assert!(tool_results.iter().any(|m| m["content"].to_string().contains("25")));
+                (json!({"role":"assistant","content":if subtract {"DIFFERENCE=8"} else {"FIRST=17 SECOND=25 SUM=42"}}), "stop")
+            } else {
+                (json!({"role":"assistant","content":"CLI_BRIDGE_OK"}), "stop")
+            };
+            let chunk = json!({"id":"fixture","object":"chat.completion.chunk","model":"fixture","choices":[{"index":0,"delta":delta,"finish_reason":null}]});
+            let end = json!({"id":"fixture","object":"chat.completion.chunk","model":"fixture","choices":[{"index":0,"delta":{},"finish_reason":finish}]});
+            ([(header::CONTENT_TYPE,"text/event-stream")], format!("data: {chunk}\n\ndata: {end}\n\ndata: [DONE]\n\n"))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, mock).await.unwrap();
+    });
+    let db = Arc::new(Database::memory().unwrap());
+    let mut provider = Provider::with_id(
+        "cli-fixture".into(),
+        "CLI Fixture".into(),
+        json!({"env":{"GOOGLE_GEMINI_BASE_URL":format!("http://{addr}"),"GEMINI_API_KEY":"synthetic-key","GEMINI_MODEL":"fixture"}}),
+        None,
+    );
+    provider.meta = Some(ProviderMeta {
+        api_format: Some("openai_chat".into()),
+        ..Default::default()
+    });
+    db.save_provider("gemini", &provider).unwrap();
+    db.set_current_provider("gemini", &provider.id).unwrap();
+    let proxy = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            max_retries: 0,
+            ..Default::default()
+        },
+        db,
+        None,
+    );
+    let info = proxy.start().await.unwrap();
+    for (prompt, expected, resume) in [
+        ("Reply only CLI_BRIDGE_OK", "CLI_BRIDGE_OK", false),
+        (
+            "READ_FIXTURES: Read first.txt and second.txt using read_file and sum the numbers.",
+            "FIRST=17 SECOND=25 SUM=42",
+            false,
+        ),
+        (
+            "SUBTRACT_FIXTURES: Use the numbers you read and subtract first from second.",
+            "DIFFERENCE=8",
+            true,
+        ),
+        (
+            "READ_IMAGE: Read fixture.png with read_file.",
+            "IMAGE_RECEIVED",
+            false,
+        ),
+    ] {
+        let mut command = tokio::process::Command::new(&cli);
+        command.env_clear();
+        for name in ["PATH", "TMPDIR", "SYSTEMROOT"] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+        command
+            .env("HOME", home.path())
+            .env("GEMINI_API_KEY", "synthetic-key")
+            .env("GEMINI_CLI_TRUST_WORKSPACE", "true")
+            .env(
+                "GOOGLE_GEMINI_BASE_URL",
+                format!("http://127.0.0.1:{}", info.port),
+            )
+            .current_dir(home.path())
+            .args(["-p", prompt, "--model", "gemini-2.5-pro"])
+            .kill_on_drop(true);
+        if resume {
+            command.args(["--resume", "latest"]);
+        }
+        let output = tokio::time::timeout(std::time::Duration::from_secs(45), command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "synthetic CLI failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(expected),
+            "missing synthetic CLI answer: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+    proxy.stop().await.unwrap();
+    server.abort();
+    let captured = requests.lock().await;
+    assert!(!captured.is_empty());
+    assert!(captured
+        .iter()
+        .any(|body| body["messages"].is_array() && body["tools"].is_array()));
+}

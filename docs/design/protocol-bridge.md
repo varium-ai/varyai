@@ -17,11 +17,11 @@ Configure the real provider URL, key, and model. Do not use the local proxy as i
 
 Seven missing directions are composed from the existing Anthropic adapters. Provider selection, model mapping, retries, and usage attribution remain in the client's existing forwarding chain. Historical Chat clients without an explicit upstream override retain native forwarding. Chat Completions does not include the legacy `/v1/completions` endpoint.
 
-New directions support JSON and SSE, text, images, parallel function calls, argument deltas, call IDs, and referenced tool results. Unsupported semantics return explicit errors instead of silently losing behavior: multiple choices/candidates, unsupported structured outputs, strict tool constraints, explicit image-detail settings, unknown tool-history extensions, opaque Gemini thoughtSignature history that cannot be represented, and unadapted native tools. Same-protocol routes retain existing behavior.
+New directions support JSON and SSE, text, images, parallel function calls, argument deltas, call IDs, and referenced tool results. Unsupported semantics return explicit errors instead of silently losing behavior: multiple choices/candidates, unsupported structured outputs, strict tool constraints, explicit image-detail settings, unknown tool-history extensions, opaque Gemini thoughtSignature history that cannot be represented (excluding Gemini CLI's unsigned-tool placeholder), and unadapted native tools. Same-protocol routes retain existing behavior.
 
 Claude Chat/Responses key authentication uses Bearer; Anthropic retains explicit API-key/Bearer selection. Gemini conversion requires a real finish reason and rejects malformed events, upstream errors, and multiple candidates. Usage-only tail frames update final accounting. Rebuilt responses remove invalid entity headers; converted tool observations use ConvertedUnknown quality. New Chat/Gemini streams cap each event and tool arguments at 2 MiB and concurrent active tools at 256. Interrupted streams never synthesize successful completion. Conversion errors do not echo request bodies, keys, or opaque history.
 
-Gemini CLI 0.65.0 sends `generationConfig.thinkingConfig` by default. Cross-protocol requests accept `includeThoughts` as a response-summary preference, map automatic budgets (`-1`) to adaptive thinking, zero to disabled thinking, and positive budgets to explicit thinking budgets. Named levels map to the existing low/medium/high effort and budget conversion (MINIMAL uses low). These are approximate reasoning controls across model families, not identical token guarantees. Unknown fields, invalid values, simultaneous budget/level controls, and opaque signed history remain rejected. Chat reasoning controls are emitted only for models supported by the existing adapter.
+Gemini CLI 0.65.0 sends `generationConfig.thinkingConfig` by default. Cross-protocol requests accept `includeThoughts` as a response-summary preference, map automatic budgets (`-1`) to adaptive thinking, zero to disabled thinking, and positive budgets to explicit thinking budgets. Named levels map to the existing low/medium/high effort and budget conversion (MINIMAL uses low). These are approximate reasoning controls across model families, not identical token guarantees. Unknown fields, invalid values, simultaneous budget/level controls, and opaque signed history remain rejected. Gemini CLI's exact `skip_thought_signature_validator` placeholder is accepted only on function-call parts and removed during conversion; it is not a real thought signature. Chat reasoning controls are emitted only for models supported by the existing adapter.
 
 ## Automated coverage and limits
 
@@ -68,3 +68,13 @@ Legacy checks on 2026-10-22 passed typecheck, renderer build, 2168 frontend test
 Gemini tool-result role correction and image support adapt [Magpie's implementation](protocol-magpie-comparison.md), with its MIT notice retained.
 
 Protocol references: [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create), [Gemini generateContent](https://ai.google.dev/api/generate-content), and [Anthropic streaming](https://platform.claude.com/docs/en/build-with-claude/streaming).
+
+An opt-in installed-client check runs Gemini CLI against an in-memory proxy and a synthetic Chat SSE upstream on dynamic ports. It uses a temporary home with synthetic credentials, reads two temporary files and a PNG through actual CLI tools, and resumes the session to verify tool-result history. It does not establish compatibility with a live third-party model:
+
+```sh
+VARYAI_GEMINI_CLI="$(command -v gemini)" \
+  cargo test --lib --manifest-path src-tauri/Cargo.toml \
+  installed_gemini_cli_uses_chat_bridge -- --ignored
+```
+
+On 2026-10-22, an isolated proxy using the configured live Grok Chat provider passed Gemini CLI 0.65.0 plain text, two successful `read_file` calls (17 and 25, sum 42), and resumed history (difference 8 with no additional tool calls). This check did not switch the running application or modify client settings. Image transport passed against the synthetic upstream; live model image interpretation and interactive cancellation were not established by this run.
