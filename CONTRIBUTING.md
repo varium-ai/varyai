@@ -61,6 +61,14 @@ Use concise commit subjects such as `fix(proxy): preserve upstream error details
 
 The public `main` branch is the application development line. Submit changes through a pull request and wait for review and the `CI Required` check. That check verifies path detection and all applicable frontend, backend, and WSL2 jobs; failures, cancellations, and unexpected skips fail the check. Documentation-only pull requests may intentionally skip the application suites.
 
+Frontend checks and the Linux, Windows, and macOS backend suites run for relevant PR changes and every push to `main`. The WSL2 filesystem contract runs only when storage/configuration code, backend dependencies, tests, or its workflows change, on both PRs and main pushes. A manual run of `CI` runs all checks regardless of changed paths.
+
+Before a release or when investigating WSL compatibility, maintainers can run [WSL2 Full Suite (Manual)](.github/workflows/wsl2-manual.yml) from the Actions tab. This longer suite has no scheduled trigger and is separate from the PR gate.
+
+Dependabot checks npm, Cargo, and GitHub Actions versions monthly, with at most two open version-update PRs per ecosystem. Minor and patch updates are grouped within each ecosystem; major updates remain separate for compatibility review. Security alerts and automated security fixes are managed separately in repository settings and are not delayed by the monthly version-update schedule. Dependency PRs require normal review and CI; they are not automatically merged.
+
+Maintainers triage issues and label PRs directly. Issues are not automatically closed because of inactivity.
+
 Maintainers can squash a pull request when merging it. Preserve commits already published on `main`, including the original CC Switch history. Keep release credentials and company release orchestration in private facilities; do not merge private development history into this repository.
 
 ## Code and review expectations
