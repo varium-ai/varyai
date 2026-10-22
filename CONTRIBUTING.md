@@ -65,7 +65,9 @@ Frontend checks and the Linux, Windows, and macOS backend suites run for relevan
 
 Before a release or when investigating WSL compatibility, maintainers can run [WSL2 Full Suite (Manual)](.github/workflows/wsl2-manual.yml) from the Actions tab. This longer suite has no scheduled trigger and is separate from the PR gate.
 
-Dependabot checks npm, Cargo, and GitHub Actions versions monthly, with at most two open version-update PRs per ecosystem. Minor and patch updates are grouped within each ecosystem; major updates remain separate for compatibility review. Security alerts and automated security fixes are managed separately in repository settings and are not delayed by the monthly version-update schedule. Dependency PRs require normal review and CI; they are not automatically merged.
+Dependabot opens PRs for security fixes only. Ordinary version-update PRs for npm, Cargo, and GitHub Actions are disabled with `open-pull-requests-limit: 0` in [.github/dependabot.yml](.github/dependabot.yml). Security alerts and automated security fixes remain enabled in repository settings; they use a separate PR limit and are not delayed by the schedule required in the configuration file.
+
+Maintainers update dependencies in small, focused batches when needed and validate compatibility locally before submitting a PR. Security fixes still require normal review and CI; dependency PRs are not automatically merged.
 
 Maintainers triage issues and label PRs directly. Issues are not automatically closed because of inactivity.
 
