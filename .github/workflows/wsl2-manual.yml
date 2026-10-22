@@ -1,12 +1,14 @@
-name: WSL2 Nightly
+name: WSL2 Full Suite (Manual)
 
 # The full backend suite takes 50+ minutes on a \\wsl.localhost 9P filesystem,
-# so it runs nightly instead of per PR. The per-PR gate in ci.yml only runs the
-# atomic-write contract test against the same WSL2-backed environment.
+# so maintainers run it before releases or when investigating WSL compatibility.
+# The path-filtered gate in ci.yml runs only the atomic-write contract test.
 on:
-  schedule:
-    - cron: "23 18 * * *" # 02:23 Beijing time
   workflow_dispatch:
+
+concurrency:
+  group: wsl2-full-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   backend-windows-wsl2-full:
@@ -42,22 +44,6 @@ jobs:
         shell: bash
         run: mkdir -p dist
 
-      - name: Prepare WSL2-backed test environment
-        shell: pwsh
-        run: |
-          wsl.exe -d Ubuntu-24.04 -- bash -lc "rm -rf /tmp/cc-switch-windows-test-root && mkdir -p /tmp/cc-switch-windows-test-root/{home,temp} && chmod -R 0777 /tmp/cc-switch-windows-test-root"
-          $testRoot = "\\wsl.localhost\Ubuntu-24.04\tmp\cc-switch-windows-test-root"
-          $testHome = Join-Path $testRoot "home"
-          $testTemp = Join-Path $testRoot "temp"
-          foreach ($path in @($testRoot, $testHome, $testTemp)) {
-            if (-not (Test-Path -LiteralPath $path)) {
-              throw "WSL2-backed test path is unavailable: $path"
-            }
-          }
-          "CC_SWITCH_TEST_HOME=$testHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CC_SWITCH_WSL_TEST_DIR=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CC_SWITCH_WSL_TEST_TEMP=$testTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
       - name: Compile backend tests with native temp
         # link.exe/mt.exe cannot create manifests when TEMP points at a WSL UNC path.
         env:
@@ -83,6 +69,31 @@ jobs:
           $manifest = Join-Path $env:RUNNER_TEMP "wsl-test-binaries.json"
           ConvertTo-Json -InputObject $testBinaries | Set-Content -LiteralPath $manifest
           "CC_SWITCH_TEST_BINARIES=$manifest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Prepare WSL2-backed test environment
+        shell: pwsh
+        run: |
+          # Keep the distro alive while Windows accesses its UNC filesystem.
+          $keepAlive = Start-Process -FilePath wsl.exe -ArgumentList @('-d', 'Ubuntu-24.04', '--', 'sleep', 'infinity') -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP/wsl-keepalive.log" -RedirectStandardError "$env:RUNNER_TEMP/wsl-keepalive-error.log"
+          "CC_SWITCH_WSL_KEEPALIVE_PID=$($keepAlive.Id)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          wsl.exe -d Ubuntu-24.04 -- bash -lc "rm -rf /tmp/cc-switch-windows-test-root && mkdir -p /tmp/cc-switch-windows-test-root/{home,temp} && chmod -R 0777 /tmp/cc-switch-windows-test-root"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to prepare the WSL2 test directories"
+          }
+          if ($keepAlive.HasExited) {
+            throw "WSL2 keepalive exited before the filesystem tests"
+          }
+          $testRoot = "\\wsl.localhost\Ubuntu-24.04\tmp\cc-switch-windows-test-root"
+          $testHome = Join-Path $testRoot "home"
+          $testTemp = Join-Path $testRoot "temp"
+          foreach ($path in @($testRoot, $testHome, $testTemp)) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "WSL2-backed test path is unavailable: $path"
+            }
+          }
+          "CC_SWITCH_TEST_HOME=$testHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CC_SWITCH_WSL_TEST_DIR=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CC_SWITCH_WSL_TEST_TEMP=$testTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Run Windows-to-WSL2 filesystem contract
         shell: pwsh
@@ -123,4 +134,12 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               exit $LASTEXITCODE
             }
+          }
+
+      - name: Stop WSL2 keepalive
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:CC_SWITCH_WSL_KEEPALIVE_PID) {
+            Stop-Process -Id ([int]$env:CC_SWITCH_WSL_KEEPALIVE_PID) -ErrorAction SilentlyContinue
           }

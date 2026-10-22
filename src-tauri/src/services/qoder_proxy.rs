@@ -567,6 +567,7 @@ mod tests {
             Some("false")
         );
     }
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn exit_restores_client_but_keeps_certificate_for_a_new_manager() {
         let dir = tempfile::tempdir().expect("directory");
@@ -603,6 +604,7 @@ mod tests {
             "saved certificate does not mean routing is active"
         );
     }
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn temporarily_disabled_route_reuses_certificate_listener_and_restores_config() {
         let dir = tempfile::tempdir().expect("directory");

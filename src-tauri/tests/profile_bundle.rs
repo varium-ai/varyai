@@ -6,6 +6,16 @@ use serde_json::json;
 #[path = "support.rs"]
 mod support;
 
+fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+    // Every case resets the test HOME and creates a fresh AppState. Keep the
+    // original failure visible while allowing independent cases to run.
+    let mutex = support::test_mutex();
+    mutex.lock().unwrap_or_else(|poisoned| {
+        mutex.clear_poison();
+        poisoned.into_inner()
+    })
+}
+
 fn seed() -> cc_switch_lib::AppState {
     support::reset_test_fs();
     let home = std::path::PathBuf::from(std::env::var("CC_SWITCH_TEST_HOME").unwrap());
@@ -18,6 +28,7 @@ fn seed() -> cc_switch_lib::AppState {
         ".qwen",
         ".zcode",
         "Library",
+        "AppData",
     ] {
         let path = home.join(directory);
         if path.exists() {
@@ -51,7 +62,7 @@ fn seed() -> cc_switch_lib::AppState {
 
 #[test]
 fn pi_bundle_merges_native_model_fields_missing_from_saved_provider_and_can_undo() {
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     let provider = Provider::with_id(
         "company".into(),
@@ -131,7 +142,7 @@ fn pi_bundle_merges_native_model_fields_missing_from_saved_provider_and_can_undo
 
 #[test]
 fn captures_every_provider_capable_agent_instead_of_only_the_original_three() {
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     support::reset_test_fs();
     let state = support::create_test_state().unwrap();
     let apps: Vec<_> = AppType::all()
@@ -181,7 +192,7 @@ fn captures_every_provider_capable_agent_instead_of_only_the_original_three() {
 
 #[test]
 fn bundle_captures_live_instructions_alongside_provider_models() {
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     let home = std::path::PathBuf::from(std::env::var("CC_SWITCH_TEST_HOME").unwrap());
     std::fs::write(
@@ -201,7 +212,7 @@ fn bundle_captures_live_instructions_alongside_provider_models() {
 
 #[test]
 fn bundle_previews_and_restores_provider_and_model_for_two_agents() {
-    let _guard = support::test_mutex().lock().expect("test lock");
+    let _guard = test_guard();
     let state = seed();
     let profile =
         ProfileBundleService::capture(&state, "Work", &["claude".into(), "codex".into()], None)
@@ -242,7 +253,7 @@ fn bundle_previews_and_restores_provider_and_model_for_two_agents() {
 
 #[test]
 fn changed_live_file_invalidates_preview_without_overwriting_external_edits() {
-    let _guard = support::test_mutex().lock().expect("test lock");
+    let _guard = test_guard();
     let state = seed();
     let profile =
         ProfileBundleService::capture(&state, "Work", &["claude".into(), "codex".into()], None)
@@ -262,7 +273,7 @@ fn changed_live_file_invalidates_preview_without_overwriting_external_edits() {
 
 #[test]
 fn saving_a_bundle_keeps_existing_single_agent_profile_behavior() {
-    let _guard = support::test_mutex().lock().expect("test lock");
+    let _guard = test_guard();
     let state = seed();
     let legacy =
         ProfileService::create(&state, "Project", cc_switch_lib::ProfileScope::Claude).unwrap();
@@ -282,7 +293,7 @@ fn saving_a_bundle_keeps_existing_single_agent_profile_behavior() {
 
 #[test]
 fn captures_live_model_selection_without_saving_credentials() {
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     let path = cc_switch_lib::get_claude_settings_path();
     let mut live: serde_json::Value =
@@ -304,7 +315,7 @@ fn captures_live_model_selection_without_saving_credentials() {
 
 #[test]
 fn second_agent_failure_restores_first_agent_and_original_files() {
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     let profile =
         ProfileBundleService::capture(&state, "Work", &["claude".into(), "codex".into()], None)
@@ -345,7 +356,7 @@ fn second_agent_failure_restores_first_agent_and_original_files() {
 
 #[test]
 fn undo_refuses_to_overwrite_an_external_edit() {
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     let profile =
         ProfileBundleService::capture(&state, "Work", &["claude".into(), "codex".into()], None)
@@ -394,7 +405,7 @@ fn extra_config(app: &AppType, model: &str) -> serde_json::Value {
 
 #[test]
 fn added_agents_apply_and_undo_through_their_real_configuration_adapters() {
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     for app in [
         AppType::Gemini,
         AppType::GrokBuild,
@@ -426,6 +437,7 @@ fn added_agents_apply_and_undo_through_their_real_configuration_adapters() {
             AppType::GrokBuild => ".grok/config.toml",
             AppType::OpenCode => ".config/opencode/opencode.json",
             AppType::OpenClaw => ".openclaw/openclaw.json",
+            AppType::Hermes if cfg!(windows) => "AppData/Local/hermes/config.yaml",
             AppType::Hermes => ".hermes/config.yaml",
             AppType::Pi => ".pi/agent/models.json",
             AppType::WorkBuddy => ".workbuddy-ai/models.json",
@@ -501,7 +513,7 @@ fn added_agents_apply_and_undo_through_their_real_configuration_adapters() {
 #[test]
 fn instructions_mcp_and_skill_assignments_apply_and_restore_with_the_bundle() {
     use cc_switch_lib::{McpService, SkillService};
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     let home = std::path::PathBuf::from(std::env::var("CC_SWITCH_TEST_HOME").unwrap());
     let server=serde_json::from_value(json!({"id":"fixture-mcp","name":"Fixture MCP","server":{"command":"fixture","args":[]},"apps":{"claude":true}})).unwrap();
@@ -564,7 +576,7 @@ fn instructions_mcp_and_skill_assignments_apply_and_restore_with_the_bundle() {
 #[test]
 fn failed_resource_projection_rolls_back_prior_mcp_and_instruction_changes() {
     use cc_switch_lib::{McpService, SkillService};
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     let home = std::path::PathBuf::from(std::env::var("CC_SWITCH_TEST_HOME").unwrap());
     McpService::upsert_server(
@@ -612,7 +624,7 @@ fn failed_resource_projection_rolls_back_prior_mcp_and_instruction_changes() {
 
 #[test]
 fn closed_trae_does_not_block_profile_preview_apply_or_undo() {
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     for (id, model) in [("trae-a", "model-a"), ("trae-b", "model-b")] {
         state
@@ -671,7 +683,7 @@ fn closed_trae_does_not_block_profile_preview_apply_or_undo() {
 #[test]
 fn switching_profiles_reuses_unchanged_agents_without_rewriting_their_files() {
     use std::os::unix::fs::MetadataExt;
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     let apps = ["claude".into(), "codex".into()];
     let work = ProfileBundleService::capture(&state, "Work", &apps, None).unwrap();
@@ -752,7 +764,7 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
             Arc, Mutex,
         },
     };
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     // macOS's default temporary directory can exceed Unix socket SUN_LEN.
     support::ensure_test_home();
     struct RestoreHome(std::ffi::OsString);
@@ -883,7 +895,7 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
 #[test]
 fn profile_mcp_assignments_survive_proxy_restore_and_undo_restores_backup() {
     use cc_switch_lib::McpService;
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     let server = serde_json::from_value(json!({"id":"profile-mcp","name":"Profile MCP","server":{"command":"fixture"},"apps":{"codex":true}})).unwrap();
     McpService::upsert_server(&state, server).unwrap();
@@ -924,7 +936,7 @@ fn profile_mcp_assignments_survive_proxy_restore_and_undo_restores_backup() {
 
 #[test]
 fn empty_native_model_selections_apply_without_enabling_fallback_suppliers() {
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     for app in [AppType::Kimi, AppType::Qwen, AppType::ZCode] {
         state
@@ -962,21 +974,32 @@ fn empty_native_model_selections_apply_without_enabling_fallback_suppliers() {
 }
 
 #[test]
-fn fourteen_file_based_agents_apply_as_one_bundle_and_undo_together() {
-    let _guard = support::test_mutex().lock().unwrap();
+fn supported_file_based_agents_apply_as_one_bundle_and_undo_together() {
+    let _guard = test_guard();
     let state = seed();
     let apps: Vec<_> = AppType::all()
         .filter(|app| !matches!(app, AppType::DoubaoWork | AppType::Trae))
+        .filter(|app| *app != AppType::ClaudeDesktop || cfg!(any(target_os = "macos", windows)))
         .collect();
-    let mut official = Provider::with_id(
-        "claude-desktop-official".into(),
-        "Desktop Official".into(),
-        json!({"env":{}}),
-        None,
+    assert_eq!(
+        apps.len(),
+        if cfg!(any(target_os = "macos", windows)) {
+            14
+        } else {
+            13
+        }
     );
-    official.category = Some("official".into());
-    state.db.save_provider("claude-desktop", &official).unwrap();
-    ProviderService::switch(&state, AppType::ClaudeDesktop, &official.id).unwrap();
+    if apps.contains(&AppType::ClaudeDesktop) {
+        let mut official = Provider::with_id(
+            "claude-desktop-official".into(),
+            "Desktop Official".into(),
+            json!({"env":{}}),
+            None,
+        );
+        official.category = Some("official".into());
+        state.db.save_provider("claude-desktop", &official).unwrap();
+        ProviderService::switch(&state, AppType::ClaudeDesktop, &official.id).unwrap();
+    }
     for app in apps.iter().filter(|app| {
         !matches!(
             app,
@@ -1020,7 +1043,7 @@ fn fourteen_file_based_agents_apply_as_one_bundle_and_undo_together() {
         .map(|app| state.db.get_all_providers(app.as_str()).unwrap())
         .collect();
     let preview = ProfileBundleService::preview(&state, &profile.id).unwrap();
-    assert_eq!(preview.changes.len(), 14);
+    assert_eq!(preview.changes.len(), apps.len());
     let result = ProfileBundleService::apply(&state, &profile.id, &preview.revision).unwrap();
     assert!(result.success, "all adapters must apply together");
     ProfileBundleService::undo(&state, result.undo_id.as_deref().unwrap()).unwrap();
@@ -1036,7 +1059,7 @@ fn fourteen_file_based_agents_apply_as_one_bundle_and_undo_together() {
 
 #[test]
 fn workbuddy_model_edit_is_replaced_by_saved_catalog_without_orphaning_old_ids() {
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     let provider = Provider::with_id(
         "workbuddy".into(),
@@ -1078,7 +1101,7 @@ fn workbuddy_model_edit_is_replaced_by_saved_catalog_without_orphaning_old_ids()
 #[cfg(unix)]
 #[test]
 fn undo_restores_an_instruction_file_symlink_and_its_existing_target() {
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     let home = support::ensure_test_home();
     let target = home.join(".cc-switch/shared-instructions.md");
@@ -1107,7 +1130,7 @@ fn undo_restores_an_instruction_file_symlink_and_its_existing_target() {
 
 #[test]
 fn two_named_bundles_can_be_edited_and_switched_without_single_provider_changes_rewriting_them() {
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     let apps = ["claude".into(), "codex".into()];
     let work = ProfileBundleService::capture(&state, "Work", &apps, None).unwrap();
@@ -1177,7 +1200,7 @@ fn two_named_bundles_can_be_edited_and_switched_without_single_provider_changes_
 
 #[test]
 fn later_custom_suppliers_can_be_captured_without_changing_old_profiles_or_copying_credentials() {
-    let _guard = support::test_mutex().lock().unwrap();
+    let _guard = test_guard();
     let state = seed();
     let apps = ["claude".into(), "codex".into()];
     let old = ProfileBundleService::capture(&state, "Original", &apps, None).unwrap();

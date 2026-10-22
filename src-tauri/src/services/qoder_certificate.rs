@@ -112,7 +112,7 @@ pub(crate) async fn create() -> Result<Certificate, String> {
     .await
     .map_err(|_| failure())?
 }
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(crate) fn create_at(directory: PathBuf) -> Result<Certificate, String> {
     create_at_with_lifetime(directory, 86_400)
 }

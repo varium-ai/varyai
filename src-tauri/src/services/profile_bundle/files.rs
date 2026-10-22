@@ -1,6 +1,8 @@
 use super::{error, AppError};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(windows)]
+use std::os::windows::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 
 enum Node {
@@ -83,6 +85,11 @@ fn digest(node: &Node) -> Value {
 }
 fn remove(path: &Path) -> Result<(), AppError> {
     match std::fs::symlink_metadata(path) {
+        #[cfg(windows)]
+        Ok(m) if m.file_type().is_symlink_dir() => {
+            // Remove the link itself, including when its target no longer exists.
+            std::fs::remove_dir(path).map_err(|_| error("restoreFailed"))
+        }
         Ok(m) if m.is_dir() && !m.file_type().is_symlink() => {
             std::fs::remove_dir_all(path).map_err(|_| error("restoreFailed"))
         }
@@ -91,6 +98,7 @@ fn remove(path: &Path) -> Result<(), AppError> {
         Err(_) => Err(error("restoreFailed")),
     }
 }
+
 fn restore(path: &Path, node: &Node) -> Result<(), AppError> {
     if let Node::Directory(children) = node {
         if std::fs::symlink_metadata(path).is_ok_and(|m| !m.is_dir() || m.file_type().is_symlink())
@@ -134,5 +142,78 @@ fn restore(path: &Path, node: &Node) -> Result<(), AppError> {
             }
         }
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn symlink(target: &Path, path: &Path, directory: bool) {
+        #[cfg(unix)]
+        {
+            let _ = directory;
+            std::os::unix::fs::symlink(target, path).unwrap();
+        }
+        #[cfg(windows)]
+        if directory {
+            std::os::windows::fs::symlink_dir(target, path).unwrap();
+        } else {
+            std::os::windows::fs::symlink_file(target, path).unwrap();
+        }
+    }
+
+    #[test]
+    fn restore_removes_added_links_without_removing_their_targets() {
+        for directory in [false, true] {
+            for dangling in [false, true] {
+                for nested in [false, true] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let target = temp.path().join("target");
+                    let content = if directory {
+                        std::fs::create_dir(&target).unwrap();
+                        target.join("SKILL.md")
+                    } else {
+                        target.clone()
+                    };
+                    std::fs::write(&content, "Preserve this content").unwrap();
+                    let root = temp.path().join("snapshot");
+                    let link = if nested {
+                        std::fs::create_dir(&root).unwrap();
+                        root.join("link")
+                    } else {
+                        root.clone()
+                    };
+                    let before = Tree::capture(root.clone()).unwrap();
+                    symlink(&target, &link, directory);
+                    let remaining = if dangling {
+                        let moved = temp.path().join("moved-target");
+                        std::fs::rename(&target, &moved).unwrap();
+                        if directory {
+                            moved.join("SKILL.md")
+                        } else {
+                            moved
+                        }
+                    } else {
+                        content
+                    };
+
+                    before.restore().unwrap();
+
+                    assert_eq!(
+                        std::fs::symlink_metadata(&link).unwrap_err().kind(),
+                        std::io::ErrorKind::NotFound
+                    );
+                    assert_eq!(
+                        std::fs::read_to_string(remaining).unwrap(),
+                        "Preserve this content"
+                    );
+                    assert_eq!(
+                        Tree::capture(root).unwrap().fingerprint(),
+                        before.fingerprint()
+                    );
+                }
+            }
+        }
     }
 }
