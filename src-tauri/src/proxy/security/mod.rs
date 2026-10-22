@@ -74,9 +74,12 @@ pub(crate) fn inspect_with_context(
     let runtime = get_security_runtime();
     let detected_at = std::time::Instant::now();
     let now = chrono::Utc::now().timestamp_millis();
+    let current_turn = extractor::CurrentTurn::new(body);
     let inspection = SecurityAuditEngine::inspect_and_redact_with_runtime(body, &runtime);
     for finding in &inspection.findings {
-        if finding.action == AuditAction::Allow {
+        if finding.action == AuditAction::Allow
+            || (!inspection.is_blocked() && current_turn.is_historical(&finding.location))
+        {
             continue;
         }
         emit_audit_event(aggregation::PendingAuditEvent {
@@ -157,8 +160,11 @@ pub fn inspect_and_intercept(
             .any(|f| f.action == AuditAction::Redact);
 
     // Enqueue audit events asynchronously.
+    let current_turn = extractor::CurrentTurn::new(body);
     for finding in &inspection.findings {
-        if finding.action == AuditAction::Allow {
+        if finding.action == AuditAction::Allow
+            || (!blocked && current_turn.is_historical(&finding.location))
+        {
             continue;
         }
         emit_audit_event(aggregation::PendingAuditEvent {

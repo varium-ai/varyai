@@ -1,6 +1,8 @@
 {
   "security": {
     "riskCritical": "CRITICAL 嚴重",
+    "refreshSuccess": "安全記錄已重新整理",
+    "refreshFailed": "重新整理安全記錄失敗，請重試",
     "sessionId": "工作階段 ID",
     "sessionUnknown": "工作階段未知",
     "sessionFilter": "工作階段篩選",
@@ -175,7 +177,8 @@
     "detailService": "呼叫的 AI 服務",
     "detailTime": "檢測時間",
     "detailOutbound": "傳送狀態",
-    "detailSnippet": "隱藏後的內容",
+    "detailSnippet": "稽核片段（已遮蔽）",
+    "auditSnippetHint": "稽核記錄一律隱藏敏感內容；選擇「提醒」時，傳送給 AI 的原文保持不變。",
     "goToRules": "前往檢測規則設定",
     "ruleHeading": "策略規則明細",
     "ruleCount": "（{{count}} 條已載入）",
@@ -1359,7 +1362,7 @@
     "invalidToml": "config.toml 格式錯誤：{{error}}",
     "defaultModelPlaceholder": "例如: grok-4.5",
     "defaultModelHint": "Grok Build 預設請求的模型，隨時可改，無需等待軟體更新供應商範本。",
-    "advancedSectionHint": "包含上游格式、思考能力與自訂 User-Agent。使用 Chat Completions / Anthropic Messages 協定的供應商需開啟路由接管才能使用。",
+    "advancedSectionHint": "包含上游格式、思考能力與自訂 User-Agent。使用 Chat Completions / Anthropic Messages / Gemini 協定的供應商需開啟路由接管才能使用。",
     "reasoningEffortHint": "上游支援 low/high/max 等思考深度控制時啟用。啟用後會自動啟用思考模式，並把請求中的 reasoning effort 轉成上游 Chat 參數。",
     "maxOutputTokensHint": "預設上限 8192 容易在長回答或深度思考時被截斷（stop_reason=max_tokens）。此處設定會作為 Anthropic 的 max_tokens 覆蓋請求值。請勿超過該模型／閘道的真實輸出上限，否則可能 400。留空使用預設 8192。"
   },
@@ -1467,6 +1470,7 @@
     "openReleaseNotesFailed": "開啟更新日誌失敗："
   },
   "providerForm": {
+    "protocolBridgeHint": "選擇供應商實際提供的上游協議。不同協議需開啟路由接管以轉換；相同協議直接轉發。",
     "supplierName": "供應商名稱",
     "supplierNameRequired": "供應商名稱 *",
     "supplierNamePlaceholder": "例如：Anthropic 官方",
@@ -1587,10 +1591,10 @@
     "fullUrlDisabled": "標記為完整 URL",
     "fullUrlHint": "請填寫完整請求 URL，並且必須開啟路由後使用；路由將直接使用此 URL，不拼接路徑",
     "fullUrlHintGeminiNative": "Gemini Native 下，完整 URL 模式同時相容兩類位址：1. 官方/標準 Gemini URL，代理伺服器會依模型和串流參數自動標準化；2. 自訂 relay 的完整 URL，代理伺服器會盡量原樣使用，只補齊查詢參數，不再強制附加 models 路徑",
-    "apiFormatAnthropic": "Anthropic Messages (原生)",
-    "apiFormatOpenAIChat": "OpenAI Chat Completions (需開啟路由)",
-    "apiFormatOpenAIResponses": "OpenAI Responses API (需開啟路由)",
-    "apiFormatGeminiNative": "Gemini Native generateContent (需開啟路由)",
+    "apiFormatAnthropic": "Anthropic Messages",
+    "apiFormatOpenAIChat": "OpenAI Chat Completions",
+    "apiFormatOpenAIResponses": "OpenAI Responses API",
+    "apiFormatGeminiNative": "Gemini Native generateContent",
     "codexApiFormatResponses": "OpenAI Responses API (原生)",
     "codexApiFormatOpenAIChat": "OpenAI Chat Completions (需開啟路由)",
     "codexApiFormatHint": "選擇供應商真實支援的 Codex API 格式；設定仍保持 Responses 以相容新版 Codex，Chat Completions 會透過本地路由自動轉換。",

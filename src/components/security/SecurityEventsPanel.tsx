@@ -102,6 +102,7 @@ export function SecurityEventsPanel({
 }: SecurityEventsPanelProps) {
   const { t, i18n } = useTranslation();
   const [refreshRequest, setRefreshRequest] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   // Keep the reading range stable across unrelated renders (including deep-page signals).
   const { startDate, endDate } = useMemo(
     () => resolveUsageRange(range),
@@ -146,11 +147,27 @@ export function SecurityEventsPanel({
   // Apply new page/range state first, then force a request even if page one was cached.
   useEffect(() => {
     if (refreshRequest > 0) {
-      void refetch();
-      void summary.refetch();
+      const refreshQueries = async () => {
+        try {
+          const results = await Promise.all([refetch(), summary.refetch()]);
+          if (isRefreshing) {
+            if (results.some((result) => result?.isError)) {
+              toast.error(t("security.refreshFailed"));
+            } else {
+              toast.success(t("security.refreshSuccess"));
+            }
+          }
+        } catch {
+          if (isRefreshing) toast.error(t("security.refreshFailed"));
+        } finally {
+          if (isRefreshing) setIsRefreshing(false);
+        }
+      };
+      void refreshQueries();
     }
   }, [refreshRequest]);
   const refresh = () => {
+    setIsRefreshing(true);
     onPageChange(1);
     onRangeChange({ ...range });
     resetUpdates();
@@ -519,8 +536,13 @@ export function SecurityEventsPanel({
             size="icon"
             aria-label={t("security.refreshLogs")}
             onClick={refresh}
+            disabled={isLoading || isRefreshing}
           >
-            <RefreshCw className="h-4 w-4" />
+            <RefreshCw
+              className={
+                "h-4 w-4 " + (isLoading || isRefreshing ? "animate-spin" : "")
+              }
+            />
           </Button>
           <Button
             variant="ghost"

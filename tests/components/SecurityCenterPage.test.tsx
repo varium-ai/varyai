@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -13,6 +14,7 @@ import en from "@/i18n/locales/en.json";
 import ja from "@/i18n/locales/ja.json";
 import zhTW from "@/i18n/locales/zh-TW.json";
 import tailwindcss from "tailwindcss";
+import { toast } from "sonner";
 import { resolveUsageRange } from "@/lib/usageRange";
 import { SecurityCenterPage } from "@/components/security/SecurityCenterPage";
 import type { SecurityEvent } from "@/types/securityEvents";
@@ -47,6 +49,10 @@ const auditRows = vi.hoisted(() => ({
 const updateCustomAction = vi.hoisted(() => vi.fn());
 const saveRule = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const deleteRule = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -254,6 +260,36 @@ vi.mock("@/lib/api", () => ({
 }));
 
 describe("SecurityCenterPage", () => {
+  it("shows refresh progress until requests finish and then reports success", async () => {
+    let finish!: () => void;
+    auditRows.refetchByAction.audit.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    render(<SecurityCenterPage />);
+    const refresh = screen.getByRole("button", {
+      name: "security.refreshLogs",
+    });
+    fireEvent.click(refresh);
+    expect(refresh).toBeDisabled();
+    expect(refresh.querySelector("svg")).toHaveClass("animate-spin");
+    await act(async () => finish());
+    await waitFor(() => expect(refresh).not.toBeDisabled());
+    expect(toast.success).toHaveBeenCalledWith("security.refreshSuccess");
+  });
+  it("reports a failed refresh and allows retrying", async () => {
+    auditRows.refetchByAction.audit.mockResolvedValueOnce({ isError: true });
+    render(<SecurityCenterPage />);
+    const refresh = screen.getByRole("button", {
+      name: "security.refreshLogs",
+    });
+    fireEvent.click(refresh);
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("security.refreshFailed"),
+    );
+    expect(refresh).not.toBeDisabled();
+  });
   it.each([
     ["empty", "security.noFilteredRecords"],
     ["loading", "security.loadingLogs"],
@@ -622,6 +658,9 @@ it("shows persisted aggregation counts and first/last hit times in the list and 
   expect(screen.getByText("7")).toBeInTheDocument();
   fireEvent.click(screen.getByText("Repeated token"));
   const detail = screen.getByRole("dialog");
+  expect(
+    within(detail).getByText("security.auditSnippetHint"),
+  ).toBeInTheDocument();
   expect(within(detail).getByText("security.triggerCount")).toBeInTheDocument();
   expect(within(detail).getByText("7")).toBeInTheDocument();
   expect(

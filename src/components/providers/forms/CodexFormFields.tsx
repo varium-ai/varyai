@@ -475,6 +475,7 @@ export function CodexFormFields({
     hasRequestOverrides ||
     catalogModels.length > 0 ||
     apiFormat === "openai_responses" ||
+    apiFormat === "gemini_native" ||
     isAnthropicFormat ||
     supportsThinking ||
     supportsEffort ||
@@ -995,26 +996,31 @@ export function CodexFormFields({
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="openai_chat">
-                        {t("codexConfig.upstreamFormatChat", {
-                          defaultValue: "Chat Completions（需开启路由）",
+                        {t("providerForm.apiFormatOpenAIChat", {
+                          defaultValue: "OpenAI Chat Completions",
                         })}
                       </SelectItem>
                       <SelectItem value="openai_responses">
-                        {t("codexConfig.upstreamFormatResponses", {
-                          defaultValue: "Responses（原生）",
+                        {t("providerForm.apiFormatOpenAIResponses", {
+                          defaultValue: "OpenAI Responses API",
                         })}
                       </SelectItem>
                       <SelectItem value="anthropic">
-                        {t("codexConfig.upstreamFormatAnthropic", {
-                          defaultValue: "Anthropic Messages（需开启路由）",
+                        {t("providerForm.apiFormatAnthropic", {
+                          defaultValue: "Anthropic Messages",
+                        })}
+                      </SelectItem>
+                      <SelectItem value="gemini_native">
+                        {t("providerForm.apiFormatGeminiNative", {
+                          defaultValue: "Gemini Native generateContent",
                         })}
                       </SelectItem>
                     </SelectContent>
                   </Select>
                   <p className="text-xs leading-relaxed text-muted-foreground">
-                    {t("codexConfig.upstreamFormatHint", {
+                    {t("providerForm.protocolBridgeHint", {
                       defaultValue:
-                        "供应商原生是 Responses API 就选 Responses（直连，不转换格式）；使用 Chat Completions 协议就选 Chat；供应商只提供原生 Anthropic Messages 协议就选 Anthropic Messages。Chat 与 Anthropic Messages 均需开启路由接管才能转换为 Responses。",
+                        "选择供应商实际提供的上游协议。不同协议需要开启路由接管，由本地代理转换；相同协议直接转发。",
                     })}
                   </p>
                 </div>

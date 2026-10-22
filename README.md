@@ -89,6 +89,7 @@ Inspection covers traffic and fields handled by the enabled integration. Tool-ri
 | Provider management       | Manage endpoints, credentials, and model settings for supported coding tools.                                                                                        |
 | Local gateway             | Route supported clients through a local HTTP proxy with streaming, protocol adaptation, retries, and configured failover. The default listener is `127.0.0.1:15721`. |
 | Protocol adaptation       | Adapters for Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, and Gemini. Available routes and conversion behavior depend on the client and provider.  |
+| Protocol matrix           | [Four-protocol routing and verification](docs/design/protocol-bridge.md) |
 | Sensitive-data inspection | Inspect supported outbound text fields with built-in and custom rules. Configure redaction, audit logging, or forwarding without inspection for each rule.           |
 | Security center           | Review detected events by time, session, information type, risk level, and handling result.                                                                          |
 | Tool-risk observations    | Record and flag supported tool calls covered by enabled risk rules.                                                                                                  |

@@ -539,6 +539,11 @@ pub fn openai_to_anthropic(body: Value) -> Result<Value, ProxyError> {
         .and_then(|c| c.as_array())
         .ok_or_else(|| ProxyError::TransformError("No choices in response".to_string()))?;
 
+    if choices.len() > 1 {
+        return Err(ProxyError::TransformError(
+            "Multiple choices cannot cross protocols".into(),
+        ));
+    }
     let choice = choices
         .first()
         .ok_or_else(|| ProxyError::TransformError("Empty choices array".to_string()))?;
