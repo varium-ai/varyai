@@ -24,6 +24,7 @@ jobs:
     outputs:
       frontend: ${{ steps.filter.outputs.frontend }}
       backend: ${{ steps.filter.outputs.backend }}
+      wsl: ${{ steps.filter.outputs.wsl }}
     steps:
       # On pull_request the filter reads changed files via the API (no checkout);
       # on push or manual runs it needs local git history to diff against.
@@ -59,12 +60,35 @@ jobs:
               - "src-tauri/**"
               - "rust-toolchain.toml"
               - ".github/workflows/**"
+            # Exercise WSL filesystem compatibility for storage/configuration changes.
+            # Unrelated backend changes still run the three-platform backend suite.
+            wsl:
+              - "src-tauri/src/config.rs"
+              - "src-tauri/src/settings.rs"
+              - "src-tauri/src/*_config.rs"
+              - "src-tauri/src/pi_config/**"
+              - "src-tauri/src/claude_mcp.rs"
+              - "src-tauri/src/prompt_files.rs"
+              - "src-tauri/src/database/**"
+              - "src-tauri/src/services/config.rs"
+              - "src-tauri/src/services/profile*.rs"
+              - "src-tauri/src/services/profile_bundle/**"
+              - "src-tauri/src/services/*_files.rs"
+              - "src-tauri/src/services/webdav*.rs"
+              - "src-tauri/src/services/webdav_sync/**"
+              - "src-tauri/tests/**"
+              - "src-tauri/Cargo.toml"
+              - "src-tauri/Cargo.lock"
+              - "src-tauri/build.rs"
+              - "rust-toolchain.toml"
+              - ".github/workflows/ci.yml"
+              - ".github/workflows/wsl2-manual.yml"
 
   frontend:
     name: Frontend Checks
     runs-on: ubuntu-latest
     needs: changes
-    # Pushes to main always run everything: they keep the caches that PRs restore from warm.
+    # Main pushes and manual runs always validate the renderer and warm its cache.
     if: github.event_name != 'pull_request' || needs.changes.outputs.frontend == 'true'
     steps:
       - name: Checkout
@@ -175,7 +199,8 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 45
     needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.backend == 'true'
+    # Manual CI runs exercise this contract regardless of changed paths.
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.wsl == 'true'
     permissions:
       contents: read
     steps:
@@ -280,6 +305,7 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           FRONTEND_CHANGED: ${{ needs.changes.outputs.frontend }}
           BACKEND_CHANGED: ${{ needs.changes.outputs.backend }}
+          WSL_CHANGED: ${{ needs.changes.outputs.wsl }}
           EVENT_NAME: ${{ github.event_name }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           BACKEND_RESULT: ${{ needs.backend.result }}
@@ -291,7 +317,7 @@ jobs:
             echo "Changed-area detection did not succeed: $CHANGES_RESULT"
             exit 1
           }
-          for changed in "$FRONTEND_CHANGED" "$BACKEND_CHANGED"; do
+          for changed in "$FRONTEND_CHANGED" "$BACKEND_CHANGED" "$WSL_CHANGED"; do
             [[ "$changed" == true || "$changed" == false ]] || {
               echo "Changed-area detection returned an invalid result"
               exit 1
@@ -309,4 +335,12 @@ jobs:
           }
           verify_result frontend "$FRONTEND_CHANGED" "$FRONTEND_RESULT"
           verify_result backend "$BACKEND_CHANGED" "$BACKEND_RESULT"
-          verify_result wsl2 "$BACKEND_CHANGED" "$WSL_RESULT"
+          # WSL is path-filtered on both PRs and main pushes, but always runs manually.
+          wsl_expected=success
+          if [[ "$EVENT_NAME" != workflow_dispatch && "$WSL_CHANGED" == false ]]; then
+            wsl_expected=skipped
+          fi
+          if [[ "$WSL_RESULT" != "$wsl_expected" ]]; then
+            echo "wsl2: expected $wsl_expected, received $WSL_RESULT"
+            exit 1
+          fi
