@@ -18,6 +18,7 @@ fn seed() -> cc_switch_lib::AppState {
         ".qwen",
         ".zcode",
         "Library",
+        "AppData",
     ] {
         let path = home.join(directory);
         if path.exists() {
@@ -426,6 +427,7 @@ fn added_agents_apply_and_undo_through_their_real_configuration_adapters() {
             AppType::GrokBuild => ".grok/config.toml",
             AppType::OpenCode => ".config/opencode/opencode.json",
             AppType::OpenClaw => ".openclaw/openclaw.json",
+            AppType::Hermes if cfg!(windows) => "AppData/Local/hermes/config.yaml",
             AppType::Hermes => ".hermes/config.yaml",
             AppType::Pi => ".pi/agent/models.json",
             AppType::WorkBuddy => ".workbuddy-ai/models.json",
