@@ -385,7 +385,8 @@ impl RequestForwarder {
     /// `active_connections` / 刷新 `last_request_at`，无论 inner 走哪条出口路径，
     /// 出口处都会把 `active_connections` 回收。Per-attempt 维度（成功/失败/熔断
     /// 等）仍由 inner 内自行更新 `success_requests` / `failed_requests`。
-    #[allow(clippy::too_many_arguments)]
+    // Preserve the existing inline error/provider contract on the forwarding path.
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)]
     pub async fn forward_with_retry(
         &self,
         app_type: &AppType,
@@ -425,7 +426,8 @@ impl RequestForwarder {
     /// * `body` - 请求体
     /// * `headers` - 请求头
     /// * `providers` - 已选择的 Provider 列表（由 RequestContext 提供，避免重复调用 select_providers）
-    #[allow(clippy::too_many_arguments)]
+    // Preserve the existing inline error/provider contract on the forwarding path.
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)]
     async fn forward_with_retry_inner(
         &self,
         app_type: &AppType,

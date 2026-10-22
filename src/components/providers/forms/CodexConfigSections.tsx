@@ -7,6 +7,7 @@ import React, {
 } from "react";
 import { useTranslation } from "react-i18next";
 import JsonEditor from "@/components/JsonEditor";
+import { Input } from "@/components/ui/input";
 import {
   extractCodexTopLevelInt,
   isCodexRemoteCompactionEnabled,
@@ -310,15 +311,16 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
         </label>
         <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
           <span>{t("codexConfig.autoCompactLimit")}:</span>
-          <input
+          <Input
             type="text"
+            placeholder={t("codexConfig.autoCompactLimitPlaceholder")}
             inputMode="numeric"
             pattern="[0-9]*"
             key={toggleStates.compactLimit}
             defaultValue={toggleStates.compactLimit}
             disabled={!toggleStates.contextWindow1M}
             onChange={(e) => handleCompactLimitChange(e.target.value)}
-            className="w-28 h-7 px-2 text-sm rounded border border-border bg-background text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-28 h-7 px-2 text-sm"
           />
         </label>
       </div>

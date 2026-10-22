@@ -71,6 +71,12 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/update_tray_menu`, () => success(true)),
 
+  http.post(`${TAURI_ENDPOINT}/get_workbuddy_default_config_dir`, () =>
+    HttpResponse.json("/mock/home/.workbuddy-ai"),
+  ),
+  http.post(`${TAURI_ENDPOINT}/get_workbuddy_live_provider_ids`, () =>
+    HttpResponse.json([]),
+  ),
   http.post(`${TAURI_ENDPOINT}/get_opencode_live_provider_ids`, () =>
     success(getLiveProviderIds("opencode")),
   ),
@@ -113,6 +119,31 @@ export const handlers = [
     }>(request);
     updateProvider(app, provider);
     return success(true);
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/duplicate_provider`, async ({ request }) => {
+    const { id, app, name } = await withJson<{
+      id: string;
+      app: AppId;
+      name: string;
+    }>(request);
+    const source = getProviders(app)[id];
+    if (!source)
+      return HttpResponse.json(
+        { error: "Provider not found" },
+        { status: 404 },
+      );
+    const copy = {
+      ...structuredClone(source),
+      id: `copy-${Date.now()}`,
+      name,
+      createdAt: Date.now(),
+      sortIndex: undefined,
+      inFailoverQueue: false,
+      meta: { ...source.meta, liveConfigManaged: false },
+    };
+    addProvider(app, copy);
+    return success(copy);
   }),
 
   http.post(`${TAURI_ENDPOINT}/delete_provider`, async ({ request }) => {
@@ -219,6 +250,18 @@ export const handlers = [
 
   http.post(`${TAURI_ENDPOINT}/get_settings`, () => success(getSettings())),
 
+  http.post(`${TAURI_ENDPOINT}/get_notification_permission_status`, () =>
+    success({
+      authorization: "unknown",
+      platform: "macos",
+      isDev: true,
+      canRequest: false,
+      canOpenSettings: true,
+      alertsEnabled: null,
+      soundEnabled: null,
+    }),
+  ),
+
   http.post(`${TAURI_ENDPOINT}/check_env_conflicts`, () => success([])),
 
   http.post(`${TAURI_ENDPOINT}/save_settings`, async ({ request }) => {
@@ -318,6 +361,30 @@ export const handlers = [
     success({ success: true }),
   ),
 
+  http.post(`${TAURI_ENDPOINT}/get_pi_routing_status`, () =>
+    HttpResponse.json({
+      enabled: false,
+      configured: false,
+      running: false,
+      providerIds: [],
+      modelCount: 0,
+      issues: [],
+      lastRequestAt: null,
+      errorCode: null,
+    }),
+  ),
+  http.post(`${TAURI_ENDPOINT}/preview_pi_routing`, () =>
+    HttpResponse.json({
+      enabled: false,
+      configured: false,
+      running: false,
+      providerIds: [],
+      modelCount: 0,
+      issues: [],
+      lastRequestAt: null,
+      errorCode: null,
+    }),
+  ),
   http.post(`${TAURI_ENDPOINT}/get_pi_current_state`, () =>
     success({
       enabledProviderIds: [],
@@ -355,6 +422,14 @@ export const handlers = [
     }),
   ),
 
+  http.post(`${TAURI_ENDPOINT}/get_qoder_certificate_status`, () =>
+    success({
+      expires_at: null,
+      expired: false,
+      active: false,
+      fingerprint: null,
+    }),
+  ),
   http.post(`${TAURI_ENDPOINT}/is_live_takeover_active`, () => success(false)),
 
   // Failover / circuit breaker defaults

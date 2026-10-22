@@ -1,4 +1,10 @@
 fn main() {
+    // Invalidate cached linker instructions when Windows runtime linkage changes.
+    println!("cargo:rerun-if-env-changed=STATIC_VCRUNTIME");
+    // The application and tray icons are embedded at compile time. Rebuild the
+    // binary whenever generated icon assets change during local development.
+    println!("cargo:rerun-if-changed=icons");
+
     tauri_build::build();
 
     // Windows: Embed Common Controls v6 manifest for test binaries

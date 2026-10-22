@@ -2,7 +2,6 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { DatabaseUpgrade } from "./components/DatabaseUpgrade";
-import { UpdateProvider } from "./contexts/UpdateContext";
 import "./index.css";
 // 导入国际化配置
 import i18n from "./i18n";
@@ -10,6 +9,10 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "@/components/theme-provider";
 import { queryClient } from "@/lib/query";
 import { Toaster } from "@/components/ui/sonner";
+import { SecuritySystemNotifier } from "@/components/SecuritySystemNotifier";
+import { ToolRiskNotifier } from "@/components/ToolRiskNotifier";
+import { AppUpdateDialog } from "@/components/AppUpdateDialog";
+import { UpdateProvider } from "@/contexts/UpdateContext";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
@@ -124,6 +127,9 @@ async function bootstrap() {
           <ThemeProvider defaultTheme="system" storageKey="cc-switch-theme">
             <UpdateProvider>
               <App />
+              <AppUpdateDialog />
+              <SecuritySystemNotifier />
+              <ToolRiskNotifier />
               <Toaster />
             </UpdateProvider>
           </ThemeProvider>

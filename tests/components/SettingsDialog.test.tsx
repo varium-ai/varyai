@@ -160,11 +160,22 @@ vi.mock("@/components/ui/tabs", () => {
         <div data-testid="tabs">{children}</div>
       </TabsContext.Provider>
     ),
-    TabsList: ({ children }: any) => <div>{children}</div>,
-    TabsTrigger: ({ value, children }: any) => {
+    TabsList: ({ children, className, slidingIndicator = true }: any) => (
+      <div className={className}>
+        {slidingIndicator && <span data-testid="tabs-list-indicator" />}
+        {children}
+      </div>
+    ),
+    TabsTrigger: ({ value, children, className }: any) => {
       const ctx = useContext(TabsContext);
       return (
-        <button type="button" onClick={() => ctx.onValueChange?.(value)}>
+        <button
+          role="tab"
+          type="button"
+          className={className}
+          data-state={ctx.value === value ? "active" : "inactive"}
+          onClick={() => ctx.onValueChange?.(value)}
+        >
           {children}
         </button>
       );
@@ -230,6 +241,12 @@ vi.mock("@/components/settings/AboutSection", () => ({
   AboutSection: ({ isPortable }: any) => <div>about:{String(isPortable)}</div>,
 }));
 
+vi.mock("@/components/settings/LocalProxySettings", () => ({
+  LocalProxySettings: () => (
+    <div data-testid="local-proxy-settings">local-proxy</div>
+  ),
+}));
+
 vi.mock("@/components/settings/WebdavSyncSection", () => ({
   WebdavSyncSection: ({ config }: any) => (
     <div>webdav-sync-section:{config?.baseUrl ?? "none"}</div>
@@ -254,6 +271,82 @@ const renderSettingsPage = (
 };
 
 describe("SettingsPage Component", () => {
+  it("only exposes the supported settings categories", () => {
+    renderSettingsPage();
+    const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
+    expect(screen.queryByTestId("tabs-list-indicator")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: "settings.tabGeneral" }),
+    ).toHaveClass(
+      "bg-white",
+      "border-slate-200",
+      "data-[state=active]:bg-white",
+      "data-[state=active]:text-blue-600",
+      "data-[state=active]:border-blue-600",
+      "data-[state=active]:shadow-sm",
+    );
+    expect(
+      screen.queryByRole("tab", { name: "homeAudit.label" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: "settings.tabProxy" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: "settings.tabAuth" }),
+    ).not.toBeInTheDocument();
+    expect(tabs.indexOf("settings.tabAdvanced")).toBe(
+      tabs.indexOf("settings.tabGeneral") + 1,
+    );
+    expect(screen.queryByText("settings.codexAuth")).not.toBeInTheDocument();
+    expect(screen.getByText("window-settings")).toBeInTheDocument();
+  });
+
+  it("keeps category button focus rings unclipped and wraps narrow category rows", () => {
+    renderSettingsPage();
+
+    const about = screen.getByRole("tab", { name: "common.about" });
+    const list = about.parentElement;
+    const categoryRow = list?.parentElement;
+
+    expect(list).not.toHaveClass("overflow-x-auto");
+    expect(categoryRow).not.toHaveClass("overflow-x-auto");
+    expect(list).toHaveClass("flex-wrap", "max-w-full");
+    expect(categoryRow).toHaveClass("flex-wrap");
+  });
+
+  it("renders local routing at the top of advanced settings", () => {
+    renderSettingsPage();
+
+    fireEvent.click(screen.getByRole("tab", { name: "settings.tabAdvanced" }));
+
+    expect(screen.getByTestId("local-proxy-settings")).toBeInTheDocument();
+  });
+
+  it("opens the requested settings tab", () => {
+    renderSettingsPage({ initialTab: "advanced" });
+
+    expect(screen.getByTestId("local-proxy-settings")).toBeInTheDocument();
+  });
+
+  it("keeps usage statistics out of the settings tabs", () => {
+    renderSettingsPage();
+
+    expect(
+      screen.queryByRole("tab", { name: "usage.title" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps Skills storage and sync controls out of general settings", () => {
+    renderSettingsPage();
+
+    expect(
+      screen.queryByText("settings.skillStorage.title"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("settings.skillSync.title"),
+    ).not.toBeInTheDocument();
+  });
+
   beforeEach(async () => {
     tMock.mockImplementation((key: string) => key);
     settingsMock = createSettingsMock();

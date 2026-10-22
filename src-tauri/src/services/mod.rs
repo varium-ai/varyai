@@ -9,11 +9,15 @@ pub mod model_fetch;
 pub mod model_pricing;
 pub mod omo;
 pub mod pi_prompt_files;
+pub(crate) mod pi_routing;
 pub(crate) mod pi_state;
 pub mod profile;
+pub mod profile_bundle;
 pub mod prompt;
 pub mod provider;
 pub mod proxy;
+pub(crate) mod qoder_certificate;
+pub(crate) mod qoder_proxy;
 pub mod s3;
 pub mod s3_auto_sync;
 pub mod s3_sync;
@@ -30,11 +34,13 @@ pub mod stream_check;
 pub mod subscription;
 pub mod subscription_grok;
 pub mod sync_protocol;
+pub mod tool_risk;
 pub mod usage_cache;
 pub mod usage_stats;
 pub mod webdav;
 pub mod webdav_auto_sync;
 pub mod webdav_sync;
+pub(crate) mod workbuddy_proxy;
 
 pub use config::ConfigService;
 pub use mcp::McpService;
@@ -51,3 +57,8 @@ pub use usage_stats::{
     DailyStats, LogFilters, ModelStats, PaginatedLogs, ProviderLimitStatus, ProviderStats,
     RequestLogDetail, UsageSummary, UsageSummaryByApp,
 };
+pub(crate) mod agent_clients;
+
+pub(crate) mod trae_bridge;
+
+pub(crate) mod doubao_work;

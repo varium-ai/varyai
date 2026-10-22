@@ -1,10 +1,6 @@
 /**
- * Coding Plan 供应商的 base_url 路由表。
- *
- * 与后端 `src-tauri/src/services/coding_plan.rs::detect_provider` 保持一致：
- * 后端靠 `url.contains(...)` 做子串判断，前端这里用 RegExp 做同效匹配。
- * 新增供应商时改这一处即可（UsageScriptModal 下拉 + useProviderActions
- * 新建自动注入 + 托盘识别全部复用）。
+ * Coding-plan endpoint matching shared by provider creation and quota detection.
+ * Keep matching aligned with services/coding_plan.rs::detect_provider.
  */
 import { createUsageScript } from "@/types";
 import { TEMPLATE_TYPES } from "@/config/constants";
@@ -20,37 +16,28 @@ export interface CodingPlanProviderEntry {
     | "zenmux"
     | "volcengine"
     | "opencode_go";
-  /** UsageScriptModal 下拉显示用 */
-  label: string;
   /** base_url 匹配规则 */
   pattern: RegExp;
 }
 
 export const CODING_PLAN_PROVIDERS: readonly CodingPlanProviderEntry[] = [
-  { id: "kimi", label: "Kimi For Coding", pattern: /api\.kimi\.com\/coding/i },
+  { id: "kimi", pattern: /api\.kimi\.com\/coding/i },
   {
     id: "zhipu",
-    label: "Zhipu GLM (智谱)",
     pattern: /bigmodel\.cn|api\.z\.ai/i,
   },
   {
-    // 智谱团队套餐（Team Plan）。base_url 与个人版智谱（open.bigmodel.cn）相同，
-    // 无法靠 base_url 自动区分——靠显式 codingPlanProvider === "zhipu_team" 路由。
-    // 个人版 zhipu 排在前面，detectCodingPlanProvider 首匹配仍命中个人版，
-    // 故团队版永不被 injectCodingPlanUsageScript 自动注入（必须用户手动选）。
-    // pattern 仅占位（下拉展示用），实际不参与自动检测。
+    // Team plans share the personal endpoint. Keep personal matching first;
+    // existing explicit zhipu_team configurations are handled by the backend.
     id: "zhipu_team",
-    label: "Zhipu GLM Team (智谱团队)",
     pattern: /bigmodel\.cn/i,
   },
   {
     id: "minimax",
-    label: "MiniMax",
     pattern: /api\.minimaxi?\.com|api\.minimax\.io/i,
   },
   {
     id: "zenmux",
-    label: "ZenMux",
     pattern: /zenmux\./i,
   },
   {
@@ -59,7 +46,6 @@ export const CODING_PLAN_PROVIDERS: readonly CodingPlanProviderEntry[] = [
     // /api/coding[/v3]（Coding Plan）；与后端 detect_provider 的
     // `volces.com/api/plan` / `volces.com/api/coding` 子串判断同效。
     id: "volcengine",
-    label: "火山方舟 (Volcengine)",
     pattern: /volces\.com\/api\/(plan|coding)/i,
   },
   {
@@ -70,7 +56,6 @@ export const CODING_PLAN_PROVIDERS: readonly CodingPlanProviderEntry[] = [
     // /zen/go/v1（codex/opencode/pi 走 Chat），子串同时覆盖；
     // Zen 按量版（/zen/v1）没有用量 API，刻意不命中。
     id: "opencode_go",
-    label: "OpenCode Go",
     pattern: /opencode\.ai\/zen\/go/i,
   },
 ] as const;
@@ -122,15 +107,10 @@ export function extractBaseUrlForUsageDetection(
 }
 
 /**
- * 新建供应商时，若 base_url 命中 Coding Plan 路由表，自动把
- * `meta.usage_script` 标记为 token_plan 并启用。
- *
- * - 仅在 `meta.usage_script` 完全缺失时注入，不覆盖用户/UsageScriptModal 已有配置
- * - Claude app 保持既有行为：命中任意 Coding Plan 供应商都注入；
- *   其余 app（claude-desktop/codex/opencode/pi）仅对 OpenCode Go 注入——
- *   五个 app 各有一份 OpenCode Go 预设、凭据形态后端全部支持，而智谱/Kimi
- *   等在其他 app 的自动注入未逐一验证过，不随手扩大
- * - code 置空：Rust 端走专用 `coding_plan::get_coding_plan_quota`，不执行 JS 脚本
+ * Add a native token-plan usage configuration only when none exists.
+ * Claude retains detection for all recognized plans; other clients only receive
+ * automatic OpenCode Go configuration. Empty script code selects the native
+ * coding_plan quota path instead of executing JavaScript.
  */
 export function injectCodingPlanUsageScript<
   T extends {

@@ -223,7 +223,7 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
           disabled={nativeLoginOnly}
         >
           <SelectTrigger
-            className="h-10 min-w-0 rounded-lg bg-background/80 px-3 shadow-sm"
+            className="h-10 min-w-0 rounded-full bg-background/80 px-3 shadow-sm"
             aria-label={
               selectionLabel ?? t("codexOauth.accountToUse", "使用的账号")
             }

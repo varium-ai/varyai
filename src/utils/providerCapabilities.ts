@@ -89,6 +89,11 @@ export function supportsOfficialProxyTakeover(
   appId: AppId,
   provider: Pick<Provider, "id" | "category" | "meta" | "settingsConfig">,
 ): boolean {
+  if (
+    ["workbuddy", "qoder", "trae", "kimi", "qwen", "zcode"].includes(appId) &&
+    provider.category === "official"
+  )
+    return true;
   const identity = resolveCodexOfficialIdentity(appId, provider);
   if (!identity || identity === "api_key") return false;
   if (

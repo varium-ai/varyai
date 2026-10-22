@@ -20,7 +20,13 @@ impl PiStateService {
     pub(crate) fn current(state: &AppState) -> Result<PiCurrentState, AppError> {
         let _guard = futures::executor::block_on(state.proxy_service.lock_switch_for_app(PI_APP));
         let native = read_pi_native_providers()?;
-        let enabled_provider_ids = native.keys().cloned().collect::<Vec<_>>();
+        let enabled_provider_ids = native
+            .iter()
+            .filter(|(id, config)| {
+                !(id.as_str() == "vary" && state.proxy_service.pi_routing.owns_node(config))
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
         let default_provider_id = match read_pi_native_defaults() {
             Ok(defaults) => defaults.default_provider,
             Err(error) => {

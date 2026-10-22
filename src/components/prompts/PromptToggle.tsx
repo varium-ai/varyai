@@ -6,10 +6,6 @@ interface PromptToggleProps {
   disabled?: boolean;
 }
 
-/**
- * Toggle 开关组件（提示词专用）
- * 启用时为绿色，禁用时为灰色
- */
 const PromptToggle: React.FC<PromptToggleProps> = ({
   enabled,
   onChange,
@@ -23,15 +19,16 @@ const PromptToggle: React.FC<PromptToggleProps> = ({
       disabled={disabled}
       onClick={() => onChange(!enabled)}
       className={`
-        relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500/20
-        ${enabled ? "bg-emerald-500 dark:bg-emerald-600" : "bg-gray-300 dark:bg-gray-600"}
+        peer inline-flex h-6 w-11 shrink-0 items-center rounded-full border-2 border-transparent shadow transition-colors
+        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2
+        ${enabled ? "bg-primary" : "bg-gray-200 dark:bg-gray-900"}
         ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}
       `}
     >
       <span
         className={`
-          inline-block h-4 w-4 transform rounded-full bg-white transition-transform
-          ${enabled ? "translate-x-6" : "translate-x-1"}
+          pointer-events-none block h-5 w-5 rounded-full bg-white dark:bg-gray-400 shadow-lg ring-0 transition-transform
+          ${enabled ? "translate-x-5" : "translate-x-0"}
         `}
       />
     </button>

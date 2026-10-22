@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "CC Switch",
-  "version": "3.20.3",
-  "identifier": "com.ccswitch.desktop",
+  "productName": "Vary AI",
+  "version": "0.2.4",
+  "identifier": "com.varyai.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:3000",
@@ -15,7 +15,7 @@
         "label": "main",
         "title": "",
         "titleBarStyle": "Overlay",
-        "width": 1000,
+        "width": 1200,
         "height": 650,
         "minWidth": 900,
         "minHeight": 600,
@@ -56,14 +56,13 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["ccswitch"]
+        "schemes": ["varyai"]
       }
     },
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM4MDI4QzlBNTczOTI4RTMKUldUaktEbFhtb3dDeUM5US9kT0FmdGR5Ti9vQzcwa2dTMlpibDVDUmQ2M0VGTzVOWnd0SGpFVlEK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3NUI2QTFFQkM1RTgyMjMKUldRamdsNjhIbXBiTnk4RndHVCtSb0pYTEF0aXd4cnp1dUZwbVdzQXFVMjV4bjIrT3J0SGthbDkK",
       "endpoints": [
-        "https://dl.ccswitch.io/latest.json",
-        "https://github.com/farion1231/cc-switch/releases/latest/download/latest.json"
+        "https://github.com/secure-typex/varyai-releases/releases/latest/download/latest.json"
       ]
     }
   }

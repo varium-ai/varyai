@@ -5,6 +5,7 @@ import type { TFunction } from "i18next";
 import { useForm } from "react-hook-form";
 import { Form } from "@/components/ui/form";
 import type { ProviderCategory } from "@/types";
+import type { UniversalProviderPreset } from "@/config/universalProviderPresets";
 import {
   ProviderPresetSelector,
   filterPresetEntries,
@@ -113,9 +114,13 @@ function getIds(entries: ReadonlyArray<{ id: string }>) {
 function renderSelector({
   entries = presetEntries,
   onPresetChange = vi.fn(),
+  onUniversalPresetSelect,
+  onManageUniversalProviders,
 }: {
   entries?: TestPresetEntry[];
   onPresetChange?: (value: string) => void;
+  onUniversalPresetSelect?: (preset: UniversalProviderPreset) => void;
+  onManageUniversalProviders?: () => void;
 } = {}) {
   const Wrapper = () => {
     const form = useForm();
@@ -127,6 +132,8 @@ function renderSelector({
           presetEntries={entries}
           presetCategoryLabels={presetCategoryLabels}
           onPresetChange={onPresetChange}
+          onUniversalPresetSelect={onUniversalPresetSelect}
+          onManageUniversalProviders={onManageUniversalProviders}
         />
       </Form>
     );
@@ -138,6 +145,7 @@ function renderSelector({
 function getPresetButtonTexts() {
   const knownNames = new Set([
     "providerPreset.custom",
+    "providerPreset.other",
     ...presetEntries.flatMap((entry) => [
       entry.preset.name,
       entry.preset.nameKey ?? entry.preset.name,
@@ -228,7 +236,45 @@ describe("ProviderPresetSelector pure helpers", () => {
           t,
         }),
       ),
-    ).toEqual(["alpha", "beta", "delta", "gamma"]);
+    ).toEqual(["alpha", "beta"]);
+  });
+
+  it("合作伙伴标记不影响官方可见性，未分类和特殊模板不显示且源数据不变", () => {
+    const entries = [
+      ...presetEntries.map((entry) => ({
+        ...entry,
+        preset: { ...entry.preset, isPartner: true, primePartner: true },
+      })),
+      {
+        id: "uncategorized",
+        preset: {
+          name: "Uncategorized",
+          websiteUrl: "https://example.com",
+          settingsConfig: {},
+        },
+      },
+      {
+        id: "omo",
+        preset: {
+          name: "OMO",
+          websiteUrl: "https://example.com",
+          settingsConfig: {},
+          category: "omo" as ProviderCategory,
+        },
+      },
+    ];
+    const originalIds = getIds(entries);
+
+    expect(
+      getIds(
+        getVisiblePresetEntries(entries, {
+          query: "",
+          sortMode: "original",
+          t,
+        }),
+      ),
+    ).toEqual(["alpha", "beta"]);
+    expect(getIds(entries)).toEqual(originalIds);
   });
 
   it("original 模式按「官方 → 尊享伙伴 → 赞助商 → 非赞助商」四段排序，前三组保序、末组按显示名，双重身份不重复", () => {
@@ -324,17 +370,64 @@ describe("ProviderPresetSelector pure helpers", () => {
 });
 
 describe("ProviderPresetSelector", () => {
-  it("默认（original 模式）将官方分类置顶，非赞助商按显示名排序", () => {
+  it("其他按钮位于官方预设末尾，点击打开供应商申请弹窗而不切换预设", async () => {
+    const onPresetChange = vi.fn();
+    const user = userEvent.setup();
+    renderSelector({ onPresetChange });
+    expect(getPresetButtonTexts().slice(-1)[0]).toBe("providerPreset.other");
+    await user.click(
+      screen.getByRole("button", { name: "providerPreset.other" }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "申请添加供应商" }),
+    ).toBeInTheDocument();
+    expect(onPresetChange).not.toHaveBeenCalled();
+  });
+
+  it("统一供应商入口隐藏非官方预设，保留自定义网关和管理入口", async () => {
+    const user = userEvent.setup();
+    const onUniversalPresetSelect = vi.fn();
+    const onManageUniversalProviders = vi.fn();
+    renderSelector({ onUniversalPresetSelect, onManageUniversalProviders });
+
+    expect(
+      screen.queryByRole("button", { name: "NewAPI" }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "自定义网关" }));
+    expect(onUniversalPresetSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ providerType: "custom_gateway" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: /universalProvider.manage|管理/ }),
+    );
+    expect(onManageUniversalProviders).toHaveBeenCalledOnce();
+  });
+
+  it("搜索和排序不会重新显示第三方或聚合预设", async () => {
+    const user = userEvent.setup();
     renderSelector();
 
-    // 组件内 t() 未配置翻译资源，显示名回退为 key 字面量：
-    // Beta Gateway < Delta Mirror < preset.gamma。
+    await user.click(getSearchButton());
+    await user.type(getSearchInput(), "delta");
+    await user.click(getSortButton());
+
+    expect(getPresetButtonTexts()).toEqual([
+      "providerPreset.custom",
+      "providerPreset.other",
+    ]);
+    expect(
+      screen.queryByRole("button", { name: "Delta Mirror" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("默认仅显示官方和国产官方预设，并保留自定义配置", () => {
+    renderSelector();
+
     expect(getPresetButtonTexts()).toEqual([
       "providerPreset.custom",
       "preset.alpha",
       "Beta Gateway",
-      "Delta Mirror",
-      "preset.gamma",
+      "providerPreset.other",
     ]);
   });
 
@@ -347,9 +440,8 @@ describe("ProviderPresetSelector", () => {
     expect(getPresetButtonTexts()).toEqual([
       "providerPreset.custom",
       "Beta Gateway",
-      "Delta Mirror",
       "preset.alpha",
-      "preset.gamma",
+      "providerPreset.other",
     ]);
 
     await user.click(getSortButton());
@@ -358,8 +450,7 @@ describe("ProviderPresetSelector", () => {
       "providerPreset.custom",
       "preset.alpha",
       "Beta Gateway",
-      "Delta Mirror",
-      "preset.gamma",
+      "providerPreset.other",
     ]);
   });
 
@@ -424,8 +515,7 @@ describe("ProviderPresetSelector", () => {
       btn.className.includes("w-full"),
     );
 
-    // 至少包含 custom + 4 个预设 = 5 个等宽按钮(搜索/排序按钮为 size-8 不计入)
-    expect(fullWidthButtons.length).toBeGreaterThanOrEqual(5);
+    expect(fullWidthButtons).toHaveLength(4);
   });
 
   it("preset.icon 存在时按钮内渲染图标元素(img/svg)", () => {
@@ -512,9 +602,9 @@ describe("ProviderPresetSelector", () => {
         name: /providerPreset\.(searchInput|searchPlaceholder)|搜索预设|search/i,
       }),
     ).not.toBeInTheDocument();
-    // 收起后所有预设恢复显示
+
     expect(
-      screen.getByRole("button", { name: "preset.gamma" }),
+      screen.getByRole("button", { name: "preset.alpha" }),
     ).toBeInTheDocument();
   });
 
@@ -598,9 +688,9 @@ describe("ProviderPresetSelector", () => {
         name: /providerPreset\.(searchInput|searchPlaceholder)|搜索预设|search/i,
       }),
     ).not.toBeInTheDocument();
-    // 收起后清空 query,所有预设恢复显示
+
     expect(
-      screen.getByRole("button", { name: "preset.gamma" }),
+      screen.getByRole("button", { name: "preset.alpha" }),
     ).toBeInTheDocument();
   });
 });

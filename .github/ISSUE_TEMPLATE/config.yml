@@ -1,12 +1,6 @@
 blank_issues_enabled: false
 contact_links:
-  - name: "Security Vulnerabilities / 安全漏洞"
-    url: "https://github.com/farion1231/cc-switch/security/advisories/new"
-    about: |
-      Report security vulnerabilities through GitHub Security Advisories.
-      请通过 GitHub 安全公告报告安全漏洞。
-  - name: "Discussions / 讨论区"
-    url: "https://github.com/farion1231/cc-switch/discussions"
-    about: |
-      General discussions and community help.
-      一般讨论和社区帮助。
+  - name: Report a security vulnerability
+    url: https://github.com/varium-ai/varyai/security/advisories/new
+    about: Privately report vulnerabilities to the VaryAI maintainers.
+# Add Discussions only after this project's Discussions are enabled.

@@ -33,6 +33,8 @@ use tokio::task::JoinHandle;
 #[derive(Clone)]
 pub struct ProxyState {
     pub db: Arc<Database>,
+    pub(crate) pi_runtime: Arc<crate::services::pi_routing::Runtime>,
+    pub workbuddy_upstream: Arc<RwLock<Option<String>>>,
     pub config: Arc<RwLock<ProxyConfig>>,
     pub status: Arc<RwLock<ProxyStatus>>,
     pub start_time: Arc<RwLock<Option<std::time::Instant>>>,
@@ -71,12 +73,14 @@ impl ProxyServer {
         let failover_manager = Arc::new(FailoverSwitchManager::new(db.clone()));
 
         let state = ProxyState {
+            pi_runtime: Arc::default(),
             db,
             config: Arc::new(RwLock::new(config.clone())),
             status: Arc::new(RwLock::new(ProxyStatus::default())),
             start_time: Arc::new(RwLock::new(None)),
             current_providers: Arc::new(RwLock::new(std::collections::HashMap::new())),
             provider_router,
+            workbuddy_upstream: Arc::new(RwLock::new(None)),
             gemini_shadow: Arc::new(GeminiShadowStore::default()),
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             app_handle,
@@ -91,16 +95,23 @@ impl ProxyServer {
         }
     }
 
+    pub(crate) fn with_pi_runtime(
+        mut self,
+        runtime: Arc<crate::services::pi_routing::Runtime>,
+    ) -> Self {
+        self.state.pi_runtime = runtime;
+        self
+    }
+
     pub async fn start(&self) -> Result<ProxyServerInfo, ProxyError> {
         // 检查是否已在运行
         if self.shutdown_tx.read().await.is_some() {
             return Err(ProxyError::AlreadyRunning);
         }
 
-        let addr: SocketAddr =
-            format!("{}:{}", self.config.listen_address, self.config.listen_port)
-                .parse()
-                .map_err(|e| ProxyError::BindFailed(format!("无效的地址: {e}")))?;
+        let ip = super::types::loopback_listener_ip(&self.config.listen_address)
+            .map_err(ProxyError::BindFailed)?;
+        let addr = SocketAddr::new(ip, self.config.listen_port);
 
         // 创建关闭通道
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -143,7 +154,7 @@ impl ProxyServer {
             loop {
                 tokio::select! {
                     result = listener.accept() => {
-                        let (stream, _remote_addr) = match result {
+                        let (stream, remote_addr) = match result {
                             Ok(v) => v,
                             Err(e) => {
                                 log::error!("[{SRV}] accept 失败: {e}", SRV = log_srv::ACCEPT_ERR);
@@ -184,6 +195,7 @@ impl ProxyServer {
 
                                     // Insert our own header case map alongside hyper's internal one
                                     parts.extensions.insert(cases);
+                                    parts.extensions.insert(remote_addr);
 
                                     let body = axum::body::Body::new(body);
                                     let axum_req = http::Request::from_parts(parts, body);
@@ -280,6 +292,10 @@ impl ProxyServer {
     ///
     /// 注意：这不代表该供应商一定已经处理过请求，而是用于“热切换/启用故障转移立即切 P1”
     /// 等场景下，让 UI 能立刻反映最新目标。
+    pub(crate) async fn set_workbuddy_upstream(&self, upstream: Option<String>) {
+        *self.state.workbuddy_upstream.write().await = upstream;
+    }
+
     pub async fn set_active_target(&self, app_type: &str, provider_id: &str, provider_name: &str) {
         let mut current_providers = self.state.current_providers.write().await;
         current_providers.insert(
@@ -292,6 +308,20 @@ impl ProxyServer {
         Router::new()
             // 健康检查
             .route("/health", get(handlers::health_check))
+            .route("/private/trae/audit", post(super::trae::audit))
+            .route("/pi/*path", any(super::pi::handle))
+            .route(
+                "/workbuddy/v1/chat/completions",
+                post(super::workbuddy::handle),
+            )
+            .route(
+                "/workbuddy/providers/:id/chat/completions",
+                post(super::workbuddy::handle_custom),
+            )
+            .route(
+                "/qoder/providers/:id/*path",
+                any(super::qoder::handle_custom),
+            )
             .route("/status", get(handlers::get_status))
             // Claude API (支持带前缀和不带前缀两种格式)
             .route("/v1/messages", post(handlers::handle_messages))
@@ -306,6 +336,10 @@ impl ProxyServer {
                 post(handlers::handle_claude_desktop_messages),
             )
             // OpenAI Chat Completions API (Codex CLI，支持带前缀和不带前缀)
+            .route(
+                "/agents/:app/providers/:id/*path",
+                any(super::agent_clients::handle),
+            )
             .route("/chat/completions", post(handlers::handle_chat_completions))
             .route(
                 "/v1/chat/completions",
@@ -454,11 +488,56 @@ mod tests {
         body: Value,
     }
 
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn accepts_literal_ipv6_loopback_with_an_ephemeral_port() {
+        let db = Arc::new(Database::memory().expect("database"));
+        let config = ProxyConfig {
+            listen_address: "::1".into(),
+            listen_port: 0,
+            ..Default::default()
+        };
+        let server = ProxyServer::new(config, db, None);
+        let info = server.start().await.expect("IPv6 loopback listener");
+        assert_eq!(info.address, "::1");
+        assert_ne!(info.port, 0);
+        let connection = tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, info.port))
+            .await
+            .expect("local client connection");
+        drop(connection);
+        server.stop().await.expect("stop listener");
+        assert!(!server.get_status().await.running);
+    }
+
+    #[tokio::test]
+    async fn refuses_legacy_non_loopback_configuration_before_binding() {
+        let db = Arc::new(Database::memory().expect("database"));
+        for address in ["0.0.0.0", "192.0.2.1", "::", "::ffff:127.0.0.1"] {
+            let config = ProxyConfig {
+                listen_address: address.into(),
+                listen_port: 0,
+                ..Default::default()
+            };
+            let server = ProxyServer::new(config, db.clone(), None);
+            assert!(matches!(
+                server.start().await,
+                Err(ProxyError::BindFailed(_))
+            ));
+            assert!(!server.get_status().await.running);
+        }
+    }
+
     /// A base URL pasted as a complete endpoint with the full-URL switch left off
     /// must derive the sibling standalone endpoint instead of having the
     /// standalone path appended to it.
     #[tokio::test]
+    #[serial_test::serial]
     async fn codex_standalone_endpoints_derive_from_pasted_full_base_url() {
+        // HTTP responses can reach the process-global observation sender.
+        assert!(
+            serial_test::is_locked_serially(None),
+            "HTTP tests must share the observation tests' serial lock"
+        );
         let captured = Arc::new(Mutex::new(Vec::<CapturedRequest>::new()));
         let capture_handler = {
             let captured = captured.clone();
@@ -618,7 +697,13 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn codex_images_generation_aliases_forward_and_record_usage() {
+        // HTTP responses can reach the process-global observation sender.
+        assert!(
+            serial_test::is_locked_serially(None),
+            "HTTP tests must share the observation tests' serial lock"
+        );
         let captured = Arc::new(Mutex::new(Vec::<CapturedRequest>::new()));
         let mock_app = Router::new().route(
             "/v1/images/generations",
@@ -823,7 +908,13 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn codex_images_edit_aliases_forward_and_record_usage() {
+        // HTTP responses can reach the process-global observation sender.
+        assert!(
+            serial_test::is_locked_serially(None),
+            "HTTP tests must share the observation tests' serial lock"
+        );
         // Real Images API responses carry `input_tokens_details` with text/image
         // splits; the shared Codex usage parser must tolerate them.
         const UPSTREAM_BODY: &str = r#"{"created":1,"data":[{"b64_json":"ZWRpdA=="}],"usage":{"input_tokens":13,"output_tokens":17,"total_tokens":30,"input_tokens_details":{"text_tokens":5,"image_tokens":8}}}"#;
@@ -1044,7 +1135,13 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn alpha_search_routes_forward_to_canonical_upstream() {
+        // HTTP responses can reach the process-global observation sender.
+        assert!(
+            serial_test::is_locked_serially(None),
+            "HTTP tests must share the observation tests' serial lock"
+        );
         let captured = Arc::new(Mutex::new(Vec::<CapturedRequest>::new()));
         let mock_app = Router::new().route(
             "/v1/alpha/search",

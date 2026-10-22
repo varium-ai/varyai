@@ -7,6 +7,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { SlidingSegmentedControl } from "@/components/ui/sliding-segmented-control";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -374,34 +375,20 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
             {/* 搜索来源切换 + 搜索框 */}
             <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center">
               {/* 来源切换 */}
-              <div className="inline-flex gap-1 rounded-md border border-border-default bg-background p-1 shrink-0">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={effectiveSource === "repos" ? "default" : "ghost"}
-                  className={
-                    effectiveSource === "repos"
-                      ? "shadow-sm min-w-[64px]"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted min-w-[64px]"
-                  }
-                  onClick={() => setSearchSource("repos")}
-                >
-                  {t("skills.searchSource.repos")}
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={effectiveSource === "skillssh" ? "default" : "ghost"}
-                  className={
-                    effectiveSource === "skillssh"
-                      ? "shadow-sm min-w-[80px]"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted min-w-[80px]"
-                  }
-                  onClick={() => setSearchSource("skillssh")}
-                >
-                  skills.sh
-                </Button>
-              </div>
+              <SlidingSegmentedControl
+                value={effectiveSource}
+                onValueChange={setSearchSource}
+                options={[
+                  {
+                    value: "repos",
+                    label: t("skills.searchSource.repos"),
+                  },
+                  { value: "skillssh", label: "skills.sh" },
+                ]}
+                ariaLabel={t("skills.searchSource.repos")}
+                className="shrink-0"
+                buttonClassName="min-w-[80px]"
+              />
 
               {effectiveSource === "repos" ? (
                 <>

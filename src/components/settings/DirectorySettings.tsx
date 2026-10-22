@@ -6,7 +6,10 @@ import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
 import type { ResolvedDirectories } from "@/hooks/useSettings";
 
-type DirectoryAppId = Exclude<AppId, "claude-desktop">;
+type DirectoryAppId = Exclude<
+  AppId,
+  "claude-desktop" | "qoder" | "doubaowork" | "trae" | "kimi" | "qwen" | "zcode"
+>;
 
 interface DirectorySettingsProps {
   appConfigDir?: string;
@@ -22,6 +25,7 @@ interface DirectorySettingsProps {
   openclawDir?: string;
   hermesDir?: string;
   piDir?: string;
+  workbuddyDir?: string;
   onDirectoryChange: (app: DirectoryAppId, value?: string) => void;
   onBrowseDirectory: (app: DirectoryAppId) => Promise<void>;
   onResetDirectory: (app: DirectoryAppId) => Promise<void>;
@@ -41,6 +45,7 @@ export function DirectorySettings({
   openclawDir,
   hermesDir,
   piDir,
+  workbuddyDir,
   onDirectoryChange,
   onBrowseDirectory,
   onResetDirectory,
@@ -49,7 +54,7 @@ export function DirectorySettings({
 
   return (
     <div className="space-y-6">
-      {/* CC Switch 配置目录 - 独立区块 */}
+      {}
       <section className="space-y-4">
         <header className="space-y-1">
           <h3 className="text-sm font-medium">{t("settings.appConfigDir")}</h3>
@@ -183,6 +188,16 @@ export function DirectorySettings({
           onChange={(val) => onDirectoryChange("pi", val)}
           onBrowse={() => onBrowseDirectory("pi")}
           onReset={() => onResetDirectory("pi")}
+        />
+        <DirectoryInput
+          label={t("settings.workbuddyConfigDir")}
+          description={undefined}
+          value={workbuddyDir}
+          resolvedValue={resolvedDirs.workbuddy}
+          placeholder={"~/.workbuddy-ai"}
+          onChange={(val) => onDirectoryChange("workbuddy", val)}
+          onBrowse={() => onBrowseDirectory("workbuddy")}
+          onReset={() => onResetDirectory("workbuddy")}
         />
       </section>
     </div>

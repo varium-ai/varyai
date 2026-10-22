@@ -1,9 +1,9 @@
+import { proxyKeys } from "@/lib/query/proxy";
 import type { ReactNode } from "react";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
-import { proxyKeys } from "@/lib/query/proxy";
 import { createTestQueryClient } from "../utils/testQueryClient";
 
 const toastSuccessMock = vi.fn();
@@ -104,7 +104,40 @@ describe("useProxyStatus", () => {
     expect(proxyKeys.status).toEqual(["proxyStatus"]);
     expect(proxyKeys.takeoverStatus).toEqual(["proxyTakeoverStatus"]);
     expect(proxyKeys.globalConfig).toEqual(["globalProxyConfig"]);
-    expect(proxyKeys.appConfig("claude")).toEqual(["appProxyConfig", "claude"]);
+  });
+
+  it("detects an external takeover reset while the proxy keeps running", async () => {
+    let takenOver = true;
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === "get_proxy_status"
+          ? { running: true }
+          : { codex: takenOver },
+      ),
+    );
+    const { wrapper, queryClient } = createWrapper();
+    const { result, unmount } = renderHook(() => useProxyStatus(), { wrapper });
+
+    try {
+      await waitFor(() => {
+        expect(result.current.isRunning).toBe(true);
+        expect(result.current.takeoverStatus?.codex).toBe(true);
+      });
+
+      // Another app restores the shared native configuration without emitting
+      // a Tauri event to this process. The proxy itself is still alive.
+      takenOver = false;
+      await waitFor(
+        () => {
+          expect(result.current.isRunning).toBe(true);
+          expect(result.current.takeoverStatus?.codex).toBe(false);
+        },
+        { timeout: 3500 },
+      );
+    } finally {
+      unmount();
+      queryClient.clear();
+    }
   });
 
   it("shows interpolated address and port after proxy server starts", async () => {
@@ -131,4 +164,17 @@ describe("useProxyStatus", () => {
     expect(invokeMock).toHaveBeenCalledWith("start_proxy_server");
     expect(invokeMock).toHaveBeenCalledWith("stop_proxy_server");
   });
+  it.each(["stopProxyServer", "stopWithRestore"] as const)(
+    "%s refreshes global audit and per-agent connection state",
+    async (method) => {
+      const { wrapper, queryClient } = createWrapper();
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+      const { result } = renderHook(() => useProxyStatus(), { wrapper });
+      await act(async () => {
+        await result.current[method]();
+      });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["security"] });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["security-route"] });
+    },
+  );
 });

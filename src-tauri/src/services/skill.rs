@@ -65,7 +65,6 @@ pub enum SyncMethod {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillStorageLocation {
-    /// CC Switch 管理目录 (~/.cc-switch/skills/)
     #[default]
     CcSwitch,
     /// Agent Skills 统一标准目录 (~/.agents/skills/)
@@ -311,7 +310,7 @@ const SKILL_BACKUP_RETAIN_COUNT: usize = 20;
 /// 归档字节由第三方完全控制（仓库可经 deeplink 添加，且 branch 可把下载落点
 /// 改写到攻击者自传的 release asset），没有上限时一个几 MB 的压缩炸弹就能塞满磁盘。
 /// 取值对齐 `webdav_sync/archive.rs` 里同款保护的量级。
-const MAX_ARCHIVE_ENTRIES: usize = 10_000;
+const MAX_ARCHIVE_ENTRIES: usize = 30_000;
 const MAX_ARCHIVE_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 /// symlink 目标就是一条路径，几十字节就够；给到 4 KiB 是宽松上限。
 /// 必须有这个上限：zip 2.4.2 的 `make_reader` 不按声明的 uncompressed_size
@@ -321,6 +320,8 @@ const MAX_SYMLINK_TARGET_BYTES: u64 = 4 * 1024;
 /// 物化一个目录按一个目录块计费。空目录不写内容字节，但照样吃 inode 和磁盘块，
 /// 不计费就等于允许无限量地造目录。
 const DIRECTORY_BUDGET_COST: u64 = 4096;
+
+const FILE_ENTRY_BUDGET_COST: u64 = DIRECTORY_BUDGET_COST;
 /// 压缩体上限。解压预算只有在 ZipArchive 建起来之后才生效，而那时整个响应体
 /// 已经在内存里了，所以下载这一步需要自己的上限。技能仓库是 Markdown，
 /// 128 MiB 的压缩包已经远超正常规模。
@@ -569,6 +570,17 @@ impl SkillService {
     pub fn get_app_skills_dir(app: &AppType) -> Result<PathBuf> {
         // 目录覆盖：优先使用用户在 settings.json 中配置的 override 目录
         match app {
+            AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => {
+                return Err(anyhow!(
+                    "Skill synchronization is not supported for this app"
+                ))
+            }
             AppType::Claude => {
                 if let Some(custom) = crate::settings::get_claude_override_dir() {
                     return Ok(custom.join("skills"));
@@ -625,6 +637,17 @@ impl SkillService {
             AppType::OpenClaw => home.join(".openclaw").join("skills"),
             AppType::Hermes => crate::hermes_config::get_hermes_dir().join("skills"),
             AppType::Pi => crate::pi_config::get_pi_agent_dir()?.join("skills"),
+            AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => {
+                return Err(anyhow!(
+                    "Skill synchronization is not supported for this app"
+                ))
+            }
         })
     }
 
@@ -681,7 +704,18 @@ impl SkillService {
     }
 
     fn validate_skill_storage_destination(ssot_dir: &Path) -> Result<()> {
-        for app in AppType::all() {
+        for app in AppType::all().filter(|app| {
+            !matches!(
+                app,
+                AppType::WorkBuddy
+                    | AppType::Qoder
+                    | AppType::Kimi
+                    | AppType::Qwen
+                    | AppType::ZCode
+                    | AppType::Trae
+                    | AppType::DoubaoWork
+            )
+        }) {
             if matches!(app, AppType::ClaudeDesktop) {
                 continue;
             }
@@ -1020,7 +1054,7 @@ impl SkillService {
                     .map(|path| path.to_string_lossy().to_string());
 
                     // Pi 目录可能包含用户自己维护的同名 Skill。删除 SSOT 前仅移除
-                    // 能验证为 CC Switch 部署的副本；其余路径保留并返回警告。
+
                     if let Some(destination) = pi_removal_path {
                         let removal =
                             Self::remove_verified_pi_destination(&source, &destination, &directory);
@@ -1034,7 +1068,18 @@ impl SkillService {
                     }
 
                     // 其他应用沿用既有的逐项容错行为。
-                    for app in AppType::all() {
+                    for app in AppType::all().filter(|app| {
+                        !matches!(
+                            app,
+                            AppType::WorkBuddy
+                                | AppType::Qoder
+                                | AppType::Kimi
+                                | AppType::Qwen
+                                | AppType::ZCode
+                                | AppType::Trae
+                                | AppType::DoubaoWork
+                        )
+                    }) {
                         if matches!(app, AppType::Pi) {
                             continue;
                         }
@@ -1288,12 +1333,11 @@ impl SkillService {
 
             for skill in group_skills {
                 // 在远程仓库中找到匹配的 Skill 目录
-                let remote_match = remote_skills.iter().find(|rs| {
-                    // 匹配方式：安装名称的最后一段
-                    let remote_install_name =
-                        rs.directory.rsplit('/').next().unwrap_or(&rs.directory);
-                    remote_install_name.eq_ignore_ascii_case(&skill.directory)
-                });
+                let remote_match = Self::find_remote_skill_for_install(
+                    &remote_skills,
+                    &skill.directory,
+                    skill.readme_url.as_deref(),
+                );
 
                 let remote_skill_dir = match remote_match {
                     Some(rs) => match Self::resolve_skill_source_dir(temp_dir, &rs.directory) {
@@ -1411,19 +1455,18 @@ impl SkillService {
         let mut remote_skills: Vec<DiscoverableSkill> = Vec::new();
         let _ = self.scan_dir_recursive(temp_dir, temp_dir, &repo, &mut remote_skills);
 
-        let remote_match = remote_skills
-            .iter()
-            .find(|rs| {
-                let remote_install_name = rs.directory.rsplit('/').next().unwrap_or(&rs.directory);
-                remote_install_name.eq_ignore_ascii_case(&skill.directory)
-            })
-            .ok_or_else(|| {
-                anyhow!(format_skill_error(
-                    "SKILL_DIR_NOT_FOUND",
-                    &[("path", &skill.directory)],
-                    Some("checkRepoUrl"),
-                ))
-            })?;
+        let remote_match = Self::find_remote_skill_for_install(
+            &remote_skills,
+            &skill.directory,
+            skill.readme_url.as_deref(),
+        )
+        .ok_or_else(|| {
+            anyhow!(format_skill_error(
+                "SKILL_DIR_NOT_FOUND",
+                &[("path", &skill.directory)],
+                Some("checkRepoUrl"),
+            ))
+        })?;
 
         let source =
             Self::resolve_skill_source_dir(temp_dir, &remote_match.directory).ok_or_else(|| {
@@ -1481,11 +1524,12 @@ impl SkillService {
         let (new_name, new_description) = Self::read_skill_name_desc(&skill_md, &skill.directory);
 
         // 更新 readme_url
-        let doc_path = skill
-            .readme_url
-            .as_deref()
-            .and_then(Self::extract_doc_path_from_url)
-            .unwrap_or_else(|| format!("{}/SKILL.md", skill.directory.trim_end_matches('/')));
+        let doc_path = Self::updated_skill_doc_path(
+            temp_dir,
+            &source,
+            skill.readme_url.as_deref(),
+            &skill.directory,
+        );
         let readme_url = Self::build_skill_doc_url(&owner, &name, &used_branch, &doc_path);
 
         let updated_metadata = InstalledSkill {
@@ -1674,7 +1718,18 @@ impl SkillService {
         crate::settings::set_skill_storage_location(target)?;
 
         // 4. 刷新所有应用目录的 symlink（指向新 SSOT）
-        for app in AppType::all() {
+        for app in AppType::all().filter(|app| {
+            !matches!(
+                app,
+                AppType::WorkBuddy
+                    | AppType::Qoder
+                    | AppType::Kimi
+                    | AppType::Qwen
+                    | AppType::ZCode
+                    | AppType::Trae
+                    | AppType::DoubaoWork
+            )
+        }) {
             let _ = Self::sync_to_app_unlocked(db, &app);
         }
         for (directory, deployment) in pi_deployments {
@@ -1865,7 +1920,6 @@ impl SkillService {
 
     /// 扫描未管理的 Skills
     ///
-    /// 扫描各应用目录，找出未被 CC Switch 管理的 Skills
     pub fn scan_unmanaged(db: &Arc<Database>) -> Result<Vec<UnmanagedSkill>> {
         let _state_guard = skill_state_read_guard();
         let managed_skills = db.get_all_installed_skills()?;
@@ -1876,7 +1930,18 @@ impl SkillService {
 
         // 收集所有待扫描的目录及其来源标签
         let mut scan_sources: Vec<(PathBuf, String)> = Vec::new();
-        for app in AppType::all() {
+        for app in AppType::all().filter(|app| {
+            !matches!(
+                app,
+                AppType::WorkBuddy
+                    | AppType::Qoder
+                    | AppType::Kimi
+                    | AppType::Qwen
+                    | AppType::ZCode
+                    | AppType::Trae
+                    | AppType::DoubaoWork
+            )
+        }) {
             if let Ok(d) = Self::get_app_skills_dir(&app) {
                 scan_sources.push((d, app.as_str().to_string()));
             }
@@ -1929,7 +1994,6 @@ impl SkillService {
 
     /// 从应用目录导入 Skills
     ///
-    /// 将未管理的 Skills 导入到 CC Switch 统一管理
     pub fn import_from_apps(
         db: &Arc<Database>,
         imports: Vec<ImportSkillSelection>,
@@ -1948,7 +2012,18 @@ impl SkillService {
 
         // 收集所有候选搜索目录
         let mut search_sources: Vec<(PathBuf, String)> = Vec::new();
-        for app in AppType::all() {
+        for app in AppType::all().filter(|app| {
+            !matches!(
+                app,
+                AppType::WorkBuddy
+                    | AppType::Qoder
+                    | AppType::Kimi
+                    | AppType::Qwen
+                    | AppType::ZCode
+                    | AppType::Trae
+                    | AppType::DoubaoWork
+            )
+        }) {
             if let Ok(d) = Self::get_app_skills_dir(&app) {
                 search_sources.push((d, app.as_str().to_string()));
             }
@@ -2463,7 +2538,18 @@ impl SkillService {
 
     /// Caller must hold either the Skills state read or write guard.
     fn sync_to_app_unlocked(db: &Arc<Database>, app: &AppType) -> Result<()> {
-        if matches!(app, AppType::ClaudeDesktop | AppType::Pi) {
+        if matches!(
+            app,
+            AppType::ClaudeDesktop
+                | AppType::Pi
+                | AppType::WorkBuddy
+                | AppType::Qoder
+                | AppType::Kimi
+                | AppType::Qwen
+                | AppType::ZCode
+                | AppType::Trae
+                | AppType::DoubaoWork
+        ) {
             return Ok(());
         }
 
@@ -2977,6 +3063,43 @@ impl SkillService {
         walk(root, target_name, 0)
     }
 
+    fn find_remote_skill_for_install<'a>(
+        remote_skills: &'a [DiscoverableSkill],
+        install_name: &str,
+        stored_readme_url: Option<&str>,
+    ) -> Option<&'a DiscoverableSkill> {
+        let stored_doc_path = stored_readme_url.and_then(Self::extract_doc_path_from_url);
+        stored_doc_path
+            .as_deref()
+            .and_then(|doc_path| {
+                remote_skills.iter().find(|skill| {
+                    skill
+                        .readme_url
+                        .as_deref()
+                        .and_then(Self::extract_doc_path_from_url)
+                        .as_deref()
+                        == Some(doc_path)
+                })
+            })
+            .or_else(|| {
+                remote_skills.iter().find(|skill| {
+                    skill
+                        .directory
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&skill.directory)
+                        .eq_ignore_ascii_case(install_name)
+                })
+            })
+            .or_else(|| {
+                let mut matches = remote_skills
+                    .iter()
+                    .filter(|skill| skill.name.trim().eq_ignore_ascii_case(install_name));
+                let found = matches.next()?;
+                matches.next().is_none().then_some(found)
+            })
+    }
+
     /// 将 discoverable skill 的目录信息重新解析为解压目录中的真实源目录。
     ///
     /// **核心原则：返回的目录必定含 `SKILL.md`**（以 SKILL.md 为锚点）。解析顺序：
@@ -3006,7 +3129,22 @@ impl SkillService {
             return Some(found);
         }
 
-        // 3. 兜底：仓库根本身是 skill
+        if let Ok(skill_dirs) = Self::scan_skills_in_dir(root) {
+            let mut matches = skill_dirs.into_iter().filter(|path| {
+                Self::parse_skill_metadata_static(&path.join("SKILL.md"))
+                    .ok()
+                    .and_then(|metadata| metadata.name)
+                    .is_some_and(|name| name.trim().eq_ignore_ascii_case(&install_name))
+            });
+            if let Some(found) = matches.next() {
+                if matches.next().is_some() {
+                    log::warn!("Multiple skill directories declare metadata name '{install_name}'");
+                    return None;
+                }
+                return Some(found);
+            }
+        }
+
         if root.join("SKILL.md").is_file() {
             log::info!(
                 "Skill directory '{}' not found, but SKILL.md exists at root, using repo root",
@@ -3031,6 +3169,21 @@ impl SkillService {
             .collect();
         parts.push("SKILL.md".to_string());
         Some(parts.join("/"))
+    }
+
+    fn updated_skill_doc_path(
+        repo_root: &Path,
+        source: &Path,
+        readme_url: Option<&str>,
+        directory: &str,
+    ) -> String {
+        let resolved = repo_root.canonicalize().ok().and_then(|root| {
+            source
+                .canonicalize()
+                .ok()
+                .and_then(|source| Self::doc_path_for_source(&root, &source))
+        });
+        Self::choose_doc_path(resolved, readme_url, directory)
     }
 
     /// 选择 readme_url 使用的仓库内文档路径：真实解析出的源目录优先，其次是
@@ -3178,6 +3331,21 @@ impl SkillService {
         }
     }
 
+    fn write_file_within_budget<R: std::io::Read>(
+        reader: &mut R,
+        dest: &Path,
+        total_bytes: &mut u64,
+    ) -> Result<()> {
+        let mut writer = fs::File::create(dest)?;
+        let before = *total_bytes;
+        Self::copy_entry_within_budget(reader, &mut writer, total_bytes)?;
+        let written = total_bytes.saturating_sub(before);
+        if written < FILE_ENTRY_BUDGET_COST {
+            Self::charge_archive_budget(total_bytes, FILE_ENTRY_BUDGET_COST - written)?;
+        }
+        Ok(())
+    }
+
     /// 读取 symlink 条目声明的目标路径。
     ///
     /// 这条分支曾是唯一一处不经预算的解压：`read_to_string` 直接把整条解压流吞进
@@ -3320,10 +3488,8 @@ impl SkillService {
                 if let Some(parent) = outpath.parent() {
                     Self::create_dir_all_within_budget(parent, &mut total_bytes)?;
                 }
-                let mut outfile = fs::File::create(&outpath)?;
-                // 按实际写入的字节累计，而不是信任归档头里声明的 size——
-                // 压缩炸弹的声明值可以是假的。
-                Self::copy_entry_within_budget(&mut file, &mut outfile, &mut total_bytes)?;
+
+                Self::write_file_within_budget(&mut file, &outpath, &mut total_bytes)?;
             }
         }
 
@@ -3354,12 +3520,9 @@ impl SkillService {
         Ok(())
     }
 
-    /// 复制单个文件并计入归档总预算，复用 `copy_entry_within_budget` 以保证
-    /// 上限与报错文案只有一处定义。
     fn copy_file_within_budget(src: &Path, dest: &Path, total_bytes: &mut u64) -> Result<()> {
         let mut reader = fs::File::open(src)?;
-        let mut writer = fs::File::create(dest)?;
-        Self::copy_entry_within_budget(&mut reader, &mut writer, total_bytes)
+        Self::write_file_within_budget(&mut reader, dest, total_bytes)
     }
 
     /// 递归复制目录
@@ -3396,7 +3559,18 @@ impl SkillService {
             return Ok(Some(ssot_path));
         }
 
-        for app in AppType::all() {
+        for app in AppType::all().filter(|app| {
+            !matches!(
+                app,
+                AppType::WorkBuddy
+                    | AppType::Qoder
+                    | AppType::Kimi
+                    | AppType::Qwen
+                    | AppType::ZCode
+                    | AppType::Trae
+                    | AppType::DoubaoWork
+            )
+        }) {
             let app_dir = match Self::get_app_skills_dir(&app) {
                 Ok(dir) => dir,
                 Err(_) => continue,
@@ -3859,8 +4033,7 @@ impl SkillService {
                 if let Some(parent) = outpath.parent() {
                     Self::create_dir_all_within_budget(parent, &mut total_bytes)?;
                 }
-                let mut outfile = fs::File::create(&outpath)?;
-                Self::copy_entry_within_budget(&mut file, &mut outfile, &mut total_bytes)?;
+                Self::write_file_within_budget(&mut file, &outpath, &mut total_bytes)?;
             }
         }
 
@@ -4135,7 +4308,18 @@ pub fn migrate_skills_to_ssot(db: &Arc<Database>) -> Result<usize> {
     }
 
     // 扫描各应用目录
-    for app in AppType::all() {
+    for app in AppType::all().filter(|app| {
+        !matches!(
+            app,
+            AppType::WorkBuddy
+                | AppType::Qoder
+                | AppType::Kimi
+                | AppType::Qwen
+                | AppType::ZCode
+                | AppType::Trae
+                | AppType::DoubaoWork
+        )
+    }) {
         let app_dir = match SkillService::get_app_skills_dir(&app) {
             Ok(d) => d,
             Err(_) => continue,
@@ -4434,6 +4618,64 @@ mod tests {
             err.to_string().contains("ARCHIVE_TOO_MANY_ENTRIES"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn extract_repo_archive_accepts_large_skill_repo() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        const ENTRIES: usize = 13_248;
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = SimpleFileOptions::default();
+            for i in 0..ENTRIES {
+                zip.start_file(format!("repo-main/skills/demo/f{i}.md"), opts)
+                    .unwrap();
+                zip.write_all(b"x").unwrap();
+            }
+            zip.finish().unwrap();
+        }
+
+        let temp = tempdir().expect("tempdir");
+        let archive = zip::ZipArchive::new(std::io::Cursor::new(buf)).expect("archive parses");
+        SkillService::extract_repo_archive(archive, temp.path())
+            .expect("a 13k-entry skill repo must extract");
+        assert!(temp.path().join("skills/demo/f0.md").is_file());
+        assert!(temp
+            .path()
+            .join(format!("skills/demo/f{}.md", ENTRIES - 1))
+            .is_file());
+    }
+
+    #[test]
+    fn copy_file_within_budget_charges_at_least_one_block() {
+        let temp = tempdir().expect("tempdir");
+        let src = temp.path().join("source");
+        let mut total = 0u64;
+
+        fs::write(&src, []).expect("empty source");
+        SkillService::copy_file_within_budget(&src, &temp.path().join("empty"), &mut total)
+            .expect("empty file within budget");
+        assert_eq!(total, DIRECTORY_BUDGET_COST);
+
+        fs::write(&src, [7u8; 64]).expect("small source");
+        SkillService::copy_file_within_budget(&src, &temp.path().join("small"), &mut total)
+            .expect("small file within budget");
+        assert_eq!(total, 2 * DIRECTORY_BUDGET_COST);
+
+        fs::write(&src, vec![7u8; DIRECTORY_BUDGET_COST as usize + 1]).expect("large source");
+        SkillService::copy_file_within_budget(&src, &temp.path().join("large"), &mut total)
+            .expect("large file within budget");
+        assert_eq!(total, 3 * DIRECTORY_BUDGET_COST + 1);
+
+        fs::write(&src, [7u8]).expect("tiny source");
+        let mut total = MAX_ARCHIVE_TOTAL_BYTES - DIRECTORY_BUDGET_COST + 1;
+        let err =
+            SkillService::copy_file_within_budget(&src, &temp.path().join("tiny"), &mut total)
+                .expect_err("a one-byte file must not bypass the block budget");
+        assert!(err.to_string().contains("ARCHIVE_TOO_LARGE"), "{err}");
     }
 
     #[test]
@@ -4761,6 +5003,33 @@ mod tests {
             !extracted.path().join("d").join("leaked.txt").exists(),
             "an entry with an unresolved `..` must be skipped, not silently relocated"
         );
+    }
+    #[test]
+    fn extract_local_zip_accepts_large_skill_repo() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        const ENTRIES: usize = 13_248;
+        let temp = tempdir().expect("tempdir");
+        let zip_path = temp.path().join("large.zip");
+        {
+            let file = fs::File::create(&zip_path).expect("create zip");
+            let mut zip = zip::ZipWriter::new(file);
+            for i in 0..ENTRIES {
+                zip.start_file(format!("demo/f{i}.md"), SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(b"x").unwrap();
+            }
+            zip.finish().unwrap();
+        }
+
+        let extracted =
+            SkillService::extract_local_zip(&zip_path).expect("a 13k-entry local ZIP must extract");
+        assert!(extracted.path().join("demo/f0.md").is_file());
+        assert!(extracted
+            .path()
+            .join(format!("demo/f{}.md", ENTRIES - 1))
+            .is_file());
     }
 
     #[test]
@@ -5920,6 +6189,81 @@ mod tests {
     }
 
     #[test]
+    fn update_lookup_prioritizes_saved_source_and_rejects_ambiguous_metadata() {
+        let temp = tempdir().expect("tempdir");
+        let repo = SkillRepo {
+            owner: "owner".to_string(),
+            name: "repo".to_string(),
+            branch: "main".to_string(),
+            enabled: true,
+        };
+        let write_skill = |directory: &str, name: &str| {
+            let dir = temp.path().join(directory);
+            fs::create_dir_all(&dir).expect("create skill");
+            fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\n---\n"))
+                .expect("write skill");
+        };
+        write_skill("skills", "weread-skills");
+        let scan = || {
+            let mut skills = Vec::new();
+            SkillService::new()
+                .scan_dir_recursive(temp.path(), temp.path(), &repo, &mut skills)
+                .expect("scan");
+            skills
+        };
+        assert_eq!(
+            SkillService::find_remote_skill_for_install(&scan(), "weread-skills", None)
+                .map(|s| s.directory.as_str()),
+            Some("skills")
+        );
+        write_skill("other", "weread-skills");
+        assert!(
+            SkillService::find_remote_skill_for_install(&scan(), "weread-skills", None).is_none(),
+            "duplicate metadata names must be ambiguous"
+        );
+        write_skill("weread-skills", "another-name");
+        assert_eq!(
+            SkillService::find_remote_skill_for_install(&scan(), "weread-skills", None)
+                .map(|s| s.directory.as_str()),
+            Some("weread-skills"),
+            "directory match takes priority over metadata"
+        );
+        assert_eq!(
+            SkillService::find_remote_skill_for_install(
+                &scan(),
+                "weread-skills",
+                Some("https://github.com/owner/repo/blob/main/skills/SKILL.md"),
+            )
+            .map(|s| s.directory.as_str()),
+            Some("skills"),
+            "saved source path wins over a competing directory even after metadata changes"
+        );
+    }
+
+    #[test]
+    fn resolve_skill_source_dir_finds_unique_metadata_name() {
+        let temp = tempdir().expect("tempdir");
+        let nested = temp.path().join("skills");
+        fs::create_dir_all(&nested).expect("create skill dir");
+        fs::write(nested.join("SKILL.md"), "---\nname: weread-skills\n---\n").expect("write skill");
+        assert_eq!(
+            SkillService::resolve_skill_source_dir(temp.path(), "weread-skills"),
+            Some(nested.clone())
+        );
+        let duplicate = temp.path().join("other");
+        fs::create_dir_all(&duplicate).expect("create duplicate");
+        fs::write(
+            duplicate.join("SKILL.md"),
+            "---\nname: weread-skills\n---\n",
+        )
+        .expect("write duplicate");
+        assert!(
+            SkillService::resolve_skill_source_dir(temp.path(), "weread-skills").is_none(),
+            "ambiguous metadata must not choose an arbitrary source"
+        );
+    }
+
+    #[test]
     fn choose_doc_path_prefers_resolved_source_over_stale_readme_url() {
         // #6111 现场还原：skills.sh 安装嵌套目录 skill——directory 是 skillId
         // （末级目录名），readme_url 是仓库根 URL，真实嵌套路径只能来自
@@ -5933,6 +6277,22 @@ mod tests {
         assert_eq!(
             doc_path,
             "skills/developertools/solutions/alibabacloud-cli-guidance/SKILL.md"
+        );
+    }
+
+    #[test]
+    fn update_doc_path_uses_resolved_source_after_relocation() {
+        let temp = tempdir().expect("tempdir");
+        let new_source = temp.path().join("new/skills");
+        fs::create_dir_all(&new_source).expect("source");
+        assert_eq!(
+            SkillService::updated_skill_doc_path(
+                temp.path(),
+                &new_source,
+                Some("https://github.com/owner/repo/blob/main/old/skills/SKILL.md"),
+                "weread-skills",
+            ),
+            "new/skills/SKILL.md"
         );
     }
 

@@ -48,6 +48,20 @@ pub struct VisibleApps {
     pub hermes: bool,
     #[serde(default = "default_true")]
     pub pi: bool,
+    #[serde(default)]
+    pub workbuddy: bool,
+    #[serde(default)]
+    pub qoder: bool,
+    #[serde(default)]
+    pub kimi: bool,
+    #[serde(default)]
+    pub qwen: bool,
+    #[serde(default)]
+    pub zcode: bool,
+    #[serde(default)]
+    pub trae: bool,
+    #[serde(default)]
+    pub doubaowork: bool,
 }
 
 impl Default for VisibleApps {
@@ -62,6 +76,13 @@ impl Default for VisibleApps {
             openclaw: true,
             hermes: false, // 默认不显示，需用户手动启用
             pi: true,
+            workbuddy: false,
+            qoder: false,
+            kimi: false,
+            qwen: false,
+            zcode: false,
+            trae: false,
+            doubaowork: false,
         }
     }
 }
@@ -79,6 +100,13 @@ impl VisibleApps {
             AppType::OpenClaw => self.openclaw,
             AppType::Hermes => self.hermes,
             AppType::Pi => self.pi,
+            AppType::WorkBuddy => self.workbuddy,
+            AppType::Qoder => self.qoder,
+            AppType::Kimi => self.kimi,
+            AppType::Qwen => self.qwen,
+            AppType::ZCode => self.zcode,
+            AppType::Trae => self.trae,
+            AppType::DoubaoWork => self.doubaowork,
         }
     }
 }
@@ -364,9 +392,6 @@ pub struct AppSettings {
     /// 静默启动（程序启动时不显示主窗口，仅托盘运行）
     #[serde(default)]
     pub silent_startup: bool,
-    /// 是否在主页面启用本地代理功能（默认关闭）
-    #[serde(default)]
-    pub enable_local_proxy: bool,
     /// User has confirmed the local proxy first-run notice
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_confirmed: Option<bool>,
@@ -433,6 +458,8 @@ pub struct AppSettings {
     pub hermes_config_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pi_config_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workbuddy_config_dir: Option<String>,
 
     // ===== 当前供应商 ID（设备级）=====
     /// 当前 Claude 供应商 ID（本地存储，优先于数据库 is_current）
@@ -527,7 +554,6 @@ impl Default for AppSettings {
             skip_claude_onboarding: false,
             launch_on_startup: false,
             silent_startup: false,
-            enable_local_proxy: false,
             proxy_confirmed: None,
             usage_confirmed: None,
             usage_dashboard_refresh_interval_ms: None,
@@ -550,6 +576,7 @@ impl Default for AppSettings {
             openclaw_config_dir: None,
             hermes_config_dir: None,
             pi_config_dir: None,
+            workbuddy_config_dir: None,
             current_provider_claude: None,
             current_provider_claude_desktop: None,
             current_provider_codex: None,
@@ -626,6 +653,13 @@ impl AppSettings {
 
         self.hermes_config_dir = self
             .hermes_config_dir
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        self.workbuddy_config_dir = self
+            .workbuddy_config_dir
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
@@ -964,6 +998,14 @@ pub fn get_hermes_override_dir() -> Option<PathBuf> {
         .map(|p| resolve_override_path(p))
 }
 
+pub fn get_workbuddy_override_dir() -> Option<PathBuf> {
+    let settings = settings_store().read().ok()?;
+    settings
+        .workbuddy_config_dir
+        .as_ref()
+        .map(|path| resolve_override_path(path))
+}
+
 pub fn get_pi_override_dir() -> Option<PathBuf> {
     let settings = settings_store().read().ok()?;
     settings
@@ -1009,7 +1051,14 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
         AppType::OpenCode => settings.current_provider_opencode.clone(),
         AppType::OpenClaw => settings.current_provider_openclaw.clone(),
         AppType::Hermes => settings.current_provider_hermes.clone(),
-        AppType::Pi => None,
+        AppType::Pi
+        | AppType::WorkBuddy
+        | AppType::Qoder
+        | AppType::Kimi
+        | AppType::Qwen
+        | AppType::ZCode
+        | AppType::Trae
+        | AppType::DoubaoWork => None,
     }
 }
 
@@ -1028,7 +1077,14 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         AppType::OpenCode => settings.current_provider_opencode = id_owned.clone(),
         AppType::OpenClaw => settings.current_provider_openclaw = id_owned.clone(),
         AppType::Hermes => settings.current_provider_hermes = id_owned.clone(),
-        AppType::Pi => {}
+        AppType::Pi
+        | AppType::WorkBuddy
+        | AppType::Qoder
+        | AppType::Kimi
+        | AppType::Qwen
+        | AppType::ZCode
+        | AppType::Trae
+        | AppType::DoubaoWork => {}
     })
 }
 
@@ -1188,6 +1244,18 @@ pub fn update_s3_sync_status(status: WebDavSyncStatus) -> Result<(), AppError> {
 mod tests {
     use super::*;
     use crate::app_config::AppType;
+    #[test]
+    fn optional_agents_require_explicit_homepage_opt_in() {
+        let defaults = VisibleApps::default();
+        assert!(!defaults.workbuddy && !defaults.qoder);
+        let old: VisibleApps =
+            serde_json::from_value(serde_json::json!({"codex":true})).expect("old");
+        assert!(!old.workbuddy && !old.qoder);
+        let added: VisibleApps =
+            serde_json::from_value(serde_json::json!({"workbuddy":true,"qoder":true}))
+                .expect("added");
+        assert!(added.workbuddy && added.qoder);
+    }
 
     #[test]
     fn visible_apps_old_settings_default_claude_desktop_visible() {

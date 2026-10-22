@@ -9,6 +9,7 @@ pub struct AppState {
     pub db: Arc<Database>,
     pub proxy_service: ProxyService,
     pub usage_cache: Arc<UsageCache>,
+    pub(crate) profile_bundles: Arc<crate::services::profile_bundle::ProfileBundleState>,
     // 内部已使用细粒度锁（accounts/access_tokens/refresh_locks），所有方法均为
     // `&self`，无需外层 RwLock；避免持有粗粒度锁跨网络刷新导致的连锁阻塞。
     pub codex_oauth_manager: Arc<CodexOAuthManager>,
@@ -26,6 +27,7 @@ impl AppState {
             db,
             proxy_service,
             usage_cache: Arc::new(UsageCache::new()),
+            profile_bundles: Arc::new(Default::default()),
             codex_oauth_manager,
         }
     }

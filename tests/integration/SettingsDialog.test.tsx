@@ -120,6 +120,12 @@ vi.mock("@/components/settings/AboutSection", () => ({
   AboutSection: ({ isPortable }: any) => <div>about:{String(isPortable)}</div>,
 }));
 
+vi.mock("@/components/settings/LocalProxySettings", () => ({
+  LocalProxySettings: () => (
+    <div data-testid="local-proxy-settings">local-proxy</div>
+  ),
+}));
+
 const renderDialog = (
   props?: Partial<React.ComponentProps<typeof SettingsPage>>,
 ) => {
@@ -144,6 +150,37 @@ afterEach(() => {
 });
 
 describe("SettingsPage integration", () => {
+  it("shows notification permissions in general settings with a dev explanation", async () => {
+    renderDialog();
+    expect(
+      await screen.findByText("settings.permissions.title"),
+    ).toBeInTheDocument();
+    const title = screen.getByRole("heading", {
+      name: "settings.permissions.title",
+    });
+    expect(title.parentElement).toHaveTextContent(
+      "settings.permissions.deliveryHint",
+    );
+    expect(
+      screen.getAllByText("settings.permissions.deliveryHint"),
+    ).toHaveLength(1);
+    expect(
+      screen.queryByText("settings.permissions.notifications"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("settings.permissions.notificationDescription"),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByText("settings.permissions.devHint"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "settings.permissions.openSettings" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "settings.permissions.request" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("loads default settings from MSW", async () => {
     renderDialog();
 

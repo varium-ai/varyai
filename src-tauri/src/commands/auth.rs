@@ -231,49 +231,6 @@ pub async fn auth_cancel_login(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn auth_list_accounts(
-    auth_provider: String,
-    copilot_state: State<'_, CopilotAuthState>,
-    codex_state: State<'_, CodexOAuthState>,
-    xai_state: State<'_, XaiOAuthState>,
-) -> Result<Vec<ManagedAuthAccount>, String> {
-    let auth_provider = ensure_auth_provider(&auth_provider)?;
-    match auth_provider {
-        AUTH_PROVIDER_GITHUB_COPILOT => {
-            let auth_manager = copilot_state.0.read().await;
-            let status = auth_manager.get_status().await;
-            let default_account_id = status.default_account_id.clone();
-            Ok(status
-                .accounts
-                .into_iter()
-                .map(|account| map_account(auth_provider, account, default_account_id.as_deref()))
-                .collect())
-        }
-        AUTH_PROVIDER_CODEX_OAUTH => {
-            let auth_manager = &codex_state.0;
-            let status = auth_manager.get_status().await;
-            let default_account_id = status.default_account_id.clone();
-            Ok(status
-                .accounts
-                .into_iter()
-                .map(|account| map_account(auth_provider, account, default_account_id.as_deref()))
-                .collect())
-        }
-        AUTH_PROVIDER_XAI_OAUTH => {
-            let auth_manager = xai_state.0.read().await;
-            let status = auth_manager.get_status().await;
-            let default_account_id = status.default_account_id.clone();
-            Ok(status
-                .accounts
-                .into_iter()
-                .map(|account| map_xai_account(account, default_account_id.as_deref()))
-                .collect())
-        }
-        _ => unreachable!(),
-    }
-}
-
-#[tauri::command(rename_all = "camelCase")]
 pub async fn auth_get_status(
     auth_provider: String,
     copilot_state: State<'_, CopilotAuthState>,

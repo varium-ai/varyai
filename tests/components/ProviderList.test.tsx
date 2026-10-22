@@ -146,6 +146,98 @@ beforeEach(() => {
 });
 
 describe("ProviderList Component", () => {
+  it("explains missing Pi upstream backups and opens the affected provider for repair", async () => {
+    const provider = createProvider({ id: "lost", name: "Company" });
+    const onEdit = vi.fn();
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/get_pi_routing_status`, () =>
+        HttpResponse.json({
+          enabled: true,
+          configured: true,
+          running: false,
+          providerIds: ["lost"],
+          modelCount: 0,
+          issues: [
+            {
+              providerId: "lost",
+              modelId: null,
+              code: "piRouting.sourceRecoveryRequired",
+            },
+          ],
+          lastRequestAt: null,
+          errorCode: "piRouting.sourceRecoveryRequired",
+        }),
+      ),
+    );
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ lost: provider }}
+        currentProviderId=""
+        appId="pi"
+        onSwitch={vi.fn()}
+        onEdit={onEdit}
+        onDelete={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByText("piRouting.sourceRecoveryRequired"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "piRouting.repairSource" }),
+    );
+    expect(onEdit).toHaveBeenCalledWith(provider);
+  });
+
+  it("uses WorkBuddy native membership without an import models button", async () => {
+    const provider = createProvider({
+      id: "workbuddy-model",
+      name: "WorkBuddy model",
+    });
+    useDragSortMock.mockReturnValue({
+      sortedProviders: [provider],
+      sensors: [],
+      handleDragEnd: vi.fn(),
+    });
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/get_workbuddy_live_provider_ids`, () =>
+        HttpResponse.json([provider.id]),
+      ),
+    );
+    renderWithQueryClient(
+      <ProviderList
+        providers={{ [provider.id]: provider }}
+        currentProviderId=""
+        appId="workbuddy"
+        onSwitch={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onRemoveFromConfig={vi.fn()}
+        onOpenWebsite={vi.fn()}
+      />,
+    );
+    await waitFor(() => {
+      const latest = providerCardRenderSpy.mock.calls
+        .map(([props]) => props)
+        .at(-1);
+      expect(latest).toMatchObject({
+        isCurrent: false,
+        isInConfig: true,
+        isProxyRunning: false,
+      });
+      expect(latest.onTest).toBeUndefined();
+      expect(latest.onOpenTerminal).toBeUndefined();
+    });
+    expect(
+      screen.queryByRole("button", { name: "workbuddy.importModels" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("should render skeleton placeholders when loading", () => {
     const { container } = renderWithQueryClient(
       <ProviderList
@@ -340,6 +432,33 @@ describe("ProviderList Component", () => {
       screen.queryByRole("button", { name: "provider.addProvider" }),
     ).not.toBeInTheDocument();
   });
+
+  it.each([false, true])(
+    "keeps the Pi provider page free of a separate routing panel (has providers: %s)",
+    (hasProviders) => {
+      const provider = createProvider({ id: "pi-source", name: "Pi source" });
+      useDragSortMock.mockReturnValue({
+        sortedProviders: hasProviders ? [provider] : [],
+        sensors: [],
+        handleDragEnd: vi.fn(),
+      });
+      renderWithQueryClient(
+        <ProviderList
+          providers={hasProviders ? { [provider.id]: provider } : {}}
+          currentProviderId=""
+          appId="pi"
+          onSwitch={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onOpenWebsite={vi.fn()}
+        />,
+      );
+      expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("region", { name: "piRouting.title" }),
+      ).not.toBeInTheDocument();
+    },
+  );
 
   it("does not expose proxy or failover actions on Pi provider cards", async () => {
     const currentProvider = createProvider({

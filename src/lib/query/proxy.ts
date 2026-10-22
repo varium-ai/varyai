@@ -2,17 +2,12 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { proxyApi } from "@/lib/api/proxy";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
-import type {
-  GlobalProxyConfig,
-  AppProxyConfig,
-  ProxyTakeoverStatus,
-} from "@/types/proxy";
+import type { GlobalProxyConfig, ProxyTakeoverStatus } from "@/types/proxy";
 
 export const proxyKeys = {
   status: ["proxyStatus"] as const,
   takeoverStatus: ["proxyTakeoverStatus"] as const,
   globalConfig: ["globalProxyConfig"] as const,
-  appConfig: (appType: string) => ["appProxyConfig", appType] as const,
 };
 
 // ========== 代理服务器状态 Hooks ==========
@@ -61,6 +56,8 @@ export function useSetProxyTakeoverForApp() {
       proxyApi.setProxyTakeoverForApp(appType, enabled),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus });
+      queryClient.invalidateQueries({ queryKey: proxyKeys.status });
+      queryClient.invalidateQueries({ queryKey: ["pi", "routing"] });
     },
   });
 }
@@ -90,46 +87,6 @@ export function useUpdateGlobalProxyConfig() {
     onSuccess: () => {
       toast.success(t("proxy.settings.toast.saved"), { closeButton: true });
       queryClient.invalidateQueries({ queryKey: proxyKeys.globalConfig });
-      queryClient.invalidateQueries({ queryKey: proxyKeys.status });
-    },
-    onError: (error: Error) => {
-      toast.error(
-        t("proxy.settings.toast.saveFailed", { error: error.message }),
-      );
-    },
-  });
-}
-
-/**
- * 获取指定应用的代理配置
- */
-export function useAppProxyConfig(appType: string) {
-  return useQuery({
-    queryKey: proxyKeys.appConfig(appType),
-    queryFn: () => proxyApi.getProxyConfigForApp(appType),
-    enabled: !!appType,
-  });
-}
-
-/**
- * 更新指定应用的代理配置
- */
-export function useUpdateAppProxyConfig() {
-  const queryClient = useQueryClient();
-  const { t } = useTranslation();
-
-  return useMutation({
-    mutationFn: (config: AppProxyConfig) =>
-      proxyApi.updateProxyConfigForApp(config),
-    onSuccess: (_, variables) => {
-      toast.success(t("proxy.settings.toast.saved"), { closeButton: true });
-      queryClient.invalidateQueries({
-        queryKey: proxyKeys.appConfig(variables.appType),
-      });
-      queryClient.invalidateQueries({
-        queryKey: ["autoFailoverEnabled", variables.appType],
-      });
-      queryClient.invalidateQueries({ queryKey: ["circuitBreakerConfig"] });
       queryClient.invalidateQueries({ queryKey: proxyKeys.status });
     },
     onError: (error: Error) => {

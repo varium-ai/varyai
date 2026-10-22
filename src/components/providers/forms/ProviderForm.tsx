@@ -85,6 +85,9 @@ import { ClaudeDesktopProviderForm } from "./ClaudeDesktopProviderForm";
 import { GrokBuildProviderForm } from "./GrokBuildProviderForm";
 import { CodexFormFields } from "./CodexFormFields";
 import { GeminiFormFields } from "./GeminiFormFields";
+import { ManagedAgentProviderForm } from "./ManagedAgentProviderForm";
+import { QoderProviderForm } from "./QoderProviderForm";
+import { WorkBuddyProviderForm } from "./WorkBuddyProviderForm";
 import { PiProviderForm } from "./PiProviderForm";
 import { OmoFormFields } from "./OmoFormFields";
 import { parseOmoOtherFieldsObject } from "@/types/omo";
@@ -253,6 +256,7 @@ export interface ProviderFormProps {
   submitLabel: string;
   onSubmit: (values: ProviderFormValues) => Promise<void> | void;
   onCancel: () => void;
+  onAddThirdParty?: (values: ProviderFormValues) => Promise<void> | void;
   onUniversalPresetSelect?: (preset: UniversalProviderPreset) => void;
   onManageUniversalProviders?: () => void;
   onManageAuthAccounts?: (target: ManagedAuthProvider) => void;
@@ -273,6 +277,12 @@ export interface ProviderFormProps {
 }
 
 export function ProviderForm(props: ProviderFormProps) {
+  if (["trae", "kimi", "qwen", "zcode"].includes(props.appId))
+    return <ManagedAgentProviderForm {...props} />;
+  if (props.appId === "qoder") return <QoderProviderForm {...props} />;
+  if (props.appId === "workbuddy") {
+    return <WorkBuddyProviderForm {...props} />;
+  }
   if (props.appId === "pi") {
     return <PiProviderForm {...props} />;
   }

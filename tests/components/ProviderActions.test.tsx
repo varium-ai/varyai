@@ -10,11 +10,11 @@ function renderPiActions({
   isStateChangeProtected = false,
   isAutoFailoverEnabled = false,
   isInFailoverQueue = false,
-  onSwitch = vi.fn(),
-  onEdit = vi.fn(),
-  onRemoveFromConfig = vi.fn(),
-  onDelete = vi.fn(),
-  onSetAsDefault = vi.fn(),
+  onSwitch = vi.fn<() => void>(),
+  onEdit = vi.fn<() => void>(),
+  onRemoveFromConfig = vi.fn<() => void>(),
+  onDelete = vi.fn<() => void>(),
+  onSetAsDefault = vi.fn<() => void>(),
   onToggleFailover,
 }: {
   isCurrent?: boolean;
@@ -23,12 +23,12 @@ function renderPiActions({
   isStateChangeProtected?: boolean;
   isAutoFailoverEnabled?: boolean;
   isInFailoverQueue?: boolean;
-  onSwitch?: ReturnType<typeof vi.fn>;
-  onEdit?: ReturnType<typeof vi.fn>;
-  onRemoveFromConfig?: ReturnType<typeof vi.fn>;
-  onDelete?: ReturnType<typeof vi.fn>;
-  onSetAsDefault?: ReturnType<typeof vi.fn>;
-  onToggleFailover?: ReturnType<typeof vi.fn>;
+  onSwitch?: () => void;
+  onEdit?: () => void;
+  onRemoveFromConfig?: () => void;
+  onDelete?: () => void;
+  onSetAsDefault?: (modelId?: string) => void;
+  onToggleFailover?: (enabled: boolean) => void;
 }) {
   render(
     <ProviderActions

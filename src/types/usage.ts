@@ -1,12 +1,3 @@
-// 使用统计相关类型定义
-
-export interface TokenUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-}
-
 export interface RequestLog {
   requestId: string;
   providerId: string;
@@ -152,16 +143,6 @@ export interface UsageScopeFilters {
   model?: string;
 }
 
-export interface ProviderLimitStatus {
-  providerId: string;
-  dailyUsage: string;
-  dailyLimit?: string;
-  dailyExceeded: boolean;
-  monthlyUsage: string;
-  monthlyLimit?: string;
-  monthlyExceeded: boolean;
-}
-
 export type UsageRangePreset = "today" | "1d" | "7d" | "14d" | "30d" | "custom";
 
 export interface UsageRangeSelection {
@@ -195,7 +176,13 @@ export type AppType =
   | "gemini"
   | "grokbuild"
   | "opencode"
-  | "pi";
+  | "pi"
+  | "qoder"
+  | "doubaowork"
+  | "trae"
+  | "kimi"
+  | "qwen"
+  | "zcode";
 
 export type AppTypeFilter = "all" | AppType;
 
@@ -206,6 +193,12 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
   "grokbuild",
   "opencode",
   "pi",
+  "qoder",
+  "doubaowork",
+  "trae",
+  "kimi",
+  "qwen",
+  "zcode",
 ];
 
 /**
@@ -229,7 +222,15 @@ export const CACHE_INCLUSIVE_APP_TYPES: ReadonlySet<string> = new Set([
 // Pi sessions can mix Anthropic and OpenAI APIs, but the dashboard aggregates
 // only by app type. Treat cache-write coverage as partial without changing
 // Pi's fresh-input token semantics.
-const PARTIAL_CACHE_WRITE_APP_TYPES: ReadonlySet<string> = new Set(["pi"]);
+const PARTIAL_CACHE_WRITE_APP_TYPES: ReadonlySet<string> = new Set([
+  "pi",
+  "qoder",
+  "doubaowork",
+  "trae",
+  "kimi",
+  "qwen",
+  "zcode",
+]);
 
 export type CacheWriteAvailability = "ok" | "partial" | "na";
 
@@ -311,10 +312,4 @@ export function isUnpricedUsage(log: UsageCostLog): boolean {
     (!Number.isFinite(multiplier) || multiplier !== 0) &&
     totalCost === 0
   );
-}
-
-export interface StatsFilters {
-  timeRange: UsageRangePreset;
-  providerId?: string;
-  appType?: string;
 }

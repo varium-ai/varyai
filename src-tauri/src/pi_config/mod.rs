@@ -1,7 +1,7 @@
 //! Thin adapter for Pi's native files.
 //!
 //! Pi owns account login and the active provider/model in `settings.json`.
-//! CC Switch only manages explicit provider entries in `models.json`.
+//! Vary AI only manages explicit provider entries in `models.json`.
 
 use crate::config::{atomic_write_private, get_home_dir};
 use crate::error::AppError;
@@ -111,6 +111,35 @@ pub(crate) fn read_pi_native_provider(provider_key: &str) -> Result<Option<Value
     Ok(providers(&document, &path)?.get(provider_key).cloned())
 }
 
+/// Apply a routing projection in one revision-checked write, including legacy cleanup.
+pub(crate) fn replace_pi_providers(
+    expected: &IndexMap<String, Value>,
+    replacement: &IndexMap<String, Value>,
+) -> Result<(), AppError> {
+    let _guard = lock_models_file()?;
+    let path = get_pi_models_path()?;
+    let (mut document, revision) = read_models_document_with_revision(&path)?;
+    let nodes = providers_mut(&mut document, &path)?;
+    let current: IndexMap<String, Value> =
+        nodes.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    if &current != expected {
+        return Err(AppError::Conflict(
+            "Pi providers changed outside Vary AI".into(),
+        ));
+    }
+    if expected == replacement {
+        return Ok(());
+    }
+    for (id, node) in replacement {
+        validate_provider_node(id, node)?;
+    }
+    *nodes = replacement
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    write_models_document(&path, &document, &revision)
+}
+
 pub(crate) fn pi_provider_exists(provider_key: &str) -> Result<bool, AppError> {
     let _guard = lock_models_file()?;
     let path = get_pi_models_path()?;
@@ -157,7 +186,7 @@ pub(crate) fn replace_pi_provider(
     })?;
     if current != expected {
         return Err(AppError::Conflict(format!(
-            "Pi provider '{provider_key}' changed outside CC Switch"
+            "Pi provider '{provider_key}' changed outside Vary AI"
         )));
     }
     if current == replacement {
@@ -211,7 +240,7 @@ fn remove_pi_provider_inner(
     };
     if expected.is_some_and(|expected| current != *expected) {
         return Err(AppError::Conflict(format!(
-            "Pi provider '{provider_key}' changed outside CC Switch"
+            "Pi provider '{provider_key}' changed outside Vary AI"
         )));
     }
     providers.remove(provider_key);
@@ -239,7 +268,7 @@ pub(crate) fn restore_pi_provider_if_missing(
     }
 }
 
-/// Validate the shape CC Switch can persist as one
+/// Validate the shape Vary AI can persist as one
 /// `models.json.providers.<provider_key>` node.
 ///
 /// Provider ownership is intentionally source-based: every explicit object in
@@ -417,7 +446,7 @@ fn ensure_models_revision(path: &Path, expected_revision: &str) -> Result<(), Ap
         Ok(())
     } else {
         Err(AppError::Conflict(format!(
-            "Pi models.json changed outside CC Switch: {}",
+            "Pi models.json changed outside Vary AI: {}",
             path.display()
         )))
     }

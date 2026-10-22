@@ -2,6 +2,7 @@
 //!
 //! 提供本地HTTP代理服务，支持多Provider故障转移和请求透传
 
+pub(crate) mod agent_clients;
 pub mod body_filter;
 pub mod cache_injector;
 pub mod circuit_breaker;
@@ -23,7 +24,12 @@ pub mod media_sanitizer;
 pub mod model_mapper;
 pub mod provider_router;
 pub mod providers;
+pub(crate) mod qoder;
+pub(crate) mod qoder_codec;
+pub(crate) mod qoder_tls;
+pub(crate) mod qoder_usage;
 pub mod response_processor;
+pub mod security;
 pub(crate) mod server;
 pub mod session;
 pub(crate) mod sse;
@@ -32,8 +38,11 @@ pub mod thinking_budget_rectifier;
 pub mod thinking_optimizer;
 pub mod thinking_rectifier;
 pub(crate) mod tool_media;
+pub mod tool_observation;
+pub(crate) mod trae;
 pub(crate) mod types;
 pub mod usage;
+pub(crate) mod workbuddy;
 
 // 公开导出给外部使用（commands, services等模块需要）
 #[allow(unused_imports)]
@@ -53,3 +62,4 @@ pub use types::{ProxyConfig, ProxyServerInfo, ProxyStatus};
 // 注意：这个导出用于模块内部，编译器可能警告未使用但实际被子模块使用
 #[allow(unused_imports)]
 pub(crate) use types::*;
+pub(crate) mod pi;

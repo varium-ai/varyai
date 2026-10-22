@@ -20,7 +20,15 @@ pub(super) fn list(state: &AppState) -> Result<IndexMap<String, Provider>, AppEr
             log::warn!("Failed to read Pi providers; showing saved catalog: {error}");
         }
     }
-    state.db.get_all_providers(PI_APP)
+    let mut providers = state.db.get_all_providers(PI_APP)?;
+    providers.retain(|id, provider| {
+        !(id == "vary"
+            && state
+                .proxy_service
+                .pi_routing
+                .owns_node(&provider.settings_config))
+    });
+    Ok(providers)
 }
 
 pub(super) fn import_from_live(state: &AppState) -> Result<usize, AppError> {
@@ -79,6 +87,12 @@ pub(super) fn add(
         }
         return Err(error);
     }
+    state
+        .proxy_service
+        .pi_routing
+        .include_source(&provider.id)
+        .map_err(AppError::Config)?;
+    state.proxy_service.refresh_pi_routing_locked();
     Ok(true)
 }
 
@@ -103,6 +117,7 @@ pub(super) fn update_usage_script(
     strip_unsupported_pi_metadata(&mut provider);
     ProviderService::normalize_usage_script_credential_overrides(&app_type, &mut provider);
     state.db.save_provider(app_type.as_str(), &provider)?;
+    state.proxy_service.refresh_pi_routing_locked();
     Ok(true)
 }
 
@@ -127,10 +142,21 @@ pub(super) fn update(
         .ok_or_else(|| AppError::InvalidInput(format!("Pi provider '{original_id}' not found")))?;
     strip_unsupported_pi_metadata(&mut provider);
     ProviderService::validate_provider_settings(&app_type, &provider)?;
+    align_native_display_name(&mut provider);
     ProviderService::normalize_usage_script_credential_overrides(&app_type, &mut provider);
 
-    let previous_native =
-        crate::pi_config::replace_pi_provider_if_present(&original_id, &provider.settings_config)?;
+    let current = crate::pi_config::read_pi_native_provider(&original_id)?;
+    let routed = current.as_ref().is_some_and(|node| {
+        state
+            .proxy_service
+            .pi_routing
+            .owns_provider(&original_id, node)
+    });
+    let previous_native = if routed {
+        None
+    } else {
+        crate::pi_config::replace_pi_provider_if_present(&original_id, &provider.settings_config)?
+    };
     if let Err(error) = state.db.save_provider(app_type.as_str(), &provider) {
         if let Some(previous_native) = previous_native.as_ref() {
             if let Err(rollback) = crate::pi_config::replace_pi_provider(
@@ -145,6 +171,7 @@ pub(super) fn update(
         }
         return Err(error);
     }
+    state.proxy_service.refresh_pi_routing_locked();
     Ok(true)
 }
 
@@ -170,13 +197,28 @@ pub(super) fn delete(state: &AppState, id: &str) -> Result<(), AppError> {
         }
         return Err(error);
     }
+    state
+        .proxy_service
+        .pi_routing
+        .detach_source(id)
+        .map_err(AppError::Config)?;
+    state.proxy_service.refresh_pi_routing_locked();
     Ok(())
 }
 
-pub(super) fn remove(state: &AppState, id: &str) -> Result<(), AppError> {
+pub(super) fn remove_with_lock(
+    state: &AppState,
+    id: &str,
+    lock_held: bool,
+) -> Result<(), AppError> {
     let app_type = AppType::Pi;
-    let _guard =
-        futures::executor::block_on(state.proxy_service.lock_switch_for_app(app_type.as_str()));
+    let _guard = if lock_held {
+        None
+    } else {
+        Some(futures::executor::block_on(
+            state.proxy_service.lock_switch_for_app(app_type.as_str()),
+        ))
+    };
     let provider = state
         .db
         .get_provider_by_id(id, app_type.as_str())?
@@ -185,7 +227,9 @@ pub(super) fn remove(state: &AppState, id: &str) -> Result<(), AppError> {
         return Ok(());
     };
     let mut synced = provider;
-    merge_native_config(&mut synced, removed.clone());
+    if !state.proxy_service.pi_routing.owns_provider(id, &removed) {
+        merge_native_config(&mut synced, removed.clone());
+    }
     if let Err(error) = state.db.save_provider(app_type.as_str(), &synced) {
         if let Err(rollback) = crate::pi_config::restore_pi_provider_if_missing(id, &removed) {
             return Err(AppError::Config(format!(
@@ -194,19 +238,40 @@ pub(super) fn remove(state: &AppState, id: &str) -> Result<(), AppError> {
         }
         return Err(error);
     }
+    state
+        .proxy_service
+        .pi_routing
+        .detach_source(id)
+        .map_err(AppError::Config)?;
+    state.proxy_service.refresh_pi_routing_locked();
     Ok(())
 }
 
 pub(super) fn enable(state: &AppState, id: &str) -> Result<SwitchResult, AppError> {
+    enable_with_lock(state, id, false)
+}
+pub(super) fn enable_with_lock(
+    state: &AppState,
+    id: &str,
+    lock_held: bool,
+) -> Result<SwitchResult, AppError> {
     let app_type = AppType::Pi;
-    let _guard =
-        futures::executor::block_on(state.proxy_service.lock_switch_for_app(app_type.as_str()));
+    let _guard = if lock_held {
+        None
+    } else {
+        Some(futures::executor::block_on(
+            state.proxy_service.lock_switch_for_app(app_type.as_str()),
+        ))
+    };
     let provider = state
         .db
         .get_provider_by_id(id, app_type.as_str())?
         .ok_or_else(|| AppError::InvalidInput(format!("Pi provider '{id}' not found")))?;
 
     if let Some(native) = crate::pi_config::read_pi_native_provider(id)? {
+        if state.proxy_service.pi_routing.owns_provider(id, &native) {
+            return Ok(SwitchResult::default());
+        }
         let mut synced = provider;
         merge_native_config(&mut synced, native);
         state.db.save_provider(app_type.as_str(), &synced)?;
@@ -215,6 +280,12 @@ pub(super) fn enable(state: &AppState, id: &str) -> Result<SwitchResult, AppErro
 
     ProviderService::validate_provider_settings(&app_type, &provider)?;
     crate::pi_config::insert_pi_provider(id, &provider.settings_config)?;
+    state
+        .proxy_service
+        .pi_routing
+        .include_source(id)
+        .map_err(AppError::Config)?;
+    state.proxy_service.refresh_pi_routing_locked();
     Ok(SwitchResult::default())
 }
 
@@ -222,10 +293,18 @@ fn sync_native_locked(
     state: &AppState,
     native: &IndexMap<String, Value>,
 ) -> Result<usize, AppError> {
+    let repaired = state
+        .proxy_service
+        .pi_routing
+        .recover_sources(&state.db)
+        .map_err(AppError::Config)?;
     let saved = state.db.get_all_providers(PI_APP)?;
-    let mut changed = 0;
+    let mut changed = repaired;
 
     for (id, config) in native {
+        if state.proxy_service.pi_routing.owns_provider(id, config) {
+            continue;
+        }
         let mut provider = saved.get(id).cloned().unwrap_or_else(|| {
             let name = native_provider_name(config).unwrap_or(id).to_string();
             let mut imported = Provider::with_id(id.clone(), name, config.clone(), None);
@@ -246,6 +325,9 @@ fn sync_native_locked(
         changed += 1;
     }
 
+    if changed > 0 {
+        state.proxy_service.refresh_pi_routing_locked();
+    }
     Ok(changed)
 }
 
@@ -263,7 +345,7 @@ fn native_provider_name(config: &Value) -> Option<&str> {
         .filter(|name| !name.trim().is_empty())
 }
 
-fn align_native_display_name(provider: &mut Provider) {
+pub(super) fn align_native_display_name(provider: &mut Provider) {
     let Some(config) = provider.settings_config.as_object_mut() else {
         return;
     };
@@ -351,6 +433,28 @@ mod tests {
             team_organization_id: None,
             team_project_id: None,
         }
+    }
+
+    #[test]
+    #[serial]
+    fn renamed_pi_provider_keeps_the_new_name_after_native_sync() {
+        let _agent = TestAgentDir::new();
+        let state = state();
+        add(&state, input("model-a"), true).expect("source");
+        let mut renamed = state
+            .db
+            .get_provider_by_id("cc-switch-test", "pi")
+            .expect("db")
+            .expect("source");
+        renamed.name = "Company backup".into();
+        // Older records, and the copy action, can retain the original embedded name.
+        update(&state, None, renamed).expect("rename");
+        let listed = list(&state).expect("sync");
+        assert_eq!(listed["cc-switch-test"].name, "Company backup");
+        assert_eq!(
+            listed["cc-switch-test"].settings_config["name"],
+            "Company backup"
+        );
     }
 
     #[test]

@@ -2,9 +2,8 @@ import type { AppId } from "@/lib/api/types";
 import type { PerApp, Profile, ProfileScope } from "@/lib/api/profiles";
 
 /**
- * 应用页 → 所属项目分组（后端 ProfileScope::for_app 的前端镜像，两处同步）
- *
- * 不在映射里的应用不支持 Profile，其标签页不渲染切换器。
+ * Frontend mirror of ProfileScope::for_app; keep both mappings aligned.
+ * Legacy single-client profiles use this mapping; other clients use agent bundles.
  */
 export const APP_PROFILE_SCOPE: Partial<Record<AppId, ProfileScope>> = {
   claude: "claude",
@@ -12,7 +11,7 @@ export const APP_PROFILE_SCOPE: Partial<Record<AppId, ProfileScope>> = {
   codex: "codex",
 };
 
-/** 分组内的 payload 槽位 key（后端 ProfileScope::apps 的前端镜像） */
+/** Payload slot keys within a scope; mirrors ProfileScope::apps. */
 const SCOPE_SLOT_KEYS: Record<ProfileScope, (keyof PerApp<unknown>)[]> = {
   claude: ["claude"],
   "claude-desktop": ["claude-desktop"],
@@ -20,9 +19,8 @@ const SCOPE_SLOT_KEYS: Record<ProfileScope, (keyof PerApp<unknown>)[]> = {
 };
 
 /**
- * 项目在某分组是否拍过快照（任一槽位非 null 即视为拍过）
- *
- * 未拍过的项目在该分组应用时不改动配置，只绑定 current 标记。
+ * A scope has a snapshot when any slot is non-null.
+ * Applying an uncaptured scope only binds the current marker, without changing configuration.
  */
 export function hasScopeSnapshot(profile: Profile, scope: ProfileScope) {
   const { providers, mcp, skills, prompts } = profile.payload;

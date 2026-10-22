@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { Input } from "@/components/ui/input";
 
 interface ApiKeyInputProps {
   value: string;
@@ -28,7 +29,7 @@ const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
     setShowKey(!showKey);
   };
 
-  const inputClass = `w-full px-3 py-2 pr-10 border rounded-lg text-sm transition-colors ${
+  const inputClass = `pr-10 ${
     disabled
       ? "bg-muted border-border-default text-muted-foreground cursor-not-allowed"
       : "border-border-default bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:focus:ring-blue-400/20"
@@ -40,7 +41,7 @@ const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
         {label} {required && "*"}
       </label>
       <div className="relative">
-        <input
+        <Input
           type={showKey ? "text" : "password"}
           id={id}
           value={value}

@@ -1176,7 +1176,7 @@ export function PiProviderForm({
             : "";
         // Existing explicit nodes may be partial overrides of a Pi built-in
         // provider. Pi inherits the built-in transport in that case, so only
-        // require a complete transport when CC Switch creates a new provider.
+        // require a complete transport when Vary AI creates a new provider.
         if (!isEdit && !modelApi && !api.trim()) {
           throw new PiFormValidationError(
             t("pi.form.effectiveApiRequired", { id }),
@@ -1898,6 +1898,9 @@ export function PiProviderForm({
                                                   )}
                                                 </label>
                                                 <Input
+                                                  placeholder={t(
+                                                    "pi.form.thinkingLevelValuePlaceholder",
+                                                  )}
                                                   value={
                                                     typeof mappedValue ===
                                                     "string"

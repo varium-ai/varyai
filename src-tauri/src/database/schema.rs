@@ -2,7 +2,7 @@
 //!
 //! 负责数据库表结构的创建和版本迁移。
 
-use super::{lock_conn, Database, SCHEMA_VERSION};
+use super::{lock_conn, Database, SCHEMA_VERSION, SHARED_SCHEMA_VERSION};
 use crate::error::AppError;
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -22,6 +22,11 @@ impl Database {
 
     /// 在指定连接上创建表（供迁移和测试使用）
     pub(crate) fn create_tables_on_conn(conn: &Connection) -> Result<(), AppError> {
+        Self::create_shared_tables_on_conn(conn)?;
+        Self::create_extension_tables_on_conn(conn)
+    }
+
+    pub(crate) fn create_shared_tables_on_conn(conn: &Connection) -> Result<(), AppError> {
         // 1. Providers 表
         conn.execute(
             "CREATE TABLE IF NOT EXISTS providers (
@@ -433,29 +438,175 @@ impl Database {
         Ok(())
     }
 
-    /// 应用 Schema 迁移
-    pub(crate) fn apply_schema_migrations(&self) -> Result<(), AppError> {
-        let conn = lock_conn!(self.conn);
-        Self::apply_schema_migrations_on_conn(&conn)
+    pub(crate) fn create_extension_tables_on_conn(conn: &Connection) -> Result<(), AppError> {
+        // 20. Security audit events.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS security_audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                request_id TEXT,
+                app_type TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                rule_name TEXT NOT NULL,
+                rule_category TEXT NOT NULL,
+                risk_level TEXT NOT NULL,
+                action_taken TEXT NOT NULL,
+                matched_snippet_masked TEXT NOT NULL,
+                location TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                trigger_count INTEGER NOT NULL DEFAULT 1,
+                last_seen_at INTEGER,
+                session_id TEXT
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_security_audit_timestamp ON security_audit_logs(timestamp)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_security_audit_app_type ON security_audit_logs(app_type)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_security_audit_app_time ON security_audit_logs(app_type, timestamp DESC)",
+            [],
+        );
+
+        if Self::has_column(conn, "security_audit_logs", "session_id")? {
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_security_audit_session_time ON security_audit_logs(session_id, timestamp DESC)", [])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+
+        // 21. Custom security rules.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS security_custom_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                rule_type TEXT NOT NULL,
+                pattern TEXT NOT NULL,
+                risk_level TEXT NOT NULL,
+                action TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                description TEXT,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 22. Global security settings (key-value).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS security_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 23. Tool-risk settings (key-value).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tool_risk_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 24. Custom tool-risk rules.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tool_risk_custom_rules (
+                id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                definition TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 25. Built-in tool-risk rule overrides.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tool_risk_builtin_overrides (
+                id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        // 26. Sanitized tool-risk observations.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tool_risk_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                client_category TEXT,
+                operation_category TEXT,
+                command_summary TEXT,
+                detection_scope TEXT NOT NULL,
+                integrity_status TEXT NOT NULL,
+                verdict TEXT,
+                risk_category TEXT,
+                severity TEXT,
+                reason_code TEXT,
+                policy_version INTEGER NOT NULL,
+                rule_ids TEXT,
+                suppressed_count INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_risk_events_timestamp ON tool_risk_events(timestamp DESC)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_risk_events_verdict ON tool_risk_events(verdict)",
+            [],
+        );
+        Self::create_tool_risk_command_lists_table(conn)?;
+        Self::create_tool_risk_policy_changes_table(conn)?;
+
+        Ok(())
     }
 
     /// 在指定连接上应用 Schema 迁移
     pub(crate) fn apply_schema_migrations_on_conn(conn: &Connection) -> Result<(), AppError> {
+        Self::apply_migrations_to(conn, SCHEMA_VERSION, false)
+    }
+
+    pub(crate) fn apply_shared_schema_migrations(conn: &Connection) -> Result<(), AppError> {
+        Self::apply_migrations_to(conn, SHARED_SCHEMA_VERSION, true)
+    }
+
+    fn apply_migrations_to(conn: &Connection, target: i32, shared: bool) -> Result<(), AppError> {
         conn.execute("SAVEPOINT schema_migration;", [])
             .map_err(|e| AppError::Database(format!("开启迁移 savepoint 失败: {e}")))?;
 
         let mut version = Self::get_user_version(conn)?;
 
-        if version > SCHEMA_VERSION {
+        if version > target {
             conn.execute("ROLLBACK TO schema_migration;", []).ok();
             conn.execute("RELEASE schema_migration;", []).ok();
             return Err(AppError::Database(format!(
-                "数据库版本过新（{version}），当前应用仅支持 {SCHEMA_VERSION}，请升级应用后再尝试。"
+                "数据库版本过新（{version}），当前应用仅支持 {target}，请升级应用后再尝试。"
             )));
         }
 
         let result = (|| {
-            while version < SCHEMA_VERSION {
+            while version < target {
                 match version {
                     0 => {
                         log::info!("检测到 user_version=0，迁移到 1（补齐缺失列并设置版本）");
@@ -549,9 +700,47 @@ impl Database {
                         Self::migrate_v17_to_v18(conn)?;
                         Self::set_user_version(conn, 18)?;
                     }
+                    18 if shared => {
+                        Self::ensure_upstream_shared_columns(conn)?;
+                        Self::set_user_version(conn, 19)?;
+                    }
+                    19 if shared => {
+                        Self::ensure_upstream_shared_columns(conn)?;
+                        Self::set_user_version(conn, 20)?;
+                    }
+                    18 => {
+                        log::info!(
+                            "迁移数据库从 v18 到 v19（添加安全审计与敏感数据防泄漏模块相关表）"
+                        );
+                        Self::migrate_v18_to_v19(conn)?;
+                        Self::set_user_version(conn, 19)?;
+                    }
+                    19 => {
+                        Self::migrate_v19_to_v20(conn)?;
+                        Self::set_user_version(conn, 20)?;
+                    }
+                    20 => {
+                        Self::migrate_v20_to_v21(conn)?;
+                        Self::set_user_version(conn, 21)?;
+                    }
+                    21 => {
+                        log::info!("迁移数据库从 v21 到 v22（合并安全审计与工具风险结构）");
+                        Self::migrate_v21_to_v22(conn)?;
+                        Self::set_user_version(conn, 22)?;
+                    }
+                    22 => {
+                        log::info!("迁移数据库从 v22 到 v23（独立命令黑白名单）");
+                        Self::create_tool_risk_command_lists_table(conn)?;
+                        Self::set_user_version(conn, 23)?;
+                    }
+                    23 => {
+                        log::info!("迁移数据库从 v23 到 v24（本地工具风险配置变更审计）");
+                        Self::create_tool_risk_policy_changes_table(conn)?;
+                        Self::set_user_version(conn, 24)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
-                            "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"
+                            "未知的数据库版本 {version}，无法迁移到 {target}"
                         )));
                     }
                 }
@@ -1596,6 +1785,226 @@ impl Database {
                 "INTEGER",
             )?;
         }
+        Ok(())
+    }
+
+    fn migrate_v20_to_v21(conn: &Connection) -> Result<(), AppError> {
+        Self::add_column_if_missing(conn, "security_audit_logs", "session_id", "TEXT")?;
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_security_audit_session_time ON security_audit_logs(session_id, timestamp DESC)", [])
+            .map_err(|_| AppError::Database("audit session migration failed".into()))?;
+        Ok(())
+    }
+
+    fn migrate_v19_to_v20(conn: &Connection) -> Result<(), AppError> {
+        Self::add_column_if_missing(
+            conn,
+            "security_audit_logs",
+            "trigger_count",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        Self::add_column_if_missing(conn, "security_audit_logs", "last_seen_at", "INTEGER")?;
+        conn.execute(
+            "UPDATE security_audit_logs SET last_seen_at = timestamp WHERE last_seen_at IS NULL",
+            [],
+        )
+        .map_err(|_| AppError::Database("audit migration failed".into()))?;
+        Ok(())
+    }
+
+    /// Migrate to v19: create security audit, custom rule and settings tables.
+    fn migrate_v18_to_v19(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS security_audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                request_id TEXT,
+                app_type TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                rule_name TEXT NOT NULL,
+                rule_category TEXT NOT NULL,
+                risk_level TEXT NOT NULL,
+                action_taken TEXT NOT NULL,
+                matched_snippet_masked TEXT NOT NULL,
+                location TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_security_audit_timestamp ON security_audit_logs(timestamp)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_security_audit_app_type ON security_audit_logs(app_type)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_security_audit_app_time ON security_audit_logs(app_type, timestamp DESC)",
+            [],
+        );
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS security_custom_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                rule_type TEXT NOT NULL,
+                pattern TEXT NOT NULL,
+                risk_level TEXT NOT NULL,
+                action TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                description TEXT,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS security_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// v22 -> v23: store lists separately without changing rules, digests or policy versions.
+    fn create_tool_risk_command_lists_table(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tool_risk_command_lists (
+                id TEXT PRIMARY KEY,
+                definition TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|_| AppError::Database("创建工具风险命令名单表失败".into()))?;
+        Ok(())
+    }
+
+    /// v23 -> v24: audit fixed change metadata; preserve settings and historical events.
+    fn create_tool_risk_policy_changes_table(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tool_risk_policy_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                at INTEGER NOT NULL,
+                policy_version INTEGER NOT NULL,
+                actor TEXT NOT NULL CHECK (actor IN ('local_ui', 'system', 'unknown')),
+                kind TEXT NOT NULL CHECK (kind IN (
+                    'settings_update', 'rule_create', 'rule_update', 'rule_delete',
+                    'builtin_toggle', 'builtin_reset', 'list_create', 'list_update', 'list_delete'
+                )),
+                target_id TEXT,
+                changed_fields TEXT NOT NULL,
+                audit_status TEXT NOT NULL CHECK (audit_status IN (
+                    'recorded', 'audit_unavailable', 'unknown'
+                ))
+            )",
+            [],
+        )
+        .map_err(|_| AppError::Database("创建工具风险配置变更审计表失败".into()))?;
+        Ok(())
+    }
+
+    /// Create tool-risk tables originally introduced by the local v19 -> v20 migration.
+    /// Settings, custom rules, built-in overrides and sanitized events remain separate.
+    fn create_tool_risk_tables(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tool_risk_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tool_risk_custom_rules (
+                id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                definition TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tool_risk_builtin_overrides (
+                id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tool_risk_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                client_category TEXT,
+                operation_category TEXT,
+                command_summary TEXT,
+                detection_scope TEXT NOT NULL,
+                integrity_status TEXT NOT NULL,
+                verdict TEXT,
+                risk_category TEXT,
+                severity TEXT,
+                reason_code TEXT,
+                policy_version INTEGER NOT NULL,
+                rule_ids TEXT,
+                suppressed_count INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_risk_events_timestamp ON tool_risk_events(timestamp DESC)",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建工具风险时间索引失败: {e}")))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_risk_events_verdict ON tool_risk_events(verdict)",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("创建工具风险判定索引失败: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Add the local command digest column; v22 clears existing values.
+    fn add_tool_risk_command_summary(conn: &Connection) -> Result<(), AppError> {
+        Self::add_column_if_missing(conn, "tool_risk_events", "command_summary", "TEXT")?;
+        Ok(())
+    }
+
+    /// v21 -> v22: reconcile databases that reused v20/v21 with different schemas.
+    /// Preserve upstream audit counters and session semantics; add tool-risk tables idempotently.
+    /// Never persist raw command digests; clear old values on upgrade and backup import.
+    fn migrate_v21_to_v22(conn: &Connection) -> Result<(), AppError> {
+        Self::migrate_v18_to_v19(conn)?;
+        Self::migrate_v19_to_v20(conn)?;
+        Self::migrate_v20_to_v21(conn)?;
+        Self::create_tool_risk_tables(conn)?;
+        Self::add_tool_risk_command_summary(conn)?;
+        conn.execute(
+            "UPDATE tool_risk_events SET command_summary = NULL WHERE command_summary IS NOT NULL",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("清除历史工具命令摘要失败: {e}")))?;
         Ok(())
     }
 
@@ -3552,7 +3961,7 @@ impl Database {
         Ok(false)
     }
 
-    fn add_column_if_missing(
+    pub(crate) fn add_column_if_missing(
         conn: &Connection,
         table: &str,
         column: &str,
@@ -3794,5 +4203,78 @@ mod tests {
         assert_eq!(byte_offset, None, "存量行的字节游标必须为 NULL");
         assert_eq!(fingerprint, None, "存量行的尾部指纹必须为 NULL");
         Ok(())
+    }
+
+    #[test]
+    fn tool_risk_helper_adds_command_summary_column() -> Result<(), AppError> {
+        // The v20 tool-risk table lacks command_summary; migration must add it.
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE tool_risk_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                client_category TEXT,
+                operation_category TEXT,
+                detection_scope TEXT NOT NULL,
+                integrity_status TEXT NOT NULL,
+                verdict TEXT,
+                risk_category TEXT,
+                severity TEXT,
+                reason_code TEXT,
+                policy_version INTEGER NOT NULL,
+                rule_ids TEXT,
+                suppressed_count INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+             );",
+        )?;
+        Database::set_user_version(&conn, 20)?;
+
+        Database::add_tool_risk_command_summary(&conn)?;
+
+        assert!(Database::has_column(
+            &conn,
+            "tool_risk_events",
+            "command_summary"
+        )?);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod content_dedup_migration_tests {
+    use super::*;
+    #[test]
+    fn v19_audit_rows_receive_default_counts_and_last_hit_without_new_ids() {
+        let conn = Connection::open_in_memory().unwrap();
+        Database::migrate_v18_to_v19(&conn).unwrap();
+        conn.execute("INSERT INTO security_audit_logs (id, timestamp, app_type, provider_id, rule_id, rule_name, rule_category, risk_level, action_taken, matched_snippet_masked) VALUES (42, 1234, 'claude', '', 'r', 'rule', 'custom', 'LOW', 'audit', '***')", []).unwrap();
+        Database::set_user_version(&conn, 19).unwrap();
+        Database::apply_schema_migrations_on_conn(&conn).unwrap();
+        let row: (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT id, timestamp, trigger_count, last_seen_at FROM security_audit_logs",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (42, 1234, 1, 1234));
+    }
+}
+
+#[cfg(test)]
+mod session_audit_migration_tests {
+    use super::*;
+    #[test]
+    fn v20_rows_keep_ids_counts_and_times_with_unknown_sessions() {
+        let conn = Connection::open_in_memory().unwrap();
+        Database::migrate_v18_to_v19(&conn).unwrap();
+        Database::migrate_v19_to_v20(&conn).unwrap();
+        conn.execute("INSERT INTO security_audit_logs (id, timestamp, app_type, provider_id, rule_id, rule_name, rule_category, risk_level, action_taken, matched_snippet_masked, trigger_count, last_seen_at) VALUES (42, 1234, 'claude', '', 'r', 'rule', 'custom', 'HIGH', 'audit', '***', 7, 5678)", []).unwrap();
+        Database::set_user_version(&conn, 20).unwrap();
+        Database::apply_schema_migrations_on_conn(&conn).unwrap();
+        let row: (i64, i64, i64, i64, Option<String>) = conn.query_row("SELECT id, timestamp, trigger_count, last_seen_at, session_id FROM security_audit_logs", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap();
+        assert_eq!(row, (42, 1234, 7, 5678, None));
     }
 }

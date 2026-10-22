@@ -1,29 +1,28 @@
-name: "❓ Question / 提问"
-description: |
-  Ask a question about usage or configuration.
-  询问使用或配置相关问题。
+name: ❓ Question
+description: Ask a question about usage or configuration.
 labels:
   - question
 body:
+  - type: markdown
+    attributes:
+      value:
+        "This form creates a public VaryAI issue. Do not report security vulnerabilities here. See SECURITY.md
+        at the repository root for the status of private reporting channels.
+
+        Remove API keys, tokens, passwords, personal or customer data, and private URLs from logs, screenshots, and
+        configuration samples before posting."
   - type: checkboxes
     attributes:
-      label: Self Checks / 自检
+      label: Self Checks
       options:
-        - label: |
-            I have read the [FAQ](https://github.com/farion1231/cc-switch#faq) section in README.
-            我已阅读 README 中的[常见问题](https://github.com/farion1231/cc-switch#常见问题)。
+        - label: I have read this VaryAI repository's README and relevant documentation.
           required: true
-        - label: |
-            I have searched for [existing issues](https://github.com/farion1231/cc-switch/issues), including closed ones.
-            我已搜索过[已有的 Issue](https://github.com/farion1231/cc-switch/issues)，包括已关闭的。
+        - label: I have searched this repository's issues, including closed ones.
           required: true
-
   - type: dropdown
     attributes:
-      label: Related App / 涉及应用
-      description: |
-        Which app is your question about?
-        你的问题涉及哪个应用？
+      label: Related App
+      description: Which app is your question about?
       multiple: true
       options:
         - Claude Code
@@ -31,34 +30,25 @@ body:
         - Gemini CLI
         - OpenCode
         - OpenClaw
-        - General / 通用
+        - General
     validations:
       required: true
-
   - type: textarea
     attributes:
-      label: Your Question / 你的问题
-      description: |
-        Describe your question clearly.
-        请清晰地描述你的问题。
+      label: Your Question
+      description: Describe your question clearly.
     validations:
       required: true
-
   - type: textarea
     attributes:
-      label: What Have You Tried / 你已经尝试过什么
-      description: |
-        Describe what you've already tried or researched.
-        描述你已经尝试过或查阅过的内容。
+      label: What Have You Tried
+      description: Describe what you've already tried or researched.
     validations:
       required: false
-
   - type: textarea
     attributes:
-      label: Environment / 环境信息
-      description: |
-        OS, CC Switch version, and any relevant details.
-        操作系统、CC Switch 版本及其他相关信息。
-      placeholder: "e.g. macOS 15.4, CC Switch 3.11.1"
+      label: Environment
+      description: OS, VaryAI version, and relevant details. For source builds, include the commit SHA.
+      placeholder: e.g. macOS 15.4, VaryAI 0.2.3
     validations:
       required: false

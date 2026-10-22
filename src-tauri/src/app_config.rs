@@ -32,7 +32,14 @@ impl McpApps {
             AppType::OpenCode => self.opencode,
             AppType::OpenClaw => false, // OpenClaw doesn't support MCP
             AppType::Hermes => self.hermes,
-            AppType::Pi => false, // Pi core has no native MCP registry.
+            AppType::Pi
+            | AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => false, // MCP is not managed for these apps.
             AppType::ClaudeDesktop => false,
         }
     }
@@ -47,7 +54,14 @@ impl McpApps {
             AppType::OpenCode => self.opencode = enabled,
             AppType::OpenClaw => {} // OpenClaw doesn't support MCP, ignore
             AppType::Hermes => self.hermes = enabled,
-            AppType::Pi => {}            // Pi core has no native MCP registry.
+            AppType::Pi
+            | AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => {} // MCP is not managed for these apps.
             AppType::ClaudeDesktop => {} // Claude Desktop 3P provider config doesn't support MCP here
         }
     }
@@ -117,6 +131,13 @@ impl SkillApps {
             AppType::OpenCode => self.opencode,
             AppType::Hermes => self.hermes,
             AppType::Pi => self.pi,
+            AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => false,
             AppType::OpenClaw => false, // OpenClaw doesn't support Skills
             AppType::ClaudeDesktop => false,
         }
@@ -132,8 +153,15 @@ impl SkillApps {
             AppType::OpenCode => self.opencode = enabled,
             AppType::Hermes => self.hermes = enabled,
             AppType::Pi => self.pi = enabled,
+            AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => {}
             AppType::OpenClaw => {} // OpenClaw doesn't support Skills, ignore
-            AppType::ClaudeDesktop => {} // Claude Desktop 3P profiles don't use CC Switch skill sync
+            AppType::ClaudeDesktop => {} // Claude Desktop 3P profiles don't use Vary AI skill sync
         }
     }
 
@@ -234,7 +262,7 @@ pub struct InstalledSkill {
     pub updated_at: i64,
 }
 
-/// 未管理的 Skill（在应用目录中发现但未被 CC Switch 管理）
+/// A skill found in an application directory but not managed by Vary AI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnmanagedSkill {
@@ -392,6 +420,13 @@ pub enum AppType {
     OpenClaw,
     Hermes,
     Pi,
+    WorkBuddy,
+    Qoder,
+    Kimi,
+    Qwen,
+    ZCode,
+    Trae,
+    DoubaoWork,
 }
 
 impl AppType {
@@ -406,6 +441,13 @@ impl AppType {
             AppType::OpenClaw => "openclaw",
             AppType::Hermes => "hermes",
             AppType::Pi => "pi",
+            AppType::WorkBuddy => "workbuddy",
+            AppType::Qoder => "qoder",
+            AppType::Kimi => "kimi",
+            AppType::Qwen => "qwen",
+            AppType::ZCode => "zcode",
+            AppType::Trae => "trae",
+            AppType::DoubaoWork => "doubaowork",
         }
     }
 
@@ -417,7 +459,16 @@ impl AppType {
     pub fn is_additive_mode(&self) -> bool {
         matches!(
             self,
-            AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi
+            AppType::OpenCode
+                | AppType::OpenClaw
+                | AppType::Hermes
+                | AppType::Pi
+                | AppType::WorkBuddy
+                | AppType::Qoder
+                | AppType::Kimi
+                | AppType::Qwen
+                | AppType::ZCode
+                | AppType::Trae
         )
     }
 
@@ -440,6 +491,13 @@ impl AppType {
             AppType::OpenClaw,
             AppType::Hermes,
             AppType::Pi,
+            AppType::WorkBuddy,
+            AppType::Qoder,
+            AppType::Kimi,
+            AppType::Qwen,
+            AppType::ZCode,
+            AppType::Trae,
+            AppType::DoubaoWork,
         ]
         .into_iter()
     }
@@ -460,6 +518,13 @@ impl FromStr for AppType {
             "openclaw" => Ok(AppType::OpenClaw),
             "hermes" => Ok(AppType::Hermes),
             "pi" => Ok(AppType::Pi),
+            "workbuddy" => Ok(AppType::WorkBuddy),
+            "qoder" | "qoder-cn" => Ok(AppType::Qoder),
+            "kimi" => Ok(AppType::Kimi),
+            "qwen" => Ok(AppType::Qwen),
+            "zcode" => Ok(AppType::ZCode),
+            "trae" => Ok(AppType::Trae),
+            "doubaowork" => Ok(AppType::DoubaoWork),
             other => Err(AppError::localized(
                 "unsupported_app",
                 format!("不支持的应用标识: '{other}'。可选值: claude, claude-desktop, codex, gemini, grokbuild, opencode, openclaw, hermes, pi。"),
@@ -503,7 +568,14 @@ impl CommonConfigSnippets {
             AppType::OpenCode => self.opencode.as_ref(),
             AppType::OpenClaw => self.openclaw.as_ref(),
             AppType::Hermes => self.hermes.as_ref(),
-            AppType::Pi => None,
+            AppType::Pi
+            | AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => None,
         }
     }
 
@@ -518,7 +590,14 @@ impl CommonConfigSnippets {
             AppType::OpenCode => self.opencode = snippet,
             AppType::OpenClaw => self.openclaw = snippet,
             AppType::Hermes => self.hermes = snippet,
-            AppType::Pi => {}
+            AppType::Pi
+            | AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => {}
         }
     }
 }
@@ -844,7 +923,14 @@ impl MultiAppConfig {
             AppType::Hermes => &mut config.prompts.hermes.prompts,
             // Pi was added after prompts moved to SQLite. Keeping it out of
             // this legacy config avoids a second, unused prompt state.
-            AppType::Pi => return Ok(false),
+            AppType::Pi
+            | AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => return Ok(false),
         };
 
         prompts.insert(id, prompt);
@@ -888,7 +974,14 @@ impl MultiAppConfig {
                 AppType::OpenCode => &self.mcp.opencode.servers,
                 AppType::OpenClaw => continue, // OpenClaw MCP is still in development, skip
                 AppType::Hermes => continue,   // Hermes didn't exist in v3.6.x, skip
-                AppType::Pi => continue,       // Pi didn't exist in v3.6.x, skip
+                AppType::Pi
+                | AppType::WorkBuddy
+                | AppType::Qoder
+                | AppType::Kimi
+                | AppType::Qwen
+                | AppType::ZCode
+                | AppType::Trae
+                | AppType::DoubaoWork => continue, // Pi didn't exist in v3.6.x, skip
             };
 
             for (id, entry) in old_servers {

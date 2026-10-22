@@ -26,7 +26,6 @@ const PROXY_TOKEN_PLACEHOLDER: &str = "PROXY_MANAGED";
 
 /// 代理接管模式下需要从 Claude Live 配置中移除的"模型覆盖"字段。
 ///
-/// 原因：接管模式下 `*_MODEL` 必须由 CC Switch 写成稳定的 Claude 角色别名，
 /// 再由本地代理映射到当前供应商真实模型；`*_MODEL_NAME` 也需要同步接管，
 /// 否则 Claude Code 模型菜单会残留上一个供应商的显示名称。
 const CLAUDE_MODEL_OVERRIDE_ENV_KEYS: [&str; 12] = [
@@ -393,6 +392,11 @@ pub struct ProxyService {
     /// AppHandle，用于传递给 ProxyServer 以支持故障转移时的 UI 更新
     app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
     switch_locks: SwitchLockManager,
+    /// Reconnection may wait for a closed client; it must not queue local configuration writes.
+    trae_audit_lock: Arc<tokio::sync::Mutex<()>>,
+    qoder: Arc<super::qoder_proxy::Manager>,
+    doubaowork: Arc<super::doubao_work::Manager>,
+    pub(crate) pi_routing: Arc<super::pi_routing::Manager>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -412,12 +416,22 @@ impl ProxyService {
         db: Arc<Database>,
         codex_oauth_manager: Arc<CodexOAuthManager>,
     ) -> Self {
+        #[cfg(not(test))]
+        let pi_path = super::pi_routing::settings_path();
+        #[cfg(test)]
+        let pi_path = std::env::temp_dir()
+            .join(format!("vary-pi-test-{}", uuid::Uuid::new_v4()))
+            .join("pi-routing.json");
         Self {
+            pi_routing: Arc::new(super::pi_routing::Manager::new(pi_path)),
+            qoder: Arc::new(super::qoder_proxy::Manager::new(db.clone())),
+            doubaowork: Arc::new(super::doubao_work::Manager::default()),
             db,
             codex_oauth_manager,
             server: Arc::new(RwLock::new(None)),
             app_handle: Arc::new(RwLock::new(None)),
             switch_locks: SwitchLockManager::new(),
+            trae_audit_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -916,6 +930,7 @@ impl ProxyService {
 
     /// 设置 AppHandle（在应用初始化时调用）
     pub fn set_app_handle(&self, handle: tauri::AppHandle) {
+        self.qoder.set_app_handle(handle.clone());
         futures::executor::block_on(async {
             *self.app_handle.write().await = Some(handle);
         });
@@ -928,9 +943,33 @@ impl ProxyService {
         self.switch_locks.lock_for_app(app_type).await
     }
 
+    async fn lock_trae_audit(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.trae_audit_lock.clone().lock_owned().await
+    }
+
     /// 该应用是否正有切换 / 接管操作在进行中。见 `SwitchLockManager::is_locked_for_app`。
     pub(crate) async fn is_switch_in_progress_for_app(&self, app_type: &str) -> bool {
         self.switch_locks.is_locked_for_app(app_type).await
+    }
+
+    /// Security inspection requires local routing; disabling inspection leaves routing active.
+    pub async fn update_security_audit_settings(
+        &self,
+        settings: &crate::database::SecurityAuditSettings,
+    ) -> Result<(), String> {
+        if settings.enabled && !self.is_running().await {
+            self.start().await?;
+        }
+        self.db
+            .update_security_settings(settings)
+            .map_err(|e| e.to_string())?;
+        if let Err(e) = crate::proxy::security::reload_security_runtime(&self.db) {
+            log::warn!("[SecurityAudit] 热更新安全运行时配置失败: {e}");
+        }
+        if let Some(app) = self.app_handle.read().await.as_ref() {
+            crate::tray::update_security_audit_icon(app, settings.enabled);
+        }
+        Ok(())
     }
 
     /// 启动代理服务器
@@ -957,6 +996,10 @@ impl ProxyService {
             .await
             .map_err(|e| format!("获取代理配置失败: {e}"))?;
 
+        if self.pi_routing.enabled().unwrap_or(false) {
+            Self::pi_origin(&config.listen_address, config.listen_port)?;
+        }
+
         // 3. 若已在运行：确保持久化状态（如需要）并返回当前信息
         if let Some(server) = self.server.read().await.as_ref() {
             let status = server.get_status().await;
@@ -970,7 +1013,8 @@ impl ProxyService {
 
         // 4. 创建并启动服务器
         let app_handle = self.app_handle.read().await.clone();
-        let server = ProxyServer::new(config.clone(), self.db.clone(), app_handle);
+        let server = ProxyServer::new(config.clone(), self.db.clone(), app_handle)
+            .with_pi_runtime(self.pi_routing.runtime.clone());
         let info = server
             .start()
             .await
@@ -986,6 +1030,14 @@ impl ProxyService {
         // 5. 保存服务器实例
         *self.server.write().await = Some(server);
 
+        if self.pi_routing.enabled().unwrap_or(false) {
+            if let Err(code) = self
+                .pi_routing
+                .refresh(&self.db, &Self::pi_origin(&info.address, info.port)?)
+            {
+                log::warn!("[Pi] routing restoration failed: {code}");
+            }
+        }
         log::info!("代理服务器已启动: {}:{}", info.address, info.port);
         Ok(info)
     }
@@ -1107,6 +1159,24 @@ impl ProxyService {
     }
 
     /// 获取各应用的接管状态（是否改写该应用的 Live 配置指向本地代理）
+    pub fn get_qoder_certificate_status(&self) -> super::qoder_proxy::CertificateStatus {
+        self.qoder.certificate_status()
+    }
+    pub async fn clear_qoder_certificate(&self) -> Result<(), String> {
+        let _guard = self.switch_locks.lock_for_app("qoder").await;
+        self.qoder.clear_certificate().await
+    }
+    pub async fn rebuild_qoder_certificate(&self) -> Result<(), String> {
+        let _guard = self.switch_locks.lock_for_app("qoder").await;
+        self.qoder.clear_certificate().await?;
+        if !self.is_running().await {
+            self.start().await?;
+        }
+        let (origin, _) = self.build_proxy_urls().await?;
+        self.qoder.allow_certificate_creation()?;
+        self.qoder.enable(&origin).await
+    }
+
     pub async fn get_takeover_status(&self) -> Result<ProxyTakeoverStatus, String> {
         // 从 proxy_config.enabled 读取（优先），兼容旧的 live_backup 备份检测
         let claude_enabled = self
@@ -1137,7 +1207,40 @@ impl ProxyService {
         let opencode_enabled = false;
         let openclaw_enabled = false;
 
+        let trae = self.is_running().await
+            && tokio::task::spawn_blocking(super::trae_bridge::active)
+                .await
+                .unwrap_or(false);
         Ok(ProxyTakeoverStatus {
+            doubaowork: self.doubaowork.active(),
+            doubaowork_waiting: !self.doubaowork.active()
+                && self
+                    .db
+                    .get_bool_flag(super::doubao_work::ENABLED_KEY)
+                    .unwrap_or(false),
+            trae_waiting: !trae
+                && self
+                    .db
+                    .get_bool_flag(super::trae_bridge::ENABLED_KEY)
+                    .unwrap_or(false)
+                && self
+                    .db
+                    .get_bool_flag(super::trae_bridge::CONSENT_KEY)
+                    .unwrap_or(false),
+            kimi: self.native_agent_active("kimi").await,
+            qwen: self.native_agent_active("qwen").await,
+            zcode: self.native_agent_active("zcode").await,
+            trae,
+            pi: self.pi_routing.enabled()?,
+            qoder: self.qoder.is_active()
+                && self
+                    .db
+                    .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
+                    .map_err(|e| e.to_string())?,
+            workbuddy: self
+                .db
+                .get_bool_flag(super::workbuddy_proxy::ENABLED_KEY)
+                .map_err(|e| e.to_string())?,
             claude: claude_enabled,
             codex: codex_enabled,
             gemini: gemini_enabled,
@@ -1147,11 +1250,330 @@ impl ProxyService {
         })
     }
 
+    pub(crate) async fn get_qoder_settings(
+        &self,
+    ) -> Result<super::qoder_proxy::SettingsSnapshot, String> {
+        let _guard = self.switch_locks.lock_for_app("qoder").await;
+        super::qoder_proxy::settings_snapshot()
+    }
+    pub(crate) async fn save_qoder_settings(
+        &self,
+        revision: &str,
+        content: &str,
+    ) -> Result<(), String> {
+        let _guard = self.switch_locks.lock_for_app("qoder").await;
+        let active = self
+            .db
+            .get_live_backup("qoder")
+            .await
+            .map_err(|e| e.to_string())?
+            .is_some();
+        super::qoder_proxy::save_settings(&self.db, revision, content, active)
+    }
+
+    pub(crate) async fn get_workbuddy_settings(
+        &self,
+    ) -> Result<super::workbuddy_proxy::SettingsSnapshot, String> {
+        let _guard = self.switch_locks.lock_for_app("workbuddy").await;
+        super::workbuddy_proxy::settings_snapshot(&crate::workbuddy_config::get_workbuddy_dir())
+    }
+
+    pub(crate) async fn save_workbuddy_settings(
+        &self,
+        revision: &str,
+        content: &str,
+    ) -> Result<(), String> {
+        let _guard = self.switch_locks.lock_for_app("workbuddy").await;
+        let backup = self
+            .db
+            .get_live_backup("workbuddy")
+            .await
+            .map_err(|error| error.to_string())?
+            .map(|saved| {
+                serde_json::from_str::<super::workbuddy_proxy::Backup>(&saved.original_config)
+                    .map_err(|_| "WorkBuddy recovery backup is invalid".to_string())
+            })
+            .transpose()?;
+        super::workbuddy_proxy::save_settings(
+            &crate::workbuddy_config::get_workbuddy_dir(),
+            revision,
+            content,
+            backup.as_ref(),
+        )
+    }
+
+    async fn restore_workbuddy_live_inner(&self) -> Result<(), String> {
+        use super::workbuddy_proxy::Backup;
+        if let Some(saved) = self
+            .db
+            .get_live_backup("workbuddy")
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            let backup: Backup = serde_json::from_str(&saved.original_config)
+                .map_err(|_| "WorkBuddy recovery backup is invalid".to_string())?;
+            // Always attempt both files; a corrupt models.json must not strand official traffic.
+            let models_result = backup.project_models(&self.db, false);
+            let settings_result = backup.restore();
+            models_result?;
+            settings_result?;
+            self.db
+                .delete_live_backup("workbuddy")
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(server) = self.server.read().await.as_ref() {
+            server.set_workbuddy_upstream(None).await;
+        }
+        Ok(())
+    }
+
+    async fn set_workbuddy_takeover_at(
+        &self,
+        directory: &std::path::Path,
+        enabled: bool,
+    ) -> Result<(), String> {
+        use super::workbuddy_proxy::{Backup, ENABLED_KEY};
+        let _guard = self.switch_locks.lock_for_app("workbuddy").await;
+        let was_running = self.is_running().await;
+        let result = async {
+            self.restore_workbuddy_live_inner().await?;
+            self.db
+                .set_setting(ENABLED_KEY, "false")
+                .map_err(|e| e.to_string())?;
+            if enabled {
+                if !self.is_running().await {
+                    self.start().await?;
+                }
+                let (origin, _) = self.build_proxy_urls().await?;
+                let backup = Backup::prepare(directory, &format!("{origin}/workbuddy/v1"))?;
+                let encoded = serde_json::to_string(&backup)
+                    .map_err(|_| "Cannot encode WorkBuddy recovery backup".to_string())?;
+                self.db
+                    .save_live_backup("workbuddy", &encoded)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if let Some(server) = self.server.read().await.as_ref() {
+                    server
+                        .set_workbuddy_upstream(Some(backup.upstream.clone()))
+                        .await;
+                }
+                let applied = backup
+                    .apply()
+                    .and_then(|_| backup.project_models(&self.db, true))
+                    .and_then(|_| {
+                        self.db
+                            .set_setting(ENABLED_KEY, "true")
+                            .map_err(|e| e.to_string())
+                    });
+                if let Err(error) = applied {
+                    // Retain the durable backup if recovery itself fails.
+                    self.restore_workbuddy_live_inner().await?;
+                    return Err(error);
+                }
+            } else if !self
+                .db
+                .is_live_takeover_active()
+                .await
+                .map_err(|e| e.to_string())?
+                && !self.pi_routing.enabled().unwrap_or(true)
+                && self.is_running().await
+            {
+                self.stop().await?;
+            }
+            Ok(())
+        }
+        .await;
+        if result.is_err()
+            && !was_running
+            && !self.db.is_live_takeover_active().await.unwrap_or(true)
+            && !self.pi_routing.enabled().unwrap_or(true)
+            && self.is_running().await
+        {
+            let _ = self.stop().await;
+        }
+        result
+    }
+
     /// 为指定应用开启/关闭 Live 接管
     ///
     /// - 开启：自动启动代理服务，仅接管当前 app 的 Live 配置
     /// - 关闭：仅恢复当前 app 的 Live 配置；若无其它接管，则自动停止代理服务
+    async fn native_agent_active(&self, app: &str) -> bool {
+        self.is_running().await
+            && self
+                .db
+                .get_bool_flag(&super::agent_clients::enabled_key(app))
+                .unwrap_or(false)
+            && self.db.get_live_backup(app).await.ok().flatten().is_some()
+    }
+
+    pub(crate) async fn refresh_trae_takeover(&self) {
+        let _guard = self.lock_trae_audit().await;
+        if !self.is_running().await
+            || !self
+                .db
+                .get_bool_flag(super::trae_bridge::CONSENT_KEY)
+                .unwrap_or(false)
+            || !self
+                .db
+                .get_bool_flag(super::trae_bridge::ENABLED_KEY)
+                .unwrap_or(false)
+        {
+            return;
+        }
+        let Ok((origin, _)) = self.build_proxy_urls().await else {
+            return;
+        };
+        let _ = tokio::task::spawn_blocking(move || super::trae_bridge::reconnect(&origin)).await;
+    }
+
     pub async fn set_takeover_for_app(&self, app_type: &str, enabled: bool) -> Result<(), String> {
+        if app_type == "doubaowork" {
+            let _guard = self.switch_locks.lock_for_app("doubaowork").await;
+            if enabled {
+                if !self
+                    .db
+                    .get_bool_flag(super::doubao_work::CONSENT_KEY)
+                    .map_err(|e| e.to_string())?
+                {
+                    return Err("homeAudit.doubaoConsentRequired".into());
+                }
+                if !self.is_running().await {
+                    self.start().await?;
+                }
+                self.doubaowork.enable().await;
+            } else {
+                self.doubaowork.disable().await;
+            }
+            self.db
+                .set_setting(
+                    super::doubao_work::ENABLED_KEY,
+                    if enabled { "true" } else { "false" },
+                )
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        if app_type == "trae" {
+            let _guard = self.lock_trae_audit().await;
+            if enabled {
+                if !self
+                    .db
+                    .get_bool_flag(super::trae_bridge::CONSENT_KEY)
+                    .map_err(|e| e.to_string())?
+                {
+                    return Err("TRAE local connection consent is required".into());
+                }
+                if !self.is_running().await {
+                    self.start().await?;
+                }
+                let (origin, _) = self.build_proxy_urls().await?;
+                tokio::task::spawn_blocking(move || super::trae_bridge::enable(&origin))
+                    .await
+                    .map_err(|_| "TRAE bridge unavailable".to_string())?
+                    .map_err(|e| e.to_string())?;
+            } else {
+                tokio::task::spawn_blocking(super::trae_bridge::disable)
+                    .await
+                    .map_err(|_| "TRAE bridge unavailable".to_string())?
+                    .map_err(|e| e.to_string())?;
+            }
+            self.db
+                .set_setting(
+                    super::trae_bridge::ENABLED_KEY,
+                    if enabled { "true" } else { "false" },
+                )
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        if super::agent_clients::supported(app_type) {
+            let _guard = self.switch_locks.lock_for_app(app_type).await;
+            if enabled {
+                if !self.is_running().await {
+                    self.start().await?;
+                }
+                let (origin, _) = self.build_proxy_urls().await?;
+                if let Err(error) = super::agent_clients::enable(&self.db, app_type, &origin).await
+                {
+                    let _ = self
+                        .db
+                        .set_setting(&super::agent_clients::enabled_key(app_type), "false");
+                    let _ = super::agent_clients::restore(&self.db, app_type).await;
+                    return Err(match error {
+                        crate::error::AppError::Localized {
+                            key: "agents.no_models",
+                            ..
+                        } if app_type == "qwen" => "homeAudit.qwenSetup".into(),
+                        error => error.to_string(),
+                    });
+                }
+            } else {
+                self.db
+                    .set_setting(&super::agent_clients::enabled_key(app_type), "false")
+                    .map_err(|e| e.to_string())?;
+                super::agent_clients::restore(&self.db, app_type)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            return Ok(());
+        }
+        if app_type == "pi" {
+            if !enabled {
+                return self.disable_pi_routing().await;
+            }
+            let _guard = self.switch_locks.lock_for_app("pi").await;
+            let ids = self.pi_routing.source_ids(&self.db)?;
+            let origin = self.pi_configured_origin().await?;
+            let preview = self.pi_routing.preview(&self.db, &ids, &origin)?;
+            if preview.targets.is_empty() {
+                return Err(if preview
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "piRouting.sourceRecoveryRequired")
+                {
+                    "piRouting.sourceRecoveryRequired"
+                } else {
+                    "piRouting.noAvailableModels"
+                }
+                .into());
+            }
+            let info = self.start().await?;
+            let origin = Self::pi_origin(&info.address, info.port)?;
+            return self.pi_routing.configure(&self.db, &ids, &origin);
+        }
+        if app_type == "qoder" {
+            let _guard = self.switch_locks.lock_for_app("qoder").await;
+            if enabled {
+                if !self.is_running().await {
+                    self.start().await?;
+                }
+                let (origin, _) = self.build_proxy_urls().await?;
+                if !self
+                    .db
+                    .get_bool_flag("qoder_certificate_consent")
+                    .map_err(|e| e.to_string())?
+                {
+                    return Err("Qoder certificate consent is required".into());
+                }
+                if let Err(error) = self.qoder.enable(&origin).await {
+                    let _ = self
+                        .db
+                        .set_setting(super::qoder_proxy::ENABLED_KEY, "false");
+                    return Err(error);
+                }
+            } else {
+                self.db
+                    .set_setting(super::qoder_proxy::ENABLED_KEY, "false")
+                    .map_err(|e| e.to_string())?;
+                self.qoder.suspend().await?;
+            }
+            return Ok(());
+        }
+        if app_type == "workbuddy" {
+            return self
+                .set_workbuddy_takeover_at(&crate::workbuddy_config::get_workbuddy_dir(), enabled)
+                .await;
+        }
         let app = AppType::from_str(app_type).map_err(|e| format!("无效的应用类型: {e}"))?;
         if !app.supports_local_proxy() {
             return Err(format!("{} 不支持本地路由", app.as_str()));
@@ -1364,7 +1786,7 @@ impl ProxyService {
             .await
             .map_err(|e| format!("检查接管状态失败: {e}"))?;
 
-        if !any_enabled {
+        if !any_enabled && !self.pi_routing.enabled().unwrap_or(true) {
             let _ = self.db.set_live_takeover_active(false).await;
 
             if self.is_running().await {
@@ -1722,7 +2144,11 @@ impl ProxyService {
 
     /// 停止代理服务器
     pub async fn stop(&self) -> Result<(), String> {
+        self.doubaowork.disable().await;
         if let Some(server) = self.server.write().await.take() {
+            if let Ok(mut snapshot) = self.pi_routing.runtime.catalog.write() {
+                *snapshot = None;
+            }
             server
                 .stop()
                 .await
@@ -1753,6 +2179,17 @@ impl ProxyService {
     ///
     /// 会清除 settings 表中的代理状态，下次启动不会自动恢复。
     pub async fn stop_with_restore(&self) -> Result<(), String> {
+        self.update_security_audit_settings(&crate::database::SecurityAuditSettings {
+            enabled: false,
+        })
+        .await?;
+
+        // Configuration conflicts must not prevent an explicit gateway shutdown.
+        let pi_cleanup_error = match self.pi_routing.enabled() {
+            Ok(true) => self.disable_pi_routing().await.err(),
+            Ok(false) => None,
+            Err(error) => Some(error),
+        };
         // 1. 停止代理服务器（即使未运行也继续执行恢复逻辑）
         if let Err(e) = self.stop().await {
             log::warn!("停止代理服务器失败（将继续恢复 Live 配置）: {e}");
@@ -1767,6 +2204,23 @@ impl ProxyService {
             .await
             .map_err(|e| format!("清除接管状态失败: {e}"))?;
 
+        self.db
+            .set_setting(super::qoder_proxy::ENABLED_KEY, "false")
+            .map_err(|e| e.to_string())?;
+
+        self.db
+            .set_setting(super::doubao_work::ENABLED_KEY, "false")
+            .map_err(|e| e.to_string())?;
+        self.db
+            .set_setting(super::trae_bridge::ENABLED_KEY, "false")
+            .map_err(|e| e.to_string())?;
+
+        for app in super::agent_clients::APPS {
+            self.db
+                .set_setting(&super::agent_clients::enabled_key(app), "false")
+                .map_err(|e| e.to_string())?;
+        }
+
         // 4. 清除所有应用的 enabled 状态（用户手动关闭，不需要下次自动恢复）
         for app_type in ["claude", "codex", "gemini", "grokbuild"] {
             if let Ok(mut config) = self.db.get_proxy_config_for_app(app_type).await {
@@ -1778,6 +2232,10 @@ impl ProxyService {
                 }
             }
         }
+
+        self.db
+            .set_setting(super::workbuddy_proxy::ENABLED_KEY, "false")
+            .map_err(|e| e.to_string())?;
 
         // 5. 删除备份
         self.db
@@ -1793,7 +2251,10 @@ impl ProxyService {
 
         // 注意：不清除故障转移队列和开关状态，保留供下次开启代理时使用
         log::info!("代理已停止，Live 配置已恢复");
-        Ok(())
+        match pi_cleanup_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// 停止代理服务器（恢复 Live 配置，但保留 settings 表中的代理状态）
@@ -2260,7 +2721,23 @@ impl ProxyService {
 
     /// 恢复原始 Live 配置
     async fn restore_live_configs(&self) -> Result<(), String> {
+        self.doubaowork.disable().await;
         let mut errors = Vec::new();
+        {
+            let _guard = self.lock_trae_audit().await;
+            match tokio::task::spawn_blocking(super::trae_bridge::disable).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => errors.push(format!("TRAE bridge recovery: {error}")),
+                Err(error) => errors.push(format!("TRAE bridge recovery: {error}")),
+            }
+        }
+
+        {
+            let _guard = self.switch_locks.lock_for_app("qoder").await;
+            if let Err(error) = self.qoder.restore().await {
+                errors.push(error);
+            }
+        }
 
         for app_type in [
             AppType::Claude,
@@ -2273,6 +2750,20 @@ impl ProxyService {
                 .await
             {
                 errors.push(e);
+            }
+        }
+
+        {
+            let _guard = self.switch_locks.lock_for_app("workbuddy").await;
+            if let Err(error) = self.restore_workbuddy_live_inner().await {
+                errors.push(error);
+            }
+        }
+
+        for app in super::agent_clients::APPS {
+            let _guard = self.switch_locks.lock_for_app(app).await;
+            if let Err(error) = super::agent_clients::restore(&self.db, app).await {
+                errors.push(error.to_string());
             }
         }
 
@@ -2650,7 +3141,12 @@ impl ProxyService {
     /// 检查是否处于 Live 接管模式
     pub async fn is_takeover_active(&self) -> Result<bool, String> {
         let status = self.get_takeover_status().await?;
-        Ok(status.claude || status.codex || status.gemini || status.grokbuild)
+        Ok(status.claude
+            || status.codex
+            || status.gemini
+            || status.grokbuild
+            || status.workbuddy
+            || status.qoder)
     }
 
     /// 从异常退出中恢复（启动时调用）
@@ -3949,6 +4445,163 @@ impl ProxyService {
             .map_err(|e| format!("获取代理配置失败: {e}"))
     }
 
+    fn pi_origin(address: &str, port: u16) -> Result<String, String> {
+        let ip = address
+            .parse::<std::net::IpAddr>()
+            .map_err(|_| "piRouting.invalidListener")?;
+        if !ip.is_loopback() {
+            return Err("piRouting.invalidListener".into());
+        }
+        Ok(format!("http://{}", std::net::SocketAddr::new(ip, port)))
+    }
+    async fn pi_configured_origin(&self) -> Result<String, String> {
+        let config = self
+            .db
+            .get_proxy_config()
+            .await
+            .map_err(|_| "piRouting.invalidListener")?;
+        Self::pi_origin(&config.listen_address, config.listen_port)
+    }
+    pub(crate) async fn pi_routing_status(&self) -> Result<super::pi_routing::Status, String> {
+        let origin = self
+            .pi_configured_origin()
+            .await
+            .unwrap_or_else(|_| "http://127.0.0.1:15721".into());
+        self.pi_routing
+            .status(&self.db, self.is_running().await, &origin)
+    }
+    pub(crate) async fn preview_pi_routing(
+        &self,
+        ids: &[String],
+    ) -> Result<super::pi_routing::Status, String> {
+        let mut status = self.pi_routing_status().await?;
+        let catalog =
+            self.pi_routing
+                .preview(&self.db, ids, &self.pi_configured_origin().await?)?;
+        status.provider_ids = ids.to_vec();
+        status.model_count = catalog.targets.len();
+        status.issues = catalog.issues;
+        Ok(status)
+    }
+    pub(crate) async fn configure_pi_routing(&self, ids: &[String]) -> Result<(), String> {
+        let _guard = self.switch_locks.lock_for_app("pi").await;
+        self.pi_configured_origin().await?;
+        let info = self.start().await?;
+        let origin = Self::pi_origin(&info.address, info.port)?;
+        self.pi_routing.configure(&self.db, ids, &origin)
+    }
+    pub(crate) async fn disable_pi_routing(&self) -> Result<(), String> {
+        let _guard = self.switch_locks.lock_for_app("pi").await;
+        self.pi_routing.disable()
+    }
+    pub(crate) async fn restore_pi_routing(&self) -> Result<(), String> {
+        if self.pi_routing.enabled()? {
+            let ids = self.pi_routing.source_ids(&self.db)?;
+            self.configure_pi_routing(&ids).await?;
+        }
+        Ok(())
+    }
+    // Caller already holds the Pi switch lock; never acquire it recursively.
+    pub(crate) fn refresh_pi_routing_locked(&self) {
+        if !self.pi_routing.enabled().unwrap_or(false) {
+            return;
+        }
+        let origin = futures::executor::block_on(self.pi_configured_origin());
+        let result = origin.and_then(|origin| self.pi_routing.refresh(&self.db, &origin));
+        if let Err(code) = result {
+            log::warn!("[Pi] source refresh failed: {code}");
+        }
+    }
+    pub(crate) async fn update_global_config(
+        &self,
+        mut config: GlobalProxyConfig,
+    ) -> Result<(), String> {
+        if !self.pi_routing.enabled()? {
+            return self
+                .db
+                .update_global_proxy_config(config)
+                .await
+                .map_err(|e| e.to_string());
+        }
+        let _guard = self.switch_locks.lock_for_app("pi").await;
+        let previous = self
+            .db
+            .get_global_proxy_config()
+            .await
+            .map_err(|e| e.to_string())?;
+        let origin = Self::pi_origin(&config.listen_address, config.listen_port)?;
+        let changed = config.listen_address != previous.listen_address
+            || config.listen_port != previous.listen_port;
+        if !changed {
+            return self
+                .db
+                .update_global_proxy_config(config)
+                .await
+                .map_err(|e| e.to_string());
+        }
+        let ids = self
+            .pi_routing
+            .status(
+                &self.db,
+                false,
+                &Self::pi_origin(&previous.listen_address, previous.listen_port)?,
+            )?
+            .provider_ids;
+        if !self.is_running().await {
+            self.pi_routing.configure(&self.db, &ids, &origin)?;
+            if let Err(error) = self.db.update_global_proxy_config(config).await {
+                let _ = self.pi_routing.configure(
+                    &self.db,
+                    &ids,
+                    &Self::pi_origin(&previous.listen_address, previous.listen_port)?,
+                );
+                return Err(error.to_string());
+            }
+            return Ok(());
+        }
+        let mut listener_config = self.get_config().await?;
+        listener_config.listen_address = config.listen_address.clone();
+        listener_config.listen_port = config.listen_port;
+        let server = ProxyServer::new(
+            listener_config,
+            self.db.clone(),
+            self.app_handle.read().await.clone(),
+        )
+        .with_pi_runtime(self.pi_routing.runtime.clone());
+        let info = server
+            .start()
+            .await
+            .map_err(|_| "piRouting.listenerFailed")?;
+        let new_origin = Self::pi_origin(&info.address, info.port)?;
+        if let Err(error) = self.pi_routing.configure(&self.db, &ids, &new_origin) {
+            let _ = server.stop().await;
+            return Err(error);
+        }
+        config.listen_port = info.port;
+        if self.db.update_global_proxy_config(config).await.is_err() {
+            let _ = server.stop().await;
+            let _ = self.pi_routing.configure(
+                &self.db,
+                &ids,
+                &Self::pi_origin(&previous.listen_address, previous.listen_port)?,
+            );
+            return Err("piRouting.settingsWriteFailed".into());
+        }
+        let old = self.server.write().await.replace(server);
+        if let Some(old) = old {
+            let _ = old.stop().await;
+        }
+        drop(_guard);
+        for app in [
+            AppType::Claude,
+            AppType::Codex,
+            AppType::Gemini,
+            AppType::GrokBuild,
+        ] {
+            self.reproject_takeover_live_config_if_enabled(&app).await?;
+        }
+        Ok(())
+    }
     /// 更新代理配置
     pub async fn update_config(&self, config: &ProxyConfig) -> Result<(), String> {
         // 记录旧配置用于判定是否需要重启
@@ -3957,6 +4610,56 @@ impl ProxyService {
             .get_proxy_config()
             .await
             .map_err(|e| format!("获取代理配置失败: {e}"))?;
+
+        if self.pi_routing.enabled()? {
+            Self::pi_origin(&config.listen_address, config.listen_port)?;
+            let _guard = self.switch_locks.lock_for_app("pi").await;
+            let restart = config.listen_address != previous.listen_address
+                || config.listen_port != previous.listen_port;
+            if restart && self.is_running().await {
+                let mut updated = config.clone();
+                updated.live_takeover_active = previous.live_takeover_active;
+                let handle = self.app_handle.read().await.clone();
+                let server = ProxyServer::new(updated.clone(), self.db.clone(), handle)
+                    .with_pi_runtime(self.pi_routing.runtime.clone());
+                let info = server
+                    .start()
+                    .await
+                    .map_err(|_| "piRouting.listenerFailed")?;
+                let origin = Self::pi_origin(&info.address, info.port)?;
+                if let Err(code) = self.pi_routing.refresh(&self.db, &origin) {
+                    let _ = server.stop().await;
+                    let _ = self.pi_routing.refresh(
+                        &self.db,
+                        &Self::pi_origin(&previous.listen_address, previous.listen_port)?,
+                    );
+                    return Err(code);
+                }
+                updated.listen_port = info.port;
+                if self.db.update_proxy_config(updated).await.is_err() {
+                    let _ = server.stop().await;
+                    let _ = self.pi_routing.refresh(
+                        &self.db,
+                        &Self::pi_origin(&previous.listen_address, previous.listen_port)?,
+                    );
+                    return Err("piRouting.settingsWriteFailed".into());
+                }
+                let old = self.server.write().await.replace(server);
+                if let Some(old) = old {
+                    let _ = old.stop().await;
+                }
+                drop(_guard);
+                for app in [
+                    AppType::Claude,
+                    AppType::Codex,
+                    AppType::Gemini,
+                    AppType::GrokBuild,
+                ] {
+                    self.reproject_takeover_live_config_if_enabled(&app).await?;
+                }
+                return Ok(());
+            }
+        }
 
         // 保存到数据库（保持 live_takeover_active 状态不变）
         let mut new_config = config.clone();
@@ -3986,7 +4689,8 @@ impl ProxyService {
             }
 
             let app_handle = self.app_handle.read().await.clone();
-            let new_server = ProxyServer::new(new_config.clone(), self.db.clone(), app_handle);
+            let new_server = ProxyServer::new(new_config.clone(), self.db.clone(), app_handle)
+                .with_pi_runtime(self.pi_routing.runtime.clone());
             let info = new_server
                 .start()
                 .await
@@ -4095,6 +4799,31 @@ mod tests {
     use std::env;
     use tempfile::TempDir;
 
+    #[tokio::test]
+    async fn trae_reconnection_does_not_queue_local_configuration_switches() {
+        let service = ProxyService::new(Arc::new(Database::memory().unwrap()));
+        let _reconnecting = service.lock_trae_audit().await;
+        let local_switch = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            service.lock_switch_for_app("trae"),
+        )
+        .await;
+        assert!(
+            local_switch.is_ok(),
+            "client reconnection blocked local configuration switching"
+        );
+        let cloned = service.clone();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                cloned.lock_trae_audit()
+            )
+            .await
+            .is_err(),
+            "audit toggles and reconnects must still serialize with each other"
+        );
+    }
+
     struct TempHome {
         #[allow(dead_code)]
         dir: TempDir,
@@ -4152,6 +4881,158 @@ mod tests {
         db.update_proxy_config(proxy_config)
             .await
             .expect("set test proxy config to an ephemeral port");
+    }
+
+    #[test]
+    fn qwen_protection_reports_missing_models_but_accepts_native_configuration() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let configured = json!({
+            "modelProviders":{"openai":[{"id":"native-model","baseUrl":"https://models.example/v1","envKey":"EXTERNAL_API_KEY"}]},
+            "model":{"name":"native-model"},
+            "security":{"auth":{"selectedType":"openai"}},
+            "nativeSetting":"keep"
+        });
+        for original in [None, Some(json!({})), Some(configured)] {
+            let dir = tempfile::tempdir().expect("dir");
+            let path = dir.path().join("settings.json");
+            if let Some(original) = &original {
+                std::fs::write(&path, original.to_string()).expect("native config");
+            }
+            super::super::agent_clients::with_test_config(&path, || {
+                runtime.block_on(async {
+                    let db = Arc::new(Database::memory().expect("db"));
+                    use_ephemeral_proxy_port(&db).await;
+                    assert!(db
+                        .get_all_providers("qwen")
+                        .expect("saved providers")
+                        .is_empty());
+                    let service = ProxyService::new(db.clone());
+                    let result = service.set_takeover_for_app("qwen", true).await;
+                    if original
+                        .as_ref()
+                        .is_some_and(|v| v.get("modelProviders").is_some())
+                    {
+                        result.expect("native model config can be protected without a VaryAI card");
+                        assert!(service.native_agent_active("qwen").await);
+                        service
+                            .set_takeover_for_app("qwen", false)
+                            .await
+                            .expect("restore");
+                    } else {
+                        assert_eq!(result, Err("homeAudit.qwenSetup".into()));
+                        assert!(!db.get_bool_flag("qwen_proxy_enabled").expect("flag"));
+                        assert!(db.get_live_backup("qwen").await.expect("backup").is_none());
+                    }
+                    service.stop().await.expect("stop");
+                    match &original {
+                        Some(original) => assert_eq!(
+                            serde_json::from_str::<Value>(
+                                &std::fs::read_to_string(&path).expect("config")
+                            )
+                            .expect("json"),
+                            *original
+                        ),
+                        None => assert!(!path.exists()),
+                    }
+                });
+            });
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn security_audit_and_routing_follow_master_switch_dependency() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        use_ephemeral_proxy_port(&db).await;
+        let service = ProxyService::new(db.clone());
+        let on = crate::database::SecurityAuditSettings { enabled: true };
+        let off = crate::database::SecurityAuditSettings { enabled: false };
+
+        service
+            .update_security_audit_settings(&on)
+            .await
+            .expect("enable audit");
+        assert!(service.is_running().await);
+        assert!(db.get_security_settings().expect("settings").enabled);
+
+        service
+            .update_security_audit_settings(&off)
+            .await
+            .expect("disable audit");
+        assert!(
+            service.is_running().await,
+            "disabling audit must preserve routing"
+        );
+        assert!(!db.get_security_settings().expect("settings").enabled);
+
+        service
+            .update_security_audit_settings(&on)
+            .await
+            .expect("enable again");
+        service.stop_with_restore().await.expect("disable routing");
+        assert!(!service.is_running().await);
+        assert!(!db.get_security_settings().expect("settings").enabled);
+        service.start().await.expect("start routing only");
+        assert!(!db.get_security_settings().expect("settings").enabled);
+        service.stop().await.expect("cleanup");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn audit_is_not_enabled_when_routing_cannot_start() {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory().expect("init db"));
+        db.update_security_settings(&crate::database::SecurityAuditSettings { enabled: false })
+            .expect("audit initially off");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("occupied port");
+        let mut config = db.get_global_proxy_config().await.expect("config");
+        config.listen_address = "127.0.0.1".into();
+        config.listen_port = listener.local_addr().expect("address").port();
+        db.update_global_proxy_config(config)
+            .await
+            .expect("save config");
+        let service = ProxyService::new(db.clone());
+        assert!(service
+            .update_security_audit_settings(&crate::database::SecurityAuditSettings {
+                enabled: true
+            })
+            .await
+            .is_err());
+        assert!(!db.get_security_settings().expect("settings").enabled);
+        assert!(!service.is_running().await);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn normal_exit_preserves_saved_audit_preference() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        use_ephemeral_proxy_port(&db).await;
+        let service = ProxyService::new(db.clone());
+        service
+            .update_security_audit_settings(&crate::database::SecurityAuditSettings {
+                enabled: true,
+            })
+            .await
+            .expect("enable audit");
+        service
+            .stop_with_restore_keep_state()
+            .await
+            .expect("normal exit");
+        assert!(!service.is_running().await);
+        assert!(db.get_security_settings().expect("settings").enabled);
+        service
+            .update_security_audit_settings(&crate::database::SecurityAuditSettings {
+                enabled: false,
+            })
+            .await
+            .expect("reset runtime after test");
     }
 
     async fn seed_distinct_app_proxy_configs(db: &Database) -> Vec<Value> {
@@ -4241,7 +5122,10 @@ mod tests {
         let db = Arc::new(Database::memory().expect("init db"));
         let service = ProxyService::new(db);
 
-        assert!(service.set_takeover_for_app("pi", true).await.is_err());
+        assert!(service
+            .set_takeover_for_app("opencode", true)
+            .await
+            .is_err());
         assert!(!service.is_running().await);
         assert!(service.switch_proxy_target("pi", "missing").await.is_err());
     }
@@ -4746,6 +5630,50 @@ mod tests {
                 .and_then(|env| env.get("ANTHROPIC_API_KEY"))
                 .is_none(),
             "non-managed providers should retain the legacy fallback behavior"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn codex_takeover_works_after_repairing_an_unselected_official_seed() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        use_ephemeral_proxy_port(&db).await;
+        db.init_default_official_providers().expect("seed");
+        db.set_current_provider("codex", "missing")
+            .expect("simulate old database");
+        db.init_default_official_providers()
+            .expect("startup repair");
+
+        let auth = json!({
+            "auth_mode": "chatgpt",
+            "tokens": { "id_token": "test-id", "access_token": "test-access" }
+        });
+        crate::codex_config::write_codex_live_atomic(&auth, Some("model = \"gpt-5.4\"\n"))
+            .expect("seed native Codex config");
+        let service = ProxyService::new(db);
+        service
+            .set_takeover_for_app("codex", true)
+            .await
+            .expect("enable Codex routing");
+        assert!(service.get_takeover_status().await.expect("status").codex);
+        let config = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
+            .expect("read routed config");
+        assert!(crate::codex_config::codex_config_has_official_proxy_route(
+            &config
+        ));
+        assert!(!config.contains(":0"));
+        assert_eq!(
+            crate::config::read_json_file::<Value>(&crate::codex_config::get_codex_auth_path())
+                .expect("read auth"),
+            auth
+        );
+        service.stop_with_restore().await.expect("stop and restore");
+        assert_eq!(
+            crate::config::read_json_file::<Value>(&crate::codex_config::get_codex_auth_path())
+                .expect("restored auth"),
+            auth
         );
     }
 
@@ -10753,5 +11681,204 @@ experimental_bearer_token = "PROXY_MANAGED"
             .expect("read backup")
             .expect("backup exists");
         assert_eq!(backup.original_config, original_backup);
+    }
+    #[tokio::test]
+    async fn workbuddy_restore_attempts_official_settings_even_when_native_models_are_corrupt() {
+        let db = Arc::new(Database::memory().expect("db"));
+        let mut config = db.get_proxy_config().await.expect("config");
+        config.listen_port = 0;
+        db.update_proxy_config(config).await.expect("port");
+        let service = ProxyService::new(db.clone());
+        let dir = tempfile::tempdir().expect("dir");
+        let original = r#"{"env":{"CODEBUDDY_BASE_URL":"https://official.example/v2"}}"#;
+        std::fs::write(dir.path().join("settings.json"), original).expect("settings");
+        service
+            .set_workbuddy_takeover_at(dir.path(), true)
+            .await
+            .expect("enable");
+        std::fs::write(dir.path().join("models.json"), "invalid JSON").expect("external edit");
+        service
+            .restore_workbuddy_live_inner()
+            .await
+            .expect_err("retain recovery backup");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("settings.json")).expect("settings"),
+            original
+        );
+        assert!(db
+            .get_live_backup("workbuddy")
+            .await
+            .expect("backup")
+            .is_some());
+        std::fs::remove_file(dir.path().join("models.json")).expect("repair models");
+        service
+            .set_workbuddy_takeover_at(dir.path(), false)
+            .await
+            .expect("recover and stop");
+    }
+
+    #[tokio::test]
+    async fn workbuddy_custom_models_are_protected_and_restored_without_touching_unmanaged_models()
+    {
+        let db = Arc::new(Database::memory().expect("db"));
+        let mut config = db.get_proxy_config().await.expect("config");
+        config.listen_port = 0;
+        db.update_proxy_config(config).await.expect("port");
+        let service = ProxyService::new(db.clone());
+        let dir = tempfile::tempdir().expect("dir");
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{"env":{"CODEBUDDY_BASE_URL":"https://official.example/v2"}}"#,
+        )
+        .expect("settings");
+        let model = json!({"id":"third-party","name":"Third party","apiKey":"synthetic-test-key","url":"https://api.example/v1/chat/completions","supportsImages":true,"extra":{"keep":true}});
+        let provider = Provider::with_id("api-provider".into(), "API".into(), model.clone(), None);
+        db.save_provider("workbuddy", &provider).expect("provider");
+        let unmanaged = json!({"id":"unmanaged","url":"https://other.example/chat/completions"});
+        std::fs::write(dir.path().join("models.json"), serde_json::to_vec(&json!({"models":[model,unmanaged],"availableModels":["third-party","unmanaged"],"extra":42})).expect("JSON")).expect("models");
+        service
+            .set_workbuddy_takeover_at(dir.path(), true)
+            .await
+            .expect("enable");
+        let read = || -> Value {
+            serde_json::from_slice(&std::fs::read(dir.path().join("models.json")).expect("read"))
+                .expect("JSON")
+        };
+        let projected = read();
+        assert!(projected["models"][0]["url"]
+            .as_str()
+            .expect("url")
+            .contains("/workbuddy/providers/api-provider/chat/completions"));
+        assert_eq!(projected["models"][0]["apiKey"], "synthetic-test-key");
+        assert_eq!(projected["models"][0]["extra"], json!({"keep":true}));
+        assert_eq!(projected["models"][1], unmanaged);
+        // A client edit while running must survive recovery.
+        let mut edited = projected;
+        edited["models"][0]["supportsImages"] = json!(false);
+        std::fs::write(
+            dir.path().join("models.json"),
+            serde_json::to_vec(&edited).expect("JSON"),
+        )
+        .expect("edit");
+        service
+            .set_workbuddy_takeover_at(dir.path(), false)
+            .await
+            .expect("disable");
+        let restored = read();
+        assert_eq!(restored["models"][0]["url"], model["url"]);
+        assert_eq!(restored["models"][0]["supportsImages"], false);
+        assert_eq!(restored["models"][1], unmanaged);
+        assert_eq!(restored["extra"], 42);
+        assert_eq!(
+            restored["availableModels"],
+            json!(["third-party", "unmanaged"])
+        );
+    }
+    #[tokio::test]
+    async fn workbuddy_takeover_restores_configuration_and_counts_as_active() {
+        let db = Arc::new(Database::memory().expect("db"));
+        let mut config = db.get_proxy_config().await.expect("config");
+        config.listen_port = 0;
+        db.update_proxy_config(config.clone())
+            .await
+            .expect("ephemeral port");
+        let service = ProxyService::new(db.clone());
+        let dir = tempfile::tempdir().expect("dir");
+        std::fs::create_dir(dir.path().join("cache")).expect("cache");
+        std::fs::write(
+            dir.path().join("cache/acc-product-config-v3.json"),
+            r#"{"endpoint":"https://www.workbuddy.cn"}"#,
+        )
+        .expect("product");
+        std::fs::write(dir.path().join("settings.json"), "{}").expect("settings");
+        service
+            .set_workbuddy_takeover_at(dir.path(), true)
+            .await
+            .expect("enable");
+        assert!(
+            service
+                .get_takeover_status()
+                .await
+                .expect("status")
+                .workbuddy
+        );
+        assert!(db.is_live_takeover_active().await.expect("active"));
+        assert!(db.is_live_takeover_active_sync());
+        assert!(service.is_running().await);
+        service
+            .set_workbuddy_takeover_at(dir.path(), true)
+            .await
+            .expect("repeat enable");
+        // A clean exit restores the file but retains the user's enabled preference.
+        service.stop().await.expect("exit stop");
+        service
+            .restore_workbuddy_live_inner()
+            .await
+            .expect("exit restore");
+        // A released ephemeral port can be assigned to another parallel test.
+        db.update_proxy_config(config.clone())
+            .await
+            .expect("fresh ephemeral restart port");
+        assert!(db
+            .get_bool_flag(super::super::workbuddy_proxy::ENABLED_KEY)
+            .expect("preference"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("settings.json")).expect("restored on exit"),
+            "{}"
+        );
+        service
+            .set_workbuddy_takeover_at(dir.path(), true)
+            .await
+            .expect("restore on startup");
+        // A crash leaves the durable backup and injected endpoint; re-enabling recovers both.
+        service.stop().await.expect("simulate crash");
+        // A released ephemeral port can be assigned to another parallel test.
+        db.update_proxy_config(config.clone())
+            .await
+            .expect("fresh ephemeral restart port");
+        service
+            .set_workbuddy_takeover_at(dir.path(), true)
+            .await
+            .expect("recover after crash");
+        service
+            .set_workbuddy_takeover_at(dir.path(), false)
+            .await
+            .expect("disable");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("settings.json")).expect("restored"),
+            "{}"
+        );
+        assert!(!db.is_live_takeover_active().await.expect("inactive"));
+        assert!(!service.is_running().await);
+        assert!(db
+            .get_live_backup("workbuddy")
+            .await
+            .expect("backup")
+            .is_none());
+        service
+            .set_workbuddy_takeover_at(dir.path(), true)
+            .await
+            .expect("enable with another client");
+        let mut codex = db
+            .get_proxy_config_for_app("codex")
+            .await
+            .expect("codex config");
+        codex.enabled = true;
+        db.update_proxy_config_for_app(codex.clone())
+            .await
+            .expect("other client active");
+        service
+            .set_workbuddy_takeover_at(dir.path(), false)
+            .await
+            .expect("disable only WorkBuddy");
+        assert!(
+            service.is_running().await,
+            "another client still needs the gateway"
+        );
+        codex.enabled = false;
+        db.update_proxy_config_for_app(codex)
+            .await
+            .expect("clear fake client");
+        service.stop().await.expect("stop test server");
     }
 }

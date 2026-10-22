@@ -4,6 +4,7 @@ import {
   createUsageTrendTokenTickFormatter,
   formatUsageTrendTokenTickLabel,
   formatUsageTrendTickLabel,
+  usageTrendLegendItems,
 } from "@/components/usage/UsageTrendChart";
 
 const day = (isoDate: string) =>
@@ -151,5 +152,20 @@ describe("formatUsageTrendTokenTickLabel", () => {
         createUsageTrendTokenTickFormatter("en-US"),
       ),
     ).toBe("1.5K");
+  });
+});
+
+describe("usage trend chart legend layout", () => {
+  it("keeps the legend items in the centered header order", () => {
+    expect(usageTrendLegendItems.map((item) => item.dataKey)).toEqual([
+      "cost",
+      "cacheCreationTokens",
+      "cacheReadTokens",
+      "inputTokens",
+      "outputTokens",
+    ]);
+    expect(usageTrendLegendItems.every((item) => item.color.length > 0)).toBe(
+      true,
+    );
   });
 });

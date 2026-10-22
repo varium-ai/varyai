@@ -1,0 +1,7 @@
+# Merge into an existing subscription; this is not a complete subscription.
+# Replace the rules array. Select a working GLOBAL proxy and use Rule mode.
+rules:
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR6,::1/128,DIRECT,no-resolve
+  - DOMAIN,localhost,DIRECT
+  - MATCH,GLOBAL

@@ -5,6 +5,7 @@ import type { SettingsFormState } from "@/hooks/useSettingsForm";
 
 const getAppConfigDirOverrideMock = vi.hoisted(() => vi.fn());
 const getConfigDirMock = vi.hoisted(() => vi.fn());
+const getWorkBuddyDefaultConfigDirMock = vi.hoisted(() => vi.fn());
 const selectConfigDirectoryMock = vi.hoisted(() => vi.fn());
 const setAppConfigDirOverrideMock = vi.hoisted(() => vi.fn());
 const homeDirMock = vi.hoisted(() => vi.fn<() => Promise<string>>());
@@ -17,6 +18,7 @@ vi.mock("@/lib/api", () => ({
   settingsApi: {
     getAppConfigDirOverride: getAppConfigDirOverrideMock,
     getConfigDir: getConfigDirMock,
+    getWorkBuddyDefaultConfigDir: getWorkBuddyDefaultConfigDirMock,
     selectConfigDirectory: selectConfigDirectoryMock,
     setAppConfigDirOverride: setAppConfigDirOverrideMock,
   },
@@ -60,6 +62,7 @@ describe("useDirectorySettings", () => {
     vi.clearAllMocks();
 
     homeDirMock.mockResolvedValue("/home/mock");
+    getWorkBuddyDefaultConfigDirMock.mockResolvedValue("/home/mock/.codebuddy");
     joinMock.mockImplementation(async (...segments: string[]) =>
       segments.join("/"),
     );
@@ -73,6 +76,7 @@ describe("useDirectorySettings", () => {
       if (app === "opencode") return "/remote/opencode";
       if (app === "openclaw") return "/remote/openclaw";
       if (app === "pi") return "/remote/pi";
+      if (app === "workbuddy") return "/remote/workbuddy";
       return "/remote/hermes";
     });
     selectConfigDirectoryMock.mockReset();
@@ -98,7 +102,25 @@ describe("useDirectorySettings", () => {
       openclaw: "/remote/openclaw",
       hermes: "/remote/hermes",
       pi: "/remote/pi",
+      workbuddy: "/remote/workbuddy",
     });
+  });
+
+  it("resets WorkBuddy to the detected legacy directory rather than guessing a path", async () => {
+    const { result } = renderHook(() =>
+      useDirectorySettings({
+        settings: createSettings({ workbuddyConfigDir: "/custom/workbuddy" }),
+        onUpdateSettings,
+      }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await act(async () => {
+      await result.current.resetDirectory("workbuddy");
+    });
+    expect(onUpdateSettings).toHaveBeenCalledWith({
+      workbuddyConfigDir: undefined,
+    });
+    expect(result.current.resolvedDirs.workbuddy).toBe("/home/mock/.codebuddy");
   });
 
   it("updates claude directory when browsing succeeds", async () => {

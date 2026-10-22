@@ -155,7 +155,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     ),
     endpointCandidates: ["https://api.moonshot.cn/v1"],
     // 原生 Responses 直连（不需要本地路由接管）：官方 Codex 接入文档
-    //（platform.kimi.com/docs/guide/codex-kimi.md，直接以 CC Switch 为例）
+
     // 给出 base_url = https://api.moonshot.cn/v1 + wire_api = "responses"，
     // 并明写开放平台「原生支持 Codex 使用的 Responses API，无需协议转换或本
     // 地代理」；接口参考 platform.kimi.com/docs/api/responses.md（POST
@@ -216,7 +216,7 @@ export const codexProviderPresets: CodexProviderPreset[] = [
     ),
     endpointCandidates: ["https://api.kimi.com/coding/v1"],
     // 原生 Responses 直连（不需要本地路由接管）：官方 Codex 接入文档
-    //（kimi.com/code/docs/third-party-tools/codex.html，以 CC Switch 为例）
+
     // 给出 base_url = https://api.kimi.com/coding/v1 且 wire_api「必须填
     // responses」，并明写「Kimi Code 服务端原生支持 OpenAI Responses API
     //（流式/非流式、reasoning、function calling 均可用），无需任何本地路由

@@ -50,6 +50,10 @@ import {
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
+import {
+  computeAutoImportCatalogModels,
+  MAX_AUTO_IMPORT_CATALOG_MODELS,
+} from "./helpers/codexCatalogAutoImport";
 import { CustomUserAgentField } from "./CustomUserAgentField";
 import { LocalProxyRequestOverridesField } from "./LocalProxyRequestOverridesField";
 import { cn } from "@/lib/utils";
@@ -495,6 +499,12 @@ export function CodexFormFields({
     catalogModels.map((m) => createCatalogRow(m)),
   );
 
+  const catalogRowsRef = useRef<CodexCatalogRow[]>(catalogRows);
+  catalogRowsRef.current = catalogRows;
+
+  const codexModelRef = useRef<string>(codexModel);
+  codexModelRef.current = codexModel;
+
   // 记录上次发送给父组件的数据，避免重复触发
   const lastSentModelsRef = useRef<CodexCatalogModel[]>(catalogModels);
 
@@ -549,6 +559,72 @@ export function CodexFormFields({
     [codexChatReasoning, onCodexChatReasoningChange],
   );
 
+  const handleFetchModelsSuccess = useCallback(
+    (models: FetchedModel[]) => {
+      setFetchedModels(models);
+      if (models.length === 0) {
+        toast.info(t("providerForm.fetchModelsEmpty"));
+        return;
+      }
+
+      if (canEditCatalog) {
+        const result = computeAutoImportCatalogModels(
+          catalogRowsRef.current,
+          models,
+          codexModelRef.current,
+        );
+
+        if (result.importedCount > 0) {
+          setCatalogRows((current) => {
+            return result.nextCatalogModels.map((item) => {
+              const existing = current.find(
+                (r) => r.model.trim() === item.model.trim(),
+              );
+              return existing
+                ? { ...existing, ...item }
+                : createCatalogRow(item);
+            });
+          });
+          setAdvancedExpanded(true);
+        }
+
+        if (
+          result.suggestedDefaultModel &&
+          !codexModelRef.current.trim() &&
+          onModelChange
+        ) {
+          onModelChange(result.suggestedDefaultModel);
+        }
+
+        if (result.importedCount === 0) {
+          toast.success(
+            t("providerForm.fetchModelsSuccess", { count: models.length }),
+          );
+        } else if (result.totalValidCount <= MAX_AUTO_IMPORT_CATALOG_MODELS) {
+          toast.success(
+            t("codexConfig.fetchModelsAutoImportAll", {
+              count: result.totalValidCount,
+              defaultValue: `已获取 ${result.totalValidCount} 个模型并自动导入模型目录`,
+            }),
+          );
+        } else {
+          toast.success(
+            t("codexConfig.fetchModelsAutoImportTop", {
+              total: result.totalValidCount,
+              count: MAX_AUTO_IMPORT_CATALOG_MODELS,
+              defaultValue: `已获取 ${result.totalValidCount} 个模型，默认导入前 10 个，其余可手动添加`,
+            }),
+          );
+        }
+      } else {
+        toast.success(
+          t("providerForm.fetchModelsSuccess", { count: models.length }),
+        );
+      }
+    },
+    [canEditCatalog, onModelChange, t],
+  );
+
   const handleFetchModels = useCallback(() => {
     // xAI OAuth 托管预设：不走 base_url + key 的 /models 探测，
     // 直接用托管账号 token 拉取（与 Claude 表单同一后端命令）
@@ -566,14 +642,7 @@ export function CodexFormFields({
       fetchXaiOauthModels(selectedXaiAccountId ?? null)
         .then((models) => {
           if (seq !== fetchModelsSeqRef.current) return;
-          setFetchedModels(models);
-          if (models.length === 0) {
-            toast.info(t("providerForm.fetchModelsEmpty"));
-          } else {
-            toast.success(
-              t("providerForm.fetchModelsSuccess", { count: models.length }),
-            );
-          }
+          handleFetchModelsSuccess(models);
         })
         .catch((err) => {
           if (seq !== fetchModelsSeqRef.current) return;
@@ -602,14 +671,7 @@ export function CodexFormFields({
     )
       .then((models) => {
         if (seq !== fetchModelsSeqRef.current) return;
-        setFetchedModels(models);
-        if (models.length === 0) {
-          toast.info(t("providerForm.fetchModelsEmpty"));
-        } else {
-          toast.success(
-            t("providerForm.fetchModelsSuccess", { count: models.length }),
-          );
-        }
+        handleFetchModelsSuccess(models);
       })
       .catch((err) => {
         if (seq !== fetchModelsSeqRef.current) return;
@@ -625,6 +687,7 @@ export function CodexFormFields({
     isXaiOauthPreset,
     isXaiOauthAuthenticated,
     selectedXaiAccountId,
+    handleFetchModelsSuccess,
     t,
   ]);
 
@@ -1206,7 +1269,7 @@ export function CodexFormFields({
                   <p className="text-xs leading-relaxed text-muted-foreground">
                     {t("codexConfig.modelMappingHint", {
                       defaultValue:
-                        "选择模型角色后，CC Switch 会自动生成 Codex 兼容路由；菜单显示名可以填 DeepSeek、Kimi 等品牌模型，实际请求模型按右侧填写内容发送。",
+                        "选择模型角色后，Vary AI 会自动生成 Codex 兼容路由；菜单显示名可以填 DeepSeek、Kimi 等品牌模型，实际请求模型按右侧填写内容发送。",
                     })}
                   </p>
                 </div>

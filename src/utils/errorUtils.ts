@@ -45,6 +45,7 @@ export const translatePiProviderMutationError = (
 
   if (
     message.includes("models.json changed") ||
+    message.includes("changed outside Vary AI") ||
     message.includes("changed outside CC Switch") ||
     message.includes("no longer present in models.json") ||
     message.includes("another value now owns the key")

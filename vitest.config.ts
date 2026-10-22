@@ -1,15 +1,17 @@
 import path from "node:path";
 import { defineConfig } from "vitest/config";
-import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  plugins: [react()],
+  // Tests need JSX conversion, not the production plugin's Fast Refresh hooks.
+  // Keep the browser application and Node test environment explicit.
+  esbuild: { jsx: "automatic" },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
   },
   test: {
+    maxWorkers: 2,
     environment: "jsdom",
     setupFiles: ["./tests/setupGlobals.ts", "./tests/setupTests.ts"],
     globals: true,

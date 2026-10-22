@@ -6,8 +6,9 @@
 //!
 //! 支持从客户端请求中提取 Session ID，用于关联同一对话的多个请求：
 //! - Claude: 从 `metadata.user_id` (格式: `user_xxx_session_yyy`) 或 `metadata.session_id` 提取
-//! - Codex: 从 headers 中的 `session_id` / `x-session-id` 或 `metadata.session_id` 提取
+
 //! - Grok Build: 从 headers 中的 `x-grok-conv-id` / `x-grok-session-id` 提取
+
 //! - 其他: 生成新的 UUID
 
 use axum::http::HeaderMap;
@@ -53,7 +54,7 @@ pub struct SessionIdResult {
 /// 3. 生成新 UUID
 ///
 /// ### Codex 请求
-/// 1. Headers: `session_id` 或 `x-session-id`
+/// 1. Headers: `thread-id` → `session-id` → `session_id` → `x-session-id`
 /// 2. `metadata.session_id`
 /// 3. 生成新 UUID
 ///
@@ -61,6 +62,7 @@ pub struct SessionIdResult {
 /// 1. Headers: `x-grok-conv-id` 或 `x-grok-session-id`
 /// 2. `metadata.session_id`
 /// 3. 生成新 UUID
+///
 ///
 /// ## 示例
 ///
@@ -73,9 +75,79 @@ pub fn extract_session_id(
     body: &serde_json::Value,
     client_format: &str,
 ) -> SessionIdResult {
+    extract_client_session_id(headers, body, client_format).unwrap_or_else(generate_new_session_id)
+}
+
+/// Extract an actual client identity without generating a per-request UUID.
+pub(crate) fn extract_client_session_id(
+    headers: &HeaderMap,
+    body: &serde_json::Value,
+    client_format: &str,
+) -> Option<SessionIdResult> {
+    if client_format == "zcode" {
+        if let Some(id) = headers
+            .get("x-session-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            return Some(SessionIdResult {
+                session_id: id.to_owned(),
+                source: SessionIdSource::Header,
+                client_provided: true,
+            });
+        }
+    }
+    if client_format == "qoder" {
+        for name in ["x-qoder-session-id", "x-session-id", "session-id"] {
+            if let Some(id) = headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                return Some(SessionIdResult {
+                    session_id: format!("qoder_{id}"),
+                    source: SessionIdSource::Header,
+                    client_provided: true,
+                });
+            }
+        }
+        if let Some(id) = body
+            .get("session_id")
+            .or_else(|| body.pointer("/metadata/session_id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(SessionIdResult {
+                session_id: format!("qoder_{id}"),
+                source: SessionIdSource::MetadataSessionId,
+                client_provided: true,
+            });
+        }
+        return None;
+    }
+    if client_format == "workbuddy" {
+        // WorkBuddy sets this to its current session.id. Request/message/parent
+        // IDs describe different scopes and must not identify this conversation.
+        if let Some(session_id) = headers
+            .get("x-conversation-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            return Some(SessionIdResult {
+                session_id: session_id.to_string(),
+                source: SessionIdSource::Header,
+                client_provided: true,
+            });
+        }
+    }
+
     if client_format == "claude" {
         if let Some(result) = extract_claude_session(headers, body) {
-            return result;
+            return Some(result);
         }
     }
 
@@ -88,17 +160,12 @@ pub fn extract_session_id(
             "codex"
         };
         if let Some(result) = extract_responses_session(headers, body, prefix) {
-            return result;
+            return Some(result);
         }
     }
 
-    // Claude 请求：从 metadata 提取
-    if let Some(result) = extract_from_metadata(body) {
-        return result;
-    }
-
-    // 兜底：生成新 Session ID
-    generate_new_session_id()
+    // Other clients may also supply metadata; absence stays unknown.
+    extract_from_metadata(body)
 }
 
 /// 提取 Claude Session ID
@@ -135,7 +202,7 @@ fn extract_responses_session(
         // conversation ID 时的回退。x-grok-req-id 是逐请求 ID，不能用于聚合。
         &["x-grok-conv-id", "x-grok-session-id"]
     } else {
-        &["session_id", "x-session-id"]
+        &["thread-id", "session-id", "session_id", "x-session-id"]
     };
     for header_name in header_names {
         if let Some(value) = headers.get(*header_name) {
@@ -234,6 +301,94 @@ mod tests {
     use serde_json::json;
 
     // ========== Session ID 提取测试 ==========
+
+    #[test]
+    fn zcode_native_header_is_stable_and_missing_identity_stays_unknown() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-session-id",
+            "native-zcode-session".parse().expect("header"),
+        );
+        headers.insert("x-request-id", "request-a".parse().expect("header"));
+        let body = json!({"messages": []});
+        let original = headers.clone();
+        let result = extract_client_session_id(&headers, &body, "zcode").expect("session");
+        assert_eq!(result.session_id, "native-zcode-session");
+        assert_eq!(result.source, SessionIdSource::Header);
+        assert_eq!(headers, original);
+        headers.remove("x-session-id");
+        assert!(extract_client_session_id(&headers, &body, "zcode").is_none());
+    }
+
+    #[test]
+    fn workbuddy_uses_native_conversation_id_across_turns_without_rewriting_requests() {
+        let body = json!({
+            "messages": [{"role":"user", "content":"Hello"}],
+            "metadata": {"session_id":"metadata-fallback"}
+        });
+        let original_body = body.clone();
+        for conversation in ["native-session-a", "11111111-2222-3333-4444-555555555555"] {
+            for turn in ["first-turn", "second-turn"] {
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    "X-Conversation-ID",
+                    conversation.parse().expect("conversation"),
+                );
+                headers.insert("x-conversation-request-id", turn.parse().expect("turn"));
+                headers.insert("x-conversation-message-id", turn.parse().expect("message"));
+                headers.insert("x-request-id", turn.parse().expect("request"));
+                headers.insert(
+                    "x-parent-conversation-id",
+                    "parent-session".parse().expect("parent"),
+                );
+                let original_headers = headers.clone();
+                let result = extract_client_session_id(&headers, &body, "workbuddy")
+                    .expect("native WorkBuddy conversation");
+                assert_eq!(result.session_id, conversation);
+                assert_eq!(result.source, SessionIdSource::Header);
+                assert!(result.client_provided);
+                assert_eq!(headers, original_headers);
+                assert_eq!(body, original_body);
+            }
+        }
+    }
+
+    #[test]
+    fn workbuddy_does_not_invent_sessions_from_request_or_parent_ids() {
+        let mut headers = HeaderMap::new();
+        for name in [
+            "x-request-id",
+            "x-conversation-request-id",
+            "x-conversation-message-id",
+            "x-parent-conversation-id",
+        ] {
+            headers.insert(
+                name,
+                "11111111-2222-3333-4444-555555555555".parse().expect("ID"),
+            );
+        }
+        for value in ["", "   "] {
+            headers.insert(
+                "x-conversation-id",
+                value.parse().expect("empty conversation"),
+            );
+            assert!(extract_client_session_id(&headers, &json!({}), "workbuddy").is_none());
+            let result = extract_client_session_id(
+                &headers,
+                &json!({"metadata":{"session_id":"metadata-fallback"}}),
+                "workbuddy",
+            )
+            .expect("metadata fallback");
+            assert_eq!(result.session_id, "metadata-fallback");
+        }
+        headers.insert(
+            "x-conversation-id",
+            "workbuddy-only".parse().expect("conversation"),
+        );
+        for client in ["codex", "claude", "gemini", "grokbuild"] {
+            assert!(extract_client_session_id(&headers, &json!({}), client).is_none());
+        }
+    }
 
     #[test]
     fn test_extract_session_from_claude_metadata_user_id() {
@@ -347,6 +502,75 @@ mod tests {
             assert_eq!(result.source, SessionIdSource::Header);
             assert!(result.client_provided);
         }
+    }
+
+    #[test]
+    fn test_codex_current_client_headers_identify_same_thread_across_requests() {
+        for format in ["codex", "openai"] {
+            for header_name in ["thread-id", "session-id"] {
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    header_name,
+                    axum::http::HeaderValue::from_static("11111111-2222-3333-4444-555555555555"),
+                );
+                let original_headers = headers.clone();
+                for cursor in ["resp_first", "resp_second"] {
+                    let body = json!({"input":"Hello", "previous_response_id":cursor});
+                    let original_body = body.clone();
+                    let result = extract_session_id(&headers, &body, format);
+                    assert_eq!(
+                        result.session_id,
+                        "codex_11111111-2222-3333-4444-555555555555"
+                    );
+                    assert_eq!(result.source, SessionIdSource::Header);
+                    assert!(result.client_provided);
+                    assert_eq!(body, original_body);
+                    assert_eq!(headers, original_headers);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_codex_prefers_thread_identity_and_falls_back_when_it_is_empty() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "thread-id",
+            axum::http::HeaderValue::from_static("11111111-2222-3333-4444-555555555555"),
+        );
+        headers.insert(
+            "session-id",
+            axum::http::HeaderValue::from_static("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+        );
+        headers.insert(
+            "session_id",
+            axum::http::HeaderValue::from_static("99999999-8888-7777-6666-555555555555"),
+        );
+        let body = json!({"metadata":{"session_id":"metadata-session-123456789"}});
+        assert_eq!(
+            extract_session_id(&headers, &body, "codex").session_id,
+            "codex_11111111-2222-3333-4444-555555555555"
+        );
+        headers.insert("thread-id", axum::http::HeaderValue::from_static("   "));
+        assert_eq!(
+            extract_session_id(&headers, &body, "codex").session_id,
+            "codex_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        );
+    }
+
+    #[test]
+    fn test_codex_cache_and_turn_keys_alone_do_not_identify_a_thread() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-client-request-id",
+            axum::http::HeaderValue::from_static("11111111-2222-3333-4444-555555555555"),
+        );
+        headers.insert(
+            "x-codex-turn-metadata",
+            axum::http::HeaderValue::from_static("{\"turn_id\":\"turn-local\"}"),
+        );
+        let body = json!({"prompt_cache_key":"shared-cache-11111111-2222-3333", "previous_response_id":"resp_local"});
+        assert!(extract_client_session_id(&headers, &body, "codex").is_none());
     }
 
     #[test]

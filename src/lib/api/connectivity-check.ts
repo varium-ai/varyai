@@ -38,16 +38,6 @@ export async function streamCheckProvider(
 }
 
 /**
- * 批量连通性检查
- */
-export async function streamCheckAllProviders(
-  appType: AppId,
-  proxyTargetsOnly: boolean = false,
-): Promise<Array<[string, StreamCheckResult]>> {
-  return invoke("stream_check_all_providers", { appType, proxyTargetsOnly });
-}
-
-/**
  * 获取连通性检查配置
  */
 export async function getStreamCheckConfig(): Promise<StreamCheckConfig> {

@@ -1,8 +1,20 @@
 packages: []
 
 onlyBuiltDependencies:
-  - '@tailwindcss/oxide'
+  - "@tailwindcss/oxide"
   - esbuild
 
 ignoredBuiltDependencies:
   - msw
+
+# Security floors for transitive build/test dependencies; preserve major versions
+# except selector-parser, whose v7 fixes unbounded selector parsing.
+overrides:
+  "rollup@>=4.0.0 <4.59.0": "^4.64.12"
+  "picomatch@<2.3.2": "^2.3.2"
+  "picomatch@>=4.0.0 <4.0.4": "^4.0.7"
+  "ws@>=8.0.0 <8.21.0": "^8.22.0"
+  "form-data@>=4.0.0 <4.0.6": "^4.0.6"
+  "@babel/core@>=7.0.0 <7.29.6": "^7.29.6"
+  "browserslist@<4.28.7": "^4.29.4"
+  "postcss-selector-parser@<7.1.6": "^7.1.7"

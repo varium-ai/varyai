@@ -122,6 +122,9 @@ impl<T> PerApp<T> {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProfilePayload {
+    /// Explicit cross-agent scheme. Legacy per-agent projects remain scoped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<super::profile_bundle::ProfileBundle>,
     /// 每 app 的当前供应商 id
     pub providers: PerApp<Option<String>>,
     /// 每 app 启用的 MCP server id 集合
@@ -291,6 +294,10 @@ impl ProfileService {
             })?;
             let mut payload: ProfilePayload = serde_json::from_str(&profile.payload)
                 .map_err(|e| AppError::Config(format!("解析 profile payload 失败: {e}")))?;
+            // Cross-agent snapshots change only through explicit recapture.
+            if payload.bundle.is_some() {
+                return Ok(profile);
+            }
             payload.merge_scope_from(&Self::snapshot_current(state, scope)?, scope);
             profile.payload = serde_json::to_string(&payload)
                 .map_err(|e| AppError::Config(format!("序列化 profile payload 失败: {e}")))?;
@@ -303,7 +310,7 @@ impl ProfileService {
     /// 删除项目；若删除的是某分组当前激活项目，一并清除该分组的激活标记
     pub fn delete(state: &AppState, id: &str) -> Result<(), AppError> {
         state.db.delete_profile(id)?;
-        for scope in ProfileScope::ALL {
+        for scope in AppType::all() {
             if state.db.get_current_profile_id(scope.as_str())?.as_deref() == Some(id) {
                 state.db.set_current_profile_id(scope.as_str(), None)?;
             }
@@ -332,6 +339,14 @@ impl ProfileService {
         profile_id: &str,
         scope: ProfileScope,
     ) -> Result<(Vec<String>, bool), AppError> {
+        if state
+            .db
+            .get_profile(profile_id)?
+            .and_then(|p| serde_json::from_str::<ProfilePayload>(&p.payload).ok())
+            .is_some_and(|p| p.bundle.is_some())
+        {
+            return Err(AppError::Message("profiles.bundle.previewRequired".into()));
+        }
         let mut warnings = Vec::new();
 
         // 自动保存旧项目当前状态（仅当前分组），失败不阻塞切换
@@ -459,7 +474,8 @@ impl ProfileService {
             .set_current_profile_id(scope.as_str(), Some(profile_id))?;
 
         // 当前分组内所有接管已关闭；若其它应用也无接管，可停止代理服务。
-        let should_stop_proxy = !state.db.is_live_takeover_active_sync();
+        let should_stop_proxy = !state.db.is_live_takeover_active_sync()
+            && !state.proxy_service.pi_routing.enabled().unwrap_or(true);
 
         Ok((warnings, should_stop_proxy))
     }
@@ -476,6 +492,7 @@ mod tests {
     #[test]
     fn test_payload_serde_roundtrip() {
         let payload = ProfilePayload {
+            bundle: None,
             providers: PerApp {
                 claude: Some("p1".into()),
                 claude_desktop: Some("d1".into()),

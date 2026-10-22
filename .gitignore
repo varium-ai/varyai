@@ -8,7 +8,6 @@ release/
 *.tsbuildinfo
 .npmrc
 CLAUDE.md
-AGENTS.md
 GEMINI.md
 /.claude
 /.codex
@@ -29,3 +28,9 @@ copilot-api
 .history
 CODEBUDDY.md
 mainWindow.js
+
+.voidx/
+voidx.py
+
+# Tool risk lab (local datasets, models, runtime)
+tool-risk-lab/

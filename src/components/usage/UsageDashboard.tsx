@@ -1,3 +1,4 @@
+import { APP_ICON_NAME } from "@/config/appConfig";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { UsageHero } from "./UsageHero";
@@ -7,7 +8,6 @@ import { ProviderStatsTable } from "./ProviderStatsTable";
 import { ModelStatsTable } from "./ModelStatsTable";
 import {
   KNOWN_APP_TYPES,
-  type AppType,
   type AppTypeFilter,
   type UsageRangeSelection,
 } from "@/types/usage";
@@ -66,16 +66,6 @@ const isRefreshIntervalOption = (
 const normalizeRefreshInterval = (value: number | undefined) =>
   isRefreshIntervalOption(value) ? value : DEFAULT_REFRESH_INTERVAL_MS;
 
-// 与 AppSwitcher 的 appIconName 保持一致（codex 复用 openai 图标）
-const APP_FILTER_ICON: Record<AppType, string> = {
-  claude: "claude",
-  codex: "openai",
-  gemini: "gemini",
-  grokbuild: "grok",
-  opencode: "opencode",
-  pi: "pi",
-};
-
 // Select 的 "all" 哨兵和用户自定义名称同处一个值域——真有来源/模型叫 "all"
 // 就会撞名（重复 value、选中即清空筛选）。动态选项统一加前缀编码隔离值域。
 const DYNAMIC_OPTION_PREFIX = "v:";
@@ -84,6 +74,7 @@ const decodeOptionValue = (value: string) =>
   value === "all" ? undefined : value.slice(DYNAMIC_OPTION_PREFIX.length);
 
 interface UsageDashboardProps {
+  initialAppType?: string;
   refreshIntervalMs?: number;
   onRefreshIntervalChange?: (next: number) => Promise<boolean> | boolean | void;
   sessionAutoSyncEnabled?: boolean;
@@ -93,6 +84,7 @@ interface UsageDashboardProps {
 }
 
 export function UsageDashboard({
+  initialAppType = "all",
   refreshIntervalMs: savedRefreshIntervalMs,
   onRefreshIntervalChange,
   sessionAutoSyncEnabled = true,
@@ -101,7 +93,7 @@ export function UsageDashboard({
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [range, setRange] = useState<UsageRangeSelection>({ preset: "today" });
-  const [appType, setAppType] = useState<AppTypeFilter>("all");
+  const [appType, setAppType] = useState<string>(initialAppType);
   const [providerName, setProviderName] = useState<string | undefined>(
     undefined,
   );
@@ -310,7 +302,7 @@ export function UsageDashboard({
                     <LayoutGrid className="h-4 w-4" />
                   ) : (
                     <ProviderIcon
-                      icon={APP_FILTER_ICON[type]}
+                      icon={APP_ICON_NAME[type]}
                       name={label}
                       size={16}
                     />
@@ -327,7 +319,7 @@ export function UsageDashboard({
             onValueChange={(v) => changeProviderName(decodeOptionValue(v))}
           >
             <SelectTrigger
-              className="h-9 w-[100px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
+              className="h-9 w-[180px] min-w-[180px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
               title={providerName ?? t("usage.filterBySource")}
             >
               <SelectValue />
@@ -352,7 +344,7 @@ export function UsageDashboard({
             onValueChange={(v) => setModel(decodeOptionValue(v))}
           >
             <SelectTrigger
-              className="h-9 w-[100px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
+              className="h-9 w-[180px] min-w-[180px] bg-background text-xs focus:border-border-default [&>span]:min-w-0 [&>span]:truncate"
               title={model ?? t("usage.filterByModel")}
             >
               <SelectValue />

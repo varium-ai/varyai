@@ -24,3 +24,31 @@ pub(crate) fn update_pi_provider_usage_script(
 pub(crate) fn get_pi_session_discovery() -> PiSessionDiscovery {
     crate::session_manager::providers::pi::session_discovery()
 }
+
+#[tauri::command]
+pub(crate) async fn get_pi_routing_status(
+    state: State<'_, AppState>,
+) -> Result<crate::services::pi_routing::Status, String> {
+    state.proxy_service.pi_routing_status().await
+}
+#[tauri::command]
+pub(crate) async fn preview_pi_routing(
+    state: State<'_, AppState>,
+    provider_ids: Vec<String>,
+) -> Result<crate::services::pi_routing::Status, String> {
+    state.proxy_service.preview_pi_routing(&provider_ids).await
+}
+#[tauri::command]
+pub(crate) async fn configure_pi_routing(
+    state: State<'_, AppState>,
+    provider_ids: Vec<String>,
+) -> Result<(), String> {
+    state
+        .proxy_service
+        .configure_pi_routing(&provider_ids)
+        .await
+}
+#[tauri::command]
+pub(crate) async fn disable_pi_routing(state: State<'_, AppState>) -> Result<(), String> {
+    state.proxy_service.disable_pi_routing().await
+}

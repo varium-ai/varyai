@@ -475,35 +475,62 @@ describe("PromptPanel", () => {
     expect(onNavigationBlockedChange).toHaveBeenLastCalledWith(false);
   });
 
-  it("queues external reloads while an edit or confirmation is open", async () => {
-    renderPanel();
+  it("refreshes on window focus only while open and removes the listener on unmount", async () => {
+    const view = renderPanel();
     await waitForPanelReady();
     mocks.reload.mockClear();
 
-    fireEvent.click(screen.getAllByTitle("common.edit")[0]);
-    act(() => {
-      window.dispatchEvent(
-        new CustomEvent("prompt-imported", { detail: { app: "claude" } }),
-      );
-    });
-    expect(mocks.reload).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "form-close" }));
+    fireEvent(window, new Event("focus"));
     await waitFor(() => expect(mocks.reload).toHaveBeenCalledTimes(1));
-    mocks.reload.mockClear();
     await waitForPanelReady();
 
-    fireEvent.click(screen.getAllByTitle("common.delete")[0]);
-    act(() => {
-      window.dispatchEvent(
-        new CustomEvent("prompt-imported", { detail: { app: "claude" } }),
-      );
-    });
+    view.rerender(
+      <PromptPanel
+        open={false}
+        appId="claude"
+        onOpenChange={() => undefined}
+      />,
+    );
+    mocks.reload.mockClear();
+    fireEvent(window, new Event("focus"));
     expect(mocks.reload).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "cancel-dialog" }));
-    await waitFor(() => expect(mocks.reload).toHaveBeenCalledTimes(1));
+    view.unmount();
+    fireEvent(window, new Event("focus"));
+    expect(mocks.reload).not.toHaveBeenCalled();
   });
+
+  it.each(["focus", "prompt-imported"])(
+    "queues %s reloads while an edit or confirmation is open",
+    async (trigger) => {
+      renderPanel();
+      await waitForPanelReady();
+      mocks.reload.mockClear();
+
+      const triggerReload = () =>
+        fireEvent(
+          window,
+          trigger === "focus"
+            ? new Event("focus")
+            : new CustomEvent("prompt-imported", { detail: { app: "claude" } }),
+        );
+      fireEvent.click(screen.getAllByTitle("common.edit")[0]);
+      triggerReload();
+      expect(mocks.reload).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "form-close" }));
+      await waitFor(() => expect(mocks.reload).toHaveBeenCalledTimes(1));
+      mocks.reload.mockClear();
+      await waitForPanelReady();
+
+      fireEvent.click(screen.getAllByTitle("common.delete")[0]);
+      triggerReload();
+      expect(mocks.reload).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "cancel-dialog" }));
+      await waitFor(() => expect(mocks.reload).toHaveBeenCalledTimes(1));
+    },
+  );
 
   it("starts the latest app reload without waiting for an older app", async () => {
     let resolveClaudeReload!: () => void;

@@ -20,6 +20,10 @@ mod init_status;
 mod lightweight;
 #[cfg(target_os = "linux")]
 mod linux_fix;
+#[cfg(target_os = "macos")]
+mod macos_dev_bundle;
+#[cfg(target_os = "macos")]
+mod macos_quit;
 mod mcp;
 mod model_capabilities;
 mod openclaw_config;
@@ -30,14 +34,20 @@ mod prompt;
 mod prompt_files;
 mod provider;
 mod proxy;
+mod qoder_config;
+mod security_events;
 mod services;
+pub use services::profile_bundle::ProfileBundleService;
 mod session_manager;
 mod settings;
 mod store;
+mod telemetry;
+mod tool_risk_events;
 
 mod tray;
 mod usage_events;
 mod usage_script;
+mod workbuddy_config;
 
 pub use app_config::{AppType, InstalledSkill, McpApps, McpServer, MultiAppConfig, SkillApps};
 pub use codex_config::{
@@ -75,8 +85,6 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt, sync::Arc};
-#[cfg(target_os = "macos")]
-use tauri::image::Image;
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::RunEvent;
 use tauri::{Emitter, Manager};
@@ -238,7 +246,6 @@ fn runtime_log_level_allows(level: log::Level, max_level: log::LevelFilter) -> b
     max_level.to_level().is_some_and(|maximum| level <= maximum)
 }
 
-/// 统一处理 ccswitch:// 深链接 URL
 ///
 /// - 解析 URL
 /// - 向前端发射 `deeplink-import` / `deeplink-error` 事件
@@ -249,7 +256,7 @@ fn handle_deeplink_url(
     focus_main_window: bool,
     source: &str,
 ) -> bool {
-    if !url_str.starts_with("ccswitch://") {
+    if !crate::deeplink::is_supported_deeplink_url(url_str) {
         return false;
     }
 
@@ -275,6 +282,10 @@ fn handle_deeplink_url(
 
             if focus_main_window {
                 if let Some(window) = app.get_webview_window("main") {
+                    #[cfg(target_os = "windows")]
+                    {
+                        let _ = window.set_skip_taskbar(false);
+                    }
                     let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();
@@ -326,21 +337,14 @@ async fn update_tray_menu(
     }
 }
 
-#[cfg(target_os = "macos")]
-fn macos_tray_icon() -> Option<Image<'static>> {
-    const ICON_BYTES: &[u8] = include_bytes!("../icons/tray/macos/statusbar_template_3x.png");
-
-    match Image::from_bytes(ICON_BYTES) {
-        Ok(icon) => Some(icon),
-        Err(err) => {
-            log::warn!("Failed to load macOS tray icon: {err}");
-            None
-        }
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    #[cfg(target_os = "macos")]
+    if let Err(error) = macos_dev_bundle::reexec_if_needed(context.config()) {
+        // Notification setup is auxiliary; never prevent the gateway starting.
+        eprintln!("Development notification app setup failed: {error}");
+    }
     // 设置 panic hook，在应用崩溃时记录日志到 <app_config_dir>/crash.log（默认 ~/.cc-switch/crash.log）
     panic_hook::setup_panic_hook();
 
@@ -376,6 +380,12 @@ pub fn run() {
 
             // Show and focus window regardless
             if let Some(window) = app.get_webview_window("main") {
+                // Closing to tray or silent startup may leave the window hidden
+                // from the Windows taskbar even after show().
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = window.set_skip_taskbar(false);
+                }
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -397,6 +407,7 @@ pub fn run() {
                 && !startup_page_handled.swap(true, Ordering::Relaxed)
                 && !crate::settings::get_settings().silent_startup
             {
+                let _ = webview.window().set_skip_taskbar(false);
                 let _ = webview.window().show();
                 log::info!("主页面加载完成，主窗口已显示");
             }
@@ -430,7 +441,9 @@ pub fn run() {
                     }
                     #[cfg(target_os = "macos")]
                     {
-                        tray::apply_tray_policy(window.app_handle(), false);
+                        // Closing the window should keep the app available in the Dock,
+                        // like a regular macOS app. Accessory mode removes its Dock icon.
+                        tray::apply_tray_policy(window.app_handle(), true);
                     }
                 } else {
                     api.prevent_close();
@@ -441,6 +454,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::default()
@@ -492,7 +506,7 @@ pub fn run() {
 
                 // 用户配置存在数据库中，数据库尚未打开时使用保守的 Info 级别。
                 log::set_max_level(log::LevelFilter::Info);
-                log::info!("=== CC Switch v{} started ===", env!("CARGO_PKG_VERSION"));
+                log::info!("=== Vary AI v{} started ===", env!("CARGO_PKG_VERSION"));
             }
 
             // 首次读取覆盖路径时 logger 尚未可用；此处重放一次，
@@ -518,6 +532,8 @@ pub fn run() {
             // 也能向前端推送 `usage-log-recorded`。
             // 放在日志系统初始化之后，确保 init 的日志能正常输出。
             usage_events::init(app.handle().clone());
+            security_events::init(app.handle().clone());
+            tool_risk_events::init(app.handle().clone());
 
             // 初始化数据库
             let app_config_dir = crate::config::get_app_config_dir();
@@ -566,20 +582,25 @@ pub fn run() {
             // 预检：数据库版本过新时，必须先于任何 schema 写操作（create_tables 内含
             // DROP/ALTER 等 DDL）进入恢复界面，避免旧应用对读不懂的更新版 DB 落写。
             match crate::database::Database::stored_user_version_exceeds_supported(&db_path) {
-                Ok(Some(version)) => {
+                Ok(Some(stored)) => {
+                    let version = stored.version;
                     log::warn!("数据库版本过新（v{version}），引导用户在应用内升级应用");
                     crate::init_status::set_init_error(crate::init_status::InitErrorPayload {
-                        path: db_path.display().to_string(),
+                        path: stored.path.display().to_string(),
                         error: format!(
                             "数据库版本过新（{version}），当前应用仅支持 {}，请升级应用后再尝试。",
-                            crate::database::SCHEMA_VERSION
+                            stored.supported_version
                         ),
                         kind: Some("db_version_too_new".to_string()),
                         db_version: Some(version),
-                        supported_version: Some(crate::database::SCHEMA_VERSION),
+                        supported_version: Some(stored.supported_version),
                     });
                     // 主窗口默认 visible:false，恢复界面必须强制显示
                     if let Some(window) = app.get_webview_window("main") {
+                        #[cfg(target_os = "windows")]
+                        {
+                            let _ = window.set_skip_taskbar(false);
+                        }
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
@@ -607,6 +628,25 @@ pub fn run() {
                     }
                 }
             };
+
+            crate::proxy::security::init_audit_logger(db.clone());
+            if let Err(e) = crate::proxy::security::reload_security_runtime(&db) {
+                log::error!("[SecurityAudit] 初始化安全审计运行时配置失败: {e}");
+            }
+
+            if let Err(e) = crate::commands::reload_tool_risk_runtime(&db) {
+                log::error!("[ToolRisk] 初始化工具调用风险运行时配置失败: {e}");
+            }
+            {
+                let (sender, receiver) = crate::proxy::tool_observation::channel::create_channel(
+                    crate::proxy::tool_observation::channel::DEFAULT_QUEUE_CAPACITY,
+                );
+                if crate::proxy::tool_observation::channel::install_global_sender(sender) {
+                    crate::services::tool_risk::worker::spawn_worker(db.clone(), receiver);
+                } else {
+                    log::warn!("[ToolRisk] 观察通道已安装，跳过重复初始化");
+                }
+            }
 
             // 数据库可用后立即应用持久化日志级别，避免后续服务初始化
             // 继续使用启动阶段的 Info 回退。损坏配置显式 fail-closed 到 Info。
@@ -650,6 +690,9 @@ pub fn run() {
             }
 
             let app_state = AppState::new(db);
+            if let Err(error) = initialize_optional_agent_visibility(&app_state.db) {
+                log::warn!("初始化可选 Agent 列表失败: {error}");
+            }
 
             // 设置 AppHandle 用于代理故障转移时的 UI 更新
             app_state.proxy_service.set_app_handle(app.handle().clone());
@@ -711,10 +754,10 @@ pub fn run() {
             // 1.5. 自动导入 live 配置 + seed 官方预设供应商（Claude / Codex / Gemini）
             //
             // 先 import 后 seed 是有意为之：先把用户手动配置的 settings.json / auth.json / .env
-            // 落成 "default" provider 设为 current，再追加官方预设（is_current=false）。
+
             // 这样用户切到官方预设时，回填机制会保护原 live 配置不丢失。
             //
-            // 捕获首次运行快照：所有全新装用户都会看到欢迎弹窗介绍 CC Switch 的工作方式。
+
             // 读失败时默认不弹，宁可漏弹也不要因为故障打扰用户。
             let first_run_already_confirmed = crate::settings::get_settings()
                 .first_run_notice_confirmed
@@ -1067,19 +1110,22 @@ pub fn run() {
                         log::debug!("  URL[{i}]: {}", url_for_log(url_str));
 
                         if handle_deeplink_url(&app_handle, url_str, true, "on_open_url") {
-                            break; // Process only first ccswitch:// URL
+                            break; // Process only the first supported deep-link URL
                         }
                     }
                 }
             });
             log::info!("✓ Deep-link URL handler registered");
 
+            #[cfg(target_os = "macos")]
+            macos_quit::install(app.handle())?;
+
             // 创建动态托盘菜单
             let menu = tray::create_tray_menu(app.handle(), &app_state)?;
 
             // 构建托盘
             let mut tray_builder = TrayIconBuilder::with_id(tray::TRAY_ID)
-                .tooltip("CC Switch") // 鼠标悬停提示
+                .tooltip("Vary AI") // 鼠标悬停提示
                 .on_tray_icon_event(|tray, event| match event {
                     // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
                     // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
@@ -1098,16 +1144,21 @@ pub fn run() {
                 })
                 .show_menu_on_left_click(true);
 
-            // 使用平台对应的托盘图标（macOS 使用模板图标适配深浅色）
             #[cfg(target_os = "macos")]
             {
-                if let Some(icon) = macos_tray_icon() {
-                    tray_builder = tray_builder.icon(icon).icon_as_template(true);
-                } else if let Some(icon) = app.default_window_icon() {
-                    log::warn!("Falling back to default window icon for tray");
-                    tray_builder = tray_builder.icon(icon.clone());
-                } else {
-                    log::warn!("Failed to load macOS tray icon for tray");
+                let audit_enabled = app_state
+                    .db
+                    .get_security_settings()
+                    .map(|settings| settings.enabled)
+                    .unwrap_or_else(|error| {
+                        log::warn!("Failed to read security audit settings for tray: {error}");
+                        false
+                    });
+                match tray::security_audit_icon(audit_enabled) {
+                    Ok(icon) => {
+                        tray_builder = tray_builder.icon(icon).icon_as_template(false);
+                    }
+                    Err(error) => log::warn!("Failed to load macOS status bar icon: {error}"),
                 }
             }
 
@@ -1131,6 +1182,19 @@ pub fn run() {
             );
             // 将同一个实例注入到全局状态，避免重复创建导致的不一致
             app.manage(app_state);
+
+            // Installation statistics use a dedicated local file and never enter
+            // the synchronized/exported application settings.
+            let telemetry_path = match app.path().app_local_data_dir() {
+                Ok(directory) => Some(directory.join("installation-analytics.json")),
+                Err(_) => {
+                    log::warn!("Could not resolve local statistics storage; reporting is unavailable");
+                    None
+                }
+            };
+            let telemetry = Arc::new(crate::telemetry::TelemetryManager::load(telemetry_path));
+            app.manage(telemetry.clone());
+            telemetry.clone().start_worker();
 
             // 初始化 SkillService
             let skill_service = SkillService::new();
@@ -1241,6 +1305,18 @@ pub fn run() {
 
                 // 检查 settings 表中的代理状态，自动恢复代理服务
                 restore_proxy_state_on_startup(&state).await;
+                if let Err(code) = state.proxy_service.restore_pi_routing().await {
+                    log::warn!("[Pi] startup restoration failed: {code}");
+                }
+
+                // TRAE may be closed at startup or recreate its chat windows later.
+                let trae_proxy = state.proxy_service.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        trae_proxy.refresh_trae_takeover().await;
+                    }
+                });
 
                 // Periodic backup check (on startup)
                 if let Err(e) = state.db.periodic_backup_if_needed() {
@@ -1372,6 +1448,8 @@ pub fn run() {
             commands::get_providers,
             commands::get_current_provider,
             commands::add_provider,
+            commands::duplicate_provider,
+            commands::submit_provider_request,
             commands::update_provider,
             commands::delete_provider,
             commands::remove_provider_from_live_config,
@@ -1389,6 +1467,10 @@ pub fn run() {
             commands::get_config_dir,
             commands::open_config_folder,
             commands::pick_directory,
+            commands::get_notification_permission_status,
+            commands::request_notification_permission,
+            commands::open_notification_settings,
+            commands::send_system_notification,
             commands::open_external,
             commands::get_init_error,
             commands::get_migration_result,
@@ -1403,6 +1485,8 @@ pub fn run() {
             commands::extract_common_config_snippet,
             commands::read_live_provider_settings,
             commands::get_settings,
+            commands::get_telemetry_preferences,
+            commands::set_telemetry_enabled,
             commands::save_settings,
             commands::has_codex_unify_history_backup,
             commands::restore_codex_unified_history,
@@ -1469,6 +1553,10 @@ pub fn run() {
             commands::delete_pi_prompt_template,
             // Pi native provider and session views
             commands::get_pi_current_state,
+            commands::get_pi_routing_status,
+            commands::preview_pi_routing,
+            commands::configure_pi_routing,
+            commands::disable_pi_routing,
             commands::update_pi_provider_usage_script,
             commands::get_pi_session_discovery,
             // Profile management (项目配置方案)
@@ -1478,6 +1566,10 @@ pub fn run() {
             commands::delete_profile,
             commands::clear_current_profile,
             commands::apply_profile,
+            commands::capture_profile_bundle,
+            commands::preview_profile_bundle,
+            commands::apply_profile_bundle,
+            commands::undo_profile_bundle,
             // Fetch OpenAI-compatible and Anthropic model lists. Response data structure:
             // data[].id, data[]?.owned_by. Special: supports Zhipu OpenAI Responses models[].slug.
             commands::fetch_models_for_config,
@@ -1559,7 +1651,12 @@ pub fn run() {
             commands::stop_proxy_server,
             commands::stop_proxy_with_restore,
             commands::get_proxy_takeover_status,
+            commands::get_agent_installations,
+            commands::get_qoder_certificate_status,
+            commands::clear_qoder_certificate,
+            commands::rebuild_qoder_certificate,
             commands::set_proxy_takeover_for_app,
+            commands::launch_doubao_work_for_audit,
             commands::get_proxy_status,
             commands::get_proxy_config,
             commands::update_proxy_config,
@@ -1633,6 +1730,13 @@ pub fn run() {
             // OpenCode specific
             commands::import_opencode_providers_from_live,
             commands::get_opencode_live_provider_ids,
+            commands::get_qoder_live_provider_ids,
+            commands::get_qoder_settings,
+            commands::save_qoder_settings,
+            commands::get_workbuddy_live_provider_ids,
+            commands::get_workbuddy_settings,
+            commands::save_workbuddy_settings,
+            commands::get_workbuddy_default_config_dir,
             // OpenClaw specific
             commands::import_openclaw_providers_from_live,
             commands::get_openclaw_live_provider_ids,
@@ -1671,23 +1775,11 @@ pub fn run() {
             commands::auth_start_login,
             commands::auth_poll_for_account,
             commands::auth_cancel_login,
-            commands::auth_list_accounts,
             commands::auth_get_status,
             commands::auth_remove_account,
             commands::auth_set_default_account,
             commands::auth_logout,
-            // Copilot OAuth commands (multi-account support)
-            commands::copilot_start_device_flow,
-            commands::copilot_poll_for_auth,
-            commands::copilot_poll_for_account,
-            commands::copilot_list_accounts,
-            commands::copilot_remove_account,
-            commands::copilot_set_default_account,
-            commands::copilot_get_auth_status,
-            commands::copilot_logout,
-            commands::copilot_is_authenticated,
-            commands::copilot_get_token,
-            commands::copilot_get_token_for_account,
+            // Copilot model and usage commands
             commands::copilot_get_models,
             commands::copilot_get_models_for_account,
             commands::copilot_get_usage,
@@ -1713,10 +1805,43 @@ pub fn run() {
             commands::enter_lightweight_mode,
             commands::exit_lightweight_mode,
             commands::is_lightweight_mode,
+            // Security Audit & DLP commands
+            commands::get_security_audit_settings,
+            commands::update_security_audit_settings,
+            commands::get_security_audit_logs,
+            commands::get_security_audit_notification_batch,
+            commands::get_security_event_count,
+            commands::clear_security_audit_logs,
+            commands::get_security_rules,
+            commands::update_builtin_security_rule_action,
+            commands::update_custom_security_rule_action,
+            commands::save_custom_security_rule,
+            commands::toggle_custom_security_rule,
+            commands::delete_custom_security_rule,
+            commands::test_security_rule_match,
+            commands::get_security_audit_alerts,
+            commands::get_tool_risk_rules,
+            commands::get_tool_risk_rule,
+            commands::save_custom_tool_risk_rule,
+            commands::delete_custom_tool_risk_rule,
+            commands::toggle_tool_risk_rule,
+            commands::reset_builtin_tool_risk_rule,
+            commands::test_tool_risk_rule_match,
+            commands::get_tool_risk_settings,
+            commands::update_tool_risk_settings,
+            commands::get_tool_risk_events,
+            commands::get_tool_risk_events_after,
+            commands::clear_tool_risk_events,
+            commands::get_tool_risk_policy_changes,
+            commands::clear_tool_risk_policy_changes,
+            commands::get_tool_risk_command_lists,
+            commands::save_tool_risk_command_list,
+            commands::delete_tool_risk_command_list,
+            commands::preview_tool_risk_command_pattern,
         ]);
 
     let app = builder
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while running tauri application");
 
     app.run(|app_handle, event| {
@@ -1798,7 +1923,7 @@ pub fn run() {
                         }
                     }
                 }
-                // 处理通过自定义 URL 协议触发的打开事件（例如 ccswitch://...）
+
                 RunEvent::Opened { urls } => {
                     if let Some(url) = urls.first() {
                         let url_str = url.to_string();
@@ -1807,7 +1932,7 @@ pub fn run() {
                             url_for_log(&url_str)
                         );
 
-                        if url_str.starts_with("ccswitch://") {
+                        if crate::deeplink::is_supported_deeplink_url(&url_str) {
                             if crate::lightweight::is_lightweight_mode() {
                                 if let Err(e) = crate::lightweight::exit_lightweight_mode(app_handle)
                                 {
@@ -1947,6 +2072,47 @@ pub(crate) fn remove_tray_icon_before_exit(app_handle: &tauri::AppHandle) {
 /// 则自动启动代理服务并接管对应应用的 Live 配置。
 const PROXY_STARTUP_APP_TYPES: [&str; 4] = ["claude", "codex", "gemini", "grokbuild"];
 
+fn initialize_optional_agent_visibility(db: &database::Database) -> Result<(), error::AppError> {
+    let mut settings = settings::get_settings();
+    if settings.visible_apps.is_some() {
+        return Ok(());
+    }
+    let mut visible = settings::VisibleApps::default();
+    // Existing activated/customized clients are user choices, not new default tabs.
+    for (app, official, flag) in [
+        (
+            "workbuddy",
+            "workbuddy-official",
+            services::workbuddy_proxy::ENABLED_KEY,
+        ),
+        (
+            "qoder",
+            "qoder-official",
+            services::qoder_proxy::ENABLED_KEY,
+        ),
+    ] {
+        let added = db.get_bool_flag(flag)?
+            || db
+                .get_all_providers(app)?
+                .values()
+                .any(|p| p.id != official);
+        match app {
+            "workbuddy" => visible.workbuddy = added,
+            "qoder" => visible.qoder = added,
+            _ => {}
+        }
+    }
+    settings.visible_apps = Some(visible);
+    settings::update_settings(settings)
+}
+
+fn startup_agent_eligible(app: &str, visible: &settings::VisibleApps, installed: bool) -> bool {
+    installed
+        && app
+            .parse::<app_config::AppType>()
+            .is_ok_and(|app| visible.is_visible(&app))
+}
+
 async fn enabled_proxy_apps_on_startup(db: &database::Database) -> Vec<&'static str> {
     let mut apps = Vec::new();
     for app_type in PROXY_STARTUP_APP_TYPES {
@@ -1956,6 +2122,38 @@ async fn enabled_proxy_apps_on_startup(db: &database::Database) -> Vec<&'static 
             .is_ok_and(|config| config.enabled)
         {
             apps.push(app_type);
+        }
+    }
+    if db
+        .get_bool_flag(services::workbuddy_proxy::ENABLED_KEY)
+        .unwrap_or(false)
+    {
+        apps.push("workbuddy");
+    }
+    if db
+        .get_bool_flag(services::qoder_proxy::ENABLED_KEY)
+        .unwrap_or(false)
+    {
+        apps.push("qoder");
+    }
+    if db
+        .get_bool_flag(services::doubao_work::ENABLED_KEY)
+        .unwrap_or(false)
+    {
+        apps.push("doubaowork");
+    }
+    if db
+        .get_bool_flag(services::trae_bridge::ENABLED_KEY)
+        .unwrap_or(false)
+    {
+        apps.push("trae");
+    }
+    for app in services::agent_clients::APPS {
+        if db
+            .get_bool_flag(&services::agent_clients::enabled_key(app))
+            .unwrap_or(false)
+        {
+            apps.push(*app);
         }
     }
     apps
@@ -1973,7 +2171,12 @@ async fn restore_proxy_state_on_startup(state: &store::AppState) {
     log::info!("检测到上次代理状态需要恢复，应用列表: {apps_to_restore:?}");
 
     // 逐个恢复接管状态
+    let visible = settings::get_settings().visible_apps.unwrap_or_default();
     for app_type in apps_to_restore {
+        if !startup_agent_eligible(app_type, &visible, commands::is_agent_installed(app_type)) {
+            log::debug!("跳过未加入或未安装的 Agent: {app_type}");
+            continue;
+        }
         match state
             .proxy_service
             .set_takeover_for_app(app_type, true)
@@ -1984,6 +2187,10 @@ async fn restore_proxy_state_on_startup(state: &store::AppState) {
             }
             Err(e) => {
                 log::error!("✗ 恢复 {app_type} 的代理接管状态失败: {e}");
+                if app_type == "trae" {
+                    // Keep the user's intent while waiting for the local connection helper to reconnect.
+                    continue;
+                }
                 // 失败时清除该应用的状态，避免下次启动再次尝试
                 if let Err(clear_err) = state
                     .proxy_service
@@ -2102,7 +2309,7 @@ fn show_migration_error_dialog(app: &tauri::AppHandle, error: &str) -> bool {
         format!(
             "从旧版本迁移配置时发生错误：\n\n{error}\n\n\
             您的数据尚未丢失，旧配置文件仍然保留。\n\
-            建议回退到旧版本 CC Switch 以保护数据。\n\n\
+            建议回退到旧版本 Vary AI 以保护数据。\n\n\
             点击「重试」重新尝试迁移\n\
             点击「退出」关闭程序（可回退版本后重新打开）"
         )
@@ -2110,7 +2317,7 @@ fn show_migration_error_dialog(app: &tauri::AppHandle, error: &str) -> bool {
         format!(
             "An error occurred while migrating configuration:\n\n{error}\n\n\
             Your data is NOT lost - the old config file is still preserved.\n\
-            Consider rolling back to an older CC Switch version.\n\n\
+            Consider rolling back to an older Vary AI version.\n\n\
             Click 'Retry' to attempt migration again\n\
             Click 'Exit' to close the program"
         )
@@ -2175,7 +2382,7 @@ fn show_database_init_error_dialog(
             Common causes include: newer database version, corrupted file, permission issues, or low disk space.\n\n\
             Suggestions:\n\
             1) Back up the entire config directory (including cc-switch.db)\n\
-            2) If you see “database version is newer”, please upgrade CC Switch\n\
+            2) If you see “database version is newer”, please upgrade Vary AI\n\
             3) If this happened right after upgrading, consider rolling back to export/backup then upgrade again\n\n\
             Click 'Retry' to attempt initialization again\n\
             Click 'Exit' to close the program",
@@ -2287,6 +2494,38 @@ mod tests {
         ExitRequestAction,
     };
     use crate::database::Database;
+
+    #[test]
+    fn windows_main_window_show_paths_restore_taskbar_visibility() {
+        // These entry points run on Windows, but CI on other platforms can still
+        // guard the ordering of the Windows-specific step before window.show().
+        let source = include_str!("lib.rs");
+        for path in [
+            "if focus_main_window {",
+            "// Show and focus window regardless",
+            "// 主窗口默认 visible:false，恢复界面必须强制显示",
+        ] {
+            let (_, after_entry) = source.split_once(path).expect("window show entry point");
+            let (before_show, _) = after_entry
+                .split_once("let _ = window.show();")
+                .expect("show window");
+            assert!(
+                before_show.contains("#[cfg(target_os = \"windows\")]")
+                    && before_show.contains("let _ = window.set_skip_taskbar(false);"),
+                "{path} must restore the Windows taskbar icon before showing the window"
+            );
+        }
+        let (_, windows_page_load) = source
+            .split_once("let startup_page_handled = AtomicBool::new(false);")
+            .expect("Windows page load handler");
+        let (before_show, _) = windows_page_load
+            .split_once("let _ = webview.window().show();")
+            .expect("show window after page load");
+        assert!(
+            before_show.contains("let _ = webview.window().set_skip_taskbar(false);"),
+            "Windows page load must restore the taskbar icon before showing the window"
+        );
+    }
 
     #[test]
     fn log_url_redaction_strips_credentials_and_query_keeps_path() {
@@ -2409,5 +2648,22 @@ mod tests {
         let apps = enabled_proxy_apps_on_startup(&db).await;
 
         assert_eq!(apps, vec!["grokbuild"]);
+    }
+
+    #[tokio::test]
+    async fn startup_restore_includes_enabled_workbuddy_official_route() {
+        let db = Database::memory().expect("db");
+        db.set_setting(crate::services::workbuddy_proxy::ENABLED_KEY, "true")
+            .expect("enable");
+        assert_eq!(enabled_proxy_apps_on_startup(&db).await, vec!["workbuddy"]);
+    }
+    #[test]
+    fn startup_skips_unselected_and_missing_agents() {
+        let mut visible = crate::settings::VisibleApps::default();
+        assert!(!super::startup_agent_eligible("qoder", &visible, true));
+        visible.qoder = true;
+        assert!(!super::startup_agent_eligible("qoder", &visible, false));
+        assert!(super::startup_agent_eligible("qoder", &visible, true));
+        assert!(super::startup_agent_eligible("codex", &visible, true));
     }
 }

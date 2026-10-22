@@ -20,12 +20,10 @@ pub struct FetchedModel {
 
 /// 模型列表响应的兼容格式。
 ///
-/// OpenAI 兼容接口和 Anthropic 接口使用 `data` 字段，智谱 OpenAI Responses
-/// 接口使用 `models` 字段，此结构同时兼容这两种格式。
 #[derive(Debug, Deserialize)]
 struct ModelsResponse {
     data: Option<Vec<ModelEntry>>,
-    models: Option<Vec<ZhipuModelEntry>>,
+    models: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,9 +32,19 @@ struct ModelEntry {
     owned_by: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ZhipuModelEntry {
-    slug: String,
+fn catalog_model_ids(models: Option<serde_json::Value>) -> Vec<String> {
+    let Some(serde_json::Value::Array(entries)) = models else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            ["slug", "id"]
+                .iter()
+                .find_map(|key| entry.get(key)?.as_str().filter(|id| !id.is_empty()))
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 const FETCH_TIMEOUT_SECS: u64 = 15;
@@ -115,13 +123,9 @@ pub async fn fetch_models(
                     })
                     .collect()
             } else {
-                resp.models
-                    .unwrap_or_default()
+                catalog_model_ids(resp.models)
                     .into_iter()
-                    .map(|m| FetchedModel {
-                        id: m.slug,
-                        owned_by: None,
-                    })
+                    .map(|id| FetchedModel { id, owned_by: None })
                     .collect()
             };
 
@@ -630,5 +634,35 @@ mod tests {
         let json = r#"{"object":"list","data":[]}"#;
         let resp: ModelsResponse = serde_json::from_str(json).unwrap();
         assert!(resp.data.unwrap().is_empty());
+    }
+
+    #[test]
+    fn model_response_ignores_unrelated_models_shapes() {
+        for models in [
+            r#"[{"id":"other"}]"#,
+            r#"{"count":1}"#,
+            "2",
+            r#"["not a model"]"#,
+            r#"[{"slug":1}]"#,
+        ] {
+            let json = format!(r#"{{"data":[{{"id":"model-a"}}],"models":{models}}}"#);
+            let resp: ModelsResponse = serde_json::from_str(&json).unwrap();
+            assert_eq!(resp.data.unwrap()[0].id, "model-a");
+        }
+    }
+
+    #[test]
+    fn catalog_models_prefer_slug_then_id_and_skip_invalid() {
+        let resp: ModelsResponse = serde_json::from_str(
+            r#"{"models":[
+            {"slug":"glm","id":"fallback"}, {"id":"other"},
+            {"slug":"","id":"valid"}, {"slug":1}, {}, 3
+        ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            catalog_model_ids(resp.models),
+            vec!["glm", "other", "valid"]
+        );
     }
 }

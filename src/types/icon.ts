@@ -5,7 +5,3 @@ export interface IconMetadata {
   keywords: string[]; // 搜索关键词
   defaultColor?: string; // 默认颜色
 }
-
-export interface IconPreset {
-  [key: string]: IconMetadata;
-}

@@ -8,7 +8,6 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Legend,
 } from "recharts";
 import { useUsageTrends } from "@/lib/query/usage";
 import { Loader2 } from "lucide-react";
@@ -54,6 +53,44 @@ export interface UsageTrendChartPoint {
   cacheReadTokens: number;
   cost: number | null;
 }
+
+export const usageTrendLegendItems = [
+  {
+    dataKey: "cost",
+    labelKey: "usage.cost",
+    fallbackLabel: "成本",
+    color: "#f43f5e",
+    dashed: true,
+  },
+  {
+    dataKey: "cacheCreationTokens",
+    labelKey: "usage.cacheCreationTokens",
+    fallbackLabel: "缓存创建",
+    color: "#f97316",
+    dashed: false,
+  },
+  {
+    dataKey: "cacheReadTokens",
+    labelKey: "usage.cacheReadTokens",
+    fallbackLabel: "缓存命中",
+    color: "#a855f7",
+    dashed: false,
+  },
+  {
+    dataKey: "inputTokens",
+    labelKey: "usage.inputTokens",
+    fallbackLabel: "输入 Tokens",
+    color: "#3b82f6",
+    dashed: false,
+  },
+  {
+    dataKey: "outputTokens",
+    labelKey: "usage.outputTokens",
+    fallbackLabel: "输出 Tokens",
+    color: "#22c55e",
+    dashed: false,
+  },
+] as const;
 
 /** Build chart rows from backend trend stats. Exported for unit tests. */
 export function buildUsageTrendChartData(
@@ -234,11 +271,51 @@ export function UsageTrendChart({
 
   return (
     <div className="rounded-xl border border-border/50 bg-card/40 p-6 backdrop-blur-sm">
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 grid grid-cols-1 items-center gap-3 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-4">
         <h3 className="text-lg font-semibold">
           {t("usage.trends", "使用趋势")}
         </h3>
-        <p className="text-sm text-muted-foreground">{rangeLabel}</p>
+        <div
+          className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-sm"
+          aria-label={t("usage.legend", "图表图例")}
+        >
+          {usageTrendLegendItems.map((item) => (
+            <span
+              key={item.dataKey}
+              className="inline-flex items-center gap-1.5 whitespace-nowrap"
+              style={{ color: item.color }}
+            >
+              <svg
+                aria-hidden="true"
+                className="h-3 w-5 shrink-0"
+                viewBox="0 0 20 12"
+                fill="none"
+              >
+                <line
+                  x1="1"
+                  y1="6"
+                  x2="19"
+                  y2="6"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeDasharray={item.dashed ? "4 3" : undefined}
+                />
+                <circle
+                  cx="10"
+                  cy="6"
+                  r="3.5"
+                  fill="hsl(var(--card))"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                />
+              </svg>
+              <span>{t(item.labelKey, item.fallbackLabel)}</span>
+            </span>
+          ))}
+        </div>
+        <p className="text-sm text-muted-foreground md:justify-self-end">
+          {rangeLabel}
+        </p>
       </div>
 
       <div className="h-[350px] w-full">
@@ -310,7 +387,6 @@ export function UsageTrendChart({
               tickFormatter={(value) => `$${value}`}
             />
             <Tooltip content={<CustomTooltip />} />
-            <Legend />
             <Area
               yAxisId="tokens"
               type="monotone"

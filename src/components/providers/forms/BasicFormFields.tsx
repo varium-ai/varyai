@@ -25,18 +25,20 @@ import type { ProviderFormData } from "@/lib/schemas/provider";
 
 interface BasicFormFieldsProps {
   form: UseFormReturn<ProviderFormData>;
+  defaultIcon?: string;
   /** Slot to render content between icon and name fields */
   beforeNameSlot?: ReactNode;
 }
 
 export function BasicFormFields({
   form,
+  defaultIcon,
   beforeNameSlot,
 }: BasicFormFieldsProps) {
   const { t } = useTranslation();
   const [iconDialogOpen, setIconDialogOpen] = useState(false);
 
-  const currentIcon = form.watch("icon");
+  const currentIcon = form.watch("icon") || defaultIcon;
   const currentIconColor = form.watch("iconColor");
   const providerName = form.watch("name") || "Provider";
   const effectiveIconColor =

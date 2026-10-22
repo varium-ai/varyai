@@ -36,24 +36,6 @@ type RequestLogsKey = {
 // Query keys
 export const usageKeys = {
   all: ["usage"] as const,
-  summary: (
-    preset: UsageRangeSelection["preset"],
-    customStartDate: number | undefined,
-    customEndDate: number | undefined,
-    filters?: UsageScopeFilters,
-    liveEndTime?: boolean,
-  ) =>
-    [
-      ...usageKeys.all,
-      "summary",
-      preset,
-      customStartDate ?? 0,
-      customEndDate ?? 0,
-      liveEndTime ?? false,
-      filters?.appType ?? null,
-      filters?.providerName ?? null,
-      filters?.model ?? null,
-    ] as const,
   summaryByApp: (
     preset: UsageRangeSelection["preset"],
     customStartDate: number | undefined,
@@ -140,11 +122,7 @@ export const usageKeys = {
       page,
       pageSize,
     ] as const,
-  detail: (requestId: string) =>
-    [...usageKeys.all, "detail", requestId] as const,
   pricing: () => [...usageKeys.all, "pricing"] as const,
-  limits: (providerId: string, appType: string) =>
-    [...usageKeys.all, "limits", providerId, appType] as const,
   script: (providerId: string, appType: string) =>
     [...usageKeys.all, providerId, appType] as const,
 };
@@ -156,36 +134,6 @@ function normalizeScopeFilters(filters?: UsageScopeFilters): UsageScopeFilters {
     providerName: filters?.providerName,
     model: filters?.model,
   };
-}
-
-// Hooks
-export function useUsageSummary(
-  range: UsageRangeSelection,
-  filters?: UsageScopeFilters,
-  options?: UsageQueryOptions,
-) {
-  const effective = normalizeScopeFilters(filters);
-  return useQuery({
-    queryKey: usageKeys.summary(
-      range.preset,
-      range.customStartDate,
-      range.customEndDate,
-      effective,
-      range.liveEndTime,
-    ),
-    queryFn: () => {
-      const { startDate, endDate } = resolveUsageRange(range);
-      return usageApi.getUsageSummary(
-        startDate,
-        endDate,
-        effective.appType,
-        effective.providerName,
-        effective.model,
-      );
-    },
-    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
-    refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
-  });
 }
 
 export function useUsageSummaryByApp(
@@ -331,26 +279,10 @@ export function useRequestLogs({
   });
 }
 
-export function useRequestDetail(requestId: string) {
-  return useQuery({
-    queryKey: usageKeys.detail(requestId),
-    queryFn: () => usageApi.getRequestDetail(requestId),
-    enabled: !!requestId,
-  });
-}
-
 export function useModelPricing() {
   return useQuery({
     queryKey: usageKeys.pricing(),
     queryFn: usageApi.getModelPricing,
-  });
-}
-
-export function useProviderLimits(providerId: string, appType: string) {
-  return useQuery({
-    queryKey: usageKeys.limits(providerId, appType),
-    queryFn: () => usageApi.checkProviderLimits(providerId, appType),
-    enabled: !!providerId && !!appType,
   });
 }
 

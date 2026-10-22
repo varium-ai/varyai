@@ -17,7 +17,7 @@ use toml_edit::DocumentMut;
 
 pub const CC_SWITCH_CODEX_MODEL_PROVIDER_ID: &str = "custom";
 /// Temporary model-provider id used while the built-in `codex-official`
-/// provider is routed through CC Switch.  A dedicated id is an ownership
+/// provider is routed through Vary AI.  A dedicated id is an ownership
 /// marker: unlike a generic localhost `base_url`, it can be detected and
 /// cleaned up without mistaking a user's own local provider for takeover.
 pub const CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID: &str = "cc-switch-official";
@@ -458,7 +458,7 @@ pub fn get_codex_auth_path() -> PathBuf {
     get_codex_config_dir().join("auth.json")
 }
 
-fn get_codex_managed_oauth_live_auth_marker_path() -> PathBuf {
+pub(crate) fn get_codex_managed_oauth_live_auth_marker_path() -> PathBuf {
     crate::config::get_app_config_dir().join(CODEX_MANAGED_OAUTH_LIVE_AUTH_MARKER_FILENAME)
 }
 
@@ -1627,6 +1627,11 @@ fn codex_catalog_model_entry(
         if let Some(parallel) = spec.supports_parallel_tool_calls {
             entry_obj.insert("supports_parallel_tool_calls".to_string(), json!(parallel));
         }
+    }
+
+    if profile == CodexCatalogToolProfile::ProxyChat {
+        // Do not advertise a detail level rejected by strict Chat gateways.
+        entry_obj.insert("supports_image_detail_original".to_string(), json!(false));
     }
 
     // Per-model reasoning levels override the template's conservative
@@ -3542,7 +3547,7 @@ pub fn apply_codex_official_proxy_route(
         }
     };
 
-    // Clean only CC Switch's placeholder from every stale provider table. Real
+    // Clean only Vary AI's placeholder from every stale provider table. Real
     // user bearer tokens are preserved, as are all unrelated provider fields.
     remove_codex_proxy_placeholders_from_providers(&mut providers);
 
@@ -3557,7 +3562,7 @@ pub fn apply_codex_official_proxy_route(
     Ok(doc.to_string())
 }
 
-/// Whether a live Codex config is the official route projected by CC Switch.
+/// Whether a live Codex config is the official route projected by Vary AI.
 pub fn codex_config_has_official_proxy_route(config_text: &str) -> bool {
     if !config_text.contains(CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID) {
         return false;
@@ -3574,7 +3579,7 @@ pub fn codex_config_has_official_proxy_route(config_text: &str) -> bool {
         == Some(CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID)
 }
 
-/// Remove only the official takeover route owned by CC Switch. This is a
+/// Remove only the official takeover route owned by Vary AI. This is a
 /// last-resort crash cleanup when no live backup or provider SSOT is usable.
 pub fn remove_codex_official_proxy_route(config_text: &str) -> Result<String, AppError> {
     let mut doc = config_text
@@ -6755,6 +6760,10 @@ base_url = "https://production.api/v1"
                 .and_then(Value::as_bool),
             Some(true)
         );
+        assert_eq!(
+            catalog["models"][0]["supports_image_detail_original"],
+            false
+        );
     }
 
     #[test]
@@ -8168,7 +8177,7 @@ model = "glm-5"
 
     #[test]
     fn set_catalog_json_some_preserves_user_owned_catalog() {
-        // When CC Switch generates a catalog (Some arm), it must still respect a
+        // When Vary AI generates a catalog (Some arm), it must still respect a
         // user-managed external catalog file instead of clobbering it with the
         // cc-switch-owned filename. Only an absent or cc-switch-owned pointer is
         // claimed; this mirrors the None arm's ownership rule.

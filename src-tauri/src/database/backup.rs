@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use tempfile::{Builder, NamedTempFile};
 
-const CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
+const VARY_AI_SQL_EXPORT_HEADER: &str = "-- Vary AI SQLite 导出";
+const LEGACY_CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
 
 /// Bound combined INSERT batches while still amortizing statement parsing.
 /// A row larger than this cap is emitted alone because it cannot be split.
@@ -91,6 +92,12 @@ const SYNC_SKIP_TABLES: &[&str] = &[
     "usage_daily_rollups",
     "session_log_sync",
     "session_usage_dedup",
+    "tool_risk_settings",
+    "tool_risk_custom_rules",
+    "tool_risk_builtin_overrides",
+    "tool_risk_events",
+    "tool_risk_command_lists",
+    "tool_risk_policy_changes",
 ];
 
 /// Tables whose local data is preserved from the live database during WebDAV import.
@@ -102,6 +109,12 @@ const SYNC_PRESERVE_TABLES: &[&str] = &[
     "usage_daily_rollups",
     "session_log_sync",
     "session_usage_dedup",
+    "tool_risk_settings",
+    "tool_risk_custom_rules",
+    "tool_risk_builtin_overrides",
+    "tool_risk_events",
+    "tool_risk_command_lists",
+    "tool_risk_policy_changes",
 ];
 
 /// A database backup entry for the UI
@@ -220,8 +233,7 @@ impl Database {
         Self::validate_imported_schema(&temp_conn)?;
 
         // 补齐缺失表/索引并执行迁移
-        Self::create_tables_on_conn(&temp_conn)?;
-        Self::apply_schema_migrations_on_conn(&temp_conn)?;
+        Self::prepare_portable_database(&temp_conn)?;
         on_staging_ready()?;
 
         let backup_file_guard = lock_backup_file_operations()?;
@@ -230,14 +242,24 @@ impl Database {
         // device-local rows can miss writes that arrived during staging.
         let backup_path = {
             let mut main_conn = lock_conn!(self.conn);
-            let backup_path =
-                Self::backup_database_file_from_conn(&backup_file_guard, &main_conn, &[])?;
+            let extension = self.lock_extension_connection()?;
+            let snapshot = Self::combined_snapshot(&main_conn, extension.as_deref())?;
+            let backup_path = Self::backup_database_file_from_conn_at(
+                &backup_file_guard,
+                &snapshot,
+                &[],
+                main_conn.path().filter(|p| !p.is_empty()).map(Path::new),
+            )?;
             if !preserve_tables.is_empty() {
-                Self::restore_tables(&main_conn, &temp_conn, preserve_tables)?;
+                Self::restore_tables(&snapshot, &temp_conn, preserve_tables)?;
             }
-            let backup = Backup::new(&temp_conn, &mut main_conn)
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            Self::complete_backup(&backup, "替换主数据库")?;
+            if extension.is_some() {
+                Self::replace_split_storage(&main_conn, &temp_path)?;
+            } else {
+                let backup = Backup::new(&temp_conn, &mut main_conn)
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                Self::complete_backup(&backup, "替换主数据库")?;
+            }
             backup_path
         };
 
@@ -251,19 +273,32 @@ impl Database {
     /// 创建内存快照以避免长时间持有数据库锁
     pub(crate) fn snapshot_to_memory(&self) -> Result<Connection, AppError> {
         let conn = lock_conn!(self.conn);
+        let extension = self.lock_extension_connection()?;
+        Self::combined_snapshot(&conn, extension.as_deref())
+    }
+
+    fn combined_snapshot(
+        conn: &Connection,
+        extension: Option<&Connection>,
+    ) -> Result<Connection, AppError> {
         let mut snapshot =
             Connection::open_in_memory().map_err(|e| AppError::Database(e.to_string()))?;
 
         {
             let backup =
-                Backup::new(&conn, &mut snapshot).map_err(|e| AppError::Database(e.to_string()))?;
+                Backup::new(conn, &mut snapshot).map_err(|e| AppError::Database(e.to_string()))?;
             Self::complete_backup(&backup, "创建内存数据库快照")?;
         }
 
+        if let Some(extension) = extension {
+            Self::create_extension_tables_on_conn(&snapshot)?;
+            Self::restore_tables(extension, &snapshot, super::storage::EXTENSION_TABLES)?;
+            Self::set_user_version(&snapshot, super::SCHEMA_VERSION)?;
+        }
         Ok(snapshot)
     }
 
-    fn complete_backup(backup: &Backup<'_, '_>, context: &str) -> Result<(), AppError> {
+    pub(super) fn complete_backup(backup: &Backup<'_, '_>, context: &str) -> Result<(), AppError> {
         let result = backup
             .step(-1)
             .map_err(|e| AppError::Database(format!("{context}失败: {e}")))?;
@@ -280,14 +315,16 @@ impl Database {
 
     fn validate_cc_switch_sql_export(sql: &str) -> Result<(), AppError> {
         let trimmed = sql.trim_start();
-        if trimmed.starts_with(CC_SWITCH_SQL_EXPORT_HEADER) {
+        if trimmed.starts_with(VARY_AI_SQL_EXPORT_HEADER)
+            || trimmed.starts_with(LEGACY_CC_SWITCH_SQL_EXPORT_HEADER)
+        {
             return Ok(());
         }
 
         Err(AppError::localized(
             "backup.sql.invalid_format",
-            "仅支持导入由 CC Switch 导出的 SQL 备份文件。",
-            "Only SQL backups exported by CC Switch are supported.",
+            "仅支持导入由 Vary AI 导出的 SQL 备份文件。",
+            "Only SQL backups exported by Vary AI are supported.",
         ))
     }
 
@@ -464,7 +501,7 @@ impl Database {
         }
         if reclaimed_rows > 0 {
             let conn = lock_conn!(self.conn);
-            if let Err(e) = conn.execute_batch("PRAGMA incremental_vacuum;") {
+            if let Err(e) = Self::incremental_vacuum_on_conn(&conn) {
                 log::warn!("Periodic incremental vacuum failed: {e}");
             }
         }
@@ -483,20 +520,29 @@ impl Database {
         backup_file_guard: &BackupFileOperationGuard,
     ) -> Result<Option<PathBuf>, AppError> {
         let conn = lock_conn!(self.conn);
-        Self::backup_database_file_from_conn(backup_file_guard, &conn, &[])
+        let extension = self.lock_extension_connection()?;
+        let snapshot = Self::combined_snapshot(&conn, extension.as_deref())?;
+        Self::backup_database_file_from_conn_at(
+            backup_file_guard,
+            &snapshot,
+            &[],
+            conn.path().filter(|p| !p.is_empty()).map(Path::new),
+        )
     }
 
     /// Create a safety backup from a connection whose caller already owns both
     /// the backup-file operation guard and the appropriate database guard.
-    fn backup_database_file_from_conn(
+    fn backup_database_file_from_conn_at(
         backup_file_guard: &BackupFileOperationGuard,
         source_conn: &Connection,
         protected_paths: &[&Path],
+        db_path: Option<&Path>,
     ) -> Result<Option<PathBuf>, AppError> {
         Self::backup_database_file_from_conn_with_hook(
             backup_file_guard,
             source_conn,
             protected_paths,
+            db_path,
             |_, _| Ok(()),
         )
     }
@@ -505,12 +551,15 @@ impl Database {
         _backup_file_guard: &BackupFileOperationGuard,
         source_conn: &Connection,
         protected_paths: &[&Path],
+        db_path: Option<&Path>,
         before_publish: F,
     ) -> Result<Option<PathBuf>, AppError>
     where
         F: FnOnce(&Path, &Path) -> Result<(), AppError>,
     {
-        let db_path = get_app_config_dir().join("cc-switch.db");
+        let db_path = db_path
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| get_app_config_dir().join("cc-switch.db"));
         if !db_path.exists() {
             return Ok(None);
         }
@@ -669,7 +718,7 @@ impl Database {
         ))
     }
 
-    /// Validate that the external SQL created a recognizable CC Switch schema.
+    /// Validate that the external SQL created a recognizable Vary AI schema.
     ///
     /// These tables all existed in the oldest supported SQL-export schema
     /// (v3.8.x). Checking before migrations keeps header-only/truncated files
@@ -696,8 +745,8 @@ impl Database {
             let names = missing.join(", ");
             return Err(AppError::localized(
                 "backup.sql.invalid_schema",
-                format!("导入的 SQL 缺少 CC Switch 必需表：{names}"),
-                format!("The imported SQL is missing required CC Switch tables: {names}"),
+                format!("导入的 SQL 缺少 Vary AI 必需表：{names}"),
+                format!("The imported SQL is missing required Vary AI tables: {names}"),
             ));
         }
         Ok(())
@@ -712,7 +761,7 @@ impl Database {
             .unwrap_or(0);
 
         output.push_str(&format!(
-            "-- CC Switch SQLite 导出\n-- 生成时间: {timestamp}\n-- user_version: {user_version}\n"
+            "-- Vary AI SQLite 导出\n-- 生成时间: {timestamp}\n-- user_version: {user_version}\n"
         ));
         output.push_str("PRAGMA foreign_keys=OFF;\n");
         output.push_str(&format!("PRAGMA user_version={user_version};\n"));
@@ -885,7 +934,7 @@ impl Database {
         Ok(())
     }
 
-    fn quote_identifier(identifier: &str) -> String {
+    pub(super) fn quote_identifier(identifier: &str) -> String {
         format!("\"{}\"", identifier.replace('"', "\"\""))
     }
 
@@ -1023,7 +1072,15 @@ impl Database {
         }
 
         let backup_file_guard = lock_backup_file_operations()?;
-        let backup_dir = get_app_config_dir().join("backups");
+        let backup_dir = {
+            let conn = lock_conn!(self.conn);
+            conn.path()
+                .map(Path::new)
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(get_app_config_dir)
+                .join("backups")
+        };
         let backup_path = backup_dir.join(filename);
 
         if !backup_path.exists() {
@@ -1059,8 +1116,7 @@ impl Database {
         Self::validate_sqlite_integrity(&staging_conn)?;
         Self::validate_imported_schema(&staging_conn)?;
         Self::ensure_incremental_auto_vacuum_on_conn(&staging_conn)?;
-        Self::create_tables_on_conn(&staging_conn)?;
-        Self::apply_schema_migrations_on_conn(&staging_conn)?;
+        Self::prepare_portable_database(&staging_conn)?;
         Self::ensure_model_pricing_seeded_on_conn(&staging_conn)?;
         Self::validate_sqlite_integrity(&staging_conn)?;
 
@@ -1068,15 +1124,22 @@ impl Database {
         // the safety file exactly represents the state being replaced.
         let safety_backup = {
             let mut main_conn = lock_conn!(self.conn);
-            let safety_backup = Self::backup_database_file_from_conn(
+            let extension = self.lock_extension_connection()?;
+            let snapshot = Self::combined_snapshot(&main_conn, extension.as_deref())?;
+            let safety_backup = Self::backup_database_file_from_conn_at(
                 &backup_file_guard,
-                &main_conn,
+                &snapshot,
                 &[backup_path.as_path()],
+                main_conn.path().filter(|p| !p.is_empty()).map(Path::new),
             )?;
             before_replace(safety_backup.as_deref())?;
-            let backup = Backup::new(&staging_conn, &mut main_conn)
-                .map_err(|e| AppError::Database(e.to_string()))?;
-            Self::complete_backup(&backup, "恢复主数据库")?;
+            if extension.is_some() {
+                Self::replace_split_storage(&main_conn, temp_file.path())?;
+            } else {
+                let backup = Backup::new(&staging_conn, &mut main_conn)
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                Self::complete_backup(&backup, "恢复主数据库")?;
+            }
             safety_backup
         };
         let safety_id = safety_backup
@@ -1252,6 +1315,57 @@ mod tests {
 
     #[test]
     #[serial]
+    fn v22_import_and_file_backup_restore_both_v21_branches() -> Result<(), AppError> {
+        let _test_home = TestHomeGuard::new();
+        let backup_dir = crate::config::get_app_config_dir().join("backups");
+        std::fs::create_dir_all(&backup_dir).map_err(|e| AppError::io(&backup_dir, e))?;
+        for local in [false, true] {
+            let source = Database {
+                extension_conn: None,
+                conn: std::sync::Mutex::new(
+                    crate::database::migration_v22_tests::historical_fixture(21, local)?,
+                ),
+            };
+            {
+                let conn = crate::database::lock_conn!(source.conn);
+                // Complete non-security schema for import validation without running migrations.
+                Database::create_tables_on_conn(&conn)?;
+                conn.execute(
+                    "INSERT INTO providers (id, app_type, name, settings_config, meta)
+                     VALUES ('historical', 'claude', 'Historical', '{}', '{}')",
+                    [],
+                )?;
+            }
+            let sql = source.export_sql_string()?;
+            let imported = Database::memory()?;
+            imported.import_sql_string(&sql)?;
+            {
+                let conn = crate::database::lock_conn!(imported.conn);
+                crate::database::migration_v22_tests::assert_v22_state(&conn, 21, local)?;
+            }
+            // A real SQLite backup file must go through the restore staging migration too.
+            let filename = format!(
+                "historical-v21-{}.db",
+                if local { "local" } else { "upstream" }
+            );
+            let path = backup_dir.join(&filename);
+            let mut file_conn = Connection::open(&path)?;
+            {
+                let conn = crate::database::lock_conn!(source.conn);
+                let backup = rusqlite::backup::Backup::new(&conn, &mut file_conn)?;
+                Database::complete_backup(&backup, "test historical backup")?;
+            }
+            drop(file_conn);
+            let restored = Database::memory()?;
+            restored.restore_from_backup(&filename)?;
+            let conn = crate::database::lock_conn!(restored.conn);
+            crate::database::migration_v22_tests::assert_v22_state(&conn, 21, local)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
     fn import_rejects_cross_file_statements_and_leaves_no_file_behind() -> Result<(), AppError> {
         let test_home = TestHomeGuard::new();
         // `VACUUM INTO` 是关键字扫描方案最容易漏的一条：它不含 "ATTACH" 字样，
@@ -1270,7 +1384,7 @@ mod tests {
             // 真正拦下来的必须是 authorizer。
             let malicious = format!(
                 "{}\n{}\n",
-                super::CC_SWITCH_SQL_EXPORT_HEADER,
+                super::LEGACY_CC_SWITCH_SQL_EXPORT_HEADER,
                 template.replace("{path}", &target.to_string_lossy().replace('\'', "''"))
             );
 
@@ -1390,14 +1504,14 @@ mod tests {
 
         let header_only = format!(
             "{}\nPRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\nCOMMIT;\n",
-            super::CC_SWITCH_SQL_EXPORT_HEADER
+            super::LEGACY_CC_SWITCH_SQL_EXPORT_HEADER
         );
         let error = target
             .import_sql_string(&header_only)
             .expect_err("缺少原始 schema 的文件必须被拒绝");
         assert!(
-            error.to_string().contains("required CC Switch tables")
-                || error.to_string().contains("CC Switch 必需表"),
+            error.to_string().contains("required Vary AI tables")
+                || error.to_string().contains("Vary AI 必需表"),
             "应由原始 schema 校验拒绝，实际错误: {error}"
         );
 
@@ -1506,7 +1620,7 @@ mod tests {
 
         let invalid_sql = format!(
             "{}\nBEGIN TRANSACTION;\nCREATE TABLE partial (id INTEGER);\nTHIS IS NOT SQL;\n",
-            super::CC_SWITCH_SQL_EXPORT_HEADER
+            super::LEGACY_CC_SWITCH_SQL_EXPORT_HEADER
         );
         assert!(target.import_sql_string(&invalid_sql).is_err());
 
@@ -1542,7 +1656,7 @@ mod tests {
         let exported = source.export_sql_string()?;
         let truncated = exported
             .strip_suffix("COMMIT;\nPRAGMA foreign_keys=ON;\n")
-            .expect("CC Switch export should end with a committed transaction");
+            .expect("Vary AI export should end with a committed transaction");
 
         let target = Database::memory()?;
         {
@@ -1590,7 +1704,7 @@ mod tests {
              INSERT INTO skills (key, installed, installed_at)
              VALUES ('claude:legacy-skill', 1, 1700000000);
              COMMIT;\nPRAGMA foreign_keys=ON;\n",
-            super::CC_SWITCH_SQL_EXPORT_HEADER,
+            super::LEGACY_CC_SWITCH_SQL_EXPORT_HEADER,
             crate::database::tests::V3_8_SCHEMA_V1_SQL,
         );
 
@@ -2150,6 +2264,322 @@ mod tests {
         Ok(())
     }
 
+    fn insert_tool_risk_command_list_fixture(
+        db: &Database,
+        id: &str,
+        pattern: &str,
+        updated_at: i64,
+    ) -> Result<(), AppError> {
+        // These are inert fixture strings, never shell commands or real credentials.
+        let definition = serde_json::json!({
+            "id": id,
+            "revision": 3,
+            "listType": "blacklist",
+            "matchKind": "exact",
+            "pattern": pattern,
+            "enabled": true,
+            "severity": "high",
+            "riskCategory": "destructive_change"
+        })
+        .to_string();
+        let conn = crate::database::lock_conn!(db.conn);
+        conn.execute(
+            "INSERT INTO tool_risk_command_lists (id, definition, updated_at)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, definition, updated_at],
+        )?;
+        Ok(())
+    }
+
+    fn tool_risk_command_list_rows(
+        conn: &Connection,
+    ) -> Result<Vec<(String, String, i64)>, AppError> {
+        let rows = conn
+            .prepare("SELECT id, definition, updated_at FROM tool_risk_command_lists ORDER BY id")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    #[test]
+    #[serial]
+    fn tool_risk_command_lists_sync_export_omits_secret_patterns() -> Result<(), AppError> {
+        let _test_home = TestHomeGuard::new();
+        let source = Database::memory()?;
+        const SECRET_PATTERN: &str = "SECRET_FIXTURE_TOOL_RISK_LOCAL_PATTERN";
+        insert_tool_risk_command_list_fixture(&source, "local-list", SECRET_PATTERN, 123)?;
+
+        let sql = source.export_sql_string_for_sync()?;
+        assert!(
+            !sql.contains(SECRET_PATTERN),
+            "同步导出不得包含本机名单的 secret fixture pattern"
+        );
+        let exported = Connection::open_in_memory()?;
+        exported.execute_batch(&sql)?;
+        assert!(
+            tool_risk_command_list_rows(&exported)?.is_empty(),
+            "同步导出应保留名单表结构，但不得导出名单数据"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn tool_risk_command_lists_sync_import_preserves_local_rows() -> Result<(), AppError> {
+        let _test_home = TestHomeGuard::new();
+        let remote = Database::memory()?;
+        insert_tool_risk_command_list_fixture(
+            &remote,
+            "shared-list",
+            "REMOTE_FIXTURE_PATTERN",
+            999,
+        )?;
+        insert_tool_risk_command_list_fixture(&remote, "remote-only", "REMOTE_ONLY_FIXTURE", 888)?;
+        let local = Database::memory()?;
+        insert_tool_risk_command_list_fixture(&local, "shared-list", "SECRET_FIXTURE_LOCAL", 123)?;
+        insert_tool_risk_command_list_fixture(&local, "local-only", "LOCAL_ONLY_FIXTURE", 456)?;
+        let expected = {
+            let conn = crate::database::lock_conn!(local.conn);
+            tool_risk_command_list_rows(&conn)?
+        };
+
+        // Both sanitized sync payloads and older/full payloads must preserve local rows.
+        for sql in [
+            remote.export_sql_string_for_sync()?,
+            remote.export_sql_string()?,
+        ] {
+            local.import_sql_string_for_sync(&sql)?;
+            let conn = crate::database::lock_conn!(local.conn);
+            assert_eq!(
+                tool_risk_command_list_rows(&conn)?,
+                expected,
+                "同步导入不得删除或覆盖本机名单，也不得添加远端名单"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn tool_risk_command_lists_full_local_backups_round_trip_rows() -> Result<(), AppError> {
+        let test_home = TestHomeGuard::new();
+        let source = Database::memory()?;
+        const SECRET_PATTERN: &str = "SECRET_FIXTURE_TOOL_RISK_BACKUP_PATTERN";
+        insert_tool_risk_command_list_fixture(&source, "backup-list", SECRET_PATTERN, 321)?;
+        let expected = {
+            let conn = crate::database::lock_conn!(source.conn);
+            tool_risk_command_list_rows(&conn)?
+        };
+
+        let sql = source.export_sql_string()?;
+        assert!(
+            sql.contains(SECRET_PATTERN),
+            "完整本地 SQL 备份必须保留名单 pattern"
+        );
+        let restored = Database::memory()?;
+        restored.import_sql_string(&sql)?;
+        {
+            let conn = crate::database::lock_conn!(restored.conn);
+            assert_eq!(tool_risk_command_list_rows(&conn)?, expected);
+        }
+
+        let path = source
+            .backup_database_file()?
+            .expect("isolated local backup");
+        assert!(path.starts_with(test_home.path()));
+        let backup =
+            Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        assert_eq!(tool_risk_command_list_rows(&backup)?, expected);
+        Ok(())
+    }
+
+    fn seed_v24_local_tool_risk_data(db: &Database, marker: &str) -> Result<(), AppError> {
+        insert_tool_risk_command_list_fixture(db, marker, marker, 321)?;
+        let conn = crate::database::lock_conn!(db.conn);
+        conn.execute(
+            "INSERT INTO tool_risk_settings (key, value) VALUES ('legacy_secret_fixture', ?1)",
+            [marker],
+        )?;
+        conn.execute_batch(
+            "INSERT INTO tool_risk_settings VALUES ('enabled', 'true'), ('policy_version', '17');
+             INSERT INTO tool_risk_builtin_overrides VALUES ('builtin-rule', 0, 123);",
+        )?;
+        conn.execute(
+            "INSERT INTO tool_risk_custom_rules
+                (id, revision, name, definition, enabled, updated_at)
+             VALUES (?1, 3, ?1, ?1, 1, 456)",
+            [marker],
+        )?;
+        conn.execute(
+            "INSERT INTO tool_risk_events (
+                timestamp, source, stage, command_summary, detection_scope,
+                integrity_status, verdict, policy_version
+             ) VALUES (789, 'claude', 'response', ?1, 'tool', 'complete', 'risky', 17)",
+            [marker],
+        )?;
+
+        Database::set_user_version(&conn, crate::database::SCHEMA_VERSION)?;
+
+        conn.execute(
+            "INSERT INTO tool_risk_policy_changes
+                (at, policy_version, actor, kind, target_id, changed_fields, audit_status)
+             VALUES (999, 17, 'unknown', 'list_create', ?1, '[\"pattern\"]', 'recorded')",
+            [marker],
+        )?;
+        Ok(())
+    }
+
+    fn v24_local_tool_risk_rows(
+        conn: &Connection,
+    ) -> Result<Vec<Vec<Vec<rusqlite::types::Value>>>, AppError> {
+        let mut tables = Vec::new();
+        for table in [
+            "tool_risk_settings",
+            "tool_risk_custom_rules",
+            "tool_risk_builtin_overrides",
+            "tool_risk_events",
+            "tool_risk_command_lists",
+            "tool_risk_policy_changes",
+        ] {
+            let mut stmt = conn.prepare(&format!("SELECT * FROM {table} ORDER BY 1"))?;
+            let column_count = stmt.column_count();
+            let rows = stmt
+                .query_map([], |row| {
+                    (0..column_count).map(|column| row.get(column)).collect()
+                })?
+                .collect::<Result<_, _>>()?;
+            tables.push(rows);
+        }
+        Ok(tables)
+    }
+
+    #[test]
+    #[serial]
+    fn v24_policy_changes_sync_export_omits_audit_and_secret_config() -> Result<(), AppError> {
+        let _test_home = TestHomeGuard::new();
+        let source = Database::memory()?;
+        const SECRET: &str = "SECRET_FIXTURE_V24_LOCAL_CONFIG_AND_AUDIT";
+        seed_v24_local_tool_risk_data(&source, SECRET)?;
+        let sql = source.export_sql_string_for_sync()?;
+        assert!(
+            !sql.contains(SECRET),
+            "同步 SQL 不得含本地配置、事件或审计原值"
+        );
+        let exported = Connection::open_in_memory()?;
+        exported.execute_batch(&sql)?;
+        for rows in v24_local_tool_risk_rows(&exported)? {
+            assert!(rows.is_empty(), "同步仅携带本地表结构，不携带任何本地行");
+        }
+        let sequences: i64 = exported.query_row(
+            "SELECT COUNT(*) FROM sqlite_sequence
+             WHERE name IN ('tool_risk_events', 'tool_risk_policy_changes')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(sequences, 0, "本地历史序列也不得同步");
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn v24_policy_changes_sync_import_preserves_local_audit_lists_and_sequence(
+    ) -> Result<(), AppError> {
+        let _test_home = TestHomeGuard::new();
+        let remote = Database::memory()?;
+        seed_v24_local_tool_risk_data(&remote, "REMOTE_FIXTURE_V24")?;
+        let local = Database::memory()?;
+        seed_v24_local_tool_risk_data(&local, "SECRET_FIXTURE_V24_LOCAL")?;
+        let expected = {
+            let conn = crate::database::lock_conn!(local.conn);
+            conn.execute_batch(
+                "INSERT INTO tool_risk_policy_changes
+                    (id, at, policy_version, actor, kind, changed_fields, audit_status)
+                 VALUES (90, 1000, 17, 'system', 'settings_update', '[\"enabled\"]', 'recorded');
+                 DELETE FROM tool_risk_policy_changes WHERE id = 90;",
+            )?;
+            v24_local_tool_risk_rows(&conn)?
+        };
+
+        for sql in [
+            remote.export_sql_string_for_sync()?,
+            remote.export_sql_string()?,
+        ] {
+            local.import_sql_string_for_sync(&sql)?;
+            let conn = crate::database::lock_conn!(local.conn);
+            assert_eq!(v24_local_tool_risk_rows(&conn)?, expected);
+            let sequence: i64 = conn.query_row(
+                "SELECT seq FROM sqlite_sequence WHERE name = 'tool_risk_policy_changes'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(sequence, 90, "同步保留本地审计 ID 高水位");
+        }
+        let conn = crate::database::lock_conn!(local.conn);
+        conn.execute(
+            "INSERT INTO tool_risk_policy_changes
+                (at, policy_version, actor, kind, changed_fields, audit_status)
+             VALUES (1001, 18, 'local_ui', 'settings_update', '[\"enabled\"]', 'recorded')",
+            [],
+        )?;
+        assert_eq!(conn.last_insert_rowid(), 91);
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn v24_policy_changes_full_sql_backup_restores_all_local_data() -> Result<(), AppError> {
+        let _test_home = TestHomeGuard::new();
+        let source = Database::memory()?;
+        const SECRET: &str = "SECRET_FIXTURE_V24_FULL_SQL_BACKUP";
+        seed_v24_local_tool_risk_data(&source, SECRET)?;
+        let expected = {
+            let conn = crate::database::lock_conn!(source.conn);
+            v24_local_tool_risk_rows(&conn)?
+        };
+        let sql = source.export_sql_string()?;
+        assert!(sql.contains(SECRET), "完整本地备份必须保留配置与历史原值");
+        let target = Database::memory()?;
+        seed_v24_local_tool_risk_data(&target, "REPLACED_FIXTURE_V24_SQL")?;
+        target.import_sql_string(&sql)?;
+        let conn = crate::database::lock_conn!(target.conn);
+        assert_eq!(v24_local_tool_risk_rows(&conn)?, expected);
+        assert_eq!(
+            Database::get_user_version(&conn)?,
+            crate::database::SCHEMA_VERSION
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn v24_policy_changes_full_binary_backup_restores_all_local_data() -> Result<(), AppError> {
+        let test_home = TestHomeGuard::new();
+        let source = Database::memory()?;
+        seed_v24_local_tool_risk_data(&source, "SECRET_FIXTURE_V24_BINARY_BACKUP")?;
+        let expected = {
+            let conn = crate::database::lock_conn!(source.conn);
+            v24_local_tool_risk_rows(&conn)?
+        };
+        let path = source
+            .backup_database_file()?
+            .expect("isolated binary backup");
+        assert!(path.starts_with(test_home.path()));
+        let backup =
+            Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        assert_eq!(v24_local_tool_risk_rows(&backup)?, expected);
+        drop(backup);
+        let target = Database::memory()?;
+        seed_v24_local_tool_risk_data(&target, "REPLACED_FIXTURE_V24_BINARY")?;
+        target.restore_from_backup(path.file_name().unwrap().to_str().unwrap())?;
+        let conn = crate::database::lock_conn!(target.conn);
+        assert_eq!(v24_local_tool_risk_rows(&conn)?, expected);
+        assert_eq!(
+            Database::get_user_version(&conn)?,
+            crate::database::SCHEMA_VERSION
+        );
+        Ok(())
+    }
+
     #[test]
     fn every_sync_preserved_table_is_skipped_from_remote_payloads() {
         for table in super::SYNC_PRESERVE_TABLES {
@@ -2372,6 +2802,7 @@ mod tests {
                 &backup_file_guard,
                 &conn,
                 &[],
+                None,
                 |temp_path, target_path| {
                     assert!(
                         temp_path.exists(),
@@ -2423,6 +2854,7 @@ mod tests {
                 &backup_file_guard,
                 &conn,
                 &[],
+                None,
                 |_, target_path| {
                     claimed_path = Some(target_path.to_path_buf());
                     std::fs::write(target_path, b"claimed by another process")

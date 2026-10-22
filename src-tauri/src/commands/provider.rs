@@ -56,6 +56,24 @@ pub async fn add_provider(
 }
 
 #[tauri::command]
+pub async fn duplicate_provider(
+    app_handle: tauri::AppHandle,
+    app: String,
+    id: String,
+    name: String,
+) -> Result<Provider, String> {
+    let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle
+            .try_state::<AppState>()
+            .ok_or_else(|| "应用状态不可用".to_string())?;
+        ProviderService::duplicate(state.inner(), app_type, &id, &name).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("供应商复制任务执行失败: {e}"))?
+}
+
+#[tauri::command]
 pub async fn update_provider(
     app_handle: tauri::AppHandle,
     app: String,
@@ -122,6 +140,38 @@ pub async fn switch_provider(
     id: String,
 ) -> Result<SwitchResult, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
+    if app_type == AppType::Qoder {
+        let state = app_handle
+            .try_state::<AppState>()
+            .ok_or_else(|| "Application state is unavailable".to_string())?;
+        let manually_cleared = state
+            .db
+            .get_bool_flag(crate::services::qoder_proxy::CERTIFICATE_CLEARED_KEY)
+            .map_err(|e| e.to_string())?;
+        if !manually_cleared
+            && (!state.proxy_service.get_takeover_status().await?.qoder
+                || !state.proxy_service.is_running().await)
+        {
+            super::proxy::ensure_qoder_consent(&app_handle, state.inner()).await?;
+            state
+                .proxy_service
+                .set_takeover_for_app("qoder", true)
+                .await?;
+        }
+    }
+    if app_type == AppType::WorkBuddy {
+        let state = app_handle
+            .try_state::<AppState>()
+            .ok_or_else(|| "应用状态不可用".to_string())?;
+        if !state.proxy_service.get_takeover_status().await?.workbuddy
+            || !state.proxy_service.is_running().await
+        {
+            state
+                .proxy_service
+                .set_takeover_for_app("workbuddy", true)
+                .await?;
+        }
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle
             .try_state::<AppState>()
@@ -953,6 +1003,36 @@ pub fn import_opencode_providers_from_live(state: State<'_, AppState>) -> Result
 }
 
 #[tauri::command]
+pub fn get_workbuddy_default_config_dir() -> String {
+    crate::workbuddy_config::get_workbuddy_default_dir()
+        .to_string_lossy()
+        .to_string()
+}
+
+#[tauri::command]
+pub fn get_workbuddy_live_provider_ids(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    crate::services::provider::get_workbuddy_live_provider_ids(&state).map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn get_workbuddy_settings(
+    state: State<'_, AppState>,
+) -> Result<crate::services::workbuddy_proxy::SettingsSnapshot, String> {
+    state.proxy_service.get_workbuddy_settings().await
+}
+
+#[tauri::command]
+pub async fn save_workbuddy_settings(
+    state: State<'_, AppState>,
+    revision: String,
+    content: String,
+) -> Result<(), String> {
+    state
+        .proxy_service
+        .save_workbuddy_settings(&revision, &content)
+        .await
+}
+#[tauri::command]
 pub fn get_opencode_live_provider_ids() -> Result<Vec<String>, String> {
     crate::opencode_config::get_providers()
         .map(|providers| providers.keys().cloned().collect())
@@ -1264,4 +1344,26 @@ mod native_query_credentials_tests {
         assert_eq!(base_url, "https://provider.zenmux.example/v1");
         assert_eq!(api_key, "sk-provider");
     }
+}
+
+#[tauri::command]
+pub fn get_qoder_live_provider_ids(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    crate::services::provider::get_qoder_live_provider_ids(state.inner()).map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub async fn get_qoder_settings(
+    state: State<'_, AppState>,
+) -> Result<crate::services::qoder_proxy::SettingsSnapshot, String> {
+    state.proxy_service.get_qoder_settings().await
+}
+#[tauri::command]
+pub async fn save_qoder_settings(
+    state: State<'_, AppState>,
+    revision: String,
+    content: String,
+) -> Result<(), String> {
+    state
+        .proxy_service
+        .save_qoder_settings(&revision, &content)
+        .await
 }

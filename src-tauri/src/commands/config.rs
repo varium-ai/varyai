@@ -68,6 +68,36 @@ pub async fn get_config_status(
     app: String,
 ) -> Result<ConfigStatus, String> {
     match AppType::from_str(&app).map_err(|e| e.to_string())? {
+        AppType::DoubaoWork => {
+            let path = dirs::home_dir()
+                .ok_or("Home directory unavailable")?
+                .join("Library/Application Support/DoubaoWork");
+            Ok(ConfigStatus {
+                exists: path.exists(),
+                path: path.to_string_lossy().into_owned(),
+            })
+        }
+        AppType::Trae => {
+            let path = dirs::home_dir()
+                .ok_or("Home directory unavailable")?
+                .join(".trae-cn");
+            Ok(ConfigStatus {
+                exists: path.exists(),
+                path: path.to_string_lossy().into_owned(),
+            })
+        }
+        app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode) => {
+            let path = crate::services::agent_clients::config_path(app.as_str())
+                .map_err(|e| e.to_string())?;
+            Ok(ConfigStatus {
+                exists: path.exists(),
+                path: path
+                    .parent()
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned(),
+            })
+        }
         AppType::Claude => Ok(config::get_claude_config_status()),
         AppType::ClaudeDesktop => {
             let status = crate::claude_desktop_config::get_status(
@@ -135,6 +165,18 @@ pub async fn get_config_status(
 
             Ok(ConfigStatus { exists, path })
         }
+        AppType::Qoder => Ok(ConfigStatus {
+            exists: crate::qoder_config::path().exists(),
+            path: crate::qoder_config::directory()
+                .to_string_lossy()
+                .into_owned(),
+        }),
+        AppType::WorkBuddy => Ok(ConfigStatus {
+            exists: crate::workbuddy_config::get_workbuddy_config_path().exists(),
+            path: crate::workbuddy_config::get_workbuddy_dir()
+                .to_string_lossy()
+                .to_string(),
+        }),
         AppType::Pi => {
             let config_path = crate::pi_config::get_pi_models_path().map_err(|e| e.to_string())?;
             let path = crate::pi_config::get_pi_agent_dir()
@@ -157,6 +199,12 @@ pub async fn get_claude_code_config_path() -> Result<String, String> {
 #[tauri::command]
 pub async fn get_config_dir(app: String) -> Result<String, String> {
     let dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
+        AppType::DoubaoWork => return Err("Doubao Work has no managed configuration file".into()),
+        app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::Trae) => {
+            let path = crate::services::agent_clients::config_path(app.as_str())
+                .map_err(|e| e.to_string())?;
+            path.parent().unwrap_or(&path).to_path_buf()
+        }
         AppType::Claude => config::get_claude_config_dir(),
         AppType::ClaudeDesktop => {
             crate::claude_desktop_config::get_config_library_path().map_err(|e| e.to_string())?
@@ -167,6 +215,8 @@ pub async fn get_config_dir(app: String) -> Result<String, String> {
         AppType::OpenCode => crate::opencode_config::get_opencode_dir(),
         AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
         AppType::Hermes => crate::hermes_config::get_hermes_dir(),
+        AppType::WorkBuddy => crate::workbuddy_config::get_workbuddy_dir(),
+        AppType::Qoder => crate::qoder_config::directory(),
         AppType::Pi => crate::pi_config::get_pi_agent_dir().map_err(|e| e.to_string())?,
     };
 
@@ -176,6 +226,12 @@ pub async fn get_config_dir(app: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, String> {
     let config_dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
+        AppType::DoubaoWork => return Err("Doubao Work has no managed configuration file".into()),
+        app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::Trae) => {
+            let path = crate::services::agent_clients::config_path(app.as_str())
+                .map_err(|e| e.to_string())?;
+            path.parent().unwrap_or(&path).to_path_buf()
+        }
         AppType::Claude => config::get_claude_config_dir(),
         AppType::ClaudeDesktop => {
             crate::claude_desktop_config::get_config_library_path().map_err(|e| e.to_string())?
@@ -186,6 +242,8 @@ pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, 
         AppType::OpenCode => crate::opencode_config::get_opencode_dir(),
         AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
         AppType::Hermes => crate::hermes_config::get_hermes_dir(),
+        AppType::WorkBuddy => crate::workbuddy_config::get_workbuddy_dir(),
+        AppType::Qoder => crate::qoder_config::directory(),
         AppType::Pi => crate::pi_config::get_pi_agent_dir().map_err(|e| e.to_string())?,
     };
 

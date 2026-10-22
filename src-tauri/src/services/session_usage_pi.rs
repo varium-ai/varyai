@@ -354,6 +354,9 @@ fn parse_pi_file(
     let mut session_timestamp = None;
     let mut records = Vec::new();
     let mut incomplete_tail = false;
+    let known_models =
+        crate::services::pi_routing::Manager::new(crate::services::pi_routing::settings_path())
+            .known_models();
 
     loop {
         buffer.clear();
@@ -431,6 +434,12 @@ fn parse_pi_file(
             }
             continue;
         }
+        if value
+            .get("message")
+            .is_some_and(|message| managed_message(message, &known_models))
+        {
+            continue;
+        }
         if let Some(record) = parse_usage_record(
             &value,
             session_id.as_deref().unwrap_or_default(),
@@ -449,6 +458,14 @@ fn parse_pi_file(
         last_complete_line: line_number,
         incomplete_tail,
     })
+}
+
+// Only a locally recorded generated alias proves gateway accounting ownership.
+fn managed_message(message: &Value, known: &[String]) -> bool {
+    message["provider"].as_str() == Some("vary")
+        && message["model"]
+            .as_str()
+            .is_some_and(|id| known.iter().any(|known| known == id))
 }
 
 fn parse_usage_record(
@@ -1533,5 +1550,29 @@ mod tests {
         assert_eq!(result.errors.len(), 1);
         assert!(result.errors[0].contains("安全上限"));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod routing_tests {
+    #[test]
+    fn pi_routing_import_excludes_only_proven_managed_models() {
+        let known = vec!["vary_test".to_string()];
+        assert!(super::managed_message(
+            &serde_json::json!({"provider":"vary","model":"vary_test"}),
+            &known
+        ));
+        assert!(!super::managed_message(
+            &serde_json::json!({"provider":"direct","model":"vary_test"}),
+            &known
+        ));
+        assert!(!super::managed_message(
+            &serde_json::json!({"provider":"vary","model":"user"}),
+            &known
+        ));
+        assert!(!super::managed_message(
+            &serde_json::json!({"model":"vary_test"}),
+            &known
+        ));
     }
 }

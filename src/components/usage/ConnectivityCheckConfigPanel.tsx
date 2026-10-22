@@ -106,6 +106,7 @@ export function ConnectivityCheckConfigPanel() {
             <Label htmlFor="timeoutSecs">{t("streamCheck.timeout")}</Label>
             <Input
               id="timeoutSecs"
+              placeholder="2–60"
               type="number"
               min={2}
               max={60}
@@ -120,6 +121,7 @@ export function ConnectivityCheckConfigPanel() {
             <Label htmlFor="maxRetries">{t("streamCheck.maxRetries")}</Label>
             <Input
               id="maxRetries"
+              placeholder="0–5"
               type="number"
               min={0}
               max={5}
@@ -136,6 +138,7 @@ export function ConnectivityCheckConfigPanel() {
             </Label>
             <Input
               id="degradedThresholdMs"
+              placeholder="1000–30000"
               type="number"
               min={1000}
               max={30000}

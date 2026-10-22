@@ -1,0 +1,23 @@
+{
+  "routing": {
+    "name": "Vary_Local_Direct",
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "type": "field",
+        "ip": ["127.0.0.0/8", "::1/128"],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "domain": ["full:localhost"],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "port": "0-65535",
+        "outboundTag": "main"
+      }
+    ]
+  }
+}

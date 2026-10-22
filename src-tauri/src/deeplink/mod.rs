@@ -1,6 +1,6 @@
-//! Deep link import functionality for CC Switch
+//! Deep link import functionality for Vary AI
 //!
-//! This module implements the ccswitch:// protocol for importing configurations
+//! This module implements the `varyai://` protocol for importing configurations
 //! via deep links. Supports importing:
 //! - Provider configurations (Claude/Codex/Gemini)
 //! - MCP server configurations
@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 // Re-export public API
 pub use mcp::import_mcp_from_deeplink;
+pub(crate) use parser::is_supported_deeplink_url;
 pub use parser::parse_deeplink_url;
 pub use prompt::import_prompt_from_deeplink;
 pub use provider::{import_provider_from_deeplink, parse_and_merge_config};
@@ -29,7 +30,7 @@ pub use skill::import_skill_from_deeplink;
 
 /// Deep link import request model
 ///
-/// Represents a parsed ccswitch:// URL ready for processing.
+/// Represents a parsed Vary AI deep link ready for processing.
 /// This struct contains all possible fields for all resource types.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

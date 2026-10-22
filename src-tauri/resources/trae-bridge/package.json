@@ -1,0 +1,14 @@
+{
+  "name": "varyai-trae-bridge",
+  "displayName": "VaryAI TRAE Bridge",
+  "publisher": "varyai",
+  "version": "0.1.3",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "main": "./extension.cjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "description": "Local VaryAI message audit and managed model configuration. No account credentials leave TRAE."
+}

@@ -66,8 +66,7 @@ pub fn is_openai_o_series(model: &str) -> bool {
 /// Supported families:
 /// - o-series: o1, o3, o4-mini, etc.
 /// - GPT-5+: gpt-5, gpt-5.1, gpt-5.4, gpt-5-codex, etc.
-/// - xAI Grok Build models. `grok-4.5`/`grok-4.6` are the documented Grok
-///   Build models; retain the previous `grok-build-*` family for saved providers.
+/// - xAI Grok 4.5+ (numeric 4.x minors ≥ 5) and legacy `grok-build-*`.
 pub fn supports_reasoning_effort(model: &str) -> bool {
     let normalized = model.to_lowercase();
     is_openai_o_series(&normalized)
@@ -75,11 +74,30 @@ pub fn supports_reasoning_effort(model: &str) -> bool {
             .strip_prefix("gpt-")
             .and_then(|rest| rest.chars().next())
             .is_some_and(|c| c.is_ascii_digit() && c >= '5')
-        || normalized == "grok-4.5"
-        || normalized.starts_with("grok-4.5-")
-        || normalized == "grok-4.6"
-        || normalized.starts_with("grok-4.6-")
+        || normalized
+            .strip_prefix("grok-4.")
+            .and_then(|rest| {
+                let minor = rest.bytes().take_while(u8::is_ascii_digit).count();
+                (minor > 0 && (rest.len() == minor || rest.as_bytes()[minor] == b'-'))
+                    .then(|| &rest[..minor])
+            })
+            .and_then(|minor| minor.parse::<u32>().ok())
+            .is_some_and(|minor| minor >= 5)
         || normalized.starts_with("grok-build-")
+}
+
+/// Models that accept a distinct OpenAI `max` tier (not merely `xhigh`).
+fn supports_max_reasoning_effort(model: &str) -> bool {
+    matches!(
+        model.to_ascii_lowercase().as_str(),
+        "gpt-5.6"
+            | "gpt-5.6-sol"
+            | "gpt-5.6-terra"
+            | "gpt-5.6-luna"
+            | "gpt-6-astra"
+            | "gpt-6-sol"
+            | "gpt-6-luna"
+    )
 }
 
 /// Resolve the appropriate OpenAI `reasoning_effort` from an Anthropic request body.
@@ -87,14 +105,18 @@ pub fn supports_reasoning_effort(model: &str) -> bool {
 /// Priority:
 /// 1. Explicit `output_config.effort` — preserves the user's intent directly.
 ///    `low`/`medium`/`high`/`xhigh` map 1:1 (`xhigh` is what Claude Code's
-///    `/effort xhigh` sends); `max` maps to `xhigh`
-///    (supported by mainstream GPT models). Unknown values are ignored.
+///    `/effort xhigh` sends); `max` stays `max` for supported models and falls
+///    back to `xhigh` otherwise. Unknown values are ignored.
 /// 2. Fallback: `thinking.type` + `budget_tokens`:
 ///    - `adaptive` → `xhigh` (adaptive = maximum reasoning effort)
 ///    - `enabled` with budget → `low` (<4 000) / `medium` (4 000–15 999) / `high` (≥16 000)
 ///    - `enabled` without budget → `high` (conservative default)
 ///    - `disabled` / absent → `None`
 pub fn resolve_reasoning_effort(body: &Value) -> Option<&'static str> {
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     // --- Priority 1: explicit output_config.effort ---
     if let Some(effort) = body
         .pointer("/output_config/effort")
@@ -105,8 +127,9 @@ pub fn resolve_reasoning_effort(body: &Value) -> Option<&'static str> {
             "medium" => Some("medium"),
             "high" => Some("high"),
             "xhigh" => Some("xhigh"),
-            "max" => Some("xhigh"), // OpenAI xhigh = maximum reasoning effort
-            _ => None,              // unknown value — do not inject
+            "max" if supports_max_reasoning_effort(model) => Some("max"),
+            "max" => Some("xhigh"),
+            _ => None, // unknown value — do not inject
         };
     }
 
@@ -1779,6 +1802,48 @@ mod tests {
         assert!(!supports_reasoning_effort("gpt-4o"));
         assert!(!supports_reasoning_effort("claude-sonnet-4-6"));
         assert!(!supports_reasoning_effort("grok-4"));
+    }
+
+    #[test]
+    fn grok_reasoning_whitelist_accepts_numeric_minors_from_five() {
+        for model in [
+            "grok-4.5",
+            "grok-4.7",
+            "grok-4.10",
+            "grok-4.10-build",
+            "GROK-4.8",
+        ] {
+            assert!(supports_reasoning_effort(model), "{model}");
+        }
+        for model in [
+            "grok-4.4",
+            "grok-4.4-build",
+            "grok-4.7alpha",
+            "grok-4.7.1",
+            "grok-4.x",
+        ] {
+            assert!(!supports_reasoning_effort(model), "{model}");
+        }
+    }
+
+    #[test]
+    fn max_effort_is_preserved_only_for_models_supporting_max() {
+        for model in [
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+        ] {
+            let body = json!({"model": model, "output_config": {"effort": "max"}});
+            assert_eq!(resolve_reasoning_effort(&body), Some("max"), "{model}");
+        }
+        for model in ["gpt-5.4", "gpt-6", "gpt-6-solar"] {
+            let body = json!({"model": model, "output_config": {"effort": "max"}});
+            assert_eq!(resolve_reasoning_effort(&body), Some("xhigh"), "{model}");
+        }
     }
 
     // ── resolve_reasoning_effort unit tests ──

@@ -1,6 +1,6 @@
 //! Codex Responses ↔ OpenAI Chat Completions conversion.
 //!
-//! This module is used when the Codex client talks to CC Switch through the
+//! This module is used when the Codex client talks to Vary AI through the
 //! Responses API, while the selected upstream provider only exposes an
 //! OpenAI-compatible Chat Completions endpoint.
 
@@ -17,9 +17,9 @@ use crate::proxy::{
         short_sha256_hex,
     },
     tool_media::{
-        chat_file_from_input_file, flush_pending_chat_tool_media, plan_chat_tool_output_media,
-        queue_chat_tool_output_media, strip_and_clamp_media_from_tool_value, ToolMediaScope,
-        TOOL_RESULT_MEDIA_MOVED_MARKER,
+        chat_file_from_input_file, chat_media_part_from_tool_part, flush_pending_chat_tool_media,
+        plan_chat_tool_output_media, queue_chat_tool_output_media,
+        strip_and_clamp_media_from_tool_value, ToolMediaScope, TOOL_RESULT_MEDIA_MOVED_MARKER,
     },
 };
 use serde_json::{json, Value};
@@ -247,7 +247,7 @@ pub(crate) fn build_codex_tool_context_from_request(body: &Value) -> CodexToolCo
     }
 
     if let Some(input) = body.get("input") {
-        collect_tool_search_output_tools(input, &mut context);
+        collect_input_declared_tools(input, &mut context);
     }
 
     context
@@ -771,6 +771,8 @@ fn append_responses_item_as_chat_message(
             // 到达时回溯附挂，见 attach_pending_reasoning_to_previous_assistant。
             append_pending_reasoning(pending_reasoning, responses_reasoning_item_text(item));
         }
+        // Tool declarations are promoted into the tool registry, not chat messages.
+        Some("additional_tools") => {}
         Some("input_text" | "input_image" | "input_file" | "input_audio") => {
             flush_pending_tool_calls(
                 messages,
@@ -1236,16 +1238,10 @@ fn responses_content_to_chat_content(_role: &str, content: &Value) -> Value {
                 }
             }
             "input_image" => {
-                if let Some(image_url) = part.get("image_url") {
-                    let image_url = if image_url.is_object() {
-                        image_url.clone()
-                    } else {
-                        json!({ "url": image_url.as_str().unwrap_or_default() })
-                    };
-                    chat_parts.push(json!({
-                        "type": "image_url",
-                        "image_url": image_url
-                    }));
+                if let Some(chat_part) =
+                    chat_media_part_from_tool_part(part, ToolMediaScope::AllSupported)
+                {
+                    chat_parts.push(chat_part);
                     has_non_text_part = true;
                 }
             }
@@ -1288,23 +1284,27 @@ fn responses_input_file_to_chat_file(part: &Value) -> Option<Value> {
     chat_file_from_input_file(part)
 }
 
-fn collect_tool_search_output_tools(value: &Value, context: &mut CodexToolContext) {
+/// Lift input-carried tool declarations without treating the carrier as a message.
+fn collect_input_declared_tools(value: &Value, context: &mut CodexToolContext) {
     match value {
         Value::Array(items) => {
             for item in items {
-                collect_tool_search_output_tools(item, context);
+                collect_input_declared_tools(item, context);
             }
         }
         Value::Object(obj) => {
-            if obj.get("type").and_then(|v| v.as_str()) == Some("tool_search_output") {
-                if let Some(tools) = obj.get("tools").and_then(|v| v.as_array()) {
+            if matches!(
+                obj.get("type").and_then(Value::as_str),
+                Some("tool_search_output" | "additional_tools")
+            ) {
+                if let Some(tools) = obj.get("tools").and_then(Value::as_array) {
                     for tool in tools {
                         context.add_response_tool(tool);
                     }
                 }
             }
             for value in obj.values() {
-                collect_tool_search_output_tools(value, context);
+                collect_input_declared_tools(value, context);
             }
         }
         _ => {}
@@ -1402,11 +1402,11 @@ fn responses_function_tool_to_chat_tool(tool: &Value, chat_name: &str) -> Option
         return Some(chat_tool);
     }
 
-    let mut function = json!({
-        "name": chat_name,
-        "description": tool.get("description").cloned().unwrap_or(Value::Null),
-        "parameters": normalize_function_parameters(tool.get("parameters"))
-    });
+    let mut function = json!({"name": chat_name});
+    if let Some(description) = tool.get("description").filter(|value| !value.is_null()) {
+        function["description"] = description.clone();
+    }
+    function["parameters"] = normalize_function_parameters(tool.get("parameters"));
     if let Some(strict) = tool.get("strict") {
         function["strict"] = strict.clone();
     }
@@ -2402,6 +2402,28 @@ mod tests {
     }
 
     #[test]
+    fn responses_request_to_chat_downgrades_user_image_original_detail() {
+        for image in [
+            json!({"type": "input_image", "image_url": "https://example.com/a.png", "detail": "original"}),
+            json!({"type": "input_image", "image_url": {"url": "https://example.com/a.png", "detail": "original"}}),
+        ] {
+            let input = json!({
+                "model": "m",
+                "input": [{"role": "user", "content": [image]}]
+            });
+            let result = responses_to_chat_completions(input).unwrap();
+            assert_eq!(
+                result["messages"][0]["content"][0]["image_url"]["detail"],
+                "auto"
+            );
+            assert_eq!(
+                result["messages"][0]["content"][0]["image_url"]["url"],
+                "https://example.com/a.png"
+            );
+        }
+    }
+
+    #[test]
     fn responses_request_to_chat_defaults_null_tool_parameters() {
         let input = json!({
             "model": "gpt-5.4",
@@ -3101,6 +3123,68 @@ mod tests {
         assert_eq!(out[1]["content"], "U1");
         assert_eq!(out[2]["content"], "A1");
         assert_eq!(out[3]["content"], "U2");
+    }
+
+    #[test]
+    fn additional_tools_carrier_deduplicates_top_level_tools() {
+        let input = json!({
+            "model": "m",
+            "tools": [{"type": "function", "name": "wait", "description": "top", "parameters": {"type": "object"}}],
+            "input": [
+                {"type": "additional_tools", "role": "developer", "tools": [
+                    {"type": "function", "name": "wait", "description": "carried", "parameters": {"type": "object"}}
+                ]},
+                {"role": "user", "content": "hi"}
+            ]
+        });
+        let result = responses_to_chat_completions(input).unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["function"]["description"], "top");
+        assert_eq!(result["messages"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn additional_tools_carrier_is_lifted_without_phantom_message() {
+        let input = json!({
+            "model": "m",
+            "input": [
+                {"type": "additional_tools", "role": "developer", "tools": [
+                    {"type": "namespace", "name": "functions", "tools": [
+                        {"type": "function", "name": "exec_command", "parameters": {"type": "object"}}
+                    ]},
+                    {"type": "function", "name": "wait", "parameters": {"type": "object"}}
+                ]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+            ]
+        });
+        let result = responses_to_chat_completions(input).unwrap();
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["content"], "hi");
+        let tools = result["tools"].as_array().unwrap();
+        let names: Vec<_> = tools
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str())
+            .collect();
+        assert!(names.contains(&"functions__exec_command"));
+        assert!(names.contains(&"wait"));
+    }
+
+    #[test]
+    fn missing_tool_description_is_omitted_for_chat_upstream() {
+        let result = responses_to_chat_completions(json!({
+            "model": "m", "input": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {"type": "function", "name": "no_desc", "parameters": {"type": "object"}},
+                {"type": "function", "name": "null_desc", "description": null, "parameters": {"type": "object"}},
+                {"type": "function", "name": "with_desc", "description": "OK", "parameters": {"type": "object"}}
+            ]
+        })).unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        assert!(tools[0]["function"].get("description").is_none());
+        assert!(tools[1]["function"].get("description").is_none());
+        assert_eq!(tools[2]["function"]["description"], "OK");
     }
 
     #[test]

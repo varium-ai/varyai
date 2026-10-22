@@ -8,6 +8,12 @@ import type {
 } from "@/types/proxy";
 
 export const proxyApi = {
+  async launchDoubaoWorkForAudit(): Promise<void> {
+    return invoke("launch_doubao_work_for_audit");
+  },
+  async getAgentInstallations(): Promise<Record<string, boolean>> {
+    return invoke("get_agent_installations");
+  },
   // ========== 代理服务器控制 API ==========
 
   // 启动代理服务器

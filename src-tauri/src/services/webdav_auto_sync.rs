@@ -30,6 +30,8 @@ impl AutoSyncSuppressionGuard {
 
 impl Drop for AutoSyncSuppressionGuard {
     fn drop(&mut self) {
+        // fetch_update supports the declared Rust 1.85 MSRV; try_update requires newer Rust.
+        #[allow(deprecated)]
         let _ =
             AUTO_SYNC_SUPPRESS_DEPTH.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
                 Some(value.saturating_sub(1))

@@ -27,6 +27,7 @@ import {
   type UniversalProviderPreset,
 } from "@/config/universalProviderPresets";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { ProviderRequestDialog } from "./ProviderRequestDialog";
 
 type PresetTranslator = (key: string) => unknown;
 
@@ -138,7 +139,16 @@ export function getVisiblePresetEntries(
 ): PresetEntry[] {
   const { query, sortMode, t } = options;
 
-  return sortPresetEntries(filterPresetEntries(entries, query, t), sortMode, t);
+  const officialEntries = entries.filter(
+    ({ preset }) =>
+      preset.category === "official" || preset.category === "cn_official",
+  );
+
+  return sortPresetEntries(
+    filterPresetEntries(officialEntries, query, t),
+    sortMode,
+    t,
+  );
 }
 
 interface ProviderPresetSelectorProps {
@@ -164,6 +174,7 @@ export function ProviderPresetSelector({
 }: Readonly<ProviderPresetSelectorProps>) {
   const { t } = useTranslation();
   const [searchOpen, setSearchOpen] = useState(false);
+  const [requestOpen, setRequestOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [sortMode, setSortMode] = useState<PresetSortMode>(
     PresetSortMode.Original,
@@ -196,6 +207,7 @@ export function ProviderPresetSelector({
   // 这里用 rAF 命令式地把焦点移回搜索框（不 select，避免吞掉随后输入的首字符）。
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (requestOpen) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
         event.preventDefault();
         event.stopPropagation();
@@ -206,7 +218,7 @@ export function ProviderPresetSelector({
 
     globalThis.addEventListener("keydown", handleKeyDown, true);
     return () => globalThis.removeEventListener("keydown", handleKeyDown, true);
-  }, []);
+  }, [requestOpen]);
 
   const visiblePresetEntries = useMemo(
     () =>
@@ -216,6 +228,9 @@ export function ProviderPresetSelector({
         t,
       }),
     [presetEntries, searchQuery, sortMode, t],
+  );
+  const visibleUniversalPresets = universalProviderPresets.filter(
+    (preset) => preset.isCustomTemplate,
   );
 
   const getCategoryHint = (): ReactNode => {
@@ -453,11 +468,19 @@ export function ProviderPresetSelector({
             </button>
           );
         })}
+        <button
+          type="button"
+          onClick={() => setRequestOpen(true)}
+          className="inline-flex items-center justify-start gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors w-full bg-accent text-muted-foreground hover:bg-accent/80"
+        >
+          <span className="inline-block w-4 h-4 flex-shrink-0" aria-hidden />
+          <span className="truncate">{t("providerPreset.other")}</span>
+        </button>
       </div>
 
-      {onUniversalPresetSelect && universalProviderPresets.length > 0 && (
+      {onUniversalPresetSelect && visibleUniversalPresets.length > 0 && (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2">
-          {universalProviderPresets.map((preset) => (
+          {visibleUniversalPresets.map((preset) => (
             <button
               key={`universal-${preset.providerType}`}
               type="button"
@@ -500,6 +523,7 @@ export function ProviderPresetSelector({
       )}
 
       <p className="text-xs text-muted-foreground">{getCategoryHint()}</p>
+      <ProviderRequestDialog open={requestOpen} onOpenChange={setRequestOpen} />
     </div>
   );
 }

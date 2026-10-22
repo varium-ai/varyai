@@ -99,6 +99,8 @@ impl Database {
         &self,
         config: GlobalProxyConfig,
     ) -> Result<(), AppError> {
+        crate::proxy::types::loopback_listener_ip(&config.listen_address)
+            .map_err(AppError::Message)?;
         let conn = lock_conn!(self.conn);
 
         conn.execute(
@@ -457,6 +459,8 @@ impl Database {
 
     /// 更新代理配置（兼容旧接口，更新所有三行的公共字段）
     pub async fn update_proxy_config(&self, config: ProxyConfig) -> Result<(), AppError> {
+        crate::proxy::types::loopback_listener_ip(&config.listen_address)
+            .map_err(AppError::Message)?;
         let conn = lock_conn!(self.conn);
 
         // 更新所有三行的公共字段
@@ -499,7 +503,7 @@ impl Database {
         let conn = lock_conn!(self.conn);
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM proxy_config WHERE enabled = 1",
+                "SELECT (SELECT COUNT(*) FROM proxy_config WHERE enabled = 1) + (SELECT COUNT(*) FROM settings WHERE key = 'workbuddy_official_proxy_enabled' AND value IN ('true', '1'))",
                 [],
                 |row| row.get(0),
             )
@@ -516,7 +520,7 @@ impl Database {
             Err(_) => return false,
         };
         conn.query_row(
-            "SELECT COUNT(*) FROM proxy_config WHERE enabled = 1",
+            "SELECT (SELECT COUNT(*) FROM proxy_config WHERE enabled = 1) + (SELECT COUNT(*) FROM settings WHERE key = 'workbuddy_official_proxy_enabled' AND value IN ('true', '1'))",
             [],
             |row| row.get::<_, i64>(0),
         )
@@ -906,6 +910,33 @@ impl Database {
 mod tests {
     use crate::database::Database;
     use crate::error::AppError;
+
+    #[tokio::test]
+    async fn global_config_rejects_non_loopback_without_persisting_it() {
+        let db = Database::memory().expect("database");
+        let original = db.get_global_proxy_config().await.expect("configuration");
+        for address in [
+            "0.0.0.0",
+            "192.0.2.1",
+            "::",
+            "::ffff:192.0.2.1",
+            "example.com",
+        ] {
+            let mut config = original.clone();
+            config.listen_address = address.into();
+            assert!(
+                db.update_global_proxy_config(config).await.is_err(),
+                "{address}"
+            );
+            assert_eq!(
+                db.get_global_proxy_config()
+                    .await
+                    .expect("configuration")
+                    .listen_address,
+                original.listen_address
+            );
+        }
+    }
 
     #[tokio::test]
     async fn test_default_cost_multiplier_round_trip() -> Result<(), AppError> {

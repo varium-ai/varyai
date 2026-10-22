@@ -59,7 +59,28 @@ impl PromptService {
         if matches!(app, AppType::Pi) {
             return get_pi_prompts(state);
         }
-        state.db.get_prompts(app.as_str())
+        // Restore replaces the DB before projecting it to live files. Never
+        // backfill a stale live file into the restored DB during that window.
+        let Ok(_sync_guard) = super::sync_protocol::sync_mutex().try_lock() else {
+            return state.db.get_prompts(app.as_str());
+        };
+        let mut prompts = state.db.get_prompts(app.as_str())?;
+        // Inactive templates are independent of the externally edited live file.
+        if let Some(prompt) = prompts.values_mut().find(|prompt| prompt.enabled) {
+            match Self::get_current_file_content(app.clone()) {
+                Ok(Some(content)) if !content.trim().is_empty() && prompt.content != content => {
+                    prompt.content = content;
+                    prompt.updated_at = Some(get_unix_timestamp()?);
+                    state.db.save_prompt(app.as_str(), prompt)?;
+                }
+                Ok(_) => {}
+                Err(error) => log::warn!(
+                    "Failed to refresh {} prompt from live file; keeping saved prompts: {error}",
+                    app.as_str()
+                ),
+            }
+        }
+        Ok(prompts)
     }
 
     pub fn upsert_prompt(
@@ -244,7 +265,10 @@ impl PromptService {
     pub fn sync_to_live(state: &AppState, app: AppType) -> Result<(), AppError> {
         // Pi derives activation from its native AGENTS.md; its persisted prompt
         // rows are intentionally disabled and must not drive generic projection.
-        if matches!(app, AppType::ClaudeDesktop | AppType::Pi) {
+        if matches!(
+            app,
+            AppType::ClaudeDesktop | AppType::Pi | AppType::WorkBuddy
+        ) {
             return Ok(());
         }
 
@@ -407,7 +431,7 @@ fn upsert_pi_prompt(state: &AppState, id: &str, prompt: Prompt) -> Result<(), Ap
 
     if requested_active && !was_active {
         return Err(AppError::Conflict(
-            "Pi AGENTS.md changed outside CC Switch; reload before editing it".to_string(),
+            "Pi AGENTS.md changed outside Vary AI; reload before editing it".to_string(),
         ));
     }
 
@@ -557,6 +581,65 @@ mod tests {
             std::fs::read_to_string(path).expect("read prompt"),
             "first body"
         );
+    }
+}
+
+#[cfg(test)]
+mod live_sync_tests {
+    use super::*;
+    use crate::database::Database;
+    use serial_test::serial;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    #[test]
+    #[serial]
+    fn list_skips_live_backfill_while_restore_holds_the_sync_lock() {
+        let temp = tempdir().expect("test home");
+        let original_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+        struct RestoreHome(Option<std::ffi::OsString>);
+        impl Drop for RestoreHome {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(home) => std::env::set_var("CC_SWITCH_TEST_HOME", home),
+                    None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+                }
+            }
+        }
+        let _restore_home = RestoreHome(original_home);
+        let state = AppState::new(Arc::new(Database::memory().expect("test database")));
+        let prompt = Prompt {
+            id: "active".into(),
+            name: "Restored".into(),
+            content: "restored database content".into(),
+            description: None,
+            enabled: true,
+            created_at: Some(1),
+            updated_at: Some(1),
+        };
+        state
+            .db
+            .save_prompt(AppType::Claude.as_str(), &prompt)
+            .expect("seed DB");
+        let path = prompt_file_path(&AppType::Claude).expect("live file path");
+        std::fs::create_dir_all(path.parent().expect("live file directory"))
+            .expect("create live file directory");
+        std::fs::write(&path, "stale live content").expect("seed stale live file");
+
+        let guard = super::super::sync_protocol::sync_mutex()
+            .try_lock()
+            .expect("sync lock");
+        let listed = PromptService::get_prompts(&state, AppType::Claude).expect("list during sync");
+        assert_eq!(listed["active"].content, prompt.content);
+        assert_eq!(
+            state.db.get_prompts("claude").expect("DB")["active"].content,
+            prompt.content
+        );
+        drop(guard);
+
+        let listed = PromptService::get_prompts(&state, AppType::Claude).expect("list after sync");
+        assert_eq!(listed["active"].content, "stale live content");
     }
 }
 

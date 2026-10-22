@@ -114,7 +114,7 @@ impl McpService {
                 mcp::sync_single_server_to_claude(&Default::default(), &server.id, &server.server)?;
             }
             AppType::ClaudeDesktop => {
-                log::debug!("Claude Desktop 3P profiles do not use CC Switch MCP sync, skipping");
+                log::debug!("Claude Desktop 3P profiles do not use Vary AI MCP sync, skipping");
             }
             AppType::Codex => {
                 // Codex uses TOML format, must use the correct function
@@ -145,7 +145,14 @@ impl McpService {
             AppType::Hermes => {
                 mcp::sync_single_server_to_hermes(&Default::default(), &server.id, &server.server)?;
             }
-            AppType::Pi => {}
+            AppType::Pi
+            | AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => {}
         }
         Ok(())
     }
@@ -167,7 +174,7 @@ impl McpService {
         match app {
             AppType::Claude => mcp::remove_server_from_claude(id)?,
             AppType::ClaudeDesktop => {
-                log::debug!("Claude Desktop 3P profiles do not use CC Switch MCP sync, skipping");
+                log::debug!("Claude Desktop 3P profiles do not use Vary AI MCP sync, skipping");
             }
             AppType::Codex => mcp::remove_server_from_codex(id)?,
             AppType::Gemini => mcp::remove_server_from_gemini(id)?,
@@ -182,7 +189,14 @@ impl McpService {
             AppType::Hermes => {
                 mcp::remove_server_from_hermes(id)?;
             }
-            AppType::Pi => {}
+            AppType::Pi
+            | AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => {}
         }
         Ok(())
     }
@@ -229,7 +243,16 @@ impl McpService {
     ) -> Result<(), AppError> {
         if matches!(
             app,
-            AppType::OpenClaw | AppType::ClaudeDesktop | AppType::Pi
+            AppType::OpenClaw
+                | AppType::ClaudeDesktop
+                | AppType::Pi
+                | AppType::WorkBuddy
+                | AppType::Qoder
+                | AppType::Kimi
+                | AppType::Qwen
+                | AppType::ZCode
+                | AppType::Trae
+                | AppType::DoubaoWork
         ) {
             return Ok(());
         }

@@ -9,12 +9,14 @@ import React, {
 import type { UpdateInfo } from "../lib/updater";
 import { checkForUpdate } from "../lib/updater";
 import { extractErrorMessage } from "../utils/errorUtils";
+import { settingsApi } from "@/lib/api";
 
 interface UpdateContextValue {
   // 更新状态
   hasUpdate: boolean;
   updateInfo: UpdateInfo | null;
   isChecking: boolean;
+  isInstalling: boolean;
   error: string | null;
 
   // 提示状态
@@ -23,6 +25,7 @@ interface UpdateContextValue {
 
   // 操作方法
   checkUpdate: () => Promise<boolean>;
+  installUpdate: () => Promise<boolean>;
   resetDismiss: () => void;
 }
 
@@ -35,6 +38,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const [hasUpdate, setHasUpdate] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [isChecking, setIsChecking] = useState(false);
+  const [isInstalling, setIsInstalling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isDismissed, setIsDismissed] = useState(false);
 
@@ -58,6 +62,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   }, [updateInfo?.availableVersion]);
 
   const isCheckingRef = useRef(false);
+  const isInstallingRef = useRef(false);
 
   const checkUpdate = useCallback(async () => {
     if (isCheckingRef.current) return false;
@@ -101,6 +106,35 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const installUpdate = useCallback(async () => {
+    if (isInstallingRef.current || !hasUpdate) return false;
+    isInstallingRef.current = true;
+    setIsInstalling(true);
+    setError(null);
+
+    try {
+      const installed = await settingsApi.installUpdateAndRestart();
+      if (!installed) {
+        setHasUpdate(false);
+        setUpdateInfo(null);
+        setIsDismissed(false);
+        return false;
+      }
+
+      setHasUpdate(false);
+      setUpdateInfo(null);
+      setIsDismissed(false);
+      return true;
+    } catch (err) {
+      console.error("安装更新失败:", err);
+      setError(extractErrorMessage(err) || "安装更新失败");
+      throw err;
+    } finally {
+      setIsInstalling(false);
+      isInstallingRef.current = false;
+    }
+  }, [hasUpdate]);
+
   const dismissUpdate = useCallback(() => {
     setIsDismissed(true);
     if (updateInfo?.availableVersion) {
@@ -130,10 +164,12 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     hasUpdate,
     updateInfo,
     isChecking,
+    isInstalling,
     error,
     isDismissed,
     dismissUpdate,
     checkUpdate,
+    installUpdate,
     resetDismiss,
   };
 

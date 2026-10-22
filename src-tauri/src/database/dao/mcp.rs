@@ -91,7 +91,16 @@ impl Database {
             AppType::OpenCode => Some("enabled_opencode"),
             AppType::Hermes => Some("enabled_hermes"),
             // These applications intentionally have no MCP flag in the SSOT.
-            AppType::ClaudeDesktop | AppType::OpenClaw | AppType::Pi => None,
+            AppType::ClaudeDesktop
+            | AppType::OpenClaw
+            | AppType::Pi
+            | AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => None,
         };
 
         if let Some(column) = column {
@@ -114,14 +123,20 @@ impl Database {
         .map_err(|e| AppError::Database(e.to_string()))
     }
 
-    /// 保存 MCP 服务器
     pub fn save_mcp_server(&self, server: &McpServer) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         conn.execute(
-            "INSERT OR REPLACE INTO mcp_servers (
+            "INSERT INTO mcp_servers (
                 id, name, server_config, description, homepage, docs, tags,
                 enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode, enabled_hermes
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name, server_config=excluded.server_config,
+                description=excluded.description, homepage=excluded.homepage,
+                docs=excluded.docs, tags=excluded.tags,
+                enabled_claude=excluded.enabled_claude, enabled_codex=excluded.enabled_codex,
+                enabled_gemini=excluded.enabled_gemini, enabled_grokbuild=excluded.enabled_grokbuild,
+                enabled_opencode=excluded.enabled_opencode, enabled_hermes=excluded.enabled_hermes",
             params![
                 server.id,
                 server.name,

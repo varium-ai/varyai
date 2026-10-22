@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Pencil, Trash2, X } from "lucide-react";
+import { Check, Pencil, Trash2, X, RefreshCw } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -12,6 +12,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { profilesApi, type Profile } from "@/lib/api/profiles";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   useDeleteProfileMutation,
   useProfilesQuery,
@@ -29,10 +32,10 @@ type PendingConfirm = {
 };
 
 /**
- * 项目管理对话框（纯快照式）
+ * Snapshot-based profile management.
  *
- * 项目列表全应用共享，重命名/删除作用于共享实体。
- * 快照内容由切换时的自动保存维护，不提供手动重拍入口。
+ * Renaming and deleting affect the shared profile entity. Multi-agent bundles
+ * save only through explicit refresh; legacy single-client profiles keep auto-save.
  */
 export function ProfileManageDialog({
   isOpen,
@@ -46,6 +49,25 @@ export function ProfileManageDialog({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
+  const queryClient = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshBundle = async (profile: Profile) => {
+    if (!profile.payload.bundle) return;
+    setRefreshing(true);
+    try {
+      await profilesApi.captureBundle(
+        profile.name,
+        profile.payload.bundle.selections.map((s) => s.app),
+        profile.id,
+      );
+      await queryClient.invalidateQueries({ queryKey: ["profiles"] });
+      toast.success(t("profiles.updateSuccess"));
+    } catch {
+      toast.error(t("profiles.bundle.operationFailed"));
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const profiles = data?.profiles ?? [];
 
@@ -103,6 +125,7 @@ export function ProfileManageDialog({
                 {editingId === profile.id ? (
                   <>
                     <Input
+                      placeholder={t("profiles.namePlaceholder")}
                       value={editingName}
                       onChange={(e) => setEditingName(e.target.value)}
                       className="h-7 flex-1"
@@ -137,6 +160,18 @@ export function ProfileManageDialog({
                     <span className="flex-1 truncate text-sm">
                       {profile.name}
                     </span>
+                    {profile.payload.bundle && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        title={t("profiles.bundle.recapture")}
+                        onClick={() => void refreshBundle(profile)}
+                        disabled={refreshing}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="icon"

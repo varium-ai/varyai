@@ -17,6 +17,7 @@ import {
   type ManagedAuthProvider,
 } from "@/lib/api";
 import { extractCodexExperimentalBearerToken } from "@/utils/providerConfigUtils";
+import { resolveCodexOfficialIdentity } from "@/utils/providerCapabilities";
 
 interface EditProviderDialogProps {
   open: boolean;
@@ -27,6 +28,7 @@ interface EditProviderDialogProps {
     originalId?: string;
   }) => Promise<void> | void;
   appId: AppId;
+  onAddThirdParty?: (provider: Omit<Provider, "id">) => Promise<void> | void;
   isProxyTakeover?: boolean; // 代理接管模式下不读取 live（避免显示被接管后的代理配置）
 }
 
@@ -43,6 +45,13 @@ const hasAuthMaterial = (value: unknown): boolean => {
   return true;
 };
 
+// A bare auth_mode is a logout marker, not a credential.
+const hasCodexAuthMaterial = (auth: Record<string, unknown> | null): boolean =>
+  auth !== null &&
+  Object.entries(auth).some(
+    ([key, value]) => key !== "auth_mode" && hasAuthMaterial(value),
+  );
+
 /**
  * Rebuild the provider auth only for a current Codex provider's live snapshot.
  *
@@ -56,17 +65,25 @@ const hasAuthMaterial = (value: unknown): boolean => {
 const reconcileCodexLiveAuth = (
   liveSettings: Record<string, unknown>,
   storedSettings: Record<string, unknown> | null,
-  category: string | undefined,
+  isOfficialProvider: boolean,
 ): Record<string, unknown> => {
-  if (category === "official") return liveSettings;
+  if (isOfficialProvider) return liveSettings;
 
   const configText =
     typeof liveSettings.config === "string" ? liveSettings.config : "";
   const bearer = extractCodexExperimentalBearerToken(configText);
-  if (!bearer) return liveSettings;
-
   const storedAuth = asRecord(storedSettings?.auth);
-  const authTemplate = storedAuth ?? asRecord(liveSettings.auth) ?? {};
+  const liveAuth = asRecord(liveSettings.auth);
+  if (!bearer) {
+    // Third-party credentials may live only in the DB when config.toml has
+    // its own auth source and the shared auth.json is absent or logged out.
+    if (!hasCodexAuthMaterial(liveAuth) && hasCodexAuthMaterial(storedAuth)) {
+      return { ...liveSettings, auth: storedAuth };
+    }
+    return liveSettings;
+  }
+
+  const authTemplate = storedAuth ?? liveAuth ?? {};
   const hasProviderApiKey =
     typeof authTemplate.OPENAI_API_KEY === "string" &&
     authTemplate.OPENAI_API_KEY.trim().length > 0;
@@ -94,6 +111,7 @@ export function EditProviderDialog({
   onOpenChange,
   onSubmit,
   appId,
+  onAddThirdParty,
   isProxyTakeover = false,
 }: EditProviderDialogProps) {
   const { t } = useTranslation();
@@ -177,7 +195,12 @@ export function EditProviderDialog({
       // OpenCode uses additive mode, while Pi's shared models.json is owned by
       // the catalog coordinator. Neither has a per-provider generic live
       // snapshot that may replace the DB aggregate in this form.
-      if (appId === "opencode" || appId === "pi") {
+      if (
+        appId === "opencode" ||
+        appId === "pi" ||
+        appId === "workbuddy" ||
+        appId === "qoder"
+      ) {
         if (!cancelled) {
           setLiveSettings(null);
           setHasLoadedLive(true);
@@ -239,6 +262,14 @@ export function EditProviderDialog({
     };
   }, [open, provider?.id, appId, hasLoadedLive, isProxyTakeover]); // 只依赖 provider.id，不依赖整个 provider 对象
 
+  // Legacy official cards may lack a category, while a reused fixed ID can
+  // identify a third-party route. Classify from the full provider identity.
+  const isCodexOfficialProvider =
+    appId === "codex" &&
+    provider !== null &&
+    (provider.category === "official" ||
+      resolveCodexOfficialIdentity(appId, provider) !== null);
+
   const initialSettingsConfig = useMemo(() => {
     const storedSettings = asRecord(provider?.settingsConfig);
     const base =
@@ -246,7 +277,7 @@ export function EditProviderDialog({
         ? reconcileCodexLiveAuth(
             liveSettings,
             storedSettings,
-            provider?.category,
+            isCodexOfficialProvider,
           )
         : (liveSettings ?? storedSettings ?? {});
 
@@ -269,7 +300,7 @@ export function EditProviderDialog({
     }
 
     return base;
-  }, [liveSettings, provider?.settingsConfig, provider?.category, appId]); // 只依赖表单初始化所需字段，不依赖整个 provider
+  }, [liveSettings, provider?.settingsConfig, isCodexOfficialProvider, appId]); // 只依赖表单初始化所需字段，不依赖整个 provider
 
   // 固定 initialData，防止 provider 对象更新时重置表单
   const initialData = useMemo(() => {
@@ -357,6 +388,17 @@ export function EditProviderDialog({
         providerId={provider.id}
         submitLabel={t("common.save")}
         onSubmit={handleSubmit}
+        onAddThirdParty={
+          onAddThirdParty
+            ? async (values) => {
+                await onAddThirdParty({
+                  name: values.name,
+                  category: "custom",
+                  settingsConfig: JSON.parse(values.settingsConfig),
+                });
+              }
+            : undefined
+        }
         onCancel={closeDialog}
         onManageAuthAccounts={setAuthSettingsTarget}
         onSubmittingChange={setIsFormSubmitting}

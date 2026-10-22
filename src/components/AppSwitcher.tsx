@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
 import type { VisibleApps } from "@/types";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { SlidingSegmentedControl } from "@/components/ui/sliding-segmented-control";
 import {
   Popover,
   PopoverContent,
@@ -10,7 +11,11 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { Monitor, MoreHorizontal, Terminal } from "lucide-react";
-import { APP_IDS } from "@/config/appConfig";
+import {
+  APP_IDS,
+  APP_ICON_NAME,
+  DEFAULT_VISIBLE_APPS,
+} from "@/config/appConfig";
 
 const APP_BADGE_ICON: Partial<
   Record<AppId, { icon: typeof Terminal; offsetY?: number }>
@@ -27,18 +32,6 @@ interface AppSwitcherProps {
 
 const STORAGE_KEY = "cc-switch-last-app";
 
-const APP_ICON_NAME: Record<AppId, string> = {
-  claude: "claude",
-  "claude-desktop": "claude",
-  codex: "openai",
-  gemini: "gemini",
-  grokbuild: "grok",
-  opencode: "opencode",
-  openclaw: "openclaw",
-  hermes: "hermes",
-  pi: "pi",
-};
-
 const APP_DISPLAY_NAME: Record<AppId, string> = {
   claude: "Claude Code",
   "claude-desktop": "Claude Desktop",
@@ -49,6 +42,13 @@ const APP_DISPLAY_NAME: Record<AppId, string> = {
   openclaw: "OpenClaw",
   hermes: "Hermes",
   pi: "Pi",
+  workbuddy: "WorkBuddy",
+  qoder: "Qoder CN",
+  doubaowork: "豆包工作",
+  trae: "TRAE CN",
+  kimi: "Kimi Code",
+  qwen: "Qwen Code",
+  zcode: "ZCode",
 };
 
 /** 应用图标 + 角标（Claude Code / Desktop 用角标区分终端与桌面） */
@@ -104,8 +104,7 @@ export function AppSwitcher({
 
   // Filter apps based on visibility settings (default all visible)
   const appsToShow = APP_IDS.filter((app) => {
-    if (!visibleApps) return true;
-    return visibleApps[app];
+    return visibleApps?.[app] ?? DEFAULT_VISIBLE_APPS[app];
   });
   const appCount = appsToShow.length;
 
@@ -130,14 +129,14 @@ export function AppSwitcher({
         (parseFloat(rootStyle.paddingLeft) || 0) +
         (parseFloat(rootStyle.paddingRight) || 0);
       const available = slot.clientWidth;
-      const widthAll = padding + appCount * itemWidth + (appCount - 1) * gap;
+      const widthAll = padding + appCount * itemWidth;
       if (widthAll <= available) {
         setVisibleCount(appCount);
         return;
       }
-      // 「更多」按钮与应用按钮同宽（同 padding + 同尺寸图标）
+
       const fit = Math.floor(
-        (available - padding - itemWidth) / (itemWidth + gap),
+        (available - padding - itemWidth - gap) / itemWidth,
       );
       setVisibleCount(Math.max(1, Math.min(appCount - 1, fit)));
     };
@@ -154,33 +153,31 @@ export function AppSwitcher({
     visibleList[visibleList.length - 1] = activeApp;
   }
   const overflowList = appsToShow.filter((app) => !visibleList.includes(app));
+  const selectedVisibleApp = visibleList.includes(activeApp) ? activeApp : null;
 
   return (
     <div
       ref={rootRef}
-      className="inline-flex bg-muted rounded-xl p-1 gap-1"
+      className="inline-flex items-center gap-1 rounded-xl bg-muted p-1"
       style={{ WebkitAppRegion: "no-drag" } as any}
     >
-      {visibleList.map((app) => {
-        const isActive = activeApp === app;
-        return (
-          <button
-            key={app}
-            type="button"
-            onClick={() => handleSwitch(app)}
-            title={APP_DISPLAY_NAME[app]}
-            aria-label={APP_DISPLAY_NAME[app]}
-            className={cn(
-              "group inline-flex items-center px-3 h-8 rounded-md text-sm font-medium transition-all duration-200",
-              isActive
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground hover:bg-background/50",
-            )}
-          >
-            <AppGlyph app={app} isActive={isActive} />
-          </button>
-        );
-      })}
+      <SlidingSegmentedControl
+        value={selectedVisibleApp}
+        onValueChange={handleSwitch}
+        options={visibleList.map((app) => ({
+          value: app,
+          label: <AppGlyph app={app} isActive={activeApp === app} />,
+          ariaLabel: APP_DISPLAY_NAME[app],
+          title: APP_DISPLAY_NAME[app],
+        }))}
+        ariaLabel={t("appSwitcher.label")}
+        indicatorVariant="surface"
+        indicatorInset="none"
+        className="border-0 bg-transparent p-0"
+        buttonClassName="group h-8 rounded-md px-3"
+        indicatorClassName="rounded-md"
+        indicatorTestId="app-switcher-indicator"
+      />
       {overflowList.length > 0 && (
         <Popover open={moreOpen} onOpenChange={setMoreOpen}>
           <PopoverTrigger asChild>
@@ -189,9 +186,9 @@ export function AppSwitcher({
               title={t("appSwitcher.more")}
               aria-label={t("appSwitcher.more")}
               className={cn(
-                "inline-flex items-center px-3 h-8 rounded-md transition-all duration-200",
+                "inline-flex h-8 w-11 shrink-0 items-center justify-center rounded-md transition-colors",
                 moreOpen
-                  ? "bg-background text-foreground shadow-sm"
+                  ? "text-foreground"
                   : "text-muted-foreground hover:text-foreground hover:bg-background/50",
               )}
             >

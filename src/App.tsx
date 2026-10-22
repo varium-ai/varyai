@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { SecurityAuditToggle } from "@/components/security/SecurityAuditToggle";
+import { UpdateBadge } from "@/components/UpdateBadge";
+import {
+  PrimaryNavigation,
+  type PrimaryTab,
+} from "@/components/layout/PrimaryNavigation";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
@@ -32,13 +38,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Provider, VisibleApps } from "@/types";
 import type { EnvConflict } from "@/types/env";
 import { proxyKeys, useProvidersQuery, useSettingsQuery } from "@/lib/query";
-import {
-  piApi,
-  providersApi,
-  settingsApi,
-  type AppId,
-  type ProviderSwitchEvent,
-} from "@/lib/api";
+import { providersApi, type AppId, type ProviderSwitchEvent } from "@/lib/api";
 import { checkAllEnvConflicts, checkEnvConflicts } from "@/lib/api/env";
 import { useProviderActions } from "@/hooks/useProviderActions";
 import { openclawKeys, useOpenClawHealth } from "@/hooks/useOpenClaw";
@@ -54,7 +54,6 @@ import {
   translatePiProviderMutationError,
 } from "@/utils/errorUtils";
 import { isTextEditableTarget } from "@/utils/domUtils";
-import { deepClone } from "@/utils/deepClone";
 import { cn } from "@/lib/utils";
 import {
   isWindows,
@@ -63,19 +62,17 @@ import {
   DRAG_REGION_STYLE,
 } from "@/lib/platform";
 import { AppSwitcher } from "@/components/AppSwitcher";
+import { GlobalStatusBar } from "@/components/layout/GlobalStatusBar";
+import { HomeDashboard } from "@/components/home/HomeDashboard";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
-import { ProviderList } from "@/components/providers/ProviderList";
+import { SecurityCenterPage } from "@/components/security/SecurityCenterPage";
+import { StatisticsPage } from "@/components/statistics/StatisticsPage";
 import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SettingsPage } from "@/components/settings/SettingsPage";
-import { UpdateBadge } from "@/components/UpdateBadge";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
-import { ProxyToggle } from "@/components/proxy/ProxyToggle";
-import { ClaudeDesktopRouteToggle } from "@/components/proxy/ClaudeDesktopRouteToggle";
-import { FailoverToggle } from "@/components/proxy/FailoverToggle";
-import { RoutingActivationBrand } from "@/components/proxy/RoutingActivationBrand";
-import UsageScriptModal from "@/components/UsageScriptModal";
+import { NotificationPermissionBanner } from "@/components/NotificationPermissionBanner";
 import UnifiedMcpPanel from "@/components/mcp/UnifiedMcpPanel";
 import PromptPanel, {
   type PromptPanelHandle,
@@ -91,15 +88,12 @@ import UnifiedSkillsPanel, {
 } from "@/components/skills/UnifiedSkillsPanel";
 import { DeepLinkImportDialog } from "@/components/DeepLinkImportDialog";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
+import { QoderCertificateNotice } from "@/components/QoderCertificateNotice";
 import { AgentsPanel } from "@/components/agents/AgentsPanel";
 import { UniversalProviderPanel } from "@/components/universal";
 import { McpIcon } from "@/components/BrandIcons";
 import { Button } from "@/components/ui/button";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
-import {
-  useDisableCurrentOmo,
-  useDisableCurrentOmoSlim,
-} from "@/lib/query/omo";
 import { invalidatePiProviderCaches, usePiCurrentState } from "@/lib/query/pi";
 import WorkspaceFilesPanel from "@/components/workspace/WorkspaceFilesPanel";
 import EnvPanel from "@/components/openclaw/EnvPanel";
@@ -111,10 +105,13 @@ import {
   APP_IDS,
   DEFAULT_VISIBLE_APPS,
   isProxyAppId,
+  isTakeoverAppId,
 } from "@/config/appConfig";
 
 type View =
   | "providers"
+  | "security"
+  | "stats"
   | "settings"
   | "prompts"
   | "skills"
@@ -147,43 +144,21 @@ const getInitialApp = (): AppId => {
   return "claude";
 };
 
-const VIEW_STORAGE_KEY = "cc-switch-last-view";
-const VALID_VIEWS: View[] = [
-  "providers",
-  "settings",
-  "prompts",
-  "skills",
-  "skillsDiscovery",
-  "mcp",
-  "agents",
-  "universal",
-  "sessions",
-  "workspace",
-  "openclawEnv",
-  "openclawTools",
-  "openclawAgents",
-  "hermesMemory",
-];
-
-const getInitialView = (): View => {
-  const saved = localStorage.getItem(VIEW_STORAGE_KEY) as View | null;
-  if (saved && VALID_VIEWS.includes(saved)) {
-    return saved;
-  }
-  return "providers";
-};
-
 function App() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
 
   const [activeApp, setActiveApp] = useState<AppId>(getInitialApp);
   const sharedFeatureApp: AppId =
     activeApp === "claude-desktop" ? "claude" : activeApp;
-  const [currentView, setCurrentView] = useState<View>(getInitialView);
+  // Always open the app on the provider home page after a restart. Navigation
+  // remains stateful for the lifetime of the current window only.
+  const [currentView, setCurrentView] = useState<View>("providers");
+  const [settingsInitialTab, setSettingsInitialTab] = useState<
+    "general" | "advanced"
+  >("general");
   const [skillsDiscoverySource, setSkillsDiscoverySource] =
     useState<SkillsPageSource>("repos");
-  const [settingsDefaultTab, setSettingsDefaultTab] = useState("general");
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
   const [mcpManagementBusy, setMcpManagementBusy] = useState(false);
@@ -197,15 +172,28 @@ function App() {
       hasSkills: false,
     });
 
-  useEffect(() => {
-    localStorage.setItem(VIEW_STORAGE_KEY, currentView);
-  }, [currentView]);
-
   const { data: settingsData } = useSettingsQuery();
+  useEffect(() => {
+    const language = settingsData?.language;
+    if (!language || !["zh", "zh-TW", "en", "ja"].includes(language)) return;
+    if (i18n.language !== language) void i18n.changeLanguage(language);
+    try {
+      window.localStorage.setItem("language", language);
+    } catch (error) {
+      console.warn("[App] Failed to cache saved language preference", error);
+    }
+  }, [settingsData?.language, i18n]);
   const useAppWindowControls =
     isLinux() && (settingsData?.useAppWindowControls ?? false);
   const dragBarHeight = useAppWindowControls ? 32 : DEFAULT_DRAG_BAR_HEIGHT;
-  const contentTopOffset = dragBarHeight + HEADER_HEIGHT;
+  const showSecondaryHeader = ![
+    "providers",
+    "security",
+    "stats",
+    "settings",
+  ].includes(currentView);
+  const pageTopOffset =
+    dragBarHeight + HEADER_HEIGHT + (showSecondaryHeader ? HEADER_HEIGHT : 0);
   const visibleApps = useMemo<VisibleApps>(
     () => ({
       ...DEFAULT_VISIBLE_APPS,
@@ -219,14 +207,28 @@ function App() {
   };
 
   useEffect(() => {
-    if (!visibleApps[activeApp]) {
+    if (settingsData && !visibleApps[activeApp]) {
       setActiveApp(getFirstVisibleApp());
     }
-  }, [visibleApps, activeApp]);
+  }, [settingsData, visibleApps, activeApp]);
 
   // Fallback from sessions view when switching to an app without session support
   useEffect(() => {
-    if (currentView === "mcp" && sharedFeatureApp === "pi") {
+    if (
+      ((currentView === "mcp" ||
+        currentView === "prompts" ||
+        currentView === "skills") &&
+        [
+          "workbuddy",
+          "qoder",
+          "doubaowork",
+          "trae",
+          "kimi",
+          "qwen",
+          "zcode",
+        ].includes(sharedFeatureApp)) ||
+      (currentView === "mcp" && sharedFeatureApp === "pi")
+    ) {
       setCurrentView("providers");
       return;
     }
@@ -246,7 +248,6 @@ function App() {
   }, [sharedFeatureApp, currentView]);
 
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
-  const [usageProvider, setUsageProvider] = useState<Provider | null>(null);
   const [confirmAction, setConfirmAction] = useState<{
     provider: Provider;
     action: "remove" | "delete";
@@ -255,7 +256,22 @@ function App() {
   const [showEnvBanner, setShowEnvBanner] = useState(false);
 
   const effectiveEditingProvider = useLastValidValue(editingProvider);
-  const effectiveUsageProvider = useLastValidValue(usageProvider);
+  const mainScrollRef = useRef<HTMLElement>(null);
+  const providerScrollContainerRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (currentView !== "providers") return;
+
+    for (const container of [
+      mainScrollRef.current,
+      providerScrollContainerRef.current,
+    ]) {
+      if (container) {
+        container.scrollTop = 0;
+        container.scrollLeft = 0;
+      }
+    }
+  }, [activeApp, currentView]);
 
   useUsageCacheBridge();
 
@@ -269,9 +285,6 @@ function App() {
   // 这里 enabled 默认 false，仅用于「导入」按钮的绿点提示，不主动发起扫描。
   const { data: unmanagedSkills } = useScanUnmanagedSkills();
   const hasUnmanagedSkills = (unmanagedSkills?.length ?? 0) > 0;
-  const addActionButtonClass =
-    "bg-orange-500 hover:bg-orange-600 dark:bg-orange-500 dark:hover:bg-orange-600 text-white shadow-lg shadow-orange-500/30 dark:shadow-orange-500/40 rounded-full w-8 h-8";
-
   const {
     isRunning: isProxyRunning,
     takeoverStatus,
@@ -279,17 +292,25 @@ function App() {
   } = useProxyStatus();
   const proxyAppId = isProxyAppId(activeApp) ? activeApp : null;
   const currentAppUsesProxy =
-    proxyAppId !== null || activeApp === "claude-desktop";
-  const isCurrentAppTakeoverActive = proxyAppId
-    ? takeoverStatus?.[proxyAppId] || false
+    isTakeoverAppId(activeApp) || activeApp === "claude-desktop";
+  const isCurrentAppTakeoverActive = isTakeoverAppId(activeApp)
+    ? takeoverStatus?.[activeApp] || false
     : false;
   const activeProviderId = useMemo(() => {
-    if (!proxyAppId) return undefined;
+    // A cached proxy target is only current while this app is routed through it.
+    if (!proxyAppId || !isProxyRunning || !isCurrentAppTakeoverActive) {
+      return undefined;
+    }
     const target = proxyStatus?.active_targets?.find(
       (t) => t.app_type === proxyAppId,
     );
     return target?.provider_id;
-  }, [proxyStatus?.active_targets, proxyAppId]);
+  }, [
+    proxyStatus?.active_targets,
+    proxyAppId,
+    isProxyRunning,
+    isCurrentAppTakeoverActive,
+  ]);
 
   const { data, isLoading, refetch } = useProvidersQuery(activeApp, {
     isProxyRunning: currentAppUsesProxy && isProxyRunning,
@@ -307,7 +328,11 @@ function App() {
       currentView === "openclawAgents");
   const { data: openclawHealthWarnings = [] } =
     useOpenClawHealth(isOpenClawView);
-  const hasSkillsSupport = sharedFeatureApp !== "openclaw";
+  const hasSkillsSupport =
+    sharedFeatureApp !== "openclaw" &&
+    sharedFeatureApp !== "workbuddy" &&
+    sharedFeatureApp !== "qoder" &&
+    !["doubaowork", "trae", "kimi", "qwen", "zcode"].includes(sharedFeatureApp);
   const hasSessionSupport =
     sharedFeatureApp === "claude" ||
     sharedFeatureApp === "codex" ||
@@ -317,15 +342,18 @@ function App() {
     sharedFeatureApp === "gemini" ||
     sharedFeatureApp === "hermes" ||
     sharedFeatureApp === "pi";
-  const hasMcpSupport = sharedFeatureApp !== "pi";
+  const hasMcpSupport =
+    sharedFeatureApp !== "pi" &&
+    sharedFeatureApp !== "workbuddy" &&
+    sharedFeatureApp !== "qoder" &&
+    !["doubaowork", "trae", "kimi", "qwen", "zcode"].includes(sharedFeatureApp);
 
   const {
     addProvider,
     updateProvider,
     switchProvider,
     deleteProvider,
-    saveUsageScript,
-    setAsDefaultModel,
+    duplicateProvider,
   } = useProviderActions(
     activeApp,
     currentAppUsesProxy && isProxyRunning,
@@ -360,40 +388,6 @@ function App() {
         },
       );
     }
-  };
-
-  const disableOmoMutation = useDisableCurrentOmo();
-  const handleDisableOmo = () => {
-    disableOmoMutation.mutate(undefined, {
-      onSuccess: () => {
-        toast.success(t("omo.disabled", { defaultValue: "OMO 已停用" }));
-      },
-      onError: (error: Error) => {
-        toast.error(
-          t("omo.disableFailed", {
-            defaultValue: "停用 OMO 失败: {{error}}",
-            error: extractErrorMessage(error),
-          }),
-        );
-      },
-    });
-  };
-
-  const disableOmoSlimMutation = useDisableCurrentOmoSlim();
-  const handleDisableOmoSlim = () => {
-    disableOmoSlimMutation.mutate(undefined, {
-      onSuccess: () => {
-        toast.success(t("omo.disabled", { defaultValue: "OMO 已停用" }));
-      },
-      onError: (error: Error) => {
-        toast.error(
-          t("omo.disableFailed", {
-            defaultValue: "停用 OMO 失败: {{error}}",
-            error: extractErrorMessage(error),
-          }),
-        );
-      },
-    });
   };
 
   useEffect(() => {
@@ -662,6 +656,7 @@ function App() {
           return;
         }
         event.preventDefault();
+        setSettingsInitialTab("general");
         setCurrentView("settings");
         return;
       }
@@ -690,19 +685,6 @@ function App() {
   const openHermesWebUI = useOpenHermesWebUI(() =>
     setLaunchDashboardOpen(true),
   );
-
-  const handleOpenWebsite = async (url: string) => {
-    try {
-      await settingsApi.openExternal(url);
-    } catch (error) {
-      const detail =
-        extractErrorMessage(error) ||
-        t("notifications.openLinkFailed", {
-          defaultValue: "链接打开失败",
-        });
-      toast.error(detail);
-    }
-  };
 
   const handleEditProvider = async ({
     provider,
@@ -743,6 +725,14 @@ function App() {
         await invalidatePiProviderCaches(queryClient);
       }
       // Invalidate queries to refresh the isInConfig state
+      if (activeApp === "workbuddy" || activeApp === "qoder") {
+        await queryClient.invalidateQueries({
+          queryKey: ["providers", activeApp],
+        });
+        await queryClient.invalidateQueries({
+          queryKey: [`${activeApp}LiveProviderIds`],
+        });
+      }
       if (activeApp === "opencode") {
         await queryClient.invalidateQueries({
           queryKey: ["opencodeLiveProviderIds"],
@@ -775,125 +765,6 @@ function App() {
     setConfirmAction(null);
   };
 
-  const generateUniqueProviderCopyKey = (
-    originalKey: string,
-    existingKeys: string[],
-  ): string => {
-    const baseKey = `${originalKey}-copy`;
-
-    if (!existingKeys.includes(baseKey)) {
-      return baseKey;
-    }
-
-    let counter = 2;
-    while (existingKeys.includes(`${baseKey}-${counter}`)) {
-      counter++;
-    }
-    return `${baseKey}-${counter}`;
-  };
-
-  const handleDuplicateProvider = async (provider: Provider) => {
-    const newSortIndex =
-      provider.sortIndex !== undefined ? provider.sortIndex + 1 : undefined;
-
-    const duplicatedProvider: Omit<Provider, "id" | "createdAt"> & {
-      providerKey?: string;
-      addToLive?: boolean;
-    } = {
-      name: `${provider.name} copy`,
-      settingsConfig: deepClone(provider.settingsConfig),
-      websiteUrl: provider.websiteUrl,
-      category: provider.category,
-      sortIndex: newSortIndex, // 复制原 sortIndex + 1
-      meta: provider.meta ? deepClone(provider.meta) : undefined,
-      icon: provider.icon,
-      iconColor: provider.iconColor,
-    };
-
-    if (
-      activeApp === "opencode" ||
-      activeApp === "openclaw" ||
-      activeApp === "hermes" ||
-      activeApp === "pi"
-    ) {
-      let liveProviderIds: string[] = [];
-      try {
-        liveProviderIds =
-          activeApp === "opencode"
-            ? await queryClient.ensureQueryData({
-                queryKey: ["opencodeLiveProviderIds"],
-                queryFn: () => providersApi.getOpenCodeLiveProviderIds(),
-              })
-            : activeApp === "openclaw"
-              ? await queryClient.ensureQueryData({
-                  queryKey: openclawKeys.liveProviderIds,
-                  queryFn: () => providersApi.getOpenClawLiveProviderIds(),
-                })
-              : activeApp === "hermes"
-                ? await queryClient.ensureQueryData({
-                    queryKey: hermesKeys.liveProviderIds,
-                    queryFn: () => providersApi.getHermesLiveProviderIds(),
-                  })
-                : (
-                    await queryClient.ensureQueryData({
-                      queryKey: ["pi", "currentState"],
-                      queryFn: () => piApi.getCurrentState(),
-                    })
-                  ).enabledProviderIds;
-      } catch (error) {
-        console.error(
-          "[App] Failed to load live provider IDs for duplication",
-          error,
-        );
-        const errorMessage = extractErrorMessage(error);
-        toast.error(
-          t("provider.duplicateLiveIdsLoadFailed", {
-            defaultValue: "读取配置中的供应商标识失败，请先修复配置后再试",
-          }) + (errorMessage ? `: ${errorMessage}` : ""),
-        );
-        return;
-      }
-      const existingKeys = Array.from(
-        new Set([...Object.keys(providers), ...liveProviderIds]),
-      );
-      duplicatedProvider.providerKey = generateUniqueProviderCopyKey(
-        provider.id,
-        existingKeys,
-      );
-      duplicatedProvider.addToLive = false;
-    }
-
-    if (provider.sortIndex !== undefined) {
-      const updates = Object.values(providers)
-        .filter(
-          (p) =>
-            p.sortIndex !== undefined &&
-            p.sortIndex >= newSortIndex! &&
-            p.id !== provider.id,
-        )
-        .map((p) => ({
-          id: p.id,
-          sortIndex: p.sortIndex! + 1,
-        }));
-
-      if (updates.length > 0) {
-        try {
-          await providersApi.updateSortOrder(updates, activeApp);
-        } catch (error) {
-          console.error("[App] Failed to update sort order", error);
-          toast.error(
-            t("provider.sortUpdateFailed", {
-              defaultValue: "排序更新失败",
-            }),
-          );
-          return; // 如果排序更新失败，不继续添加
-        }
-      }
-    }
-
-    await addProvider(duplicatedProvider);
-  };
-
   const confirmActionMessage = useMemo(() => {
     if (!confirmAction) return "";
 
@@ -913,32 +784,6 @@ function App() {
       ? `${message}\n\n${t("confirm.piDefaultProviderWarning")}`
       : message;
   }, [activeApp, confirmAction, piCurrentState?.defaultProviderId, t]);
-
-  const handleOpenTerminal = async (provider: Provider) => {
-    try {
-      const selectedDir = await settingsApi.pickDirectory();
-      if (!selectedDir) {
-        return;
-      }
-
-      await providersApi.openTerminal(provider.id, activeApp, {
-        cwd: selectedDir,
-      });
-      toast.success(
-        t("provider.terminalOpened", {
-          defaultValue: "终端已打开",
-        }),
-      );
-    } catch (error) {
-      console.error("[App] Failed to open terminal", error);
-      const errorMessage = extractErrorMessage(error);
-      toast.error(
-        t("provider.terminalOpenFailed", {
-          defaultValue: "打开终端失败",
-        }) + (errorMessage ? `: ${errorMessage}` : ""),
-      );
-    }
-  };
 
   const handleImportSuccess = async () => {
     try {
@@ -1004,16 +849,50 @@ function App() {
     setCurrentView("skillsDiscovery");
   };
 
+  const selectPrimaryTab = (tab: PrimaryTab) => {
+    if (tab === "home") {
+      setCurrentView("providers");
+      return;
+    }
+    if (tab === "security") {
+      setCurrentView("security");
+      return;
+    }
+    if (tab === "stats") {
+      setCurrentView("stats");
+      return;
+    }
+    setSettingsInitialTab("general");
+    setCurrentView("settings");
+  };
+
+  const activePrimaryTab: PrimaryTab | null =
+    currentView === "providers"
+      ? "home"
+      : currentView === "security"
+        ? "security"
+        : currentView === "stats"
+          ? "stats"
+          : currentView === "settings"
+            ? "settings"
+            : null;
+
   const renderContent = () => {
     const content = (() => {
       switch (currentView) {
+        case "security":
+          return <SecurityCenterPage activeApp={activeApp} />;
+        case "stats":
+          return (
+            <StatisticsPage onOpenSecurity={() => setCurrentView("security")} />
+          );
         case "settings":
           return (
             <SettingsPage
               open={true}
               onOpenChange={() => setCurrentView("providers")}
               onImportSuccess={handleImportSuccess}
-              defaultTab={settingsDefaultTab}
+              initialTab={settingsInitialTab}
             />
           );
         case "prompts":
@@ -1089,72 +968,46 @@ function App() {
           return <AgentsDefaultsPanel />;
         default:
           return (
-            <div className="px-6 flex flex-col flex-1 min-h-0 overflow-hidden">
-              <div className="flex-1 overflow-y-auto overflow-x-hidden pb-12 px-1">
-                <AnimatePresence mode="wait">
-                  <motion.div
-                    key={activeApp}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15 }}
-                    className="space-y-4"
-                  >
-                    <ProviderList
-                      providers={providers}
-                      currentProviderId={currentProviderId}
-                      appId={activeApp}
-                      isLoading={isLoading}
-                      isProxyRunning={currentAppUsesProxy && isProxyRunning}
-                      isProxyTakeover={
-                        isProxyRunning && isCurrentAppTakeoverActive
-                      }
-                      activeProviderId={activeProviderId}
-                      onSwitch={
-                        activeApp === "pi"
-                          ? handleEnablePiProvider
-                          : switchProvider
-                      }
-                      onEdit={(provider) => {
-                        setEditingProvider(provider);
-                      }}
-                      onDelete={(provider) =>
-                        setConfirmAction({ provider, action: "delete" })
-                      }
-                      onRemoveFromConfig={
-                        activeApp === "opencode" ||
-                        activeApp === "openclaw" ||
-                        activeApp === "hermes" ||
-                        activeApp === "pi"
-                          ? (provider) =>
-                              setConfirmAction({ provider, action: "remove" })
-                          : undefined
-                      }
-                      onDisableOmo={
-                        activeApp === "opencode" ? handleDisableOmo : undefined
-                      }
-                      onDisableOmoSlim={
-                        activeApp === "opencode"
-                          ? handleDisableOmoSlim
-                          : undefined
-                      }
-                      onDuplicate={handleDuplicateProvider}
-                      onConfigureUsage={setUsageProvider}
-                      onOpenWebsite={handleOpenWebsite}
-                      onOpenTerminal={
-                        activeApp === "claude" ? handleOpenTerminal : undefined
-                      }
-                      onCreate={() => setIsAddOpen(true)}
-                      onSetAsDefault={
-                        activeApp === "openclaw"
-                          ? setAsDefaultModel
-                          : activeApp === "hermes"
-                            ? switchProvider
-                            : undefined
-                      }
-                    />
-                  </motion.div>
-                </AnimatePresence>
+            <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
+              <div
+                ref={providerScrollContainerRef}
+                className="flex-1 overflow-y-auto overflow-x-hidden pb-12"
+              >
+                <HomeDashboard
+                  activeApp={activeApp}
+                  projectSwitcher={
+                    (settingsData?.showProfileSwitcher ?? true) ? (
+                      <ProfileSwitcher activeApp={activeApp} />
+                    ) : undefined
+                  }
+                  visibleApps={visibleApps}
+                  providers={providers}
+                  currentProviderId={currentProviderId}
+                  activeProviderId={activeProviderId}
+                  isLoading={isLoading}
+                  onAppChange={setActiveApp}
+                  onCreate={() => setIsAddOpen(true)}
+                  onEdit={setEditingProvider}
+                  onDuplicate={duplicateProvider}
+                  onDelete={(provider) =>
+                    setConfirmAction({ provider, action: "delete" })
+                  }
+                  onRemoveFromConfig={(provider) =>
+                    setConfirmAction({ provider, action: "remove" })
+                  }
+                  onSwitch={
+                    activeApp === "pi" ? handleEnablePiProvider : switchProvider
+                  }
+                  onOpenSecurity={() => selectPrimaryTab("security")}
+                  onManageAgents={() => {
+                    setSettingsInitialTab("general");
+                    setCurrentView("settings");
+                  }}
+                  onOpenRoutingSettings={() => {
+                    setSettingsInitialTab("advanced");
+                    setCurrentView("settings");
+                  }}
+                />
               </div>
             </div>
           );
@@ -1165,7 +1018,7 @@ function App() {
       <AnimatePresence mode="wait">
         <motion.div
           key={currentView}
-          className="flex-1 min-h-0"
+          className="flex flex-1 min-h-0 flex-col"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -1179,8 +1032,8 @@ function App() {
 
   return (
     <div
-      className="flex flex-col h-screen overflow-hidden bg-background text-foreground selection:bg-primary/30 pb-4"
-      style={{ overflowX: "hidden", paddingTop: contentTopOffset }}
+      className="flex flex-col h-screen overflow-hidden bg-[#f8fafc] text-foreground selection:bg-primary/30 dark:bg-background"
+      style={{ overflowX: "hidden", paddingTop: pageTopOffset }}
     >
       {(dragBarHeight > 0 || useAppWindowControls) && (
         <div
@@ -1232,38 +1085,75 @@ function App() {
           )}
         </div>
       )}
-      {showEnvBanner && envConflicts.length > 0 && (
-        <EnvWarningBanner
-          conflicts={envConflicts}
-          onDismiss={() => {
-            setShowEnvBanner(false);
-            sessionStorage.setItem("env_banner_dismissed", "true");
-          }}
-          onDeleted={async () => {
-            try {
-              const allConflicts = await checkAllEnvConflicts();
-              const flatConflicts = Object.values(allConflicts).flat();
-              setEnvConflicts(flatConflicts);
-              if (flatConflicts.length === 0) {
-                setShowEnvBanner(false);
+      <div className="pointer-events-none fixed inset-x-0 bottom-16 z-[100] flex max-h-[calc(100vh-12rem)] flex-col items-center gap-3 overflow-y-auto px-6 py-6">
+        <NotificationPermissionBanner />
+        {showEnvBanner && envConflicts.length > 0 && (
+          <EnvWarningBanner
+            inline
+            conflicts={envConflicts}
+            onDismiss={() => {
+              setShowEnvBanner(false);
+              sessionStorage.setItem("env_banner_dismissed", "true");
+            }}
+            onDeleted={async () => {
+              try {
+                const allConflicts = await checkAllEnvConflicts();
+                const flatConflicts = Object.values(allConflicts).flat();
+                setEnvConflicts(flatConflicts);
+                if (flatConflicts.length === 0) {
+                  setShowEnvBanner(false);
+                }
+              } catch (error) {
+                console.error(
+                  "[App] Failed to re-check conflicts after deletion:",
+                  error,
+                );
               }
-            } catch (error) {
-              console.error(
-                "[App] Failed to re-check conflicts after deletion:",
-                error,
-              );
-            }
-          }}
+            }}
+          />
+        )}
+      </div>
+
+      <div
+        className="fixed inset-x-0 z-[60]"
+        style={
+          {
+            top: dragBarHeight,
+            WebkitAppRegion: "no-drag",
+          } as React.CSSProperties
+        }
+      >
+        <PrimaryNavigation
+          activeTab={activePrimaryTab}
+          onSelect={selectPrimaryTab}
+          disabled={managementBusy}
+          actions={
+            <>
+              <UpdateBadge />
+              <SecurityAuditToggle appType={activeApp} />
+              {activeApp !== "doubaowork" && (
+                <Button
+                  onClick={() => setIsAddOpen(true)}
+                  size="sm"
+                  className="h-9 rounded-xl bg-blue-600 px-3.5 text-xs font-semibold text-white shadow-sm shadow-blue-500/20 hover:bg-blue-700"
+                >
+                  <Plus className="mr-1.5 h-4 w-4" />
+                  {t("provider.addNewProvider")}
+                </Button>
+              )}
+            </>
+          }
         />
-      )}
+      </div>
 
       <header
-        className="fixed z-50 w-full transition-all duration-300 bg-background/80 backdrop-blur-md"
+        hidden={!showSecondaryHeader}
+        className="fixed z-50 w-full border-b border-slate-200/80 bg-white/95 shadow-sm shadow-slate-200/30 backdrop-blur-md transition-all duration-300 dark:border-border dark:bg-card/95"
         {...DRAG_REGION_ATTR}
         style={
           {
             ...DRAG_REGION_STYLE,
-            top: dragBarHeight,
+            top: dragBarHeight + 64,
             height: HEADER_HEIGHT,
           } as any
         }
@@ -1299,6 +1189,8 @@ function App() {
                   <ArrowLeft className="w-4 h-4" />
                 </Button>
                 <h1 className="text-lg font-semibold">
+                  {currentView === "security" && t("primaryNav.security")}
+                  {currentView === "stats" && t("primaryNav.stats")}
                   {currentView === "settings" && t("settings.title")}
                   {currentView === "prompts" &&
                     t("prompts.title", {
@@ -1323,18 +1215,32 @@ function App() {
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <RoutingActivationBrand
-                  active={isProxyRunning && isCurrentAppTakeoverActive}
-                  contextKey={activeApp}
-                  ready={
-                    proxyStatus !== undefined && takeoverStatus !== undefined
-                  }
+                <span className="whitespace-nowrap text-xs font-medium text-slate-500 dark:text-muted-foreground">
+                  {t("primaryNav.managing")}
+                </span>
+                <span className="whitespace-nowrap text-sm font-semibold text-slate-900 dark:text-foreground">
+                  {t(`apps.${activeApp}`)}
+                </span>
+                <span
+                  className={cn(
+                    "ml-1 h-2 w-2 rounded-full",
+                    isProxyRunning && isCurrentAppTakeoverActive
+                      ? "bg-emerald-500"
+                      : "bg-slate-300 dark:bg-slate-600",
+                  )}
+                  aria-label={t(
+                    proxyStatus === undefined || takeoverStatus === undefined
+                      ? "homeAudit.unavailable"
+                      : isProxyRunning && isCurrentAppTakeoverActive
+                        ? "primaryNav.routed"
+                        : "primaryNav.direct",
+                  )}
                 />
                 <Button
                   variant="ghost"
                   size="icon"
                   onClick={() => {
-                    setSettingsDefaultTab("general");
+                    setSettingsInitialTab("general");
                     setCurrentView("settings");
                   }}
                   title={t("common.settings")}
@@ -1342,23 +1248,14 @@ function App() {
                 >
                   <Settings className="w-4 h-4" />
                 </Button>
-                <UpdateBadge
-                  onClick={() => {
-                    setSettingsDefaultTab("about");
-                    setCurrentView("settings");
-                  }}
-                />
                 {isCurrentAppTakeoverActive && (
                   <Button
                     variant="ghost"
                     size="icon"
                     onClick={() => {
-                      setSettingsDefaultTab("usage");
-                      setCurrentView("settings");
+                      setCurrentView("stats");
                     }}
-                    title={t("usage.title", {
-                      defaultValue: "使用统计",
-                    })}
+                    title={t("primaryNav.stats")}
                     className="hover:bg-black/5 dark:hover:bg-white/5"
                   >
                     <BarChart2 className="w-4 h-4" />
@@ -1369,35 +1266,6 @@ function App() {
           </div>
 
           <div className="flex flex-1 min-w-0 items-center justify-end gap-1.5">
-            {currentView === "providers" &&
-              (activeApp === "claude-desktop" || proxyAppId) && (
-                <div
-                  className="flex shrink-0 items-center gap-1.5"
-                  style={{ WebkitAppRegion: "no-drag" } as any}
-                >
-                  {activeApp === "claude-desktop" ? (
-                    <ClaudeDesktopRouteToggle />
-                  ) : proxyAppId ? (
-                    <>
-                      {settingsData?.enableLocalProxy && (
-                        <ProxyToggle activeApp={proxyAppId} />
-                      )}
-                      {settingsData?.enableFailoverToggle && (
-                        <FailoverToggle activeApp={proxyAppId} />
-                      )}
-                    </>
-                  ) : null}
-                </div>
-              )}
-            {currentView === "providers" &&
-              (settingsData?.showProfileSwitcher ?? true) && (
-                <div
-                  className="flex shrink-0 items-center"
-                  style={{ WebkitAppRegion: "no-drag" } as any}
-                >
-                  <ProfileSwitcher activeApp={activeApp} />
-                </div>
-              )}
             {/* 弹性中段：空间不足时由 AppSwitcher 自行收纳溢出应用；
                 justify-end + overflow-hidden 只裁剪 resize 瞬间的过渡帧 */}
             <div className="flex flex-1 min-w-0 items-center justify-end overflow-hidden py-4">
@@ -1691,6 +1559,10 @@ function App() {
                                 variant="ghost"
                                 size="sm"
                                 onClick={() => setCurrentView("prompts")}
+                                disabled={
+                                  sharedFeatureApp === "workbuddy" ||
+                                  sharedFeatureApp === "qoder"
+                                }
                                 className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
                                 title={t("prompts.manage")}
                               >
@@ -1727,16 +1599,6 @@ function App() {
                         </motion.div>
                       </AnimatePresence>
                     </div>
-
-                    <Button
-                      onClick={() => setIsAddOpen(true)}
-                      size="icon"
-                      className={`ml-2 ${addActionButtonClass}`}
-                      aria-label={t("provider.addNewProvider")}
-                      title={t("provider.addNewProvider")}
-                    >
-                      <Plus className="w-5 h-5" />
-                    </Button>
                   </>
                 )}
               </div>
@@ -1745,12 +1607,21 @@ function App() {
         </div>
       </header>
 
-      <main className="flex-1 min-h-0 flex flex-col overflow-y-auto animate-fade-in">
+      <main
+        ref={mainScrollRef}
+        className="flex-1 min-h-0 flex flex-col overflow-y-auto animate-fade-in"
+      >
         {isOpenClawView && openclawHealthWarnings.length > 0 && (
           <OpenClawHealthBanner warnings={openclawHealthWarnings} />
         )}
         {renderContent()}
       </main>
+
+      <GlobalStatusBar
+        activeApp={activeApp}
+        isProxyRunning={isProxyRunning}
+        proxyStatus={proxyStatus}
+      />
 
       <AddProviderDialog
         open={isAddOpen}
@@ -1768,24 +1639,10 @@ function App() {
           }
         }}
         onSubmit={handleEditProvider}
+        onAddThirdParty={addProvider}
         appId={activeApp}
         isProxyTakeover={isCurrentAppTakeoverActive}
       />
-
-      {effectiveUsageProvider && (
-        <UsageScriptModal
-          key={effectiveUsageProvider.id}
-          provider={effectiveUsageProvider}
-          appId={activeApp}
-          isOpen={Boolean(usageProvider)}
-          onClose={() => setUsageProvider(null)}
-          onSave={(script) => {
-            if (usageProvider) {
-              void saveUsageScript(usageProvider, script);
-            }
-          }}
-        />
-      )}
 
       <ConfirmDialog
         isOpen={Boolean(confirmAction)}
@@ -1823,6 +1680,7 @@ function App() {
 
       <DeepLinkImportDialog />
       <FirstRunNoticeDialog />
+      <QoderCertificateNotice />
     </div>
   );
 }

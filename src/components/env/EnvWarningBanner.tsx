@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle, ChevronDown, ChevronUp, X, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -16,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 
 interface EnvWarningBannerProps {
+  inline?: boolean;
   conflicts: EnvConflict[];
   onDismiss: () => void;
   onDeleted: () => void;
@@ -25,6 +27,7 @@ export function EnvWarningBanner({
   conflicts,
   onDismiss,
   onDeleted,
+  inline = false,
 }: EnvWarningBannerProps) {
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -111,133 +114,160 @@ export function EnvWarningBanner({
 
   return (
     <>
-      <div className="fixed top-0 left-0 right-0 z-[100] bg-yellow-50 dark:bg-yellow-950 border-b border-yellow-200 dark:border-yellow-900 shadow-lg animate-slide-down">
-        <div className="container mx-auto px-4 py-3">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="h-5 w-5 text-yellow-600 dark:text-yellow-500 flex-shrink-0 mt-0.5" />
+      <div
+        data-testid="env-warning-banner"
+        className={
+          inline
+            ? "pointer-events-none w-full max-w-2xl shrink-0"
+            : "pointer-events-none fixed inset-x-0 bottom-20 z-[100] px-4"
+        }
+      >
+        <div
+          data-testid="env-warning-card"
+          className="pointer-events-auto mx-auto w-full max-w-2xl overflow-hidden rounded-xl border border-amber-200/80 bg-amber-50/90 shadow-lg shadow-amber-900/10 backdrop-blur-md animate-slide-up dark:border-amber-900/70 dark:bg-amber-950/80 dark:shadow-black/20"
+        >
+          <div className="flex items-center gap-3 px-4 py-3 sm:px-5">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-600 dark:bg-amber-950/60 dark:text-amber-400">
+              <AlertTriangle className="h-5 w-5" />
+            </div>
 
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-semibold text-yellow-900 dark:text-yellow-100">
-                    {t("env.warning.title")}
-                  </h3>
-                  <p className="text-sm text-yellow-800 dark:text-yellow-200 mt-0.5">
-                    {t("env.warning.description", { count: conflicts.length })}
-                  </p>
-                </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="truncate text-sm font-semibold text-amber-950 dark:text-amber-50">
+                {t("env.warning.title")}
+              </h3>
+              <p className="mt-0.5 text-xs text-amber-800/80 dark:text-amber-100/75">
+                {t("env.warning.description", { count: conflicts.length })}
+              </p>
+            </div>
 
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setIsExpanded(!isExpanded)}
-                    className="text-yellow-900 dark:text-yellow-100 hover:bg-yellow-100 dark:hover:bg-yellow-900/50"
-                  >
-                    {isExpanded ? (
-                      <>
-                        {t("env.actions.collapse")}
-                        <ChevronUp className="h-4 w-4 ml-1" />
-                      </>
-                    ) : (
-                      <>
-                        {t("env.actions.expand")}
-                        <ChevronDown className="h-4 w-4 ml-1" />
-                      </>
-                    )}
-                  </Button>
+            <div className="flex shrink-0 items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-expanded={isExpanded}
+                aria-controls="env-warning-details"
+                onClick={() => setIsExpanded(!isExpanded)}
+                className="h-8 px-2.5 text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/60 dark:hover:text-amber-200"
+              >
+                {isExpanded
+                  ? t("env.actions.collapse")
+                  : t("env.actions.expand")}
+                {isExpanded ? (
+                  <ChevronUp className="ml-1 h-4 w-4" />
+                ) : (
+                  <ChevronDown className="ml-1 h-4 w-4" />
+                )}
+              </Button>
 
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={onDismiss}
-                    className="text-yellow-900 dark:text-yellow-100 hover:bg-yellow-100 dark:hover:bg-yellow-900/50"
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-
-              {isExpanded && (
-                <div className="mt-4 space-y-3">
-                  <div className="flex items-center gap-2 pb-2 border-b border-yellow-200 dark:border-yellow-900/50">
-                    <Checkbox
-                      id="select-all"
-                      checked={selectedConflicts.size === conflicts.length}
-                      onCheckedChange={toggleSelectAll}
-                    />
-                    <label
-                      htmlFor="select-all"
-                      className="text-sm font-medium text-yellow-900 dark:text-yellow-100 cursor-pointer"
-                    >
-                      {t("env.actions.selectAll")}
-                    </label>
-                  </div>
-
-                  <div className="max-h-96 overflow-y-auto space-y-2">
-                    {conflicts.map((conflict) => {
-                      const key = `${conflict.varName}:${conflict.sourcePath}`;
-                      return (
-                        <div
-                          key={key}
-                          className="flex items-start gap-3 p-3 bg-white dark:bg-gray-900 rounded-md border border-yellow-200 dark:border-yellow-900/50"
-                        >
-                          <Checkbox
-                            id={key}
-                            checked={selectedConflicts.has(key)}
-                            onCheckedChange={() => toggleSelection(key)}
-                          />
-
-                          <div className="flex-1 min-w-0">
-                            <label
-                              htmlFor={key}
-                              className="block text-sm font-medium text-foreground cursor-pointer"
-                            >
-                              {conflict.varName}
-                            </label>
-                            <p className="text-xs text-muted-foreground mt-1 break-all">
-                              {t("env.field.value")}: {conflict.varValue}
-                            </p>
-                            <p className="text-xs text-muted-foreground mt-1">
-                              {t("env.field.source")}:{" "}
-                              {getSourceDescription(conflict)}
-                            </p>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-yellow-200 dark:border-yellow-900/50">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setSelectedConflicts(new Set())}
-                      disabled={selectedConflicts.size === 0}
-                      className="text-yellow-900 dark:text-yellow-100 border-yellow-300 dark:border-yellow-800"
-                    >
-                      {t("env.actions.clearSelection")}
-                    </Button>
-
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => setShowConfirmDialog(true)}
-                      disabled={selectedConflicts.size === 0 || isDeleting}
-                      className="gap-1"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      {isDeleting
-                        ? t("env.actions.deleting")
-                        : t("env.actions.deleteSelected", {
-                            count: selectedConflicts.size,
-                          })}
-                    </Button>
-                  </div>
-                </div>
-              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={t("common.close")}
+                onClick={onDismiss}
+                className="h-8 w-8 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:text-muted-foreground dark:hover:bg-muted dark:hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </Button>
             </div>
           </div>
+
+          <AnimatePresence initial={false}>
+            {isExpanded && (
+              <motion.div
+                id="env-warning-details"
+                initial={{ gridTemplateRows: "0fr", opacity: 0 }}
+                animate={{ gridTemplateRows: "1fr", opacity: 1 }}
+                exit={{ gridTemplateRows: "0fr", opacity: 0 }}
+                transition={{
+                  gridTemplateRows: {
+                    duration: 0.28,
+                    ease: [0.32, 0.72, 0, 1],
+                  },
+                  opacity: { duration: 0.18 },
+                }}
+                className="grid overflow-hidden"
+              >
+                <div className="min-h-0 overflow-hidden">
+                  <div className="space-y-3 border-t border-amber-200/80 bg-white/45 px-4 py-4 dark:border-amber-900/60 dark:bg-amber-950/30 sm:px-5">
+                    <div className="flex items-center gap-2 border-b border-amber-200/70 pb-2 dark:border-amber-900/50">
+                      <Checkbox
+                        id="select-all"
+                        checked={selectedConflicts.size === conflicts.length}
+                        onCheckedChange={toggleSelectAll}
+                      />
+                      <label
+                        htmlFor="select-all"
+                        className="cursor-pointer text-sm font-medium text-slate-700 dark:text-foreground"
+                      >
+                        {t("env.actions.selectAll")}
+                      </label>
+                    </div>
+
+                    <div className="max-h-[min(40vh,20rem)] space-y-2 overflow-y-auto pr-1">
+                      {conflicts.map((conflict) => {
+                        const key = `${conflict.varName}:${conflict.sourcePath}`;
+                        return (
+                          <div
+                            key={key}
+                            className="flex items-start gap-3 rounded-xl border border-border/70 bg-background/80 p-3 dark:bg-card/60"
+                          >
+                            <Checkbox
+                              id={key}
+                              checked={selectedConflicts.has(key)}
+                              onCheckedChange={() => toggleSelection(key)}
+                            />
+
+                            <div className="flex-1 min-w-0">
+                              <label
+                                htmlFor={key}
+                                className="block text-sm font-medium text-foreground cursor-pointer"
+                              >
+                                {conflict.varName}
+                              </label>
+                              <p className="text-xs text-muted-foreground mt-1 break-all">
+                                {t("env.field.value")}: {conflict.varValue}
+                              </p>
+                              <p className="text-xs text-muted-foreground mt-1">
+                                {t("env.field.source")}:{" "}
+                                {getSourceDescription(conflict)}
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2 border-t border-amber-200/70 pt-3 dark:border-amber-900/50">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSelectedConflicts(new Set())}
+                        disabled={selectedConflicts.size === 0}
+                        className="border-amber-300 text-amber-900 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-200 dark:hover:bg-amber-950/50"
+                      >
+                        {t("env.actions.clearSelection")}
+                      </Button>
+
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => setShowConfirmDialog(true)}
+                        disabled={selectedConflicts.size === 0 || isDeleting}
+                        className="gap-1"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        {isDeleting
+                          ? t("env.actions.deleting")
+                          : t("env.actions.deleteSelected", {
+                              count: selectedConflicts.size,
+                            })}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
 

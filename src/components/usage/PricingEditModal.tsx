@@ -175,6 +175,7 @@ export function PricingEditModal({
           </Label>
           <Input
             id="inputCost"
+            placeholder="0.00"
             type="number"
             step={PRICE_INPUT_STEP}
             min="0"
@@ -192,6 +193,7 @@ export function PricingEditModal({
           </Label>
           <Input
             id="outputCost"
+            placeholder="0.00"
             type="number"
             step={PRICE_INPUT_STEP}
             min="0"
@@ -212,6 +214,7 @@ export function PricingEditModal({
           </Label>
           <Input
             id="cacheReadCost"
+            placeholder="0.00"
             type="number"
             step={PRICE_INPUT_STEP}
             min="0"
@@ -232,6 +235,7 @@ export function PricingEditModal({
           </Label>
           <Input
             id="cacheCreationCost"
+            placeholder="0.00"
             type="number"
             step={PRICE_INPUT_STEP}
             min="0"

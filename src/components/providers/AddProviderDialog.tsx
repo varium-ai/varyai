@@ -54,7 +54,10 @@ export function AddProviderDialog({
     appId !== "hermes" &&
     appId !== "pi" &&
     appId !== "grokbuild" &&
-    appId !== "claude-desktop";
+    appId !== "claude-desktop" &&
+    appId !== "workbuddy" &&
+    appId !== "qoder" &&
+    !["trae", "kimi", "qwen", "zcode"].includes(appId);
   const [activeTab, setActiveTab] = useState<"app-specific" | "universal">(
     "app-specific",
   );

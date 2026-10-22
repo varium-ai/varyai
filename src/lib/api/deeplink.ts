@@ -57,15 +57,6 @@ export interface DeepLinkImportRequest {
   usageAutoInterval?: number;
 }
 
-export interface McpImportResult {
-  importedCount: number;
-  importedIds: string[];
-  failed: Array<{
-    id: string;
-    error: string;
-  }>;
-}
-
 export type ImportResult =
   | { type: "provider"; id: string }
   | { type: "prompt"; id: string }
@@ -80,7 +71,7 @@ export type ImportResult =
 export const deeplinkApi = {
   /**
    * Parse a deep link URL
-   * @param url The ccswitch:// URL to parse
+   * @param url The varyai:// URL to parse
    * @returns Parsed deep link request
    */
   parseDeeplink: async (url: string): Promise<DeepLinkImportRequest> => {

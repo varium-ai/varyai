@@ -1261,3 +1261,381 @@ fn ensure_incremental_auto_vacuum_rebuilds_existing_file_db() {
         "file db should persist INCREMENTAL auto_vacuum after VACUUM rebuild"
     );
 }
+
+#[test]
+fn test_security_audit_tables_and_dao_operations() {
+    let db = Database::memory().expect("create memory db");
+
+    {
+        let conn = db.conn.lock().expect("lock conn");
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'security_%'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(tables.contains(&"security_audit_logs".to_string()));
+        assert!(tables.contains(&"security_custom_rules".to_string()));
+        assert!(tables.contains(&"security_settings".to_string()));
+    }
+
+    let event1 = crate::database::AuditLogEvent {
+        timestamp: 1000,
+        request_id: Some("req-1".to_string()),
+        session_id: None,
+        app_type: "claude".to_string(),
+        provider_id: "anthropic-main".to_string(),
+        rule_id: "rsa_ssh_private_key".to_string(),
+        rule_name: "RSA 私钥".to_string(),
+        rule_category: "private_key".to_string(),
+        risk_level: "CRITICAL".to_string(),
+        action_taken: "block".to_string(),
+        matched_snippet_masked: "-----BEGIN...****".to_string(),
+        location: Some("messages[0].content".to_string()),
+    };
+    let event2 = crate::database::AuditLogEvent {
+        timestamp: 2000,
+        request_id: Some("req-2".to_string()),
+        session_id: None,
+        app_type: "codex".to_string(),
+        provider_id: "openai-main".to_string(),
+        rule_id: "github_token".to_string(),
+        rule_name: "GitHub Token".to_string(),
+        rule_category: "api_token".to_string(),
+        risk_level: "HIGH".to_string(),
+        action_taken: "block".to_string(),
+        matched_snippet_masked: "ghp_****1234".to_string(),
+        location: Some("tool_use.input.command".to_string()),
+    };
+
+    db.insert_audit_logs_batch(&[event1, event2])
+        .expect("insert batch");
+
+    let filter = crate::database::AuditLogFilter::default();
+    let res = db
+        .get_security_audit_logs(&filter, 1, 10)
+        .expect("get logs");
+    assert_eq!(res.total, 2);
+    assert_eq!(res.items.len(), 2);
+    assert_eq!(res.items[0].timestamp, 2000);
+
+    let mut claude_filter = crate::database::AuditLogFilter::default();
+    claude_filter.app_type = Some("claude".to_string());
+    let res_claude = db.get_security_audit_logs(&claude_filter, 1, 10).unwrap();
+    assert_eq!(res_claude.total, 1);
+    assert_eq!(res_claude.items[0].rule_id, "rsa_ssh_private_key");
+
+    let cleared = db
+        .clear_security_audit_logs(Some(1500))
+        .expect("clear logs before 1500");
+    assert_eq!(cleared, 1);
+    let after_clear = db.get_security_audit_logs(&filter, 1, 10).unwrap();
+    assert_eq!(after_clear.total, 1);
+    assert_eq!(after_clear.items[0].timestamp, 2000);
+}
+
+#[test]
+fn test_security_custom_rules_and_settings() {
+    let db = Database::memory().expect("create memory db");
+
+    let default_settings = db.get_security_settings().expect("get settings");
+    assert!(default_settings.enabled);
+
+    let new_settings = crate::database::SecurityAuditSettings { enabled: false };
+    db.update_security_settings(&new_settings)
+        .expect("update settings");
+    let loaded_settings = db.get_security_settings().expect("load settings");
+    assert!(!loaded_settings.enabled);
+
+    let rule = crate::database::CustomSecurityRule {
+        id: "rule-123".to_string(),
+        name: "内部机密项目代码".to_string(),
+        rule_type: "keyword".to_string(),
+        pattern: "PROJECT_TITAN".to_string(),
+        risk_level: "CRITICAL".to_string(),
+        action: "block".to_string(),
+        enabled: true,
+        description: Some("防范项目代号外泄".to_string()),
+        updated_at: 1700000000,
+    };
+    db.save_custom_security_rule(&rule)
+        .expect("save custom rule");
+
+    let rules = db.get_custom_security_rules().expect("get custom rules");
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].name, "内部机密项目代码");
+
+    let deleted = db
+        .delete_custom_security_rule("rule-123")
+        .expect("delete rule");
+    assert!(deleted);
+    let after_del = db
+        .get_custom_security_rules()
+        .expect("get custom rules after del");
+    assert!(after_del.is_empty());
+}
+#[test]
+fn test_security_audit_logs_crud_and_clamping() {
+    use super::dao::{AuditLogEvent, AuditLogFilter};
+
+    let db = Database::memory().expect("create memory db");
+
+    let event = AuditLogEvent {
+        timestamp: 1726000000000,
+        request_id: Some("req_123".to_string()),
+        session_id: None,
+        app_type: "claude".to_string(),
+        provider_id: "official".to_string(),
+        rule_id: "rsa_key".to_string(),
+        rule_name: "RSA Private Key".to_string(),
+        rule_category: "private_key".to_string(),
+        risk_level: "CRITICAL".to_string(),
+        action_taken: "block".to_string(),
+        matched_snippet_masked: "-----BEGIN...-----".to_string(),
+        location: Some("messages[0]".to_string()),
+    };
+
+    db.insert_audit_logs_batch(&[event.clone()])
+        .expect("insert audit log");
+
+    let res = db
+        .get_security_audit_logs(&AuditLogFilter::default(), 1, 200)
+        .expect("query logs");
+    assert_eq!(res.total, 1);
+    assert_eq!(res.page_size, 100, "page_size should be clamped to 100");
+    assert_eq!(res.items.len(), 1);
+    assert_eq!(res.items[0].rule_id, "rsa_key");
+
+    let cleared = db.clear_security_audit_logs(None).expect("clear logs");
+    assert_eq!(cleared, 1);
+    let empty_res = db
+        .get_security_audit_logs(&AuditLogFilter::default(), 1, 10)
+        .expect("query empty");
+    assert_eq!(empty_res.total, 0);
+}
+
+#[test]
+fn test_custom_security_rules_and_toggle() {
+    use super::dao::CustomSecurityRule;
+
+    let db = Database::memory().expect("create memory db");
+
+    let rule = CustomSecurityRule {
+        id: "test_rule_1".to_string(),
+        name: "Test Keyword".to_string(),
+        rule_type: "keyword".to_string(),
+        pattern: "SECRET_KEY_999".to_string(),
+        risk_level: "HIGH".to_string(),
+        action: "block".to_string(),
+        enabled: true,
+        description: Some("test rule description".to_string()),
+        updated_at: 1726000000000,
+    };
+
+    db.save_custom_security_rule(&rule).expect("save rule");
+
+    let rules = db.get_custom_security_rules().expect("get rules");
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].id, "test_rule_1");
+    assert!(rules[0].enabled);
+
+    let action_updated = db
+        .update_custom_security_rule_action("test_rule_1", "redact")
+        .expect("update custom rule action");
+    assert!(action_updated);
+    let rules_after_action = db
+        .get_custom_security_rules()
+        .expect("get rules after action update");
+    assert_eq!(rules_after_action[0].action, "redact");
+    let allow_updated = db
+        .update_custom_security_rule_action("test_rule_1", "ALLOW")
+        .expect("update custom rule action to allow");
+    assert!(allow_updated);
+    let rules_after_allow = db
+        .get_custom_security_rules()
+        .expect("get rules after allow action update");
+    assert_eq!(rules_after_allow[0].action, "allow");
+    assert!(
+        db.update_custom_security_rule_action("missing", "audit")
+            .expect("update missing custom rule action")
+            == false
+    );
+    assert!(db
+        .update_custom_security_rule_action("test_rule_1", "invalid")
+        .is_err());
+
+    let toggled = db
+        .toggle_custom_security_rule("test_rule_1", false)
+        .expect("toggle false");
+    assert!(toggled);
+    let rules_after = db
+        .get_custom_security_rules()
+        .expect("get rules after toggle");
+    assert!(!rules_after[0].enabled);
+
+    let deleted = db
+        .delete_custom_security_rule("test_rule_1")
+        .expect("delete rule");
+    assert!(deleted);
+    let empty_rules = db.get_custom_security_rules().expect("get empty rules");
+    assert!(empty_rules.is_empty());
+}
+
+#[test]
+fn test_security_settings_crud() {
+    use super::dao::SecurityAuditSettings;
+
+    let db = Database::memory().expect("create memory db");
+
+    let default_settings = db.get_security_settings().expect("get default");
+    assert!(default_settings.enabled);
+
+    let new_settings = SecurityAuditSettings { enabled: false };
+    db.update_security_settings(&new_settings)
+        .expect("update settings");
+
+    let loaded = db.get_security_settings().expect("get updated");
+    assert_eq!(loaded, new_settings);
+}
+
+#[test]
+fn legacy_block_rule_settings_are_read_as_redact_and_saved_without_block() {
+    let db = Database::memory().unwrap();
+    {
+        let conn = db.conn.lock().unwrap();
+        for (id, action) in [
+            ("legacy-block", "block"),
+            ("legacy-upper", "BLOCK"),
+            ("keep-audit", "audit"),
+            ("keep-allow", "allow"),
+        ] {
+            conn.execute(
+                "INSERT INTO security_custom_rules (id, name, rule_type, pattern, risk_level, action, enabled, updated_at) VALUES (?1, ?1, 'keyword', 'SECRET', 'HIGH', ?2, 1, 123)",
+                params![id, action],
+            ).unwrap();
+        }
+        conn.execute("INSERT INTO security_settings (key, value) VALUES ('builtin_action:rsa_ssh_private_key', 'block'), ('builtin_action:github_token', 'block'), ('builtin_action:aws_access_key', 'audit')", []).unwrap();
+    }
+    let rules = db.get_custom_security_rules().unwrap();
+    for rule in &rules {
+        let expected = match rule.id.as_str() {
+            "keep-audit" => "audit",
+            "keep-allow" => "allow",
+            _ => "redact",
+        };
+        assert_eq!(rule.action, expected);
+        assert_eq!(rule.updated_at, 123);
+    }
+    let actions = db.get_builtin_security_rule_actions().unwrap();
+    assert_eq!(actions["rsa_ssh_private_key"], "redact");
+    assert_eq!(actions["github_token"], "redact");
+    assert_eq!(actions["aws_access_key"], "audit");
+
+    let mut rule = rules
+        .into_iter()
+        .find(|rule| rule.id == "legacy-block")
+        .unwrap();
+    rule.action = "block".into();
+    db.save_custom_security_rule(&rule).unwrap();
+    db.update_custom_security_rule_action("legacy-upper", "BLOCK")
+        .unwrap();
+    db.update_builtin_security_rule_action("github_token", Some("BLOCK"))
+        .unwrap();
+    let conn = db.conn.lock().unwrap();
+    for id in ["legacy-block", "legacy-upper"] {
+        let stored: String = conn
+            .query_row(
+                "SELECT action FROM security_custom_rules WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "redact");
+    }
+    let stored: String = conn
+        .query_row(
+            "SELECT value FROM security_settings WHERE key = 'builtin_action:github_token'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, "redact");
+}
+
+#[test]
+fn test_builtin_action_override_persistence_and_validation() {
+    let db = Database::memory().expect("memory db");
+    assert!(db.get_builtin_security_rule_actions().unwrap().is_empty());
+    db.update_builtin_security_rule_action("github_token", Some("AUDIT"))
+        .unwrap();
+    db.update_builtin_security_rule_action("chinese_phone_number", Some("redact"))
+        .unwrap();
+    db.update_builtin_security_rule_action("aws_access_key", Some("ALLOW"))
+        .unwrap();
+    db.update_builtin_security_rule_action("catalog:groq-key", Some("audit"))
+        .unwrap();
+    let actions = db.get_builtin_security_rule_actions().unwrap();
+    assert_eq!(
+        actions.get("github_token").map(String::as_str),
+        Some("audit")
+    );
+    assert_eq!(
+        actions.get("chinese_phone_number").map(String::as_str),
+        Some("redact")
+    );
+    assert_eq!(
+        actions.get("aws_access_key").map(String::as_str),
+        Some("allow")
+    );
+    assert_eq!(
+        actions.get("catalog:groq-key").map(String::as_str),
+        Some("audit")
+    );
+    assert!(db
+        .update_builtin_security_rule_action("unknown_rule", Some("audit"))
+        .is_err());
+    assert!(db
+        .update_builtin_security_rule_action("github_token", Some("ignore"))
+        .is_err());
+    assert!(db
+        .update_builtin_security_rule_action("catalog:generic-sk-key-notice", Some("block"))
+        .is_err());
+    assert!(db
+        .update_builtin_security_rule_action("catalog:generic-sk-key-notice", Some("redact"))
+        .is_err());
+    assert_eq!(db.get_builtin_security_rule_actions().unwrap(), actions);
+    db.update_builtin_security_rule_action("github_token", None)
+        .unwrap();
+    assert!(!db
+        .get_builtin_security_rule_actions()
+        .unwrap()
+        .contains_key("github_token"));
+}
+
+#[test]
+fn incremental_vacuum_reclaims_entire_freelist() {
+    let temp = NamedTempFile::new().expect("create temp db file");
+    let conn = Connection::open(temp.path()).expect("open temp db");
+    conn.execute("PRAGMA auto_vacuum = INCREMENTAL;", [])
+        .expect("set incremental auto_vacuum");
+    conn.execute_batch(
+        "CREATE TABLE bulk (payload BLOB);
+         WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200)
+         INSERT INTO bulk SELECT zeroblob(4096) FROM n;
+         DELETE FROM bulk;",
+    )
+    .expect("fill and clear table");
+
+    let freelist = |conn: &Connection| -> i64 {
+        conn.query_row("PRAGMA freelist_count;", [], |row| row.get(0))
+            .expect("read freelist_count")
+    };
+    assert!(
+        freelist(&conn) > 100,
+        "deleting rows should leave free pages"
+    );
+
+    Database::incremental_vacuum_on_conn(&conn).expect("incremental vacuum");
+    assert_eq!(freelist(&conn), 0, "all free pages should be reclaimed");
+}

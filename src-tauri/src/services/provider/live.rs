@@ -531,6 +531,13 @@ fn settings_contain_common_config(app_type: &AppType, settings: &Value, snippet:
         | AppType::OpenClaw
         | AppType::Hermes
         | AppType::Pi
+        | AppType::WorkBuddy
+        | AppType::Qoder
+        | AppType::Kimi
+        | AppType::Qwen
+        | AppType::ZCode
+        | AppType::Trae
+        | AppType::DoubaoWork
         | AppType::ClaudeDesktop => false,
     }
 }
@@ -606,6 +613,13 @@ pub(crate) fn remove_common_config_from_settings(
         | AppType::OpenClaw
         | AppType::Hermes
         | AppType::Pi
+        | AppType::WorkBuddy
+        | AppType::Qoder
+        | AppType::Kimi
+        | AppType::Qwen
+        | AppType::ZCode
+        | AppType::Trae
+        | AppType::DoubaoWork
         | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
 }
@@ -666,6 +680,13 @@ fn apply_common_config_to_settings(
         | AppType::OpenClaw
         | AppType::Hermes
         | AppType::Pi
+        | AppType::WorkBuddy
+        | AppType::Qoder
+        | AppType::Kimi
+        | AppType::Qwen
+        | AppType::ZCode
+        | AppType::Trae
+        | AppType::DoubaoWork
         | AppType::ClaudeDesktop => Ok(settings.clone()),
     }
 }
@@ -1064,6 +1085,25 @@ fn restore_live_settings_for_provider_backfill(
                 provider.id
             );
         }
+        let restored = match (
+            settings.get("config").and_then(Value::as_str),
+            provider
+                .settings_config
+                .get("config")
+                .and_then(Value::as_str),
+        ) {
+            (Some(live_config), Some(provider_config)) => {
+                crate::grok_config::restore_provider_default_model(live_config, provider_config)
+            }
+            _ => None,
+        };
+        if let Some(config) = restored {
+            log::info!(
+                "Grok Build models.default no longer selected provider '{}' table; restored it while backfilling",
+                provider.id
+            );
+            settings["config"] = Value::String(config);
+        }
         return settings;
     }
     if !matches!(app_type, AppType::Codex) {
@@ -1110,6 +1150,26 @@ fn restore_live_settings_for_provider_backfill(
                 "Failed to strip unified session bucket while backfilling '{}': {err}",
                 provider.id
             );
+        }
+    }
+
+    // A third-party route with its own credential source may leave no bearer in
+    // config.toml and no shared auth.json. Empty Live auth is then an absent
+    // snapshot, not a request to erase the provider's stored credential.
+    // Official logouts and Live snapshots with credentials remain authoritative.
+    if provider.category.as_deref() != Some("official")
+        && !crate::proxy::providers::is_codex_official_provider(provider)
+    {
+        let stored_auth = provider.settings_config.get("auth");
+        let live_has_auth = settings
+            .get("auth")
+            .is_some_and(crate::codex_config::codex_auth_has_login_material);
+        if !live_has_auth
+            && stored_auth.is_some_and(crate::codex_config::codex_auth_has_login_material)
+        {
+            if let (Some(obj), Some(auth)) = (settings.as_object_mut(), stored_auth) {
+                obj.insert("auth".to_string(), auth.clone());
+            }
         }
     }
 
@@ -1430,9 +1490,16 @@ pub(crate) fn write_live_snapshot(app_type: &AppType, provider: &Provider) -> Re
             crate::hermes_config::set_provider(&provider.id, provider.settings_config.clone())?;
             log::debug!("Hermes provider '{}' written to live config", provider.id);
         }
-        AppType::Pi => {
+        AppType::Pi
+        | AppType::WorkBuddy
+        | AppType::Qoder
+        | AppType::Kimi
+        | AppType::Qwen
+        | AppType::ZCode
+        | AppType::Trae
+        | AppType::DoubaoWork => {
             return Err(AppError::InvalidInput(
-                "Pi providers use the Pi provider service".to_string(),
+                "Native model configurations must use their dedicated provider service".to_string(),
             ));
         }
     }
@@ -1660,7 +1727,17 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
 
     // Sync providers based on mode
     for app_type in AppType::all() {
-        if matches!(app_type, AppType::Pi) {
+        if matches!(
+            app_type,
+            AppType::Pi
+                | AppType::WorkBuddy
+                | AppType::Qoder
+                | AppType::Kimi
+                | AppType::Qwen
+                | AppType::ZCode
+                | AppType::Trae
+                | AppType::DoubaoWork
+        ) {
             continue;
         }
         let result = if app_type.is_additive_mode() {
@@ -1706,6 +1783,8 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
 /// Read current live settings for an app type
 pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
     match app_type {
+        AppType::DoubaoWork => Ok(serde_json::json!({})),
+        app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::Trae) => Ok(crate::services::agent_clients::Document::read(app.as_str(),&crate::services::agent_clients::config_path(app.as_str())?)?.value),
         AppType::Codex => {
             let mut result = crate::codex_config::read_codex_live_settings()?;
             // `modelCatalog` is a cc-switch private field that lives only in
@@ -1815,6 +1894,10 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
             let config = crate::hermes_config::yaml_to_json(&yaml_config)?;
             Ok(config)
         }
+        AppType::Qoder => crate::qoder_config::read_at(&crate::qoder_config::path()).map(|v|v.0),
+        AppType::WorkBuddy => {
+            crate::workbuddy_config::read_models().map(|models| json!({"models": models}))
+        }
         AppType::Pi => Err(AppError::InvalidInput(
             "Pi providers are read from Pi's native models file".to_string(),
         )),
@@ -1826,6 +1909,15 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
 /// Returns `Ok(true)` if a provider was actually imported,
 /// `Ok(false)` if skipped (providers already exist for this app).
 pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool, AppError> {
+    if app_type == AppType::DoubaoWork {
+        return Ok(false);
+    }
+    if app_type == AppType::Qoder {
+        return Ok(false);
+    }
+    if app_type == AppType::WorkBuddy {
+        return super::workbuddy::import(state);
+    }
     // Additive mode apps (OpenCode, OpenClaw) should use their dedicated
     // import_xxx_providers_from_live functions, not this generic default config import
     if app_type.is_additive_mode() {
@@ -1927,7 +2019,17 @@ pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool
             })
         }
         // OpenCode, OpenClaw and Hermes use additive mode and are handled by early return above
-        AppType::OpenCode | AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
+        AppType::OpenCode
+        | AppType::OpenClaw
+        | AppType::Hermes
+        | AppType::Pi
+        | AppType::WorkBuddy
+        | AppType::Qoder
+        | AppType::Kimi
+        | AppType::Qwen
+        | AppType::ZCode
+        | AppType::Trae
+        | AppType::DoubaoWork => {
             unreachable!("additive mode apps are handled by early return")
         }
     };
@@ -2108,7 +2210,7 @@ pub(crate) fn remove_opencode_provider_from_live(provider_id: &str) -> Result<()
 /// Import all providers from OpenCode live config to database
 ///
 /// This imports existing providers from ~/.config/opencode/opencode.json
-/// into the CC Switch database. Each provider found will be added to the
+/// into the Vary AI database. Each provider found will be added to the
 /// database with is_current set to false.
 pub fn import_opencode_providers_from_live(state: &AppState) -> Result<usize, AppError> {
     use crate::opencode_config;
@@ -2183,7 +2285,7 @@ pub fn import_opencode_providers_from_live(state: &AppState) -> Result<usize, Ap
 /// Import all providers from OpenClaw live config to database
 ///
 /// This imports existing providers from ~/.openclaw/openclaw.json
-/// into the CC Switch database. Each provider found will be added to the
+/// into the Vary AI database. Each provider found will be added to the
 /// database with is_current set to false.
 pub fn import_openclaw_providers_from_live(state: &AppState) -> Result<usize, AppError> {
     use crate::openclaw_config;
@@ -2271,7 +2373,7 @@ pub fn import_openclaw_providers_from_live(state: &AppState) -> Result<usize, Ap
 /// Import all providers from Hermes live config to database
 ///
 /// This imports existing providers from ~/.hermes/config.yaml
-/// into the CC Switch database. Each provider found will be added to the
+/// into the Vary AI database. Each provider found will be added to the
 /// database with is_current set to false.
 pub fn import_hermes_providers_from_live(state: &AppState) -> Result<usize, AppError> {
     use crate::hermes_config;
@@ -3089,6 +3191,59 @@ base_url = "https://a.example/v1"
     }
 
     #[test]
+    fn category_less_official_logout_does_not_restore_stored_auth() {
+        let provider = Provider::with_id(
+            crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string(),
+            "OpenAI Official".to_string(),
+            json!({
+                "auth": { "auth_mode": "chatgpt", "tokens": { "refresh_token": "old" } },
+                "config": ""
+            }),
+            None,
+        );
+        assert!(crate::proxy::providers::is_codex_official_provider(
+            &provider
+        ));
+
+        for live_auth in [json!({}), json!({ "auth_mode": "chatgpt" })] {
+            let live = json!({ "auth": live_auth, "config": "" });
+            assert_eq!(
+                restore_live_settings_for_provider_backfill(
+                    &AppType::Codex,
+                    &provider,
+                    live.clone()
+                ),
+                live,
+                "official logout must remain authoritative"
+            );
+        }
+    }
+
+    #[test]
+    fn category_less_fixed_third_party_keeps_stored_auth_on_empty_live() {
+        let provider = Provider::with_id(
+            crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string(),
+            "Custom API".to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "sk-db-only" },
+                "config": "model_provider = \"custom\"\n"
+            }),
+            None,
+        );
+        assert!(!crate::proxy::providers::is_codex_official_provider(
+            &provider
+        ));
+        assert_eq!(
+            restore_live_settings_for_provider_backfill(
+                &AppType::Codex,
+                &provider,
+                json!({ "auth": {}, "config": "model_provider = \"custom\"\n" }),
+            ),
+            provider.settings_config
+        );
+    }
+
+    #[test]
     fn backfill_never_persists_native_tokens_into_managed_provider_config() {
         // 托管 provider 的存储配置以占位 auth 表示；但 live 里此刻是用户自己
         // 浏览器登录的原生 auth（含真实 refresh_token）。backfill 必须把 live
@@ -3317,6 +3472,46 @@ base_url = "https://a.example/v1"
             result.get("modelCatalog"),
             live_settings.get("modelCatalog"),
             "backfill must keep the Live-reconstructed catalog when the DB has none"
+        );
+    }
+
+    #[test]
+    fn codex_switch_backfill_uses_stored_auth_only_when_live_has_no_credential() {
+        let mut provider = Provider::with_id(
+            "header-auth".to_string(),
+            "Header Auth".to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "sk-db-only" },
+                "config": "model_provider = \"custom\"\nmodel = \"old\"\n"
+            }),
+            None,
+        );
+        provider.category = Some("custom".to_string());
+        let live_config = "model_provider = \"custom\"\nmodel = \"live\"\n";
+
+        for live_auth in [
+            Some(json!({})),
+            Some(json!({ "auth_mode": "chatgpt" })),
+            None,
+        ] {
+            let mut live = json!({ "config": live_config });
+            if let Some(auth) = live_auth {
+                live["auth"] = auth;
+            }
+            let backfilled =
+                restore_live_settings_for_provider_backfill(&AppType::Codex, &provider, live);
+            assert_eq!(backfilled["auth"], provider.settings_config["auth"]);
+            assert_eq!(backfilled["config"], json!(live_config));
+        }
+
+        let live = json!({
+            "auth": { "OPENAI_API_KEY": "sk-live" },
+            "config": live_config
+        });
+        assert_eq!(
+            restore_live_settings_for_provider_backfill(&AppType::Codex, &provider, live.clone()),
+            live,
+            "a live credential must still win"
         );
     }
 

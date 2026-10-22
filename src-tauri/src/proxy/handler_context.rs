@@ -33,6 +33,8 @@ pub struct StreamingTimeoutConfig {
 /// - 日志标签
 /// - Session ID（用于日志关联）
 pub struct RequestContext {
+    /// Bounded, validated tool schema references from this request only.
+    pub tool_schemas: std::sync::Arc<Vec<crate::proxy::tool_observation::channel::ToolSchemaRef>>,
     /// 请求开始时间
     pub start_time: Instant,
     /// 应用级代理配置（per-app，包含重试次数和超时配置）
@@ -157,7 +159,14 @@ impl RequestContext {
             session_id
         );
 
+        let tool_schemas = if crate::services::tool_risk::runtime::collection_enabled() {
+            crate::proxy::tool_observation::mount::collect_tool_schemas(body, app_type_str)
+        } else {
+            std::sync::Arc::new(Vec::new())
+        };
+
         Ok(Self {
+            tool_schemas,
             start_time,
             app_config,
             provider,
@@ -174,6 +183,47 @@ impl RequestContext {
             optimizer_config,
             copilot_optimizer_config,
         })
+    }
+    #[cfg(test)]
+    pub(super) fn for_tool_risk_test(body: &serde_json::Value) -> Self {
+        Self {
+            tool_schemas: crate::proxy::tool_observation::mount::collect_tool_schemas(
+                body, "codex",
+            ),
+            start_time: Instant::now(),
+            app_config: AppProxyConfig {
+                app_type: "codex".into(),
+                enabled: true,
+                auto_failover_enabled: false,
+                max_retries: 0,
+                streaming_first_byte_timeout: 0,
+                streaming_idle_timeout: 0,
+                non_streaming_timeout: 0,
+                circuit_failure_threshold: 5,
+                circuit_success_threshold: 2,
+                circuit_timeout_seconds: 60,
+                circuit_error_rate_threshold: 0.5,
+                circuit_min_requests: 10,
+            },
+            provider: Provider::with_id(
+                "test".into(),
+                "DeepSeek test".into(),
+                serde_json::json!({}),
+                None,
+            ),
+            providers: Vec::new(),
+            current_provider_id: "test".into(),
+            request_model: "deepseek-test".into(),
+            outbound_model: None,
+            tag: "Codex",
+            app_type_str: "codex",
+            app_type: AppType::Codex,
+            session_id: "test-session".into(),
+            session_client_provided: false,
+            rectifier_config: RectifierConfig::default(),
+            optimizer_config: OptimizerConfig::default(),
+            copilot_optimizer_config: CopilotOptimizerConfig::default(),
+        }
     }
 
     /// 从 URI 提取模型名称（Gemini 专用）

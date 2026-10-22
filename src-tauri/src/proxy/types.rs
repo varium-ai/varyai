@@ -1,5 +1,17 @@
 use serde::{Deserialize, Serialize};
 
+/// The unauthenticated gateway is restricted to this machine.
+/// Do not resolve hostnames: only literal loopback IP addresses are accepted.
+pub(crate) fn loopback_listener_ip(address: &str) -> Result<std::net::IpAddr, String> {
+    let ip = address.parse::<std::net::IpAddr>().map_err(|_| {
+        "The local gateway requires a loopback IP address (127.0.0.1 or ::1)".to_string()
+    })?;
+    if !ip.is_loopback() {
+        return Err("The local gateway cannot listen on non-loopback interfaces".into());
+    }
+    Ok(ip)
+}
+
 /// 代理服务器配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
@@ -110,6 +122,26 @@ pub struct ProxyServerInfo {
 /// 各应用的接管状态（是否改写该应用的 Live 配置指向本地代理）
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProxyTakeoverStatus {
+    #[serde(default)]
+    pub kimi: bool,
+    #[serde(default)]
+    pub qwen: bool,
+    #[serde(default)]
+    pub zcode: bool,
+    #[serde(default)]
+    pub trae: bool,
+    #[serde(default)]
+    pub doubaowork: bool,
+    #[serde(default)]
+    pub doubaowork_waiting: bool,
+    #[serde(default)]
+    pub trae_waiting: bool,
+    #[serde(default)]
+    pub pi: bool,
+    #[serde(default)]
+    pub qoder: bool,
+    #[serde(default)]
+    pub workbuddy: bool,
     pub claude: bool,
     pub codex: bool,
     pub gemini: bool,

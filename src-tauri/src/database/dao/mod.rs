@@ -9,9 +9,11 @@ pub mod prompts;
 pub mod providers;
 pub mod providers_seed;
 pub mod proxy;
+pub mod security;
 pub mod settings;
 pub mod skills;
 pub mod stream_check;
+pub mod tool_risk;
 pub mod universal_providers;
 pub mod usage_rollup;
 
@@ -19,3 +21,12 @@ pub mod usage_rollup;
 // 导出 FailoverQueueItem / Profile 供外部使用
 pub use failover::FailoverQueueItem;
 pub use profiles::Profile;
+pub use security::{
+    AuditBatchOutcome, AuditLogEvent, AuditLogFilter, AuditLogPageResult, AuditLogRecord,
+    AuditRowTarget, AuditWrite, AuditWriteReceipt, CustomSecurityRule, SecurityAuditSettings,
+};
+pub use tool_risk::{
+    ToolRiskActor, ToolRiskAuditStatus, ToolRiskChangeKind, ToolRiskEventInput,
+    ToolRiskEventRecord, ToolRiskPolicyChange, ToolRiskSettings, ToolRiskStoredAuditStatus,
+    ToolRiskWriteReceipt,
+};

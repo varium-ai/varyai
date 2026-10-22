@@ -278,6 +278,16 @@ const UnifiedSkillsPanel = React.forwardRef<
   };
 
   const handleToggleAll = async (app: AppId, enabled: boolean) => {
+    if (
+      app === "workbuddy" ||
+      app === "qoder" ||
+      app === "doubaowork" ||
+      app === "trae" ||
+      app === "kimi" ||
+      app === "qwen" ||
+      app === "zcode"
+    )
+      return;
     if (!skills || !beginWrite()) return;
 
     const ids = skills
@@ -1084,12 +1094,22 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-        <div className="bg-background rounded-xl p-6 max-w-lg w-full mx-4 shadow-xl max-h-[80vh] flex flex-col">
-          <h2 className="text-lg font-semibold mb-2">{t("skills.import")}</h2>
-          <p className="text-sm text-muted-foreground mb-4">
+      <Dialog
+        open
+        onOpenChange={(open) => {
+          if (!open && !isImporting) onClose();
+        }}
+      >
+        <DialogContent
+          zIndex="top"
+          className="w-[calc(100vw-2rem)] max-w-lg max-h-[80vh] rounded-xl p-6"
+        >
+          <DialogTitle className="text-lg font-semibold mb-2">
+            {t("skills.import")}
+          </DialogTitle>
+          <DialogDescription className="text-sm text-muted-foreground mb-4">
             {t("skills.importDescription")}
-          </p>
+          </DialogDescription>
 
           <div className="flex-1 overflow-y-auto space-y-2 mb-4">
             {skills.map((skill) => (
@@ -1166,8 +1186,8 @@ const ImportSkillsDialog: React.FC<ImportSkillsDialogProps> = ({
               {t("skills.importSelected", { count: selected.size })}
             </Button>
           </div>
-        </div>
-      </div>
+        </DialogContent>
+      </Dialog>
     </TooltipProvider>
   );
 };

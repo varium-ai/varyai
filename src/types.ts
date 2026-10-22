@@ -30,11 +30,6 @@ export interface Provider {
   inFailoverQueue?: boolean;
 }
 
-export interface AppConfig {
-  providers: Record<string, Provider>;
-  current: string;
-}
-
 // 自定义端点配置
 export interface CustomEndpoint {
   url: string;
@@ -298,6 +293,13 @@ export interface VisibleApps {
   openclaw: boolean;
   hermes: boolean;
   pi: boolean;
+  workbuddy?: boolean;
+  qoder?: boolean;
+  doubaowork?: boolean;
+  trae?: boolean;
+  kimi?: boolean;
+  qwen?: boolean;
+  zcode?: boolean;
 }
 
 // WebDAV 同步状态
@@ -370,8 +372,6 @@ export interface Settings {
   launchOnStartup?: boolean;
   // 静默启动（程序启动时不显示主窗口）
   silentStartup?: boolean;
-  // 是否启用主页面本地代理功能（默认关闭）
-  enableLocalProxy?: boolean;
   // User has confirmed the local proxy first-run notice
   proxyConfirmed?: boolean;
   // User has confirmed the usage query first-run notice
@@ -421,6 +421,7 @@ export interface Settings {
   hermesConfigDir?: string;
   // 覆盖 Pi agent 配置目录（可选）
   piConfigDir?: string;
+  workbuddyConfigDir?: string;
 
   // ===== 当前供应商 ID（设备级）=====
   // 当前 Claude 供应商 ID（优先于数据库 is_current）
@@ -636,19 +637,6 @@ export interface OpenCodeProviderConfig {
   name?: string; // 供应商显示名称
   options: OpenCodeProviderOptions;
   models: Record<string, OpenCodeModel>;
-}
-
-// OpenCode MCP 服务器配置（与统一格式不同）
-export interface OpenCodeMcpServerSpec {
-  type: "local" | "remote";
-  // local 类型字段
-  command?: string[]; // 与统一格式不同：命令和参数合并为数组
-  environment?: Record<string, string>; // 与统一格式不同：使用 environment 而非 env
-  // remote 类型字段
-  url?: string;
-  headers?: Record<string, string>;
-  // 通用字段
-  enabled?: boolean;
 }
 
 // ============================================================================

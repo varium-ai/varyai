@@ -348,11 +348,7 @@ pub fn transform_claude_request_for_api_format(
     // Copilot 场景：优先从 metadata.user_id 提取 session ID 作为 cache key
     // 格式: "uuid_sessionId" → 提取 "_" 后面的部分作为 session 标识
     // 同一会话的请求共享 cache key，提升 Copilot 缓存命中率
-    let is_copilot = provider
-        .meta
-        .as_ref()
-        .and_then(|m| m.provider_type.as_deref())
-        == Some("github_copilot")
+    let is_copilot = provider.is_github_copilot()
         || provider
             .settings_config
             .get("baseUrl")
@@ -444,6 +440,12 @@ pub fn transform_claude_request_for_api_format(
             // 不在 SSE 末尾吐 usage → 转换出的 Anthropic message_delta 全 0 →
             // 整笔 input/output/cache 漏记（与 Codex Responses→Chat 路径同源）。
             super::transform::inject_openai_stream_include_usage(&mut result);
+            // Copilot Chat rejects stop; retain it for other OpenAI-compatible gateways.
+            if is_copilot {
+                if let Some(obj) = result.as_object_mut() {
+                    obj.remove("stop");
+                }
+            }
             Ok(result)
         }
         "gemini_native" => super::transform_gemini::anthropic_to_gemini_with_shadow(
@@ -786,7 +788,7 @@ impl ProviderAdapter for ClaudeAdapter {
                 // for expired credentials. In both cases we would otherwise
                 // send `Authorization: Bearer ` to upstream and get a 401.
                 //
-                // CC Switch does not currently exchange the refresh_token for
+                // Vary AI does not currently exchange the refresh_token for
                 // a fresh access_token. Until that path exists, degrade to
                 // plain GoogleOAuth strategy (which still sends the raw key
                 // as a fallback) and log loudly so users know to refresh
@@ -1154,10 +1156,10 @@ mod tests {
             .split('.')
             .map(|part| part.parse().unwrap())
             .collect();
-        // Official rust-v0.153.4 catalog: gpt-6-astra requires 0.153.0.
+        // Sol and Luna require a Codex client identity at or above 0.155.0.
         assert!(
-            version.as_slice() >= [0, 153, 0].as_slice(),
-            "gpt-6-astra requires Codex >= 0.153.0; sent {version:?}"
+            version.as_slice() >= [0, 155, 0].as_slice(),
+            "gpt-6-sol and gpt-6-luna require Codex >= 0.155.0; sent {version:?}"
         );
     }
 
@@ -2043,6 +2045,48 @@ mod tests {
             "You are helpful."
         );
         assert_eq!(transformed["generationConfig"]["maxOutputTokens"], 64);
+    }
+
+    #[test]
+    fn openai_chat_strips_stop_only_for_copilot() {
+        for (provider, strip_stop) in [
+            (
+                create_provider_with_meta(
+                    json!({"env": {"ANTHROPIC_BASE_URL": "https://api.githubcopilot.com"}}),
+                    ProviderMeta {
+                        provider_type: Some("github_copilot".into()),
+                        ..Default::default()
+                    },
+                ),
+                true,
+            ),
+            (
+                create_provider(
+                    json!({"env": {"ANTHROPIC_BASE_URL": "https://api.githubcopilot.com"}}),
+                ),
+                true,
+            ),
+            (
+                create_provider(
+                    json!({"env": {"ANTHROPIC_BASE_URL": "https://openrouter.ai/api/v1"}}),
+                ),
+                false,
+            ),
+        ] {
+            let body = json!({
+                "model": "claude-sonnet-4-6", "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hello"}],
+                "stop_sequences": ["\n\nHuman:"]
+            });
+            let result =
+                transform_claude_request_for_api_format(body, &provider, "openai_chat", None, None)
+                    .unwrap();
+            if strip_stop {
+                assert!(result.get("stop").is_none());
+            } else {
+                assert_eq!(result["stop"], json!(["\n\nHuman:"]));
+            }
+        }
     }
 
     #[test]

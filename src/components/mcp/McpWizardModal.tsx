@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -336,12 +337,12 @@ const McpWizardModal: React.FC<McpWizardModalProps> = ({
                   <label className="mb-1 block text-sm font-medium text-foreground">
                     {t("mcp.wizard.args")}
                   </label>
-                  <textarea
+                  <Textarea
                     value={wizardArgs}
                     onChange={(e) => setWizardArgs(e.target.value)}
                     placeholder={t("mcp.wizard.argsPlaceholder")}
                     rows={3}
-                    className="w-full rounded-md border border-border-default bg-background px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-y"
+                    className="font-mono text-foreground resize-y"
                   />
                 </div>
 
@@ -350,12 +351,12 @@ const McpWizardModal: React.FC<McpWizardModalProps> = ({
                   <label className="mb-1 block text-sm font-medium text-foreground">
                     {t("mcp.wizard.env")}
                   </label>
-                  <textarea
+                  <Textarea
                     value={wizardEnv}
                     onChange={(e) => setWizardEnv(e.target.value)}
                     placeholder={t("mcp.wizard.envPlaceholder")}
                     rows={3}
-                    className="w-full rounded-md border border-border-default bg-background px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-y"
+                    className="font-mono text-foreground resize-y"
                   />
                 </div>
               </>
@@ -385,12 +386,12 @@ const McpWizardModal: React.FC<McpWizardModalProps> = ({
                   <label className="mb-1 block text-sm font-medium text-foreground">
                     {t("mcp.wizard.headers")}
                   </label>
-                  <textarea
+                  <Textarea
                     value={wizardHeaders}
                     onChange={(e) => setWizardHeaders(e.target.value)}
                     placeholder={t("mcp.wizard.headersPlaceholder")}
                     rows={3}
-                    className="w-full rounded-md border border-border-default bg-background px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-y"
+                    className="font-mono text-foreground resize-y"
                   />
                 </div>
               </>

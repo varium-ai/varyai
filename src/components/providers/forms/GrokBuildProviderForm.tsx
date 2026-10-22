@@ -501,6 +501,7 @@ export function GrokBuildProviderForm({
               </FormLabel>
               <Input
                 id="grokbuild-context-window"
+                placeholder={t("codexConfig.contextWindowPlaceholder")}
                 type="number"
                 min={1}
                 step={1}

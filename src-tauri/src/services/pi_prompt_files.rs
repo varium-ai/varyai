@@ -21,7 +21,7 @@ pub(crate) struct PiAgentsFileSnapshot {
     pub revision: String,
 }
 
-/// Coordinates every CC Switch read-modify-write operation on Pi's AGENTS.md.
+/// Coordinates every Vary AI read-modify-write operation on Pi's AGENTS.md.
 ///
 /// Keeping the guard alive across the database update lets callers compare the
 /// file revision immediately before an atomic replacement and roll back their
@@ -285,7 +285,7 @@ fn ensure_revision(path: &Path, expected: &str, label: &str) -> Result<(), AppEr
         Ok(())
     } else {
         Err(AppError::Conflict(format!(
-            "{label} changed outside CC Switch: {}",
+            "{label} changed outside Vary AI: {}",
             path.display()
         )))
     }

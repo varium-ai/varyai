@@ -579,6 +579,10 @@ fn merge_top_level_detail(part: &Value, image_url: &mut Map<String, Value>) {
             image_url.insert("detail".to_string(), detail.clone());
         }
     }
+    // Strict Chat gateways accept auto/low/high, but not Codex's original.
+    if image_url.get("detail").and_then(Value::as_str) == Some("original") {
+        image_url.insert("detail".to_string(), Value::String("auto".to_string()));
+    }
 }
 
 fn source_media_type_is_image(source: &Map<String, Value>) -> bool {
@@ -640,6 +644,18 @@ mod tests {
         assert_eq!(mapped["type"], "image_url");
         assert_eq!(mapped["image_url"]["url"], "https://example.com/image.png");
         assert_eq!(mapped["image_url"]["detail"], "high");
+    }
+
+    #[test]
+    fn downgrades_original_image_detail_for_chat_upstreams() {
+        for part in [
+            json!({"type": "input_image", "image_url": "https://example.com/a.png", "detail": "original"}),
+            json!({"type": "image_url", "image_url": {"url": "https://example.com/a.png", "detail": "original"}}),
+        ] {
+            let mapped =
+                chat_media_part_from_tool_part(&part, ToolMediaScope::AllSupported).unwrap();
+            assert_eq!(mapped["image_url"]["detail"], "auto");
+        }
     }
 
     #[test]

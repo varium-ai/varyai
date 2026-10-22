@@ -3487,8 +3487,8 @@ fn provider_service_delete_current_provider_returns_error() {
     }
 }
 
-#[test]
-fn recover_from_crash_without_backup_cleans_placeholder_instead_of_writing_it_back() {
+#[tokio::test]
+async fn recover_from_crash_without_backup_cleans_placeholder_instead_of_writing_it_back() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let _home = ensure_test_home();
@@ -3526,7 +3526,10 @@ fn recover_from_crash_without_backup_cleans_placeholder_instead_of_writing_it_ba
         .set_current_provider(AppType::Claude.as_str(), "default")
         .expect("set current provider");
 
-    futures::executor::block_on(state.proxy_service.recover_from_crash())
+    state
+        .proxy_service
+        .recover_from_crash()
+        .await
         .expect("recover from crash");
 
     let live_after: serde_json::Value =

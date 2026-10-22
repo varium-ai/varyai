@@ -118,6 +118,11 @@ describe("UsageDashboard", () => {
     useModelStatsMock.mockReturnValue({ data: [] });
   });
 
+  it("initializes the today view with the requested app", () => {
+    renderDashboard({ initialAppType: "codex" });
+    expect(usageHeroMock).toHaveBeenLastCalledWith(expect.objectContaining({ appType: "codex", range: { preset: "today" } }));
+  });
+
   it("uses the saved refresh interval when mounted", () => {
     renderDashboard({ refreshIntervalMs: 5000 });
 

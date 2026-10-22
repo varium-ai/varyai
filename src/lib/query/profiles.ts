@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { profilesApi, providersApi } from "@/lib/api";
+import type { AppId } from "@/lib/api/types";
 import type { ProfileScope } from "@/lib/api/profiles";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
@@ -25,8 +26,18 @@ export const useCreateProfileMutation = () => {
   const { t } = useTranslation();
 
   return useMutation({
-    mutationFn: ({ name, scope }: { name: string; scope: ProfileScope }) =>
-      profilesApi.create(name, scope),
+    mutationFn: ({
+      name,
+      scope,
+      apps,
+    }: {
+      name: string;
+      scope: ProfileScope;
+      apps?: AppId[];
+    }) =>
+      apps
+        ? profilesApi.captureBundle(name, apps)
+        : profilesApi.create(name, scope),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["profiles"] });
       await updateTrayMenuSafely();
@@ -96,7 +107,7 @@ export const useClearProfileMutation = () => {
   const { t } = useTranslation();
 
   return useMutation({
-    mutationFn: (scope: ProfileScope) => profilesApi.clearCurrent(scope),
+    mutationFn: (scope: AppId) => profilesApi.clearCurrent(scope),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["profiles"] });
       await updateTrayMenuSafely();

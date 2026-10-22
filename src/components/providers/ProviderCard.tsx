@@ -63,7 +63,7 @@ interface ProviderCardProps {
   onDisableOmoSlim?: () => void;
   onConfigureUsage: (provider: Provider) => void;
   onOpenWebsite: (url: string) => void;
-  onDuplicate: (provider: Provider) => void;
+  onDuplicate?: (provider: Provider) => void;
   onTest?: (provider: Provider) => void;
   onOpenTerminal?: (provider: Provider) => void;
   isTesting?: boolean;
@@ -137,6 +137,7 @@ const extractApiUrl = (provider: Provider, fallbackText: string) => {
     }
 
     const directBaseUrl =
+      object.url ||
       object.baseUrl ||
       object.base_url ||
       object.options?.baseURL ||
@@ -230,7 +231,11 @@ export function ProviderCard({
   // OMO and OMO Slim share the same card behavior
   const isAnyOmo = isOmo || isOmoSlim;
   const handleDisableAnyOmo = isOmoSlim ? onDisableOmoSlim : onDisableOmo;
-  const isAdditiveMode = (appId === "opencode" && !isAnyOmo) || appId === "pi";
+  const isAdditiveMode =
+    (appId === "opencode" && !isAnyOmo) ||
+    appId === "pi" ||
+    appId === "workbuddy" ||
+    appId === "qoder";
 
   const { data: health } = useProviderHealth(
     provider.id,
@@ -316,15 +321,21 @@ export function ProviderCard({
     ? provider.meta?.usage_script?.autoQueryInterval || 0
     : 0;
 
+  const scriptUsageActive =
+    usageEnabled && !isOfficial && !isOfficialSubscriptionUsage;
   const { data: usage } = useUsageQuery(provider.id, appId, {
-    enabled: usageEnabled && !isOfficial && !isOfficialSubscriptionUsage,
+    enabled: scriptUsageActive,
     autoQueryInterval,
   });
 
   const isTokenPlan =
     provider.meta?.usage_script?.templateType === "token_plan";
   const hasMultiplePlans =
-    usage?.success && usage.data && usage.data.length > 1 && !isTokenPlan;
+    scriptUsageActive &&
+    !isTokenPlan &&
+    usage?.success &&
+    usage.data &&
+    usage.data.length > 1;
 
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -351,7 +362,10 @@ export function ProviderCard({
     ? isCurrent
     : appId === "openclaw"
       ? Boolean(isDefaultModel)
-      : appId === "opencode" || appId === "pi"
+      : appId === "opencode" ||
+          appId === "pi" ||
+          appId === "workbuddy" ||
+          appId === "qoder"
         ? false
         : isAutoFailoverEnabled
           ? activeProviderId === provider.id
@@ -369,14 +383,15 @@ export function ProviderCard({
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-xl border border-border p-4 transition-all duration-300",
+        "relative overflow-hidden rounded-2xl border border-border p-5 shadow-sm transition-all duration-300",
         "bg-card text-card-foreground group",
         isAutoFailoverEnabled || isProxyTakeover
           ? "hover:border-emerald-500/50"
           : "hover:border-border-active",
         shouldUseGreen &&
-          "border-emerald-500/60 shadow-sm shadow-emerald-500/10",
-        shouldUseBlue && "border-blue-500/60 shadow-sm shadow-blue-500/10",
+          "border-2 border-emerald-500/70 shadow-sm shadow-emerald-500/10",
+        shouldUseBlue &&
+          "border-2 border-blue-600 shadow-sm shadow-blue-500/10",
         !hasStateHighlight && "hover:shadow-sm",
         dragHandleProps?.isDragging &&
           "cursor-grabbing border-primary shadow-lg scale-105 z-10",
@@ -409,7 +424,7 @@ export function ProviderCard({
             </button>
           )}
 
-          <div className="h-8 w-8 flex-shrink-0 rounded-lg bg-muted flex items-center justify-center border border-border group-hover:scale-105 transition-transform duration-300">
+          <div className="h-10 w-10 flex-shrink-0 rounded-xl bg-muted flex items-center justify-center border border-border group-hover:scale-105 transition-transform duration-300">
             <ProviderIcon
               icon={resolveProviderIcon(
                 appId,
@@ -692,7 +707,11 @@ export function ProviderCard({
               isOmo={isAnyOmo}
               onSwitch={() => onSwitch(provider)}
               onEdit={() => onEdit(provider)}
-              onDuplicate={() => onDuplicate(provider)}
+              onDuplicate={
+                appId === "workbuddy" || appId === "qoder" || !onDuplicate
+                  ? undefined
+                  : () => onDuplicate(provider)
+              }
               onTest={
                 // 连通检测对第三方/自定义/Copilot/Codex-OAuth 供应商开放（这些正是旧的
                 // 真实请求探测会误报、而可达性探测能正确处理的对象）。官方供应商
@@ -704,6 +723,8 @@ export function ProviderCard({
                   : undefined
               }
               onConfigureUsage={
+                appId === "workbuddy" ||
+                appId === "qoder" ||
                 (isOfficial && !supportsOfficialSubscription) ||
                 isCopilot ||
                 (isCodexOauth && !isBoundCodexOfficial) ||

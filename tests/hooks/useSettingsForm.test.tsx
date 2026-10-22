@@ -9,7 +9,9 @@ vi.mock("@/lib/query", () => ({
   useSettingsQuery: (...args: unknown[]) => useSettingsQueryMock(...args),
 }));
 
-let changeLanguageSpy: ReturnType<typeof vi.spyOn<any, any>>;
+let changeLanguageSpy: import("vitest").MockInstance<
+  typeof i18n.changeLanguage
+>;
 
 beforeEach(() => {
   useSettingsQueryMock.mockReset();

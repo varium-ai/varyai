@@ -266,6 +266,147 @@ describe("EditProviderDialog", () => {
     );
   });
 
+  it.each([
+    { auth: {}, description: "empty auth" },
+    { auth: { auth_mode: "chatgpt" }, description: "logout marker" },
+  ])(
+    "keeps the logout of a category-less official card ($description)",
+    async ({ auth }) => {
+      const provider: Provider = {
+        id: "codex-official",
+        name: "OpenAI Official",
+        settingsConfig: {
+          auth: { auth_mode: "chatgpt", tokens: { refresh_token: "old" } },
+          config: 'model = "old"\n',
+        },
+      };
+      const liveSettings = { auth, config: 'model = "live"\n' };
+      const onSubmit = vi.fn();
+      apiMocks.getCurrent.mockResolvedValue(provider.id);
+      apiMocks.getLiveProviderSettings.mockResolvedValue(liveSettings);
+
+      render(
+        <EditProviderDialog
+          open
+          provider={provider}
+          appId="codex"
+          onOpenChange={vi.fn()}
+          onSubmit={onSubmit}
+        />,
+      );
+      await waitFor(() =>
+        expect(
+          JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
+        ).toEqual(liveSettings),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+      expect(onSubmit.mock.calls[0][0].provider.settingsConfig).toEqual(
+        liveSettings,
+      );
+    },
+  );
+
+  it.each([
+    {
+      id: "header-auth",
+      category: "custom" as const,
+      auth: {},
+      description: "empty auth",
+    },
+    {
+      id: "header-auth",
+      category: "custom" as const,
+      auth: { auth_mode: "chatgpt" },
+      description: "logout marker",
+    },
+    {
+      id: "header-auth",
+      category: "custom" as const,
+      auth: undefined,
+      description: "missing auth",
+    },
+    {
+      id: "codex-official",
+      category: undefined,
+      auth: {},
+      description: "legacy third-party card",
+    },
+  ])(
+    "keeps stored Codex key when Live has $description",
+    async ({ id, category, auth }) => {
+      const provider: Provider = {
+        id,
+        name: "Header Auth",
+        category,
+        settingsConfig: {
+          auth: { OPENAI_API_KEY: "sk-db-only" },
+          config: 'model_provider = "custom"\nmodel = "old"\n',
+        },
+      };
+      const liveSettings = {
+        ...(auth !== undefined ? { auth } : {}),
+        config: 'model_provider = "custom"\nmodel = "live"\n',
+      };
+      const expected = {
+        ...liveSettings,
+        auth: { OPENAI_API_KEY: "sk-db-only" },
+      };
+      const onSubmit = vi.fn();
+      apiMocks.getCurrent.mockResolvedValue(provider.id);
+      apiMocks.getLiveProviderSettings.mockResolvedValue(liveSettings);
+
+      render(
+        <EditProviderDialog
+          open
+          provider={provider}
+          appId="codex"
+          onOpenChange={vi.fn()}
+          onSubmit={onSubmit}
+        />,
+      );
+      await waitFor(() =>
+        expect(
+          JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
+        ).toEqual(expected),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+      expect(onSubmit.mock.calls[0][0].provider.settingsConfig).toEqual(
+        expected,
+      );
+    },
+  );
+
+  it("keeps live Codex auth when it contains a credential", async () => {
+    const provider: Provider = {
+      id: "header-auth",
+      name: "Header Auth",
+      category: "custom",
+      settingsConfig: { auth: { OPENAI_API_KEY: "sk-db" }, config: "" },
+    };
+    const liveSettings = {
+      auth: { OPENAI_API_KEY: "sk-live" },
+      config: 'model_provider = "custom"\n',
+    };
+    apiMocks.getCurrent.mockResolvedValue(provider.id);
+    apiMocks.getLiveProviderSettings.mockResolvedValue(liveSettings);
+    render(
+      <EditProviderDialog
+        open
+        provider={provider}
+        appId="codex"
+        onOpenChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
+      ).toEqual(liveSettings),
+    );
+  });
+
   it("does not convert an OAuth-only Codex provider into an API-key provider", async () => {
     const provider: Provider = {
       id: "oauth-provider",

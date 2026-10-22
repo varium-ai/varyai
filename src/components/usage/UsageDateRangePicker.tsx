@@ -27,6 +27,10 @@ interface UsageDateRangePickerProps {
   selection: UsageRangeSelection;
   onApply: (selection: UsageRangeSelection) => void;
   triggerLabel: string;
+  presets?: readonly UsageRangePreset[];
+  presetLabels?: Partial<Record<UsageRangePreset, string>>;
+  triggerClassName?: string;
+  popoverAlign?: "start" | "center" | "end";
 }
 
 /* ── helpers ── */
@@ -108,6 +112,10 @@ export function UsageDateRangePicker({
   selection,
   onApply,
   triggerLabel,
+  presets = PRESETS,
+  presetLabels,
+  triggerClassName,
+  popoverAlign = "end",
 }: UsageDateRangePickerProps) {
   const { t, i18n } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -275,6 +283,9 @@ export function UsageDateRangePicker({
         <div className="flex items-center gap-1.5">
           <Input
             type="date"
+            aria-label={t(
+              field === "start" ? "usage.startDate" : "usage.endDate",
+            )}
             className={cn(
               "h-7 flex-1 border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0",
               isEndLive && "pointer-events-none",
@@ -295,6 +306,7 @@ export function UsageDateRangePicker({
           />
           <Input
             type="time"
+            aria-label={label}
             step={60}
             className={cn(
               "h-7 w-[90px] flex-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0",
@@ -322,7 +334,10 @@ export function UsageDateRangePicker({
         <Button
           type="button"
           variant={selection.preset === "custom" ? "default" : "outline"}
-          className="h-9 w-[100px] justify-start gap-1.5 text-xs"
+          className={cn(
+            "h-9 w-[100px] justify-start gap-1.5 text-xs",
+            triggerClassName,
+          )}
           title={triggerLabel}
         >
           <CalendarDays className="h-4 w-4 shrink-0" />
@@ -332,11 +347,11 @@ export function UsageDateRangePicker({
       </PopoverTrigger>
       <PopoverContent
         className="usage-range-popover w-[620px] max-w-[calc(100vw-2rem)] p-3"
-        align="end"
+        align={popoverAlign}
       >
         {/* Preset shortcuts */}
         <div className="flex flex-wrap gap-1.5 pb-2 border-b border-border/40">
-          {PRESETS.map((preset) => (
+          {presets.map((preset) => (
             <Button
               key={preset}
               type="button"
@@ -348,7 +363,7 @@ export function UsageDateRangePicker({
                 setOpen(false);
               }}
             >
-              {getUsageRangePresetLabel(preset, t)}
+              {presetLabels?.[preset] ?? getUsageRangePresetLabel(preset, t)}
             </Button>
           ))}
         </div>

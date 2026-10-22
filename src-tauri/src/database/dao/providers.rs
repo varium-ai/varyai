@@ -408,6 +408,37 @@ impl Database {
         Ok(())
     }
 
+    /// One native WorkBuddy model ID can be owned by only one saved configuration.
+    pub(crate) fn activate_workbuddy_models(
+        &self,
+        provider_id: &str,
+        model_ids: &[String],
+    ) -> Result<(), AppError> {
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn
+            .transaction()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        for model_id in model_ids {
+            tx.execute(
+            "UPDATE providers SET meta = json_set(COALESCE(meta, '{}'), '$.liveConfigManaged', json('false'))
+             WHERE app_type = 'workbuddy' AND id != ?1 AND (
+               json_extract(settings_config, '$.id') = ?2 OR EXISTS (
+                 SELECT 1 FROM json_each(settings_config, '$.models')
+                 WHERE json_extract(value, '$.id') = ?2))",
+            params![provider_id, model_id],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+        tx.execute("UPDATE providers SET meta = json_set(COALESCE(meta, '{}'), '$.liveConfigManaged', json('true')) WHERE app_type = 'workbuddy' AND id = ?1", params![provider_id])
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.execute(
+            "UPDATE providers SET is_current = (id = ?1) WHERE app_type = 'workbuddy'",
+            params![provider_id],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.commit().map_err(|e| AppError::Database(e.to_string()))
+    }
+
     pub fn update_provider_settings_config(
         &self,
         app_type: &str,
@@ -427,6 +458,43 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// Repair a source snapshot only while the row still contains the observed
+    /// projection. The SQL comparison also protects against another process.
+    pub fn update_provider_settings_config_if_matches(
+        &self,
+        app_type: &str,
+        provider_id: &str,
+        expected: &serde_json::Value,
+        replacement: &serde_json::Value,
+    ) -> Result<bool, AppError> {
+        let conn = lock_conn!(self.conn);
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT settings_config FROM providers WHERE id = ?1 AND app_type = ?2",
+                params![provider_id, app_type],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let Some(stored) = stored else {
+            return Ok(false);
+        };
+        if serde_json::from_str::<serde_json::Value>(&stored)
+            .ok()
+            .as_ref()
+            != Some(expected)
+        {
+            return Ok(false);
+        }
+        let replacement =
+            serde_json::to_string(replacement).map_err(|e| AppError::Database(e.to_string()))?;
+        let updated = conn.execute(
+            "UPDATE providers SET settings_config = ?1 WHERE id = ?2 AND app_type = ?3 AND settings_config = ?4",
+            params![replacement, provider_id, app_type, stored],
+        ).map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(updated == 1)
     }
 
     pub fn add_custom_endpoint(
@@ -692,8 +760,6 @@ impl Database {
     /// - 老用户升级：同样会触发一次（flag 不存在），追加到末尾，不影响已有排序
     /// - 用户删除 seed 后：不再重建（flag 已为 true），尊重用户意图
     ///
-    /// 与 `Database::save_provider` 的 UPSERT 语义配合，即使被意外重复调用
-    /// 也不会覆盖用户当前激活的供应商（is_current 字段会被保留）。
     pub fn init_default_official_providers(&self) -> Result<usize, AppError> {
         use crate::database::dao::providers_seed::OFFICIAL_SEEDS;
 
@@ -701,6 +767,7 @@ impl Database {
             .get_bool_flag("official_providers_seeded")
             .unwrap_or(false)
         {
+            self.select_sole_official_providers()?;
             return Ok(0);
         }
 
@@ -745,8 +812,28 @@ impl Database {
 
         // 即使 inserted=0（例如用户手动创建过同 id）也设置 flag 防止反复检查
         self.set_setting("official_providers_seeded", "true")?;
+        self.select_sole_official_providers()?;
 
         Ok(inserted)
+    }
+
+    fn select_sole_official_providers(&self) -> Result<(), AppError> {
+        use crate::database::dao::providers_seed::OFFICIAL_SEEDS;
+
+        let conn = lock_conn!(self.conn);
+        for seed in OFFICIAL_SEEDS {
+            conn.execute(
+                "UPDATE providers SET is_current = 1
+                 WHERE id = ?1 AND app_type = ?2 AND category = 'official'
+                   AND is_current = 0
+                   AND NOT EXISTS (
+                       SELECT 1 FROM providers WHERE app_type = ?2 AND id <> ?1
+                   )",
+                params![seed.id, seed.app_type.as_str()],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+        Ok(())
     }
 
     /// 按 id 兜底插入单条 official seed（仅当目标表中该 id 不存在时插入）。
@@ -813,6 +900,90 @@ mod ensure_official_seed_tests {
         Database, CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID, CODEX_OFFICIAL_PROVIDER_ID,
         GROKBUILD_OFFICIAL_PROVIDER_ID,
     };
+
+    #[test]
+    fn seeding_selects_the_only_official_provider() {
+        let db = Database::memory().expect("memory db");
+        db.init_default_official_providers().expect("seed");
+        assert_eq!(
+            db.get_current_provider("codex")
+                .expect("current")
+                .as_deref(),
+            Some(CODEX_OFFICIAL_PROVIDER_ID)
+        );
+    }
+
+    #[test]
+    fn seeding_repairs_existing_unselected_official_without_recreating_deleted_seeds() {
+        let db = Database::memory().expect("memory db");
+        db.init_default_official_providers().expect("seed");
+        // Model the database left by the old release, whose seeded flag is already set.
+        db.set_current_provider("codex", "missing")
+            .expect("clear current");
+        db.delete_provider("gemini", "gemini-official")
+            .expect("delete seed");
+        assert_eq!(db.init_default_official_providers().expect("repair"), 0);
+        assert_eq!(
+            db.get_current_provider("codex")
+                .expect("current")
+                .as_deref(),
+            Some(CODEX_OFFICIAL_PROVIDER_ID)
+        );
+        assert!(db
+            .get_all_providers("gemini")
+            .expect("providers")
+            .is_empty());
+    }
+
+    #[test]
+    fn seeding_preserves_selected_custom_provider() {
+        let db = Database::memory().expect("memory db");
+        let custom = crate::provider::Provider::with_id(
+            "custom".into(),
+            "Custom".into(),
+            serde_json::json!({}),
+            None,
+        );
+        db.save_provider("codex", &custom).expect("save");
+        db.set_current_provider("codex", &custom.id)
+            .expect("select");
+        db.init_default_official_providers().expect("seed");
+        assert_eq!(
+            db.get_current_provider("codex")
+                .expect("current")
+                .as_deref(),
+            Some("custom")
+        );
+    }
+
+    #[test]
+    fn seeding_does_not_choose_between_multiple_unselected_providers() {
+        let db = Database::memory().expect("memory db");
+        let custom = crate::provider::Provider::with_id(
+            "custom".into(),
+            "Custom".into(),
+            serde_json::json!({}),
+            None,
+        );
+        db.save_provider("codex", &custom).expect("save");
+        db.init_default_official_providers().expect("seed");
+        assert_eq!(db.get_current_provider("codex").expect("current"), None);
+    }
+
+    #[test]
+    fn seeding_does_not_auto_select_a_repurposed_official_seed() {
+        let db = Database::memory().expect("memory db");
+        let mut custom = crate::provider::Provider::with_id(
+            CODEX_OFFICIAL_PROVIDER_ID.into(),
+            "Custom".into(),
+            serde_json::json!({}),
+            None,
+        );
+        custom.category = Some("custom".into());
+        db.save_provider("codex", &custom).expect("save");
+        db.init_default_official_providers().expect("seed");
+        assert_eq!(db.get_current_provider("codex").expect("current"), None);
+    }
 
     #[test]
     fn ensure_inserts_when_missing() {

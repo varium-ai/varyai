@@ -2,11 +2,15 @@
 //!
 //! Handles provider CRUD operations, switching, and configuration management.
 
+mod agent_clients;
+mod duplicate;
 mod endpoints;
 mod gemini_auth;
 mod live;
 mod pi;
+pub(crate) mod qoder;
 mod usage;
+mod workbuddy;
 
 use indexmap::IndexMap;
 use regex::Regex;
@@ -28,6 +32,14 @@ pub use live::{
     should_import_default_config_on_startup, sync_current_to_live,
     update_toml_common_config_snippet,
 };
+
+pub fn get_qoder_live_provider_ids(state: &AppState) -> Result<Vec<String>, AppError> {
+    qoder::live_ids(state)
+}
+
+pub fn get_workbuddy_live_provider_ids(state: &AppState) -> Result<Vec<String>, AppError> {
+    workbuddy::live_ids(state)
+}
 
 pub fn import_pi_providers_from_live(state: &AppState) -> Result<usize, AppError> {
     pi::import_from_live(state)
@@ -2057,7 +2069,15 @@ requires_openai_auth = true
                 .expect("update app proxy config");
         }
 
-        state
+        // Tests must not contend with a running application's default proxy port.
+        db.update_proxy_config(ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        })
+        .await
+        .expect("configure ephemeral test proxy port");
+
+        let server_info = state
             .proxy_service
             .start()
             .await
@@ -2105,7 +2125,10 @@ requires_openai_auth = true
         let profile: Value = read_json_file(&profile_path).expect("read desktop profile");
         assert_eq!(
             profile["inferenceGatewayBaseUrl"],
-            json!("http://127.0.0.1:15721/claude-desktop"),
+            json!(format!(
+                "http://127.0.0.1:{}/claude-desktop",
+                server_info.port
+            )),
             "desktop profile should stay pointed at the local gateway during takeover"
         );
         assert_eq!(profile["inferenceGatewayAuthScheme"], json!("bearer"));
@@ -2114,6 +2137,11 @@ requires_openai_auth = true
             json!([{ "name": "claude-sonnet-4-6", "labelOverride": "DeepSeek V4 Flash Updated", "supports1m": true }]),
             "provider edits should propagate into the Claude Desktop 3P profile during takeover"
         );
+        state
+            .proxy_service
+            .stop()
+            .await
+            .expect("stop test proxy service");
     }
 
     #[test]
@@ -4542,6 +4570,15 @@ impl ProviderService {
         state: &AppState,
         app_type: AppType,
     ) -> Result<IndexMap<String, Provider>, AppError> {
+        if agent_clients::is_agent(&app_type) {
+            return agent_clients::list(state, app_type.as_str());
+        }
+        if app_type == AppType::Qoder {
+            return qoder::list(state);
+        }
+        if app_type == AppType::WorkBuddy {
+            return workbuddy::list(state);
+        }
         if app_type == AppType::Pi {
             return pi::list(state);
         }
@@ -4556,6 +4593,15 @@ impl ProviderService {
     ///
     /// 对于累加模式应用（OpenCode, OpenClaw），不存在"当前供应商"概念，直接返回空字符串。
     pub fn current(state: &AppState, app_type: AppType) -> Result<String, AppError> {
+        if agent_clients::is_agent(&app_type) {
+            return agent_clients::current(state, app_type.as_str());
+        }
+        if app_type == AppType::Qoder {
+            return qoder::current(state);
+        }
+        if app_type == AppType::WorkBuddy {
+            return workbuddy::current(state);
+        }
         // Additive mode apps have no "current" provider concept
         if app_type.is_additive_mode() {
             return Ok(String::new());
@@ -4571,6 +4617,15 @@ impl ProviderService {
         provider: Provider,
         add_to_live: bool,
     ) -> Result<bool, AppError> {
+        if agent_clients::is_agent(&app_type) {
+            return agent_clients::add(state, app_type.as_str(), provider);
+        }
+        if app_type == AppType::Qoder {
+            return qoder::add(state, provider, add_to_live);
+        }
+        if app_type == AppType::WorkBuddy {
+            return workbuddy::add(state, provider, add_to_live);
+        }
         if app_type == AppType::Pi {
             return pi::add(state, provider, add_to_live);
         }
@@ -4689,6 +4744,15 @@ impl ProviderService {
         original_id: Option<&str>,
         provider: Provider,
     ) -> Result<bool, AppError> {
+        if agent_clients::is_agent(&app_type) {
+            return agent_clients::update(state, app_type.as_str(), provider);
+        }
+        if app_type == AppType::Qoder {
+            return qoder::update(state, original_id, provider);
+        }
+        if app_type == AppType::WorkBuddy {
+            return workbuddy::update(state, original_id, provider);
+        }
         if app_type == AppType::Pi {
             return pi::update(state, original_id, provider);
         }
@@ -5040,6 +5104,15 @@ impl ProviderService {
     /// 同时检查本地 settings 和数据库的当前供应商，防止删除任一端正在使用的供应商。
     /// 对于累加模式应用（OpenCode, OpenClaw），可以随时删除任意供应商，同时从 live 配置中移除。
     pub fn delete(state: &AppState, app_type: AppType, id: &str) -> Result<(), AppError> {
+        if agent_clients::is_agent(&app_type) {
+            return agent_clients::remove(state, app_type.as_str(), id, true);
+        }
+        if app_type == AppType::Qoder {
+            return qoder::remove(state, id, true);
+        }
+        if app_type == AppType::WorkBuddy {
+            return workbuddy::remove(state, id, true);
+        }
         if app_type == AppType::Pi {
             return pi::delete(state, id);
         }
@@ -5115,8 +5188,27 @@ impl ProviderService {
         app_type: AppType,
         id: &str,
     ) -> Result<(), AppError> {
+        let _guard =
+            futures::executor::block_on(state.proxy_service.lock_switch_for_app(app_type.as_str()));
+        Self::remove_from_live_config_with_lock_held(state, app_type, id)
+    }
+
+    pub(crate) fn remove_from_live_config_with_lock_held(
+        state: &AppState,
+        app_type: AppType,
+        id: &str,
+    ) -> Result<(), AppError> {
+        if agent_clients::is_agent(&app_type) {
+            return agent_clients::remove_with_lock(state, app_type.as_str(), id, false, true);
+        }
+        if app_type == AppType::Qoder {
+            return qoder::remove_with_lock(state, id, false, true);
+        }
+        if app_type == AppType::WorkBuddy {
+            return workbuddy::remove_with_lock(state, id, false, true);
+        }
         if app_type == AppType::Pi {
-            return pi::remove(state, id);
+            return pi::remove_with_lock(state, id, true);
         }
 
         match app_type {
@@ -5183,9 +5275,78 @@ impl ProviderService {
     ///    d. Write target provider config to live files
     ///    e. Sync MCP configuration
     pub fn switch(state: &AppState, app_type: AppType, id: &str) -> Result<SwitchResult, AppError> {
-        if app_type == AppType::Pi {
-            return pi::enable(state, id);
+        Self::switch_impl(state, app_type, id, false)
+    }
+
+    pub(crate) fn save_profile_models_with_lock_held(
+        state: &AppState,
+        app: &AppType,
+        provider: &Provider,
+    ) -> Result<(), AppError> {
+        if *app == AppType::WorkBuddy {
+            // The native file is keyed by model ID. Let the existing update
+            // adapter replace previous IDs before saving the new catalog.
+            workbuddy::update_with_lock(state, None, provider.clone(), true)?;
+        } else {
+            state.db.save_provider(app.as_str(), provider)?;
         }
+        Ok(())
+    }
+
+    /// Cross-agent schemes acquire the selected app locks in a stable order.
+    pub(crate) fn switch_with_lock_held(
+        state: &AppState,
+        app_type: AppType,
+        id: &str,
+    ) -> Result<SwitchResult, AppError> {
+        Self::switch_impl(state, app_type, id, true)
+    }
+
+    fn switch_impl(
+        state: &AppState,
+        app_type: AppType,
+        id: &str,
+        lock_held: bool,
+    ) -> Result<SwitchResult, AppError> {
+        if agent_clients::is_agent(&app_type) {
+            return if lock_held {
+                agent_clients::enable_with_lock(state, app_type.as_str(), id, true)
+            } else {
+                agent_clients::enable(state, app_type.as_str(), id)
+            };
+        }
+        if app_type == AppType::Qoder {
+            return if lock_held {
+                qoder::enable_with_lock(state, id, true)
+            } else {
+                qoder::enable(state, id)
+            };
+        }
+        if app_type == AppType::WorkBuddy {
+            return if lock_held {
+                workbuddy::enable_with_lock(state, id, true)
+            } else {
+                workbuddy::enable(state, id)
+            };
+        }
+        if app_type == AppType::Pi {
+            return if lock_held {
+                pi::enable_with_lock(state, id, true)
+            } else {
+                pi::enable(state, id)
+            };
+        }
+
+        let _switch_guard = if (app_type.supports_local_proxy()
+            || app_type == AppType::ClaudeDesktop)
+            && !lock_held
+        {
+            Some(futures::executor::block_on(
+                state.proxy_service.lock_switch_for_app(app_type.as_str()),
+            ))
+        } else {
+            None
+        };
 
         // Check if provider exists
         let providers = state.db.get_all_providers(app_type.as_str())?;
@@ -5213,14 +5374,6 @@ impl ProviderService {
         // restore backup. Serialize them per app, then decide from the locked
         // current state so a just-started takeover cannot be overwritten by a
         // normal live write.
-        let _switch_guard = if app_type.supports_local_proxy() {
-            Some(futures::executor::block_on(
-                state.proxy_service.lock_switch_for_app(app_type.as_str()),
-            ))
-        } else {
-            None
-        };
-
         // Backup or live placeholders mean the live file is owned by proxy
         // takeover, even if the proxy server is temporarily stopped or is in the
         // activation window before enabled=true is committed.
@@ -5786,7 +5939,14 @@ impl ProviderService {
             AppType::OpenCode => Self::extract_opencode_common_config(&provider.settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(&provider.settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
-            AppType::Pi => Ok(String::new()),
+            AppType::Pi
+            | AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => Ok(String::new()),
         }
     }
 
@@ -5804,7 +5964,14 @@ impl ProviderService {
             AppType::OpenCode => Self::extract_opencode_common_config(settings_config),
             AppType::OpenClaw => Self::extract_openclaw_common_config(settings_config),
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
-            AppType::Pi => Ok(String::new()),
+            AppType::Pi
+            | AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => Ok(String::new()),
         }
     }
 
@@ -6456,6 +6623,16 @@ impl ProviderService {
 
     fn validate_provider_settings(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
         match app_type {
+            AppType::DoubaoWork => {
+                return Err(AppError::InvalidInput(
+                    "Doubao Work does not expose custom provider settings".into(),
+                ))
+            }
+            AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::Trae => {
+                if provider.category.as_deref() != Some("official") {
+                    crate::services::agent_clients::validate(&provider.settings_config)?;
+                }
+            }
             AppType::Claude => {
                 if !provider.settings_config.is_object() {
                     return Err(AppError::localized(
@@ -6568,6 +6745,16 @@ impl ProviderService {
                         "Hermes 配置必须是 JSON 对象",
                         "Hermes configuration must be a JSON object",
                     ));
+                }
+            }
+            AppType::Qoder => {
+                if provider.category.as_deref() != Some("official") {
+                    crate::qoder_config::validate_provider(&provider.settings_config)?;
+                }
+            }
+            AppType::WorkBuddy => {
+                if provider.category.as_deref() != Some("official") {
+                    crate::workbuddy_config::configured_models(&provider.settings_config)?;
                 }
             }
             AppType::Pi => {
@@ -6777,7 +6964,16 @@ impl ProviderService {
 
                 Ok((api_key, base_url))
             }
-            AppType::OpenClaw | AppType::Hermes | AppType::Pi => {
+            AppType::OpenClaw
+            | AppType::Hermes
+            | AppType::Pi
+            | AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => {
                 // These native formats use apiKey and baseUrl directly on the object.
                 let api_key = provider
                     .settings_config

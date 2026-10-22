@@ -56,7 +56,7 @@ pub async fn check_for_updates(handle: AppHandle) -> Result<bool, String> {
     handle
         .opener()
         .open_url(
-            "https://github.com/farion1231/cc-switch/releases/latest",
+            "https://github.com/secure-typex/varyai-releases/releases/latest",
             None::<String>,
         )
         .map_err(|e| format!("打开更新页面失败: {e}"))?;
@@ -1780,6 +1780,9 @@ fn build_tool_search_paths(tool: &str) -> Vec<std::path::PathBuf> {
         }
     }
     if !home.as_os_str().is_empty() {
+        if tool == "kimi" {
+            push_unique_path(&mut search_paths, home.join(".kimi-code/bin"));
+        }
         push_unique_path(&mut search_paths, home.join(".local/bin"));
         push_unique_path(&mut search_paths, home.join(".npm-global/bin"));
         push_unique_path(&mut search_paths, home.join("n/bin"));
@@ -2175,7 +2178,7 @@ fn infer_install_source(path: &Path) -> &'static str {
         .to_ascii_lowercase();
     if s.contains("/.nvm/") {
         "nvm"
-    } else if s.contains("/homebrew/") || s.contains("/cellar/") {
+    } else if s.contains("/homebrew/") || s.contains("/cellar/") || s.contains("/caskroom/") {
         "homebrew"
     // `.volta` 是 macOS/Linux 默认安装(`~/.volta/bin`),`/volta/` 兜底覆盖
     // Windows 的 `%LOCALAPPDATA%\Volta\bin` / `%VOLTA_HOME%\bin`(无前导点)。
@@ -2218,6 +2221,18 @@ fn path_line_from_env_output(raw: &str) -> Option<&str> {
     raw.lines()
         .filter_map(|line| line.strip_prefix("PATH="))
         .find(|value| value.starts_with('/'))
+}
+
+fn infer_install_source_for_install(launcher: &Path, real: &Path) -> &'static str {
+    let real_s = real
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    if real_s.contains("/cellar/") || real_s.contains("/caskroom/") {
+        "homebrew"
+    } else {
+        infer_install_source(launcher)
+    }
 }
 
 /// 合并两段 PATH：`primary` 全部保留在前，`extra` 中未出现过的段按序追加。
@@ -2500,7 +2515,7 @@ fn enumerate_tool_installations(tool: &str) -> Vec<ToolInstallation> {
 
             let is_path_default = path_default.as_ref() == Some(&real);
             let path_str = tool_path.display().to_string();
-            let source = infer_install_source(&tool_path);
+            let source = infer_install_source_for_install(&tool_path, &real);
 
             installs.push(ToolInstallation {
                 path: path_str,
@@ -2559,13 +2574,28 @@ fn parent_dir(p: &str) -> String {
 /// npm 全局包落在 `/opt/homebrew/lib/node_modules`（不含 Cellar）。两者升级命令不同。
 #[cfg(not(target_os = "windows"))]
 fn brew_formula_from_path(real: &str) -> Option<String> {
+    brew_token_from_path(real, "Cellar")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn brew_cask_from_path(real: &str) -> Option<String> {
+    brew_token_from_path(real, "Caskroom")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn brew_token_from_path(real: &str, marker: &str) -> Option<String> {
     let mut segs = real.split('/');
     while let Some(seg) = segs.next() {
-        if seg.eq_ignore_ascii_case("Cellar") {
-            return segs.next().filter(|s| !s.is_empty()).map(|s| s.to_string());
+        if seg.eq_ignore_ascii_case(marker) {
+            return segs.next().filter(|s| !s.is_empty()).map(str::to_string);
         }
     }
     None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_brew_managed_path(real: &str) -> bool {
+    brew_formula_from_path(real).is_some() || brew_cask_from_path(real).is_some()
 }
 
 /// xAI's native installer uses `~/.grok/bin` for its launchers and
@@ -2852,7 +2882,7 @@ fn prefers_official_update(tool: &str, shell: LifecycleCommandShell) -> bool {
 #[cfg(not(target_os = "windows"))]
 fn codex_repair_command(bin_path: &str, real: &str) -> Option<String> {
     // brew formula（real 在 Cellar）→ 不归 npm 管，交回 anchored 走 brew upgrade。
-    if brew_formula_from_path(real).is_some() {
+    if is_brew_managed_path(real) {
         return None;
     }
     // 只认会落到 sibling npm 的 node 管理器来源；volta/bun/system/未知交回 anchored。
@@ -2882,6 +2912,13 @@ fn package_manager_anchored_command_from_paths(
     bin_path: &str,
     real_target: &str,
 ) -> Option<String> {
+    if let Some(cask) = brew_cask_from_path(real_target) {
+        let brew = sibling_bin(bin_path, "brew")?;
+        return Some(format!(
+            "{} upgrade --cask {cask}",
+            quote_path_if_spaced(&brew)
+        ));
+    }
     if let Some(formula) = brew_formula_from_path(real_target) {
         let brew = sibling_bin(bin_path, "brew")?;
         return Some(format!("{} upgrade {formula}", quote_path_if_spaced(&brew)));
@@ -2955,7 +2992,7 @@ fn anchored_command_from_paths(tool: &str, bin_path: &str, real_target: &str) ->
         ));
     }
     let package_command = package_manager_anchored_command_from_paths(tool, bin_path, real_target);
-    if brew_formula_from_path(real_target).is_some() {
+    if is_brew_managed_path(real_target) {
         return package_command;
     }
     if prefers_official_update(tool, LifecycleCommandShell::Posix) {
@@ -3662,6 +3699,102 @@ fn is_conflicting(installs: &[ToolInstallation]) -> bool {
     let runnable_mixed =
         installs.iter().any(|i| i.runnable) && installs.iter().any(|i| !i.runnable);
     distinct_versions.len() > 1 || runnable_mixed
+}
+
+fn agent_installed_in(app: &str, desktop_roots: &[PathBuf], cli_dirs: &[PathBuf]) -> bool {
+    let bundles: &[&str] = match app {
+        "claude-desktop" => &["Claude.app"],
+        "codex" => &["Codex.app", "ChatGPT.app"],
+        "workbuddy" => &["WorkBuddy.app"],
+        "qoder" => &["Qoder CN.app"],
+        "trae" => &["Trae CN.app"],
+        "doubaowork" => &["DoubaoWork.app"],
+        "zcode" => &["ZCode.app"],
+        "kimi" => &["Kimi Code.app"],
+        _ => &[],
+    };
+    if desktop_roots
+        .iter()
+        .any(|root| bundles.iter().any(|name| root.join(name).is_dir()))
+    {
+        return true;
+    }
+    let tool = match app {
+        "claude" | "codex" | "gemini" | "workbuddy" | "kimi" | "qwen" => app,
+        "grokbuild" => "grok",
+        _ => return false,
+    };
+    cli_dirs.iter().any(|dir| {
+        tool_executable_candidates(tool, dir)
+            .iter()
+            .any(|path| path.is_file())
+    })
+}
+
+pub(crate) fn is_agent_installed(app: &str) -> bool {
+    let tool = if app == "grokbuild" { "grok" } else { app };
+    #[cfg(target_os = "macos")]
+    let roots = vec![
+        PathBuf::from("/Applications"),
+        crate::config::get_home_dir().join("Applications"),
+    ];
+    #[cfg(not(target_os = "macos"))]
+    let roots = Vec::new();
+    agent_installed_in(app, &roots, &build_tool_search_paths(tool))
+}
+
+/// Presence-only checks: do not run clients, create configs, or prompt for certificates.
+#[tauri::command]
+pub async fn get_agent_installations() -> Result<HashMap<String, bool>, String> {
+    tokio::task::spawn_blocking(|| {
+        AppType::all()
+            .map(|app| (app.as_str().to_string(), is_agent_installed(app.as_str())))
+            .collect()
+    })
+    .await
+    .map_err(|_| "Agent installation check failed".to_string())
+}
+
+#[cfg(test)]
+mod agent_installation_tests {
+    use super::*;
+    #[test]
+    fn kimi_desktop_installation_is_detected_without_a_cli_on_path() {
+        let dir = tempfile::tempdir().expect("dir");
+        std::fs::create_dir(dir.path().join("Kimi Code.app")).expect("bundle");
+        assert!(agent_installed_in("kimi", &[dir.path().to_owned()], &[]));
+    }
+
+    #[test]
+    fn kimi_official_installer_directory_is_searched_without_polluting_other_clients() {
+        let path = dirs::home_dir().expect("home").join(".kimi-code/bin");
+        assert!(build_tool_search_paths("kimi").contains(&path));
+        assert!(!build_tool_search_paths("qwen").contains(&path));
+    }
+
+    #[test]
+    fn configuration_does_not_count_as_installation_and_detection_has_no_side_effects() {
+        let root = tempfile::tempdir().expect("temp");
+        let apps = root.path().join("Applications");
+        let bin = root.path().join("bin");
+        let config = root.path().join(".qoder-cn");
+        std::fs::create_dir_all(&config).expect("config");
+        assert!(!agent_installed_in(
+            "qoder",
+            &[apps.clone()],
+            &[bin.clone()]
+        ));
+        assert!(!apps.exists() && !bin.exists());
+        std::fs::create_dir_all(apps.join("Qoder CN.app")).expect("app");
+        assert!(agent_installed_in("qoder", &[apps], &[]));
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::fs::write(
+            bin.join(if cfg!(windows) { "codex.exe" } else { "codex" }),
+            b"fixture",
+        )
+        .expect("exe");
+        assert!(agent_installed_in("codex", &[], &[bin]));
+    }
 }
 
 /// 一次"探测工具安装分布"的结果：枚举到的所有安装 + 各项衍生判定。同时服务两条
@@ -5778,6 +5911,28 @@ mod tests {
         }
 
         #[test]
+        fn cask_source_uses_real_path_without_overriding_node_shims() {
+            assert_eq!(
+                infer_install_source(Path::new("/usr/local/Caskroom/codex/0.146/bin/codex")),
+                "homebrew"
+            );
+            assert_eq!(
+                infer_install_source_for_install(
+                    Path::new("/usr/local/bin/codex"),
+                    Path::new("/usr/local/Caskroom/codex/0.146/bin/codex"),
+                ),
+                "homebrew"
+            );
+            assert_eq!(
+                infer_install_source_for_install(
+                    Path::new("/Users/me/.nvm/versions/node/v22/bin/codex"),
+                    Path::new("/Users/me/.nvm/versions/node/v22/lib/node_modules/codex"),
+                ),
+                "nvm"
+            );
+        }
+
+        #[test]
         fn windows_volta_localappdata_no_dot() {
             // `%LOCALAPPDATA%\Volta\bin\codex.exe` —— 没有前导点,靠兜底的 `/volta/`
             // 命中(归一化后小写)。如果只识别 `/.volta/`,Windows 这一类会落到 system。
@@ -5933,6 +6088,45 @@ mod tests {
                 "/opt/homebrew/Cellar/codex/1.2.3/bin/codex",
             );
             assert_eq!(cmd.as_deref(), Some("/opt/homebrew/bin/brew upgrade codex"));
+        }
+
+        #[test]
+        fn codex_homebrew_cask_uses_brew_upgrade_cask() {
+            assert_eq!(
+                anchored_command_from_paths(
+                    "codex",
+                    "/opt/homebrew/bin/codex",
+                    "/opt/homebrew/Caskroom/codex/0.146.0/bin/codex",
+                )
+                .as_deref(),
+                Some("/opt/homebrew/bin/brew upgrade --cask codex")
+            );
+            assert_eq!(
+                anchored_command_from_paths(
+                    "codex",
+                    "/usr/local/bin/codex",
+                    "/usr/local/Caskroom/codex/0.146.0/bin/codex",
+                )
+                .as_deref(),
+                Some("/usr/local/bin/brew upgrade --cask codex")
+            );
+        }
+
+        #[test]
+        fn broken_codex_cask_does_not_attempt_npm_repair() {
+            let broken = ToolInstallation {
+                path: "/opt/homebrew/bin/codex".to_string(),
+                version: None,
+                runnable: false,
+                error: None,
+                source: "homebrew".to_string(),
+                is_path_default: true,
+                real: std::path::PathBuf::from("/opt/homebrew/Caskroom/codex/0.146.0/bin/codex"),
+            };
+            assert_eq!(
+                installs_anchored_command("codex", &[broken]).as_deref(),
+                Some("/opt/homebrew/bin/brew upgrade --cask codex")
+            );
         }
 
         #[test]

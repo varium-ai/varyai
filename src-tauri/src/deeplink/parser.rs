@@ -1,6 +1,6 @@
 //! Deep link URL parser
 //!
-//! Parses ccswitch:// URLs into DeepLinkImportRequest structures.
+//! Parses Vary AI deep links into DeepLinkImportRequest structures.
 
 use super::utils::validate_url;
 use super::DeepLinkImportRequest;
@@ -8,10 +8,10 @@ use crate::error::AppError;
 use std::collections::HashMap;
 use url::Url;
 
-/// Parse a ccswitch:// URL into a DeepLinkImportRequest
+/// Parse a `varyai://` URL into a DeepLinkImportRequest.
 ///
 /// Expected format:
-/// ccswitch://v1/import?resource={type}&...
+/// varyai://v1/import?resource={type}&...
 pub fn parse_deeplink_url(url_str: &str) -> Result<DeepLinkImportRequest, AppError> {
     // Parse URL
     let url = Url::parse(url_str)
@@ -19,9 +19,9 @@ pub fn parse_deeplink_url(url_str: &str) -> Result<DeepLinkImportRequest, AppErr
 
     // Validate scheme
     let scheme = url.scheme();
-    if scheme != "ccswitch" {
+    if !is_supported_deeplink_scheme(scheme) {
         return Err(AppError::InvalidInput(format!(
-            "Invalid scheme: expected 'ccswitch', got '{scheme}'"
+            "Invalid scheme: expected 'varyai', got '{scheme}'"
         )));
     }
 
@@ -65,6 +65,16 @@ pub fn parse_deeplink_url(url_str: &str) -> Result<DeepLinkImportRequest, AppErr
             "Unsupported resource type: {resource}"
         ))),
     }
+}
+
+pub(crate) fn is_supported_deeplink_url(url_str: &str) -> bool {
+    Url::parse(url_str)
+        .map(|url| is_supported_deeplink_scheme(url.scheme()))
+        .unwrap_or(false)
+}
+
+fn is_supported_deeplink_scheme(scheme: &str) -> bool {
+    scheme == "varyai"
 }
 
 /// Parse provider deep link parameters

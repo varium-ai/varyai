@@ -15,7 +15,7 @@ use crate::services::sync_protocol::{
 };
 
 /// Maximum number of entries allowed in a zip archive.
-const MAX_EXTRACT_ENTRIES: usize = 10_000;
+const MAX_EXTRACT_ENTRIES: usize = 30_000;
 
 pub(crate) struct SkillsBackup {
     _tmp: TempDir,
@@ -373,6 +373,11 @@ mod tests {
     use std::io::Cursor;
     use std::path::Path;
     use tempfile::tempdir;
+
+    #[test]
+    fn skills_restore_accepts_same_entry_budget_as_skill_import() {
+        assert_eq!(super::MAX_EXTRACT_ENTRIES, 30_000);
+    }
 
     #[test]
     fn mark_visited_dir_tracks_canonical_duplicates() {

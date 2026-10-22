@@ -1,6 +1,6 @@
 //! Provider import from deep link
 //!
-//! Handles importing provider configurations via ccswitch:// URLs.
+//! Handles importing provider configurations via varyai:// URLs.
 
 use super::utils::{decode_base64_param, infer_homepage_from_endpoint};
 use super::DeepLinkImportRequest;
@@ -152,6 +152,17 @@ pub(crate) fn build_provider_from_request(
         AppType::OpenCode => build_opencode_settings(request),
         AppType::OpenClaw => build_additive_app_settings(request),
         AppType::Hermes => build_hermes_settings(request),
+        AppType::WorkBuddy
+        | AppType::Qoder
+        | AppType::Kimi
+        | AppType::Qwen
+        | AppType::ZCode
+        | AppType::Trae
+        | AppType::DoubaoWork => {
+            return Err(AppError::InvalidInput(
+                "Native model configurations must be added from their application page".into(),
+            ));
+        }
         AppType::Pi => {
             return Err(AppError::InvalidInput(
                 "Pi providers must be added from the Pi provider page".to_string(),

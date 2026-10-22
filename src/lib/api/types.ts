@@ -8,4 +8,11 @@ export type AppId =
   | "opencode"
   | "openclaw"
   | "hermes"
-  | "pi";
+  | "pi"
+  | "workbuddy"
+  | "qoder"
+  | "doubaowork"
+  | "trae"
+  | "kimi"
+  | "qwen"
+  | "zcode";

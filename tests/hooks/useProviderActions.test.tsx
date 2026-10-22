@@ -54,6 +54,7 @@ vi.mock("@/lib/query", () => ({
 }));
 
 const providersApiUpdateMock = vi.fn();
+const providersApiDuplicateMock = vi.fn();
 const providersApiUpdateTrayMenuMock = vi.fn();
 const piApiUpdateProviderUsageScriptMock = vi.fn();
 const settingsApiGetMock = vi.fn();
@@ -68,6 +69,7 @@ vi.mock("@/lib/api", () => ({
       piApiUpdateProviderUsageScriptMock(...args),
   },
   providersApi: {
+    duplicate: (...args: unknown[]) => providersApiDuplicateMock(...args),
     update: (...args: unknown[]) => providersApiUpdateMock(...args),
     updateTrayMenu: (...args: unknown[]) =>
       providersApiUpdateTrayMenuMock(...args),
@@ -112,6 +114,7 @@ function createProvider(overrides: Partial<Provider> = {}): Provider {
 }
 
 beforeEach(() => {
+  providersApiDuplicateMock.mockReset().mockResolvedValue({ id: "copy-id" });
   addProviderMutateAsync.mockReset();
   updateProviderMutateAsync.mockReset();
   deleteProviderMutateAsync.mockReset();
@@ -141,6 +144,45 @@ beforeEach(() => {
 });
 
 describe("useProviderActions", () => {
+  it.each(["codex", "workbuddy", "opencode", "pi"] as const)(
+    "duplicates a saved %s configuration without adding to live or switching",
+    async (appId) => {
+      const { wrapper, queryClient } = createWrapper();
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+      const provider = createProvider();
+      const { result } = renderHook(() => useProviderActions(appId), {
+        wrapper,
+      });
+      await act(async () => {
+        await result.current.duplicateProvider(provider);
+      });
+      expect(providersApiDuplicateMock).toHaveBeenCalledWith(
+        provider.id,
+        appId,
+        expect.any(String),
+      );
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: ["providers", appId],
+      });
+      expect(addProviderMutateAsync).not.toHaveBeenCalled();
+      expect(switchProviderMutateAsync).not.toHaveBeenCalled();
+      expect(providersApiUpdateMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reports duplication failure without switching or exposing backend details", async () => {
+    providersApiDuplicateMock.mockRejectedValue(new Error("synthetic-secret"));
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useProviderActions("workbuddy"), {
+      wrapper,
+    });
+    await act(async () => {
+      await result.current.duplicateProvider(createProvider());
+    });
+    expect(toastErrorMock).toHaveBeenCalledWith("provider.duplicateFailed");
+    expect(switchProviderMutateAsync).not.toHaveBeenCalled();
+  });
+
   it("should trigger mutation when calling addProvider", async () => {
     addProviderMutateAsync.mockResolvedValueOnce(undefined);
     const { wrapper } = createWrapper();

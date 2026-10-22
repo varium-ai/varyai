@@ -12,7 +12,7 @@ use crate::error::AppError;
 use crate::provider::{ClaudeDesktopMode, Provider};
 
 pub const PROFILE_ID: &str = "00000000-0000-4000-8000-000000157210";
-pub const PROFILE_NAME: &str = "CC Switch";
+pub const PROFILE_NAME: &str = "Vary AI";
 
 #[cfg(any(target_os = "macos", windows, test))]
 const CONFIG_FILE: &str = "claude_desktop_config.json";
@@ -211,6 +211,16 @@ pub fn get_status(db: &Database, proxy_running: bool) -> Result<ClaudeDesktopSta
 
 pub fn get_config_library_path() -> Result<PathBuf, AppError> {
     Ok(current_platform_paths()?.config_library_path)
+}
+
+pub(crate) fn profile_configuration_paths() -> Result<Vec<PathBuf>, AppError> {
+    let paths = current_platform_paths()?;
+    Ok(vec![
+        paths.normal_config_path,
+        paths.threep_config_path,
+        paths.profile_path,
+        paths.meta_path,
+    ])
 }
 
 pub fn default_proxy_routes() -> Vec<ClaudeDesktopDefaultRoute> {

@@ -305,6 +305,45 @@ pub fn base_url_matches(config_toml: &str, predicate: impl FnOnce(&str) -> bool)
     extract_model_config(config_toml).is_some_and(|config| predicate(&config.base_url))
 }
 
+/// Restore the provider's model selection only if the live default is unresolved
+/// and the provider's original model table still exists in the live file.
+pub fn restore_provider_default_model(live_config: &str, provider_config: &str) -> Option<String> {
+    let provider_default = provider_config
+        .parse::<toml::Value>()
+        .ok()?
+        .get("models")?
+        .get("default")?
+        .as_str()?
+        .trim()
+        .to_string();
+    if provider_default.is_empty() {
+        return None;
+    }
+
+    let mut document = live_config.parse::<toml_edit::DocumentMut>().ok()?;
+    let has_model_table = |document: &toml_edit::DocumentMut, name: &str| {
+        document
+            .get("model")
+            .and_then(|models| models.get(name))
+            .is_some_and(toml_edit::Item::is_table_like)
+    };
+    let live_default_resolves = document
+        .get("models")
+        .and_then(|models| models.get("default"))
+        .and_then(toml_edit::Item::as_str)
+        .is_some_and(|name| has_model_table(&document, name.trim()));
+    if live_default_resolves || !has_model_table(&document, &provider_default) {
+        return None;
+    }
+
+    document
+        .entry("models")
+        .or_insert(toml_edit::table())
+        .as_table_like_mut()?
+        .insert("default", toml_edit::value(provider_default));
+    Some(document.to_string())
+}
+
 /// Remove MCP projections from a provider-owned Grok Build settings snapshot.
 /// MCP servers are owned by the database and projected into live config.toml.
 pub fn strip_grok_mcp_servers_from_settings(settings: &mut Value) -> Result<(), AppError> {
@@ -482,6 +521,47 @@ context_window = 500000
         let error = validate_config_toml("[models]\ndefault = \"grok-4.5\"\n")
             .expect_err("missing model table should fail");
         assert!(error.to_string().contains("model"));
+    }
+
+    #[test]
+    fn backfill_restores_provider_default_after_client_selected_builtin_model() {
+        let live = valid_config().replace("default = \"grok-4.5\"", "default = \"grok-4.6\"");
+        let restored =
+            restore_provider_default_model(&live, valid_config()).expect("default restored");
+        assert_eq!(restored, valid_config());
+        validate_config_toml(&restored).expect("restored config validates");
+    }
+
+    #[test]
+    fn backfill_restores_missing_default_but_preserves_valid_or_unrepairable_defaults() {
+        for live in [
+            valid_config().replace("default = \"grok-4.5\"\n", ""),
+            valid_config().replace("[models]\ndefault = \"grok-4.5\"\n\n", ""),
+        ] {
+            let restored = restore_provider_default_model(&live, valid_config()).expect("restored");
+            validate_config_toml(&restored).expect("valid after restoring");
+            assert_eq!(
+                extract_model_config(&restored).map(|model| model.profile),
+                Some("grok-4.5".into())
+            );
+        }
+        assert_eq!(
+            restore_provider_default_model(valid_config(), valid_config()),
+            None
+        );
+        let selected_other_table = format!(
+            "{}\n[model.mine]\nmodel = \"m\"\n",
+            valid_config().replace("default = \"grok-4.5\"", "default = \"mine\"")
+        );
+        assert_eq!(
+            restore_provider_default_model(&selected_other_table, valid_config()),
+            None
+        );
+        assert_eq!(
+            restore_provider_default_model("[models]\ndefault = \"grok-4.6\"\n", valid_config()),
+            None
+        );
+        assert_eq!(restore_provider_default_model("", valid_config()), None);
     }
 
     #[test]

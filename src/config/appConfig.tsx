@@ -16,6 +16,25 @@ export interface AppConfig {
   badgeClass: string;
 }
 
+export const APP_ICON_NAME: Record<AppId, string> = {
+  claude: "claude",
+  "claude-desktop": "claude",
+  codex: "openai",
+  gemini: "gemini",
+  grokbuild: "grok",
+  opencode: "opencode",
+  openclaw: "openclaw",
+  hermes: "hermes",
+  pi: "pi",
+  workbuddy: "workbuddy",
+  qoder: "qoder",
+  doubaowork: "doubaowork",
+  trae: "trae",
+  kimi: "kimi-code",
+  qwen: "qwen-code",
+  zcode: "zcode",
+};
+
 export const APP_IDS: AppId[] = [
   "claude",
   "claude-desktop",
@@ -26,6 +45,13 @@ export const APP_IDS: AppId[] = [
   "openclaw",
   "hermes",
   "pi",
+  "workbuddy",
+  "qoder",
+  "doubaowork",
+  "trae",
+  "kimi",
+  "qwen",
+  "zcode",
 ];
 
 export const DEFAULT_VISIBLE_APPS: VisibleApps = {
@@ -38,18 +64,28 @@ export const DEFAULT_VISIBLE_APPS: VisibleApps = {
   openclaw: true,
   hermes: true,
   pi: true,
+  workbuddy: false,
+  qoder: false,
+  doubaowork: false,
+  trae: false,
+  kimi: false,
+  qwen: false,
+  zcode: false,
 };
 
 /** App IDs shown in Skills panels. */
-export const SKILLS_APP_IDS: AppId[] = [
-  "claude",
-  "codex",
-  "gemini",
-  "grokbuild",
-  "opencode",
-  "hermes",
-  "pi",
-];
+export const SKILLS_APP_IDS: Exclude<
+  AppId,
+  | "claude-desktop"
+  | "openclaw"
+  | "workbuddy"
+  | "qoder"
+  | "doubaowork"
+  | "trae"
+  | "kimi"
+  | "qwen"
+  | "zcode"
+>[] = ["claude", "codex", "gemini", "grokbuild", "opencode", "hermes", "pi"];
 
 export type ProxyAppId = Extract<
   AppId,
@@ -64,13 +100,57 @@ export const PROXY_APP_IDS: ProxyAppId[] = [
   "grokbuild",
 ];
 
+/** Apps whose native configuration can be routed through the local gateway. */
+export const TAKEOVER_APP_IDS = [
+  ...PROXY_APP_IDS,
+  "workbuddy",
+  "qoder",
+  "doubaowork",
+  "trae",
+  "kimi",
+  "qwen",
+  "zcode",
+] as const;
+
+/** Applications controlled by the settings routing switches, including Pi's custom provider. */
+export const ROUTING_APP_IDS = [...TAKEOVER_APP_IDS, "pi"] as const;
+
+export function isRoutingAppId(
+  appId: string,
+): appId is (typeof ROUTING_APP_IDS)[number] {
+  return (ROUTING_APP_IDS as readonly string[]).includes(appId);
+}
+
+export function isTakeoverAppId(
+  appId: string,
+): appId is
+  | ProxyAppId
+  | "workbuddy"
+  | "qoder"
+  | "doubaowork"
+  | "trae"
+  | "kimi"
+  | "qwen"
+  | "zcode" {
+  return (TAKEOVER_APP_IDS as readonly string[]).includes(appId);
+}
+
 export function isProxyAppId(appId: string): appId is ProxyAppId {
   return (PROXY_APP_IDS as string[]).includes(appId);
 }
 
 export type AdditiveAppId = Extract<
   AppId,
-  "opencode" | "openclaw" | "hermes" | "pi"
+  | "opencode"
+  | "openclaw"
+  | "hermes"
+  | "pi"
+  | "workbuddy"
+  | "qoder"
+  | "trae"
+  | "kimi"
+  | "qwen"
+  | "zcode"
 >;
 
 export const ADDITIVE_APP_IDS: AdditiveAppId[] = [
@@ -78,6 +158,12 @@ export const ADDITIVE_APP_IDS: AdditiveAppId[] = [
   "openclaw",
   "hermes",
   "pi",
+  "workbuddy",
+  "qoder",
+  "trae",
+  "kimi",
+  "qwen",
+  "zcode",
 ];
 
 export function isAdditiveAppId(appId: string): appId is AdditiveAppId {
@@ -85,7 +171,19 @@ export function isAdditiveAppId(appId: string): appId is AdditiveAppId {
 }
 
 /** Pi has no native MCP registry; do not manufacture a disabled mirror. */
-export type McpAppId = Exclude<AppId, "claude-desktop" | "openclaw" | "pi">;
+export type McpAppId = Exclude<
+  AppId,
+  | "claude-desktop"
+  | "openclaw"
+  | "pi"
+  | "workbuddy"
+  | "qoder"
+  | "doubaowork"
+  | "trae"
+  | "kimi"
+  | "qwen"
+  | "zcode"
+>;
 export const MCP_APP_IDS: McpAppId[] = [
   "claude",
   "codex",
@@ -185,6 +283,58 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
     badgeClass:
       "bg-violet-500/10 text-violet-700 dark:text-violet-300 hover:bg-violet-500/20 border-0 gap-1.5",
   },
+  doubaowork: {
+    label: "豆包工作",
+    icon: (
+      <ProviderIcon
+        icon={APP_ICON_NAME.doubaowork}
+        name="Doubao Work"
+        size={14}
+      />
+    ),
+    activeClass: "bg-blue-500/10 ring-1 ring-blue-500/20 text-blue-600",
+    badgeClass: "bg-blue-500/10 text-blue-700 border-0 gap-1.5",
+  },
+  trae: {
+    label: "TRAE CN",
+    icon: <ProviderIcon icon={APP_ICON_NAME.trae} name="TRAE CN" size={14} />,
+    activeClass: "bg-sky-500/10 text-sky-600",
+    badgeClass: "bg-sky-500/10 text-sky-700",
+  },
+  kimi: {
+    label: "Kimi Code",
+    icon: <ProviderIcon icon={APP_ICON_NAME.kimi} name="Kimi Code" size={14} />,
+    activeClass: "bg-sky-500/10 text-sky-600",
+    badgeClass: "bg-sky-500/10 text-sky-700",
+  },
+  qwen: {
+    label: "Qwen Code",
+    icon: <ProviderIcon icon={APP_ICON_NAME.qwen} name="Qwen Code" size={14} />,
+    activeClass: "bg-sky-500/10 text-sky-600",
+    badgeClass: "bg-sky-500/10 text-sky-700",
+  },
+  zcode: {
+    label: "ZCode",
+    icon: <ProviderIcon icon={APP_ICON_NAME.zcode} name="ZCode" size={14} />,
+    activeClass: "bg-sky-500/10 text-sky-600",
+    badgeClass: "bg-sky-500/10 text-sky-700",
+  },
+  qoder: {
+    label: "Qoder CN",
+    icon: <ProviderIcon icon={APP_ICON_NAME.qoder} name="Qoder CN" size={14} />,
+    activeClass: "bg-sky-500/10 text-sky-600 dark:text-sky-400",
+    badgeClass: "bg-sky-500/10 text-sky-700 dark:text-sky-300 border-0 gap-1.5",
+  },
+  workbuddy: {
+    label: "WorkBuddy",
+    icon: (
+      <ProviderIcon icon={APP_ICON_NAME.workbuddy} name="WorkBuddy" size={14} />
+    ),
+    activeClass:
+      "bg-sky-500/10 ring-1 ring-sky-500/20 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400",
+    badgeClass:
+      "bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/20 border-0 gap-1.5",
+  },
   pi: {
     label: "Pi",
     icon: <ProviderIcon icon="pi" name="Pi" size={14} showFallback={false} />,
@@ -197,4 +347,8 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
 
 export function getAppLabel(appId: string): string {
   return APP_ICON_MAP[appId as AppId]?.label ?? appId;
+}
+
+export function isManagedAgentApp(app: string): boolean {
+  return ["trae", "kimi", "qwen", "zcode"].includes(app);
 }

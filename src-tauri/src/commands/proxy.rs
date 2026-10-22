@@ -29,7 +29,11 @@ pub async fn start_proxy_server(
 #[tauri::command]
 pub async fn stop_proxy_server(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let takeover = state.proxy_service.get_takeover_status().await?;
-    if takeover.claude
+    if takeover.doubaowork
+        || takeover.doubaowork_waiting
+        || takeover.qoder
+        || takeover.workbuddy
+        || takeover.claude
         || takeover.codex
         || takeover.gemini
         || takeover.grokbuild
@@ -41,6 +45,10 @@ pub async fn stop_proxy_server(state: tauri::State<'_, AppState>) -> Result<(), 
         );
     }
 
+    state
+        .proxy_service
+        .update_security_audit_settings(&crate::database::SecurityAuditSettings { enabled: false })
+        .await?;
     state.proxy_service.stop().await
 }
 
@@ -58,13 +66,202 @@ pub async fn get_proxy_takeover_status(
     state.proxy_service.get_takeover_status().await
 }
 
+#[tauri::command]
+pub fn get_qoder_certificate_status(
+    state: tauri::State<'_, AppState>,
+) -> crate::services::qoder_proxy::CertificateStatus {
+    state.proxy_service.get_qoder_certificate_status()
+}
+#[tauri::command]
+pub async fn clear_qoder_certificate(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.proxy_service.clear_qoder_certificate().await
+}
+#[tauri::command]
+pub async fn rebuild_qoder_certificate(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    ensure_qoder_consent(&app, state.inner()).await?;
+    state.proxy_service.rebuild_qoder_certificate().await
+}
+
+pub(crate) async fn ensure_qoder_consent(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<(), String> {
+    crate::proxy::qoder_codec::check()
+        .await
+        .map_err(|e| e.to_string())?;
+    if state
+        .db
+        .get_bool_flag("qoder_certificate_consent")
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(());
+    }
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let lang = crate::settings::get_settings()
+        .language
+        .unwrap_or_else(|| "en".into());
+    let source = match lang.as_str() {
+        "zh" => include_str!("../../../src/i18n/locales/zh.json"),
+        "zh-TW" => include_str!("../../../src/i18n/locales/zh-TW.json"),
+        "ja" => include_str!("../../../src/i18n/locales/ja.json"),
+        _ => include_str!("../../../src/i18n/locales/en.json"),
+    };
+    let texts: serde_json::Value = serde_json::from_str(source)
+        .map_err(|_| "Qoder certificate consent text is unavailable".to_string())?;
+    let text = |key: &str| {
+        texts["qoder"]["certificate"][key]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(text("consent"))
+        .title(text("title"))
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            text("approve"),
+            text("cancel"),
+        ))
+        .show(move |accepted| {
+            let _ = tx.send(accepted);
+        });
+    if !rx.await.unwrap_or(false) {
+        return Err("Qoder certificate setup was cancelled".into());
+    }
+    state
+        .db
+        .set_setting("qoder_certificate_consent", "true")
+        .map_err(|e| e.to_string())
+}
+
+async fn ensure_trae_consent(app: &tauri::AppHandle, state: &AppState) -> Result<(), String> {
+    if state
+        .db
+        .get_bool_flag(crate::services::trae_bridge::CONSENT_KEY)
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(());
+    }
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let lang = crate::settings::get_settings()
+        .language
+        .unwrap_or_else(|| "en".into());
+    let source = match lang.as_str() {
+        "zh" => include_str!("../../../src/i18n/locales/zh.json"),
+        "zh-TW" => include_str!("../../../src/i18n/locales/zh-TW.json"),
+        "ja" => include_str!("../../../src/i18n/locales/ja.json"),
+        _ => include_str!("../../../src/i18n/locales/en.json"),
+    };
+    let texts: serde_json::Value = serde_json::from_str(source).map_err(|e| e.to_string())?;
+    let text = |key: &str| {
+        texts["homeAudit"][key]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(text("traeConsent"))
+        .title(text("traeNoticeTitle"))
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            text("traeApprove"),
+            text("traeCancel"),
+        ))
+        .show(move |accepted| {
+            let _ = tx.send(accepted);
+        });
+    if !rx.await.unwrap_or(false) {
+        return Err("TRAE local connection setup was cancelled".into());
+    }
+    state
+        .db
+        .set_setting(crate::services::trae_bridge::CONSENT_KEY, "true")
+        .map_err(|e| e.to_string())
+}
+
+async fn ensure_doubao_consent(app: &tauri::AppHandle, state: &AppState) -> Result<(), String> {
+    if state
+        .db
+        .get_bool_flag(crate::services::doubao_work::CONSENT_KEY)
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(());
+    }
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let lang = crate::settings::get_settings()
+        .language
+        .unwrap_or_else(|| "en".into());
+    let source = match lang.as_str() {
+        "zh" => include_str!("../../../src/i18n/locales/zh.json"),
+        "zh-TW" => include_str!("../../../src/i18n/locales/zh-TW.json"),
+        "ja" => include_str!("../../../src/i18n/locales/ja.json"),
+        _ => include_str!("../../../src/i18n/locales/en.json"),
+    };
+    let texts: serde_json::Value = serde_json::from_str(source).map_err(|e| e.to_string())?;
+    let text = |key: &str| {
+        texts["homeAudit"][key]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(text("doubaoConsent"))
+        .title(text("doubaoNoticeTitle"))
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            text("traeApprove"),
+            text("traeCancel"),
+        ))
+        .show(move |accepted| {
+            let _ = tx.send(accepted);
+        });
+    if !rx.await.unwrap_or(false) {
+        return Err("Doubao Work local connection setup was cancelled".into());
+    }
+    state
+        .db
+        .set_setting(crate::services::doubao_work::CONSENT_KEY, "true")
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn launch_doubao_work_for_audit(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    ensure_doubao_consent(&app, state.inner()).await?;
+    state
+        .proxy_service
+        .set_takeover_for_app("doubaowork", true)
+        .await?;
+    tokio::task::spawn_blocking(crate::services::doubao_work::launch)
+        .await
+        .map_err(|_| "homeAudit.doubaoLaunchFailed".to_string())?
+}
+
 /// 为指定应用开启/关闭接管
 #[tauri::command]
 pub async fn set_proxy_takeover_for_app(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     app_type: String,
     enabled: bool,
 ) -> Result<(), String> {
+    if app_type == "doubaowork" && enabled {
+        ensure_doubao_consent(&app, state.inner()).await?;
+    }
+    if app_type == "trae" && enabled {
+        ensure_trae_consent(&app, state.inner()).await?;
+    }
+    if app_type == "qoder" && enabled {
+        ensure_qoder_consent(&app, state.inner()).await?;
+    }
     state
         .proxy_service
         .set_takeover_for_app(&app_type, enabled)
@@ -115,10 +312,7 @@ pub async fn update_global_proxy_config(
     state: tauri::State<'_, AppState>,
     config: GlobalProxyConfig,
 ) -> Result<(), String> {
-    let db = &state.db;
-    db.update_global_proxy_config(config)
-        .await
-        .map_err(|e| e.to_string())
+    state.proxy_service.update_global_config(config).await
 }
 
 /// 获取指定应用的代理配置

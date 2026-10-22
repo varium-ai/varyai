@@ -277,21 +277,6 @@ export const OPENCODE_PRESET_MODEL_VARIANTS: Record<
   ],
 };
 
-/**
- * Look up preset metadata for a model by npm package and model ID.
- * Returns enrichment fields (options, limit, modalities) that can be
- * merged into a model definition when the user's config doesn't already
- * provide them.
- */
-export function getPresetModelDefaults(
-  npm: string,
-  modelId: string,
-): PresetModelVariant | undefined {
-  const models = OPENCODE_PRESET_MODEL_VARIANTS[npm];
-  if (!models) return undefined;
-  return models.find((m) => m.id === modelId);
-}
-
 export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
   // ===== 赞助商预设：文件顺序 = 应用内展示顺序，与 README 赞助商表对齐 =====
   {

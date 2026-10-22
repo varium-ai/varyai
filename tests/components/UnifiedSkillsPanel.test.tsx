@@ -193,6 +193,29 @@ describe("UnifiedSkillsPanel", () => {
     );
   });
 
+  it("closes skill import from the backdrop without importing selected skills", async () => {
+    const user = userEvent.setup();
+    const ref = createRef<UnifiedSkillsPanelHandle>();
+    render(
+      <UnifiedSkillsPanel
+        ref={ref}
+        onOpenDiscovery={() => {}}
+        currentApp="claude"
+      />,
+    );
+    await act(async () => {
+      await ref.current?.openImport();
+    });
+    const dialog = screen.getByRole("dialog", { name: "skills.import" });
+    await user.click(
+      within(dialog).getByRole("checkbox", { name: "Shared Skill" }),
+    );
+    expect(dialog).toBeVisible();
+    await user.click(dialog.previousElementSibling as HTMLElement);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(importSkillsMock).not.toHaveBeenCalled();
+  });
+
   it("opens the import dialog without crashing when app toggles render", async () => {
     const ref = createRef<UnifiedSkillsPanelHandle>();
 

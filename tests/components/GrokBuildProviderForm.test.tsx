@@ -21,7 +21,7 @@ vi.mock("@/components/JsonEditor", () => ({
 }));
 
 describe("GrokBuildProviderForm", () => {
-  it("offers curated Grok Build presets and applies one", async () => {
+  it("only offers the official Grok preset and custom configuration", async () => {
     const user = userEvent.setup();
     const { container } = render(
       <GrokBuildProviderForm
@@ -35,14 +35,13 @@ describe("GrokBuildProviderForm", () => {
     expect(screen.queryByRole("button", { name: /BytePlus/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Kimi/ })).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: /PatewayAI/ }));
+    expect(screen.queryByRole("button", { name: /PatewayAI/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Grok Official/ }));
 
-    const baseUrlInput =
-      container.querySelector<HTMLInputElement>("#codexBaseUrl");
     const nameInput =
       container.querySelector<HTMLInputElement>('input[name="name"]');
-    expect(baseUrlInput?.value).toBe("https://api.pateway.ai/v1");
-    expect(nameInput?.value).toBe("PatewayAI");
+    expect(nameInput?.value).toBe("Grok Official");
+    expect(container.querySelector("#codexBaseUrl")).toBeNull();
   });
 
   it("submits a complete config.toml payload with Grok defaults", async () => {

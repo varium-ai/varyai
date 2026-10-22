@@ -1,13 +1,11 @@
 import { useTranslation } from "react-i18next";
-import { FolderOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ToggleRow } from "@/components/ui/toggle-row";
 import { cn } from "@/lib/utils";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import type { SettingsFormState } from "@/hooks/useSettings";
 import type { VisibleApps } from "@/types";
 import type { AppId } from "@/lib/api";
-import { DEFAULT_VISIBLE_APPS } from "@/config/appConfig";
+import { APP_ICON_NAME, DEFAULT_VISIBLE_APPS } from "@/config/appConfig";
 
 interface AppVisibilitySettingsProps {
   settings: SettingsFormState;
@@ -32,6 +30,17 @@ const APP_CONFIG: Array<{
   { id: "openclaw", icon: "openclaw", nameKey: "apps.openclaw" },
   { id: "hermes", icon: "hermes", nameKey: "apps.hermes" },
   { id: "pi", icon: "pi", nameKey: "apps.pi" },
+  { id: "workbuddy", icon: APP_ICON_NAME.workbuddy, nameKey: "apps.workbuddy" },
+  { id: "qoder", icon: APP_ICON_NAME.qoder, nameKey: "apps.qoder" },
+  {
+    id: "doubaowork",
+    icon: APP_ICON_NAME.doubaowork,
+    nameKey: "apps.doubaowork",
+  },
+  { id: "trae", icon: APP_ICON_NAME.trae, nameKey: "apps.trae" },
+  { id: "kimi", icon: APP_ICON_NAME.kimi, nameKey: "apps.kimi" },
+  { id: "qwen", icon: APP_ICON_NAME.qwen, nameKey: "apps.qwen" },
+  { id: "zcode", icon: APP_ICON_NAME.zcode, nameKey: "apps.zcode" },
 ];
 
 export function AppVisibilitySettings({
@@ -40,7 +49,10 @@ export function AppVisibilitySettings({
 }: AppVisibilitySettingsProps) {
   const { t } = useTranslation();
 
-  const visibleApps: VisibleApps = settings.visibleApps ?? DEFAULT_VISIBLE_APPS;
+  const visibleApps: VisibleApps = {
+    ...DEFAULT_VISIBLE_APPS,
+    ...settings.visibleApps,
+  };
 
   // Count how many apps are currently visible
   const visibleCount = Object.values(visibleApps).filter(Boolean).length;
@@ -68,9 +80,9 @@ export function AppVisibilitySettings({
           {t("settings.appVisibility.description")}
         </p>
       </header>
-      <div className="flex flex-wrap gap-1 rounded-md border border-border-default bg-background p-1">
+      <div className="flex flex-wrap gap-3 rounded-xl border border-border-default bg-background p-4">
         {APP_CONFIG.map((app) => {
-          const isVisible = visibleApps[app.id];
+          const isVisible = visibleApps[app.id] ?? true;
           // Disable button if this is the last visible app
           const isDisabled = isVisible && visibleCount <= 1;
 
@@ -88,13 +100,6 @@ export function AppVisibilitySettings({
           );
         })}
       </div>
-      <ToggleRow
-        icon={<FolderOpen className="h-4 w-4 text-emerald-500" />}
-        title={t("settings.appVisibility.showProfileSwitcher")}
-        description={t("settings.appVisibility.showProfileSwitcherDescription")}
-        checked={settings.showProfileSwitcher ?? true}
-        onCheckedChange={(value) => onChange({ showProfileSwitcher: value })}
-      />
     </section>
   );
 }
@@ -124,13 +129,13 @@ function AppButton({
       size="sm"
       variant={active ? "default" : "ghost"}
       className={cn(
-        "min-w-[90px] w-auto gap-1.5 px-3",
+        "h-12 min-w-[120px] w-auto gap-2.5 rounded-xl px-5 text-sm",
         active
           ? "shadow-sm"
           : "text-muted-foreground hover:text-foreground hover:bg-muted",
       )}
     >
-      <ProviderIcon icon={icon} name={name} size={14} />
+      <ProviderIcon icon={icon} name={name} size={18} />
       {children}
     </Button>
   );

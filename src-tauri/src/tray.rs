@@ -160,6 +160,33 @@ pub struct TrayAppSection {
 pub const AUTO_SUFFIX: &str = "auto";
 pub const TRAY_ID: &str = "cc-switch";
 
+#[cfg(target_os = "macos")]
+pub(crate) fn security_audit_icon(enabled: bool) -> tauri::Result<tauri::image::Image<'static>> {
+    let bytes: &[u8] = if enabled {
+        include_bytes!("../icons/tray/macos/statusbar_audit_enabled_3x.png")
+    } else {
+        include_bytes!("../icons/tray/macos/statusbar_template_3x.png")
+    };
+    tauri::image::Image::from_bytes(bytes)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn update_security_audit_icon(app: &tauri::AppHandle, enabled: bool) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        match security_audit_icon(enabled) {
+            Ok(icon) => {
+                if let Err(error) = tray.set_icon(Some(icon)) {
+                    log::warn!("Failed to update macOS status bar icon: {error}");
+                }
+            }
+            Err(error) => log::warn!("Failed to load macOS status bar icon: {error}"),
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn update_security_audit_icon(_app: &tauri::AppHandle, _enabled: bool) {}
+
 pub const TRAY_SECTIONS: [TrayAppSection; 4] = [
     TrayAppSection {
         app_type: AppType::Claude,
@@ -826,7 +853,7 @@ pub fn create_tray_menu(
                         provider,
                     );
                 let label = if is_official_blocked {
-                    format!("{} \u{26D4}", &provider.name) // ⛔ emoji
+                    format!("{} \u{26D4}", provider.name) // ⛔ emoji
                 } else {
                     provider.name.clone()
                 };
@@ -897,6 +924,14 @@ pub fn create_tray_menu(
                 scope_label,
             );
             for profile in &profiles {
+                // Cross-agent schemes require the preview dialog in the main window.
+                if serde_json::from_str::<crate::services::profile::ProfilePayload>(
+                    &profile.payload,
+                )
+                .is_ok_and(|payload| payload.bundle.is_some())
+                {
+                    continue;
+                }
                 let item = CheckMenuItem::with_id(
                     app,
                     format!("profile_{}_{}", scope.as_str(), profile.id),
@@ -1032,12 +1067,31 @@ pub fn apply_tray_policy(app: &tauri::AppHandle, dock_visible: bool) {
         ActivationPolicy::Accessory
     };
 
-    if let Err(err) = app.set_dock_visibility(dock_visible) {
-        log::warn!("设置 Dock 显示状态失败: {err}");
-    }
-
     if let Err(err) = app.set_activation_policy(desired_policy) {
         log::warn!("设置激活策略失败: {err}");
+    }
+
+    if dock_visible {
+        if let Err(err) = app.run_on_main_thread(|| {
+            use objc2::{AllocAnyThread, MainThreadMarker};
+            use objc2_app_kit::{NSApplication, NSImage};
+            use objc2_foundation::NSData;
+
+            let Some(main_thread) = MainThreadMarker::new() else {
+                log::warn!("无法在主线程恢复 Dock 图标");
+                return;
+            };
+            let data = NSData::with_bytes(include_bytes!("../icons/icon.png"));
+            let Some(icon) = NSImage::initWithData(NSImage::alloc(), &data) else {
+                log::warn!("无法解码 Dock 图标");
+                return;
+            };
+            unsafe {
+                NSApplication::sharedApplication(main_thread).setApplicationIconImage(Some(&icon));
+            }
+        }) {
+            log::warn!("恢复 Dock 图标失败: {err}");
+        }
     }
 }
 
@@ -1070,7 +1124,10 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
             }
         }
         "open_website" => {
-            if let Err(e) = app.opener().open_url("https://ccswitch.io", None::<String>) {
+            if let Err(e) = app
+                .opener()
+                .open_url("https://www.varyai.net/", None::<String>)
+            {
                 log::error!("打开官方网站失败: {e}");
             }
         }

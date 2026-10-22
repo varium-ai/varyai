@@ -16,6 +16,14 @@ const codexConfig = (wireApi: "chat_completions" | "responses") =>
   `model_provider = "custom"\n\n[model_providers.custom]\nname = "X"\nbase_url = "https://x.example/v1"\nwire_api = "${wireApi}"\n`;
 
 describe("providerNeedsRouting", () => {
+  it("allows switching back to WorkBuddy official login during takeover", () => {
+    expect(
+      supportsOfficialProxyTakeover(
+        "workbuddy",
+        mkProvider({ category: "official" }),
+      ),
+    ).toBe(true);
+  });
   it("allows explicit Codex Official cards during takeover", () => {
     const native = mkProvider({
       id: "codex-official",

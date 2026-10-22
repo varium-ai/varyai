@@ -16,6 +16,7 @@ import { proxyKeys } from "@/lib/query/proxy";
 import { usageKeys } from "@/lib/query/usage";
 import { invalidatePiProviderCaches } from "@/lib/query/pi";
 import { GROKBUILD_OFFICIAL_PROVIDER_ID } from "@/utils/providerCapabilities";
+import { isTakeoverAppId } from "@/config/appConfig";
 
 export const useAddProviderMutation = (appId: AppId) => {
   const queryClient = useQueryClient();
@@ -89,11 +90,22 @@ export const useAddProviderMutation = (appId: AppId) => {
       };
       delete (newProvider as any).providerKey;
 
-      await providersApi.add(newProvider, appId, addToLive);
+      await providersApi.add(
+        newProvider,
+        appId,
+        ["qoder", "trae", "kimi", "qwen", "zcode"].includes(appId)
+          ? false
+          : addToLive,
+      );
       return newProvider;
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      if (appId === "workbuddy" || appId === "qoder") {
+        await queryClient.invalidateQueries({
+          queryKey: [`${appId}LiveProviderIds`],
+        });
+      }
 
       if (appId === "opencode") {
         await queryClient.invalidateQueries({
@@ -177,6 +189,11 @@ export const useUpdateProviderMutation = (appId: AppId) => {
     },
     onSuccess: async (provider, variables) => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      if (appId === "workbuddy" || appId === "qoder") {
+        await queryClient.invalidateQueries({
+          queryKey: [`${appId}LiveProviderIds`],
+        });
+      }
       await queryClient.invalidateQueries({
         queryKey: usageKeys.script(provider.id, appId),
       });
@@ -235,6 +252,11 @@ export const useDeleteProviderMutation = (appId: AppId) => {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      if (appId === "workbuddy" || appId === "qoder") {
+        await queryClient.invalidateQueries({
+          queryKey: [`${appId}LiveProviderIds`],
+        });
+      }
 
       if (appId === "opencode") {
         await queryClient.invalidateQueries({
@@ -311,8 +333,24 @@ export const useSwitchProviderMutation = (appId: AppId) => {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      // A switch may use normal live writes after another process has reset
+      // takeover. Refresh both sources before reporting success so an old
+      // in-memory proxy target cannot mask the selected provider on the home page.
+      if (isTakeoverAppId(appId) || appId === "claude-desktop") {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: proxyKeys.status }),
+          queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus }),
+          queryClient.invalidateQueries({
+            queryKey: ["security-route", appId],
+          }),
+        ]);
+      }
+      if (appId === "workbuddy" || appId === "qoder") {
+        await queryClient.invalidateQueries({
+          queryKey: [`${appId}LiveProviderIds`],
+        });
+      }
       if (appId === "claude-desktop") {
-        await queryClient.invalidateQueries({ queryKey: proxyKeys.status });
         await queryClient.invalidateQueries({
           queryKey: ["claudeDesktopStatus"],
         });

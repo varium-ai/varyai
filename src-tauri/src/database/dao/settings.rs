@@ -45,6 +45,13 @@ impl Database {
         ))
     }
 
+    pub(crate) fn delete_setting(&self, key: &str) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute("DELETE FROM settings WHERE key=?1", params![key])
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// 设置值
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);

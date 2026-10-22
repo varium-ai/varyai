@@ -194,6 +194,13 @@ pub async fn handle_streaming(
     let logged_stream = create_logged_passthrough_stream(
         stream,
         ctx.tag,
+        Some(crate::proxy::tool_observation::mount::metadata(
+            parser_config.output_protocol,
+            ctx.app_type_str,
+            crate::proxy::tool_observation::channel::Transport::Sse,
+            crate::proxy::tool_observation::channel::OutputQuality::Native,
+            ctx.tool_schemas.clone(),
+        )),
         usage_collector,
         timeout_config,
         connection_guard,
@@ -233,6 +240,17 @@ pub async fn handle_non_streaming(
         "[{}] 上游响应体已接收: bytes={} (content omitted)",
         ctx.tag,
         body_bytes.len()
+    );
+
+    crate::proxy::tool_observation::mount::observe_non_streaming(
+        &body_bytes,
+        crate::proxy::tool_observation::mount::metadata(
+            parser_config.output_protocol,
+            ctx.app_type_str,
+            crate::proxy::tool_observation::channel::Transport::Json,
+            crate::proxy::tool_observation::channel::OutputQuality::Native,
+            ctx.tool_schemas.clone(),
+        ),
     );
 
     // 解析并记录使用量。关闭 usage logging 时直接跳过，避免非流式响应整包 JSON parse。
@@ -683,6 +701,7 @@ async fn log_usage_internal(
 pub fn create_logged_passthrough_stream(
     stream: impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
     tag: &'static str,
+    observation: Option<crate::proxy::tool_observation::channel::ResponseMetadata>,
     usage_collector: Option<SseUsageCollector>,
     timeout_config: StreamingTimeoutConfig,
     connection_guard: Option<ActiveConnectionGuard>,
@@ -693,8 +712,9 @@ pub fn create_logged_passthrough_stream(
         let mut utf8_remainder: Vec<u8> = Vec::new();
         let mut collector = usage_collector;
         let mut finish_guard = collector.clone().map(SseUsageFinishGuard::new);
-        let inspect_sse_events =
-            collector.is_some() || log::log_enabled!(log::Level::Debug);
+        let mut observation = observation;
+        let mut tap: Option<crate::proxy::tool_observation::channel::ResponseTap> = None;
+        let inspect_sse_events = collector.is_some() || log::log_enabled!(log::Level::Debug);
         let mut is_first_chunk = true;
 
         // 超时配置
@@ -725,6 +745,7 @@ pub fn create_logged_passthrough_stream(
                         Ok(Some(chunk)) => Some(chunk),
                         Ok(None) => None, // 流结束
                         Err(_) => {
+                            if let Some(tap) = &tap { tap.fail(); }
                             // 超时
                             let timeout_type = if is_first_chunk { "首字节" } else { "静默期" };
                             log::error!("[{tag}] 流式响应{}超时 ({}秒)", timeout_type, duration.as_secs());
@@ -744,7 +765,11 @@ pub fn create_logged_passthrough_stream(
                             bytes.len()
                         );
                     }
+                    if is_first_chunk {
+                        tap = observation.take().and_then(crate::proxy::tool_observation::mount::start_stream);
+                    }
                     is_first_chunk = false;
+                    if let Some(tap) = tap.as_mut() { tap.push(&bytes); }
                     if inspect_sse_events {
                         crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
 
@@ -783,6 +808,7 @@ pub fn create_logged_passthrough_stream(
                     yield Ok(bytes);
                 }
                 Some(Err(e)) => {
+                    if let Some(tap) = &tap { tap.fail(); }
                     log::error!("[{tag}] 流错误: {e}");
                     yield Err(std::io::Error::other(e.to_string()));
                     break;
@@ -794,6 +820,7 @@ pub fn create_logged_passthrough_stream(
             }
         }
 
+        drop(tap);
         if let Some(c) = collector.take() {
             c.finish().await;
         }
@@ -869,6 +896,69 @@ mod tests {
     use std::str::FromStr;
     use std::sync::Arc;
     use tokio::sync::RwLock;
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn no_response_reservation_until_first_client_chunk() {
+        use crate::proxy::tool_observation::channel::*;
+        use crate::services::tool_risk::runtime::{
+            set_tool_risk_runtime_for_test, ToolRiskRuntime,
+        };
+        let (sender, _receiver) = test_channel().await;
+        set_tool_risk_runtime_for_test(ToolRiskRuntime::build(true, 5, vec![], &HashMap::new()));
+        let metadata = ResponseMetadata {
+            protocol: "anthropic_messages",
+            client: "claude",
+            transport: Transport::Sse,
+            quality: OutputQuality::Native,
+            definitions: Arc::new(vec![]),
+        };
+        let output = create_logged_passthrough_stream(
+            futures::stream::pending::<Result<Bytes, std::io::Error>>(),
+            "test",
+            Some(metadata.clone()),
+            None,
+            StreamingTimeoutConfig {
+                first_byte_timeout: 0,
+                idle_timeout: 0,
+            },
+            None,
+        );
+        tokio::pin!(output);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(2), output.next())
+                .await
+                .is_err()
+        );
+        let taps: Vec<_> = (0..(MAX_ACTIVE_BYTES / RESPONSE_RESERVATION))
+            .filter_map(|_| sender.start(metadata.clone(), 5))
+            .collect();
+        assert_eq!(taps.len(), MAX_ACTIVE_BYTES / RESPONSE_RESERVATION);
+        set_tool_risk_runtime_for_test(ToolRiskRuntime::default());
+    }
+    #[tokio::test]
+    async fn passthrough_keeps_exact_client_bytes_and_errors() {
+        let bytes = Bytes::from_static(b"data: {\"private\":\"unchanged\"}\r\n\r\n");
+        let input = futures::stream::iter(vec![
+            Ok(bytes.clone()),
+            Err(std::io::Error::other("failure")),
+        ]);
+        let output = create_logged_passthrough_stream(
+            input,
+            "test",
+            None,
+            None,
+            StreamingTimeoutConfig {
+                first_byte_timeout: 0,
+                idle_timeout: 0,
+            },
+            None,
+        );
+        tokio::pin!(output);
+        assert_eq!(output.next().await.unwrap().unwrap(), bytes);
+        assert!(output.next().await.unwrap().is_err());
+        assert!(output.next().await.is_none());
+    }
 
     #[test]
     fn format_headers_keeps_only_allowlisted_diagnostic_values() {
@@ -1020,12 +1110,14 @@ mod tests {
 
     fn build_state(db: Arc<Database>) -> ProxyState {
         ProxyState {
+            pi_runtime: Arc::default(),
             db: db.clone(),
             config: Arc::new(RwLock::new(ProxyConfig::default())),
             status: Arc::new(RwLock::new(ProxyStatus::default())),
             start_time: Arc::new(RwLock::new(None)),
             current_providers: Arc::new(RwLock::new(HashMap::new())),
             provider_router: Arc::new(ProviderRouter::new(db.clone())),
+            workbuddy_upstream: Arc::new(RwLock::new(None)),
             gemini_shadow: Arc::new(GeminiShadowStore::default()),
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             app_handle: None,

@@ -27,9 +27,22 @@ pub(crate) mod backup;
 mod dao;
 mod migration;
 mod schema;
+mod storage;
+
+#[cfg(test)]
+mod split_storage_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod migration_v22_tests;
+
+#[cfg(test)]
+mod migration_v23_tests;
+
+#[cfg(test)]
+mod migration_v24_tests;
 
 // DAO 类型导出供外部使用
 pub(crate) use dao::providers_seed::{
@@ -40,8 +53,14 @@ pub(crate) use dao::proxy::{
     validate_cost_multiplier, validate_pricing_source, PRICING_SOURCE_REQUEST,
     PRICING_SOURCE_RESPONSE,
 };
-pub use dao::FailoverQueueItem;
-pub use dao::Profile;
+#[allow(unused_imports)]
+pub use dao::{
+    AuditBatchOutcome, AuditLogEvent, AuditLogFilter, AuditLogPageResult, AuditLogRecord,
+    AuditRowTarget, AuditWrite, AuditWriteReceipt, CustomSecurityRule, FailoverQueueItem, Profile,
+    SecurityAuditSettings, ToolRiskActor, ToolRiskAuditStatus, ToolRiskChangeKind,
+    ToolRiskEventInput, ToolRiskEventRecord, ToolRiskPolicyChange, ToolRiskSettings,
+    ToolRiskStoredAuditStatus, ToolRiskWriteReceipt,
+};
 
 use crate::config::get_app_config_dir;
 use crate::error::AppError;
@@ -51,9 +70,12 @@ use std::sync::Mutex;
 
 // DAO 方法通过 impl Database 提供，无需额外导出
 
-/// 当前 Schema 版本号
-/// 每次修改表结构时递增，并在 schema.rs 中添加相应的迁移逻辑
-pub(crate) const SCHEMA_VERSION: i32 = 18;
+/// Historical monolithic format, used only to upgrade/import portable backups.
+/// New Vary features must increment EXTENSION_SCHEMA_VERSION, never this value.
+pub(crate) const SCHEMA_VERSION: i32 = 24;
+/// Public schema follows CC Switch: v19 adds MCode, v20 adds Pi MCP flags.
+pub(crate) const SHARED_SCHEMA_VERSION: i32 = 20;
+pub(crate) const EXTENSION_SCHEMA_VERSION: i32 = 1;
 
 /// 安全地序列化 JSON，避免 unwrap panic
 pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError> {
@@ -79,6 +101,15 @@ pub(crate) use lock_conn;
 /// rusqlite::Connection 本身不是 Sync 的，因此需要这层包装。
 pub struct Database {
     pub(crate) conn: Mutex<Connection>,
+    /// Absent only for historical in-memory fixtures. Live storage uses two files.
+    pub(crate) extension_conn: Option<Mutex<Connection>>,
+}
+
+/// Startup recovery needs to distinguish public and Vary extension versions.
+pub struct UnsupportedDatabaseVersion {
+    pub path: std::path::PathBuf,
+    pub version: i32,
+    pub supported_version: i32,
 }
 
 fn register_db_change_hook(conn: &Connection) {
@@ -99,47 +130,7 @@ impl Database {
     /// 数据库文件位于 `~/.cc-switch/cc-switch.db`
     pub fn init() -> Result<Self, AppError> {
         let db_path = get_app_config_dir().join("cc-switch.db");
-        let db_exists = db_path.exists();
-
-        // 确保父目录存在
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-        }
-
-        let conn = Connection::open(&db_path).map_err(|e| AppError::Database(e.to_string()))?;
-
-        // 启用外键约束
-        conn.execute("PRAGMA foreign_keys = ON;", [])
-            .map_err(|e| AppError::Database(e.to_string()))?;
-        if !db_exists {
-            // For a brand-new database, configure incremental auto-vacuum
-            // before creating any tables so no rebuild is needed later.
-            conn.execute("PRAGMA auto_vacuum = INCREMENTAL;", [])
-                .map_err(|e| AppError::Database(e.to_string()))?;
-        }
-        register_db_change_hook(&conn);
-
-        let db = Self {
-            conn: Mutex::new(conn),
-        };
-        db.create_tables()?;
-
-        // Pre-migration backup: only when upgrading from an existing database
-        {
-            let conn = lock_conn!(db.conn);
-            let version = Self::get_user_version(&conn)?;
-            drop(conn);
-            if version > 0 && version < SCHEMA_VERSION {
-                log::info!(
-                    "Creating pre-migration database backup (v{version} → v{SCHEMA_VERSION})"
-                );
-                if let Err(e) = db.backup_database_file() {
-                    log::warn!("Pre-migration backup failed, continuing migration: {e}");
-                }
-            }
-        }
-
-        db.apply_schema_migrations()?;
+        let db = Self::init_at(&db_path)?;
         if let Err(e) = db.ensure_incremental_auto_vacuum() {
             log::warn!("Failed to ensure incremental auto-vacuum: {e}");
         }
@@ -158,7 +149,7 @@ impl Database {
         // Reclaim disk space after cleanup
         {
             let conn = lock_conn!(db.conn);
-            if let Err(e) = conn.execute_batch("PRAGMA incremental_vacuum;") {
+            if let Err(e) = Self::incremental_vacuum_on_conn(&conn) {
                 log::warn!("Startup incremental vacuum failed: {e}");
             }
         }
@@ -166,23 +157,43 @@ impl Database {
         Ok(db)
     }
 
-    /// 读取磁盘上数据库的 `user_version`；仅当它比应用支持的 [`SCHEMA_VERSION`]
-    /// 更新时返回 `Some(version)`。
-    ///
-    /// 用于初始化失败后判断是否为「数据库版本过新（应用过旧，需升级应用）」的可恢复
-    /// 场景——此时不应反复弹出无效的重试对话框，而应引导用户在应用内升级。
+    /// Read-only startup preflight for both independently versioned files.
+    /// Historical Vary monolithic versions are recognized by their schema.
     pub fn stored_user_version_exceeds_supported(
         db_path: &std::path::Path,
-    ) -> Result<Option<i32>, AppError> {
-        if !db_path.exists() {
-            return Ok(None);
+    ) -> Result<Option<UnsupportedDatabaseVersion>, AppError> {
+        if db_path.exists() {
+            let conn =
+                Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            let version = Self::get_user_version(&conn)?;
+            if version > SHARED_SCHEMA_VERSION && !Self::is_legacy_vary_database(&conn)? {
+                return Ok(Some(UnsupportedDatabaseVersion {
+                    path: db_path.to_path_buf(),
+                    version,
+                    supported_version: SHARED_SCHEMA_VERSION,
+                }));
+            }
         }
-        let conn = Connection::open(db_path).map_err(|e| AppError::Database(e.to_string()))?;
-        let version = Self::get_user_version(&conn)?;
-        Ok((version > SCHEMA_VERSION).then_some(version))
+        let extension_path = db_path.with_file_name("vary-ai.db");
+        if extension_path.exists() {
+            let conn = Connection::open_with_flags(
+                &extension_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?;
+            let version = Self::get_user_version(&conn)?;
+            if version > EXTENSION_SCHEMA_VERSION {
+                return Ok(Some(UnsupportedDatabaseVersion {
+                    path: extension_path,
+                    version,
+                    supported_version: EXTENSION_SCHEMA_VERSION,
+                }));
+            }
+        }
+        Ok(None)
     }
 
-    /// 创建内存数据库（用于测试）
+    /// Historical monolithic in-memory fixture for existing migration/DAO tests.
+    /// Production storage and its migration tests use init_at with temporary files.
     pub fn memory() -> Result<Self, AppError> {
         let conn = Connection::open_in_memory().map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -195,6 +206,7 @@ impl Database {
 
         let db = Self {
             conn: Mutex::new(conn),
+            extension_conn: None,
         };
         db.create_tables()?;
         db.ensure_model_pricing_seeded()?;
@@ -205,6 +217,23 @@ impl Database {
     pub(crate) fn get_auto_vacuum_mode(conn: &Connection) -> Result<i32, AppError> {
         conn.query_row("PRAGMA auto_vacuum;", [], |row| row.get(0))
             .map_err(|e| AppError::Database(format!("读取 auto_vacuum 失败: {e}")))
+    }
+
+    /// Reclaim all free pages by consuming every incremental_vacuum result row.
+    /// execute_batch steps only once and can therefore reclaim only one page.
+    pub(crate) fn incremental_vacuum_on_conn(conn: &Connection) -> Result<(), AppError> {
+        let mut stmt = conn
+            .prepare("PRAGMA incremental_vacuum;")
+            .map_err(|e| AppError::Database(format!("执行 incremental_vacuum 失败: {e}")))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| AppError::Database(format!("执行 incremental_vacuum 失败: {e}")))?;
+        while rows
+            .next()
+            .map_err(|e| AppError::Database(format!("执行 incremental_vacuum 失败: {e}")))?
+            .is_some()
+        {}
+        Ok(())
     }
 
     fn has_user_tables(conn: &Connection) -> Result<bool, AppError> {

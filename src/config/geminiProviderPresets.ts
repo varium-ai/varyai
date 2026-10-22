@@ -568,20 +568,3 @@ export const geminiProviderPresets: GeminiProviderPreset[] = [
     category: "custom",
   },
 ];
-
-export function getGeminiPresetByName(
-  name: string,
-): GeminiProviderPreset | undefined {
-  return geminiProviderPresets.find((preset) => preset.name === name);
-}
-
-export function getGeminiPresetByUrl(
-  url: string,
-): GeminiProviderPreset | undefined {
-  if (!url) return undefined;
-  return geminiProviderPresets.find(
-    (preset) =>
-      preset.baseURL &&
-      url.toLowerCase().includes(preset.baseURL.toLowerCase()),
-  );
-}

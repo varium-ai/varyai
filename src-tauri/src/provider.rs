@@ -140,8 +140,7 @@ impl Provider {
     /// from the stored provider config.
     ///
     /// Each app persists credentials in a different shape, so callers must pass
-    /// the owning app type. This mirrors the frontend `getProviderCredentials`
-    /// in `UsageScriptModal.tsx`.
+    /// the owning app type instead of assuming one shared credential layout.
     pub fn resolve_usage_credentials(
         &self,
         app_type: &crate::app_config::AppType,
@@ -213,11 +212,23 @@ impl Provider {
                 str_at(settings.get("api_key")),
             ),
             // OpenClaw (openclaw.json) flattens credentials at the top level, camelCase.
-            AppType::OpenClaw => (
+            AppType::OpenClaw
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+            | AppType::DoubaoWork => (
                 str_at(settings.get("baseUrl")),
                 str_at(settings.get("apiKey")),
             ),
             // Pi custom providers use the native models.json field names.
+            AppType::WorkBuddy => (
+                str_at(settings.get("url"))
+                    .trim_end_matches("/chat/completions")
+                    .to_string(),
+                str_at(settings.get("apiKey")),
+            ),
             AppType::Pi => (
                 crate::pi_config::provider_base_url(settings).unwrap_or_default(),
                 str_at(settings.get("apiKey")),
@@ -388,7 +399,6 @@ pub enum ClaudeDesktopMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeDesktopModelRoute {
-    /// 真实上游模型名，只保存在 CC Switch 内部，不写入 Claude Desktop profile。
     pub model: String,
     /// Claude Desktop 模型菜单显示名；写入 profile 的 `labelOverride`。
     #[serde(rename = "labelOverride", skip_serializing_if = "Option::is_none")]

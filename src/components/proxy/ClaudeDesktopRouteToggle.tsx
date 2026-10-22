@@ -4,13 +4,18 @@ import { useTranslation } from "react-i18next";
 import { Switch } from "@/components/ui/switch";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { cn } from "@/lib/utils";
+import { TAKEOVER_APP_IDS } from "@/config/appConfig";
 
 interface ClaudeDesktopRouteToggleProps {
   className?: string;
+  variant?: "toolbar" | "settings";
+  disabled?: boolean;
 }
 
 export function ClaudeDesktopRouteToggle({
   className,
+  variant = "toolbar",
+  disabled = false,
 }: ClaudeDesktopRouteToggleProps) {
   const { t } = useTranslation();
   const {
@@ -19,17 +24,13 @@ export function ClaudeDesktopRouteToggle({
     takeoverStatus,
     startProxyServer,
     stopProxyServer,
-    isStarting,
-    isStoppingServer,
+    isPending,
+    isInitialStatusPending,
   } = useProxyStatus();
 
-  const isBusy = isStarting || isStoppingServer;
-  const otherTakeoverActive = Boolean(
-    takeoverStatus?.claude ||
-      takeoverStatus?.codex ||
-      takeoverStatus?.gemini ||
-      takeoverStatus?.grokbuild,
-  );
+  const isBusy = disabled || isPending || isInitialStatusPending;
+  const otherTakeoverActive =
+    takeoverStatus?.pi || TAKEOVER_APP_IDS.some((app) => takeoverStatus?.[app]);
   const routeAddress = status?.address ?? "127.0.0.1";
   const routePort = status?.port ?? 15721;
 
@@ -69,6 +70,21 @@ export function ClaudeDesktopRouteToggle({
         defaultValue: `开启 Claude Desktop 本地路由，用于需要模型映射或格式转换的供应商。当前配置地址：${routeAddress}:${routePort}`,
       });
 
+  const control = (
+    <Switch
+      checked={isRunning}
+      onCheckedChange={handleToggle}
+      disabled={isBusy}
+      aria-label={t("claudeDesktop.route.ariaLabel", {
+        defaultValue: "Claude Desktop 本地路由",
+      })}
+      title={tooltipText}
+      className={variant === "settings" ? className : undefined}
+    />
+  );
+
+  if (variant === "settings") return control;
+
   return (
     <div
       className={cn(
@@ -89,11 +105,7 @@ export function ClaudeDesktopRouteToggle({
           )}
         />
       )}
-      <Switch
-        checked={isRunning}
-        onCheckedChange={handleToggle}
-        disabled={isBusy}
-      />
+      {control}
     </div>
   );
 }

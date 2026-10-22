@@ -21,6 +21,12 @@ export interface SwitchResult {
   warnings: string[];
 }
 
+export interface WorkBuddySettingsSnapshot {
+  path: string;
+  content: string;
+  revision: string;
+}
+
 export interface OpenTerminalOptions {
   cwd?: string;
 }
@@ -73,6 +79,10 @@ export const providersApi = {
       app: appId,
       originalId,
     });
+  },
+
+  async duplicate(id: string, appId: AppId, name: string): Promise<Provider> {
+    return await invoke("duplicate_provider", { id, app: appId, name });
   },
 
   async delete(id: string, appId: AppId): Promise<boolean> {
@@ -185,6 +195,30 @@ export const providersApi = {
    * 获取 Hermes live 配置中的供应商 ID 列表
    * 用于前端判断供应商是否已添加到 Hermes 配置
    */
+  async getQoderLiveProviderIds(): Promise<string[]> {
+    return invoke("get_qoder_live_provider_ids");
+  },
+  async getQoderSettings(): Promise<WorkBuddySettingsSnapshot> {
+    return invoke("get_qoder_settings");
+  },
+  async saveQoderSettings(revision: string, content: string): Promise<void> {
+    await invoke("save_qoder_settings", { revision, content });
+  },
+  async getWorkBuddyLiveProviderIds(): Promise<string[]> {
+    return await invoke("get_workbuddy_live_provider_ids");
+  },
+
+  async getWorkBuddySettings(): Promise<WorkBuddySettingsSnapshot> {
+    return await invoke("get_workbuddy_settings");
+  },
+
+  async saveWorkBuddySettings(
+    revision: string,
+    content: string,
+  ): Promise<void> {
+    await invoke("save_workbuddy_settings", { revision, content });
+  },
+
   async getHermesLiveProviderIds(): Promise<string[]> {
     return await invoke("get_hermes_live_provider_ids");
   },

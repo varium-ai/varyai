@@ -332,7 +332,14 @@ export function useProviderActions(
         if (!proxyRequiredReason) {
           let messageKey = "notifications.switchSuccess";
           let defaultMessage = "切换成功！";
-          if (activeApp === "codex") {
+          if (activeApp === "qoder") {
+            messageKey = "qoder.routing.restartRequired";
+            defaultMessage = "请重启 Qoder，并在模型菜单中选择已添加的模型";
+          } else if (activeApp === "workbuddy" && !routingReady) {
+            messageKey = "workbuddy.routing.restartRequired";
+            defaultMessage =
+              "切换成功，请重启 WorkBuddy 后通过官方模型入口发送消息";
+          } else if (activeApp === "codex") {
             messageKey = "notifications.codexRestartRequired";
             defaultMessage = "切换成功，请重启客户端以生效";
           } else if (activeApp === "grokbuild") {
@@ -342,7 +349,7 @@ export function useProviderActions(
             if (provider.meta?.claudeDesktopMode === "proxy") {
               messageKey = "notifications.claudeDesktopProxyRestartRequired";
               defaultMessage =
-                "切换成功，请保持 CC Switch 运行，并重启 Claude Desktop 后生效";
+                "切换成功，请保持 Vary AI 运行，并重启 Claude Desktop 后生效";
             } else {
               messageKey = "notifications.claudeDesktopRestartRequired";
               defaultMessage = "切换成功，重启 Claude Desktop 后生效";
@@ -375,6 +382,25 @@ export function useProviderActions(
       await deleteProviderMutation.mutateAsync(id);
     },
     [deleteProviderMutation],
+  );
+
+  const duplicateProvider = useCallback(
+    async (provider: Provider) => {
+      try {
+        await providersApi.duplicate(
+          provider.id,
+          activeApp,
+          t("provider.copyName", { name: provider.name }),
+        );
+        await queryClient.invalidateQueries({
+          queryKey: ["providers", activeApp],
+        });
+        toast.success(t("notifications.providerAdded"));
+      } catch {
+        toast.error(t("provider.duplicateFailed"));
+      }
+    },
+    [activeApp, queryClient, t],
   );
 
   // 保存用量脚本
@@ -491,6 +517,7 @@ export function useProviderActions(
     updateProvider,
     switchProvider,
     deleteProvider,
+    duplicateProvider,
     saveUsageScript,
     setAsDefaultModel,
     isLoading:

@@ -1233,21 +1233,6 @@ export const updateCodexExperimentalBearerToken = (
   return finalizeTomlText(lines);
 };
 
-// 从 Provider 对象中提取 Codex base_url（当 settingsConfig.config 为 TOML 字符串时）
-export const getCodexBaseUrl = (
-  provider: { settingsConfig?: Record<string, any> } | undefined | null,
-): string | undefined => {
-  try {
-    const text =
-      typeof provider?.settingsConfig?.config === "string"
-        ? (provider as any).settingsConfig.config
-        : "";
-    return extractCodexBaseUrl(text);
-  } catch {
-    return undefined;
-  }
-};
-
 // 在 Codex 的 TOML 配置文本中写入或更新 base_url 字段
 export const setCodexBaseUrl = (
   configText: string,

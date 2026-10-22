@@ -1,29 +1,28 @@
-name: "✨ Feature Request / 功能请求"
-description: |
-  Propose a new feature or improvement.
-  提出新功能或改进建议。
+name: ✨ Feature Request
+description: Propose a new feature or improvement.
 labels:
   - enhancement
 body:
+  - type: markdown
+    attributes:
+      value:
+        "This form creates a public VaryAI issue. Do not report security vulnerabilities here. See SECURITY.md
+        at the repository root for the status of private reporting channels.
+
+        Remove API keys, tokens, passwords, personal or customer data, and private URLs from examples and screenshots
+        before posting."
   - type: checkboxes
     attributes:
-      label: Self Checks / 自检
+      label: Self Checks
       options:
-        - label: |
-            I have read the [FAQ](https://github.com/farion1231/cc-switch#faq) section in README.
-            我已阅读 README 中的[常见问题](https://github.com/farion1231/cc-switch#常见问题)。
+        - label: I have read this VaryAI repository's README and relevant documentation.
           required: true
-        - label: |
-            I have searched for [existing issues](https://github.com/farion1231/cc-switch/issues), including closed ones.
-            我已搜索过[已有的 Issue](https://github.com/farion1231/cc-switch/issues)，包括已关闭的。
+        - label: I have searched this repository's issues, including closed ones.
           required: true
-
   - type: dropdown
     attributes:
-      label: Related App / 涉及应用
-      description: |
-        Which app is this feature for?
-        该功能涉及哪个应用？
+      label: Related App
+      description: Which app is this feature for?
       multiple: true
       options:
         - Claude Code
@@ -31,45 +30,31 @@ body:
         - Gemini CLI
         - OpenCode
         - OpenClaw
-        - General / 通用
+        - General
     validations:
       required: true
-
   - type: textarea
     attributes:
-      label: Problem or Motivation / 问题或动机
-      description: |
-        Is this request related to a problem? Describe the scenario.
-        这个请求是否与某个问题相关？请描述使用场景。
-      placeholder: |
-        I was trying to ... and found that ...
-        我在尝试……的时候，发现……
+      label: Problem or Motivation
+      description: Is this request related to a problem? Describe the scenario.
+      placeholder: I was trying to ... and found that ...
     validations:
       required: true
-
   - type: textarea
     attributes:
-      label: Proposed Solution / 建议方案
-      description: |
-        Describe the solution you'd like.
-        描述你希望的解决方案。
+      label: Proposed Solution
+      description: Describe the solution you'd like.
     validations:
       required: false
-
   - type: textarea
     attributes:
-      label: Additional Context / 补充信息
-      description: |
-        Any other context, mockups, or screenshots.
-        其他背景信息、设计稿或截图。
+      label: Additional Context
+      description: Any other context, mockups, or screenshots.
     validations:
       required: false
-
   - type: checkboxes
     attributes:
-      label: Contribution / 参与贡献
+      label: Contribution
       options:
-        - label: |
-            I am interested in contributing to this feature.
-            我有兴趣参与开发此功能。
+        - label: I am interested in contributing to this feature.
           required: false

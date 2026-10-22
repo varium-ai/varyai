@@ -29,7 +29,7 @@ const createDefaultProviders = (): ProvidersByApp => ({
     "claude-2": {
       id: "claude-2",
       name: "Claude Custom",
-      settingsConfig: {},
+      settingsConfig: { apiKey: "sk-live-test-secret-123" },
       category: "custom",
       sortIndex: 1,
       createdAt: Date.now() + 1,
@@ -74,6 +74,13 @@ const createDefaultProviders = (): ProvidersByApp => ({
   openclaw: {},
   hermes: {},
   pi: {},
+  workbuddy: {},
+  qoder: {},
+  doubaowork: {},
+  trae: {},
+  kimi: {},
+  qwen: {},
+  zcode: {},
 });
 
 const createDefaultCurrent = (): CurrentProviderState => ({
@@ -86,6 +93,13 @@ const createDefaultCurrent = (): CurrentProviderState => ({
   openclaw: "",
   hermes: "",
   pi: "",
+  workbuddy: "",
+  qoder: "",
+  doubaowork: "",
+  trae: "",
+  kimi: "",
+  qwen: "",
+  zcode: "",
 });
 
 let providers = createDefaultProviders();
@@ -200,6 +214,13 @@ let mcpConfigs: McpConfigState = {
   openclaw: {},
   hermes: {},
   pi: {},
+  workbuddy: {},
+  qoder: {},
+  doubaowork: {},
+  trae: {},
+  kimi: {},
+  qwen: {},
+  zcode: {},
 };
 
 const cloneProviders = (value: ProvidersByApp) =>
@@ -270,6 +291,13 @@ export const resetProviderState = () => {
     openclaw: {},
     hermes: {},
     pi: {},
+    workbuddy: {},
+    qoder: {},
+    doubaowork: {},
+    trae: {},
+    kimi: {},
+    qwen: {},
+    zcode: {},
   };
 };
 

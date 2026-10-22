@@ -47,7 +47,7 @@ import { useCallback } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { isTextEditableTarget } from "@/utils/domUtils";
-import { usePiCurrentState } from "@/lib/query/pi";
+import { usePiCurrentState, usePiRoutingStatus } from "@/lib/query/pi";
 import { isProxyAppId } from "@/config/appConfig";
 
 interface ProviderListProps {
@@ -60,7 +60,7 @@ interface ProviderListProps {
   onRemoveFromConfig?: (provider: Provider) => void;
   onDisableOmo?: () => void;
   onDisableOmoSlim?: () => void;
-  onDuplicate: (provider: Provider) => void;
+  onDuplicate?: (provider: Provider) => void;
   onConfigureUsage?: (provider: Provider) => void;
   onOpenWebsite: (url: string) => void;
   onOpenTerminal?: (provider: Provider) => void;
@@ -94,6 +94,19 @@ export function ProviderList({
   onSetAsDefault,
 }: ProviderListProps) {
   const { t } = useTranslation();
+  const { data: piRoutingStatus } = usePiRoutingStatus(appId === "pi");
+  const piSourcesToRepair =
+    appId === "pi"
+      ? Array.from(
+          new Set(
+            piRoutingStatus?.issues
+              .filter(
+                (issue) => issue.code === "piRouting.sourceRecoveryRequired",
+              )
+              .map((issue) => issue.providerId) ?? [],
+          ),
+        )
+      : [];
   const { checkProvider, isChecking } = useStreamCheck(appId);
   const { sortedProviders, sensors, handleDragEnd } = useDragSort(
     providers,
@@ -104,6 +117,18 @@ export function ProviderList({
     queryKey: ["opencodeLiveProviderIds"],
     queryFn: () => providersApi.getOpenCodeLiveProviderIds(),
     enabled: appId === "opencode",
+  });
+
+  const { data: qoderLiveIds } = useQuery({
+    queryKey: ["qoderLiveProviderIds"],
+    queryFn: () => providersApi.getQoderLiveProviderIds(),
+    enabled: appId === "qoder",
+  });
+
+  const { data: workbuddyLiveIds } = useQuery({
+    queryKey: ["workbuddyLiveProviderIds"],
+    queryFn: () => providersApi.getWorkBuddyLiveProviderIds(),
+    enabled: appId === "workbuddy",
   });
 
   // OpenClaw: 查询 live 配置中的供应商 ID 列表，用于判断 isInConfig
@@ -127,12 +152,23 @@ export function ProviderList({
       if (appId === "openclaw") {
         return openclawLiveIds?.includes(providerId) ?? false;
       }
+      if (appId === "qoder") return qoderLiveIds?.includes(providerId) ?? false;
+      if (appId === "workbuddy") {
+        return workbuddyLiveIds?.includes(providerId) ?? false;
+      }
       if (appId === "hermes") {
         return hermesLiveIds?.includes(providerId) ?? false;
       }
       return true; // 其他应用始终返回 true
     },
-    [appId, opencodeLiveIds, openclawLiveIds, hermesLiveIds],
+    [
+      appId,
+      opencodeLiveIds,
+      openclawLiveIds,
+      hermesLiveIds,
+      workbuddyLiveIds,
+      qoderLiveIds,
+    ],
   );
 
   // OpenClaw: query default model to determine which provider is default
@@ -255,6 +291,11 @@ export function ProviderList({
     onSuccess: (imported) => {
       if (imported) {
         queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+        if (appId === "workbuddy") {
+          queryClient.invalidateQueries({
+            queryKey: ["workbuddyLiveProviderIds"],
+          });
+        }
         if (appId === "claude-desktop") {
           queryClient.invalidateQueries({ queryKey: ["claudeDesktopStatus"] });
         }
@@ -398,6 +439,32 @@ export function ProviderList({
       </div>
     ) : null;
 
+  const piSourceRecoveryNotice =
+    piSourcesToRepair.length > 0 ? (
+      <div
+        role="alert"
+        className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-200"
+      >
+        <p>{t("piRouting.sourceRecoveryRequired")}</p>
+        <ul className="mt-2 space-y-1">
+          {piSourcesToRepair.map((id) => (
+            <li key={id} className="flex items-center justify-between gap-3">
+              <span>{providers[id]?.name || id}</span>
+              {providers[id] && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onEdit(providers[id])}
+                >
+                  {t("piRouting.repairSource")}
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null;
+
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -415,6 +482,7 @@ export function ProviderList({
     return (
       <div className="mt-4 space-y-4">
         {piStateErrorNotice}
+        {piSourceRecoveryNotice}
         <ProviderEmptyState
           appId={appId}
           onCreate={appId === "pi" ? undefined : onCreate}
@@ -475,8 +543,16 @@ export function ProviderList({
                 onDuplicate={onDuplicate}
                 onConfigureUsage={onConfigureUsage}
                 onOpenWebsite={onOpenWebsite}
-                onOpenTerminal={onOpenTerminal}
-                onTest={handleTest}
+                onOpenTerminal={
+                  appId === "workbuddy" || appId === "qoder"
+                    ? undefined
+                    : onOpenTerminal
+                }
+                onTest={
+                  appId === "workbuddy" || appId === "qoder"
+                    ? undefined
+                    : handleTest
+                }
                 isTesting={isChecking(provider.id)}
                 isProxyRunning={supportsFailover && isProxyRunning}
                 isProxyTakeover={supportsFailover && isProxyTakeover}
@@ -523,7 +599,18 @@ export function ProviderList({
 
   return (
     <div className="mt-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-medium text-slate-500 dark:text-muted-foreground">
+          {t("primaryNav.providers")}
+        </h2>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-400">
+            {filteredProviders.length}
+          </span>
+        </div>
+      </div>
       {piStateErrorNotice}
+      {piSourceRecoveryNotice}
       {claudeDesktopStatusMessages.length > 0 && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
           <div className="flex items-center gap-2 font-medium">
@@ -629,7 +716,7 @@ interface SortableProviderCardProps {
   onRemoveFromConfig?: (provider: Provider) => void;
   onDisableOmo?: () => void;
   onDisableOmoSlim?: () => void;
-  onDuplicate: (provider: Provider) => void;
+  onDuplicate?: (provider: Provider) => void;
   onConfigureUsage?: (provider: Provider) => void;
   onOpenWebsite: (url: string) => void;
   onOpenTerminal?: (provider: Provider) => void;
@@ -714,7 +801,11 @@ function SortableProviderCard({
           onConfigureUsage ? (item) => onConfigureUsage(item) : () => undefined
         }
         onOpenWebsite={onOpenWebsite}
-        onOpenTerminal={onOpenTerminal}
+        onOpenTerminal={
+          appId === "workbuddy" || appId === "qoder"
+            ? undefined
+            : onOpenTerminal
+        }
         onTest={onTest}
         isTesting={isTesting}
         isProxyRunning={isProxyRunning}

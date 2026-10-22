@@ -12,6 +12,7 @@ import {
   useProxyTakeoverStatus,
 } from "@/lib/query/proxy";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { securityKeys } from "@/hooks/useSecurityAudit";
 import { getAppLabel } from "@/config/appConfig";
 
 /**
@@ -25,9 +26,11 @@ export function useProxyStatus() {
   const { data: status, isPending: isProxyStatusPending } =
     useProxyStatusQuery();
 
-  // 查询各应用接管状态
+  // Shared native config can be restored by another app without a Tauri event.
+  // Poll takeover alongside server status so cached targets cannot stay active
+  // after the client has returned to a direct connection.
   const { data: takeoverStatus, isPending: isTakeoverStatusPending } =
-    useProxyTakeoverStatus(false);
+    useProxyTakeoverStatus();
 
   // 启动服务器（总开关：仅启动服务，不接管）
   const startProxyServerMutation = useMutation({
@@ -67,6 +70,8 @@ export function useProxyStatus() {
         { closeButton: true },
       );
       queryClient.invalidateQueries({ queryKey: proxyKeys.status });
+      queryClient.invalidateQueries({ queryKey: securityKeys.all });
+      queryClient.invalidateQueries({ queryKey: ["security-route"] });
     },
     onError: (error: Error) => {
       const detail =
@@ -93,10 +98,10 @@ export function useProxyStatus() {
       );
       queryClient.invalidateQueries({ queryKey: proxyKeys.status });
       queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus });
+      queryClient.invalidateQueries({ queryKey: securityKeys.all });
+      queryClient.invalidateQueries({ queryKey: ["security-route"] });
       // 彻底删除所有供应商健康状态缓存（后端已清空数据库记录）
       queryClient.removeQueries({ queryKey: ["providerHealth"] });
-      // 彻底删除所有熔断器统计缓存（代理停止后熔断器状态已重置）
-      queryClient.removeQueries({ queryKey: ["circuitBreakerStats"] });
       // 注意：故障转移队列和开关状态会保留，不需要刷新
     },
     onError: (error: Error) => {
@@ -121,14 +126,24 @@ export function useProxyStatus() {
 
       toast.success(
         variables.enabled
-          ? t("proxy.takeover.enabled", {
-              app: appLabel,
-              defaultValue: `已接管 ${appLabel} 配置（请求将走本地代理）`,
-            })
-          : t("proxy.takeover.disabled", {
-              app: appLabel,
-              defaultValue: `已恢复 ${appLabel} 配置`,
-            }),
+          ? t(
+              variables.appType === "pi"
+                ? "piRouting.enabled"
+                : "proxy.takeover.enabled",
+              {
+                app: appLabel,
+                defaultValue: `已接管 ${appLabel} 配置（请求将走本地代理）`,
+              },
+            )
+          : t(
+              variables.appType === "pi"
+                ? "piRouting.disabled"
+                : "proxy.takeover.disabled",
+              {
+                app: appLabel,
+                defaultValue: `已恢复 ${appLabel} 配置`,
+              },
+            ),
         { closeButton: true },
       );
       queryClient.invalidateQueries({ queryKey: proxyKeys.status });
@@ -140,7 +155,7 @@ export function useProxyStatus() {
         t("common.unknown", { defaultValue: "未知错误" });
       toast.error(
         t("proxy.takeover.failed", {
-          detail,
+          detail: detail.startsWith("piRouting.") ? t(detail) : detail,
           defaultValue: `操作失败: ${detail}`,
         }),
       );

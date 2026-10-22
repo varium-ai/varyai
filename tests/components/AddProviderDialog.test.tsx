@@ -95,6 +95,24 @@ describe("AddProviderDialog", () => {
     };
   });
 
+  it.each(["workbuddy", "qoder"] as const)(
+    "%s hides unsupported universal-provider syncing",
+    (appId) => {
+      render(
+        <AddProviderDialog
+          open
+          appId={appId}
+          onOpenChange={vi.fn()}
+          onSubmit={vi.fn()}
+        />,
+      );
+      expect(
+        screen.queryByRole("tab", { name: "provider.tabUniversal" }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "common.add" })).toBeEnabled();
+    },
+  );
+
   it("使用 ProviderForm 返回的自定义端点", async () => {
     const handleSubmit = vi.fn().mockResolvedValue(undefined);
     const handleOpenChange = vi.fn();

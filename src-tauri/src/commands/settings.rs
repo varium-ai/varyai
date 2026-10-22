@@ -65,6 +65,10 @@ pub async fn save_settings(
 ) -> Result<bool, String> {
     let existing = crate::settings::get_settings();
     let merged = merge_settings_for_save(settings, &existing);
+    let _pi_guard = state.proxy_service.lock_switch_for_app("pi").await;
+    if merged.pi_config_dir != existing.pi_config_dir && state.proxy_service.pi_routing.enabled()? {
+        return Err("piRouting.directoryChanged".into());
+    }
     let unify_codex_changed =
         merged.unify_codex_session_history != existing.unify_codex_session_history;
     let unify_codex_enabled = merged.unify_codex_session_history;

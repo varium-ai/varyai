@@ -31,6 +31,9 @@ export interface WebDavSyncResult {
 }
 
 export const settingsApi = {
+  async getWorkBuddyDefaultConfigDir(): Promise<string> {
+    return await invoke("get_workbuddy_default_config_dir");
+  },
   async get(): Promise<Settings> {
     return await invoke("get_settings");
   },

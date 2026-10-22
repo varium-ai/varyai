@@ -4864,6 +4864,27 @@ mod tests {
     }
 
     #[test]
+    fn responses_output_config_max_is_preserved_for_supported_models() {
+        for model in [
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+        ] {
+            let input = json!({
+                "model": model, "max_tokens": 1024,
+                "output_config": {"effort": "max"},
+                "messages": [{"role": "user", "content": "Hello"}]
+            });
+            let result = anthropic_to_responses(input, None, false, false).unwrap();
+            assert_eq!(result["reasoning"]["effort"], "max", "{model}");
+        }
+    }
+
+    #[test]
     fn test_responses_output_config_xhigh_sets_reasoning_xhigh() {
         // Claude Code's `/effort xhigh` sends output_config.effort="xhigh";
         // previously it fell into the unknown-value branch and was dropped.
