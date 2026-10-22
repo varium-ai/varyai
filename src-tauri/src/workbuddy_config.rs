@@ -419,6 +419,8 @@ fn edit_models_at<T>(
 }
 
 fn secure_file(path: &Path) -> Result<(), AppError> {
+    #[cfg(not(unix))]
+    let _ = path;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
