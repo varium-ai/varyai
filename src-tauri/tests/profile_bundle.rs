@@ -962,21 +962,32 @@ fn empty_native_model_selections_apply_without_enabling_fallback_suppliers() {
 }
 
 #[test]
-fn fourteen_file_based_agents_apply_as_one_bundle_and_undo_together() {
+fn supported_file_based_agents_apply_as_one_bundle_and_undo_together() {
     let _guard = support::test_mutex().lock().unwrap();
     let state = seed();
     let apps: Vec<_> = AppType::all()
         .filter(|app| !matches!(app, AppType::DoubaoWork | AppType::Trae))
+        .filter(|app| *app != AppType::ClaudeDesktop || cfg!(any(target_os = "macos", windows)))
         .collect();
-    let mut official = Provider::with_id(
-        "claude-desktop-official".into(),
-        "Desktop Official".into(),
-        json!({"env":{}}),
-        None,
+    assert_eq!(
+        apps.len(),
+        if cfg!(any(target_os = "macos", windows)) {
+            14
+        } else {
+            13
+        }
     );
-    official.category = Some("official".into());
-    state.db.save_provider("claude-desktop", &official).unwrap();
-    ProviderService::switch(&state, AppType::ClaudeDesktop, &official.id).unwrap();
+    if apps.contains(&AppType::ClaudeDesktop) {
+        let mut official = Provider::with_id(
+            "claude-desktop-official".into(),
+            "Desktop Official".into(),
+            json!({"env":{}}),
+            None,
+        );
+        official.category = Some("official".into());
+        state.db.save_provider("claude-desktop", &official).unwrap();
+        ProviderService::switch(&state, AppType::ClaudeDesktop, &official.id).unwrap();
+    }
     for app in apps.iter().filter(|app| {
         !matches!(
             app,
@@ -1020,7 +1031,7 @@ fn fourteen_file_based_agents_apply_as_one_bundle_and_undo_together() {
         .map(|app| state.db.get_all_providers(app.as_str()).unwrap())
         .collect();
     let preview = ProfileBundleService::preview(&state, &profile.id).unwrap();
-    assert_eq!(preview.changes.len(), 14);
+    assert_eq!(preview.changes.len(), apps.len());
     let result = ProfileBundleService::apply(&state, &profile.id, &preview.revision).unwrap();
     assert!(result.success, "all adapters must apply together");
     ProfileBundleService::undo(&state, result.undo_id.as_deref().unwrap()).unwrap();
