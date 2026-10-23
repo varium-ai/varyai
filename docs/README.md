@@ -32,4 +32,13 @@
 - [Upstream provenance](upstream-provenance.md)
 - [Security policy](../SECURITY.md)
 
+## Technical designs and testing
+
+- [Cross-agent configuration profiles](design/profile-schemes.md)
+- [Unified security-event entry](design/security-events-unified-entry-spec.md)
+- [Synthetic security sandbox testing guide](guides/security-testing-guide.md)
+- [Reversible DLP tokenization proposal — not implemented](design/security-dlp-reversible-tokenization-spec.md)
+
+Design documents distinguish implemented behavior from proposals and unverified acceptance criteria. They are not release commitments.
+
 These documents describe the current Vary AI source. Historical CC Switch manuals and release notes remain available in the retained upstream Git history. They are not Vary AI release or support promises. Runtime localization remains available independently of documentation language.
