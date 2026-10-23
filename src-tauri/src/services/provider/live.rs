@@ -850,9 +850,16 @@ fn apply_codex_official_auth(
         .map(|id| id.trim().to_string())
         .filter(|id| !id.is_empty())
     else {
-        // Preserve the historical unbound Official behavior: an empty stored
-        // auth follows Codex's current login, while a backfilled login snapshot
-        // is restored when switching back to this card.
+        // Native Codex may rotate a refresh token while this card is inactive.
+        // Never replace a newer login for the same user/workspace with its saved snapshot.
+        if let (Some(saved), Ok(live)) = (
+            provider.settings_config.get("auth"),
+            read_json_file::<Value>(&get_codex_auth_path()),
+        ) {
+            if codex_follow_login_has_newer_auth(saved, &live) {
+                provider.settings_config["auth"] = live;
+            }
+        }
         return Ok(());
     };
 
@@ -872,6 +879,32 @@ fn apply_codex_official_auth(
 
     settings_obj.insert("auth".to_string(), auth);
     Ok(())
+}
+
+fn codex_follow_login_has_newer_auth(saved: &Value, live: &Value) -> bool {
+    let generation = |auth: &Value| -> Option<(String, String, i64)> {
+        let tokens = auth.get("tokens")?;
+        if tokens.get("refresh_token")?.as_str()?.trim().is_empty() {
+            return None;
+        }
+        let identity = crate::codex_config::extract_codex_id_token_user_identity(
+            tokens.get("id_token")?.as_str()?,
+        )?;
+        let account = tokens.get("account_id")?.as_str()?.trim();
+        if account.is_empty() {
+            return None;
+        }
+        let refreshed = chrono::DateTime::parse_from_rfc3339(auth.get("last_refresh")?.as_str()?)
+            .ok()?
+            .timestamp_millis();
+        Some((identity, account.to_owned(), refreshed))
+    };
+    match (generation(saved), generation(live)) {
+        (Some((saved_user, saved_account, saved_at)), Some((live_user, live_account, live_at))) => {
+            saved_user == live_user && saved_account == live_account && live_at > saved_at
+        }
+        _ => false,
+    }
 }
 
 /// 构建写入托管 Codex `auth.json` 的完整可刷新 auth（含 refresh_token + last_refresh）。
@@ -3160,6 +3193,36 @@ base_url = "https://a.example/v1"
             live_settings["auth"]["tokens"]["refresh_token"],
             json!("live-refresh-secret")
         );
+    }
+
+    #[test]
+    fn follow_login_prefers_newer_tokens_only_for_the_same_user_and_workspace() {
+        let auth = |user: &str, account: &str, refresh: &str, day: u8| {
+            json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "id_token": crate::codex_config::test_codex_id_token(user),
+                    "account_id": account,
+                    "access_token": format!("synthetic-access-{day}"),
+                    "refresh_token": refresh
+                },
+                "last_refresh": format!("2026-10-{day:02}T00:00:00Z")
+            })
+        };
+        let saved = auth("user-a", "workspace-a", "synthetic-old", 20);
+        let latest = auth("user-a", "workspace-a", "synthetic-new", 23);
+        assert!(codex_follow_login_has_newer_auth(&saved, &latest));
+        assert!(!codex_follow_login_has_newer_auth(&latest, &saved));
+        assert!(!codex_follow_login_has_newer_auth(
+            &saved,
+            &auth("user-b", "workspace-a", "synthetic-other", 23)
+        ));
+        assert!(!codex_follow_login_has_newer_auth(
+            &saved,
+            &auth("user-a", "workspace-b", "synthetic-other", 23)
+        ));
+        assert!(!codex_follow_login_has_newer_auth(&saved, &json!({})));
+        assert!(!codex_follow_login_has_newer_auth(&json!({}), &latest));
     }
 
     #[test]

@@ -607,10 +607,7 @@ mod tests {
             edited.settings_config["apiKey"] = json!("synthetic-new");
             update(&state, "kimi", edited).expect("update");
             let doc = native::Document::read("kimi", &path).expect("doc");
-            assert_eq!(
-                doc.value["providers"]["varyai-saved"]["api_key"],
-                "synthetic-new"
-            );
+            assert_eq!(doc.value["providers"]["Test"]["api_key"], "synthetic-new");
             assert_eq!(doc.value["default_model"], "native");
         });
     }

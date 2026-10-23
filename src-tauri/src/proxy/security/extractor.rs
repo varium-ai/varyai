@@ -1,5 +1,37 @@
 use serde_json::Value;
 
+/// Historical text still needs inspection/redaction, but must not be reported as
+/// a new user action when a client resends its conversation on a later turn.
+pub(crate) struct CurrentTurn {
+    starts: Vec<(&'static str, usize)>,
+}
+
+impl CurrentTurn {
+    pub(crate) fn new(body: &Value) -> Self {
+        let starts = ["messages", "input", "contents"]
+            .into_iter()
+            .filter_map(|key| {
+                let items = body.get(key)?.as_array()?;
+                let index = items.iter().rposition(|item| item["role"] == "user")?;
+                Some((key, index))
+            })
+            .collect();
+        Self { starts }
+    }
+
+    pub(crate) fn is_historical(&self, location: &str) -> bool {
+        self.starts.iter().any(|(key, start)| {
+            location
+                .strip_prefix(key)
+                .and_then(|rest| rest.strip_prefix('['))
+                .and_then(|rest| rest.split_once(']'))
+                .and_then(|(index, _)| index.parse::<usize>().ok())
+                .is_some_and(|index| index < *start)
+        })
+    }
+}
+
+/// A text node extracted for inspection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractedTextNode<'a> {
     pub location: String,

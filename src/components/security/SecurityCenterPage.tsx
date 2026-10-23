@@ -680,6 +680,7 @@ export function SecurityCenterPage({
                 }}
                 disabled={isLogsLoading}
                 aria-label={t("security.refreshLogs")}
+                title={t("security.refreshLogs")}
               >
                 <RefreshCw
                   className={
@@ -1281,6 +1282,9 @@ export function SecurityCenterPage({
                 <div className="max-h-32 overflow-y-auto break-all rounded-xl border border-border bg-muted/80 p-3.5 font-mono text-xs leading-relaxed text-foreground">
                   {selectedLog.matchedSnippetMasked}
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  {t("security.auditPrivacyHint")}
+                </p>
               </div>
             </div>
           )}

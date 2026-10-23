@@ -217,6 +217,13 @@ describe("SecurityCenterPage", () => {
     }
   });
 
+  it("explains the refresh button on hover", () => {
+    render(<SecurityCenterPage />);
+    expect(
+      screen.getByRole("button", { name: "security.refreshLogs" }),
+    ).toHaveAttribute("title", "security.refreshLogs");
+  });
+
   it("labels sensitive type counts as a sample when the summary is paginated", () => {
     auditRows.total = 150;
     render(<SecurityCenterPage />);

@@ -1850,3 +1850,196 @@ fn native_agent_audit_sessions_have_independent_prefixes_without_fabricated_ids(
         .is_none());
     }
 }
+
+#[test]
+fn repeating_a_secret_in_the_current_turn_still_produces_a_current_finding() {
+    let secret = format!("ghp_{}", "a".repeat(36));
+    let body = json!({"messages": [{"role":"user","content":secret}, {"role":"assistant","content":"ok"}, {"role":"user","content":secret}]});
+    let result = SecurityAuditEngine::inspect_request(&body);
+    let finding = result
+        .findings
+        .iter()
+        .find(|finding| finding.rule_id == "github_token")
+        .expect("current token");
+    assert_eq!(finding.location, "messages[2].content");
+}
+
+#[test]
+fn clean_followup_redacts_history_without_reporting_it_as_current_content() {
+    use super::extractor::CurrentTurn;
+    let secret = format!("ghp_{}", "a".repeat(36));
+    for mut body in [
+        json!({"messages": [{"role":"user","content":secret}, {"role":"assistant","content":"ok"}, {"role":"user","content":"你好呀"}]}),
+        json!({"input": [{"role":"user","content":secret}, {"role":"assistant","content":"ok"}, {"role":"user","content":"你好呀"}]}),
+        json!({"contents": [{"role":"user","parts":[{"text":secret}]}, {"role":"model","parts":[{"text":"ok"}]}, {"role":"user","parts":[{"text":"你好呀"}]}]}),
+    ] {
+        let turn = CurrentTurn::new(&body);
+        let result = SecurityAuditEngine::inspect_and_redact_with_runtime(
+            &mut body,
+            &SecurityRuntimeConfig::default(),
+        );
+        assert!(!result.blocked);
+        assert!(!body.to_string().contains(&secret));
+        assert!(!result.findings.is_empty());
+        assert!(result
+            .findings
+            .iter()
+            .all(|finding| turn.is_historical(&finding.location)));
+    }
+    // Responses delta requests may contain only a fresh tool result, with no user role.
+    let delta =
+        json!({"input":[{"type":"function_call_output","call_id":"call-1","output":secret}]});
+    let turn = CurrentTurn::new(&delta);
+    let result = SecurityAuditEngine::inspect_request(&delta);
+    assert!(result
+        .findings
+        .iter()
+        .any(|finding| !turn.is_historical(&finding.location)));
+}
+
+#[test]
+fn current_identity_card_is_not_reported_as_a_historical_phone_number() {
+    use super::extractor::CurrentTurn;
+    let phone = ["138001", "38000"].concat();
+    let id = ["110105", "19491231", "002X"].concat();
+    let body = json!({"input": [
+        {"role":"user","content":format!("synthetic phone: {phone}")},
+        {"role":"assistant","content":"ok"},
+        {"role":"user","content":format!("synthetic ID: {id}")}
+    ]});
+    let turn = CurrentTurn::new(&body);
+    let result =
+        SecurityAuditEngine::inspect_request_with_runtime(&body, &SecurityRuntimeConfig::default());
+    let current: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|finding| !turn.is_historical(&finding.location))
+        .map(|finding| finding.rule_id.as_str())
+        .collect();
+    assert_eq!(current, ["chinese_id_card"]);
+}
+
+#[test]
+fn current_structured_password_does_not_use_the_historical_assignment_rule() {
+    let body = json!({"messages": [
+        {"role":"user", "content":"password = synthetic-old-password"},
+        {"role":"assistant", "content":"ok"},
+        {"role":"user", "content":"Use the login tool"},
+        {"role":"assistant", "content":[{"type":"tool_use", "name":"login", "input":{"password":"synthetic-new-password"}}]}
+    ]});
+    let turn = super::extractor::CurrentTurn::new(&body);
+    let result =
+        SecurityAuditEngine::inspect_request_with_runtime(&body, &SecurityRuntimeConfig::default());
+    let current: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|finding| !turn.is_historical(&finding.location))
+        .map(|finding| finding.rule_id.as_str())
+        .collect();
+    assert_eq!(current, ["catalog:password-field"]);
+}
+
+#[test]
+fn json_pasted_as_chat_text_uses_password_assignment_instead_of_structured_field() {
+    let body = json!({"input":[{"role":"user", "content":json!({
+        "username":"synthetic-user", "password":"synthetic-password"
+    }).to_string()}]});
+    let result =
+        SecurityAuditEngine::inspect_request_with_runtime(&body, &SecurityRuntimeConfig::default());
+    let rules: Vec<_> = result
+        .findings
+        .iter()
+        .map(|finding| finding.rule_id.as_str())
+        .collect();
+    assert_eq!(rules, ["catalog:password-assignment"]);
+}
+
+#[test]
+fn private_key_alert_and_hide_have_distinct_wire_behavior_but_mask_both_audits() {
+    for kind in ["RSA", "OPENSSH", "EC", "DSA"] {
+        let key = format!(
+            "-----BEGIN {kind} PRIVATE KEY-----\nSYNTHETIC_KEY_BODY\n-----END {kind} PRIVATE KEY-----"
+        );
+        for action in [AuditAction::Audit, AuditAction::Redact] {
+            let mut runtime = SecurityRuntimeConfig::default();
+            runtime
+                .builtin_action_overrides
+                .insert("rsa_ssh_private_key".into(), action);
+            let original = json!({"messages":[{"role":"user", "content":key}], "stream":true});
+            let mut body = original.clone();
+            let result = SecurityAuditEngine::inspect_and_redact_with_runtime(&mut body, &runtime);
+            assert!(!result.blocked);
+            let finding = result
+                .findings
+                .iter()
+                .find(|finding| finding.rule_id == "rsa_ssh_private_key")
+                .expect("synthetic private key");
+            assert_eq!(finding.action, action);
+            assert!(!finding
+                .matched_snippet_masked
+                .contains("SYNTHETIC_KEY_BODY"));
+            if action == AuditAction::Audit {
+                assert_eq!(body, original);
+            } else {
+                assert_eq!(body["messages"][0]["content"], "[REDACTED_PRIVATE_KEY]");
+                assert_eq!(body["stream"], true);
+            }
+        }
+    }
+}
+
+#[test]
+fn reported_token_rules_detect_valid_samples_with_the_configured_action() {
+    let cases = [
+        (
+            "catalog:pypi-token",
+            format!("pypi-AgEIcHlwaS5vcmc{}", "a".repeat(50)),
+        ),
+        ("catalog:bedrock-key", format!("ABSK{}", "a".repeat(109))),
+        ("catalog:google-api-key", format!("AIza{}", "A".repeat(35))),
+        ("catalog:sendgrid-token", format!("SG.{}", "a".repeat(66))),
+        (
+            "catalog:digitalocean-pat",
+            format!("dop_v1_{}", "f".repeat(64)),
+        ),
+        (
+            "catalog:huggingface-token",
+            format!("hf_{}", "a".repeat(34)),
+        ),
+        (
+            "catalog:notion-token",
+            format!("ntn_12345678901{}000", "A".repeat(32)),
+        ),
+        ("catalog:shopify-token", format!("shpat_{}", "a".repeat(32))),
+        (
+            "catalog:cloudflare-origin-key",
+            format!("v1.0-{}-{}", "a".repeat(24), "b".repeat(146)),
+        ),
+        ("catalog:openrouter-key", "v1-openrouter-synthetic".into()),
+        ("catalog:groq-key", format!("gsk_{}", "a".repeat(52))),
+        ("catalog:perplexity-key", format!("pplx-{}", "a".repeat(48))),
+    ];
+    for (rule, token) in cases {
+        for action in [AuditAction::Audit, AuditAction::Redact] {
+            let mut runtime = SecurityRuntimeConfig::default();
+            runtime.builtin_action_overrides.insert(rule.into(), action);
+            let original = json!({"input":[{"role":"user","content":token}],"temperature":0.2,"future_option":{"keep":true}});
+            let mut body = original.clone();
+            let result = SecurityAuditEngine::inspect_and_redact_with_runtime(&mut body, &runtime);
+            assert!(!result.blocked, "{rule}");
+            let finding = result
+                .findings
+                .iter()
+                .find(|finding| finding.rule_id == rule)
+                .expect("valid synthetic token");
+            assert_eq!(finding.action, action, "{rule}");
+            assert!(!finding.matched_snippet_masked.contains(&token), "{rule}");
+            if action == AuditAction::Audit {
+                assert_eq!(body, original, "{rule}");
+            } else {
+                assert!(!body.to_string().contains(&token), "{rule}");
+                assert_eq!(body["future_option"], original["future_option"]);
+            }
+        }
+    }
+}

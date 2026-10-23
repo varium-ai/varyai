@@ -44,6 +44,7 @@
     "detailTime": "Detected at",
     "detailOutbound": "Send status",
     "detailSnippet": "Hidden content",
+    "auditPrivacyHint": "Alert sends the request unchanged; Hide redacts it before sending. Audit records always hide sensitive values.",
     "goToRules": "Open detection rules",
     "ruleHeading": "Policy rule details",
     "ruleCount": "({{count}} loaded)",
@@ -167,7 +168,7 @@
       },
       "catalog_password-field": {
         "name": "Password Field",
-        "description": "Detects string values in password fields inside structured tool parameters, excluding field names and other parameters."
+        "description": "Detects string values in password fields inside structured tool parameters, excluding field names and other parameters. JSON pasted into chat is inspected by the Password Assignment rule."
       },
       "chinese_id_card": {
         "name": "Mainland China Resident ID Number",

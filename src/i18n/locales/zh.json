@@ -44,6 +44,7 @@
     "detailTime": "检测时间",
     "detailOutbound": "发送状态",
     "detailSnippet": "隐藏后的内容",
+    "auditPrivacyHint": "提醒会原文发送请求；隐藏会脱敏后发送。审计记录始终隐藏敏感值。",
     "goToRules": "前往检测规则设置",
     "ruleHeading": "策略规则明细",
     "ruleCount": "（{{count}} 条已载入）",
@@ -167,7 +168,7 @@
       },
       "catalog_password-field": {
         "name": "结构化参数中的密码字段",
-        "description": "检测结构化工具参数中密码字段的字符串值，不处理字段名和其他参数。"
+        "description": "检测结构化工具参数中密码字段的字符串值，不处理字段名和其他参数。聊天中粘贴的 JSON 文本由“配置文本中的密码赋值”规则检测。"
       },
       "chinese_id_card": {
         "name": "中国大陆居民身份证号",
