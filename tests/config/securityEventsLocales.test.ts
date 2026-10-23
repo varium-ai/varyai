@@ -17,6 +17,24 @@ const variables = (text: string) =>
   [...text.matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map((match) => match[1]).sort();
 
 describe("unified security event translations", () => {
+  it.each([
+    ["zh", zh, "刷新记录"],
+    ["en", en, "Refresh records"],
+    ["ja", ja, "記録を更新"],
+    ["zh-TW", zhTW, "重新整理記錄"],
+  ] as const)(
+    "labels the refresh action as records in %s",
+    async (language, tree, label) => {
+      const instance = createInstance();
+      await instance.init({
+        lng: language,
+        fallbackLng: false,
+        resources: { [language]: { translation: tree } },
+      });
+      expect(instance.t("security.refreshLogs")).toBe(label);
+    },
+  );
+
   it.each(locales)(
     "covers the same keys and interpolation variables in %s",
     (_locale, tree) => {

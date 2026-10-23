@@ -1,5 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createInstance } from "i18next";
+import { I18nextProvider } from "react-i18next";
+import en from "@/i18n/locales/en.json";
+import ja from "@/i18n/locales/ja.json";
+import zh from "@/i18n/locales/zh.json";
+import zhTW from "@/i18n/locales/zh-TW.json";
 import { expect, it, vi } from "vitest";
 import { ProviderForm } from "@/components/providers/forms/ProviderForm";
 import { toast } from "sonner";
@@ -12,30 +18,47 @@ vi.mock("@/hooks/useProxyStatus", () => ({
     setTakeoverForApp: vi.fn(),
   }),
 }));
-it.each(["", "   "])(
-  "reports only the missing provider name for %j",
-  async (name) => {
+const nameValidationLocales = [
+  ["zh", zh, "请填写：供应商名称"],
+  ["en", en, "Please fill in: Provider Name"],
+  ["ja", ja, "入力してください: プロバイダー名"],
+  ["zh-TW", zhTW, "請填寫：供應商名稱"],
+] as const;
+
+it.each(
+  nameValidationLocales.flatMap(([language, translations, message]) =>
+    ["", "   "].map((name) => ({ language, translations, message, name })),
+  ),
+)(
+  "renders a localized missing-name error in $language for '$name'",
+  async ({ language, translations, message, name }) => {
+    const i18n = createInstance();
+    await i18n.init({
+      lng: language,
+      fallbackLng: false,
+      resources: { [language]: { translation: translations } },
+    });
     const onSubmit = vi.fn();
     render(
-      <ProviderForm
-        appId="qoder"
-        submitLabel="Save Qoder"
-        onSubmit={onSubmit}
-        onCancel={vi.fn()}
-        initialData={{
-          name,
-          settingsConfig: {
-            baseUrl: "https://api.example/v1",
-            apiKey: "synthetic-key",
-            model: "model-a",
-          },
-        }}
-      />,
+      <I18nextProvider i18n={i18n}>
+        <ProviderForm
+          appId="qoder"
+          submitLabel="Save Qoder"
+          onSubmit={onSubmit}
+          onCancel={vi.fn()}
+          initialData={{
+            name,
+            settingsConfig: {
+              baseUrl: "https://api.example/v1",
+              apiKey: "synthetic-key",
+              model: "model-a",
+            },
+          }}
+        />
+      </I18nextProvider>,
     );
     fireEvent.click(screen.getByRole("button", { name: "Save Qoder" }));
-    await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith("providerForm.nameRequired"),
-    );
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(message));
     expect(onSubmit).not.toHaveBeenCalled();
   },
 );
