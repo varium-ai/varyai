@@ -5,6 +5,31 @@ interface UseModelStateProps {
   onConfigChange: (config: string) => void;
 }
 
+export interface ClaudeModelPickerOption {
+  model: string;
+  label?: string;
+  description?: string;
+  behavesAs?: string;
+}
+
+function parseModelPickerOptions(
+  settingsConfig: string,
+): ClaudeModelPickerOption[] {
+  try {
+    const options = JSON.parse(settingsConfig || "{}").modelPicker?.options;
+    return Array.isArray(options)
+      ? options.filter(
+          (row): row is ClaudeModelPickerOption =>
+            row !== null &&
+            typeof row === "object" &&
+            typeof row.model === "string",
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 export type ClaudeModelEnvField =
   | "ANTHROPIC_MODEL"
   | "ANTHROPIC_DEFAULT_HAIKU_MODEL"
@@ -142,6 +167,9 @@ export function useModelState({
     initial.fableName,
   );
   const [subagentModel, setSubagentModel] = useState(initial.subagent);
+  const [modelPickerOptions, setModelPickerOptions] = useState(() =>
+    parseModelPickerOptions(settingsConfig),
+  );
 
   const isUserEditingRef = useRef(false);
   const lastConfigRef = useRef(settingsConfig);
@@ -173,6 +201,7 @@ export function useModelState({
     setDefaultFableModel(parsed.fable);
     setDefaultFableModelName(parsed.fableName);
     setSubagentModel(parsed.subagent);
+    setModelPickerOptions(parseModelPickerOptions(settingsConfig));
   }, [settingsConfig]);
 
   const handleModelChange = useCallback(
@@ -224,6 +253,19 @@ export function useModelState({
     [onConfigChange],
   );
 
+  const handleModelPickerOptionsChange = useCallback(
+    (options: ClaudeModelPickerOption[]) => {
+      const config = JSON.parse(latestConfigRef.current || "{}");
+      config.modelPicker = { ...config.modelPicker, options };
+      const updated = JSON.stringify(config, null, 2);
+      isUserEditingRef.current = true;
+      latestConfigRef.current = updated;
+      setModelPickerOptions(options);
+      onConfigChange(updated);
+    },
+    [onConfigChange],
+  );
+
   return {
     claudeModel,
     setClaudeModel,
@@ -246,5 +288,7 @@ export function useModelState({
     subagentModel,
     setSubagentModel,
     handleModelChange,
+    modelPickerOptions,
+    handleModelPickerOptionsChange,
   };
 }

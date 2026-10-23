@@ -68,6 +68,18 @@ export function rendererChunk(id: string): string | undefined {
     return "provider-presets";
   }
   if (relative === "utils/grokBuildConfig.ts") return "provider-presets";
+  if (
+    [
+      "components/providers/forms/ConnectionPresetPicker.tsx",
+      "components/providers/forms/ProviderConfigDetection.tsx",
+      "components/providers/forms/shared/ModelDropdown.tsx",
+    ].includes(relative)
+  ) {
+    return "ui-connection-presets";
+  }
+  if (relative === "components/proxy/GatewayKeysPanel.tsx") {
+    return "ui-gateway-keys";
+  }
   if (relative.startsWith("icons/")) return "icons";
   if (relative.startsWith("components/")) {
     const parts = relative.slice("components/".length).split("/");

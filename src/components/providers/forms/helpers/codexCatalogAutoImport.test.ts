@@ -1,13 +1,10 @@
 import { describe, expect, it } from "vitest";
-import {
-  computeAutoImportCatalogModels,
-  MAX_AUTO_IMPORT_CATALOG_MODELS,
-} from "./codexCatalogAutoImport";
+import { computeAutoImportCatalogModels } from "./codexCatalogAutoImport";
 import type { CodexCatalogModel } from "@/types";
 import type { FetchedModel } from "@/lib/api/model-fetch";
 
 describe("computeAutoImportCatalogModels", () => {
-  it("imports all models when fetched models <= 10 and current catalog is empty", () => {
+  it("imports all models when the current catalog is empty", () => {
     const fetched: FetchedModel[] = [
       { id: "model-1", ownedBy: "test" },
       { id: "model-2", ownedBy: "test" },
@@ -26,7 +23,7 @@ describe("computeAutoImportCatalogModels", () => {
     expect(result.suggestedDefaultModel).toBe("model-1");
   });
 
-  it("limits auto-import to top 10 models when fetched models > 10", () => {
+  it("imports all models when the supplier returns more than ten", () => {
     const fetched: FetchedModel[] = Array.from({ length: 15 }, (_, i) => ({
       id: `model-${i + 1}`,
       ownedBy: "test",
@@ -35,20 +32,20 @@ describe("computeAutoImportCatalogModels", () => {
     const result = computeAutoImportCatalogModels([], fetched, "");
 
     expect(result.totalValidCount).toBe(15);
-    expect(result.importedCount).toBe(MAX_AUTO_IMPORT_CATALOG_MODELS);
-    expect(result.nextCatalogModels).toHaveLength(10);
+    expect(result.importedCount).toBe(15);
+    expect(result.nextCatalogModels).toHaveLength(15);
     expect(result.nextCatalogModels[0]).toEqual({
       model: "model-1",
       displayName: "model-1",
     });
-    expect(result.nextCatalogModels[9]).toEqual({
-      model: "model-10",
-      displayName: "model-10",
+    expect(result.nextCatalogModels[14]).toEqual({
+      model: "model-15",
+      displayName: "model-15",
     });
     expect(result.suggestedDefaultModel).toBe("model-1");
   });
 
-  it("preserves existing rows and only fills remaining quota up to 10 with deduplication", () => {
+  it("preserves existing rows and deduplicates fetched models", () => {
     const current: CodexCatalogModel[] = [
       {
         model: "custom-a",
@@ -71,9 +68,6 @@ describe("computeAutoImportCatalogModels", () => {
     const result = computeAutoImportCatalogModels(current, fetched, "custom-a");
 
     expect(result.totalValidCount).toBe(4);
-    // current has 2 items, remaining quota = 8.
-    // fetched has model-1, model-2 (dup), model-3, model-4.
-    // unique to add: model-1, model-3, model-4 (3 items)
     expect(result.importedCount).toBe(3);
     expect(result.nextCatalogModels).toHaveLength(5);
     expect(result.nextCatalogModels[0]).toEqual(current[0]);
@@ -94,7 +88,7 @@ describe("computeAutoImportCatalogModels", () => {
     expect(result.suggestedDefaultModel).toBe("custom-a");
   });
 
-  it("does not import when catalog already has 10 or more items", () => {
+  it("still imports new models when the catalog already has ten rows", () => {
     const current: CodexCatalogModel[] = Array.from({ length: 10 }, (_, i) => ({
       model: `existing-${i + 1}`,
       displayName: `Existing ${i + 1}`,
@@ -111,9 +105,9 @@ describe("computeAutoImportCatalogModels", () => {
       "existing-1",
     );
 
-    expect(result.importedCount).toBe(0);
-    expect(result.nextCatalogModels).toHaveLength(10);
-    expect(result.nextCatalogModels).toEqual(current);
+    expect(result.importedCount).toBe(2);
+    expect(result.nextCatalogModels).toHaveLength(12);
+    expect(result.nextCatalogModels.slice(0, 10)).toEqual(current);
   });
 
   it("ignores invalid or empty model ids from fetched models", () => {

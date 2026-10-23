@@ -1,3 +1,4 @@
+import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -1323,6 +1324,23 @@ export function PiProviderForm({
           />
         )}
 
+        <ConnectionPresetPicker
+          current={{ name: form.watch("name"), baseUrl, apiKey }}
+          onApply={(preset) => {
+            if (preset.apiFormat)
+              handleApiChange(
+                {
+                  anthropic: "anthropic-messages",
+                  openai_chat: "openai-completions",
+                  openai_responses: "openai-responses",
+                  gemini_native: "google-generative-ai",
+                }[preset.apiFormat],
+              );
+            form.setValue("name", preset.name);
+            handleBaseUrlChange(preset.baseUrl);
+            handleApiKeyChange(preset.apiKey);
+          }}
+        />
         {formError && (
           <div
             role="alert"
