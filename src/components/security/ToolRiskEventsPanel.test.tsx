@@ -619,3 +619,226 @@ describe("P2-10 verdict filters and current-page groups", () => {
     },
   );
 });
+
+describe("controlled unified tool calls", () => {
+  it("uses provided events, grouping and details without invoking the standalone query", () => {
+    eventQuery.mockClear();
+    const onSelectEvent = vi.fn();
+    const controlled = {
+      events: [riskyRecord],
+      isLoading: false,
+      isError: false,
+      onSelectEvent,
+    };
+    render(<ToolRiskEventsPanel controlled={controlled} />);
+    expect(eventQuery).not.toHaveBeenCalled();
+    expect(screen.getByText("rm -rf <path>")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("tool-risk-event-7"));
+    expect(onSelectEvent).toHaveBeenCalledWith(riskyRecord);
+    expect(screen.queryByTestId("tool-risk-events-clear")).toBeNull();
+    expect(screen.queryByTestId("tool-risk-events-verdict-filter")).toBeNull();
+  });
+  it("shows unknown and absent verdicts distinctly without exposing arbitrary enum strings", () => {
+    render(
+      <ToolRiskEventsPanel
+        controlled={{
+          events: [
+            { ...riskyRecord, id: 81, verdict: null },
+            {
+              ...riskyRecord,
+              id: 82,
+              verdict: "future-verdict",
+              riskCategory: "future-category",
+              severity: "future-severity",
+            },
+          ],
+          isLoading: false,
+          isError: false,
+        }}
+      />,
+    );
+    expect(screen.getByTestId("tool-risk-event-81")).toHaveTextContent(
+      "securityEvents.notRecorded",
+    );
+    expect(screen.getByTestId("tool-risk-event-82")).toHaveTextContent(
+      "securityEvents.unknown",
+    );
+    expect(document.body.innerHTML).not.toContain("future-verdict");
+    expect(document.body.innerHTML).not.toContain("future-category");
+    expect(document.body.innerHTML).not.toContain("future-severity");
+  });
+});
+
+describe("controlled tool-call labels and observation boundary", () => {
+  beforeEach(() => {
+    mockToolRiskTranslations = en.toolRisk;
+  });
+
+  it.each(reasonLocales)(
+    "localizes every controlled operation in %s and adds an observation-only status column",
+    (_locale, translations) => {
+      mockToolRiskTranslations = translations;
+      const operations = Object.keys(translations.operation);
+      render(
+        <ToolRiskEventsPanel
+          controlled={{
+            events: operations.map((operationCategory, index) => ({
+              ...riskyRecord,
+              id: index + 1,
+              operationCategory,
+            })),
+            isLoading: false,
+            isError: false,
+          }}
+        />,
+      );
+      const table = screen.getByTestId("tool-risk-events-table");
+      expect(within(table).getAllByRole("columnheader")).toHaveLength(10);
+      expect(
+        within(table).getByRole("columnheader", {
+          name: "security.detailOutbound",
+        }),
+      ).toBeInTheDocument();
+      operations.forEach((operation, index) => {
+        const row = screen.getByTestId(`tool-risk-event-${index + 1}`);
+        expect(within(row).getAllByRole("cell")).toHaveLength(10);
+        expect(row).toHaveTextContent(
+          translations.operation[
+            operation as keyof typeof translations.operation
+          ],
+        );
+        expect(row).toHaveTextContent("securityEvents.toolObservation");
+        expect(row).not.toHaveTextContent(operation);
+        expect(row).not.toHaveTextContent("security.outboundSent");
+        expect(row).not.toHaveTextContent("security.outboundBlocked");
+      });
+    },
+  );
+
+  it.each([
+    null,
+    undefined,
+    "",
+    "__proto__",
+    "constructor",
+    "toString",
+    rawAssignment,
+  ])(
+    "does not echo an unknown or unavailable controlled operation (%s)",
+    (operationCategory) => {
+      const { container } = render(
+        <ToolRiskEventsPanel
+          controlled={{
+            events: [{ ...riskyRecord, operationCategory }],
+            isLoading: false,
+            isError: false,
+          }}
+        />,
+      );
+      const operationCell = within(
+        screen.getByTestId("tool-risk-event-7"),
+      ).getAllByRole("cell")[2];
+      expect(operationCell).toHaveTextContent(
+        operationCategory
+          ? "securityEvents.unknown"
+          : "securityEvents.notRecorded",
+      );
+      expect(container.innerHTML).not.toContain("raw-secret-not-for-ui");
+      if (operationCategory)
+        expect(operationCell).not.toHaveTextContent(operationCategory);
+    },
+  );
+
+  it("replaces the standalone retention hint with an observation-only warning in controlled mode", () => {
+    render(
+      <ToolRiskEventsPanel
+        controlled={{ events: [riskyRecord], isLoading: false, isError: false }}
+      />,
+    );
+    const warning = screen.getByText("securityEvents.toolWarning", {
+      exact: false,
+    });
+    expect(warning).toBeInTheDocument();
+    expect(screen.getByTestId("tool-risk-event-7")).toHaveTextContent(
+      "securityEvents.toolObservation",
+    );
+    expect(screen.queryByText(en.toolRisk.eventRetentionHint)).toBeNull();
+    expect(
+      screen.getByText(en.toolRisk.eventPageGroupingHint, { exact: false }),
+    ).toBeInTheDocument();
+  });
+
+  it.each(["empty", "loading", "error"])(
+    "keeps all controlled columns aligned for the %s state",
+    (state) => {
+      render(
+        <ToolRiskEventsPanel
+          controlled={{
+            events: [],
+            isLoading: state === "loading",
+            isError: state === "error",
+          }}
+        />,
+      );
+      const table = screen.getByTestId("tool-risk-events-table");
+      expect(table.querySelectorAll("thead th")).toHaveLength(10);
+      expect(table.querySelector("tbody td")).toHaveAttribute("colspan", "10");
+    },
+  );
+});
+
+describe("tool-call table layout", () => {
+  it.each([false, true])(
+    "keeps explicit readable column widths and local overflow (controlled=%s)",
+    (controlled) => {
+      mockEvents = [riskyRecord];
+      render(
+        <ToolRiskEventsPanel
+          onCreateRule={vi.fn()}
+          controlled={
+            controlled
+              ? { events: [riskyRecord], isLoading: false, isError: false }
+              : undefined
+          }
+        />,
+      );
+      const table = screen.getByTestId("tool-risk-events-table");
+      expect(table).toHaveClass(
+        "table-fixed",
+        controlled ? "min-w-[1760px]" : "min-w-[1544px]",
+      );
+      expect(table.parentElement).toHaveClass("overflow-auto");
+      const columns = Array.from(table.querySelectorAll("colgroup col"));
+      expect(columns.map((column) => column.getAttribute("style"))).toEqual(
+        [
+          176,
+          104,
+          128,
+          320,
+          112,
+          152,
+          104,
+          184,
+          ...(controlled ? [216] : []),
+          264,
+        ].map((width) => `width: ${width}px;`),
+      );
+      for (const heading of within(table).getAllByRole("columnheader")) {
+        expect(heading).toHaveClass("whitespace-nowrap");
+      }
+      const cells = within(
+        screen.getByTestId("tool-risk-event-7"),
+      ).getAllByRole("cell");
+      expect(cells[4]).toHaveClass("whitespace-nowrap");
+      expect(cells[4].firstElementChild).toHaveClass("whitespace-nowrap");
+      expect(cells[6]).toHaveClass("whitespace-nowrap");
+      expect(cells[5]).toHaveClass("break-words", "leading-5");
+      expect(cells[7]).toHaveClass("break-words", "leading-5");
+      const command = within(cells[3]).getByText(riskyRecord.commandSummary!);
+      expect(command.tagName).toBe("DIV");
+      expect(command).toHaveClass("truncate", "font-mono");
+      const actions = cells.at(-1)!;
+      expect(within(actions).getAllByRole("button")).toHaveLength(3);
+    },
+  );
+});

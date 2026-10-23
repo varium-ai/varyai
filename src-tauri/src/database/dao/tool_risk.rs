@@ -584,7 +584,7 @@ fn insert_events<'a>(
     Ok(inserted)
 }
 
-fn read_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolRiskEventRecord> {
+pub(super) fn read_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolRiskEventRecord> {
     let rule_ids: Option<String> = row.get(14)?;
     Ok(ToolRiskEventRecord {
         id: row.get(0)?,
@@ -609,7 +609,8 @@ fn read_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolRiskEventRecord> 
     })
 }
 
-const EVENT_COLUMNS: &str = "id, timestamp, source, stage, client_category, operation_category,
+pub(super) const EVENT_COLUMNS: &str =
+    "id, timestamp, source, stage, client_category, operation_category,
     command_summary, detection_scope, integrity_status, verdict, risk_category, severity,
     reason_code, policy_version, rule_ids, suppressed_count";
 

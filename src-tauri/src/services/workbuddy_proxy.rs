@@ -187,6 +187,22 @@ impl Backup {
         write_settings(&path, self.injected.as_bytes())
     }
 
+    pub(crate) fn is_applied(&self) -> Result<bool, String> {
+        let current = read_settings(&self.directory.join("settings.json"))?;
+        let current = parse_settings(current.as_deref())?;
+        let injected = parse_settings(Some(&self.injected))?;
+        let Some(expected) = injected
+            .pointer("/env/CODEBUDDY_BASE_URL")
+            .and_then(Value::as_str)
+        else {
+            return Ok(false);
+        };
+        Ok(current
+            .pointer("/env/CODEBUDDY_BASE_URL")
+            .and_then(Value::as_str)
+            == Some(expected))
+    }
+
     pub fn restore(&self) -> Result<(), String> {
         let path = self.directory.join("settings.json");
         let Some(current) = read_settings(&path)? else {
@@ -286,6 +302,25 @@ mod tests {
             std::fs::write(dir.path().join("settings.json"), settings).expect("settings");
         }
         dir
+    }
+
+    #[test]
+    fn active_route_requires_the_injected_endpoint_and_preserves_unrelated_edits() {
+        let dir = fixture(Some("{}"));
+        let backup =
+            Backup::prepare(dir.path(), "http://127.0.0.1:19999/workbuddy/v1").expect("backup");
+        assert!(!backup.is_applied().expect("original"));
+        backup.apply().expect("apply");
+        assert!(backup.is_applied().expect("applied"));
+        let path = dir.path().join("settings.json");
+        let mut current: Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+        current["unrelated"] = json!(true);
+        std::fs::write(&path, current.to_string()).expect("external edit");
+        assert!(backup.is_applied().expect("unrelated edit"));
+        current["env"][ENDPOINT_KEY] = json!("https://official.example/v2");
+        std::fs::write(&path, current.to_string()).expect("endpoint edit");
+        assert!(!backup.is_applied().expect("external endpoint"));
     }
 
     #[test]

@@ -196,7 +196,11 @@ export function WorkBuddyProviderForm({
       !!onAddThirdParty &&
       [url, apiKey, modelId, ...additionalModels].some((value) => value.trim());
     const needsModel = !isOfficial || addThirdParty;
-    if (!name || (needsModel && (!modelId.trim() || !apiKey.trim()))) {
+    if (!name) {
+      toast.error(t("providerForm.nameRequired"));
+      return;
+    }
+    if (needsModel && (!modelId.trim() || !apiKey.trim())) {
       toast.error(t(`${desktopClient}.form.required`));
       return;
     }

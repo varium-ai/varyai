@@ -33,6 +33,7 @@ pub struct StreamingTimeoutConfig {
 /// - 日志标签
 /// - Session ID（用于日志关联）
 pub struct RequestContext {
+    pub(crate) converted_output: bool,
     /// Bounded, validated tool schema references from this request only.
     pub tool_schemas: std::sync::Arc<Vec<crate::proxy::tool_observation::channel::ToolSchemaRef>>,
     /// 请求开始时间
@@ -166,6 +167,7 @@ impl RequestContext {
         };
 
         Ok(Self {
+            converted_output: false,
             tool_schemas,
             start_time,
             app_config,
@@ -187,6 +189,7 @@ impl RequestContext {
     #[cfg(test)]
     pub(super) fn for_tool_risk_test(body: &serde_json::Value) -> Self {
         Self {
+            converted_output: false,
             tool_schemas: crate::proxy::tool_observation::mount::collect_tool_schemas(
                 body, "codex",
             ),

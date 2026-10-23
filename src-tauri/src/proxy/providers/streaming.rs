@@ -20,6 +20,8 @@ struct OpenAIStreamChunk {
     choices: Vec<StreamChoice>,
     #[serde(default)]
     usage: Option<Usage>,
+    #[serde(default)]
+    error: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -206,7 +208,14 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                                     continue;
                                 }
 
-                                if let Ok(chunk) = serde_json::from_str::<OpenAIStreamChunk>(data) {
+                                let chunk = match serde_json::from_str::<OpenAIStreamChunk>(data) {
+                                    Ok(chunk) if chunk.error.is_none() && chunk.choices.len() <= 1 => chunk,
+                                    _ => {
+                                        yield Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid or failed Chat stream event"));
+                                        return;
+                                    }
+                                };
+                                {
                                     log::debug!("[Claude/OpenRouter] <<< SSE chunk received");
 
                                     if message_id.is_none() && !chunk.id.is_empty() {

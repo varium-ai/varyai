@@ -93,3 +93,73 @@ const { client, invalidate, rerender, unmount } = setup(first);
         expect(JSON.stringify(logMock.mock.calls)).not.toContain("secret-invalidating-123");
     });
 });
+
+describe("unified security event cache bridge", () => {
+  beforeEach(() => {
+    listenMock.mockReset();
+    logMock.mockReset();
+  });
+
+  it("both first read and recorded signals refetch active summaries but never deep pages", async () => {
+    let emit!: () => void;
+    listenMock.mockImplementation(async (_name, cb) => {
+      emit = cb;
+      return vi.fn();
+    });
+    const { client, invalidate, onRecorded } = setup();
+    await waitFor(() => expect(onRecorded).toHaveBeenCalledTimes(1));
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["securityEvents", "summary"],
+      refetchType: "active",
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["securityEvents", "page"],
+      refetchType: "none",
+    });
+    invalidate.mockClear();
+    act(() => emit());
+    await waitFor(() => expect(onRecorded).toHaveBeenCalledTimes(2));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: securityKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["securityEvents", "summary"],
+      refetchType: "active",
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["securityEvents", "page"],
+      refetchType: "none",
+    });
+    expect(invalidate).not.toHaveBeenCalledWith({
+      queryKey: ["securityEvents"],
+    });
+    client.clear();
+  });
+
+  it.each(["legacy", "summary", "page"])(
+    "a synchronous %s invalidation failure does not block the other domains or notifier",
+    async (domain) => {
+      let emit!: () => void;
+      listenMock.mockImplementation(async (_name, cb) => {
+        emit = cb;
+        return vi.fn();
+      });
+      const { invalidate, onRecorded } = setup();
+      await waitFor(() => expect(onRecorded).toHaveBeenCalledTimes(1));
+      invalidate.mockClear().mockImplementation((options) => {
+        const key = options?.queryKey;
+        if (
+          (domain === "legacy" && key?.[0] === "security") ||
+          key?.[1] === domain
+        )
+          throw new Error("secret-bridge-error");
+        return Promise.resolve();
+      });
+      act(() => emit());
+      await waitFor(() => expect(onRecorded).toHaveBeenCalledTimes(2));
+      expect(invalidate).toHaveBeenCalledTimes(3);
+      await waitFor(() => expect(logMock).toHaveBeenCalled());
+      expect(JSON.stringify(logMock.mock.calls)).not.toContain(
+        "secret-bridge-error",
+      );
+    },
+  );
+});
