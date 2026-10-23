@@ -1,10 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ClaudeApiFormat } from "@/types";
 
 export interface ConnectionPreset {
   id: string;
   name: string;
   baseUrl: string;
   apiKey: string;
+  apiFormat?: ClaudeApiFormat;
 }
 
 export const connectionPresetsApi = {

@@ -12,6 +12,8 @@ pub struct ConnectionPreset {
     pub name: String,
     pub base_url: String,
     pub api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_format: Option<String>,
 }
 
 fn preset_key(id: &str) -> Result<String, AppError> {
@@ -47,6 +49,12 @@ impl Database {
         let invalid = || AppError::Message("Invalid connection preset fields".into());
         let endpoint = reqwest::Url::parse(&preset.base_url).map_err(|_| invalid())?;
         if preset.name.is_empty()
+            || preset.api_format.as_deref().is_some_and(|format| {
+                !matches!(
+                    format,
+                    "anthropic" | "openai_chat" | "openai_responses" | "gemini_native"
+                )
+            })
             || preset.name.chars().count() > 80
             || preset.name.chars().any(char::is_control)
             || preset.api_key.is_empty()
@@ -92,6 +100,7 @@ mod tests {
             name: "Fixture relay".into(),
             base_url: "https://relay.example/custom/v1/".into(),
             api_key: "synthetic-credential".into(),
+            api_format: None,
         }
     }
 
@@ -141,5 +150,48 @@ mod tests {
         preset.api_key.clear();
         assert!(db.save_connection_preset(&preset).is_err());
         assert!(db.list_connection_presets().expect("empty list").is_empty());
+    }
+
+    #[test]
+    fn preserves_protocols_and_reads_legacy_presets_without_a_format() {
+        let db = Database::memory().expect("memory database");
+        let legacy = fixture();
+        db.set_setting(
+            &preset_key(&legacy.id).expect("key"),
+            &serde_json::to_string(&legacy).expect("fixture JSON"),
+        )
+        .expect("legacy preset");
+        assert!(db.list_connection_presets().expect("legacy list")[0]
+            .api_format
+            .is_none());
+        for format in [
+            "anthropic",
+            "openai_chat",
+            "openai_responses",
+            "gemini_native",
+        ] {
+            let mut preset = fixture();
+            preset.api_format = Some(format.into());
+            db.save_connection_preset(&preset).expect("save format");
+            let rows = db.list_connection_presets().expect("list formats");
+            assert_eq!(
+                rows.iter()
+                    .find(|p| p.id == preset.id)
+                    .expect("saved preset")
+                    .api_format
+                    .as_deref(),
+                Some(format)
+            );
+        }
+        let mut invalid = fixture();
+        invalid.api_format = Some("synthetic-private-format".into());
+        let error = db
+            .save_connection_preset(&invalid)
+            .expect_err("invalid format");
+        assert!(!error.to_string().contains("synthetic-private-format"));
+        assert_eq!(
+            db.list_connection_presets().expect("unchanged list").len(),
+            5
+        );
     }
 }

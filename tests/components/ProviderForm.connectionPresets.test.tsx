@@ -1,11 +1,12 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProviderForm } from "@/components/providers/forms/ProviderForm";
 import { createTestQueryClient } from "../utils/testQueryClient";
 import type { AppId } from "@/lib/api";
+import type { ConnectionPreset } from "@/lib/api/connection-presets";
 
-const fixture = {
+const fixture: ConnectionPreset = {
   id: "fixture",
   name: "Saved relay",
   baseUrl: "https://relay.example/custom/v1",
@@ -121,6 +122,105 @@ const cases: [AppId, Record<string, unknown>][] = [
 ];
 
 describe("connection presets in every agent form", () => {
+  afterEach(() => {
+    delete fixture.apiFormat;
+  });
+
+  it.each([
+    ["opencode", "gemini_native", "npm", "@ai-sdk/google"],
+    ["openclaw", "anthropic", "api", "anthropic-messages"],
+    ["hermes", "openai_responses", "api_mode", "codex_responses"],
+    ["pi", "openai_responses", "api", "openai-responses"],
+    ["qoder", "anthropic", "protocol", "anthropic"],
+    ["kimi", "openai_responses", "protocol", "openai-responses"],
+  ] as const)(
+    "maps the saved protocol to %s client configuration",
+    async (appId, apiFormat, field, expected) => {
+      fixture.apiFormat = apiFormat;
+      const settingsConfig = { ...cases.find(([id]) => id === appId)![1] };
+      if (appId === "opencode")
+        settingsConfig.models = { "keep-model": { name: "Keep" } };
+      if (appId === "openclaw" || appId === "hermes")
+        settingsConfig.models = [{ id: "keep-model", name: "Keep" }];
+      const onSubmit = vi.fn();
+      const queryClient = createTestQueryClient();
+      queryClient.setQueryData(["opencodeLiveProviderIds"], []);
+      queryClient.setQueryData(["openclaw", "liveProviderIds"], []);
+      queryClient.setQueryData(["hermes", "liveProviderIds"], []);
+      render(
+        <QueryClientProvider client={queryClient}>
+          <ProviderForm
+            appId={appId}
+            providerId="fixture-provider"
+            initialData={{
+              name: "Existing relay",
+              category: "custom",
+              settingsConfig,
+            }}
+            submitLabel="Save fixture"
+            onSubmit={onSubmit}
+            onCancel={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Apply fixture preset" }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Save fixture" }));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      const saved = JSON.parse(onSubmit.mock.calls[0][0].settingsConfig);
+      expect(saved[field]).toBe(expected);
+      expect(onSubmit.mock.calls[0][0].settingsConfig).toContain("keep-model");
+    },
+  );
+
+  it.each(
+    cases
+      .slice(0, 3)
+      .flatMap(([appId, settingsConfig]) =>
+        (
+          [
+            "anthropic",
+            "openai_chat",
+            "openai_responses",
+            "gemini_native",
+          ] as const
+        ).map((apiFormat) => ({ appId, settingsConfig, apiFormat })),
+      ),
+  )(
+    "persists the preset's $apiFormat upstream for $appId without changing its model",
+    async ({ appId, settingsConfig, apiFormat }) => {
+      fixture.apiFormat = apiFormat;
+      const onSubmit = vi.fn();
+      render(
+        <QueryClientProvider client={createTestQueryClient()}>
+          <ProviderForm
+            appId={appId}
+            providerId="fixture-provider"
+            initialData={{
+              name: "Existing relay",
+              category: "custom",
+              settingsConfig,
+            }}
+            submitLabel="Save fixture"
+            onSubmit={onSubmit}
+            onCancel={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Apply fixture preset" }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Save fixture" }));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      expect(onSubmit.mock.calls[0][0].meta.apiFormat).toBe(apiFormat);
+      expect(onSubmit.mock.calls[0][0].settingsConfig).toContain("keep-model");
+      if (appId === "codex")
+        expect(
+          JSON.parse(onSubmit.mock.calls[0][0].settingsConfig).config,
+        ).toMatch(/wire_api\s*=\s*"responses"/);
+    },
+  );
   it.each(cases.slice(0, 3))(
     "persists %s credentials independently and preserves its model",
     async (appId, settingsConfig) => {

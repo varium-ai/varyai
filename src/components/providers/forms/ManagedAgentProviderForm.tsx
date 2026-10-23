@@ -168,8 +168,17 @@ export function ManagedAgentProviderForm({
         </p>
       )}
       <ConnectionPresetPicker
+        supportedFormats={["openai_chat", "openai_responses", "anthropic"]}
         current={{ name, baseUrl, apiKey }}
         onApply={(preset) => {
+          if (preset.apiFormat && preset.apiFormat !== "gemini_native")
+            setProtocol(
+              {
+                anthropic: "anthropic",
+                openai_chat: "openai",
+                openai_responses: "openai-responses",
+              }[preset.apiFormat],
+            );
           setName(preset.name);
           setBaseUrl(preset.baseUrl);
           setApiKey(preset.apiKey);

@@ -1,10 +1,15 @@
 {
   "connectionPresets": {
+    "unsupportedFormat": "此客户端不支持该格式",
+    "testModelHint": "填写此 Key 可用的模型，仅用于检测，不覆盖 Agent 的模型配置。",
+    "testModel": "检测模型（可选）",
+    "formatHint": "选择供应商实际接收的协议。不指定时，保留各 Agent 当前的格式。",
+    "keepFormat": "保留 Agent 当前格式",
     "label": "连接预设",
     "manage": "管理预设",
     "loading": "加载中…",
     "select": "选择预设并填入",
-    "hint": "选择后填入名称、API 地址和 Key。之后各 Agent 独立配置，修改预设不会同步。",
+    "hint": "选择后填入名称、API 地址、Key 和选定的上游格式。之后各 Agent 独立配置，修改预设不会同步。",
     "customRequired": "官方登录和托管账号无需此预设；请在自定义供应商中使用。",
     "add": "新建预设",
     "edit": "编辑",

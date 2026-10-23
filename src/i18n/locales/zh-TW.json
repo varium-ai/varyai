@@ -1,10 +1,15 @@
 {
   "connectionPresets": {
+    "unsupportedFormat": "此用戶端不支援此格式",
+    "testModelHint": "填寫此 Key 可用的模型，僅用於偵測，不覆蓋 Agent 的模型設定。",
+    "testModel": "偵測模型（選填）",
+    "formatHint": "選擇供應商實際接收的協定。不指定時，保留各 Agent 目前的格式。",
+    "keepFormat": "保留 Agent 目前格式",
     "label": "連線預設",
     "manage": "管理預設",
     "loading": "載入中…",
     "select": "選擇預設並填入",
-    "hint": "選擇後填入名稱、API 位址和 Key。之後各 Agent 獨立設定，修改預設不會同步。",
+    "hint": "選擇後填入名稱、API 位址、Key 和選定的上游格式。之後各 Agent 獨立設定，修改預設不會同步。",
     "customRequired": "官方登入和託管帳號無需此預設；請在自訂供應商中使用。",
     "add": "新增預設",
     "edit": "編輯",

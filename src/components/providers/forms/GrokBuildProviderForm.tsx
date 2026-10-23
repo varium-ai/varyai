@@ -440,8 +440,9 @@ export function GrokBuildProviderForm({
 
         <ConnectionPresetPicker
           disabled={category === "official"}
-          current={{ name: form.watch("name"), baseUrl, apiKey }}
+          current={{ name: form.watch("name"), baseUrl, apiKey, apiFormat }}
           onApply={(preset) => {
+            if (preset.apiFormat) setApiFormat(preset.apiFormat);
             form.setValue("name", preset.name);
             setBaseUrl(preset.baseUrl);
             setApiKey(preset.apiKey);

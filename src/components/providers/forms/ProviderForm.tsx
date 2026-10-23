@@ -2206,6 +2206,14 @@ function ProviderFormFull({
           <ConnectionPresetPicker
             current={{
               name: form.watch("name"),
+              apiFormat:
+                appId === "claude"
+                  ? localApiFormat
+                  : appId === "codex"
+                    ? localCodexApiFormat
+                    : appId === "gemini"
+                      ? localGeminiApiFormat
+                      : undefined,
               ...((
                 {
                   codex: { baseUrl: codexBaseUrl, apiKey: codexApiKey },
@@ -2225,6 +2233,11 @@ function ProviderFormFull({
                 } as Partial<Record<AppId, { baseUrl: string; apiKey: string }>>
               )[appId] ?? { baseUrl, apiKey }),
             }}
+            supportedFormats={
+              appId === "hermes"
+                ? ["openai_chat", "openai_responses", "anthropic"]
+                : undefined
+            }
             disabled={
               category === "official" ||
               isCopilotProvider ||
@@ -2235,10 +2248,14 @@ function ProviderFormFull({
             }
             onApply={(preset) => {
               form.setValue("name", preset.name, { shouldDirty: true });
+              if (preset.apiFormat) setProtocolManuallySelected(true);
               if (appId === "codex") {
+                if (preset.apiFormat)
+                  handleCodexApiFormatChange(preset.apiFormat);
                 handleCodexBaseUrlChange(preset.baseUrl);
                 handleCodexApiKeyChange(preset.apiKey);
               } else if (appId === "gemini") {
+                if (preset.apiFormat) setLocalGeminiApiFormat(preset.apiFormat);
                 const env = envStringToObj(geminiEnv);
                 env.GOOGLE_GEMINI_BASE_URL = preset.baseUrl;
                 env.GEMINI_API_KEY = preset.apiKey;
@@ -2246,15 +2263,45 @@ function ProviderFormFull({
                 updateGeminiEnvField("GOOGLE_GEMINI_BASE_URL", preset.baseUrl);
                 updateGeminiEnvField("GEMINI_API_KEY", preset.apiKey);
               } else if (appId === "opencode") {
+                if (preset.apiFormat)
+                  opencodeForm.handleOpencodeNpmChange(
+                    {
+                      anthropic: "@ai-sdk/anthropic",
+                      openai_chat: "@ai-sdk/openai-compatible",
+                      openai_responses: "@ai-sdk/openai",
+                      gemini_native: "@ai-sdk/google",
+                    }[preset.apiFormat],
+                  );
                 opencodeForm.handleOpencodeBaseUrlChange(preset.baseUrl);
                 opencodeForm.handleOpencodeApiKeyChange(preset.apiKey);
               } else if (appId === "openclaw") {
+                if (preset.apiFormat)
+                  openclawForm.handleOpenclawApiChange(
+                    {
+                      anthropic: "anthropic-messages",
+                      openai_chat: "openai-completions",
+                      openai_responses: "openai-responses",
+                      gemini_native: "google-generative-ai",
+                    }[preset.apiFormat],
+                  );
                 openclawForm.handleOpenclawBaseUrlChange(preset.baseUrl);
                 openclawForm.handleOpenclawApiKeyChange(preset.apiKey);
               } else if (appId === "hermes") {
+                if (preset.apiFormat && preset.apiFormat !== "gemini_native")
+                  hermesForm.handleHermesApiModeChange(
+                    {
+                      anthropic: "anthropic_messages",
+                      openai_chat: "chat_completions",
+                      openai_responses: "codex_responses",
+                    }[preset.apiFormat] as
+                      | "anthropic_messages"
+                      | "chat_completions"
+                      | "codex_responses",
+                  );
                 hermesForm.handleHermesBaseUrlChange(preset.baseUrl);
                 hermesForm.handleHermesApiKeyChange(preset.apiKey);
               } else {
+                if (preset.apiFormat) handleApiFormatChange(preset.apiFormat);
                 try {
                   const config = JSON.parse(
                     form.getValues("settingsConfig") || "{}",

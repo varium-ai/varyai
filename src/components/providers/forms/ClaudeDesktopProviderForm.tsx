@@ -876,8 +876,15 @@ export function ClaudeDesktopProviderForm({
 
         <ConnectionPresetPicker
           disabled={isOfficial || usesManagedOAuth}
-          current={{ name: form.watch("name"), baseUrl, apiKey }}
+          current={{
+            name: form.watch("name"),
+            baseUrl,
+            apiKey,
+            apiFormat: needsModelMapping ? apiFormat : "anthropic",
+          }}
+          supportedFormats={needsModelMapping ? undefined : ["anthropic"]}
           onApply={(preset) => {
+            if (preset.apiFormat) setApiFormat(preset.apiFormat);
             form.setValue("name", preset.name);
             setBaseUrl(preset.baseUrl);
             setApiKey(preset.apiKey);

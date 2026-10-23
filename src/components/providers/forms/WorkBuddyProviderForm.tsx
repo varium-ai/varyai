@@ -365,9 +365,26 @@ export function WorkBuddyProviderForm({
         onSubmit={form.handleSubmit(save)}
       >
         <ConnectionPresetPicker
+          supportedFormats={
+            desktopClient === "qoder"
+              ? ["openai_chat", "openai_responses", "anthropic"]
+              : ["openai_chat"]
+          }
           disabled={isOfficial && !onAddThirdParty}
           current={{ name: form.watch("name"), baseUrl: url, apiKey }}
           onApply={(preset) => {
+            if (
+              desktopClient === "qoder" &&
+              preset.apiFormat &&
+              preset.apiFormat !== "gemini_native"
+            )
+              setProtocol(
+                {
+                  anthropic: "anthropic",
+                  openai_chat: "openai",
+                  openai_responses: "openai-responses",
+                }[preset.apiFormat],
+              );
             form.setValue("name", preset.name);
             setUrl(preset.baseUrl);
             setApiKey(preset.apiKey);

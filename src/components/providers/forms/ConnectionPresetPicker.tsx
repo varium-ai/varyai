@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import type { ClaudeApiFormat } from "@/types";
+import { ProviderConfigDetection } from "./ProviderConfigDetection";
 import {
   Dialog,
   DialogContent,
@@ -19,11 +21,24 @@ import {
 
 interface Props {
   onApply: (preset: ConnectionPreset) => void;
-  current?: Partial<Pick<ConnectionPreset, "name" | "baseUrl" | "apiKey">>;
+  current?: Partial<Omit<ConnectionPreset, "id">>;
   disabled?: boolean;
+  supportedFormats?: ClaudeApiFormat[];
 }
 
-export function ConnectionPresetPicker({ onApply, current, disabled }: Props) {
+const formatLabels: Record<ClaudeApiFormat, string> = {
+  anthropic: "providerForm.apiFormatAnthropic",
+  openai_chat: "providerForm.apiFormatOpenAIChat",
+  openai_responses: "providerForm.apiFormatOpenAIResponses",
+  gemini_native: "providerForm.apiFormatGeminiNative",
+};
+
+export function ConnectionPresetPicker({
+  onApply,
+  current,
+  disabled,
+  supportedFormats,
+}: Props) {
   const { t } = useTranslation();
   const id = useId();
   const manageButtonRef = useRef<HTMLButtonElement>(null);
@@ -32,6 +47,8 @@ export function ConnectionPresetPicker({ onApply, current, disabled }: Props) {
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  const [testModel, setTestModel] = useState("");
+  const [editingCredentials, setEditingCredentials] = useState(false);
   const [draft, setDraft] = useState<ConnectionPreset>({
     id: "",
     name: "",
@@ -63,9 +80,16 @@ export function ConnectionPresetPicker({ onApply, current, disabled }: Props) {
       name: current?.name ?? "",
       baseUrl: current?.baseUrl ?? "",
       apiKey: current?.apiKey ?? "",
+      ...(current?.apiFormat ? { apiFormat: current.apiFormat } : {}),
     });
+    setTestModel("");
     setError("");
   };
+
+  const canApply = (preset: ConnectionPreset) =>
+    !preset.apiFormat ||
+    !supportedFormats ||
+    supportedFormats.includes(preset.apiFormat);
 
   const save = async () => {
     if (pending) return;
@@ -136,7 +160,7 @@ export function ConnectionPresetPicker({ onApply, current, disabled }: Props) {
             const preset = presets.find(
               (item) => item.id === event.target.value,
             );
-            if (preset) onApply({ ...preset });
+            if (preset && canApply(preset)) onApply({ ...preset });
           }}
         >
           <option value="">
@@ -149,8 +173,15 @@ export function ConnectionPresetPicker({ onApply, current, disabled }: Props) {
           {[...presets]
             .sort((a, b) => a.name.localeCompare(b.name))
             .map((preset) => (
-              <option key={preset.id} value={preset.id}>
+              <option
+                key={preset.id}
+                value={preset.id}
+                disabled={!canApply(preset)}
+              >
                 {preset.name}
+                {!canApply(preset)
+                  ? ` — ${t("connectionPresets.unsupportedFormat")}`
+                  : ""}
               </option>
             ))}
         </select>
@@ -198,35 +229,62 @@ export function ConnectionPresetPicker({ onApply, current, disabled }: Props) {
             <DialogDescription>{t("connectionPresets.hint")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 px-6 py-4">
-            <div className="max-h-48 space-y-2 overflow-y-auto">
-              {presets.map((preset) => (
-                <div key={preset.id} className="flex items-center gap-2">
-                  <span className="min-w-0 flex-1 truncate">{preset.name}</span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={pending}
-                    aria-label={`${t("connectionPresets.edit")} ${preset.name}`}
-                    onClick={() => {
-                      setDraft({ ...preset });
-                      setError("");
-                    }}
-                  >
-                    {t("connectionPresets.edit")}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={pending}
-                    aria-label={`${t("connectionPresets.delete")} ${preset.name}`}
-                    onClick={() => remove(preset.id)}
-                  >
-                    {t("connectionPresets.delete")}
-                  </Button>
-                </div>
-              ))}
+            <div className="max-h-48 overflow-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr>
+                    <th className="p-2 font-medium">
+                      {t("connectionPresets.name")}
+                    </th>
+                    <th className="p-2 font-medium">
+                      {t("providerForm.apiFormat")}
+                    </th>
+                    <th className="p-2 font-medium">{t("common.actions")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {presets.map((preset) => (
+                    <tr key={preset.id}>
+                      <td className="max-w-40 truncate p-2" title={preset.name}>
+                        {preset.name}
+                      </td>
+                      <td className="p-2">
+                        {t(
+                          preset.apiFormat
+                            ? formatLabels[preset.apiFormat]
+                            : "connectionPresets.keepFormat",
+                        )}
+                      </td>
+                      <td className="whitespace-nowrap p-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={pending}
+                          aria-label={`${t("connectionPresets.edit")} ${preset.name}`}
+                          onClick={() => {
+                            setDraft({ ...preset });
+                            setTestModel("");
+                            setError("");
+                          }}
+                        >
+                          {t("connectionPresets.edit")}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          disabled={pending}
+                          aria-label={`${t("connectionPresets.delete")} ${preset.name}`}
+                          onClick={() => remove(preset.id)}
+                        >
+                          {t("connectionPresets.delete")}
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
             <Button
               type="button"
@@ -260,6 +318,8 @@ export function ConnectionPresetPicker({ onApply, current, disabled }: Props) {
                   value={draft.baseUrl}
                   disabled={pending}
                   placeholder="https://api.example.com/v1"
+                  onFocus={() => setEditingCredentials(true)}
+                  onBlur={() => setEditingCredentials(false)}
                   onChange={(event) =>
                     setDraft({ ...draft, baseUrl: event.target.value })
                   }
@@ -278,11 +338,74 @@ export function ConnectionPresetPicker({ onApply, current, disabled }: Props) {
                   autoComplete="off"
                   value={draft.apiKey}
                   disabled={pending}
+                  onFocus={() => setEditingCredentials(true)}
+                  onBlur={() => setEditingCredentials(false)}
                   onChange={(event) =>
                     setDraft({ ...draft, apiKey: event.target.value })
                   }
                 />
               </div>
+              <div className="space-y-1">
+                <Label htmlFor={`${id}-format`}>
+                  {t("providerForm.apiFormat")}
+                </Label>
+                <select
+                  id={`${id}-format`}
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={draft.apiFormat ?? ""}
+                  disabled={pending}
+                  onChange={(event) => {
+                    const { apiFormat: _previous, ...rest } = draft;
+                    setDraft(
+                      event.target.value
+                        ? {
+                            ...rest,
+                            apiFormat: event.target.value as ClaudeApiFormat,
+                          }
+                        : rest,
+                    );
+                  }}
+                >
+                  <option value="">{t("connectionPresets.keepFormat")}</option>
+                  {Object.entries(formatLabels).map(([format, label]) => (
+                    <option key={format} value={format}>
+                      {t(label)}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  {t("connectionPresets.formatHint")}
+                </p>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor={`${id}-test-model`}>
+                  {t("connectionPresets.testModel")}
+                </Label>
+                <Input
+                  id={`${id}-test-model`}
+                  value={testModel}
+                  disabled={pending}
+                  onChange={(event) => setTestModel(event.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t("connectionPresets.testModelHint")}
+                </p>
+              </div>
+              {open && (
+                <ProviderConfigDetection
+                  key={draft.id}
+                  baseUrl={draft.baseUrl}
+                  apiKey={draft.apiKey}
+                  model={testModel}
+                  apiFormat={draft.apiFormat}
+                  editingCredentials={editingCredentials}
+                  autoSelectFormat={false}
+                  onModelChange={setTestModel}
+                  onApiFormatChange={(apiFormat) =>
+                    setDraft((previous) => ({ ...previous, apiFormat }))
+                  }
+                />
+              )}
             </div>
             {error && (
               <p role="alert" className="text-sm text-destructive">

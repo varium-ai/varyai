@@ -10,6 +10,14 @@ import userEvent from "@testing-library/user-event";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import { ConnectionPresetPicker } from "@/components/providers/forms/ConnectionPresetPicker";
 import { connectionPresetsApi } from "@/lib/api/connection-presets";
+import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
+
+vi.mock("@/lib/api/provider-protocol-detection", () => ({
+  detectProviderProtocols: vi.fn(),
+}));
+vi.mock("@/lib/api/model-fetch", () => ({
+  fetchModelsForConfig: vi.fn().mockResolvedValue([]),
+}));
 
 vi.mock("@/lib/api/connection-presets", () => ({
   connectionPresetsApi: { list: vi.fn(), save: vi.fn(), remove: vi.fn() },
@@ -24,9 +32,124 @@ const fixture = {
 
 describe("reusable connection presets", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.mocked(connectionPresetsApi.list).mockResolvedValue([fixture]);
     vi.mocked(connectionPresetsApi.save).mockResolvedValue(undefined);
     vi.mocked(connectionPresetsApi.remove).mockResolvedValue(undefined);
+  });
+
+  it("saves a selected upstream protocol and restores it when editing", async () => {
+    vi.mocked(connectionPresetsApi.list).mockResolvedValue([
+      { ...fixture, apiFormat: "openai_responses" },
+    ]);
+    render(<ConnectionPresetPicker onApply={vi.fn()} />);
+    await screen.findByRole("option", { name: fixture.name });
+    fireEvent.click(
+      screen.getByRole("button", { name: "connectionPresets.manage" }),
+    );
+    const table = screen.getByRole("table");
+    expect(
+      within(table).getByRole("columnheader", {
+        name: "providerForm.apiFormat",
+      }),
+    ).toBeVisible();
+    expect(
+      within(table).getByRole("cell", {
+        name: "providerForm.apiFormatOpenAIResponses",
+      }),
+    ).toBeVisible();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: `connectionPresets.edit ${fixture.name}`,
+      }),
+    );
+    const protocol = screen.getByLabelText("providerForm.apiFormat");
+    expect(protocol).toHaveValue("openai_responses");
+    fireEvent.change(protocol, { target: { value: "openai_chat" } });
+    fireEvent.click(
+      screen.getByRole("button", { name: "connectionPresets.save" }),
+    );
+    await waitFor(() =>
+      expect(connectionPresetsApi.save).toHaveBeenCalledWith({
+        ...fixture,
+        apiFormat: "openai_chat",
+      }),
+    );
+  });
+
+  it("detects only on request and saves the chosen result without changing the agent model", async () => {
+    vi.mocked(detectProviderProtocols).mockResolvedValue([
+      {
+        format: "openai_chat",
+        text: { status: "verified" },
+        stream: { status: "verified" },
+      },
+      {
+        format: "gemini_native",
+        text: { status: "unavailable", statusCode: 503 },
+        stream: null,
+      },
+    ]);
+    const apply = vi.fn();
+    render(<ConnectionPresetPicker onApply={apply} />);
+    await screen.findByRole("option", { name: fixture.name });
+    fireEvent.click(
+      screen.getByRole("button", { name: "connectionPresets.manage" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: `connectionPresets.edit ${fixture.name}`,
+      }),
+    );
+    fireEvent.change(screen.getByLabelText("connectionPresets.testModel"), {
+      target: { value: "fixture-model" },
+    });
+    expect(detectProviderProtocols).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerDetection.check" }),
+    );
+    await screen.findByText("providerDetection.verified");
+    expect(detectProviderProtocols).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseUrl: fixture.baseUrl,
+        apiKey: fixture.apiKey,
+        model: "fixture-model",
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerDetection.use" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "connectionPresets.save" }),
+    );
+    await waitFor(() =>
+      expect(connectionPresetsApi.save).toHaveBeenCalledWith({
+        ...fixture,
+        apiFormat: "openai_chat",
+      }),
+    );
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it("does not apply a protocol the target client cannot use", async () => {
+    vi.mocked(connectionPresetsApi.list).mockResolvedValue([
+      { ...fixture, apiFormat: "gemini_native" },
+    ]);
+    const apply = vi.fn();
+    render(
+      <ConnectionPresetPicker
+        onApply={apply}
+        supportedFormats={["openai_chat"]}
+      />,
+    );
+    expect(
+      await screen.findByRole("option", { name: new RegExp(fixture.name) }),
+    ).toBeDisabled();
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "connectionPresets.label" }),
+      { target: { value: fixture.id } },
+    );
+    expect(apply).not.toHaveBeenCalled();
   });
 
   it("opens above the provider panel and closes without losing its draft", async () => {

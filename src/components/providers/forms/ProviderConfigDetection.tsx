@@ -14,7 +14,7 @@ interface Props {
   baseUrl: string;
   apiKey: string;
   model: string;
-  apiFormat: ClaudeApiFormat;
+  apiFormat?: ClaudeApiFormat;
   anthropicAuthField?: ClaudeApiKeyField;
   editingCredentials: boolean;
   autoSelectFormat: boolean;
