@@ -235,7 +235,7 @@
     "logsTitle": "Security Events",
     "logsDesc": "Records sensitive information detected before sending, the AI app, and the handling method",
     "clearLogs": "Clear Logs",
-    "refreshLogs": "Refresh Logs",
+    "refreshLogs": "Refresh records",
     "refreshSuccess": "Security records refreshed",
     "refreshFailed": "Could not refresh security records. Try again.",
     "alertTitle": "Sensitive Information Detected",
@@ -1571,6 +1571,7 @@
     "openReleaseNotesFailed": "Failed to open release notes:"
   },
   "providerForm": {
+    "missingRequiredFields": "Please fill in: {{fields}}",
     "protocolBridgeHint": "Choose the provider’s upstream protocol. Different protocols require route takeover for local conversion; matching protocols pass through.",
     "supplierName": "Provider Name",
     "supplierNameRequired": "Provider Name *",

@@ -27,6 +27,7 @@
     }
   },
   "security": {
+    "refreshLogs": "記録を更新",
     "riskCritical": "CRITICAL（重大）",
     "refreshSuccess": "セキュリティ記録を更新しました",
     "refreshFailed": "セキュリティ記録の更新に失敗しました。再試行してください。",
@@ -1496,6 +1497,7 @@
     "openReleaseNotesFailed": "リリースノートを開けませんでした:"
   },
   "providerForm": {
+    "missingRequiredFields": "入力してください: {{fields}}",
     "protocolBridgeHint": "プロバイダーの上流プロトコルを選択します。異なる場合はローカル変換のためルート引継ぎが必要です。同じ場合はそのまま転送します。",
     "supplierName": "プロバイダー名",
     "supplierNameRequired": "プロバイダー名 *",

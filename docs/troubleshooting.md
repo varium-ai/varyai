@@ -51,6 +51,10 @@ Local proxy configuration can refer to `http://127.0.0.1:15721` or its `/v1` end
 
 Codex can rotate its refresh token while an Official provider card still has an older login snapshot. When switching back, Vary AI now retains a newer native login for the same user and workspace instead of restoring the older token. A different user's or workspace's login is not substituted. A token already invalidated by the server still requires signing in again through Codex; this change cannot restore it.
 
+### Qoder or WorkBuddy reports missing provider fields
+
+Custom providers require a provider name, model ID, URL, and API key. Saving lists all empty or whitespace-only fields together and omits fields already filled in. Additional model rows also require an ID. Official login entries do not require custom model credentials unless a custom model is being added. A toast showing `providerForm.nameRequired` indicates a build with a missing translation reference; use a build containing the fix.
+
 ### Kimi shows an internal ID as the provider group
 
 Apply the saved provider again to migrate its Kimi group to the provider name shown in Vary AI. Renaming it also updates model references while preserving model aliases and the selected model. Choose a unique provider name: Vary AI refuses to overwrite an existing native group with the same name. Restart Kimi when it needs to reload its configuration.

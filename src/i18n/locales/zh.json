@@ -235,7 +235,7 @@
     "logsTitle": "安全事件",
     "logsDesc": "记录发送前检测到的敏感信息、AI 应用与处理方式",
     "clearLogs": "清空日志",
-    "refreshLogs": "刷新日志",
+    "refreshLogs": "刷新记录",
     "refreshSuccess": "安全记录已刷新",
     "refreshFailed": "刷新安全记录失败，请重试",
     "alertTitle": "检测到敏感信息",
@@ -1571,6 +1571,7 @@
     "openReleaseNotesFailed": "打开更新日志失败:"
   },
   "providerForm": {
+    "missingRequiredFields": "请填写：{{fields}}",
     "protocolBridgeHint": "选择供应商实际提供的上游协议。不同协议需要开启路由接管，由本地代理转换；相同协议直接转发。",
     "supplierName": "供应商名称",
     "supplierNameRequired": "供应商名称 *",

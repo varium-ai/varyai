@@ -196,12 +196,21 @@ export function WorkBuddyProviderForm({
       !!onAddThirdParty &&
       [url, apiKey, modelId, ...additionalModels].some((value) => value.trim());
     const needsModel = !isOfficial || addThirdParty;
-    if (!name) {
-      toast.error(t("providerForm.nameRequired"));
-      return;
+    const modelIds = [modelId, ...additionalModels].map((id) => id.trim());
+    const missingFields: string[] = [];
+    if (!name) missingFields.push(t("provider.name"));
+    if (needsModel) {
+      if (modelIds.some((id) => !id))
+        missingFields.push(t(`${desktopClient}.form.modelId`));
+      if (!url.trim()) missingFields.push("URL");
+      if (!apiKey.trim()) missingFields.push(t("universalProvider.apiKey"));
     }
-    if (needsModel && (!modelId.trim() || !apiKey.trim())) {
-      toast.error(t(`${desktopClient}.form.required`));
+    if (missingFields.length > 0) {
+      toast.error(
+        t("providerForm.missingRequiredFields", {
+          fields: missingFields.join(", "),
+        }),
+      );
       return;
     }
     let config: Record<string, unknown> = {};
@@ -225,11 +234,6 @@ export function WorkBuddyProviderForm({
       }
     }
     if (needsModel) {
-      const modelIds = [modelId, ...additionalModels].map((id) => id.trim());
-      if (modelIds.some((id) => !id)) {
-        toast.error(t(`${desktopClient}.form.required`));
-        return;
-      }
       if (new Set(modelIds).size !== modelIds.length) {
         toast.error(t(`${desktopClient}.form.duplicateModels`));
         return;

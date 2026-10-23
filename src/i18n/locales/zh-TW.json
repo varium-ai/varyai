@@ -27,6 +27,7 @@
     }
   },
   "security": {
+    "refreshLogs": "重新整理記錄",
     "riskCritical": "CRITICAL 嚴重",
     "refreshSuccess": "安全記錄已重新整理",
     "refreshFailed": "重新整理安全記錄失敗，請重試",
@@ -1497,6 +1498,7 @@
     "openReleaseNotesFailed": "開啟更新日誌失敗："
   },
   "providerForm": {
+    "missingRequiredFields": "請填寫：{{fields}}",
     "protocolBridgeHint": "選擇供應商實際提供的上游協議。不同協議需開啟路由接管以轉換；相同協議直接轉發。",
     "supplierName": "供應商名稱",
     "supplierNameRequired": "供應商名稱 *",
