@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { useState } from "react";
+import { toast } from "sonner";
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -165,7 +167,10 @@ const choose = (label: string, option: string) => {
 };
 const latestFilter = () =>
   state.query.mock.calls.at(-1)![0] as SecurityEventFilter;
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 beforeEach(() => {
   vi.clearAllMocks();
   state.refetch.mockReset();
@@ -464,5 +469,131 @@ describe("unified event snapshot and clear boundaries", () => {
         }),
       ),
     );
+  });
+});
+
+describe("manual refresh feedback", () => {
+  it.each(["security_events", "tool_calls"] as const)(
+    "keeps the original icon spinning and table loading for 300 ms in %s",
+    async (view) => {
+      vi.useFakeTimers();
+      render(<Harness />);
+      if (view === "tool_calls")
+        fireEvent.click(screen.getByText("securityEvents.toolCallsView"));
+      const button = screen.getByRole("button", {
+        name: "security.refreshLogs",
+      });
+      fireEvent.click(button);
+      expect(button).toHaveAttribute("aria-busy", "true");
+      expect(button.querySelector("svg")).toHaveClass(
+        "lucide-refresh-cw",
+        "animate-spin",
+      );
+      const loading = screen.getByTestId("security-events-loading");
+      expect(loading).toHaveAttribute("role", "status");
+      expect(loading).toHaveTextContent("security.loadingLogs");
+      expect(loading.querySelector("svg")).toHaveClass("animate-spin");
+      expect(loading.closest("table")).toBeNull();
+      expect(screen.getByText("security.nextPage")).toBeDisabled();
+      fireEvent.click(button);
+      expect(state.refetch).toHaveBeenCalledTimes(1);
+      await act(async () => vi.advanceTimersByTimeAsync(299));
+      expect(button).toBeDisabled();
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(button).toBeEnabled();
+      expect(button).toHaveAttribute("aria-busy", "false");
+      expect(button.querySelector("svg")).not.toHaveClass("animate-spin");
+      expect(screen.queryByTestId("security-events-loading")).toBeNull();
+      expect(toast.success).not.toHaveBeenCalled();
+    },
+  );
+
+  it("waits for all requests after a partial failure, reports a safe error and permits retry", async () => {
+    vi.useFakeTimers();
+    let finishSummary!: () => void;
+    state.refetch.mockRejectedValueOnce(new Error("synthetic-private-detail"));
+    state.summaryRefetch.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishSummary = resolve;
+      }),
+    );
+    render(<Harness />);
+    const button = screen.getByRole("button", { name: "security.refreshLogs" });
+    fireEvent.click(button);
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+    expect(button).toBeDisabled();
+    expect(toast.error).not.toHaveBeenCalled();
+    await act(async () => finishSummary());
+    expect(button).toBeEnabled();
+    expect(toast.error).toHaveBeenCalledExactlyOnceWith(
+      "security.refreshFailed",
+    );
+    expect(document.body.innerHTML).not.toContain("synthetic-private-detail");
+    expect(toast.success).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+    expect(button).toBeEnabled();
+    expect(state.refetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats query result errors as refresh failures", async () => {
+    vi.useFakeTimers();
+    state.summaryRefetch.mockResolvedValue({ isError: true });
+    render(<Harness />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "security.refreshLogs" }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+    expect(toast.error).toHaveBeenCalledWith("security.refreshFailed");
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+});
+
+describe("clear action feedback", () => {
+  it("uses a native scope title and focuses cancel when confirmation opens", async () => {
+    render(<Harness />);
+    const button = screen.getByRole("button", {
+      name: "securityEvents.clearFiltered",
+    });
+    expect(button).toHaveAttribute("title", "securityEvents.clearFiltered");
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "common.cancel" }),
+      ).toHaveFocus(),
+    );
+    expect(state.clear).not.toHaveBeenCalled();
+  });
+
+  it("blocks duplicate submissions and dismissal while deleting, then allows retry after failure", async () => {
+    let fail!: (error: Error) => void;
+    state.clear.mockReturnValueOnce(
+      new Promise((_, reject) => {
+        fail = reject;
+      }),
+    );
+    render(<Harness />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "securityEvents.clearFiltered" }),
+    );
+    const dialog = screen.getByRole("dialog");
+    const confirm = within(dialog).getByRole("button", {
+      name: "common.confirm",
+    });
+    fireEvent.click(confirm);
+    expect(confirm).toBeDisabled();
+    expect(within(dialog).getByText("common.cancel")).toBeDisabled();
+    fireEvent.click(confirm);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(state.clear).toHaveBeenCalledTimes(1);
+    await act(async () => fail(new Error("synthetic-clear-error")));
+    expect(confirm).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "securityEvents.clearFailed",
+    );
+    fireEvent.click(confirm);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(state.clear).toHaveBeenCalledTimes(2);
   });
 });

@@ -22,6 +22,12 @@ Client errors and notifications must not contain matched sensitive plaintext. St
 
 The detector itself executes locally. That statement does not describe the whole application's network behavior: see the [statistics and update review](../data-and-network.md). No performance benchmark is asserted here.
 
+## Security Center refresh
+
+The records refresh button returns to the first filtered page and reloads the unified event list and range summary, including all three action totals. The table area shows a centered loading spinner and message, while the button's original refresh icon rotates. Loading remains visible for at least 300 milliseconds and until every query finishes; refresh and pagination controls are disabled during that time. Successful refreshes restore the table without a success message. If any query fails, the page shows a generic failure message without backend error details and allows another attempt.
+
+The clear button's native `title` tooltip and confirmation dialog explain that clearing permanently deletes matching sensitive-information and tool-observation events across all pages of the current view and filters. Opening or canceling the dialog does not delete records. Confirmation starts the deletion and disables both dialog actions until it finishes; a failure keeps the dialog open for retry. Successful deletion reloads the records and statistics and returns pagination to the first page.
+
 ## Implementation references
 
 - [Rules](../../src-tauri/src/proxy/security/builtin_rules.rs)
