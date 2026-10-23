@@ -1855,6 +1855,7 @@
     "pricingModelSourceHint": "選擇依請求模型還是回傳模型進行定價比對"
   },
   "codexConfig": {
+    "importModelsHint": "取得模型列表只載入候選項，不修改映射；一鍵設定將全部模型逐行匯入下方並跳過重複項。",
     "authJson": "auth.json (JSON) *",
     "authJsonPlaceholder": "{\n    \"OPENAI_API_KEY\": \"sk-your-api-key-here\"\n}",
     "authJsonHint": "Codex auth.json 設定內容",

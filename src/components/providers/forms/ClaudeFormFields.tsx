@@ -989,9 +989,9 @@ export function ClaudeFormFields({
 
             {/* 模型映射 */}
             <div className="space-y-1 border-t border-border-default pt-2">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <FormLabel>{t("providerForm.modelMappingLabel")}</FormLabel>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   {/* 一键设置按钮 */}
                   <Button
                     type="button"

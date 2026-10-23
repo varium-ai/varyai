@@ -39,6 +39,7 @@ import {
   Loader2,
   Plus,
   Trash2,
+  Wand2,
 } from "lucide-react";
 import EndpointSpeedTest from "./EndpointSpeedTest";
 import { CodexOAuthSection } from "./CodexOAuthSection";
@@ -50,10 +51,7 @@ import {
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
-import {
-  computeAutoImportCatalogModels,
-  MAX_AUTO_IMPORT_CATALOG_MODELS,
-} from "./helpers/codexCatalogAutoImport";
+import { computeAutoImportCatalogModels } from "./helpers/codexCatalogAutoImport";
 import { CustomUserAgentField } from "./CustomUserAgentField";
 import { LocalProxyRequestOverridesField } from "./LocalProxyRequestOverridesField";
 import { cn } from "@/lib/utils";
@@ -433,6 +431,7 @@ export function CodexFormFields({
 
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const [importingModels, setImportingModels] = useState(false);
   // 拉取请求序号：请求身份（Base URL / 完整地址开关 / API Key / 自定义 UA）
   // 一变即自增，清空旧列表并作废在途响应——/models 结果可能按 Key 的模型
   // 授权返回，换号后残留旧列表会误导选择
@@ -441,6 +440,10 @@ export function CodexFormFields({
   useEffect(() => {
     fetchModelsSeqRef.current += 1;
     setFetchedModels((prev) => (prev.length === 0 ? prev : []));
+    setIsFetchingModels(false);
+    return () => {
+      fetchModelsSeqRef.current += 1;
+    };
   }, [
     codexBaseUrl,
     isFullUrl,
@@ -560,137 +563,104 @@ export function CodexFormFields({
     [codexChatReasoning, onCodexChatReasoningChange],
   );
 
-  const handleFetchModelsSuccess = useCallback(
-    (models: FetchedModel[]) => {
-      setFetchedModels(models);
-      if (models.length === 0) {
-        toast.info(t("providerForm.fetchModelsEmpty"));
-        return;
-      }
+  const canFetchModels = isXaiOauthPreset
+    ? isXaiOauthAuthenticated
+    : Boolean(codexBaseUrl.trim() && codexApiKey.trim());
 
-      if (canEditCatalog) {
-        const result = computeAutoImportCatalogModels(
-          catalogRowsRef.current,
-          models,
-          codexModelRef.current,
-        );
-
-        if (result.importedCount > 0) {
-          setCatalogRows((current) => {
-            return result.nextCatalogModels.map((item) => {
-              const existing = current.find(
-                (r) => r.model.trim() === item.model.trim(),
-              );
-              return existing
-                ? { ...existing, ...item }
-                : createCatalogRow(item);
-            });
-          });
-          setAdvancedExpanded(true);
-        }
-
-        if (
-          result.suggestedDefaultModel &&
-          !codexModelRef.current.trim() &&
-          onModelChange
-        ) {
-          onModelChange(result.suggestedDefaultModel);
-        }
-
-        if (result.importedCount === 0) {
-          toast.success(
-            t("providerForm.fetchModelsSuccess", { count: models.length }),
-          );
-        } else if (result.totalValidCount <= MAX_AUTO_IMPORT_CATALOG_MODELS) {
-          toast.success(
-            t("codexConfig.fetchModelsAutoImportAll", {
-              count: result.totalValidCount,
-              defaultValue: `已获取 ${result.totalValidCount} 个模型并自动导入模型目录`,
-            }),
+  const handleFetchModels = useCallback(
+    async (importModels = false) => {
+      if (!canFetchModels) {
+        if (isXaiOauthPreset) {
+          toast.error(
+            t("xaiOauth.loginRequired", { defaultValue: "请先登录 xAI 账号" }),
           );
         } else {
-          toast.success(
-            t("codexConfig.fetchModelsAutoImportTop", {
-              total: result.totalValidCount,
-              count: MAX_AUTO_IMPORT_CATALOG_MODELS,
-              defaultValue: `已获取 ${result.totalValidCount} 个模型，默认导入前 10 个，其余可手动添加`,
-            }),
-          );
+          showFetchModelsError(null, t, {
+            hasApiKey: !!codexApiKey.trim(),
+            hasBaseUrl: !!codexBaseUrl.trim(),
+          });
         }
-      } else {
-        toast.success(
-          t("providerForm.fetchModelsSuccess", { count: models.length }),
-        );
-      }
-    },
-    [canEditCatalog, onModelChange, t],
-  );
-
-  const handleFetchModels = useCallback(() => {
-    // xAI OAuth 托管预设：不走 base_url + key 的 /models 探测，
-    // 直接用托管账号 token 拉取（与 Claude 表单同一后端命令）
-    if (isXaiOauthPreset) {
-      if (!isXaiOauthAuthenticated) {
-        toast.error(
-          t("xaiOauth.loginRequired", {
-            defaultValue: "请先登录 xAI 账号",
-          }),
-        );
         return;
       }
       const seq = ++fetchModelsSeqRef.current;
       setIsFetchingModels(true);
-      fetchXaiOauthModels(selectedXaiAccountId ?? null)
-        .then((models) => {
-          if (seq !== fetchModelsSeqRef.current) return;
-          handleFetchModelsSuccess(models);
-        })
-        .catch((err) => {
-          if (seq !== fetchModelsSeqRef.current) return;
-          console.warn("[XaiOAuth] Failed to fetch models:", err);
-          showFetchModelsError(err, t);
-        })
-        .finally(() => setIsFetchingModels(false));
-      return;
-    }
-
-    if (!codexBaseUrl || !codexApiKey) {
-      showFetchModelsError(null, t, {
-        hasApiKey: !!codexApiKey,
-        hasBaseUrl: !!codexBaseUrl,
-      });
-      return;
-    }
-    const seq = ++fetchModelsSeqRef.current;
-    setIsFetchingModels(true);
-    fetchModelsForConfig(
+      try {
+        const models = isXaiOauthPreset
+          ? await fetchXaiOauthModels(selectedXaiAccountId ?? null)
+          : await fetchModelsForConfig(
+              codexBaseUrl,
+              codexApiKey,
+              isFullUrl,
+              undefined,
+              customUserAgent,
+            );
+        if (seq !== fetchModelsSeqRef.current) return;
+        setFetchedModels(models);
+        if (!importModels) {
+          if (models.length) {
+            toast.success(
+              t("providerForm.fetchModelsSuccess", { count: models.length }),
+            );
+          } else {
+            toast.info(t("providerForm.fetchModelsEmpty"));
+          }
+        }
+        return models;
+      } catch (err) {
+        if (seq === fetchModelsSeqRef.current) showFetchModelsError(err, t);
+      } finally {
+        if (seq === fetchModelsSeqRef.current) setIsFetchingModels(false);
+      }
+    },
+    [
+      canFetchModels,
       codexBaseUrl,
       codexApiKey,
       isFullUrl,
-      undefined,
       customUserAgent,
-    )
-      .then((models) => {
-        if (seq !== fetchModelsSeqRef.current) return;
-        handleFetchModelsSuccess(models);
-      })
-      .catch((err) => {
-        if (seq !== fetchModelsSeqRef.current) return;
-        console.warn("[ModelFetch] Failed:", err);
-        showFetchModelsError(err, t);
-      })
-      .finally(() => setIsFetchingModels(false));
-  }, [
-    codexBaseUrl,
-    codexApiKey,
-    isFullUrl,
-    customUserAgent,
-    isXaiOauthPreset,
-    isXaiOauthAuthenticated,
-    selectedXaiAccountId,
-    handleFetchModelsSuccess,
-    t,
-  ]);
+      isXaiOauthPreset,
+      selectedXaiAccountId,
+      t,
+    ],
+  );
+
+  const handleQuickSet = async () => {
+    setImportingModels(true);
+    try {
+      const models = fetchedModels.length
+        ? fetchedModels
+        : await handleFetchModels(true);
+      if (!models) return;
+      const result = computeAutoImportCatalogModels(
+        catalogRowsRef.current,
+        models,
+        codexModelRef.current,
+      );
+      if (!result.totalValidCount) {
+        toast.info(t("providerForm.fetchModelsEmpty"));
+        return;
+      }
+      setCatalogRows((current) =>
+        result.nextCatalogModels.map((item) => {
+          const existing = current.find(
+            (row) => row.model.trim() === item.model.trim(),
+          );
+          return existing ? { ...existing, ...item } : createCatalogRow(item);
+        }),
+      );
+      setAdvancedExpanded(true);
+      if (result.suggestedDefaultModel && !codexModelRef.current.trim()) {
+        onModelChange?.(result.suggestedDefaultModel);
+      }
+      toast.success(
+        t("providerForm.quickSetSuccess", {
+          count: result.nextCatalogModels.length,
+        }),
+      );
+    } finally {
+      setImportingModels(false);
+    }
+  };
 
   const handleAddCatalogRow = useCallback(() => {
     if (!onCatalogModelsChange) return;
@@ -752,12 +722,31 @@ export function CodexFormFields({
   }, [onCatalogModelsChange, trimmedDefaultModel]);
 
   const renderCatalogActionButtons = (onAdd: () => void, addLabel: string) => (
-    <div className="flex gap-1">
+    <div className="flex flex-wrap gap-2">
       <Button
         type="button"
         variant="outline"
         size="sm"
-        onClick={handleFetchModels}
+        onClick={handleQuickSet}
+        disabled={
+          isFetchingModels ||
+          importingModels ||
+          (!fetchedModels.length && !canFetchModels)
+        }
+        className="h-7 gap-1"
+      >
+        {isFetchingModels || importingModels ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Wand2 className="h-3.5 w-3.5" />
+        )}
+        {t("providerForm.quickSetModels", { defaultValue: "一键设置" })}
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => handleFetchModels()}
         disabled={isFetchingModels}
         className="h-7 gap-1"
       >
@@ -878,21 +867,23 @@ export function CodexFormFields({
               }
               className="flex-1"
             />
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              onClick={handleFetchModels}
-              disabled={isFetchingModels}
-              className="shrink-0"
-              title={t("providerForm.fetchModels")}
-            >
-              {isFetchingModels ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Download className="h-4 w-4" />
-              )}
-            </Button>
+            {!canEditCatalog && (
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => handleFetchModels()}
+                disabled={isFetchingModels}
+                className="shrink-0"
+                title={t("providerForm.fetchModels")}
+              >
+                {isFetchingModels ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+              </Button>
+            )}
             {defaultModelSuggestions.length > 0 && (
               <ModelDropdown
                 models={defaultModelSuggestions}
@@ -1259,7 +1250,7 @@ export function CodexFormFields({
                 )}
               >
                 <div className="space-y-1">
-                  <div className="flex items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <FormLabel>
                       {t("codexConfig.modelMappingTitle", {
                         defaultValue: "模型映射",
@@ -1272,6 +1263,9 @@ export function CodexFormFields({
                       }),
                     )}
                   </div>
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    {t("codexConfig.importModelsHint")}
+                  </p>
                   <p className="text-xs leading-relaxed text-muted-foreground">
                     {t("codexConfig.modelMappingHint", {
                       defaultValue:

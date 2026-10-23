@@ -32,6 +32,79 @@ describe("provider upstream protocol selection", () => {
     i18n.addResourceBundle("zh", "translation", zh, true, true);
   });
 
+  it("saves and reopens all Codex models after fetching candidates separately", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    const catalog = Array.from({ length: 15 }, (_, i) => ({
+      id: `fixture-model-${i}`,
+      ownedBy: null,
+    }));
+    vi.mocked(fetchModelsForConfig).mockResolvedValue(catalog);
+    const initialData = {
+      name: "Codex import fixture",
+      category: "third_party" as const,
+      settingsConfig: {
+        auth: { OPENAI_API_KEY: "fixture-key" },
+        config:
+          'model = "existing-default"\nmodel_provider = "custom"\n[model_providers.custom]\nname = "Relay"\nbase_url = "https://relay.example/v1"\nwire_api = "responses"\n',
+      },
+    };
+    const view = render(
+      <QueryClientProvider client={createTestQueryClient()}>
+        <ProviderForm
+          appId="codex"
+          providerId="fixture-codex-import"
+          submitLabel="Save imported models"
+          onSubmit={onSubmit}
+          onCancel={vi.fn()}
+          initialData={initialData}
+        />
+      </QueryClientProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: "获取模型列表" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "一键设置" })).toBeEnabled(),
+    );
+    expect(
+      screen.queryAllByRole("textbox", { name: "实际请求模型" }),
+    ).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "一键设置" }));
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("textbox", { name: "实际请求模型" }),
+      ).toHaveLength(15),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Save imported models" }),
+    );
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    const saved = JSON.parse(onSubmit.mock.calls[0][0].settingsConfig);
+    expect(saved.modelCatalog.models).toEqual(
+      catalog.map(({ id }) => ({ model: id, displayName: id })),
+    );
+    expect(saved.config).toContain('model = "existing-default"');
+    expect(saved.auth).toEqual(initialData.settingsConfig.auth);
+    view.unmount();
+    render(
+      <QueryClientProvider client={createTestQueryClient()}>
+        <ProviderForm
+          appId="codex"
+          providerId="fixture-codex-import"
+          submitLabel="Save imported models"
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          initialData={{ ...initialData, settingsConfig: saved }}
+        />
+      </QueryClientProvider>,
+    );
+    expect(
+      screen
+        .getAllByRole("textbox", { name: "实际请求模型" })
+        .map((input) => (input as HTMLInputElement).value),
+    ).toEqual(catalog.map(({ id }) => id));
+    vi.mocked(fetchModelsForConfig).mockResolvedValue([]);
+  });
+
   it("saves and reopens every imported Claude model as a separate row", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();

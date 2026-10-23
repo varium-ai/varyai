@@ -1854,6 +1854,7 @@
     "pricingModelSourceHint": "リクエストモデルまたはレスポンスモデルで価格を照合するかを選択"
   },
   "codexConfig": {
+    "importModelsHint": "モデル一覧の取得では候補のみを読み込み、マッピングは変更しません。一括設定ですべてのモデルを下にインポートし、重複を除外します。",
     "authJson": "auth.json (JSON) *",
     "authJsonPlaceholder": "{\n  \"OPENAI_API_KEY\": \"sk-your-api-key-here\"\n}",
     "authJsonHint": "Codex の auth.json 設定内容",
