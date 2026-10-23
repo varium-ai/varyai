@@ -167,6 +167,15 @@ pub fn gemini_to_anthropic_with_shadow_and_hints(
         }));
     }
 
+    if body
+        .get("candidates")
+        .and_then(Value::as_array)
+        .is_some_and(|c| c.len() > 1)
+    {
+        return Err(ProxyError::TransformError(
+            "Multiple candidates cannot cross protocols".into(),
+        ));
+    }
     let candidate = body
         .get("candidates")
         .and_then(|value| value.as_array())
@@ -1211,8 +1220,7 @@ pub(crate) fn build_anthropic_usage(usage: Option<&Value>) -> Value {
         .unwrap_or(0);
     let total_tokens = usage
         .get("totalTokenCount")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0);
+        .and_then(|value| value.as_u64());
     let cached_tokens = usage
         .get("cachedContentTokenCount")
         .and_then(|value| value.as_u64())
@@ -1223,8 +1231,16 @@ pub(crate) fn build_anthropic_usage(usage: Option<&Value>) -> Value {
     // =false 不再从 input 扣 cache，因此这里必须先扣减，否则缓存 token 会被双重计费
     // （一次按完整 input 价、一次按 cache_read 价）。output 仍按 total-prompt 计算
     // （prompt 是总输入，扣减只作用于 input/cache 的拆分，不影响 output）。
+    // When total is omitted, combine candidate output and reasoning tokens.
     let input_tokens = prompt_tokens.saturating_sub(cached_tokens);
-    let output_tokens = total_tokens.saturating_sub(prompt_tokens);
+    let output_tokens = total_tokens
+        .map(|total| total.saturating_sub(prompt_tokens))
+        .unwrap_or_else(|| {
+            usage["candidatesTokenCount"]
+                .as_u64()
+                .unwrap_or(0)
+                .saturating_add(usage["thoughtsTokenCount"].as_u64().unwrap_or(0))
+        });
 
     let mut result = json!({
         "input_tokens": input_tokens,

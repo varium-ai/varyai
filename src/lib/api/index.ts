@@ -15,6 +15,7 @@ export { openclawApi } from "./openclaw";
 export { sessionsApi } from "./sessions";
 export { workspaceApi } from "./workspace";
 export { securityApi } from "./security";
+export { securityEventsApi } from "./securityEvents";
 export { toolRiskApi } from "./toolRisk";
 export * as configApi from "./config";
 export * as authApi from "./auth";

@@ -140,6 +140,40 @@ describe("useProxyStatus", () => {
     }
   });
 
+  it("detects an external takeover reset while the proxy keeps running", async () => {
+    let takenOver = true;
+    invokeMock.mockImplementation((command: string) =>
+      Promise.resolve(
+        command === "get_proxy_status"
+          ? { running: true }
+          : { codex: takenOver },
+      ),
+    );
+    const { wrapper, queryClient } = createWrapper();
+    const { result, unmount } = renderHook(() => useProxyStatus(), { wrapper });
+
+    try {
+      await waitFor(() => {
+        expect(result.current.isRunning).toBe(true);
+        expect(result.current.takeoverStatus?.codex).toBe(true);
+      });
+
+      // Another app restores the shared native configuration without emitting
+      // a Tauri event to this process. The proxy itself is still alive.
+      takenOver = false;
+      await waitFor(
+        () => {
+          expect(result.current.isRunning).toBe(true);
+          expect(result.current.takeoverStatus?.codex).toBe(false);
+        },
+        { timeout: 3500 },
+      );
+    } finally {
+      unmount();
+      queryClient.clear();
+    }
+  });
+
   it("shows interpolated address and port after proxy server starts", async () => {
     const { wrapper } = createWrapper();
     const { result } = renderHook(() => useProxyStatus(), { wrapper });

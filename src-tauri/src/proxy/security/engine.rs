@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::borrow::Cow;
 
 use super::builtin_rules::{BuiltinRule, BUILTIN_RULES, GLOBAL_AHO_CORASICK};
-use super::extractor::extract_payload_texts;
+use super::extractor::{extract_payload_texts, CurrentTurn};
 use super::pii::{scan_chinese_id_cards, scan_chinese_phone_numbers};
 use super::runtime::{get_security_runtime, SecurityRuntimeConfig};
 use super::types::{AuditAction, AuditFinding, RiskLevel, RuleCategory, SecurityInspectionResult};
@@ -31,9 +31,13 @@ impl SecurityAuditEngine {
             return SecurityInspectionResult::pass();
         }
 
+        let current_turn = CurrentTurn::new(body);
+        let (current, historical): (Vec<_>, Vec<_>) = text_nodes
+            .into_iter()
+            .partition(|node| !current_turn.is_historical(&node.location));
         let mut all_findings = Vec::new();
 
-        for node in text_nodes {
+        for node in current.into_iter().chain(historical) {
             let mut findings = Self::inspect_text_with_context(
                 node.text,
                 &node.location,
@@ -47,7 +51,7 @@ impl SecurityAuditEngine {
             return SecurityInspectionResult::pass();
         }
 
-        // Retain the first hit for each rule/content pair within this request.
+        // Prefer the current-turn location so history cannot hide a repeated new input.
         let mut seen = std::collections::HashSet::new();
         all_findings.retain(|f| {
             let Some(identity) = f.identity else {

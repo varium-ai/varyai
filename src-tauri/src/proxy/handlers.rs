@@ -842,6 +842,7 @@ pub async fn handle_chat_completions(
     };
 
     let connection_guard = result.connection_guard.take();
+    ctx.converted_output = result.claude_api_format.is_some();
     ctx.outbound_model = result.outbound_model.take();
     ctx.provider = result.provider;
     let response = result.response;
@@ -943,6 +944,7 @@ async fn handle_responses_for_app(
     };
 
     let connection_guard = result.connection_guard.take();
+    ctx.converted_output = result.claude_api_format.is_some();
     ctx.outbound_model = result.outbound_model.take();
     ctx.provider = result.provider;
     let response = result.response;
@@ -2298,6 +2300,7 @@ pub async fn handle_gemini(
     };
 
     let connection_guard = result.connection_guard.take();
+    ctx.converted_output = result.claude_api_format.is_some();
     ctx.outbound_model = result.outbound_model.take();
     ctx.provider = result.provider;
     let response = result.response;

@@ -1237,10 +1237,7 @@ impl ProxyService {
                     .db
                     .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
                     .map_err(|e| e.to_string())?,
-            workbuddy: self
-                .db
-                .get_bool_flag(super::workbuddy_proxy::ENABLED_KEY)
-                .map_err(|e| e.to_string())?,
+            workbuddy: self.workbuddy_active().await,
             claude: claude_enabled,
             codex: codex_enabled,
             gemini: gemini_enabled,
@@ -1248,6 +1245,30 @@ impl ProxyService {
             opencode: opencode_enabled,
             openclaw: openclaw_enabled,
         })
+    }
+
+    async fn workbuddy_active(&self) -> bool {
+        if !self.is_running().await
+            || !self
+                .db
+                .get_bool_flag(super::workbuddy_proxy::ENABLED_KEY)
+                .unwrap_or(false)
+        {
+            return false;
+        }
+        let Ok(Some(saved)) = self.db.get_live_backup("workbuddy").await else {
+            return false;
+        };
+        let Ok(backup) =
+            serde_json::from_str::<super::workbuddy_proxy::Backup>(&saved.original_config)
+        else {
+            return false;
+        };
+        tokio::task::spawn_blocking(move || backup.is_applied())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(false)
     }
 
     pub(crate) async fn get_qoder_settings(
@@ -11825,6 +11846,14 @@ experimental_bearer_token = "PROXY_MANAGED"
         assert_eq!(
             std::fs::read_to_string(dir.path().join("settings.json")).expect("restored on exit"),
             "{}"
+        );
+        assert!(
+            !service
+                .get_takeover_status()
+                .await
+                .expect("restored status")
+                .workbuddy,
+            "the saved enabled preference must not claim a restored client is protected"
         );
         service
             .set_workbuddy_takeover_at(dir.path(), true)

@@ -254,7 +254,12 @@ export type ClaudeApiFormat =
 // - "openai_responses": OpenAI Responses API 格式，直接透传
 // - "openai_chat": OpenAI Chat Completions 格式，需要本地路由转换
 // - "anthropic": native Anthropic Messages format, needs local routing to convert to Responses
-export type CodexApiFormat = "openai_responses" | "openai_chat" | "anthropic";
+// - "gemini_native": Gemini generateContent format, needs local routing to convert to Responses
+export type CodexApiFormat =
+  | "openai_responses"
+  | "openai_chat"
+  | "anthropic"
+  | "gemini_native";
 
 export interface CodexCatalogModel {
   model: string;

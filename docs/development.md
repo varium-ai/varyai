@@ -41,6 +41,8 @@ Use `pnpm exec vitest run <test-files>` to select frontend tests. There is no `p
 
 ## Toolchain dependency review
 
+The Windows-to-WSL2 CI contract keeps the distribution running with a detached Linux process while Windows accesses its UNC filesystem. Preparation, contract execution, and cleanup have separate timeouts. Preparation logs distinguish Linux directory setup from Windows UNC access so a stalled runner can be diagnosed without waiting for the whole job timeout. Both the PR workflow and the manual WSL2 workflow use the same lifecycle.
+
 Run `pnpm audit --prod` for application dependencies and `pnpm audit` for the complete development tree. The checked-in overrides set security floors for build and test dependencies; review compatibility when removing or changing them.
 
 The remaining known development dependency advisory is [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm) in `braces` 3.0.3, used by the Tailwind 3 globbing toolchain. As of October 22, 2026, no patched version is published. This package is absent from the production dependency tree. The documented build consumes repository-controlled patterns rather than a public glob-processing API; this limits exposure but does not fix the dependency. Maintainers must revisit the exception when a patch or a compatible toolchain replacement becomes available, or when a workflow starts accepting untrusted patterns. Do not suppress the advisory as though it were fixed.

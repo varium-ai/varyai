@@ -738,8 +738,12 @@ describe("risk rule draft and condition safety", () => {
           suppressedCount: 0,
         },
       ];
-      render(<ToolRiskRulesPanel />);
-      fireEvent.click(screen.getByTestId("tool-risk-create-rule-19"));
+      render(
+        <ToolRiskRulesPanel
+          pendingRuleSeed={{ operationCategory }}
+          onRuleSeedConsumed={vi.fn()}
+        />,
+      );
       expect(conditionField()).toHaveTextContent("toolRisk.pickConditionField");
       expect(screen.getByTestId("tool-risk-save")).toBeDisabled();
       expect(
@@ -769,8 +773,15 @@ describe("risk rule draft and condition safety", () => {
         suppressedCount: 0,
       },
     ];
-    render(<ToolRiskRulesPanel />);
-    fireEvent.click(screen.getByTestId("tool-risk-create-rule-19"));
+    render(
+      <ToolRiskRulesPanel
+        pendingRuleSeed={{
+          operationCategory: "shell_exec",
+          commandClass: "unknown",
+        }}
+        onRuleSeedConsumed={vi.fn()}
+      />,
+    );
     expect(
       screen.getByLabelText("toolRisk.fieldCommandClass"),
     ).toHaveTextContent("toolRisk.commandClass.unknown");
@@ -1424,5 +1435,39 @@ describe("P2-9 policy history entry and safe errors", () => {
       expect(toast.error).toHaveBeenLastCalledWith("toolRisk.ruleLoadFailed"),
     );
     expect(screen.queryByTestId("tool-risk-save")).toBeNull();
+  });
+});
+
+describe("unified tool log migration", () => {
+  it("keeps the rules page free of embedded records and the extra tool-call link", () => {
+    render(<ToolRiskRulesPanel />);
+    expect(screen.queryByTestId("tool-risk-events-table")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "securityEvents.openToolCalls" }),
+    ).toBeNull();
+  });
+  it("consumes a pending enum seed once without reopening on rerender", () => {
+    const consume = vi.fn();
+    const seed = {
+      operationCategory: "shell_exec" as const,
+      commandClass: "network_egress" as const,
+    };
+    const { rerender } = render(
+      <ToolRiskRulesPanel
+        pendingRuleSeed={seed}
+        onRuleSeedConsumed={consume}
+      />,
+    );
+    expect(consume).toHaveBeenCalledOnce();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "common.cancel" }));
+    rerender(
+      <ToolRiskRulesPanel
+        pendingRuleSeed={seed}
+        onRuleSeedConsumed={consume}
+      />,
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(consume).toHaveBeenCalledOnce();
   });
 });

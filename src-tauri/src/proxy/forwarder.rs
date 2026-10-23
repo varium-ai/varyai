@@ -1173,6 +1173,78 @@ impl RequestForwarder {
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
     ) -> Result<(ProxyResponse, Option<String>, Option<String>), ProxyError> {
+        if let Some(bridge) = super::protocol_bridge::Bridge::route(app_type, endpoint, provider) {
+            let mut body = body.clone();
+            if bridge.input == super::protocol_bridge::Protocol::Responses {
+                self.codex_chat_history.enrich_request(&mut body).await;
+            }
+            let tool_context =
+                super::providers::transform_codex_chat::build_codex_tool_context_from_request(
+                    &body,
+                );
+            let body = bridge.request(body, endpoint)?;
+            let bridge_context = super::protocol_bridge::BridgeContext {
+                tool_context,
+                shadow: self.gemini_shadow.clone(),
+                history: self.codex_chat_history.clone(),
+                provider_id: provider.id.clone(),
+                session_id: self
+                    .session_client_provided
+                    .then(|| self.session_id.clone()),
+                hints: super::providers::transform_gemini::extract_anthropic_tool_schema_hints(
+                    &body,
+                ),
+            };
+            let streaming = body["stream"].as_bool().unwrap_or(false);
+            let bridged_provider = bridge.provider(provider);
+            let bridged_adapter = super::protocol_bridge::BridgeAdapter {
+                original: adapter,
+                output: bridge.output,
+            };
+            let bridge_endpoint = bridge.endpoint(endpoint);
+            let (response, format, model) = self
+                .forward_native(
+                    app_type,
+                    method,
+                    &bridged_provider,
+                    &bridge_endpoint,
+                    &body,
+                    headers,
+                    extensions,
+                    &bridged_adapter,
+                )
+                .await?;
+            return Ok((
+                bridge
+                    .response(
+                        response,
+                        streaming,
+                        self.non_streaming_timeout,
+                        bridge_context,
+                    )
+                    .await?,
+                format,
+                model,
+            ));
+        }
+        self.forward_native(
+            app_type, method, provider, endpoint, body, headers, extensions, adapter,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn forward_native(
+        &self,
+        app_type: &AppType,
+        method: &http::Method,
+        provider: &Provider,
+        endpoint: &str,
+        body: &Value,
+        headers: &axum::http::HeaderMap,
+        extensions: &Extensions,
+        adapter: &dyn ProviderAdapter,
+    ) -> Result<(ProxyResponse, Option<String>, Option<String>), ProxyError> {
         // 使用适配器提取 base_url
         let mut base_url = adapter.extract_base_url(provider)?;
 

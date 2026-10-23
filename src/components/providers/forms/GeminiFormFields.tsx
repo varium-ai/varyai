@@ -11,13 +11,22 @@ import {
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
-import type { ProviderCategory } from "@/types";
+import type { ProviderCategory, ClaudeApiFormat } from "@/types";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 interface EndpointCandidate {
   url: string;
 }
 
 interface GeminiFormFieldsProps {
+  apiFormat?: ClaudeApiFormat;
+  onApiFormatChange?: (format: ClaudeApiFormat) => void;
   providerId?: string;
   // API Key
   shouldShowApiKey: boolean;
@@ -49,6 +58,8 @@ interface GeminiFormFieldsProps {
 }
 
 export function GeminiFormFields({
+  apiFormat = "gemini_native",
+  onApiFormatChange,
   providerId,
   shouldShowApiKey,
   apiKey,
@@ -109,6 +120,47 @@ export function GeminiFormFields({
 
   return (
     <>
+      {category !== "official" && !isGoogleOfficial && onApiFormatChange && (
+        <div className="space-y-2">
+          <FormLabel htmlFor="gemini-upstream-format">
+            {t("providerForm.apiFormat")}
+          </FormLabel>
+          <Select
+            value={apiFormat}
+            onValueChange={(value) =>
+              onApiFormatChange(value as ClaudeApiFormat)
+            }
+          >
+            <SelectTrigger id="gemini-upstream-format">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(
+                [
+                  "anthropic",
+                  "openai_chat",
+                  "openai_responses",
+                  "gemini_native",
+                ] as ClaudeApiFormat[]
+              ).map((format, index) => (
+                <SelectItem key={format} value={format}>
+                  {t(
+                    [
+                      "providerForm.apiFormatAnthropic",
+                      "providerForm.apiFormatOpenAIChat",
+                      "providerForm.apiFormatOpenAIResponses",
+                      "providerForm.apiFormatGeminiNative",
+                    ][index],
+                  )}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            {t("providerForm.protocolBridgeHint")}
+          </p>
+        </div>
+      )}
       {/* Google OAuth 提示 */}
       {isGoogleOfficial && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-950">
