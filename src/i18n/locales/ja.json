@@ -201,7 +201,12 @@
     "notifyAuditTitle": "機密情報を検出しました",
     "notifyAuditBody": "「{{app}}」のリクエストで「{{rule}}」を検出しました。リクエストはそのまま送信されました。",
     "notifyRedactTitle": "機密情報を隠しました",
-    "notifyRedactBody": "「{{app}}」のリクエストで「{{rule}}」を検出しました。隠してから送信しました。"
+    "notifyRedactBody": "「{{app}}」のリクエストで「{{rule}}」を検出しました。隠してから送信しました。",
+    "logsRefreshFailed": "セキュリティイベントと統計の一部を更新できませんでした。もう一度お試しください。",
+    "clearLogsTooltip": "現在の絞り込み条件に該当しない記録も含め、すべての機密情報イベントを消去",
+    "clearLogsConfirmTitle": "すべての機密情報イベントを消去しますか？",
+    "clearLogsConfirmDescription": "現在の絞り込み条件に該当しない記録も含め、すべてのアプリと期間の機密情報イベントを完全に削除します。この操作は取り消せません。",
+    "clearLogsConfirm": "すべてのイベントを消去"
   },
   "app": {
     "title": "Vary AI",

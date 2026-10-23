@@ -273,7 +273,12 @@
     "notifyAuditTitle": "Sensitive Information Detected",
     "notifyAuditBody": "{{app}} request detected “{{rule}}”. Request sent unchanged.",
     "notifyRedactTitle": "Sensitive Information Hidden",
-    "notifyRedactBody": "{{app}} request detected “{{rule}}”. Hidden before sending."
+    "notifyRedactBody": "{{app}} request detected “{{rule}}”. Hidden before sending.",
+    "logsRefreshFailed": "Could not refresh all security events and statistics. Please try again.",
+    "clearLogsTooltip": "Clear all sensitive-information events, including records outside the current filters",
+    "clearLogsConfirmTitle": "Clear all sensitive-information events?",
+    "clearLogsConfirmDescription": "This permanently deletes sensitive-information event records across all applications and dates, including records outside the current filters. This action cannot be undone.",
+    "clearLogsConfirm": "Clear all events"
   },
   "app": {
     "title": "Vary AI",

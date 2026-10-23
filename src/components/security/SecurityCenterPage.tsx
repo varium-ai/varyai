@@ -5,6 +5,7 @@ import {
   ChevronRight,
   FileText,
   FlaskConical,
+  Loader2,
   Plus,
   Pencil,
   RefreshCw,
@@ -57,6 +58,8 @@ import { ToolRiskRulesPanel } from "@/components/security/ToolRiskRulesPanel";
 import { toast } from "sonner";
 
 type SecurityTab = "records" | "rules" | "toolRisk";
+
+const MIN_REFRESH_LOADING_MS = 300;
 
 type LogFilter = {
   sessionId?: string;
@@ -180,6 +183,8 @@ export function SecurityCenterPage({
   const [activeTab, setActiveTab] = useState<SecurityTab>("records");
   const [logPage, setLogPage] = useState(1);
   const [logFilter, setLogFilter] = useState<LogFilter>({});
+  const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
+  const [isClearLogsDialogOpen, setIsClearLogsDialogOpen] = useState(false);
   const [selectedLogSnapshot, setSelectedLog] = useState<AuditLogRecord | null>(
     null,
   );
@@ -214,6 +219,8 @@ export function SecurityCenterPage({
     clearLogs,
     isClearing,
   } = useSecurityAuditLogs({ ...logFilter, ...timeFilter }, logPage, 20);
+
+  const isTableLoading = isLogsLoading || isRefreshingLogs;
 
   const selectedLog =
     logsResult?.items.find((log) => log.id === selectedLogSnapshot?.id) ??
@@ -342,6 +349,39 @@ export function SecurityCenterPage({
   const resetLogFilters = () => {
     setLogFilter({});
     setLogPage(1);
+  };
+
+  const handleRefreshLogs = async () => {
+    setIsRefreshingLogs(true);
+    try {
+      const results = await Promise.allSettled([
+        refetchLogs({ throwOnError: true }),
+        rangeSummary.refetch({ throwOnError: true }),
+        redactedInRange.refetch({ throwOnError: true }),
+        blockedInRange.refetch({ throwOnError: true }),
+        auditedInRange.refetch({ throwOnError: true }),
+        new Promise<void>((resolve) =>
+          setTimeout(resolve, MIN_REFRESH_LOADING_MS),
+        ),
+      ]);
+      if (results.some((result) => result.status === "rejected")) {
+        toast.error(t("security.logsRefreshFailed"));
+      }
+    } finally {
+      setIsRefreshingLogs(false);
+    }
+  };
+
+  const handleConfirmClearLogs = async () => {
+    if (isClearing) return;
+    try {
+      await clearLogs(undefined);
+      setIsClearLogsDialogOpen(false);
+      setSelectedLog(null);
+      setLogPage(1);
+    } catch {
+      // The shared mutation reports the failure; keep the dialog open for retry.
+    }
   };
 
   const handleOpenAddRule = () => {
@@ -671,19 +711,19 @@ export function SecurityCenterPage({
                 variant="ghost"
                 size="icon"
                 className="h-8 w-8 rounded-full"
-                onClick={() => {
-                  void refetchLogs();
-                  void rangeSummary.refetch();
-                  void redactedInRange.refetch();
-                  void blockedInRange.refetch();
-                  void auditedInRange.refetch();
-                }}
-                disabled={isLogsLoading}
+                onClick={() => void handleRefreshLogs()}
+                disabled={isTableLoading}
+                aria-busy={isTableLoading}
                 aria-label={t("security.refreshLogs")}
+                title={t(
+                  isRefreshingLogs
+                    ? "common.refreshing"
+                    : "security.refreshLogs",
+                )}
               >
                 <RefreshCw
                   className={
-                    "h-3.5 w-3.5 " + (isLogsLoading ? "animate-spin" : "")
+                    "h-3.5 w-3.5" + (isTableLoading ? " animate-spin" : "")
                   }
                 />
               </Button>
@@ -692,9 +732,10 @@ export function SecurityCenterPage({
                 variant="ghost"
                 size="icon"
                 className="h-8 w-8 rounded-full text-muted-foreground hover:text-destructive"
-                onClick={() => void clearLogs(undefined)}
+                onClick={() => setIsClearLogsDialogOpen(true)}
                 disabled={isClearing}
                 aria-label={t("security.clearLogs")}
+                title={t("security.clearLogsTooltip")}
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
@@ -749,7 +790,10 @@ export function SecurityCenterPage({
 
             <div className="overflow-hidden rounded-2xl border border-border/90 bg-card shadow-sm">
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[1552px] table-fixed border-collapse text-left">
+                <table
+                  aria-busy={isTableLoading}
+                  className="w-full min-w-[1552px] table-fixed border-collapse text-left"
+                >
                   <colgroup>
                     <col className="w-56" />
                     <col className="w-56" />
@@ -795,7 +839,7 @@ export function SecurityCenterPage({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/60 text-sm">
-                    {!isLogsLoading &&
+                    {!isTableLoading &&
                       !isLogsError &&
                       logsResult?.items.map((log) => {
                         const appConfig = getAppConfig(log.appType);
@@ -899,18 +943,24 @@ export function SecurityCenterPage({
                 </table>
               </div>
               {/* Center status messages in the viewport, independently of table width. */}
-              {(isLogsLoading || isLogsError || !logsResult?.items.length) && (
+              {(isTableLoading || isLogsError || !logsResult?.items.length) && (
                 <div
                   role="status"
                   className={
                     "flex flex-col items-center justify-center px-4 py-14 text-center text-xs " +
-                    (isLogsError && !isLogsLoading
+                    (isLogsError && !isTableLoading
                       ? "text-destructive"
                       : "text-muted-foreground")
                   }
                 >
-                  {isLogsLoading ? (
-                    t("security.loadingLogs")
+                  {isTableLoading ? (
+                    <>
+                      <Loader2
+                        aria-hidden="true"
+                        className="mb-2 h-6 w-6 animate-spin"
+                      />
+                      {t("security.loadingLogs")}
+                    </>
                   ) : isLogsError ? (
                     t("common.error")
                   ) : (
@@ -942,7 +992,7 @@ export function SecurityCenterPage({
                   variant="outline"
                   size="sm"
                   className="rounded-lg"
-                  disabled={logPage <= 1}
+                  disabled={isTableLoading || logPage <= 1}
                   onClick={() => setLogPage((page) => Math.max(1, page - 1))}
                 >
                   {t("security.prevPage")}
@@ -952,7 +1002,10 @@ export function SecurityCenterPage({
                   variant="outline"
                   size="sm"
                   className="rounded-lg"
-                  disabled={logPage * logsResult.pageSize >= logsResult.total}
+                  disabled={
+                    isTableLoading ||
+                    logPage * logsResult.pageSize >= logsResult.total
+                  }
                   onClick={() => setLogPage((page) => page + 1)}
                 >
                   {t("security.nextPage")}
@@ -1183,6 +1236,45 @@ export function SecurityCenterPage({
           <ToolRiskRulesPanel />
         </section>
       )}
+
+      <Dialog
+        open={isClearLogsDialogOpen}
+        onOpenChange={(open) => {
+          if (!isClearing) setIsClearLogsDialogOpen(open);
+        }}
+      >
+        <DialogContent zIndex="alert" className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("security.clearLogsConfirmTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("security.clearLogsConfirmDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={isClearing}
+              onClick={() => setIsClearLogsDialogOpen(false)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={isClearing}
+              onClick={() => void handleConfirmClearLogs()}
+            >
+              {isClearing && (
+                <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+              )}
+              {isClearing
+                ? t("common.deleting")
+                : t("security.clearLogsConfirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={selectedLog !== null}
