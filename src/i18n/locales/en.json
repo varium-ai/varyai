@@ -4458,5 +4458,26 @@
     "sourceModelResponse": "Model response",
     "severityNone": "None",
     "resultWarning": "Risk warning"
+  },
+  "gatewayKeys": {
+    "title": "Gateway keys",
+    "description": "Independent credentials for scripts and projects. Supports Messages, Responses and Chat Completions. Use Bearer authentication or x-api-key.",
+    "boundaries": "Budgets count reported input, output and cache tokens once. UTC calendar resets. Completed usage is saved asynchronously; concurrent and long requests can exceed the limit. Missing usage cannot be counted. This is not a supplier bill.",
+    "name": "Name",
+    "models": "Allowed model IDs (comma separated)",
+    "limit": "Token budget (blank: unlimited)",
+    "period": "Reset period",
+    "never": "Never",
+    "daily": "Daily (UTC)",
+    "monthly": "Monthly (UTC)",
+    "create": "Create key",
+    "once": "The secret is shown only once. Copy it now and keep it private.",
+    "dismiss": "Hide secret",
+    "revoked": "Revoked",
+    "usage": "{{used}} / {{limit}} tokens",
+    "reset": "Resets: {{time}}",
+    "edit": "Edit",
+    "revoke": "Revoke",
+    "failed": "Gateway key operation failed"
   }
 }

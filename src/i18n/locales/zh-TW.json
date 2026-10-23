@@ -4385,5 +4385,26 @@
     "sourceModelResponse": "模型回應",
     "severityNone": "無",
     "resultWarning": "風險預警"
+  },
+  "gatewayKeys": {
+    "title": "閘道金鑰",
+    "description": "為腳本和專案建立獨立憑證。支援 Messages、Responses 和 Chat Completions，使用 Bearer 或 x-api-key 驗證。",
+    "boundaries": "預算對回報的輸入、輸出和快取 token 去重計量，按 UTC 日曆重設。已完成用量非同步儲存，並行和長請求可能超額；缺失的用量無法計量。此統計不等同供應商帳單。",
+    "name": "名稱",
+    "models": "允許的模型 ID（逗號分隔）",
+    "limit": "Token 預算（留空不限）",
+    "period": "重設週期",
+    "never": "不重設",
+    "daily": "每日（UTC）",
+    "monthly": "每月（UTC）",
+    "create": "建立金鑰",
+    "once": "金鑰僅顯示一次，請立即複製並妥善保管。",
+    "dismiss": "隱藏金鑰",
+    "revoked": "已撤銷",
+    "usage": "{{used}} / {{limit}} token",
+    "reset": "重設時間：{{time}}",
+    "edit": "編輯",
+    "revoke": "撤銷",
+    "failed": "閘道金鑰操作失敗"
   }
 }

@@ -4458,5 +4458,26 @@
     "sourceModelResponse": "模型响应",
     "severityNone": "无",
     "resultWarning": "风险预警"
+  },
+  "gatewayKeys": {
+    "title": "网关密钥",
+    "description": "为脚本和项目创建独立凭证。支持 Messages、Responses 和 Chat Completions，使用 Bearer 或 x-api-key 鉴权。",
+    "boundaries": "预算对上报的输入、输出和缓存 token 去重计量，按 UTC 日历重置。已完成用量异步保存，并发和长请求可能超额；缺失的用量无法计量。此统计不等同供应商账单。",
+    "name": "名称",
+    "models": "允许的模型 ID（逗号分隔）",
+    "limit": "Token 预算（留空不限）",
+    "period": "重置周期",
+    "never": "不重置",
+    "daily": "每日（UTC）",
+    "monthly": "每月（UTC）",
+    "create": "创建密钥",
+    "once": "密钥只展示一次，请立即复制并妥善保管。",
+    "dismiss": "隐藏密钥",
+    "revoked": "已撤销",
+    "usage": "{{used}} / {{limit}} token",
+    "reset": "重置时间：{{time}}",
+    "edit": "编辑",
+    "revoke": "撤销",
+    "failed": "网关密钥操作失败"
   }
 }

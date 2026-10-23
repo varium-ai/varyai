@@ -77,6 +77,9 @@ export function rendererChunk(id: string): string | undefined {
   ) {
     return "ui-connection-presets";
   }
+  if (relative === "components/proxy/GatewayKeysPanel.tsx") {
+    return "ui-gateway-keys";
+  }
   if (relative.startsWith("icons/")) return "icons";
   if (relative.startsWith("components/")) {
     const parts = relative.slice("components/".length).split("/");

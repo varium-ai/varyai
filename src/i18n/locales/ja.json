@@ -4384,5 +4384,26 @@
     "sourceModelResponse": "モデル応答",
     "severityNone": "なし",
     "resultWarning": "リスク警告"
+  },
+  "gatewayKeys": {
+    "title": "ゲートウェイキー",
+    "description": "スクリプトやプロジェクト用の個別認証情報。Messages、Responses、Chat Completions に対応。Bearer または x-api-key で認証します。",
+    "boundaries": "入力・出力・キャッシュの報告トークンを重複なく集計し、UTC の暦でリセットします。完了した使用量は非同期で保存され、並列・長時間リクエストは上限を超える場合があります。使用量がない応答は集計できません。プロバイダーの請求額ではありません。",
+    "name": "名前",
+    "models": "許可するモデル ID（カンマ区切り）",
+    "limit": "トークン予算（空欄は無制限）",
+    "period": "リセット周期",
+    "never": "リセットなし",
+    "daily": "毎日（UTC）",
+    "monthly": "毎月（UTC）",
+    "create": "キーを作成",
+    "once": "シークレットは一度だけ表示されます。今すぐコピーし、安全に保管してください。",
+    "dismiss": "シークレットを隠す",
+    "revoked": "失効済み",
+    "usage": "{{used}} / {{limit}} トークン",
+    "reset": "リセット：{{time}}",
+    "edit": "編集",
+    "revoke": "失効",
+    "failed": "ゲートウェイキーの操作に失敗しました"
   }
 }

@@ -8,6 +8,10 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProxyPanel } from "@/components/proxy/ProxyPanel";
 
+vi.mock("@/components/proxy/GatewayKeysPanel", () => ({
+  GatewayKeysPanel: () => <div />,
+}));
+
 const { state, setTakeover, stopProxyServer } = vi.hoisted(() => ({
   state: { takeoverStatus: {} as Record<string, boolean> },
   setTakeover: vi.fn(),
