@@ -226,6 +226,14 @@ export function useSecurityProtection(app: string) {
     },
     onSuccess: (routes, enabled) => {
       if (enabled) {
+        const nextSteps = [
+          ...(routes?.activated ?? [])
+            .filter((app) => ["qoder", "workbuddy", "kimi"].includes(app))
+            .map((app) =>
+              t("homeAudit.appProtectionRestart", { app: t(`apps.${app}`) }),
+            ),
+          t("homeAudit.newConversationNotice"),
+        ].join(" ");
         if (routes && (routes.failed.length || routes.skipped.length)) {
           const labels = (apps: string[]) =>
             apps.map((app) => t(`apps.${app}`)).join(", ") || "—";
@@ -237,16 +245,13 @@ export function useSecurityProtection(app: string) {
                 failed: labels(routes.failed),
               }) +
               " " +
-              t("homeAudit.newConversationNotice"),
+              nextSteps,
             closeButton: true,
           });
           return;
         }
         toast.success(t("homeAudit.enabled"), {
-          description:
-            t("homeAudit.protectionDetail") +
-            " " +
-            t("homeAudit.newConversationNotice"),
+          description: t("homeAudit.protectionDetail") + " " + nextSteps,
         });
       } else {
         toast.warning(t("homeAudit.disabled"), {

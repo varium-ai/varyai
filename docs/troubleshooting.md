@@ -47,6 +47,18 @@ Common configuration locations include:
 
 Local proxy configuration can refer to `http://127.0.0.1:15721` or its `/v1` endpoint. If a client still points at that endpoint after an abnormal exit, review the application's takeover state and recovery options. A normal disable/exit path can restore the saved configuration; inspect the relevant backup before manual recovery. Back up the current files before editing them and preserve unrelated client settings. Do not publish authentication files or entire backups in an issue.
 
+### Codex Official login asks to sign in again after switching
+
+Codex can rotate its refresh token while an Official provider card still has an older login snapshot. When switching back, Vary AI now retains a newer native login for the same user and workspace instead of restoring the older token. A different user's or workspace's login is not substituted. A token already invalidated by the server still requires signing in again through Codex; this change cannot restore it.
+
+### Qoder or WorkBuddy reports missing provider fields
+
+Custom providers require a provider name, model ID, URL, and API key. Saving lists all empty or whitespace-only fields together and omits fields already filled in. Additional model rows also require an ID. Official login entries do not require custom model credentials unless a custom model is being added. A toast showing `providerForm.nameRequired` indicates a build with a missing translation reference; use a build containing the fix.
+
+### Kimi shows an internal ID as the provider group
+
+Apply the saved provider again to migrate its Kimi group to the provider name shown in Vary AI. Renaming it also updates model references while preserving model aliases and the selected model. Choose a unique provider name: Vary AI refuses to overwrite an existing native group with the same name. Restart Kimi when it needs to reload its configuration.
+
 ## Windows VC++ runtime errors
 
 If launch fails with a missing `VCRUNTIME140_1.dll` or `VCRUNTIME140.dll`, an older artifact may still depend on the external Visual C++ runtime. Use the platform vendor's official runtime installer for the artifact's architecture when necessary; do not download individual DLL files from third-party sites.

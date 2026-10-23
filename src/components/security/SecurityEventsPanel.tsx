@@ -558,6 +558,7 @@ export function SecurityEventsPanel({
             variant="ghost"
             size="icon"
             aria-label={t("security.refreshLogs")}
+            title={t("security.refreshLogs")}
             aria-busy={tableLoading}
             onClick={refresh}
             disabled={isLoading || isRefreshing}

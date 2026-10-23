@@ -388,6 +388,13 @@ describe("SecurityCenterPage", () => {
     expect(auditRows.refetchByAction.redact).toHaveBeenCalledOnce();
   });
 
+  it("explains the refresh button on hover", () => {
+    render(<SecurityCenterPage />);
+    expect(
+      screen.getByRole("button", { name: "security.refreshLogs" }),
+    ).toHaveAttribute("title", "security.refreshLogs");
+  });
+
   it("shows a true source split instead of a first-page sensitive-type sample", () => {
     auditRows.total = 150;
     render(<SecurityCenterPage />);

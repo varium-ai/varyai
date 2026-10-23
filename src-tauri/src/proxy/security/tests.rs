@@ -2001,3 +2001,72 @@ fn native_agent_audit_sessions_have_independent_prefixes_without_fabricated_ids(
         .is_none());
     }
 }
+
+#[test]
+fn current_structured_password_does_not_use_the_historical_assignment_rule() {
+    let body = json!({"messages": [
+        {"role":"user", "content":"password = synthetic-old-password"},
+        {"role":"assistant", "content":"ok"},
+        {"role":"user", "content":"Use the login tool"},
+        {"role":"assistant", "content":[{"type":"tool_use", "name":"login", "input":{"password":"synthetic-new-password"}}]}
+    ]});
+    let turn = super::extractor::CurrentTurn::new(&body);
+    let result =
+        SecurityAuditEngine::inspect_request_with_runtime(&body, &SecurityRuntimeConfig::default());
+    let current: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|finding| !turn.is_historical(&finding.location))
+        .map(|finding| finding.rule_id.as_str())
+        .collect();
+    assert_eq!(current, ["catalog:password-field"]);
+}
+
+#[test]
+fn json_pasted_as_chat_text_uses_password_assignment_instead_of_structured_field() {
+    let body = json!({"input":[{"role":"user", "content":json!({
+        "username":"synthetic-user", "password":"synthetic-password"
+    }).to_string()}]});
+    let result =
+        SecurityAuditEngine::inspect_request_with_runtime(&body, &SecurityRuntimeConfig::default());
+    let rules: Vec<_> = result
+        .findings
+        .iter()
+        .map(|finding| finding.rule_id.as_str())
+        .collect();
+    assert_eq!(rules, ["catalog:password-assignment"]);
+}
+
+#[test]
+fn private_key_alert_and_hide_have_distinct_wire_behavior_but_mask_both_audits() {
+    for kind in ["RSA", "OPENSSH", "EC", "DSA"] {
+        let key = format!(
+            "-----BEGIN {kind} PRIVATE KEY-----\nSYNTHETIC_KEY_BODY\n-----END {kind} PRIVATE KEY-----"
+        );
+        for action in [AuditAction::Audit, AuditAction::Redact] {
+            let mut runtime = SecurityRuntimeConfig::default();
+            runtime
+                .builtin_action_overrides
+                .insert("rsa_ssh_private_key".into(), action);
+            let original = json!({"messages":[{"role":"user", "content":key}], "stream":true});
+            let mut body = original.clone();
+            let result = SecurityAuditEngine::inspect_and_redact_with_runtime(&mut body, &runtime);
+            assert!(!result.blocked);
+            let finding = result
+                .findings
+                .iter()
+                .find(|finding| finding.rule_id == "rsa_ssh_private_key")
+                .expect("synthetic private key");
+            assert_eq!(finding.action, action);
+            assert!(!finding
+                .matched_snippet_masked
+                .contains("SYNTHETIC_KEY_BODY"));
+            if action == AuditAction::Audit {
+                assert_eq!(body, original);
+            } else {
+                assert_eq!(body["messages"][0]["content"], "[REDACTED_PRIVATE_KEY]");
+                assert_eq!(body["stream"], true);
+            }
+        }
+    }
+}

@@ -16,6 +16,12 @@ The base credential/PII rules, including private-key material, default to redact
 
 Confirm behavior in `builtin_rules.rs`, `runtime.rs`, and the security DAO before changing settings or documentation.
 
+Alert sends the request unchanged; Hide replaces detected sensitive text before forwarding. Both actions keep sensitive values masked in audit details. Comparing audit snippets alone cannot establish whether the forwarded request was redacted.
+
+For conversation arrays (`messages`, `input`, and `contents`), entries before the last user message are historical. They remain inspected and redacted, but successful forwarding does not create new audit events or notifications for historical findings. Current input takes precedence when the same sensitive value appears in both history and the new turn. Blocked requests still report the findings that explain the block. Requests without a user message, including tool-result deltas, remain fully eligible for reporting.
+
+The Password Field rule inspects password string values in actual structured tool arguments. JSON pasted into a chat message is plain request text and uses Password Assignment instead. The visible rule description states this boundary; changing the pasted text's appearance does not turn it into tool arguments.
+
 ## Privacy and persistence
 
 Client errors and notifications must not contain matched sensitive plaintext. Stored audit summaries are masked; masking is not a proof of complete anonymity. Event aggregation and asynchronous notifications do not establish that every attempted event was persisted or displayed.

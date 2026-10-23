@@ -310,20 +310,46 @@ impl Document {
             "kimi" => {
                 object(&mut self.value, "providers")?;
                 object(&mut self.value, "models")?;
+                let previous_key = self.kimi_provider_key(id);
+                let provider_name = name.trim();
+                if provider_name.is_empty()
+                    || (provider_name != previous_key
+                        && self.value["providers"].get(provider_name).is_some())
+                {
+                    return Err(invalid());
+                }
+                if previous_key != provider_name {
+                    if let Some(previous) = self.value["providers"]
+                        .as_object_mut()
+                        .ok_or_else(invalid)?
+                        .remove(&previous_key)
+                    {
+                        self.value["providers"][provider_name] = previous;
+                    }
+                    for model in self.value["models"]
+                        .as_object_mut()
+                        .ok_or_else(invalid)?
+                        .values_mut()
+                    {
+                        if model["provider"] == previous_key {
+                            model["provider"] = json!(provider_name);
+                        }
+                    }
+                }
                 let protocol = match config["protocol"].as_str() {
                     Some("anthropic") => "anthropic",
                     Some("openai-responses") => "openai_responses",
                     _ => "openai",
                 };
-                object(&mut self.value["providers"], &key)?;
-                self.value["providers"][&key]["type"] = json!(protocol);
-                self.value["providers"][&key]["base_url"] = config["baseUrl"].clone();
-                self.value["providers"][&key]["api_key"] = config["apiKey"].clone();
+                object(&mut self.value["providers"], provider_name)?;
+                self.value["providers"][provider_name]["type"] = json!(protocol);
+                self.value["providers"][provider_name]["base_url"] = config["baseUrl"].clone();
+                self.value["providers"][provider_name]["api_key"] = config["apiKey"].clone();
                 self.value["models"]
                     .as_object_mut()
                     .ok_or_else(invalid)?
                     .retain(|_, existing| {
-                        existing["provider"] != key
+                        existing["provider"] != provider_name
                             || models
                                 .iter()
                                 .any(|model| model["model"] == existing["model"])
@@ -333,7 +359,7 @@ impl Document {
                     let alias = format!("{key}-{wire}");
                     object(&mut self.value["models"], &alias)?;
                     let entry = &mut self.value["models"][&alias];
-                    entry["provider"] = json!(key);
+                    entry["provider"] = json!(provider_name);
                     entry["model"] = json!(wire);
                     if model["contextWindow"].is_u64() || entry.get("max_context_size").is_none() {
                         entry["max_context_size"] =
@@ -667,6 +693,21 @@ impl Document {
                     .and_then(|rule| rule["providerId"].as_str())
                     .and_then(|id| id.strip_prefix("varyai-"))
                     .map(String::from)
+            } else if app == "kimi" {
+                self.value["models"].as_object().and_then(|models| {
+                    models.iter().find_map(|(alias, model)| {
+                        let provider = model["provider"].as_str()?;
+                        if path != pointer(&["providers", provider, "base_url"])
+                            && path != pointer(&["models", alias, "base_url"])
+                        {
+                            return None;
+                        }
+                        alias
+                            .strip_prefix("varyai-")?
+                            .strip_suffix(&format!("-{}", model["model"].as_str()?))
+                            .map(String::from)
+                    })
+                })
             } else {
                 path.split('/')
                     .find_map(|part| part.strip_prefix("varyai-"))
@@ -729,8 +770,25 @@ impl Document {
         }
         Ok(())
     }
+    fn kimi_provider_key(&self, id: &str) -> String {
+        self.value["models"]
+            .as_object()
+            .and_then(|models| {
+                models.iter().find_map(|(alias, model)| {
+                    let wire = model["model"].as_str()?;
+                    (alias == &format!("varyai-{id}-{wire}"))
+                        .then(|| model["provider"].as_str().map(String::from))?
+                })
+            })
+            .unwrap_or_else(|| format!("varyai-{id}"))
+    }
+
     pub fn remove(&mut self, app: &str, id: &str, expected: &Value) -> Result<(), AppError> {
-        let key = format!("varyai-{id}");
+        let key = if app == "kimi" {
+            self.kimi_provider_key(id)
+        } else {
+            format!("varyai-{id}")
+        };
         if app == "qwen" {
             let env_key = format!("VARYAI_{}_API_KEY", id.replace('-', "_"));
             if self.value["env"]
@@ -985,8 +1043,7 @@ mod tests {
                 .expect("apply");
             match app {
                 "kimi" => {
-                    doc.value["providers"]["varyai-saved"]["api_key"] =
-                        json!("synthetic-external-edit")
+                    doc.value["providers"]["Gateway"]["api_key"] = json!("synthetic-external-edit")
                 }
                 "qwen" => {
                     doc.value["env"]["VARYAI_saved_API_KEY"] = json!("synthetic-external-edit")
@@ -1029,7 +1086,7 @@ mod tests {
         let mut doc = Document::parse("kimi", "").expect("parse");
         doc.apply("kimi", "saved", "Gateway", &provider())
             .expect("apply");
-        doc.value["providers"]["varyai-saved"]["custom_headers"] = json!({"x-test":"preserve"});
+        doc.value["providers"]["Gateway"]["custom_headers"] = json!({"x-test":"preserve"});
         doc.value["models"]["varyai-saved-alpha"]["capabilities"] = json!(["vision"]);
         let mut next = provider();
         next["models"] = json!([{"model":"alpha"}]);
@@ -1037,7 +1094,7 @@ mod tests {
             .expect("update");
         assert!(doc.value["models"].get("varyai-saved-beta").is_none());
         assert_eq!(
-            doc.value["providers"]["varyai-saved"]["custom_headers"],
+            doc.value["providers"]["Gateway"]["custom_headers"],
             json!({"x-test":"preserve"})
         );
         assert_eq!(
@@ -1085,6 +1142,56 @@ mod tests {
         );
         assert_eq!(value["models"]["varyai-saved-beta"]["model"], "beta");
         assert_eq!(value["default_model"], "varyai-saved-alpha");
+    }
+
+    #[test]
+    fn kimi_provider_groups_follow_the_saved_name_and_keep_stable_model_aliases() {
+        let mut doc = Document::parse("kimi", "").expect("parse");
+        doc.apply("kimi", "saved", "Company", &provider())
+            .expect("apply");
+        assert!(doc.value["providers"].get("Company").is_some());
+        assert_eq!(
+            doc.value["models"]["varyai-saved-alpha"]["provider"],
+            "Company"
+        );
+        let selection = doc.selection("kimi");
+        doc.apply("kimi", "saved", "Renamed Company", &provider())
+            .expect("rename");
+        assert!(doc.value["providers"].get("Company").is_none());
+        assert_eq!(
+            doc.value["models"]["varyai-saved-alpha"]["provider"],
+            "Renamed Company"
+        );
+        assert_eq!(doc.selection("kimi"), selection);
+        let routes = doc.route("kimi", "http://127.0.0.1:1234").expect("route");
+        assert_eq!(routes[0].provider_id, "saved");
+        doc.restore(&routes).expect("restore");
+        doc.remove("kimi", "saved", &provider()).expect("remove");
+        assert!(doc.value["providers"].get("Renamed Company").is_none());
+    }
+
+    #[test]
+    fn kimi_provider_name_migrates_legacy_groups_without_overwriting_native_groups() {
+        let original = json!({
+            "providers": {"varyai-saved": {"type":"openai", "base_url":"https://models.example/v1", "api_key":"synthetic-test-key", "custom_headers":{"x-keep":"yes"}}, "Native": {"type":"kimi", "base_url":"https://native.example/v1", "api_key":"synthetic-native"}},
+            "models": {"varyai-saved-alpha":{"provider":"varyai-saved", "model":"alpha", "max_context_size":200000}},
+            "default_model":"varyai-saved-alpha"
+        });
+        let mut doc = Document::parse("kimi", "").expect("parse");
+        doc.value = original.clone();
+        assert!(doc.apply("kimi", "saved", "Native", &provider()).is_err());
+        assert_eq!(doc.value, original);
+        doc.apply("kimi", "saved", "Company", &provider())
+            .expect("migrate");
+        assert_eq!(
+            doc.value["providers"]["Company"]["custom_headers"]["x-keep"],
+            "yes"
+        );
+        assert_eq!(
+            doc.value["providers"]["Native"],
+            original["providers"]["Native"]
+        );
+        assert!(doc.value["providers"].get("varyai-saved").is_none());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 {
   "security": {
+    "refreshLogs": "記録を更新",
     "riskCritical": "CRITICAL（重大）",
     "refreshSuccess": "セキュリティ記録を更新しました",
     "refreshFailed": "セキュリティ記録の更新に失敗しました。再試行してください。",
@@ -125,7 +126,7 @@
       },
       "catalog_password-field": {
         "name": "パスワードフィールド",
-        "description": "構造化されたツールパラメータ内のパスワードフィールドの文字列値を検出します。フィールド名や他のパラメータは対象外です。"
+        "description": "構造化されたツールパラメータ内のパスワードフィールドの文字列値を検出します。フィールド名や他のパラメータは対象外です。チャットに貼り付けた JSON テキストはパスワード代入ルールで検出します。"
       },
       "chinese_id_card": {
         "name": "中国本土の住民 ID 番号",
@@ -178,7 +179,7 @@
     "detailTime": "検知時刻",
     "detailOutbound": "送信状態",
     "detailSnippet": "監査の抜粋（マスク済み）",
-    "auditSnippetHint": "監査記録では常に機密情報をマスクします。「警告」では、AI に送信する原文は変更されません。",
+    "auditSnippetHint": "警告ではリクエストをそのまま送信し、非表示では機密情報を隠して送信します。監査記録では常に機密値を非表示にします。",
     "goToRules": "検知ルールを開く",
     "ruleHeading": "ポリシールールの詳細",
     "ruleCount": "（{{count}} 件）",
@@ -1469,6 +1470,7 @@
     "openReleaseNotesFailed": "リリースノートを開けませんでした:"
   },
   "providerForm": {
+    "missingRequiredFields": "入力してください: {{fields}}",
     "protocolBridgeHint": "プロバイダーの上流プロトコルを選択します。異なる場合はローカル変換のためルート引継ぎが必要です。同じ場合はそのまま転送します。",
     "supplierName": "プロバイダー名",
     "supplierNameRequired": "プロバイダー名 *",

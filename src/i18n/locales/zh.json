@@ -44,7 +44,7 @@
     "detailTime": "检测时间",
     "detailOutbound": "发送状态",
     "detailSnippet": "审计片段（已脱敏）",
-    "auditSnippetHint": "审计记录始终隐藏敏感内容；选择“提醒”时，发送给 AI 的原文保持不变。",
+    "auditSnippetHint": "提醒会原文发送请求；隐藏会脱敏后发送。审计记录始终隐藏敏感值。",
     "goToRules": "前往检测规则设置",
     "ruleHeading": "策略规则明细",
     "ruleCount": "（{{count}} 条已载入）",
@@ -168,7 +168,7 @@
       },
       "catalog_password-field": {
         "name": "结构化参数中的密码字段",
-        "description": "检测结构化工具参数中密码字段的字符串值，不处理字段名和其他参数。"
+        "description": "检测结构化工具参数中密码字段的字符串值，不处理字段名和其他参数。聊天中粘贴的 JSON 文本由“配置文本中的密码赋值”规则检测。"
       },
       "chinese_id_card": {
         "name": "中国大陆居民身份证号",
@@ -208,7 +208,7 @@
     "logsTitle": "安全事件",
     "logsDesc": "记录发送前检测到的敏感信息、AI 应用与处理方式",
     "clearLogs": "清空日志",
-    "refreshLogs": "刷新日志",
+    "refreshLogs": "刷新记录",
     "refreshSuccess": "安全记录已刷新",
     "refreshFailed": "刷新安全记录失败，请重试",
     "alertTitle": "检测到敏感信息",
@@ -1544,6 +1544,7 @@
     "openReleaseNotesFailed": "打开更新日志失败:"
   },
   "providerForm": {
+    "missingRequiredFields": "请填写：{{fields}}",
     "protocolBridgeHint": "选择供应商实际提供的上游协议。不同协议需要开启路由接管，由本地代理转换；相同协议直接转发。",
     "supplierName": "供应商名称",
     "supplierNameRequired": "供应商名称 *",

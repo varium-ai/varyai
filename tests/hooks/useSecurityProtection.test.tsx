@@ -337,7 +337,9 @@ describe("protection mutation", () => {
       });
       expect(toast.success).toHaveBeenCalledWith("homeAudit.enabled", {
         description:
-          "homeAudit.protectionDetail homeAudit.newConversationNotice",
+          app === "workbuddy"
+            ? "homeAudit.protectionDetail homeAudit.appProtectionRestart homeAudit.newConversationNotice"
+            : "homeAudit.protectionDetail homeAudit.newConversationNotice",
       });
       expect(
         vi.mocked(proxyApi.setProxyTakeoverForApp).mock.invocationCallOrder[0],

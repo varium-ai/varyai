@@ -11847,13 +11847,14 @@ experimental_bearer_token = "PROXY_MANAGED"
             std::fs::read_to_string(dir.path().join("settings.json")).expect("restored on exit"),
             "{}"
         );
+        service.start().await.expect("proxy serving another client");
         assert!(
             !service
                 .get_takeover_status()
                 .await
                 .expect("restored status")
                 .workbuddy,
-            "the saved enabled preference must not claim a restored client is protected"
+            "a saved preference must not claim a restored client is protected"
         );
         service
             .set_workbuddy_takeover_at(dir.path(), true)
