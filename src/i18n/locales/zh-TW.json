@@ -152,7 +152,7 @@
       },
       "catalog_password-field": {
         "name": "結構化參數中的密碼欄位",
-        "description": "偵測結構化工具參數中密碼欄位的字串值，不處理欄位名稱和其他參數。"
+        "description": "偵測結構化工具參數中密碼欄位的字串值，不處理欄位名稱和其他參數。聊天中貼上的 JSON 文字由「設定文字中的密碼賦值」規則偵測。"
       },
       "chinese_id_card": {
         "name": "中國大陸居民身分證號",
@@ -205,7 +205,7 @@
     "detailTime": "檢測時間",
     "detailOutbound": "傳送狀態",
     "detailSnippet": "稽核片段（已遮蔽）",
-    "auditSnippetHint": "稽核記錄一律隱藏敏感內容；選擇「提醒」時，傳送給 AI 的原文保持不變。",
+    "auditSnippetHint": "提醒會原文傳送請求；隱藏會去識別化後傳送。稽核記錄一律隱藏敏感值。",
     "goToRules": "前往檢測規則設定",
     "ruleHeading": "策略規則明細",
     "ruleCount": "（{{count}} 條已載入）",

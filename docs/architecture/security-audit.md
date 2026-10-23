@@ -16,11 +16,23 @@ The base credential/PII rules, including private-key material, default to redact
 
 Confirm behavior in `builtin_rules.rs`, `runtime.rs`, and the security DAO before changing settings or documentation.
 
+Alert sends the request unchanged; Hide replaces detected sensitive text before forwarding. Both actions keep sensitive values masked in audit details. Comparing audit snippets alone cannot establish whether the forwarded request was redacted.
+
+For conversation arrays (`messages`, `input`, and `contents`), entries before the last user message are historical. They remain inspected and redacted, but successful forwarding does not create new audit events or notifications for historical findings. Current input takes precedence when the same sensitive value appears in both history and the new turn. Blocked requests still report the findings that explain the block. Requests without a user message, including tool-result deltas, remain fully eligible for reporting.
+
+The Password Field rule inspects password string values in actual structured tool arguments. JSON pasted into a chat message is plain request text and uses Password Assignment instead. The visible rule description states this boundary; changing the pasted text's appearance does not turn it into tool arguments.
+
 ## Privacy and persistence
 
 Client errors and notifications must not contain matched sensitive plaintext. Stored audit summaries are masked; masking is not a proof of complete anonymity. Event aggregation and asynchronous notifications do not establish that every attempted event was persisted or displayed.
 
 The detector itself executes locally. That statement does not describe the whole application's network behavior: see the [statistics and update review](../data-and-network.md). No performance benchmark is asserted here.
+
+## Security Center refresh
+
+The records refresh button returns to the first filtered page and reloads the unified event list and range summary, including all three action totals. The table area shows a centered loading spinner and message, while the button's original refresh icon rotates. Loading remains visible for at least 300 milliseconds and until every query finishes; refresh and pagination controls are disabled during that time. Successful refreshes restore the table without a success message. If any query fails, the page shows a generic failure message without backend error details and allows another attempt.
+
+The clear button's native `title` tooltip and confirmation dialog explain that clearing permanently deletes matching sensitive-information and tool-observation events across all pages of the current view and filters. Opening or canceling the dialog does not delete records. Confirmation starts the deletion and disables both dialog actions until it finishes; a failure keeps the dialog open for retry. Successful deletion reloads the records and statistics and returns pagination to the first page.
 
 ## Implementation references
 

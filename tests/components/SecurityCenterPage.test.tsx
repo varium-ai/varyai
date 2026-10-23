@@ -260,7 +260,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 describe("SecurityCenterPage", () => {
-  it("shows refresh progress until requests finish and then reports success", async () => {
+  it("shows refresh progress until requests finish without a success toast", async () => {
     let finish!: () => void;
     auditRows.refetchByAction.audit.mockReturnValueOnce(
       new Promise<void>((resolve) => {
@@ -276,7 +276,7 @@ describe("SecurityCenterPage", () => {
     expect(refresh.querySelector("svg")).toHaveClass("animate-spin");
     await act(async () => finish());
     await waitFor(() => expect(refresh).not.toBeDisabled());
-    expect(toast.success).toHaveBeenCalledWith("security.refreshSuccess");
+    expect(toast.success).not.toHaveBeenCalled();
   });
   it("reports a failed refresh and allows retrying", async () => {
     auditRows.refetchByAction.audit.mockResolvedValueOnce({ isError: true });
@@ -386,6 +386,13 @@ describe("SecurityCenterPage", () => {
     );
     expect(auditRows.refetchByAction.audit).toHaveBeenCalledOnce();
     expect(auditRows.refetchByAction.redact).toHaveBeenCalledOnce();
+  });
+
+  it("explains the refresh button on hover", () => {
+    render(<SecurityCenterPage />);
+    expect(
+      screen.getByRole("button", { name: "security.refreshLogs" }),
+    ).toHaveAttribute("title", "security.refreshLogs");
   });
 
   it("shows a true source split instead of a first-page sensitive-type sample", () => {
