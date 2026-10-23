@@ -12,6 +12,14 @@ Select the target client before adding or editing a provider. Provider credentia
 
 See [Codex model catalogs](codex-model-catalog.md) for import behavior. Do not use an internal gateway address or a usable key in a shared example.
 
+## Import all Claude Code models
+
+In the Claude Code provider's model mapping section, **Quick Set** imports every model returned by discovery as a separate editable row. If no catalog has been fetched, the button fetches it first using the current endpoint/key or selected managed account. Empty role fields do not disable import. Failed or superseded requests do not change the rows.
+
+Import appends missing model IDs without duplicating existing IDs or replacing customized labels. Save the provider to persist the rows in `modelPicker.options`; reopening the provider restores them. Rows can be renamed, edited, or removed. The Sonnet, Opus, Fable, Haiku and Subagent defaults remain separately configurable. With local routing enabled, an explicitly listed model takes precedence over role and fallback mapping, so selecting it preserves its request ID.
+
+Claude Code's [`modelPicker` setting](https://code.claude.com/docs/en/settings-reference#modelpicker) requires version 2.1.242 or later. Restart Claude Code after saving to load the menu. Older clients can still use their role mappings or select an explicit model with `/model <model-id>`; importing rows does not upgrade the client. A discovery result lists advertised IDs and does not verify inference access for every model.
+
 ## Choose the correct protocol
 
 The format controls conversion when the supported client is routed through Vary AI:
