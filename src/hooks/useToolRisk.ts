@@ -4,6 +4,10 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { toolRiskApi } from "@/lib/api";
+import {
+  invalidateSecurityEventDomains,
+  invalidateSecurityEventsQueries,
+} from "@/hooks/useSecurityEvents";
 import { reportFrontendError } from "@/lib/frontendLogger";
 import type {
   SaveCommandListInput,
@@ -190,10 +194,11 @@ export function useToolRiskEvents(
   });
 
   const clearMutation = useMutation({
+    mutationKey: ["toolRisk", "clearEvents"],
     mutationFn: (beforeTimestamp?: number) =>
       toolRiskApi.clearEvents(beforeTimestamp),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: toolRiskKeys.all });
+      void invalidateSecurityEventDomains(queryClient);
       toast.success(
         t("toolRisk.eventsCleared", { defaultValue: "调用记录已清空" }),
       );
@@ -227,6 +232,7 @@ export function useToolRiskEventBridge(onRecorded?: () => void) {
       } catch {
         reportFrontendError("tool_risk_invalidate", "failed");
       }
+      void invalidateSecurityEventsQueries(queryClient);
     };
     void (async () => {
       try {

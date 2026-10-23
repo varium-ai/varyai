@@ -1,18 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  CheckCircle2,
-  ChevronRight,
-  FileText,
-  FlaskConical,
-  Plus,
-  Pencil,
-  RefreshCw,
-  Search,
-  Trash2,
-  X,
-} from "lucide-react";
-import { APP_ICON_MAP, getAppLabel } from "@/config/appConfig";
+import { CheckCircle2, FlaskConical, Plus, Pencil, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SlidingSegmentedControl } from "@/components/ui/sliding-segmented-control";
 import {
@@ -32,45 +20,28 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  useSecurityAuditLogs,
-  useSecurityRules,
-} from "@/hooks/useSecurityAudit";
+import { useSecurityRules } from "@/hooks/useSecurityAudit";
 import { securityApi } from "@/lib/api";
 import {
   getBuiltinRuleDescription,
   getBuiltinRuleName,
 } from "@/lib/securityRuleLocalization";
-import { getUsageRangePresetLabel, resolveUsageRange } from "@/lib/usageRange";
 import type {
   AuditAction,
-  AuditLogRecord,
   CustomSecurityRule,
   RiskLevel,
   RuleMatchResult,
   SecurityRuleItem,
   RuleType,
 } from "@/types/security";
-import { UsageDateRangePicker } from "@/components/usage/UsageDateRangePicker";
-import type { UsageRangeSelection, UsageRangePreset } from "@/types/usage";
+import type { UsageRangeSelection } from "@/types/usage";
 import { ToolRiskRulesPanel } from "@/components/security/ToolRiskRulesPanel";
 import { toast } from "sonner";
+import { SecurityEventsPanel } from "./SecurityEventsPanel";
+import type { SecurityEventFilter } from "@/types/securityEvents";
+import type { ToolRiskRuleSeed } from "@/types/toolRisk";
 
 type SecurityTab = "records" | "rules" | "toolRisk";
-
-type LogFilter = {
-  sessionId?: string;
-  appType?: string;
-  riskLevel?: string;
-  ruleCategory?: string;
-  action?: string;
-  keyword?: string;
-};
-
-type FilterOption = {
-  value: string;
-  label: string;
-};
 
 function createEmptyRule(): CustomSecurityRule {
   return {
@@ -86,103 +57,20 @@ function createEmptyRule(): CustomSecurityRule {
   };
 }
 
-function MetricCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-border/90 bg-card p-5 shadow-sm transition-colors hover:border-border">
-      <div className="text-3xl font-extrabold tracking-tight text-foreground sm:text-4xl">
-        {value}
-      </div>
-      <div className="mt-1.5 text-xs font-medium text-muted-foreground sm:text-sm">
-        {label}
-      </div>
-    </div>
-  );
-}
-
-function FilterSelect({
-  label,
-  value,
-  options,
-  onChange,
-  ariaLabel,
-}: {
-  label: string;
-  value: string;
-  options: FilterOption[];
-  onChange: (value: string) => void;
-  ariaLabel: string;
-}) {
-  const selected = options.find((option) => option.value === value);
-
-  return (
-    <Select value={value} onValueChange={onChange}>
-      <SelectTrigger
-        aria-label={ariaLabel}
-        className="h-8 w-auto min-w-[108px] flex-none rounded-full border-border bg-card px-3.5 text-xs font-medium shadow-sm"
-      >
-        <SelectValue>
-          {label}: {selected?.label ?? value}
-        </SelectValue>
-      </SelectTrigger>
-      <SelectContent>
-        {options.map((option) => (
-          <SelectItem key={option.value} value={option.value}>
-            {label}: {option.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  );
-}
-
-function AppMark({ appType }: { appType: string }) {
-  const app = APP_ICON_MAP[appType as keyof typeof APP_ICON_MAP];
-  if (app?.icon) {
-    return (
-      <span className="flex h-5 w-5 shrink-0 items-center justify-center">
-        {app.icon}
-      </span>
-    );
-  }
-  return (
-    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-bold text-muted-foreground">
-      {getAppLabel(appType).slice(0, 1).toUpperCase()}
-    </span>
-  );
-}
-
 export function SecurityCenterPage({
   activeApp = "claude",
 }: {
   activeApp?: string;
 }) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const [range, setRange] = useState<UsageRangeSelection>({ preset: "today" });
-  const { startDate, endDate } = resolveUsageRange(range);
-  const timeFilter = {
-    startTimestamp: startDate * 1000,
-    // Open-ended ranges keep new events visible on refresh; fixed custom ranges
-    // include every millisecond of the selected final second.
-    endTimestamp:
-      range.preset === "custom" && !range.liveEndTime
-        ? endDate * 1000 + 999
-        : undefined,
-  };
-  const rangeLabels: Partial<Record<UsageRangePreset, string>> = {
-    today: t("security.todayFilter"),
-    "7d": t("security.last7Days"),
-    "30d": t("security.last30Days"),
-    custom: t("security.customDateRange"),
-  };
-  const rangeLabel =
-    rangeLabels[range.preset] ?? getUsageRangePresetLabel(range.preset, t);
-
   const [activeTab, setActiveTab] = useState<SecurityTab>("records");
   const [logPage, setLogPage] = useState(1);
-  const [logFilter, setLogFilter] = useState<LogFilter>({});
-  const [selectedLogSnapshot, setSelectedLog] = useState<AuditLogRecord | null>(
-    null,
-  );
+  const [eventFilter, setEventFilter] = useState<SecurityEventFilter>({
+    view: "security_events",
+  });
+  const [pendingRuleSeed, setPendingRuleSeed] =
+    useState<ToolRiskRuleSeed | null>(null);
   const [isRuleModalOpen, setIsRuleModalOpen] = useState(false);
   const [ruleToDelete, setRuleToDelete] = useState<SecurityRuleItem | null>(
     null,
@@ -206,57 +94,6 @@ export function SecurityCenterPage({
     updateCustomAction,
     isSaving,
   } = useSecurityRules();
-  const {
-    logsResult,
-    isError: isLogsError,
-    isLoading: isLogsLoading,
-    refetch: refetchLogs,
-    clearLogs,
-    isClearing,
-  } = useSecurityAuditLogs({ ...logFilter, ...timeFilter }, logPage, 20);
-
-  const selectedLog =
-    logsResult?.items.find((log) => log.id === selectedLogSnapshot?.id) ??
-    selectedLogSnapshot;
-
-  const rangeSummary = useSecurityAuditLogs(timeFilter, 1, 100);
-  const redactedInRange = useSecurityAuditLogs(
-    { action: "redact", ...timeFilter },
-    1,
-    1,
-  );
-  const blockedInRange = useSecurityAuditLogs(
-    { action: "block", ...timeFilter },
-    1,
-    1,
-  );
-  const auditedInRange = useSecurityAuditLogs(
-    { action: "audit", ...timeFilter },
-    1,
-    1,
-  );
-
-  const displayCount = (value: number | undefined, loading: boolean) => {
-    if (loading) return "…";
-    if (value === undefined) return "—";
-    return value.toLocaleString(i18n.language);
-  };
-
-  const rangeSensitiveTypes = rangeSummary.logsResult
-    ? new Set(
-        rangeSummary.logsResult.items.map(
-          (log) => log.ruleCategory || log.ruleName,
-        ),
-      ).size
-    : undefined;
-  const rangeTotal = rangeSummary.logsResult?.total;
-  const filteredTotal = logsResult?.total;
-  const statsLoading =
-    rangeSummary.isLoading ||
-    redactedInRange.isLoading ||
-    blockedInRange.isLoading ||
-    auditedInRange.isLoading;
-
   const getRiskLabel = (riskLevel: RiskLevel) => {
     if (riskLevel === "CRITICAL" || riskLevel === "HIGH") {
       return t("security.levelHighShort");
@@ -290,9 +127,6 @@ export function SecurityCenterPage({
     if (action === "redact") return "text-blue-600 dark:text-blue-400";
     return "text-emerald-600 dark:text-emerald-400";
   };
-
-  const getAppConfig = (appType: string) =>
-    APP_ICON_MAP[appType as keyof typeof APP_ICON_MAP];
 
   const getCategoryLabel = (category: string) => {
     const normalized = category.toLowerCase();
@@ -333,16 +167,6 @@ export function SecurityCenterPage({
           rule.description || getCategoryLabel(rule.category),
         )
       : rule.description || getCategoryLabel(rule.category);
-
-  const handleLogFilterChange = (changes: Partial<LogFilter>) => {
-    setLogFilter((current) => ({ ...current, ...changes }));
-    setLogPage(1);
-  };
-
-  const resetLogFilters = () => {
-    setLogFilter({});
-    setLogPage(1);
-  };
 
   const handleOpenAddRule = () => {
     setEditingRule(createEmptyRule());
@@ -420,53 +244,6 @@ export function SecurityCenterPage({
     }
   };
 
-  const formatLogTime = (log: AuditLogRecord) =>
-    new Date(log.timestamp).toLocaleString(i18n.language);
-  const formatLastSeen = (log: AuditLogRecord) =>
-    new Date(log.lastSeenAt ?? log.timestamp).toLocaleString(i18n.language);
-
-  const ruleCategories = Array.from(
-    new Set(rules.map((rule) => rule.category).filter(Boolean)),
-  );
-
-  const serviceOptions: FilterOption[] = [
-    { value: "all", label: t("security.allApps") },
-    ...[
-      "claude",
-      "codex",
-      "gemini",
-      "grokbuild",
-      "opencode",
-      "openclaw",
-      "workbuddy",
-      "qoder",
-      "doubaowork",
-      "trae",
-      "kimi",
-      "qwen",
-      "zcode",
-    ].map((appType) => ({ value: appType, label: getAppLabel(appType) })),
-  ];
-  const typeOptions: FilterOption[] = [
-    { value: "all", label: t("security.allRules") },
-    ...ruleCategories.map((category) => ({
-      value: category,
-      label: getCategoryLabel(category),
-    })),
-  ];
-  const riskOptions: FilterOption[] = [
-    { value: "all", label: t("security.allRisks") },
-    { value: "HIGH", label: t("security.levelHighShort") },
-    { value: "MEDIUM", label: t("security.levelMediumShort") },
-    { value: "LOW", label: t("security.levelLowShort") },
-  ];
-  const actionOptions: FilterOption[] = [
-    { value: "all", label: t("security.allActions") },
-    { value: "block", label: t("security.resultBlocked") },
-    { value: "audit", label: t("security.resultAlert") },
-    { value: "redact", label: t("security.ruleActionRedact") },
-    { value: "allow", label: t("security.ruleActionAllow") },
-  ];
   const defaultActionOptions: Array<{
     value: AuditAction;
     label: string;
@@ -541,427 +318,22 @@ export function SecurityCenterPage({
       </div>
 
       {activeTab === "records" ? (
-        <section
-          className="mt-6 space-y-5"
-          role="tabpanel"
-          aria-label={t("security.tabRecords")}
-        >
-          <div className="grid grid-cols-3 gap-4">
-            <MetricCard
-              label={t("securityStats.redacted")}
-              value={displayCount(
-                redactedInRange.logsResult?.total,
-                statsLoading,
-              )}
-            />
-            <MetricCard
-              label={t("securityStats.warnings")}
-              value={displayCount(
-                auditedInRange.logsResult?.total,
-                statsLoading,
-              )}
-            />
-            <MetricCard
-              label={t("securityStats.protectiveBlocked")}
-              value={displayCount(
-                blockedInRange.logsResult?.total,
-                statsLoading,
-              )}
-            />
-          </div>
-
-          {/* Horizontal scrolling also clips vertical overflow; keep focus rings inside it. */}
-          <div className="overflow-x-auto p-1">
-            <div className="flex min-w-max items-center gap-2.5 text-xs">
-              <UsageDateRangePicker
-                selection={range}
-                triggerLabel={rangeLabel}
-                triggerClassName="h-8 w-auto flex-none rounded-full px-3 text-xs"
-                popoverAlign="start"
-                presets={["today", "7d", "30d"]}
-                presetLabels={rangeLabels}
-                onApply={(nextRange) => {
-                  setRange(nextRange);
-                  setLogPage(1);
-                }}
-              />
-              <FilterSelect
-                label={t("security.levelFilter")}
-                value={logFilter.riskLevel || "all"}
-                options={riskOptions}
-                onChange={(value) =>
-                  handleLogFilterChange({
-                    riskLevel: value === "all" ? undefined : value,
-                  })
-                }
-                ariaLabel={t("security.allRisks")}
-              />
-              <FilterSelect
-                label={t("security.typeFilter")}
-                value={logFilter.ruleCategory || "all"}
-                options={typeOptions}
-                onChange={(value) =>
-                  handleLogFilterChange({
-                    ruleCategory: value === "all" ? undefined : value,
-                  })
-                }
-                ariaLabel={t("security.typeFilter")}
-              />
-              <FilterSelect
-                label={t("security.serviceFilter")}
-                value={logFilter.appType || "all"}
-                options={serviceOptions}
-                onChange={(value) =>
-                  handleLogFilterChange({
-                    appType: value === "all" ? undefined : value,
-                  })
-                }
-                ariaLabel={t("security.allApps")}
-              />
-              <FilterSelect
-                label={t("security.recordResult")}
-                value={logFilter.action || "all"}
-                options={actionOptions}
-                onChange={(value) =>
-                  handleLogFilterChange({
-                    action: value === "all" ? undefined : value,
-                  })
-                }
-                ariaLabel={t("security.allActions")}
-              />
-              <Input
-                value={logFilter.sessionId ?? ""}
-                onChange={(event) =>
-                  handleLogFilterChange({ sessionId: event.target.value })
-                }
-                aria-label={t("security.sessionFilter")}
-                placeholder={t("security.sessionFilterPlaceholder")}
-                className="h-8 w-[220px] flex-none rounded-full bg-card text-xs focus:border-border-active"
-              />
-              <div className="relative w-[220px] flex-none">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={logFilter.keyword ?? ""}
-                  onChange={(event) =>
-                    handleLogFilterChange({ keyword: event.target.value })
-                  }
-                  placeholder={t("security.searchPlaceholder")}
-                  className="h-8 rounded-full bg-card pl-8 text-xs focus:border-border-active"
-                />
-              </div>
-              {(logFilter.riskLevel ||
-                logFilter.ruleCategory ||
-                logFilter.appType ||
-                logFilter.action ||
-                logFilter.keyword ||
-                logFilter.sessionId) && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 rounded-full px-3 text-xs text-muted-foreground"
-                  onClick={resetLogFilters}
-                >
-                  <X className="mr-1 h-3.5 w-3.5" />
-                  {t("security.resetFilters")}
-                </Button>
-              )}
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 rounded-full"
-                onClick={() => {
-                  void refetchLogs();
-                  void rangeSummary.refetch();
-                  void redactedInRange.refetch();
-                  void blockedInRange.refetch();
-                  void auditedInRange.refetch();
-                }}
-                disabled={isLogsLoading}
-                aria-label={t("security.refreshLogs")}
-                title={t("security.refreshLogs")}
-              >
-                <RefreshCw
-                  className={
-                    "h-3.5 w-3.5 " + (isLogsLoading ? "animate-spin" : "")
-                  }
-                />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 rounded-full text-muted-foreground hover:text-destructive"
-                onClick={() => void clearLogs(undefined)}
-                disabled={isClearing}
-                aria-label={t("security.clearLogs")}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between gap-4 rounded-xl border border-border/90 bg-card px-5 py-3.5 shadow-sm">
-            <div className="flex items-center gap-2.5 text-sm text-foreground">
-              <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-blue-600" />
-              <div>
-                <p>
-                  {t("security.recordsSummary", {
-                    total: displayCount(rangeTotal, rangeSummary.isLoading),
-                    filtered: displayCount(filteredTotal, isLogsLoading),
-                  })}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {t(
-                    rangeSummary.logsResult &&
-                      rangeSummary.logsResult.total >
-                        rangeSummary.logsResult.items.length
-                      ? "securityStats.sensitiveTypesSample"
-                      : "securityStats.sensitiveTypesSummary",
-                    {
-                      types: displayCount(
-                        rangeSensitiveTypes,
-                        rangeSummary.isLoading,
-                      ),
-                      sampleSize: displayCount(
-                        rangeSummary.logsResult?.items.length,
-                        rangeSummary.isLoading,
-                      ),
-                    },
-                  )}
-                </p>
-              </div>
-            </div>
-            <span className="hidden shrink-0 font-mono text-xs text-muted-foreground sm:inline-block">
-              {t("security.localOnly")}
-            </span>
-          </div>
-
-          <div className="space-y-2.5 pt-1">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-medium text-muted-foreground">
-                {t("security.recordsHeading")}
-              </h2>
-              <span className="hidden font-mono text-xs text-muted-foreground sm:inline-block">
-                {t("security.localOnly")}
-              </span>
-            </div>
-
-            <div className="overflow-hidden rounded-2xl border border-border/90 bg-card shadow-sm">
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[1552px] table-fixed border-collapse text-left">
-                  <colgroup>
-                    <col className="w-56" />
-                    <col className="w-56" />
-                    <col className="w-32" />
-                    <col className="w-56" />
-                    <col className="w-48" />
-                    <col className="w-28" />
-                    <col className="w-32" />
-                    <col className="w-36" />
-                    <col className="w-32" />
-                    <col className="w-12" />
-                  </colgroup>
-                  <thead>
-                    <tr className="border-b border-border/70 text-xs font-normal text-muted-foreground">
-                      <th className="whitespace-nowrap px-4 py-3.5 font-normal">
-                        {t("security.firstSeenAt")}
-                      </th>
-                      <th className="whitespace-nowrap px-4 py-3.5 font-normal">
-                        {t("security.lastSeenAt")}
-                      </th>
-                      <th className="whitespace-nowrap px-4 py-3.5 font-normal">
-                        {t("security.triggerCount")}
-                      </th>
-                      <th className="whitespace-nowrap px-4 py-3.5 font-normal">
-                        {t("security.sessionId")}
-                      </th>
-                      <th className="whitespace-nowrap px-4 py-3.5 font-normal">
-                        {t("security.recordType")}
-                      </th>
-                      <th className="whitespace-nowrap px-4 py-3.5 font-normal">
-                        {t("security.riskLevel")}
-                      </th>
-                      <th className="whitespace-nowrap px-4 py-3.5 font-normal">
-                        {t("security.recordResult")}
-                      </th>
-                      <th className="whitespace-nowrap px-4 py-3.5 font-normal">
-                        {t("security.aiService")}
-                      </th>
-                      <th className="whitespace-nowrap px-4 py-3.5 font-normal">
-                        {t("security.outboundStatus")}
-                      </th>
-                      <th className="whitespace-nowrap px-4 py-3.5 text-right font-normal" />
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border/60 text-sm">
-                    {!isLogsLoading &&
-                      !isLogsError &&
-                      logsResult?.items.map((log) => {
-                        const appConfig = getAppConfig(log.appType);
-                        const outboundBlocked = log.actionTaken === "block";
-                        const ruleName = getRuleName(
-                          log.ruleId,
-                          log.ruleName || getCategoryLabel(log.ruleCategory),
-                        );
-                        return (
-                          <tr
-                            key={log.id}
-                            tabIndex={0}
-                            onClick={() => setSelectedLog(log)}
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter" || event.key === " ") {
-                                event.preventDefault();
-                                setSelectedLog(log);
-                              }
-                            }}
-                            className="group cursor-pointer transition-colors hover:bg-muted/50 focus:bg-muted/50 focus:outline-none"
-                          >
-                            <td className="whitespace-nowrap px-4 py-4 font-mono text-xs text-muted-foreground">
-                              {formatLogTime(log)}
-                            </td>
-                            <td className="whitespace-nowrap px-4 py-4 font-mono text-xs text-muted-foreground">
-                              {formatLastSeen(log)}
-                            </td>
-                            <td
-                              className="truncate px-4 py-4 font-mono text-sm tabular-nums"
-                              title={(log.triggerCount ?? 1).toLocaleString(
-                                i18n.language,
-                              )}
-                            >
-                              {(log.triggerCount ?? 1).toLocaleString(
-                                i18n.language,
-                              )}
-                            </td>
-                            <td className="px-4 py-4 font-mono text-xs text-muted-foreground">
-                              <span
-                                className="block truncate"
-                                title={log.sessionId || undefined}
-                              >
-                                {log.sessionId || t("security.sessionUnknown")}
-                              </span>
-                            </td>
-                            <td className="px-4 py-4 font-medium text-foreground">
-                              <span className="block truncate" title={ruleName}>
-                                {ruleName}
-                              </span>
-                            </td>
-                            <td
-                              className={
-                                "whitespace-nowrap px-4 py-4 font-medium " +
-                                getRiskClass(log.riskLevel)
-                              }
-                            >
-                              {getRiskLabel(log.riskLevel)}
-                            </td>
-                            <td
-                              className={
-                                "whitespace-nowrap px-4 py-4 font-medium " +
-                                getActionClass(log.actionTaken)
-                              }
-                            >
-                              {getActionLabel(log.actionTaken)}
-                            </td>
-                            <td className="px-4 py-4">
-                              <div className="flex items-center gap-2">
-                                <AppMark appType={log.appType} />
-                                <span
-                                  className="min-w-0 truncate text-xs font-medium text-foreground sm:text-sm"
-                                  title={
-                                    appConfig?.label ?? getAppLabel(log.appType)
-                                  }
-                                >
-                                  {appConfig?.label ?? getAppLabel(log.appType)}
-                                </span>
-                              </div>
-                            </td>
-                            <td className="whitespace-nowrap px-4 py-4">
-                              <span
-                                className={
-                                  "text-xs sm:text-sm " +
-                                  (outboundBlocked
-                                    ? "font-medium text-foreground"
-                                    : "text-muted-foreground")
-                                }
-                              >
-                                {outboundBlocked
-                                  ? t("security.outboundBlocked")
-                                  : t("security.outboundSent")}
-                              </span>
-                            </td>
-                            <td className="px-4 py-4 text-right">
-                              <ChevronRight className="inline-block h-4 w-4 text-muted-foreground/40 transition-all group-hover:translate-x-0.5 group-hover:text-muted-foreground" />
-                            </td>
-                          </tr>
-                        );
-                      })}
-                  </tbody>
-                </table>
-              </div>
-              {/* Center status messages in the viewport, independently of table width. */}
-              {(isLogsLoading || isLogsError || !logsResult?.items.length) && (
-                <div
-                  role="status"
-                  className={
-                    "flex flex-col items-center justify-center px-4 py-14 text-center text-xs " +
-                    (isLogsError && !isLogsLoading
-                      ? "text-destructive"
-                      : "text-muted-foreground")
-                  }
-                >
-                  {isLogsLoading ? (
-                    t("security.loadingLogs")
-                  ) : isLogsError ? (
-                    t("common.error")
-                  ) : (
-                    <>
-                      <FileText className="mb-2 h-8 w-8 stroke-1 text-muted-foreground/50" />
-                      {t("security.noFilteredRecords")}
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {logsResult && logsResult.total > 0 && (
-            <div className="flex flex-col gap-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-              <span>
-                {t("security.logPagination", {
-                  total: logsResult.total,
-                  page: logsResult.page,
-                  pages: Math.max(
-                    1,
-                    Math.ceil(logsResult.total / logsResult.pageSize),
-                  ),
-                })}
-              </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="rounded-lg"
-                  disabled={logPage <= 1}
-                  onClick={() => setLogPage((page) => Math.max(1, page - 1))}
-                >
-                  {t("security.prevPage")}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="rounded-lg"
-                  disabled={logPage * logsResult.pageSize >= logsResult.total}
-                  onClick={() => setLogPage((page) => page + 1)}
-                >
-                  {t("security.nextPage")}
-                </Button>
-              </div>
-            </div>
-          )}
-        </section>
+        <SecurityEventsPanel
+          filter={eventFilter}
+          onFilterChange={setEventFilter}
+          page={logPage}
+          onPageChange={setLogPage}
+          range={range}
+          onRangeChange={setRange}
+          dlpCategories={Array.from(
+            new Set(rules.map((rule) => rule.category).filter(Boolean)),
+          ).map((value) => ({ value, label: getCategoryLabel(value) }))}
+          onOpenDlpRules={() => setActiveTab("rules")}
+          onCreateRule={(seed) => {
+            setPendingRuleSeed(seed);
+            setActiveTab("toolRisk");
+          }}
+        />
       ) : activeTab === "rules" ? (
         <section
           className="mt-6 space-y-5"
@@ -1181,132 +553,12 @@ export function SecurityCenterPage({
           role="tabpanel"
           aria-label={t("toolRisk.tabLabel", { defaultValue: "工具调用风险" })}
         >
-          <ToolRiskRulesPanel />
+          <ToolRiskRulesPanel
+            pendingRuleSeed={pendingRuleSeed}
+            onRuleSeedConsumed={() => setPendingRuleSeed(null)}
+          />
         </section>
       )}
-
-      <Dialog
-        open={selectedLog !== null}
-        onOpenChange={(open) => {
-          if (!open) setSelectedLog(null);
-        }}
-      >
-        <DialogContent zIndex="top" className="max-w-lg overflow-hidden p-0">
-          <DialogHeader className="border-b border-border/70 bg-muted/30 px-6 py-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <DialogTitle>{t("security.detailTitle")}</DialogTitle>
-                {selectedLog && (
-                  <span className="rounded-md bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                    {getRiskLabel(selectedLog.riskLevel)}
-                    {t("security.riskLevel")}
-                  </span>
-                )}
-              </div>
-            </div>
-            <DialogDescription>{t("security.logsDesc")}</DialogDescription>
-          </DialogHeader>
-          {selectedLog && (
-            <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div className="rounded-xl border border-border/70 bg-muted/30 p-3">
-                  <div className="text-muted-foreground">
-                    {t("security.detailType")}
-                  </div>
-                  <div className="mt-0.5 text-sm font-bold text-foreground">
-                    {getRuleName(
-                      selectedLog.ruleId,
-                      selectedLog.ruleName ||
-                        getCategoryLabel(selectedLog.ruleCategory),
-                    )}
-                  </div>
-                </div>
-                <div className="rounded-xl border border-border/70 bg-muted/30 p-3">
-                  <div className="text-muted-foreground">
-                    {t("security.detailService")}
-                  </div>
-                  <div className="mt-0.5 flex items-center gap-1.5 text-sm font-bold text-foreground">
-                    <AppMark appType={selectedLog.appType} />
-                    {getAppLabel(selectedLog.appType)}
-                  </div>
-                </div>
-                <div className="rounded-xl border border-border/70 bg-muted/30 p-3">
-                  <div className="text-muted-foreground">
-                    {t("security.firstSeenAt")}
-                  </div>
-                  <div className="mt-0.5 font-mono font-medium text-foreground">
-                    {formatLogTime(selectedLog)}
-                  </div>
-                </div>
-                <div className="rounded-xl border border-border/70 bg-muted/30 p-3">
-                  <div className="text-muted-foreground">
-                    {t("security.lastSeenAt")}
-                  </div>
-                  <div className="mt-0.5 font-mono font-medium text-foreground">
-                    {formatLastSeen(selectedLog)}
-                  </div>
-                </div>
-                <div className="rounded-xl border border-border/70 bg-muted/30 p-3">
-                  <div className="text-muted-foreground">
-                    {t("security.triggerCount")}
-                  </div>
-                  <div className="mt-0.5 font-mono font-medium text-foreground">
-                    {(selectedLog.triggerCount ?? 1).toLocaleString(
-                      i18n.language,
-                    )}
-                  </div>
-                </div>
-                <div className="rounded-xl border border-border/70 bg-muted/30 p-3">
-                  <div className="text-muted-foreground">
-                    {t("security.detailOutbound")}
-                  </div>
-                  <div className="mt-0.5 font-medium text-foreground">
-                    {selectedLog.actionTaken === "block"
-                      ? t("security.outboundBlocked")
-                      : t("security.outboundSent")}
-                  </div>
-                </div>
-              </div>
-              <div className="rounded-xl border border-border/70 bg-muted/30 p-3 text-xs">
-                <div className="text-muted-foreground">
-                  {t("security.sessionId")}
-                </div>
-                <div className="mt-0.5 break-all font-mono font-medium text-foreground">
-                  {selectedLog.sessionId || t("security.sessionUnknown")}
-                </div>
-              </div>
-              <div className="space-y-1.5">
-                <div className="text-xs font-medium text-muted-foreground">
-                  {t("security.detailSnippet")}
-                </div>
-                <div className="max-h-32 overflow-y-auto break-all rounded-xl border border-border bg-muted/80 p-3.5 font-mono text-xs leading-relaxed text-foreground">
-                  {selectedLog.matchedSnippetMasked}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {t("security.auditPrivacyHint")}
-                </p>
-              </div>
-            </div>
-          )}
-          <DialogFooter className="flex items-center justify-between border-t border-border/70 bg-muted/30 px-6 py-4 sm:justify-between">
-            <Button
-              type="button"
-              variant="ghost"
-              className="px-0 text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400"
-              onClick={() => {
-                setSelectedLog(null);
-                setActiveTab("rules");
-              }}
-            >
-              {t("security.goToRules")}
-              <ChevronRight className="ml-1 h-3.5 w-3.5" />
-            </Button>
-            <Button type="button" onClick={() => setSelectedLog(null)}>
-              {t("common.done")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={isRuleModalOpen} onOpenChange={setIsRuleModalOpen}>
         <DialogContent zIndex="alert" className="max-w-lg overflow-hidden">

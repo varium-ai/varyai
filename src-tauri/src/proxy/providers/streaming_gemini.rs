@@ -286,8 +286,17 @@ pub fn create_anthropic_sse_stream_from_gemini<E: std::error::Error + Send + 'st
 
                         let chunk_json: Value = match serde_json::from_str(&data) {
                             Ok(value) => value,
-                            Err(_) => continue,
+                            Err(_) => {
+                                yield Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Gemini stream event"));
+                                return;
+                            }
                         };
+                        if chunk_json.get("error").is_some()
+                            || chunk_json.get("candidates").and_then(Value::as_array).is_some_and(|c| c.len() > 1)
+                        {
+                            yield Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unsupported or failed Gemini stream event"));
+                            return;
+                        }
 
                         if message_id.is_none() {
                             message_id = chunk_json
@@ -301,8 +310,8 @@ pub fn create_anthropic_sse_stream_from_gemini<E: std::error::Error + Send + 'st
                                 .and_then(|value| value.as_str())
                                 .map(ToString::to_string);
                         }
-                        if latest_usage.is_none() {
-                            latest_usage = chunk_json.get("usageMetadata").cloned();
+                        if let Some(usage) = chunk_json.get("usageMetadata") {
+                            latest_usage = Some(usage.clone());
                         }
 
                         if !has_sent_message_start {
@@ -407,6 +416,15 @@ pub fn create_anthropic_sse_stream_from_gemini<E: std::error::Error + Send + 'st
                     return;
                 }
             }
+        }
+
+        // EOF alone is not a successful model completion. Never flush pending tool
+        // calls or invent a finish when the upstream was cancelled or interrupted.
+        if (latest_finish_reason.is_none() && blocked_text.is_none())
+            || !buffer.trim().is_empty() || !utf8_remainder.is_empty()
+        {
+            yield Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "Incomplete Gemini stream"));
+            return;
         }
 
         if !has_sent_message_start {
@@ -579,6 +597,41 @@ mod tests {
     use crate::proxy::providers::gemini_shadow::GeminiShadowStore;
     use crate::proxy::providers::transform_gemini::anthropic_to_gemini_with_shadow;
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn interrupted_or_invalid_gemini_streams_never_report_success() {
+        for chunks in [
+            vec!["data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n"],
+            vec!["data: {\"error\":{\"code\":503,\"message\":\"fixture-private-error\"}}\n\n"],
+            vec!["data: malformed-private-event\n\n"],
+            vec!["data: {\"candidates\":[{\"finishReason\":\"STOP\"},{\"finishReason\":\"STOP\"}]}\n\n"],
+        ] {
+            let source = futures::stream::iter(chunks.into_iter().map(|s| Ok::<_, std::io::Error>(Bytes::from(s))));
+            let result = create_anthropic_sse_stream_from_gemini(source, None, None, None, None).collect::<Vec<_>>().await;
+            assert!(result.iter().any(Result::is_err), "invalid upstream was accepted");
+            let output = result.iter().filter_map(|r| r.as_ref().ok()).map(|b| String::from_utf8_lossy(b)).collect::<String>();
+            assert!(!output.contains("message_stop"), "interrupted stream got a successful terminal");
+            assert!(!output.contains("private"));
+        }
+    }
+
+    #[test]
+    fn usage_only_tail_updates_final_gemini_usage() {
+        let output = collect_stream_output(vec![
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":1}}\n\n",
+            "data: {\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":3}}\n\n",
+        ]);
+        let events = output
+            .lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .filter_map(|s| serde_json::from_str::<Value>(s).ok())
+            .collect::<Vec<_>>();
+        let delta = events
+            .iter()
+            .find(|e| e["type"] == "message_delta")
+            .unwrap();
+        assert_eq!(delta["usage"]["output_tokens"], 3);
+    }
 
     fn collect_stream_output(chunks: Vec<&str>) -> String {
         let owned_chunks: Vec<String> = chunks.into_iter().map(ToString::to_string).collect();

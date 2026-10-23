@@ -22,47 +22,31 @@ import { useToolRiskEvents } from "@/hooks/useToolRisk";
 import { ShellCommandListDialog } from "./ShellCommandListsPanel";
 import { groupToolRiskEvents } from "./toolRiskEventGroups";
 import {
-  COMMAND_CLASSES,
   EVENT_REASON_CODES,
-  KNOWN_REASON_CODES,
   OPERATION_TYPES,
-  RISK_CATEGORIES,
   type CommandListType,
   type ToolRiskEventRecord,
   type ToolRiskRuleSeed,
   type ToolRiskVerdict,
 } from "@/types/toolRisk";
 
-function ruleSeed(record: ToolRiskEventRecord): ToolRiskRuleSeed {
-  const commandClass = COMMAND_CLASSES.includes(record.commandClass as never)
-    ? record.commandClass!
-    : record.reasonCode === "unclassified_command"
-      ? "unknown"
-      : COMMAND_CLASSES.includes(record.reasonCode as never)
-        ? (record.reasonCode as NonNullable<ToolRiskRuleSeed["commandClass"]>)
-        : undefined;
-  return {
-    ...(OPERATION_TYPES.includes(record.operationCategory as never)
-      ? {
-          operationCategory:
-            record.operationCategory as ToolRiskRuleSeed["operationCategory"],
-        }
-      : {}),
-    ...(commandClass ? { commandClass } : {}),
-    ...(RISK_CATEGORIES.includes(record.riskCategory as never)
-      ? {
-          riskCategory: record.riskCategory as ToolRiskRuleSeed["riskCategory"],
-        }
-      : {}),
-    ...(record.severity === "medium" || record.severity === "high"
-      ? { severity: record.severity }
-      : {}),
-    ...(KNOWN_REASON_CODES.includes(record.reasonCode as never)
-      ? { reasonCode: record.reasonCode as ToolRiskRuleSeed["reasonCode"] }
-      : {}),
-  };
-}
+import { toolRiskRuleSeed } from "./toolRiskEventActions";
+import {
+  toolVerdictLabel,
+  toolCategoryLabel,
+  toolSeverityLabel,
+} from "./securityEventLabels";
 
+type ControlledToolEvents = {
+  events: ToolRiskEventRecord[];
+  isLoading: boolean;
+  isError: boolean;
+  onSelectEvent?: (event: ToolRiskEventRecord) => void;
+};
+type ToolRiskEventsPanelProps = {
+  onCreateRule?: (seed: ToolRiskRuleSeed) => void;
+  controlled?: ControlledToolEvents;
+};
 const PAGE_SIZE = 50;
 
 function verdictBadgeVariant(
@@ -81,12 +65,44 @@ function formatTimestamp(ts: number): string {
   }
 }
 
-export function ToolRiskEventsPanel({
-  onCreateRule,
-}: { onCreateRule?: (seed: ToolRiskRuleSeed) => void } = {}) {
-  const { t } = useTranslation();
+/** Display bounded backend summaries without reconstructing raw tool inputs. */
+export function ToolRiskEventsPanel(props: ToolRiskEventsPanelProps = {}) {
+  return props.controlled ? (
+    <ToolRiskEventsTable {...props} />
+  ) : (
+    <StandaloneToolRiskEvents {...props} />
+  );
+}
+
+function StandaloneToolRiskEvents(props: ToolRiskEventsPanelProps) {
   const [offset, setOffset] = useState(0);
   const [verdict, setVerdict] = useState<ToolRiskVerdict | "all">("risky");
+  const query = useToolRiskEvents(
+    PAGE_SIZE,
+    offset,
+    verdict === "all" ? undefined : verdict,
+  );
+  return (
+    <ToolRiskEventsTable
+      {...props}
+      standalone={{ ...query, offset, setOffset, verdict, setVerdict }}
+    />
+  );
+}
+
+function ToolRiskEventsTable({
+  onCreateRule,
+  controlled,
+  standalone,
+}: ToolRiskEventsPanelProps & {
+  standalone?: ReturnType<typeof useToolRiskEvents> & {
+    offset: number;
+    setOffset: React.Dispatch<React.SetStateAction<number>>;
+    verdict: ToolRiskVerdict | "all";
+    setVerdict: (value: ToolRiskVerdict | "all") => void;
+  };
+}) {
+  const { t } = useTranslation();
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<number>>(
     new Set(),
   );
@@ -94,23 +110,40 @@ export function ToolRiskEventsPanel({
     listType: CommandListType;
     summary: string;
   } | null>(null);
-  const { events, isLoading, refetch, clearEvents, isClearing } =
-    useToolRiskEvents(
-      PAGE_SIZE,
-      offset,
-      verdict === "all" ? undefined : verdict,
-    );
+  const events = controlled?.events ?? standalone?.events ?? [];
+  const isLoading = controlled?.isLoading ?? standalone?.isLoading ?? false;
+  const isClearing = standalone?.isClearing ?? false;
+  const offset = standalone?.offset ?? 0;
+  const verdict = standalone?.verdict ?? "all";
+  const setOffset = standalone?.setOffset ?? (() => {});
+  const setVerdict = standalone?.setVerdict ?? (() => {});
+  const refetch = standalone?.refetch ?? (() => Promise.resolve());
+  const clearEvents = standalone?.clearEvents ?? (() => Promise.resolve());
   const groups = groupToolRiskEvents(events);
 
-  const hasPrev = offset > 0;
-  const hasNext = events.length >= PAGE_SIZE;
+  const hasPrev = !controlled && offset > 0;
+  const hasNext = !controlled && events.length >= PAGE_SIZE;
 
   const renderEvent = (
     record: ToolRiskEventRecord,
     showId = false,
     groupCount?: number,
   ) => (
-    <TableRow key={record.id} data-testid={`tool-risk-event-${record.id}`}>
+    <TableRow
+      key={`tool_risk:${record.id}`}
+      data-testid={`tool-risk-event-${record.id}`}
+      tabIndex={controlled?.onSelectEvent ? 0 : undefined}
+      onClick={() => controlled?.onSelectEvent?.(record)}
+      onKeyDown={(event) => {
+        if (
+          event.target === event.currentTarget &&
+          (event.key === "Enter" || event.key === " ")
+        ) {
+          event.preventDefault();
+          controlled?.onSelectEvent?.(record);
+        }
+      }}
+    >
       <TableCell className="text-xs text-muted-foreground">
         {formatTimestamp(record.timestamp)}
         {showId && <div>{t("toolRisk.eventRecordId", { id: record.id })}</div>}
@@ -121,72 +154,81 @@ export function ToolRiskEventsPanel({
             className="mt-1 h-auto whitespace-normal text-left text-xs"
             data-testid={`tool-risk-event-group-toggle-${record.id}`}
             aria-expanded={expandedGroups.has(record.id)}
-            onClick={() =>
+            onClick={(event) => {
+              event.stopPropagation();
               setExpandedGroups((previous) => {
                 const next = new Set(previous);
                 if (next.has(record.id)) next.delete(record.id);
                 else next.add(record.id);
                 return next;
-              })
-            }
+              });
+            }}
           >
             {t("toolRisk.eventSimilarRecords", { count: groupCount })}
           </Button>
         )}
       </TableCell>
-      <TableCell className="text-xs">{record.clientCategory ?? "-"}</TableCell>
-      <TableCell className="text-xs">
-        {record.operationCategory ?? "-"}
+      <TableCell className="break-words text-xs leading-5">
+        {record.clientCategory ?? "-"}
       </TableCell>
-      <TableCell
-        className={`max-w-[280px] text-xs text-muted-foreground ${
-          record.commandSummary?.trim()
-            ? "truncate font-mono"
-            : "whitespace-normal"
-        }`}
-        title={
-          record.commandSummary?.trim() ? record.commandSummary : undefined
-        }
-      >
-        {record.commandSummary?.trim()
-          ? record.commandSummary
-          : t("toolRisk.commandSummaryUnavailable", {
-              defaultValue: "未采集；历史摘要无法恢复",
-            })}
-      </TableCell>
-      <TableCell>
-        <Badge
-          variant={verdictBadgeVariant(record.verdict)}
-          className="text-[10px]"
-        >
-          {record.verdict
-            ? t(`toolRisk.verdict.${record.verdict}`, {
-                defaultValue: record.verdict,
-              })
-            : "-"}
-        </Badge>
-      </TableCell>
-      <TableCell className="text-xs">
-        {record.riskCategory
-          ? t(`toolRisk.category.${record.riskCategory}`, {
-              defaultValue: record.riskCategory,
-            })
-          : "-"}
-      </TableCell>
-      <TableCell className="text-xs">
-        {record.severity
-          ? t(`toolRisk.severity.${record.severity}`, {
-              defaultValue: record.severity,
-            })
-          : "-"}
+      <TableCell className="break-words text-xs leading-5">
+        {controlled
+          ? OPERATION_TYPES.includes(record.operationCategory as never)
+            ? t(`toolRisk.operation.${record.operationCategory}`)
+            : t(
+                record.operationCategory
+                  ? "securityEvents.unknown"
+                  : "securityEvents.notRecorded",
+              )
+          : (record.operationCategory ?? "-")}
       </TableCell>
       <TableCell className="text-xs text-muted-foreground">
+        <div
+          className={
+            record.commandSummary?.trim()
+              ? "truncate font-mono"
+              : "whitespace-normal break-words leading-5"
+          }
+          title={
+            record.commandSummary?.trim() ? record.commandSummary : undefined
+          }
+        >
+          {record.commandSummary?.trim()
+            ? record.commandSummary
+            : t("toolRisk.commandSummaryUnavailable", {
+                defaultValue: "未采集；历史摘要无法恢复",
+              })}
+        </div>
+      </TableCell>
+      <TableCell className="whitespace-nowrap">
+        <Badge
+          variant={verdictBadgeVariant(record.verdict)}
+          className="whitespace-nowrap text-[10px]"
+        >
+          {toolVerdictLabel(t, record.verdict)}
+        </Badge>
+      </TableCell>
+      <TableCell className="break-words text-xs leading-5">
+        {toolCategoryLabel(t, record.riskCategory)}
+      </TableCell>
+      <TableCell className="whitespace-nowrap text-xs">
+        {toolSeverityLabel(t, record.severity)}
+      </TableCell>
+      <TableCell className="break-words text-xs leading-5 text-muted-foreground">
         {EVENT_REASON_CODES.find((code) => code === record.reasonCode)
           ? t(`toolRisk.reason.${record.reasonCode}`)
           : t("toolRisk.reasonUnknown")}
       </TableCell>
+      {controlled && (
+        <TableCell className="break-words text-xs leading-5 text-muted-foreground">
+          {t("securityEvents.toolObservation")}
+        </TableCell>
+      )}
       <TableCell>
-        <div className="flex flex-wrap gap-1">
+        <div
+          className="flex flex-wrap gap-1"
+          onClick={(event) => event.stopPropagation()}
+        >
           {(["whitelist", "blacklist"] as const).map((listType) => (
             <Button
               key={listType}
@@ -209,7 +251,7 @@ export function ToolRiskEventsPanel({
               size="sm"
               variant="ghost"
               data-testid={`tool-risk-create-rule-${record.id}`}
-              onClick={() => onCreateRule(ruleSeed(record))}
+              onClick={() => onCreateRule(toolRiskRuleSeed(record))}
             >
               {t("toolRisk.createRuleFromEvent")}
             </Button>
@@ -220,7 +262,7 @@ export function ToolRiskEventsPanel({
   );
 
   return (
-    <div className="rounded-2xl border border-border/90 bg-card shadow-sm">
+    <div className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-border/90 bg-card shadow-sm">
       <div className="flex items-center justify-between border-b border-border/80 px-5 py-4">
         <div>
           <div className="text-sm font-semibold text-foreground">
@@ -233,132 +275,173 @@ export function ToolRiskEventsPanel({
             })}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            className="gap-1.5"
-            onClick={() => void refetch()}
-          >
-            <RefreshCw className="h-4 w-4" />
-            {t("common.refresh", { defaultValue: "刷新" })}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="gap-1.5"
-            data-testid="tool-risk-events-clear"
-            disabled={isClearing}
-            onClick={() =>
-              void clearEvents()
-                .then(() => {
-                  setOffset(0);
-                  setExpandedGroups(new Set());
-                })
-                .catch(() => {
-                  /* The hook already reports the mutation error. */
-                })
-            }
-          >
-            <Eraser className="h-4 w-4" />
-            {t("toolRisk.clearAllEvents")}
-          </Button>
-        </div>
+        {!controlled && (
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              onClick={() => void refetch()}
+            >
+              <RefreshCw className="h-4 w-4" />
+              {t("common.refresh", { defaultValue: "刷新" })}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              data-testid="tool-risk-events-clear"
+              disabled={isClearing}
+              onClick={() =>
+                void clearEvents()
+                  .then(() => {
+                    setOffset(0);
+                    setExpandedGroups(new Set());
+                  })
+                  .catch(() => {
+                    /* The hook already reports the mutation error. */
+                  })
+              }
+            >
+              <Eraser className="h-4 w-4" />
+              {t("toolRisk.clearAllEvents")}
+            </Button>
+          </div>
+        )}
       </div>
 
-      <div className="space-y-2 border-b border-border/80 px-5 py-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <label
-            htmlFor="tool-risk-events-verdict"
-            className="text-xs font-medium"
-          >
-            {t("toolRisk.eventVerdictFilter")}
-          </label>
-          <Select
-            value={verdict}
-            onValueChange={(value) => {
-              if (
-                ![
-                  "all",
-                  "risky",
-                  "unchecked",
-                  "uncertain",
-                  "low_risk",
-                ].includes(value)
-              )
-                return;
-              setVerdict(value as ToolRiskVerdict | "all");
-              setOffset(0);
-              setExpandedGroups(new Set());
-            }}
-          >
-            <SelectTrigger
-              id="tool-risk-events-verdict"
-              data-testid="tool-risk-events-verdict-filter"
-              className="h-8 w-auto min-w-36 text-xs"
+      {!controlled && (
+        <div className="space-y-2 border-b border-border/80 px-5 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <label
+              htmlFor="tool-risk-events-verdict"
+              className="text-xs font-medium"
             >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="risky">
-                {t("toolRisk.verdict.risky")}
-              </SelectItem>
-              <SelectItem value="all">
-                {t("toolRisk.eventFilterAll")}
-              </SelectItem>
-              <SelectItem value="unchecked">
-                {t("toolRisk.verdict.unchecked")}
-              </SelectItem>
-              <SelectItem value="uncertain">
-                {t("toolRisk.verdict.uncertain")}
-              </SelectItem>
-              <SelectItem value="low_risk">
-                {t("toolRisk.verdict.low_risk")}
-              </SelectItem>
-            </SelectContent>
-          </Select>
+              {t("toolRisk.eventVerdictFilter")}
+            </label>
+            <Select
+              value={verdict}
+              onValueChange={(value) => {
+                if (
+                  ![
+                    "all",
+                    "risky",
+                    "unchecked",
+                    "uncertain",
+                    "low_risk",
+                  ].includes(value)
+                )
+                  return;
+                setVerdict(value as ToolRiskVerdict | "all");
+                setOffset(0);
+                setExpandedGroups(new Set());
+              }}
+            >
+              <SelectTrigger
+                id="tool-risk-events-verdict"
+                data-testid="tool-risk-events-verdict-filter"
+                className="h-8 w-auto min-w-36 text-xs"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="risky">
+                  {t("toolRisk.verdict.risky")}
+                </SelectItem>
+                <SelectItem value="all">
+                  {t("toolRisk.eventFilterAll")}
+                </SelectItem>
+                <SelectItem value="unchecked">
+                  {t("toolRisk.verdict.unchecked")}
+                </SelectItem>
+                <SelectItem value="uncertain">
+                  {t("toolRisk.verdict.uncertain")}
+                </SelectItem>
+                <SelectItem value="low_risk">
+                  {t("toolRisk.verdict.low_risk")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {t("toolRisk.eventRetentionHint")}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {t("toolRisk.eventPageGroupingHint")}
+          </p>
         </div>
-        <p className="text-xs text-muted-foreground">
-          {t("toolRisk.eventRetentionHint")}
-        </p>
-        <p className="text-xs text-muted-foreground">
+      )}
+      {controlled && (
+        <p className="px-5 py-3 text-xs text-muted-foreground">
+          {t("securityEvents.toolWarning")}{" "}
           {t("toolRisk.eventPageGroupingHint")}
         </p>
-      </div>
+      )}
 
-      <Table data-testid="tool-risk-events-table">
+      <Table
+        data-testid="tool-risk-events-table"
+        className={`table-fixed ${controlled ? "min-w-[1760px]" : "min-w-[1544px]"}`}
+      >
+        {/* Keep metadata readable; the Table wrapper scrolls on narrow windows. */}
+        <colgroup>
+          <col style={{ width: 176 }} />
+          <col style={{ width: 104 }} />
+          <col style={{ width: 128 }} />
+          <col style={{ width: 320 }} />
+          <col style={{ width: 112 }} />
+          <col style={{ width: 152 }} />
+          <col style={{ width: 104 }} />
+          <col style={{ width: 184 }} />
+          {controlled && <col style={{ width: 216 }} />}
+          <col style={{ width: 264 }} />
+        </colgroup>
         <TableHeader>
           <TableRow>
-            <TableHead>
+            <TableHead className="whitespace-nowrap">
               {t("toolRisk.colTime", { defaultValue: "时间" })}
             </TableHead>
-            <TableHead>
+            <TableHead className="whitespace-nowrap">
               {t("toolRisk.colClient", { defaultValue: "客户端" })}
             </TableHead>
-            <TableHead>
+            <TableHead className="whitespace-nowrap">
               {t("toolRisk.colOperation", { defaultValue: "操作" })}
             </TableHead>
-            <TableHead>
+            <TableHead className="whitespace-nowrap">
               {t("toolRisk.colCommandSummary", { defaultValue: "命令摘要" })}
             </TableHead>
-            <TableHead>
+            <TableHead className="whitespace-nowrap">
               {t("toolRisk.colVerdict", { defaultValue: "判定" })}
             </TableHead>
-            <TableHead>
+            <TableHead className="whitespace-nowrap">
               {t("toolRisk.colCategory", { defaultValue: "风险类别" })}
             </TableHead>
-            <TableHead>
+            <TableHead className="whitespace-nowrap">
               {t("toolRisk.colSeverity", { defaultValue: "严重度" })}
             </TableHead>
-            <TableHead>{t("toolRisk.colReason")}</TableHead>
-            <TableHead>{t("toolRisk.colActions")}</TableHead>
+            <TableHead className="whitespace-nowrap">
+              {t("toolRisk.colReason")}
+            </TableHead>
+            {controlled && (
+              <TableHead className="whitespace-nowrap">
+                {t("security.detailOutbound")}
+              </TableHead>
+            )}
+            <TableHead className="whitespace-nowrap">
+              {t("toolRisk.colActions")}
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {isLoading ? (
+          {controlled?.isError ? (
+            <TableRow>
+              <TableCell colSpan={controlled ? 10 : 9}>
+                {t("securityEvents.queryError")}
+              </TableCell>
+            </TableRow>
+          ) : isLoading ? (
             <TableRow>
               <TableCell
-                colSpan={9}
+                colSpan={controlled ? 10 : 9}
                 className="py-8 text-center text-sm text-muted-foreground"
               >
                 {t("common.loading", { defaultValue: "加载中…" })}
@@ -367,7 +450,7 @@ export function ToolRiskEventsPanel({
           ) : events.length === 0 ? (
             <TableRow>
               <TableCell
-                colSpan={9}
+                colSpan={controlled ? 10 : 9}
                 className="py-8 text-center text-sm text-muted-foreground"
               >
                 {t("toolRisk.noEvents", { defaultValue: "暂无调用记录" })}
@@ -416,12 +499,14 @@ export function ToolRiskEventsPanel({
           </Button>
         </div>
       )}
-      <ShellCommandListDialog
-        open={listDraft != null}
-        initialListType={listDraft?.listType}
-        commandSummary={listDraft?.summary}
-        onOpenChange={(open) => !open && setListDraft(null)}
-      />
+      {listDraft && (
+        <ShellCommandListDialog
+          open={listDraft != null}
+          initialListType={listDraft?.listType}
+          commandSummary={listDraft?.summary}
+          onOpenChange={(open) => !open && setListDraft(null)}
+        />
+      )}
     </div>
   );
 }

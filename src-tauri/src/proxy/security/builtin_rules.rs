@@ -147,7 +147,7 @@ pub static BUILTIN_RULES: LazyLock<Vec<BuiltinRule>> = LazyLock::new(|| {
             RuleCategory::DbConnection,
             RiskLevel::High,
             AuditAction::Redact,
-            r#"(?i)\b(?:postgres|postgresql|mysql|redis|mongodb):\/\/[^:\s]+:[^@\s]+@[^\s,'"\)\]\}]+"#,
+            r#"(?i)\b(?:postgres|postgresql|mysql|redis|mongodb):\/\/[^:\s]*:[^@\s]+@[^\s,'"\)\]\}]+"#,
             &[
                 "postgres://",
                 "postgresql://",

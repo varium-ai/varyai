@@ -12,32 +12,33 @@ vi.mock("@/hooks/useProxyStatus", () => ({
     setTakeoverForApp: vi.fn(),
   }),
 }));
-it("identifies the missing provider name without asking for completed fields", async () => {
-  const onSubmit = vi.fn();
-  render(
-    <ProviderForm
-      appId="qoder"
-      submitLabel="Save Qoder"
-      onSubmit={onSubmit}
-      onCancel={vi.fn()}
-      initialData={{
-        name: "",
-        settingsConfig: {
-          baseUrl: "https://api.example/v1",
-          apiKey: "synthetic-key",
-          model: "model-a",
-          models: [{ model: "model-a" }],
-        },
-      }}
-    />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Save Qoder" }));
-  await waitFor(() =>
-    expect(toast.error).toHaveBeenCalledWith("providerForm.nameRequired"),
-  );
-  expect(onSubmit).not.toHaveBeenCalled();
-});
-
+it.each(["", "   "])(
+  "reports only the missing provider name for %j",
+  async (name) => {
+    const onSubmit = vi.fn();
+    render(
+      <ProviderForm
+        appId="qoder"
+        submitLabel="Save Qoder"
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+        initialData={{
+          name,
+          settingsConfig: {
+            baseUrl: "https://api.example/v1",
+            apiKey: "synthetic-key",
+            model: "model-a",
+          },
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save Qoder" }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("providerForm.nameRequired"),
+    );
+    expect(onSubmit).not.toHaveBeenCalled();
+  },
+);
 it("saves Qoder native models and protocol while retaining client capabilities", async () => {
   const onSubmit = vi.fn();
   render(

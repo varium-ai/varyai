@@ -663,22 +663,26 @@ function ProviderFormFull({
   } = useCodexConfigState({ initialData });
 
   const initialCodexApiFormat: CodexApiFormat =
-    initialData?.meta?.apiFormat === "openai_chat"
-      ? "openai_chat"
-      : initialData?.meta?.apiFormat === "anthropic"
-        ? "anthropic"
-        : initialData?.meta?.apiFormat === "openai_responses"
-          ? "openai_responses"
-          : (codexApiFormatFromWireApi(
-              extractCodexWireApi(
-                typeof initialData?.settingsConfig?.config === "string"
-                  ? initialData.settingsConfig.config
-                  : "",
-              ),
-            ) ?? "openai_responses");
+    initialData?.meta?.apiFormat === "gemini_native"
+      ? "gemini_native"
+      : initialData?.meta?.apiFormat === "openai_chat"
+        ? "openai_chat"
+        : initialData?.meta?.apiFormat === "anthropic"
+          ? "anthropic"
+          : initialData?.meta?.apiFormat === "openai_responses"
+            ? "openai_responses"
+            : (codexApiFormatFromWireApi(
+                extractCodexWireApi(
+                  typeof initialData?.settingsConfig?.config === "string"
+                    ? initialData.settingsConfig.config
+                    : "",
+                ),
+              ) ?? "openai_responses");
 
   const [localCodexApiFormat, setLocalCodexApiFormat] =
     useState<CodexApiFormat>(initialCodexApiFormat);
+  const [localGeminiApiFormat, setLocalGeminiApiFormat] =
+    useState<ClaudeApiFormat>(initialData?.meta?.apiFormat ?? "gemini_native");
 
   // Auth-field choice for the Anthropic Messages upstream (defaults to the Bearer form)
   const initialCodexAnthropicAuthField: ClaudeApiKeyField =
@@ -1802,7 +1806,9 @@ function ProviderFormFull({
             ? isXaiOauthProvider
               ? "openai_responses"
               : localCodexApiFormat
-            : undefined,
+            : appId === "gemini" && category !== "official"
+              ? localGeminiApiFormat
+              : undefined,
       apiKeyField:
         appId === "claude" &&
         category !== "official" &&
@@ -1969,6 +1975,7 @@ function ProviderFormFull({
       }
       if (appId === "gemini") {
         resetGeminiConfig({}, {});
+        setLocalGeminiApiFormat("gemini_native");
       }
       if (appId === "opencode") {
         opencodeForm.resetOpencodeState();
@@ -2026,6 +2033,7 @@ function ProviderFormFull({
       const config = (preset.settingsConfig as any)?.config ?? {};
 
       resetGeminiConfig(env, config);
+      setLocalGeminiApiFormat("gemini_native");
 
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
@@ -2524,6 +2532,8 @@ function ProviderFormFull({
 
           {appId === "gemini" && (
             <GeminiFormFields
+              apiFormat={localGeminiApiFormat}
+              onApiFormatChange={setLocalGeminiApiFormat}
               providerId={providerId}
               shouldShowApiKey={shouldShowApiKey(
                 form.getValues("settingsConfig"),

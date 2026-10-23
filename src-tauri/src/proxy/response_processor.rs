@@ -198,7 +198,11 @@ pub async fn handle_streaming(
             parser_config.output_protocol,
             ctx.app_type_str,
             crate::proxy::tool_observation::channel::Transport::Sse,
-            crate::proxy::tool_observation::channel::OutputQuality::Native,
+            if ctx.converted_output {
+                crate::proxy::tool_observation::channel::OutputQuality::ConvertedUnknown
+            } else {
+                crate::proxy::tool_observation::channel::OutputQuality::Native
+            },
             ctx.tool_schemas.clone(),
         )),
         usage_collector,
@@ -248,7 +252,11 @@ pub async fn handle_non_streaming(
             parser_config.output_protocol,
             ctx.app_type_str,
             crate::proxy::tool_observation::channel::Transport::Json,
-            crate::proxy::tool_observation::channel::OutputQuality::Native,
+            if ctx.converted_output {
+                crate::proxy::tool_observation::channel::OutputQuality::ConvertedUnknown
+            } else {
+                crate::proxy::tool_observation::channel::OutputQuality::Native
+            },
             ctx.tool_schemas.clone(),
         ),
     );

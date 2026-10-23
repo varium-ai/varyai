@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   useToolRiskCommandLists,
   useToolRiskEvents,
+  useToolRiskEventBridge,
   useToolRiskSettings,
   useToolRiskSandbox,
   useToolRiskPolicyChanges,
@@ -222,7 +223,23 @@ describe("event verdict query cache", () => {
       await result.current.clearEvents();
     });
     expect(api.clearEvents).toHaveBeenLastCalledWith(undefined);
-    expect(invalidate).toHaveBeenLastCalledWith({ queryKey: toolRiskKeys.all });
+    expect(client.getMutationCache().getAll()[0]?.options.mutationKey).toEqual([
+      "toolRisk",
+      "clearEvents",
+    ]);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: toolRiskKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["security"] });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["securityEvents", "summary"],
+      refetchType: "active",
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["securityEvents", "page"],
+      refetchType: "none",
+    });
+    expect(invalidate).not.toHaveBeenCalledWith({
+      queryKey: ["securityEvents"],
+    });
     unmount();
     client.clear();
   });
@@ -508,6 +525,96 @@ describe("P2-9 safe auxiliary errors", () => {
         kind === "events"
           ? "toolRisk.eventsClearFailed"
           : "toolRisk.sandboxFailed",
+      );
+      unmount();
+      client.clear();
+    },
+  );
+});
+
+const bridgeMocks = vi.hoisted(() => ({ listen: vi.fn(), log: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: bridgeMocks.listen }));
+vi.mock("@/lib/frontendLogger", () => ({
+  reportFrontendError: bridgeMocks.log,
+}));
+
+describe("tool recorded unified query bridge", () => {
+  beforeEach(() => {
+    bridgeMocks.listen.mockReset();
+    bridgeMocks.log.mockReset();
+  });
+  function mountBridge() {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}> {children} </QueryClientProvider>
+    );
+    const onRecorded = vi.fn();
+    const hook = renderHook(() => useToolRiskEventBridge(onRecorded), {
+      wrapper,
+    });
+    return { ...hook, client, invalidate, onRecorded };
+  }
+  it("keeps its own first-read/notifier and only refetches active unified summaries", async () => {
+    let emit!: () => void;
+    const off = vi.fn();
+    bridgeMocks.listen.mockImplementation(async (_name, cb) => {
+      emit = cb;
+      return off;
+    });
+    const { client, invalidate, onRecorded, unmount } = mountBridge();
+    await waitFor(() => expect(onRecorded).toHaveBeenCalledTimes(1));
+    expect(bridgeMocks.listen).toHaveBeenCalledWith(
+      "tool-risk-recorded",
+      expect.any(Function),
+    );
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: toolRiskKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["securityEvents", "summary"],
+      refetchType: "active",
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["securityEvents", "page"],
+      refetchType: "none",
+    });
+    invalidate.mockClear();
+    act(() => emit());
+    await waitFor(() => expect(onRecorded).toHaveBeenCalledTimes(2));
+    expect(invalidate).toHaveBeenCalledTimes(3);
+    expect(invalidate).not.toHaveBeenCalledWith({
+      queryKey: ["securityEvents"],
+    });
+    unmount();
+    expect(off).toHaveBeenCalledTimes(1);
+    client.clear();
+  });
+  it.each(["legacy", "summary", "page"])(
+    "a %s invalidation failure does not block other domains or notifications",
+    async (domain) => {
+      let emit!: () => void;
+      bridgeMocks.listen.mockImplementation(async (_name, cb) => {
+        emit = cb;
+        return vi.fn();
+      });
+      const { client, invalidate, onRecorded, unmount } = mountBridge();
+      await waitFor(() => expect(onRecorded).toHaveBeenCalledTimes(1));
+      invalidate.mockClear().mockImplementation((options) => {
+        const key = options?.queryKey;
+        if (
+          (domain === "legacy" && key?.[0] === "toolRisk") ||
+          key?.[1] === domain
+        )
+          return Promise.reject(new Error("secret-command"));
+        return Promise.resolve();
+      });
+      act(() => emit());
+      await waitFor(() => expect(onRecorded).toHaveBeenCalledTimes(2));
+      expect(invalidate).toHaveBeenCalledTimes(3);
+      await waitFor(() => expect(bridgeMocks.log).toHaveBeenCalled());
+      expect(JSON.stringify(bridgeMocks.log.mock.calls)).not.toContain(
+        "secret-command",
       );
       unmount();
       client.clear();

@@ -1806,6 +1806,9 @@ pub fn run() {
             commands::exit_lightweight_mode,
             commands::is_lightweight_mode,
             // Security Audit & DLP commands
+            commands::get_security_events,
+            commands::get_security_events_summary,
+            commands::clear_security_events,
             commands::get_security_audit_settings,
             commands::update_security_audit_settings,
             commands::get_security_audit_logs,
