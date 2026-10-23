@@ -1,3 +1,4 @@
+import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -62,6 +63,7 @@ import type { UniversalProviderPreset } from "@/config/universalProviderPresets"
 import {
   applyTemplateValues,
   hasApiKeyField,
+  setApiKeyInConfig,
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
 import {
@@ -2200,6 +2202,80 @@ function ProviderFormFull({
               category={category}
             />
           )}
+
+          <ConnectionPresetPicker
+            current={{
+              name: form.watch("name"),
+              ...((
+                {
+                  codex: { baseUrl: codexBaseUrl, apiKey: codexApiKey },
+                  gemini: { baseUrl: geminiBaseUrl, apiKey: geminiApiKey },
+                  opencode: {
+                    baseUrl: opencodeForm.opencodeBaseUrl,
+                    apiKey: opencodeForm.opencodeApiKey,
+                  },
+                  openclaw: {
+                    baseUrl: openclawForm.openclawBaseUrl,
+                    apiKey: openclawForm.openclawApiKey,
+                  },
+                  hermes: {
+                    baseUrl: hermesForm.hermesBaseUrl,
+                    apiKey: hermesForm.hermesApiKey,
+                  },
+                } as Partial<Record<AppId, { baseUrl: string; apiKey: string }>>
+              )[appId] ?? { baseUrl, apiKey }),
+            }}
+            disabled={
+              category === "official" ||
+              isCopilotProvider ||
+              isClaudeCodexOauthProvider ||
+              isXaiOauthProvider ||
+              isCodexOfficialProvider ||
+              isAnyOmoCategory
+            }
+            onApply={(preset) => {
+              form.setValue("name", preset.name, { shouldDirty: true });
+              if (appId === "codex") {
+                handleCodexBaseUrlChange(preset.baseUrl);
+                handleCodexApiKeyChange(preset.apiKey);
+              } else if (appId === "gemini") {
+                const env = envStringToObj(geminiEnv);
+                env.GOOGLE_GEMINI_BASE_URL = preset.baseUrl;
+                env.GEMINI_API_KEY = preset.apiKey;
+                handleGeminiEnvChange(envObjToString(env));
+                updateGeminiEnvField("GOOGLE_GEMINI_BASE_URL", preset.baseUrl);
+                updateGeminiEnvField("GEMINI_API_KEY", preset.apiKey);
+              } else if (appId === "opencode") {
+                opencodeForm.handleOpencodeBaseUrlChange(preset.baseUrl);
+                opencodeForm.handleOpencodeApiKeyChange(preset.apiKey);
+              } else if (appId === "openclaw") {
+                openclawForm.handleOpenclawBaseUrlChange(preset.baseUrl);
+                openclawForm.handleOpenclawApiKeyChange(preset.apiKey);
+              } else if (appId === "hermes") {
+                hermesForm.handleHermesBaseUrlChange(preset.baseUrl);
+                hermesForm.handleHermesApiKeyChange(preset.apiKey);
+              } else {
+                try {
+                  const config = JSON.parse(
+                    form.getValues("settingsConfig") || "{}",
+                  );
+                  config.env = {
+                    ...config.env,
+                    ANTHROPIC_BASE_URL: preset.baseUrl,
+                  };
+                  handleSettingsConfigChange(
+                    setApiKeyInConfig(JSON.stringify(config), preset.apiKey, {
+                      createIfMissing: true,
+                      appType: appId,
+                      apiKeyField: localApiKeyField,
+                    }),
+                  );
+                } catch {
+                  toast.error(t("jsonEditor.invalidJson"));
+                }
+              }
+            }}
+          />
 
           <BasicFormFields
             form={form}

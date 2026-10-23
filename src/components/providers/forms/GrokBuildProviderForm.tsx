@@ -1,3 +1,4 @@
+import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -437,6 +438,19 @@ export function GrokBuildProviderForm({
           />
         )}
 
+        <ConnectionPresetPicker
+          disabled={category === "official"}
+          current={{ name: form.watch("name"), baseUrl, apiKey }}
+          onApply={(preset) => {
+            form.setValue("name", preset.name);
+            setBaseUrl(preset.baseUrl);
+            setApiKey(preset.apiKey);
+            syncStructuredConfig({
+              baseUrl: preset.baseUrl,
+              apiKey: preset.apiKey,
+            });
+          }}
+        />
         <BasicFormFields form={form} />
 
         {category !== "official" && (

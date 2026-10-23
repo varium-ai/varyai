@@ -1,4 +1,24 @@
 {
+  "connectionPresets": {
+    "label": "Connection preset",
+    "manage": "Manage presets",
+    "loading": "Loading…",
+    "select": "Select a preset to fill",
+    "hint": "Fills the name, API URL and key once. Each agent stays independent; later preset changes do not sync.",
+    "customRequired": "Use connection presets with custom providers. Official login and managed accounts use their own authentication.",
+    "add": "New preset",
+    "edit": "Edit",
+    "delete": "Delete",
+    "name": "Preset name",
+    "baseUrl": "API URL (Base URL)",
+    "apiKey": "API key",
+    "urlHint": "Enter the provider API endpoint. Its website homepage may not be an API endpoint.",
+    "save": "Save preset",
+    "invalid": "Enter a name, key and valid http(s) API URL.",
+    "loadFailed": "Could not load presets. Reopen the configuration page to retry.",
+    "saveFailed": "Could not save the preset. Check the fields and retry.",
+    "deleteFailed": "Could not delete the preset. Please retry."
+  },
   "providerDetection": {
     "title": "Detect configuration",
     "discovering": "Retrieving models…",

@@ -56,13 +56,13 @@ pub(crate) use dao::proxy::{
 #[allow(unused_imports)]
 pub use dao::{
     AuditBatchOutcome, AuditLogEvent, AuditLogFilter, AuditLogPageResult, AuditLogRecord,
-    AuditRowTarget, AuditWrite, AuditWriteReceipt, CustomSecurityRule, FailoverQueueItem, Profile,
-    SecurityAuditSettings, SecurityEvent, SecurityEventError, SecurityEventFilter,
-    SecurityEventPage, SecurityEventRecord, SecurityEventResult, SecurityEventRiskLevel,
-    SecurityEventSummary, SecurityEventToolVerdict, SecurityEventType, SecurityEventView,
-    SecurityEventsClearResult, ToolRiskActor, ToolRiskAuditStatus, ToolRiskChangeKind,
-    ToolRiskEventInput, ToolRiskEventRecord, ToolRiskPolicyChange, ToolRiskSettings,
-    ToolRiskStoredAuditStatus, ToolRiskWriteReceipt,
+    AuditRowTarget, AuditWrite, AuditWriteReceipt, ConnectionPreset, CustomSecurityRule,
+    FailoverQueueItem, Profile, SecurityAuditSettings, SecurityEvent, SecurityEventError,
+    SecurityEventFilter, SecurityEventPage, SecurityEventRecord, SecurityEventResult,
+    SecurityEventRiskLevel, SecurityEventSummary, SecurityEventToolVerdict, SecurityEventType,
+    SecurityEventView, SecurityEventsClearResult, ToolRiskActor, ToolRiskAuditStatus,
+    ToolRiskChangeKind, ToolRiskEventInput, ToolRiskEventRecord, ToolRiskPolicyChange,
+    ToolRiskSettings, ToolRiskStoredAuditStatus, ToolRiskWriteReceipt,
 };
 
 use crate::config::get_app_config_dir;

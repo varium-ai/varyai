@@ -1722,6 +1722,10 @@ pub fn run() {
             commands::probe_tool_installations,
             // Provider terminal
             commands::open_provider_terminal,
+            // Connection preset management
+            commands::list_connection_presets,
+            commands::save_connection_preset,
+            commands::delete_connection_preset,
             // Universal Provider management
             commands::get_universal_providers,
             commands::get_universal_provider,

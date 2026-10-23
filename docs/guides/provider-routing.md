@@ -12,6 +12,14 @@ Select the target client before adding or editing a provider. Provider credentia
 
 See [Codex model catalogs](codex-model-catalog.md) for import behavior. Do not use an internal gateway address or a usable key in a shared example.
 
+## Reuse a named connection
+
+Every agent's provider form includes **Connection preset**. Open **Manage presets** to show a separate dialog above the provider form, enter a name, the supplier's API base URL and an API key, and save. Closing the dialog or pressing Escape returns to the provider form with its unsaved values intact. Use the API endpoint supplied for client configuration, not the supplier's website homepage. Presets can be edited or deleted from the same dialog; keys are masked in the editor.
+
+Choose a saved connection when adding or editing a custom provider to fill its name, API URL and key. Save the provider normally to persist those values for that agent. This copies the values once: the agent remains independently editable, and later preset edits or deletion do not change previously configured providers. Model mappings, upstream protocol and other agent-specific settings remain unchanged. Official account and managed OAuth configurations retain their own sign-in flow.
+
+Connection presets differ from Universal Providers, whose application-specific configurations can be synchronized across clients. Saving a connection preset alone does not configure an agent or activate local routing.
+
 ## Import all Claude Code models
 
 In the Claude Code provider's model mapping section, **Quick Set** imports every model returned by discovery as a separate editable row. If no catalog has been fetched, the button fetches it first using the current endpoint/key or selected managed account. Empty role fields do not disable import. Failed or superseded requests do not change the rows.

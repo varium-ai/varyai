@@ -1,4 +1,24 @@
 {
+  "connectionPresets": {
+    "label": "连接预设",
+    "manage": "管理预设",
+    "loading": "加载中…",
+    "select": "选择预设并填入",
+    "hint": "选择后填入名称、API 地址和 Key。之后各 Agent 独立配置，修改预设不会同步。",
+    "customRequired": "官方登录和托管账号无需此预设；请在自定义供应商中使用。",
+    "add": "新建预设",
+    "edit": "编辑",
+    "delete": "删除",
+    "name": "预设名称",
+    "baseUrl": "API 地址（Base URL）",
+    "apiKey": "API Key",
+    "urlHint": "填写供应商的 API 请求地址，官网首页地址不一定是 API 地址。",
+    "save": "保存预设",
+    "invalid": "请填写名称、Key 和有效的 http(s) API 地址。",
+    "loadFailed": "预设加载失败，请关闭后重新打开配置页。",
+    "saveFailed": "保存预设失败，请检查输入后重试。",
+    "deleteFailed": "删除预设失败，请重试。"
+  },
   "providerDetection": {
     "title": "检测配置",
     "discovering": "正在获取模型列表…",

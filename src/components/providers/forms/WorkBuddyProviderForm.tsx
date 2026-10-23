@@ -1,3 +1,4 @@
+import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useForm } from "react-hook-form";
@@ -363,6 +364,15 @@ export function WorkBuddyProviderForm({
         className="space-y-6 glass rounded-xl p-6"
         onSubmit={form.handleSubmit(save)}
       >
+        <ConnectionPresetPicker
+          disabled={isOfficial && !onAddThirdParty}
+          current={{ name: form.watch("name"), baseUrl: url, apiKey }}
+          onApply={(preset) => {
+            form.setValue("name", preset.name);
+            setUrl(preset.baseUrl);
+            setApiKey(preset.apiKey);
+          }}
+        />
         <BasicFormFields form={form} defaultIcon={desktopClient} />
         {!initialData && (
           <label className="flex items-center gap-2 text-sm">

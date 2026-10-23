@@ -68,6 +68,9 @@ export function rendererChunk(id: string): string | undefined {
     return "provider-presets";
   }
   if (relative === "utils/grokBuildConfig.ts") return "provider-presets";
+  if (relative === "components/providers/forms/ConnectionPresetPicker.tsx") {
+    return "ui-connection-presets";
+  }
   if (relative.startsWith("icons/")) return "icons";
   if (relative.startsWith("components/")) {
     const parts = relative.slice("components/".length).split("/");

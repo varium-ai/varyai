@@ -1,4 +1,24 @@
 {
+  "connectionPresets": {
+    "label": "連線預設",
+    "manage": "管理預設",
+    "loading": "載入中…",
+    "select": "選擇預設並填入",
+    "hint": "選擇後填入名稱、API 位址和 Key。之後各 Agent 獨立設定，修改預設不會同步。",
+    "customRequired": "官方登入和託管帳號無需此預設；請在自訂供應商中使用。",
+    "add": "新增預設",
+    "edit": "編輯",
+    "delete": "刪除",
+    "name": "預設名稱",
+    "baseUrl": "API 位址（Base URL）",
+    "apiKey": "API Key",
+    "urlHint": "填寫供應商的 API 請求位址，官網首頁不一定是 API 位址。",
+    "save": "儲存預設",
+    "invalid": "請填寫名稱、Key 和有效的 http(s) API 位址。",
+    "loadFailed": "預設載入失敗，請重新開啟設定頁。",
+    "saveFailed": "儲存預設失敗，請檢查輸入後重試。",
+    "deleteFailed": "刪除預設失敗，請重試。"
+  },
   "providerDetection": {
     "title": "偵測設定",
     "discovering": "正在取得模型清單…",

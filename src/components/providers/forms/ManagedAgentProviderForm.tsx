@@ -1,3 +1,4 @@
+import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
 import { useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -166,6 +167,14 @@ export function ManagedAgentProviderForm({
           {t("managedAgent.traePending")}
         </p>
       )}
+      <ConnectionPresetPicker
+        current={{ name, baseUrl, apiKey }}
+        onApply={(preset) => {
+          setName(preset.name);
+          setBaseUrl(preset.baseUrl);
+          setApiKey(preset.apiKey);
+        }}
+      />
       <div className="space-y-2">
         <Label htmlFor="agent-name">{t("provider.name")}</Label>
         <Input
