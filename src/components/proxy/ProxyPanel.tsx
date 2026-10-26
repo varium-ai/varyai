@@ -242,7 +242,11 @@ export function ProxyPanel({ onToggleProxy, isProxyPending }: ProxyPanelProps) {
           />
         </div>
 
-        <GatewayKeysPanel port={listenPort} />
+        <GatewayKeysPanel
+          port={listenPort}
+          running={isRunning}
+          takeoverStatus={takeoverStatus}
+        />
 
         {/* [1] App takeover switches — animated, visible only when proxy is running */}
         <AnimatePresence>
@@ -491,6 +495,9 @@ export function ProxyPanel({ onToggleProxy, isProxyPending }: ProxyPanelProps) {
             </div>
 
             {/* [5] Stats cards */}
+            <p className="text-xs text-muted-foreground">
+              {t("gatewayKeys.serviceStats")}
+            </p>
             <div className="grid gap-3 md:grid-cols-4">
               <StatCard
                 icon={<Activity className="h-4 w-4" />}

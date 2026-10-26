@@ -11807,7 +11807,8 @@ experimental_bearer_token = "PROXY_MANAGED"
         let dir = tempfile::tempdir().expect("dir");
         std::fs::create_dir(dir.path().join("cache")).expect("cache");
         std::fs::write(
-            dir.path().join("cache/acc-product-config-v3.json"),
+            dir.path()
+                .join("cache/acc-product-config-v3-200-fixture.json"),
             r#"{"endpoint":"https://www.workbuddy.cn"}"#,
         )
         .expect("product");

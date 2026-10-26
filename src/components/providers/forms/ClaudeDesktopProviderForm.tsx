@@ -190,10 +190,7 @@ function initialRouteRows(
   });
 }
 
-// Proxy 模式对齐 Claude Code：固定 Sonnet / Opus / Fable / Haiku 四档。
-// 把任意来源的 route 行按角色归类到固定四槽（缺档留空），保证 UI 永远四行、
-// 用户不会漏配某档导致子 agent 找不到模型。
-// （fable 自 Desktop 1.12603.1+ 起被 fail-all 校验放行，可作为独立档位。）
+// Keep stable role fields in the editor; only populated models are published.
 function normalizeProxyRows(rows: RouteRow[]): RouteRow[] {
   return ROLE_ORDER.map((role) => {
     const match = rows.find(
@@ -700,33 +697,18 @@ export function ClaudeDesktopProviderForm({
         model: route.model.trim(),
         labelOverride: route.labelOverride.trim(),
       }))
-      .filter((route) => route.route || route.model);
+      .filter((route) =>
+        effectiveMode === "proxy" ? route.model : route.route || route.model,
+      );
 
     if (effectiveMode === "proxy") {
-      // 固定四档（Sonnet / Opus / Fable / Haiku），route_id 由 UI 生成、恒合法，
-      // 因此只要求至少填一个实际请求模型；留空档继承第一个已填档（Sonnet 优先），
-      // 对齐 Claude Code 的兜底，保证落库四档齐全、子 agent 不会找不到模型。
-      const primary = routeEntries.find((route) => route.model);
-      if (!primary) {
+      if (!routeEntries.length) {
         toast.error(
           t("claudeDesktop.routesRequired", {
             defaultValue: "至少填写一个模型映射",
           }),
         );
         return;
-      }
-      for (const route of routeEntries) {
-        if (!route.model) {
-          route.model = primary.model;
-          if (!route.labelOverride) {
-            route.labelOverride = primary.labelOverride || primary.model;
-          }
-          // 回填的是同一个上游模型，1M 能力声明应与 primary 一致，
-          // 避免同模型在不同档声明不同 1M（除非该档用户已显式勾选）。
-          if (!route.supports1m) {
-            route.supports1m = primary.supports1m;
-          }
-        }
       }
     } else {
       const invalid = routeEntries.find(
@@ -1104,7 +1086,7 @@ export function ClaudeDesktopProviderForm({
                       <p className="text-xs leading-relaxed text-muted-foreground">
                         {t("claudeDesktop.routeMapHint", {
                           defaultValue:
-                            "为 Sonnet、Opus、Haiku 三档分别填写实际请求模型；菜单显示名可写 DeepSeek、Kimi 等品牌名。留空的档会自动沿用 Sonnet（或第一个已填档）的模型，确保子 agent 调用的 Haiku 始终可用。",
+                            "Only roles with an actual request model appear in Desktop's menu. Clear the model to remove a menu entry. Unconfigured Haiku sub-agent requests fall back internally to Sonnet or the first configured model. Declare 1M only when supported by the upstream.",
                         })}
                       </p>
                     </div>

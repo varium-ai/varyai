@@ -22,6 +22,12 @@ Choose a saved connection when adding or editing a custom provider to fill its n
 
 Connection presets differ from Universal Providers, whose application-specific configurations can be synchronized across clients. Saving a connection preset alone does not configure an agent or activate local routing.
 
+## Claude Desktop menu mappings
+
+In model-mapping mode, the editor offers Sonnet, Opus, Fable and Haiku role fields. Only roles with an actual request model are saved to the Desktop menu. Clear a role's actual request model and save to remove that entry; an old display label or checked 1M declaration does not keep it published. Reopen Desktop after applying the provider to reload its menu. Three configured roles with 1M declared can appear as six options in Desktop: regular and 1M context for each role. The declaration does not grant additional upstream capacity.
+
+An omitted Haiku role remains available for background sub-agent calls through an internal fallback to Sonnet or the first configured route, without an extra menu entry. Explicit Haiku mappings take precedence. Gateway allowlists still check the incoming client route ID before this mapping.
+
 ## Import all Claude Code models
 
 In the Claude Code provider's model mapping section, **Quick Set** imports every model returned by discovery as a separate editable row. If no catalog has been fetched, the button fetches it first using the current endpoint/key or selected managed account. Empty role fields do not disable import. Failed or superseded requests do not change the rows.

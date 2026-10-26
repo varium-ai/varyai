@@ -227,6 +227,7 @@ describe("unified security event list", () => {
   });
   it("switches views keeping public filters, clearing source-specific ones, and never requests the standalone tool query", () => {
     render(<Harness />);
+    choose("securityEvents.source", "securityEvents.dlp");
     choose("security.allApps", "OpenAI");
     choose("security.allRisks", "security.levelHighShort");
     fireEvent.change(
@@ -264,6 +265,7 @@ describe("unified security event list", () => {
   });
   it("selecting pure tool source hides and clears DLP-only search and session", () => {
     render(<Harness />);
+    choose("securityEvents.source", "securityEvents.dlp");
     fireEvent.change(
       screen.getByRole("textbox", { name: "security.sessionFilter" }),
       { target: { value: "session" } },
@@ -273,6 +275,28 @@ describe("unified security event list", () => {
     expect(
       screen.queryByPlaceholderText("security.searchPlaceholder"),
     ).toBeNull();
+  });
+  it("shows source-specific search only when the selected source is DLP", () => {
+    render(<Harness />);
+    expect(
+      screen.queryByPlaceholderText("security.searchPlaceholder"),
+    ).toBeNull();
+    choose("securityEvents.source", "securityEvents.dlp");
+    fireEvent.change(
+      screen.getByPlaceholderText("security.searchPlaceholder"),
+      {
+        target: { value: "token" },
+      },
+    );
+    expect(latestFilter()).toMatchObject({
+      eventType: "dlp",
+      keyword: "token",
+    });
+    choose("securityEvents.source", "securityEvents.allSources");
+    expect(
+      screen.queryByPlaceholderText("security.searchPlaceholder"),
+    ).toBeNull();
+    expect(latestFilter().keyword).toBeUndefined();
   });
   it("does not display stale total as zero or old records on query errors, and supports retry", () => {
     state.error = true;

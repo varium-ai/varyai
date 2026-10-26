@@ -12,6 +12,9 @@ use std::{path::Path, sync::Mutex, time::Duration};
 pub(super) const EXTENSION_TABLES: &[&str] = &[
     "gateway_keys",
     "gateway_usage",
+    "gateway_agent_bindings",
+    "gateway_usage_details",
+    "gateway_usage_models",
     "security_audit_logs",
     "security_custom_rules",
     "security_settings",
@@ -217,6 +220,11 @@ impl Database {
             && EXTENSION_TABLES
                 .iter()
                 .filter(|t| version >= 2 || !matches!(**t, "gateway_keys" | "gateway_usage"))
+                .filter(|t| {
+                    version >= 3
+                        || !matches!(**t, "gateway_agent_bindings" | "gateway_usage_details")
+                })
+                .filter(|t| version >= 4 || **t != "gateway_usage_models")
                 .any(|t| !tables.iter().any(|name| name == t))
         {
             return Err(AppError::Database(
