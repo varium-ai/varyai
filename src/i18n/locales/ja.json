@@ -499,7 +499,7 @@
     "modelMappingOffHint": "プロバイダーが Claude Desktop の三つの役割 ID（claude-sonnet-* / claude-opus-* / claude-haiku-*）を受け付ける場合のみ直結できます。それ以外のモデル名（claude-3-5-sonnet-… などの旧式 ID を含む）は「モデルマッピング」を選択してください。",
     "modelMappingOnHint": "Claude Desktop は claude-sonnet-* / claude-opus-* / claude-haiku-* の三つの役割 ID のみ受け付けます。「モデルマッピング」を選択すると、Vary AI がこの三役割をプロバイダーの実モデルにマッピングし、使用中はローカルルーティングを起動したままにします。",
     "routeMapTitle": "モデルマッピング",
-    "routeMapHint": "Sonnet・Opus・Haiku の各区分に実際のリクエストモデルを入力してください。DeepSeek や Kimi などのブランド名はメニュー表示名に入れられます。空欄の区分は Sonnet（または最初に入力した区分）のモデルを引き継ぐため、サブ agent が呼び出す Haiku が常に利用可能になります。",
+    "routeMapHint": "実際のリクエストモデルを入力したロールだけが Desktop のメニューに表示されます。モデルを空欄にすると項目が削除されます。未設定の Haiku サブエージェントのリクエストは内部で Sonnet または最初の設定済みモデルを使用します。上流が対応している場合のみ 1M を宣言してください。",
     "routeModelLabel": "モデル役割",
     "routeRoleSonnet": "Sonnet",
     "routeRoleOpus": "Opus",

@@ -569,7 +569,7 @@
     "modelMappingOffHint": "仅当供应商直接接受 Claude Desktop 可识别的三档角色 ID（claude-sonnet-* / claude-opus-* / claude-haiku-*）时才适用直连；其他模型名（含 claude-3-5-sonnet-… 等旧式 ID）请选择模型映射。",
     "modelMappingOnHint": "Claude Desktop 只接受 claude-sonnet-* / claude-opus-* / claude-haiku-* 三档角色 ID。选择模型映射后，Vary AI 会把这三档映射到供应商的实际模型，并在使用期间保持本地路由开启。",
     "routeMapTitle": "模型映射",
-    "routeMapHint": "为 Sonnet、Opus、Haiku 三档分别填写实际请求模型；菜单显示名可写 DeepSeek、Kimi 等品牌名。留空的档会自动沿用 Sonnet（或第一个已填档）的模型，确保子 agent 调用的 Haiku 始终可用。",
+    "routeMapHint": "仅填写了实际请求模型的角色会出现在 Desktop 菜单；清空模型即可移除该菜单项。未配置的 Haiku 子 agent 请求会在内部沿用 Sonnet 或第一个已配置模型。仅在上游支持时声明 1M。",
     "routeModelLabel": "模型角色",
     "routeRoleSonnet": "Sonnet",
     "routeRoleOpus": "Opus",

@@ -569,7 +569,7 @@
     "modelMappingOffHint": "Direct mode works only when the provider accepts Claude Desktop's three role IDs (claude-sonnet-* / claude-opus-* / claude-haiku-*); for any other model name (including legacy IDs like claude-3-5-sonnet-…), select Model Mapping.",
     "modelMappingOnHint": "Claude Desktop only accepts the three role IDs claude-sonnet-* / claude-opus-* / claude-haiku-*. In Model Mapping mode, Vary AI maps these roles to your provider's actual models and keeps local routing running while in use.",
     "routeMapTitle": "Model mapping",
-    "routeMapHint": "Fill in the actual request model for each of the Sonnet, Opus, and Haiku tiers. Use the menu display name for branded models such as DeepSeek or Kimi. Any tier left blank inherits the Sonnet tier's model (or the first tier you filled in), so the Haiku that sub-agents call is always available.",
+    "routeMapHint": "Only roles with an actual request model appear in Desktop's menu. Clear the model to remove a menu entry. Unconfigured Haiku sub-agent requests fall back internally to Sonnet or the first configured model. Declare 1M only when supported by the upstream.",
     "routeModelLabel": "Model role",
     "routeRoleSonnet": "Sonnet",
     "routeRoleOpus": "Opus",
