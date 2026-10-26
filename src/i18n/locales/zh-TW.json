@@ -21,7 +21,11 @@
     "save": "儲存預設",
     "invalid": "請填寫名稱、Key 和有效的 http(s) API 位址。",
     "loadFailed": "預設載入失敗，請重新開啟設定頁。",
+    "saveSuccess": "預設已儲存",
     "saveFailed": "儲存預設失敗，請檢查輸入後重試。",
+    "deleteConfirmTitle": "確認刪除預設",
+    "deleteConfirmMessage": "確定要刪除連線預設「{{name}}」嗎？不會改動已使用此預設設定的供應商。",
+    "deleteSuccess": "預設已刪除",
     "deleteFailed": "刪除預設失敗，請重試。"
   },
   "providerDetection": {

@@ -79,7 +79,14 @@ describe("cross-agent profile preview", () => {
     expect(
       screen.queryByRole("button", { name: "恢复切换前配置" }),
     ).not.toBeInTheDocument();
-    expect(toast.success).toHaveBeenCalled();
+    expect(toast.success).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        description: expect.stringContaining(
+          "Codex：请完全退出并重新打开客户端",
+        ),
+      }),
+    );
   });
 
   it.each([false, true])(

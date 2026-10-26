@@ -21,7 +21,11 @@
     "save": "プリセットを保存",
     "invalid": "名前、キー、有効な http(s) API URL を入力してください。",
     "loadFailed": "読み込みに失敗しました。設定ページを開き直してください。",
+    "saveSuccess": "プリセットを保存しました",
     "saveFailed": "保存に失敗しました。入力を確認して再試行してください。",
+    "deleteConfirmTitle": "プリセットの削除を確認",
+    "deleteConfirmMessage": "接続プリセット「{{name}}」を削除しますか？このプリセットで設定済みのプロバイダーは変更されません。",
+    "deleteSuccess": "プリセットを削除しました",
     "deleteFailed": "削除に失敗しました。再試行してください。"
   },
   "providerDetection": {

@@ -278,6 +278,7 @@ describe("unified security event list", () => {
   });
   it("shows source-specific search only when the selected source is DLP", () => {
     render(<Harness />);
+    expect(screen.queryByText("securityEvents.keywordHint")).toBeNull();
     expect(
       screen.queryByPlaceholderText("security.searchPlaceholder"),
     ).toBeNull();
@@ -297,6 +298,7 @@ describe("unified security event list", () => {
       screen.queryByPlaceholderText("security.searchPlaceholder"),
     ).toBeNull();
     expect(latestFilter().keyword).toBeUndefined();
+    expect(screen.queryByText("securityEvents.keywordHint")).toBeNull();
   });
   it("does not display stale total as zero or old records on query errors, and supports retry", () => {
     state.error = true;
