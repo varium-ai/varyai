@@ -50,6 +50,7 @@ export function rendererChunk(id: string): string | undefined {
       return "vendor-motion";
     }
     if (name === "cmdk") return "vendor-command";
+    if (name === "zod") return "vendor-validation";
     return "vendor-base";
   }
 
