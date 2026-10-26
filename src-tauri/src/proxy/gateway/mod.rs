@@ -8,6 +8,9 @@ use sha2::{Digest, Sha256};
 
 mod ingress;
 pub use ingress::handle;
+pub(crate) use ingress::{error as policy_error, meter as meter_response};
+mod bindings;
+pub use bindings::{catalog, enforce_agent, GatewayCatalog, GatewayUsage};
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,6 +54,8 @@ impl Period {
 pub struct KeyPolicy {
     pub name: String,
     pub models: Vec<String>,
+    #[serde(default)]
+    pub all_models: bool,
     pub token_limit: Option<u64>,
     pub period: Period,
 }
@@ -58,7 +63,7 @@ impl KeyPolicy {
     fn validate(&self) -> Result<(), AppError> {
         if self.name.trim().is_empty()
             || self.name.len() > 120
-            || self.models.is_empty()
+            || (!self.all_models && self.models.is_empty())
             || self.models.len() > 200
             || self
                 .models
@@ -79,15 +84,19 @@ pub struct GatewayKey {
     pub revoked: bool,
     pub used_tokens: u64,
     pub resets_at: Option<i64>,
+    pub agents: Vec<String>,
 }
 #[derive(Serialize)]
 pub struct CreatedKey {
     pub key: GatewayKey,
     pub secret: String,
 }
+#[derive(Clone, Debug)]
 pub struct Grant {
     pub id: String,
     pub window: i64,
+    pub agent: String,
+    pub model: String,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum GatewayError {
@@ -95,6 +104,8 @@ pub enum GatewayError {
     Unauthorized,
     #[error("Model is not permitted by this gateway key")]
     Forbidden,
+    #[error("This operation is not supported by gateway budget policies")]
+    UnsupportedOperation,
     #[error("Gateway token budget exhausted")]
     Exhausted(Option<i64>),
     #[error("Gateway policy unavailable")]
@@ -134,6 +145,7 @@ impl Database {
                 policy,
                 revoked: false,
                 used_tokens: 0,
+                agents: Vec::new(),
             },
             secret,
         })
@@ -182,6 +194,12 @@ impl Database {
                     .optional()?
                     .unwrap_or(0);
                 Ok(GatewayKey {
+                    agents: conn
+                        .prepare(
+                            "SELECT app FROM gateway_agent_bindings WHERE key_id=?1 ORDER BY app",
+                        )?
+                        .query_map([&id], |r| r.get(0))?
+                        .collect::<Result<Vec<_>, _>>()?,
                     id,
                     policy,
                     revoked,
@@ -214,7 +232,10 @@ impl Database {
             return Err(GatewayError::Unauthorized);
         }
         let policy: KeyPolicy = serde_json::from_str(&raw).map_err(|_| GatewayError::Storage)?;
-        if !policy.models.iter().any(|m| m == model) {
+        if model.is_empty()
+            || model.len() > 200
+            || (!policy.all_models && !policy.models.iter().any(|m| m == model))
+        {
             return Err(GatewayError::Forbidden);
         }
         let (window, reset) = policy.period.window(now);
@@ -230,7 +251,12 @@ impl Database {
         if policy.token_limit.is_some_and(|limit| tokens >= limit) {
             return Err(GatewayError::Exhausted(reset));
         }
-        Ok(Grant { id, window })
+        Ok(Grant {
+            id,
+            window,
+            agent: "external".into(),
+            model: model.into(),
+        })
     }
     pub fn charge_gateway_key(&self, id: &str, window: i64, tokens: u64) -> Result<(), AppError> {
         let conn = crate::database::lock_conn!(self.extension_connection());

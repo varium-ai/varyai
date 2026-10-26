@@ -1,26 +1,71 @@
-# Local gateway keys
+# Gateway keys, agent policies and usage
 
-Create a key under Proxy → Gateway keys. Choose exact, case-sensitive client model IDs (comma separated), an optional token limit, and a reset period. Empty model lists are rejected. A zero budget blocks immediately; an empty budget is unlimited. The secret is displayed once; only its SHA-256 hash is stored in `vary-ai.db`. Revocation is permanent for that credential and takes effect on subsequent admissions. Requests already admitted can finish.
+Open **Settings → Advanced → Local routing → Gateway keys**. The four tabs separate key management, local agent bindings, usage and connection examples. The service activity cards below this panel describe all local routes, not an individual key's token usage.
 
-Configure scripts with `http://127.0.0.1:15721/gateway/v1` as their base URL (replace the port if customized), and use the generated secret as their API key. Supported POST endpoints are `/messages`, `/responses`, and `/chat/completions`. Use `Authorization: Bearer <key>` or `x-api-key: <key>`. The gateway removes client credential headers before invoking existing provider routing; upstream authentication comes from the configured provider. No supplier credential is needed in the script.
+## Create and manage a key
 
-The dedicated `/gateway` namespace always requires a gateway key. Existing local client takeover endpoints keep their existing authentication behavior. These budgets govern gateway-key traffic, rather than serving as an isolation boundary against other processes on the same computer. The listener remains loopback-only. Model policy applies to the client model ID before existing provider model mappings.
+The Keys tab lists existing keys. Select **Create key** to open its form. Give the credential a name such as “Desktop testing” or “Project A”. This is a label, not an agent or a running model.
 
-## Budget semantics
+New keys explicitly allow all models by default. To restrict a key, turn that option off and select request model IDs from the configured provider catalog, or enter exact case-sensitive IDs separated by commas. A restricted policy needs at least one ID. Older keys retain their original allowlists; they are never silently widened. Model policy checks the client request before provider model mappings, so Claude Desktop uses its Claude-safe route IDs rather than the mapped upstream model name.
 
-Budgets count reported input + output + cache creation tokens, plus cache read tokens only when the input count excludes them (Anthropic Messages). OpenAI input/prompt counts already include cache reads. Reasoning tokens already included in output are not added twice. Each key has independent counters, regardless of whether ordinary proxy logging is enabled.
+Set an optional token budget and reset period. An empty budget is unlimited; zero blocks immediately. The generated secret appears once and can be copied until hidden. Only its SHA-256 hash is stored in `vary-ai.db`. Existing secrets cannot be recovered. Editing a policy does not replace its credential or clear consumption. Revocation permanently blocks that credential, including agents still bound to it. Unbind the agent or select another key to restore its routed access. Already admitted requests can finish.
 
-Daily periods reset at 00:00 UTC. Monthly periods reset at 00:00 UTC on the first calendar day. Never-reset counters have no expiry. UI reset timestamps use the local display timezone. Usage belongs to the period in which the request was admitted, including responses that finish after midnight. Changing only the limit preserves consumption; changing the period selects that period's counter and can change the displayed consumption.
+Each key card shows its allowlist, usage in the current period, remaining tokens, reset time, bound agents and availability. **View usage** opens the filtered Usage tab.
 
-This is a completed-usage admission limit, not a prepaid reservation or a hard cap on an active generation. In-flight concurrent requests, a single long response, and asynchronous persistence delay can exceed a budget. After completed usage is persisted, subsequent requests are rejected when consumption is at or above the limit. Streaming responses are observed without delaying their chunks. On disconnect, any usage already observed is queued. Unreported usage cannot be counted. Responses or individual SSE lines above the observer's 1 MiB bound are passed through but may not be metered; a process exit or persistence failure can also lose pending usage. Accounting failures do not interrupt forwarding. Monitor upstream limits for strict spend control.
+## Bind a local agent
 
-Budgets use tokens, not money. Token counters are local observations and are not supplier invoices or monetary spending guarantees.
+In **Local agents**, choose a key for the agent. Agents sharing a key share its budget. Client credentials and provider settings remain unchanged: the gateway identifies managed requests by their existing route and applies the binding before forwarding. The secret is needed only by external clients, not by this local binding.
+
+Enable the agent's local route below the key panel and restart the client when its integration requires it. **Start local gateway** starts the listener without rewriting every agent's configuration. The panel distinguishes binding from route activation. Direct traffic bypassing VaryAI is outside the policy. Claude Desktop must have an applied provider in model-mapping/proxy mode; starting the shared listener alone does not connect Desktop.
+
+| Agent | Coverage |
+| --- | --- |
+| Claude Code | Routed Messages requests |
+| Claude Desktop | Dedicated Desktop Messages route; existing Desktop authentication remains required |
+| Codex | Routed Chat, Responses and compact requests |
+| Gemini CLI | Routed generateContent and streamGenerateContent requests; model ID comes from the URL |
+| Grok Build | Dedicated Responses and compact routes |
+| Pi | Provider-scoped Chat, Responses, Messages and Gemini routes |
+| WorkBuddy | Routed official/custom Chat requests |
+| Qoder | Routed custom models and the intercepted official model endpoint |
+| Doubao Work, Kimi, Qwen, ZCode | Existing native custom-provider routes |
+| TRAE | Custom-provider routes; official traffic observed only through the audit bridge cannot be blocked |
+| OpenCode, OpenClaw, Hermes | Current provider configuration is direct. No automatic binding; the UI states this explicitly. A manually configured supported external gateway connection can use a key. |
+
+Budget policies do not turn an observational audit bridge into a forwarding gateway. Non-chat image/search operations on a bound Codex route are refused as `gateway_operation_not_supported` rather than escaping the policy without accounting. Model-list and token-count probes do not consume the generation budget.
+
+## External client connection
+
+The **Connect** tab generates a request example using the chosen key's model policy and selected client protocol. Replace `YOUR_GATEWAY_KEY` with the saved secret and `MODEL_ID` with a permitted request model. It does not change a provider or agent configuration.
+
+The default local origin is `http://127.0.0.1:15721` (use the configured port). Supported POST endpoints:
+
+| Endpoint | Provider namespace |
+| --- | --- |
+| `/gateway/v1/messages` | Claude |
+| `/gateway/v1/chat/completions` | Codex |
+| `/gateway/v1/responses` | Codex |
+| `/gateway/v1beta/models/<model>:generateContent` | Gemini |
+| `/gateway/v1beta/models/<model>:streamGenerateContent?alt=sse` | Gemini |
+
+Use `Authorization: Bearer <key>`, `x-api-key: <key>` or `x-goog-api-key: <key>`. Gateway authentication headers are removed before existing provider routing supplies upstream credentials. No supplier credential is needed in the script. This namespace always requires a gateway key. Existing local client routes retain their native authentication behavior and are limited only when bound to a policy. The listener stays loopback-only.
+
+## Usage and budget semantics
+
+The **Usage** tab filters by key and shows up to 200 recent aggregate rows by key, admission period, agent and request model: completed request count, reported tokens, requests without usable usage, and last observation time. Updates poll every five seconds. Missing usage is visible but cannot be charged an accurate token amount. Older totals remain intact after migration but have no historical model breakdown. Only identities, counters and timestamps are persisted, not prompts, responses or secrets.
+
+Budgets count input + output + cache creation tokens, plus cache read tokens only when input excludes them (Anthropic Messages). OpenAI prompt/input counts already include cache reads. Reasoning tokens included in output are not added twice. Counters work independently of ordinary proxy logging.
+
+Daily periods reset at 00:00 UTC. Monthly periods reset at 00:00 UTC on the first calendar day. Never-reset counters have no expiry. UI timestamps use the local display timezone. Usage belongs to the period in which a request was admitted. Changing only a limit preserves consumption; changing its period selects that period's counter.
+
+This remains a completed-usage admission limit, not prepaid reservation or a hard cap during generation. In-flight requests, long responses and asynchronous persistence can exceed the budget. Subsequent requests are refused after completed consumption is persisted at or above the limit. Streaming bytes pass through without waiting for accounting. Disconnects queue usage already observed. Responses or SSE lines beyond the observer's 1 MiB bound may be unmetered. Process exit or persistence failure can lose pending observations; accounting failure does not interrupt forwarding. These local token observations are not supplier invoices or monetary spending guarantees.
 
 ## Errors
 
-- `401 invalid_gateway_key`: missing, invalid or revoked credential.
-- `403 model_not_allowed`: authenticated key cannot call the supplied model.
-- `429 gateway_budget_exhausted`: completed usage reached the limit; `error.resets_at` is a Unix timestamp or null for never-reset budgets.
-- `503 gateway_policy_unavailable`: credential/policy storage could not be read; no request is forwarded.
+- `401 invalid_gateway_key`: invalid/revoked external credential, or a revoked key still bound to an agent.
+- `403 model_not_allowed`: the request model is outside the key's allowlist.
+- `403 gateway_operation_not_supported`: the bound policy cannot account for this operation.
+- `429 gateway_budget_exhausted`: completed usage reached the limit. `error.resets_at` is a Unix timestamp or null for a never-reset budget.
+- `503 gateway_policy_unavailable`: the policy store cannot be read; nothing is forwarded.
 
-None of these responses include the credential, request content or supplier configuration.
+Errors contain no credential, request content or supplier configuration.

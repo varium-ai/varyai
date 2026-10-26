@@ -4,7 +4,7 @@ Provider, MCP, prompt, skill, proxy configuration and usage data remain in `cc-s
 
 ## Version boundaries
 
-The shared database follows the upstream schema chain. The current shared version is 20; the extension version is independently 2. Version 2 adds hashed local gateway credentials and per-key token counters (`gateway_keys`, `gateway_usage`). Historical single-database version 24 is a compatibility/export format, not the version to apply to the current shared file. Inspect schema structure as well as version because historical VaryAI databases reused some upstream version numbers.
+The shared database follows the upstream schema chain. The current shared version is 20; the extension version is independently 3. Version 2 added hashed local gateway credentials and per-key token counters (`gateway_keys`, `gateway_usage`). Version 3 adds local agent policy bindings and usage aggregates by agent/model (`gateway_agent_bindings`, `gateway_usage_details`), without changing existing credentials or counters. Historical single-database version 24 is a compatibility/export format, not the version to apply to the current shared file. Inspect schema structure as well as version because historical VaryAI databases reused some upstream version numbers.
 
 Before changing shared storage, check the corresponding upstream structure. Increment the extension version for VaryAI-only schema changes.
 

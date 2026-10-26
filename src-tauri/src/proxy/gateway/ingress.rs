@@ -11,10 +11,15 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-fn error(err: GatewayError) -> Response {
+pub(crate) fn error(err: GatewayError) -> Response {
     let (status, code, reset) = match err {
         GatewayError::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_gateway_key", None),
         GatewayError::Forbidden => (StatusCode::FORBIDDEN, "model_not_allowed", None),
+        GatewayError::UnsupportedOperation => (
+            StatusCode::FORBIDDEN,
+            "gateway_operation_not_supported",
+            None,
+        ),
         GatewayError::Exhausted(reset) => (
             StatusCode::TOO_MANY_REQUESTS,
             "gateway_budget_exhausted",
@@ -40,10 +45,14 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
         .strip_prefix("/gateway")
         .unwrap_or("")
         .to_owned();
-    if !matches!(
-        path.as_str(),
-        "/v1/messages" | "/v1/responses" | "/v1/chat/completions"
-    ) {
+    let gemini = path.starts_with("/v1beta/models/")
+        && (path.ends_with(":generateContent") || path.ends_with(":streamGenerateContent"));
+    if !gemini
+        && !matches!(
+            path.as_str(),
+            "/v1/messages" | "/v1/responses" | "/v1/chat/completions"
+        )
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
     let (mut parts, body) = request.into_parts();
@@ -53,15 +62,23 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
         .and_then(|h| h.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .or_else(|| parts.headers.get("x-api-key").and_then(|h| h.to_str().ok()))
+        .or_else(|| {
+            parts
+                .headers
+                .get("x-goog-api-key")
+                .and_then(|h| h.to_str().ok())
+        })
         .unwrap_or("")
         .to_owned();
     let bytes = match to_bytes(body, 200 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
     };
-    let model = serde_json::from_slice::<Value>(&bytes)
-        .ok()
-        .and_then(|v| v.get("model").and_then(Value::as_str).map(str::to_owned));
+    let model = super::bindings::path_model(&path).or_else(|| {
+        serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|v| v.get("model").and_then(Value::as_str).map(str::to_owned))
+    });
     let db = state.db.clone();
     let grant = match tokio::task::spawn_blocking(move || {
         db.authorize_gateway_key(
@@ -96,14 +113,19 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
     let request = Request::from_parts(parts, Body::from(bytes));
-    let response = match path.as_str() {
-        "/v1/messages" => {
-            crate::proxy::handlers::handle_messages(State(state.clone()), request).await
+    let response = if gemini {
+        crate::proxy::handlers::handle_gemini(State(state.clone()), request.uri().clone(), request)
+            .await
+    } else {
+        match path.as_str() {
+            "/v1/messages" => {
+                crate::proxy::handlers::handle_messages(State(state.clone()), request).await
+            }
+            "/v1/chat/completions" => {
+                crate::proxy::handlers::handle_chat_completions(State(state.clone()), request).await
+            }
+            _ => crate::proxy::handlers::handle_responses(State(state.clone()), request).await,
         }
-        "/v1/chat/completions" => {
-            crate::proxy::handlers::handle_chat_completions(State(state.clone()), request).await
-        }
-        _ => crate::proxy::handlers::handle_responses(State(state.clone()), request).await,
     }
     .unwrap_or_else(IntoResponse::into_response);
     meter(response, state.db, grant, path != "/v1/messages")
@@ -134,10 +156,18 @@ impl Meter {
                 let line: Vec<_> = self.buffer.drain(..=end).collect();
                 if let Some(data) = line.strip_prefix(b"data:") {
                     if let Ok(mut value) = serde_json::from_slice::<Value>(data) {
+                        if let Some(body) = value.get("body").and_then(Value::as_str) {
+                            if let Ok(decoded) = serde_json::from_str(body) {
+                                value = decoded;
+                            }
+                        }
                         // Keep only usage-bearing envelopes; never retain generated text.
                         if let Some(obj) = value.as_object_mut() {
                             obj.retain(|k, _| {
-                                matches!(k.as_str(), "usage" | "type" | "message" | "response")
+                                matches!(
+                                    k.as_str(),
+                                    "usage" | "usageMetadata" | "type" | "message" | "response"
+                                )
                             });
                         }
                         for key in ["message", "response"] {
@@ -148,6 +178,7 @@ impl Meter {
                         if value.get("usage").is_some()
                             || value.pointer("/message/usage").is_some()
                             || value.pointer("/response/usage").is_some()
+                            || value.get("usageMetadata").is_some()
                         {
                             let kind = value.get("type").cloned();
                             self.events.retain(|e| e.get("type").cloned() != kind);
@@ -167,6 +198,7 @@ impl Drop for Meter {
             if self.inclusive {
                 TokenUsage::from_codex_stream_events_auto(&self.events)
                     .or_else(|| TokenUsage::from_openai_stream_events(&self.events))
+                    .or_else(|| TokenUsage::from_gemini_stream_chunks(&self.events))
             } else {
                 TokenUsage::from_claude_stream_events(&self.events)
             }
@@ -177,22 +209,22 @@ impl Drop for Meter {
                     if self.inclusive {
                         TokenUsage::from_codex_response_auto(&v)
                             .or_else(|| TokenUsage::from_openai_response(&v))
+                            .or_else(|| TokenUsage::from_gemini_response(&v))
                     } else {
                         TokenUsage::from_claude_response(&v)
                     }
                 })
         };
-        if let Some(usage) = usage {
-            let tokens = total_tokens(&usage, self.inclusive);
+        {
+            let tokens = usage.map(|usage| total_tokens(&usage, self.inclusive));
             let (tx, mut rx) = tokio::sync::mpsc::channel(1);
             let db = self.db.clone();
-            let id = self.grant.id.clone();
-            let window = self.grant.window;
+            let grant = self.grant.clone();
             // Persistence runs off the forwarding task and cannot alter its result.
             tokio::spawn(async move {
                 if let Some(tokens) = rx.recv().await {
                     let _ = tokio::task::spawn_blocking(move || {
-                        if db.charge_gateway_key(&id, window, tokens).is_err() {
+                        if db.record_gateway_observation(&grant, tokens).is_err() {
                             log::warn!("Gateway usage persistence failed");
                         }
                     })
@@ -203,7 +235,12 @@ impl Drop for Meter {
         }
     }
 }
-fn meter(response: Response, db: Arc<Database>, grant: Grant, inclusive: bool) -> Response {
+pub(crate) fn meter(
+    response: Response,
+    db: Arc<Database>,
+    grant: Grant,
+    inclusive: bool,
+) -> Response {
     let (parts, body) = response.into_parts();
     let sse = parts
         .headers
@@ -241,6 +278,7 @@ mod tests {
         let created = db.create_gateway_key(KeyPolicy {
             name: "Synthetic".into(),
             models: vec!["allowed".into()],
+            all_models: false,
             token_limit: None,
             period: Period::Never,
         })?;

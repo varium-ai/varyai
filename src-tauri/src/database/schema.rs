@@ -440,7 +440,9 @@ impl Database {
 
     pub(crate) fn create_extension_tables_on_conn(conn: &Connection) -> Result<(), AppError> {
         conn.execute_batch("CREATE TABLE IF NOT EXISTS gateway_keys (id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL UNIQUE, policy TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS gateway_usage (key_id TEXT NOT NULL, window INTEGER NOT NULL, tokens INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(key_id,window));")?;
+            CREATE TABLE IF NOT EXISTS gateway_usage (key_id TEXT NOT NULL, window INTEGER NOT NULL, tokens INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(key_id,window));
+            CREATE TABLE IF NOT EXISTS gateway_agent_bindings (app TEXT PRIMARY KEY, key_id TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS gateway_usage_details (key_id TEXT NOT NULL, window INTEGER NOT NULL, agent TEXT NOT NULL, model TEXT NOT NULL, tokens INTEGER NOT NULL DEFAULT 0, requests INTEGER NOT NULL DEFAULT 0, unmetered INTEGER NOT NULL DEFAULT 0, last_used INTEGER NOT NULL, PRIMARY KEY(key_id,window,agent,model));")?;
         // 20. Security audit events.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS security_audit_logs (

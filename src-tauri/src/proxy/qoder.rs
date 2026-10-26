@@ -226,6 +226,22 @@ pub(crate) async fn handle_official(
         .and_then(Value::as_str)
         .unwrap_or("qoder-official")
         .to_string();
+    let policy_db = state.db.clone();
+    let policy_model = model.clone();
+    let gateway_grant = match tokio::task::spawn_blocking(move || {
+        policy_db.authorize_gateway_agent("qoder", &policy_model, chrono::Utc::now().timestamp())
+    })
+    .await
+    {
+        Ok(Ok(grant)) => grant,
+        Ok(Err(err)) => return Ok(super::gateway::policy_error(err)),
+        Err(_) => {
+            return Ok(super::gateway::policy_error(
+                super::gateway::GatewayError::Storage,
+            ))
+        }
+    };
+    let gateway_db = state.db.clone();
     if let Some(blocked) = super::security::inspect_and_intercept_mut_with_headers(
         &AppType::Qoder,
         &mut payload,
@@ -275,7 +291,11 @@ pub(crate) async fn handle_official(
         status: 0,
         streaming: true,
     };
-    send(target, parts, bytes, Some(job)).await
+    let response = send(target, parts, bytes, Some(job)).await?;
+    Ok(match gateway_grant {
+        Some(grant) => super::gateway::meter_response(response, gateway_db, grant, true),
+        None => response,
+    })
 }
 pub(crate) async fn send(
     target: String,
