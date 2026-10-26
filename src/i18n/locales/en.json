@@ -4461,6 +4461,13 @@
     "resultWarning": "Risk warning"
   },
   "gatewayKeys": {
+    "sourceAgent": "Request source",
+    "upstreamModel": "Forwarded model",
+    "requestModel": "Client request model (allowlist ID)",
+    "upstreamMissing": "Not recorded (older record or no completed forwarding)",
+    "deleteTitle": "Delete gateway key",
+    "deleteConfirm": "Permanently delete “{{name}}” and all its usage records? This cannot be undone. Only revoked keys with no agent bindings can be deleted.",
+    "deleteUnbindHint": "Unbind this key from every agent in Local agents before deleting it.",
     "title": "Gateway keys",
     "description": "Create credentials, bind local agents to a policy, and review their model usage. Creating a key alone does not connect a client.",
     "boundaries": "Budgets count reported input, output and cache tokens once. UTC calendar resets. Completed usage is saved asynchronously; concurrent and long requests can exceed the limit. Missing usage cannot be counted. This is not a supplier bill.",
@@ -4510,7 +4517,7 @@
     "traeHint": "Covers custom model routes. Official requests observed only by the audit bridge cannot be blocked by this policy.",
     "filterKey": "Gateway key",
     "allKeys": "All keys",
-    "usageHint": "Up to 200 recent aggregates by key, accounting period, agent and request model. Each row shows completed requests. Missing usage is counted separately and cannot consume a known token amount. Existing totals from older versions have no model breakdown.",
+    "usageHint": "Up to 200 recent aggregates by key, accounting period, agent, client request model and forwarded model. Rows show completed requests; missing usage is counted separately. Older records without an outbound model remain marked as not recorded.",
     "noUsage": "No observed requests yet. Bind an agent with local routing enabled, or send a request with a gateway key.",
     "usageRow": "{{requests}} requests · {{tokens}} tokens · {{unmetered}} without reported usage",
     "lastUsed": "Last request: {{time}}",

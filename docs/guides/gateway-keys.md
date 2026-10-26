@@ -12,6 +12,8 @@ Set an optional token budget and reset period. An empty budget is unlimited; zer
 
 Each key card shows its allowlist, usage in the current period, remaining tokens, reset time, bound agents and availability. **View usage** opens the filtered Usage tab.
 
+To permanently remove a key, revoke it first and remove all of its bindings in **Local agents**. Its card then offers **Delete**. The confirmation identifies the key and explains that deletion permanently removes the credential, period counters and all per-model usage records. Other keys are unaffected. Bound keys cannot be deleted, so removing a credential cannot silently remove an agent's policy. Usage arriving from an already admitted request after deletion does not recreate its history.
+
 ## Bind a local agent
 
 In **Local agents**, choose a key for the agent. Agents sharing a key share its budget. Client credentials and provider settings remain unchanged: the gateway identifies managed requests by their existing route and applies the binding before forwarding. The secret is needed only by external clients, not by this local binding.
@@ -52,7 +54,9 @@ Use `Authorization: Bearer <key>`, `x-api-key: <key>` or `x-goog-api-key: <key>`
 
 ## Usage and budget semantics
 
-The **Usage** tab filters by key and shows up to 200 recent aggregate rows by key, admission period, agent and request model: completed request count, reported tokens, requests without usable usage, and last observation time. Updates poll every five seconds. Missing usage is visible but cannot be charged an accurate token amount. Older totals remain intact after migration but have no historical model breakdown. Only identities, counters and timestamps are persisted, not prompts, responses or secrets.
+The **Usage** tab filters by key and shows up to 200 recent aggregate rows by key, admission period, agent, client request model and forwarded model: completed request count, reported tokens, requests without usable usage, and last observation time. For a Desktop mapping such as `claude-sonnet-fixture → synthetic-upstream`, the forwarded model is `synthetic-upstream`; the client request model remains the ID checked by the allowlist. Forwarding records the resolved outbound model after mapping and successful provider selection, independently of a supplier's echoed model name. Changing a mapping later creates a separate aggregate rather than relabeling past usage.
+
+Updates poll every five seconds. Missing usage is visible but cannot be charged an accurate token amount. Older totals and detail rows remain intact after migration. Records that did not capture a forwarded model display **Not recorded**; the current configuration is never used to guess a historical model. Only identities, model IDs, counters and timestamps are persisted, not prompts, responses or secrets.
 
 Budgets count input + output + cache creation tokens, plus cache read tokens only when input excludes them (Anthropic Messages). OpenAI prompt/input counts already include cache reads. Reasoning tokens included in output are not added twice. Counters work independently of ordinary proxy logging.
 

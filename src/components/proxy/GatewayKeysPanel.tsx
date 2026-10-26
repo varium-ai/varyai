@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { APP_IDS, APP_ICON_MAP } from "@/config/appConfig";
 import { providersApi } from "@/lib/api/providers";
 import { proxyApi } from "@/lib/api/proxy";
@@ -60,6 +61,7 @@ export function GatewayKeysPanel({
   const [editing, setEditing] = useState<string | null>(null);
   const [secret, setSecret] = useState("");
   const [pending, setPending] = useState(false);
+  const [deleting, setDeleting] = useState<GatewayKey | null>(null);
   const [usageKey, setUsageKey] = useState("");
   const [connectKey, setConnectKey] = useState("");
   const [format, setFormat] = useState("anthropic");
@@ -469,6 +471,16 @@ export function GatewayKeysPanel({
                       </Button>
                     </>
                   )}
+                  {key.revoked && (
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      disabled={pending || !!key.agents?.length}
+                      onClick={() => setDeleting(key)}
+                    >
+                      {t("common.delete")}
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="outline"
@@ -480,6 +492,11 @@ export function GatewayKeysPanel({
                     {t("gatewayKeys.viewUsage")}
                   </Button>
                 </div>
+                {key.revoked && !!key.agents?.length && (
+                  <p className="text-xs text-muted-foreground">
+                    {t("gatewayKeys.deleteUnbindHint")}
+                  </p>
+                )}
               </article>
             );
           })}
@@ -600,15 +617,24 @@ export function GatewayKeysPanel({
             .filter((u) => !usageKey || u.keyId === usageKey)
             .map((u) => (
               <div
-                key={`${u.keyId}:${u.window}:${u.agent}:${u.model}`}
+                key={`${u.keyId}:${u.window}:${u.agent}:${u.model}:${u.upstreamModel ?? ""}`}
                 className="rounded-lg border p-3 space-y-1 text-xs"
               >
-                <p className="font-medium">
+                <div className="break-all text-sm">
+                  <span>{t("gatewayKeys.upstreamModel")}</span>:{" "}
+                  <span className="font-semibold">
+                    {u.upstreamModel ?? t("gatewayKeys.upstreamMissing")}
+                  </span>
+                </div>
+                <p className="text-muted-foreground">
                   {keys.find((key) => key.id === u.keyId)?.policy.name ??
                     u.keyId}{" "}
-                  · {label(u.agent)}
+                  · {t("gatewayKeys.sourceAgent")}: {label(u.agent)}
                 </p>
-                <p className="break-all">{u.model}</p>
+                <div className="break-all text-muted-foreground">
+                  <span>{t("gatewayKeys.requestModel")}</span>:{" "}
+                  <span>{u.model}</span>
+                </div>
                 <p>
                   {t("gatewayKeys.usagePeriod", {
                     time: u.window
@@ -676,6 +702,27 @@ export function GatewayKeysPanel({
           </p>
         </div>
       )}
+      <ConfirmDialog
+        isOpen={deleting !== null}
+        title={t("gatewayKeys.deleteTitle")}
+        message={t("gatewayKeys.deleteConfirm", {
+          name: deleting?.policy.name,
+        })}
+        confirmText={t("common.delete")}
+        pending={pending}
+        onCancel={() => setDeleting(null)}
+        onConfirm={() => {
+          if (!deleting || pending) return;
+          const id = deleting.id;
+          void run(async () => {
+            await gatewayApi.delete(id);
+            setDeleting(null);
+            setSecret("");
+            if (usageKey === id) setUsageKey("");
+            if (connectKey === id) setConnectKey("");
+          });
+        }}
+      />
     </section>
   );
 }

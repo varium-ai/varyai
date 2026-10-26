@@ -5,6 +5,7 @@ use chrono::{Datelike, TimeZone, Utc};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::{Arc, OnceLock};
 
 mod ingress;
 pub use ingress::handle;
@@ -97,6 +98,22 @@ pub struct Grant {
     pub window: i64,
     pub agent: String,
     pub model: String,
+    pub upstream_model: GatewayUpstreamModel,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GatewayUpstreamModel(Arc<OnceLock<String>>);
+
+impl GatewayUpstreamModel {
+    pub(crate) fn record(&self, model: Option<&str>) {
+        if let Some(model) = model.filter(|m| !m.is_empty() && m.len() <= 200) {
+            let _ = self.0.set(model.to_owned());
+        }
+    }
+
+    fn get(&self) -> Option<&str> {
+        self.0.get().map(String::as_str)
+    }
 }
 #[derive(Debug, thiserror::Error)]
 pub enum GatewayError {
@@ -165,6 +182,25 @@ impl Database {
     pub fn revoke_gateway_key(&self, id: &str) -> Result<(), AppError> {
         let conn = crate::database::lock_conn!(self.extension_connection());
         conn.execute("UPDATE gateway_keys SET revoked=1 WHERE id=?1", [id])?;
+        Ok(())
+    }
+    pub fn delete_gateway_key(&self, id: &str) -> Result<(), AppError> {
+        let mut conn = crate::database::lock_conn!(self.extension_connection());
+        let tx = conn.transaction()?;
+        let eligible: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM gateway_keys WHERE id=?1 AND revoked=1) AND NOT EXISTS(SELECT 1 FROM gateway_agent_bindings WHERE key_id=?1)",
+            [id], |r| r.get(0),
+        )?;
+        if !eligible {
+            return Err(AppError::Config(
+                "Only revoked, unbound gateway keys can be deleted".into(),
+            ));
+        }
+        tx.execute("DELETE FROM gateway_usage_details WHERE key_id=?1", [id])?;
+        tx.execute("DELETE FROM gateway_usage_models WHERE key_id=?1", [id])?;
+        tx.execute("DELETE FROM gateway_usage WHERE key_id=?1", [id])?;
+        tx.execute("DELETE FROM gateway_keys WHERE id=?1", [id])?;
+        tx.commit()?;
         Ok(())
     }
     pub fn list_gateway_keys(&self) -> Result<Vec<GatewayKey>, AppError> {
@@ -256,6 +292,7 @@ impl Database {
             window,
             agent: "external".into(),
             model: model.into(),
+            upstream_model: GatewayUpstreamModel::default(),
         })
     }
     pub fn charge_gateway_key(&self, id: &str, window: i64, tokens: u64) -> Result<(), AppError> {

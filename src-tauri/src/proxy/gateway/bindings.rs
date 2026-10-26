@@ -42,6 +42,7 @@ pub struct GatewayUsage {
     pub window: i64,
     pub agent: String,
     pub model: String,
+    pub upstream_model: Option<String>,
     pub tokens: u64,
     pub requests: u64,
     pub unmetered: u64,
@@ -139,6 +140,7 @@ impl Database {
             window,
             agent: app.into(),
             model: model.into(),
+            upstream_model: GatewayUpstreamModel::default(),
         }))
     }
 
@@ -153,16 +155,25 @@ impl Database {
     ) -> Result<(), AppError> {
         let mut conn = crate::database::lock_conn!(self.extension_connection());
         let tx = conn.transaction()?;
+        // A completed in-flight response must not recreate a permanently deleted key's history.
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM gateway_keys WHERE id=?1)",
+            [&grant.id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Ok(());
+        }
         let count = tokens.unwrap_or(0).min(i64::MAX as u64);
         tx.execute("INSERT INTO gateway_usage(key_id,window,tokens) VALUES(?1,?2,?3) ON CONFLICT(key_id,window) DO UPDATE SET tokens=MIN(9223372036854775807,tokens+excluded.tokens)", rusqlite::params![grant.id,grant.window,count])?;
-        tx.execute("INSERT INTO gateway_usage_details(key_id,window,agent,model,tokens,requests,unmetered,last_used) VALUES(?1,?2,?3,?4,?5,1,?6,?7) ON CONFLICT(key_id,window,agent,model) DO UPDATE SET tokens=MIN(9223372036854775807,tokens+excluded.tokens),requests=requests+1,unmetered=unmetered+excluded.unmetered,last_used=excluded.last_used", rusqlite::params![grant.id,grant.window,grant.agent,grant.model,count,u8::from(tokens.is_none()),Utc::now().timestamp()])?;
+        tx.execute("INSERT INTO gateway_usage_models(key_id,window,agent,model,upstream_model,tokens,requests,unmetered,last_used) VALUES(?1,?2,?3,?4,?5,?6,1,?7,?8) ON CONFLICT(key_id,window,agent,model,upstream_model) DO UPDATE SET tokens=MIN(9223372036854775807,tokens+excluded.tokens),requests=requests+1,unmetered=unmetered+excluded.unmetered,last_used=excluded.last_used", rusqlite::params![grant.id,grant.window,grant.agent,grant.model,grant.upstream_model.get().unwrap_or(""),count,u8::from(tokens.is_none()),Utc::now().timestamp()])?;
         tx.commit()?;
         Ok(())
     }
 
     pub fn list_gateway_usage(&self, id: Option<&str>) -> Result<Vec<GatewayUsage>, AppError> {
         let conn = crate::database::lock_conn!(self.extension_connection());
-        let mut stmt=conn.prepare("SELECT key_id,window,agent,model,tokens,requests,unmetered,last_used FROM gateway_usage_details WHERE (?1 IS NULL OR key_id=?1) ORDER BY last_used DESC LIMIT 200")?;
+        let mut stmt=conn.prepare("SELECT key_id,window,agent,model,SUM(tokens),SUM(requests),SUM(unmetered),MAX(last_used),NULLIF(upstream_model,'') FROM (SELECT key_id,window,agent,model,tokens,requests,unmetered,last_used,'' AS upstream_model FROM gateway_usage_details UNION ALL SELECT key_id,window,agent,model,tokens,requests,unmetered,last_used,upstream_model FROM gateway_usage_models) WHERE (?1 IS NULL OR key_id=?1) GROUP BY key_id,window,agent,model,upstream_model ORDER BY MAX(last_used) DESC LIMIT 200")?;
         let rows = stmt
             .query_map([id], |r| {
                 Ok(GatewayUsage {
@@ -174,6 +185,7 @@ impl Database {
                     requests: r.get(5)?,
                     unmetered: r.get(6)?,
                     last_used: r.get(7)?,
+                    upstream_model: r.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -267,7 +279,7 @@ pub async fn enforce_agent(
     if unsupported {
         return super::ingress::error(GatewayError::UnsupportedOperation);
     }
-    let (parts, body) = request.into_parts();
+    let (mut parts, body) = request.into_parts();
     let bytes = match to_bytes(body, 200 * 1024 * 1024).await {
         Ok(v) => v,
         Err(_) => return super::ingress::error(GatewayError::Forbidden),
@@ -296,6 +308,9 @@ pub async fn enforce_agent(
         Ok(Err(err)) => return super::ingress::error(err),
         Err(_) => return super::ingress::error(GatewayError::Storage),
     };
+    if let Some(grant) = &grant {
+        parts.extensions.insert(grant.upstream_model.clone());
+    }
     let response = next
         .run(Request::from_parts(parts, Body::from(bytes)))
         .await;

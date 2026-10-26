@@ -4461,6 +4461,13 @@
     "resultWarning": "风险预警"
   },
   "gatewayKeys": {
+    "sourceAgent": "请求来源",
+    "upstreamModel": "实际转发模型",
+    "requestModel": "客户端请求模型（白名单 ID）",
+    "upstreamMissing": "未记录（旧记录或未完成转发）",
+    "deleteTitle": "删除网关密钥",
+    "deleteConfirm": "永久删除“{{name}}”及其全部用量记录？此操作无法恢复。仅允许删除已撤销且未绑定 agent 的密钥。",
+    "deleteUnbindHint": "请先在“本机 agent”中解除这把密钥的全部绑定，再删除。",
     "title": "网关密钥",
     "description": "创建密钥、为本机 agent 绑定策略，并查看对应模型用量。仅创建密钥不会自动连接客户端。",
     "boundaries": "预算对上报的输入、输出和缓存 token 去重计量，按 UTC 日历重置。已完成用量异步保存，并发和长请求可能超额；缺失的用量无法计量。此统计不等同供应商账单。",
@@ -4510,7 +4517,7 @@
     "traeHint": "覆盖自定义模型路由；仅通过审计桥观察的官方请求无法由此策略拦截。",
     "filterKey": "网关密钥",
     "allKeys": "全部密钥",
-    "usageHint": "按密钥、计量周期、agent 和请求模型汇总最近 200 条记录。显示已结束的请求，未上报用量单独计数，无法扣除准确 Token。旧版本已有用量不含模型明细。",
+    "usageHint": "按密钥、计量周期、agent、客户端请求模型及实际转发模型汇总最近 200 条记录。显示已结束的请求，未上报用量单独计数；旧记录未保存实际转发模型时显示“未记录”。",
     "noUsage": "还没有观察到请求。请绑定已开启本地路由的 agent，或使用网关密钥发送请求。",
     "usageRow": "{{requests}} 次请求 · {{tokens}} Token · {{unmetered}} 次未上报用量",
     "lastUsed": "最近请求：{{time}}",

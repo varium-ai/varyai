@@ -101,6 +101,7 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
     ] {
         parts.headers.remove(name);
     }
+    parts.extensions.insert(grant.upstream_model.clone());
     let endpoint = parts
         .uri
         .path_and_query()

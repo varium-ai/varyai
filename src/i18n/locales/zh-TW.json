@@ -4388,6 +4388,13 @@
     "resultWarning": "風險預警"
   },
   "gatewayKeys": {
+    "sourceAgent": "請求來源",
+    "upstreamModel": "實際轉發模型",
+    "requestModel": "用戶端請求模型（白名單 ID）",
+    "upstreamMissing": "未記錄（舊記錄或尚未完成轉發）",
+    "deleteTitle": "刪除閘道金鑰",
+    "deleteConfirm": "永久刪除「{{name}}」及其全部用量記錄？此操作無法復原。僅能刪除已撤銷且未綁定 agent 的金鑰。",
+    "deleteUnbindHint": "請先在「本機 agent」中解除這把金鑰的所有綁定，再刪除。",
     "title": "閘道金鑰",
     "description": "建立金鑰、為本機 agent 綁定策略，並查看對應模型用量。僅建立金鑰不會自動連接客戶端。",
     "boundaries": "預算對回報的輸入、輸出和快取 token 去重計量，按 UTC 日曆重設。已完成用量非同步儲存，並行和長請求可能超額；缺失的用量無法計量。此統計不等同供應商帳單。",
@@ -4437,7 +4444,7 @@
     "traeHint": "涵蓋自訂模型路由；僅透過稽核橋觀察的官方請求無法由此策略攔截。",
     "filterKey": "閘道金鑰",
     "allKeys": "全部金鑰",
-    "usageHint": "依金鑰、計量週期、agent 與請求模型彙總最近 200 筆記錄。顯示已結束的請求，未回報用量另行計數，無法扣除準確 Token。舊版本既有用量不含模型明細。",
+    "usageHint": "依金鑰、計量週期、agent、用戶端請求模型及實際轉發模型彙總最近 200 筆記錄。顯示已結束的請求，未回報用量另行計數；舊記錄未儲存實際轉發模型時顯示「未記錄」。",
     "noUsage": "尚未觀察到請求。請綁定已開啟本機路由的 agent，或使用閘道金鑰傳送請求。",
     "usageRow": "{{requests}} 次請求 · {{tokens}} Token · {{unmetered}} 次未回報用量",
     "lastUsed": "最近請求：{{time}}",

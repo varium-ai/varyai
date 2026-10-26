@@ -92,3 +92,14 @@ pub async fn revoke_gateway_key(state: State<'_, AppState>, id: String) -> Resul
     .await
     .map_err(|_| "gatewayKeys.failed".to_string())?
 }
+
+#[tauri::command]
+pub async fn delete_gateway_key(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        db.delete_gateway_key(&id)
+            .map_err(|_| "gatewayKeys.failed".to_string())
+    })
+    .await
+    .map_err(|_| "gatewayKeys.failed".to_string())?
+}

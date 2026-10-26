@@ -225,7 +225,7 @@ async fn desktop_native_route_uses_bound_policy_and_keeps_desktop_auth(
     let upstream = Router::new().route("/v1/messages",post(move |Json(body):Json<serde_json::Value>| {
         let calls = observed.clone();
         async move {
-            assert_eq!(body["model"],"fixture-upstream");
+            assert!(["fixture-upstream", "fixture-upstream-v2"].iter().any(|m| body["model"] == *m));
             calls.fetch_add(1,Ordering::SeqCst);
             Json(json!({"id":"fixture-message","type":"message","role":"assistant","model":"fixture-upstream","content":[{"type":"text","text":"42"}],"stop_reason":"end_turn","usage":{"input_tokens":20,"output_tokens":5}}))
         }
@@ -304,6 +304,15 @@ async fn desktop_native_route_uses_bound_policy_and_keeps_desktop_auth(
         .await?;
     assert_ne!(invalid_auth.status(), StatusCode::OK);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    provider
+        .meta
+        .as_mut()
+        .ok_or("missing meta")?
+        .claude_desktop_model_routes
+        .get_mut("claude-sonnet-fixture")
+        .ok_or("missing route")?
+        .model = "fixture-upstream-v2".into();
+    db.save_provider("claude-desktop", &provider)?;
     let response = client
         .post(&url)
         .bearer_auth("synthetic-native")
@@ -313,6 +322,23 @@ async fn desktop_native_route_uses_bound_policy_and_keeps_desktop_auth(
     assert_eq!(response.status(), StatusCode::OK);
     let _ = response.bytes().await?;
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let rows = db.list_gateway_usage(Some(&key.key.id)).unwrap_or_default();
+            if rows.iter().any(|r| {
+                r.upstream_model.as_deref() == Some("fixture-upstream-v2") && r.tokens == 25
+            }) {
+                assert!(rows
+                    .iter()
+                    .any(|r| r.upstream_model.as_deref() == Some("fixture-upstream")
+                        && r.tokens == 25));
+                assert!(rows.iter().all(|r| r.model == "claude-sonnet-fixture"));
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
     proxy.stop().await?;
     task.abort();
     Ok(())

@@ -24,3 +24,10 @@ Coverage includes legacy restrictive-policy compatibility, extension database up
 ## Acceptance boundaries
 
 These checks exercise the running VaryAI gateway with synthetic clients and upstream responses. They do not establish live acceptance in all 16 agent applications, vendor billing accuracy, installer/signing acceptance or production release acceptance. TRAE's observational official audit bridge cannot enforce a blocking policy; its managed custom-provider route can. Direct requests outside VaryAI remain outside these budgets. In-flight and concurrent requests can exceed a completed-usage admission limit.
+
+## Follow-up: deletion and forwarded model identity
+
+- The running isolated application showed Delete for a revoked, unbound fixture and disabled it for a still-bound fixture. Its confirmation named the key and all usage records; cancellation preserved the fixture. Database tests verified actual deletion, preservation of other keys and suppression of late observations after deletion.
+- A synthetic native Desktop request used client model `claude-sonnet-fixture`, forwarded `synthetic-grok-model` and returned 200. The upstream deliberately echoed `echoed-alias`. The gateway still recorded the forwarded model and 25 tokens, while preserving an older seven-token record with no known forwarded model.
+- An integration test changed the same client route between two outbound models and confirmed separate historical aggregates. The UI gives the forwarded model the main position, labels Desktop as the request source and retains the client model as the allowlist ID.
+- The complete frontend suite passed 2,378 tests; the final model-label adjustment also passed the 12 focused panel tests. Rust library tests passed 3,863 tests with 14 existing ignored tests, and integration targets passed. Type checking, renderer build, formatting and Clippy passed. A disk-space failure during compilation was resolved by removing regenerable incremental caches and rerunning the complete Rust suite.

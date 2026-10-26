@@ -169,6 +169,14 @@ async fn forward_to_provider(
         redirects += 1;
     };
     let status = response.status();
+    if status.is_success() {
+        if let Some(trace) = parts
+            .extensions
+            .get::<super::gateway::GatewayUpstreamModel>()
+        {
+            trace.record(payload.get("model").and_then(serde_json::Value::as_str));
+        }
+    }
     let mut headers = response.headers().clone();
     strip_hop_headers(&mut headers);
     let mut result = Response::new(Body::from_stream(response.bytes_stream()));

@@ -24,6 +24,7 @@ export interface GatewayUsage {
   window: number;
   agent: string;
   model: string;
+  upstreamModel?: string | null;
   tokens: number;
   requests: number;
   unmetered: number;
@@ -43,4 +44,5 @@ export const gatewayApi = {
   update: (id: string, policy: GatewayPolicy) =>
     invoke<void>("update_gateway_key", { id, policy }),
   revoke: (id: string) => invoke<void>("revoke_gateway_key", { id }),
+  delete: (id: string) => invoke<void>("delete_gateway_key", { id }),
 };

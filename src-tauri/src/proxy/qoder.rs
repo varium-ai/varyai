@@ -242,6 +242,15 @@ pub(crate) async fn handle_official(
         }
     };
     let gateway_db = state.db.clone();
+    if let Some(grant) = &gateway_grant {
+        if payload
+            .pointer("/model_config/key")
+            .and_then(Value::as_str)
+            .is_some()
+        {
+            parts.extensions.insert(grant.upstream_model.clone());
+        }
+    }
     if let Some(blocked) = super::security::inspect_and_intercept_mut_with_headers(
         &AppType::Qoder,
         &mut payload,
@@ -304,6 +313,10 @@ pub(crate) async fn send(
     mut job: Option<Job>,
 ) -> Result<Response, ProxyError> {
     let start = Instant::now();
+    let gateway_model = parts
+        .extensions
+        .get::<super::gateway::GatewayUpstreamModel>()
+        .cloned();
     strip_hop_headers(&mut parts.headers);
     parts.headers.remove(header::CONTENT_LENGTH);
     let uri: http::Uri = target.parse().map_err(|_| invalid())?;
@@ -326,6 +339,11 @@ pub(crate) async fn send(
     .await
     .map_err(|_| ProxyError::ForwardFailed("Qoder upstream connection failed".into()))?;
     let status = response.status();
+    if status.is_success() {
+        if let (Some(trace), Some(item)) = (&gateway_model, &job) {
+            trace.record(Some(&item.request_model));
+        }
+    }
     let mut headers = response.headers().clone();
     strip_hop_headers(&mut headers);
     // Never follow redirects with native credentials or third-party API keys.

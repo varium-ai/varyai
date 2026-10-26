@@ -11,6 +11,87 @@ fn policy() -> KeyPolicy {
 }
 
 #[test]
+fn deletes_only_revoked_unbound_keys_and_removes_their_usage(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db = Database::memory()?;
+    let a = db.create_gateway_key(policy())?;
+    let b = db.create_gateway_key(policy())?;
+    let grant_a = db.authorize_gateway_key(&a.secret, "allowed", 0)?;
+    let grant_b = db.authorize_gateway_key(&b.secret, "allowed", 0)?;
+    db.record_gateway_usage(&grant_a, 20)?;
+    db.record_gateway_usage(&grant_b, 30)?;
+    assert!(db.delete_gateway_key(&a.key.id).is_err());
+    db.bind_gateway_agent("claude-desktop", Some(&a.key.id))?;
+    db.revoke_gateway_key(&a.key.id)?;
+    assert!(db.delete_gateway_key(&a.key.id).is_err());
+    db.bind_gateway_agent("claude-desktop", None)?;
+    db.delete_gateway_key(&a.key.id)?;
+    assert!(matches!(
+        db.authorize_gateway_key(&a.secret, "allowed", 0),
+        Err(GatewayError::Unauthorized)
+    ));
+    assert!(db.list_gateway_usage(Some(&a.key.id))?.is_empty());
+    assert_eq!(db.list_gateway_usage(Some(&b.key.id))?[0].tokens, 30);
+    let remaining = db.list_gateway_keys()?;
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, b.key.id);
+    // Usage from an already admitted request must not recreate deleted counters.
+    db.record_gateway_usage(&grant_a, 10)?;
+    assert!(db.list_gateway_usage(Some(&a.key.id))?.is_empty());
+    let conn = db
+        .extension_connection()
+        .lock()
+        .map_err(|_| "database lock")?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM gateway_usage WHERE key_id=?1",
+        [&a.key.id],
+        |r| r.get(0),
+    )?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+#[test]
+fn usage_preserves_each_forwarded_model_and_keeps_legacy_rows_unknown(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("cc-switch.db");
+    let db = Database::init_at(&path)?;
+    let key = db.create_gateway_key(KeyPolicy {
+        period: Period::Never,
+        ..policy()
+    })?;
+    db.charge_gateway_key(&key.key.id, 0, 7)?;
+    db.extension_connection().lock().map_err(|_| "database lock")?.execute("INSERT INTO gateway_usage_details(key_id,window,agent,model,tokens,requests,unmetered,last_used) VALUES(?1,0,'external','allowed',7,1,0,1)", [&key.key.id])?;
+    drop(db);
+    let ext = rusqlite::Connection::open(dir.path().join("vary-ai.db"))?;
+    ext.execute_batch("DROP TABLE IF EXISTS gateway_usage_models; PRAGMA user_version=3;")?;
+    drop(ext);
+    let db = Database::init_at(&path)?;
+    for (model, tokens) in [("upstream-a", 20), ("upstream-b", 30)] {
+        let grant = db.authorize_gateway_key(&key.secret, "allowed", 0)?;
+        grant.upstream_model.record(Some(model));
+        db.record_gateway_usage(&grant, tokens)?;
+    }
+    let rows = db.list_gateway_usage(Some(&key.key.id))?;
+    assert_eq!(db.list_gateway_keys()?[0].used_tokens, 57);
+    assert_eq!(rows.len(), 3);
+    assert!(rows
+        .iter()
+        .any(|row| row.upstream_model.as_deref() == Some("upstream-a") && row.tokens == 20));
+    assert!(rows
+        .iter()
+        .any(|row| row.upstream_model.as_deref() == Some("upstream-b") && row.tokens == 30));
+    assert!(rows
+        .iter()
+        .any(|row| row.upstream_model.is_none() && row.tokens == 7));
+    db.revoke_gateway_key(&key.key.id)?;
+    db.delete_gateway_key(&key.key.id)?;
+    assert!(db.list_gateway_usage(Some(&key.key.id))?.is_empty());
+    Ok(())
+}
+
+#[test]
 fn agent_binding_is_independent_of_client_credentials_and_survives_revocation(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::memory()?;
