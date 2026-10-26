@@ -14,6 +14,7 @@ export interface GatewayKey {
   usedTokens: number;
   resetsAt: number | null;
   agents?: string[];
+  secretAvailable?: boolean;
 }
 export interface GatewayCatalog {
   agents: { id: string; localRouting: boolean }[];
@@ -45,4 +46,5 @@ export const gatewayApi = {
     invoke<void>("update_gateway_key", { id, policy }),
   revoke: (id: string) => invoke<void>("revoke_gateway_key", { id }),
   delete: (id: string) => invoke<void>("delete_gateway_key", { id }),
+  reveal: (id: string) => invoke<string | null>("reveal_gateway_key", { id }),
 };

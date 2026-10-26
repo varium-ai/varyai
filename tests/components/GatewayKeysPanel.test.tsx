@@ -22,6 +22,7 @@ vi.mock("@/lib/api/gateway", () => ({
   gatewayApi: {
     list: vi.fn(),
     create: vi.fn(),
+    reveal: vi.fn(),
     update: vi.fn(),
     revoke: vi.fn(),
     delete: vi.fn(),
@@ -145,6 +146,45 @@ it("updates budgets without replacing a credential and revokes by ID", async () 
   await waitFor(() =>
     expect(gatewayApi.revoke).toHaveBeenCalledWith("fixture"),
   );
+});
+
+it("reveals a saved key on demand and can show it again after hiding", async () => {
+  vi.mocked(gatewayApi.list).mockResolvedValue([
+    {
+      id: "fixture",
+      policy,
+      revoked: false,
+      usedTokens: 42,
+      resetsAt: null,
+      secretAvailable: true,
+    },
+  ]);
+  vi.mocked(gatewayApi.reveal).mockResolvedValue("synthetic-saved-secret");
+  mount();
+  const reveal = await screen.findByRole("button", {
+    name: "gatewayKeys.reveal",
+  });
+  expect(gatewayApi.reveal).not.toHaveBeenCalled();
+  expect(screen.queryByText("synthetic-saved-secret")).not.toBeInTheDocument();
+  fireEvent.click(reveal);
+  await screen.findByText("synthetic-saved-secret");
+  expect(gatewayApi.reveal).toHaveBeenCalledWith("fixture");
+  fireEvent.click(screen.getByRole("button", { name: "gatewayKeys.dismiss" }));
+  expect(screen.queryByText("synthetic-saved-secret")).not.toBeInTheDocument();
+  fireEvent.click(reveal);
+  await screen.findByText("synthetic-saved-secret");
+  expect(gatewayApi.reveal).toHaveBeenCalledTimes(2);
+});
+
+it("explains that legacy hash-only credentials cannot be recovered", async () => {
+  vi.mocked(gatewayApi.list).mockResolvedValue([
+    { id: "legacy", policy, revoked: false, usedTokens: 42, resetsAt: null },
+  ]);
+  mount();
+  await screen.findByText("gatewayKeys.legacySecret");
+  expect(
+    screen.queryByRole("button", { name: "gatewayKeys.reveal" }),
+  ).not.toBeInTheDocument();
 });
 
 it("requires confirmation to delete a revoked key and refreshes the list", async () => {

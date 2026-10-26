@@ -1450,6 +1450,7 @@ pub fn run() {
             commands::bind_gateway_agent,
             commands::list_gateway_usage,
             commands::create_gateway_key,
+            commands::reveal_gateway_key,
             commands::update_gateway_key,
             commands::revoke_gateway_key,
             commands::delete_gateway_key,

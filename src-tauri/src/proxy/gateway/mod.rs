@@ -11,6 +11,7 @@ mod ingress;
 pub use ingress::handle;
 pub(crate) use ingress::{error as policy_error, meter as meter_response};
 mod bindings;
+mod secrets;
 pub use bindings::{catalog, enforce_agent, GatewayCatalog, GatewayUsage};
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -86,6 +87,7 @@ pub struct GatewayKey {
     pub used_tokens: u64,
     pub resets_at: Option<i64>,
     pub agents: Vec<String>,
+    pub secret_available: bool,
 }
 #[derive(Serialize)]
 pub struct CreatedKey {
@@ -134,6 +136,22 @@ fn digest(secret: &str) -> String {
 
 impl Database {
     pub fn create_gateway_key(&self, policy: KeyPolicy) -> Result<CreatedKey, AppError> {
+        self.create_gateway_key_inner(policy, None)
+    }
+
+    pub fn create_saved_gateway_key(
+        &self,
+        policy: KeyPolicy,
+        directory: &std::path::Path,
+    ) -> Result<CreatedKey, AppError> {
+        self.create_gateway_key_inner(policy, Some(directory))
+    }
+
+    fn create_gateway_key_inner(
+        &self,
+        policy: KeyPolicy,
+        directory: Option<&std::path::Path>,
+    ) -> Result<CreatedKey, AppError> {
         policy.validate()?;
         let mut random = [0u8; 32];
         getrandom::getrandom(&mut random)
@@ -146,8 +164,9 @@ impl Database {
                 .collect::<String>()
         );
         let id = uuid::Uuid::new_v4().to_string();
-        let conn = crate::database::lock_conn!(self.extension_connection());
-        conn.execute(
+        let mut conn = crate::database::lock_conn!(self.extension_connection());
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO gateway_keys (id, secret_hash, policy, revoked) VALUES (?1,?2,?3,0)",
             rusqlite::params![
                 id,
@@ -155,6 +174,15 @@ impl Database {
                 crate::database::to_json_string(&policy)?
             ],
         )?;
+        if let Some(directory) = directory {
+            secrets::save(directory, &id, &secret)?;
+        }
+        if let Err(error) = tx.commit() {
+            if let Some(directory) = directory {
+                let _ = secrets::remove(directory, &id);
+            }
+            return Err(error.into());
+        }
         Ok(CreatedKey {
             key: GatewayKey {
                 id,
@@ -163,9 +191,45 @@ impl Database {
                 revoked: false,
                 used_tokens: 0,
                 agents: Vec::new(),
+                secret_available: directory.is_some(),
             },
             secret,
         })
+    }
+
+    pub fn list_saved_gateway_keys(
+        &self,
+        directory: &std::path::Path,
+    ) -> Result<Vec<GatewayKey>, AppError> {
+        let mut keys = self.list_gateway_keys()?;
+        for key in &mut keys {
+            key.secret_available = !key.revoked && secrets::available(directory, &key.id);
+        }
+        Ok(keys)
+    }
+
+    pub fn reveal_gateway_key(
+        &self,
+        id: &str,
+        directory: &std::path::Path,
+    ) -> Result<Option<String>, AppError> {
+        let hash: Option<String> = {
+            let conn = crate::database::lock_conn!(self.extension_connection());
+            conn.query_row(
+                "SELECT secret_hash FROM gateway_keys WHERE id=?1 AND revoked=0",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?
+        };
+        let Some(hash) = hash else { return Ok(None) };
+        let Some(secret) = secrets::read(directory, id)? else {
+            return Ok(None);
+        };
+        if digest(&secret) != hash {
+            return Err(AppError::Config("Gateway secret unavailable".into()));
+        }
+        Ok(Some(secret))
     }
     pub fn update_gateway_key(&self, id: &str, policy: KeyPolicy) -> Result<(), AppError> {
         policy.validate()?;
@@ -185,6 +249,22 @@ impl Database {
         Ok(())
     }
     pub fn delete_gateway_key(&self, id: &str) -> Result<(), AppError> {
+        self.delete_gateway_key_inner(id, None)
+    }
+
+    pub fn delete_saved_gateway_key(
+        &self,
+        id: &str,
+        directory: &std::path::Path,
+    ) -> Result<(), AppError> {
+        self.delete_gateway_key_inner(id, Some(directory))
+    }
+
+    fn delete_gateway_key_inner(
+        &self,
+        id: &str,
+        directory: Option<&std::path::Path>,
+    ) -> Result<(), AppError> {
         let mut conn = crate::database::lock_conn!(self.extension_connection());
         let tx = conn.transaction()?;
         let eligible: bool = tx.query_row(
@@ -200,6 +280,9 @@ impl Database {
         tx.execute("DELETE FROM gateway_usage_models WHERE key_id=?1", [id])?;
         tx.execute("DELETE FROM gateway_usage WHERE key_id=?1", [id])?;
         tx.execute("DELETE FROM gateway_keys WHERE id=?1", [id])?;
+        if let Some(directory) = directory {
+            secrets::remove(directory, id)?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -241,6 +324,7 @@ impl Database {
                     revoked,
                     used_tokens,
                     resets_at,
+                    secret_available: false,
                 })
             })
             .collect()

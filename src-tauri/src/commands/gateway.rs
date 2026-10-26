@@ -49,7 +49,7 @@ pub async fn list_gateway_usage(
 pub async fn list_gateway_keys(state: State<'_, AppState>) -> Result<Vec<GatewayKey>, String> {
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        db.list_gateway_keys()
+        db.list_saved_gateway_keys(&crate::config::get_app_config_dir().join("gateway-secrets"))
             .map_err(|_| "gatewayKeys.failed".to_string())
     })
     .await
@@ -62,8 +62,11 @@ pub async fn create_gateway_key(
 ) -> Result<CreatedKey, String> {
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        db.create_gateway_key(policy)
-            .map_err(|_| "gatewayKeys.failed".to_string())
+        db.create_saved_gateway_key(
+            policy,
+            &crate::config::get_app_config_dir().join("gateway-secrets"),
+        )
+        .map_err(|_| "gatewayKeys.failed".to_string())
     })
     .await
     .map_err(|_| "gatewayKeys.failed".to_string())?
@@ -78,6 +81,23 @@ pub async fn update_gateway_key(
     tauri::async_runtime::spawn_blocking(move || {
         db.update_gateway_key(&id, policy)
             .map_err(|_| "gatewayKeys.failed".to_string())
+    })
+    .await
+    .map_err(|_| "gatewayKeys.failed".to_string())?
+}
+
+#[tauri::command]
+pub async fn reveal_gateway_key(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<String>, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        db.reveal_gateway_key(
+            &id,
+            &crate::config::get_app_config_dir().join("gateway-secrets"),
+        )
+        .map_err(|_| "gatewayKeys.failed".to_string())
     })
     .await
     .map_err(|_| "gatewayKeys.failed".to_string())?
@@ -97,8 +117,11 @@ pub async fn revoke_gateway_key(state: State<'_, AppState>, id: String) -> Resul
 pub async fn delete_gateway_key(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        db.delete_gateway_key(&id)
-            .map_err(|_| "gatewayKeys.failed".to_string())
+        db.delete_saved_gateway_key(
+            &id,
+            &crate::config::get_app_config_dir().join("gateway-secrets"),
+        )
+        .map_err(|_| "gatewayKeys.failed".to_string())
     })
     .await
     .map_err(|_| "gatewayKeys.failed".to_string())?

@@ -174,7 +174,11 @@ export function GatewayKeysPanel({
             aria-selected={view === tab}
             variant={view === tab ? "default" : "outline"}
             size="sm"
-            onClick={() => setView(tab)}
+            disabled={pending}
+            onClick={() => {
+              setSecret("");
+              setView(tab);
+            }}
           >
             {t(`gatewayKeys.tabs.${tab}`)}
           </Button>
@@ -187,6 +191,7 @@ export function GatewayKeysPanel({
             <Button
               size="sm"
               onClick={() => {
+                setSecret("");
                 reset();
                 setFormOpen(true);
               }}
@@ -358,7 +363,7 @@ export function GatewayKeysPanel({
           )}
           {secret && (
             <div className="rounded-lg border p-3 space-y-2" role="status">
-              <p className="text-xs">{t("gatewayKeys.once")}</p>
+              <p className="text-xs">{t("gatewayKeys.savedSecret")}</p>
               <code className="block break-all select-all text-xs">
                 {secret}
               </code>
@@ -451,6 +456,23 @@ export function GatewayKeysPanel({
                 <div className="flex flex-wrap gap-2">
                   {!key.revoked && (
                     <>
+                      {key.secretAvailable && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={pending}
+                          onClick={() =>
+                            void run(async () => {
+                              setSecret("");
+                              const value = await gatewayApi.reveal(key.id);
+                              if (value) setSecret(value);
+                              else toast.error(t("gatewayKeys.legacySecret"));
+                            })
+                          }
+                        >
+                          {t("gatewayKeys.reveal")}
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
@@ -464,7 +486,10 @@ export function GatewayKeysPanel({
                         variant="outline"
                         disabled={pending}
                         onClick={() =>
-                          void run(() => gatewayApi.revoke(key.id))
+                          void run(async () => {
+                            setSecret("");
+                            await gatewayApi.revoke(key.id);
+                          })
                         }
                       >
                         {t("gatewayKeys.revoke")}
@@ -485,6 +510,7 @@ export function GatewayKeysPanel({
                     size="sm"
                     variant="outline"
                     onClick={() => {
+                      setSecret("");
                       setUsageKey(key.id);
                       setView("usage");
                     }}
@@ -492,6 +518,11 @@ export function GatewayKeysPanel({
                     {t("gatewayKeys.viewUsage")}
                   </Button>
                 </div>
+                {!key.revoked && !key.secretAvailable && (
+                  <p className="text-xs text-muted-foreground">
+                    {t("gatewayKeys.legacySecret")}
+                  </p>
+                )}
                 {key.revoked && !!key.agents?.length && (
                   <p className="text-xs text-muted-foreground">
                     {t("gatewayKeys.deleteUnbindHint")}

@@ -11,6 +11,74 @@ fn policy() -> KeyPolicy {
 }
 
 #[test]
+fn saved_gateway_secrets_survive_restart_without_entering_the_database_or_list(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("cc-switch.db");
+    let store = dir.path().join("gateway-secrets");
+    let db = Database::init_at(&path)?;
+    let created = db.create_saved_gateway_key(policy(), &store)?;
+    let id = created.key.id.clone();
+    assert_eq!(
+        db.reveal_gateway_key(&id, &store)?.as_deref(),
+        Some(created.secret.as_str())
+    );
+    assert_eq!(
+        db.reveal_gateway_key(&id, &store)?.as_deref(),
+        Some(created.secret.as_str())
+    );
+    let listing = serde_json::to_string(&db.list_gateway_keys()?)?;
+    assert!(!listing.contains(&created.secret));
+    let bytes = std::fs::read(dir.path().join("vary-ai.db"))?;
+    assert!(!bytes
+        .windows(created.secret.len())
+        .any(|window| window == created.secret.as_bytes()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(store.join(&id))?.permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    drop(db);
+    let db = Database::init_at(&path)?;
+    assert_eq!(
+        db.reveal_gateway_key(&id, &store)?.as_deref(),
+        Some(created.secret.as_str())
+    );
+    db.revoke_gateway_key(&id)?;
+    assert!(db.reveal_gateway_key(&id, &store)?.is_none());
+    db.delete_saved_gateway_key(&id, &store)?;
+    assert!(!store.join(&id).exists());
+    assert!(db.reveal_gateway_key(&id, &store)?.is_none());
+    Ok(())
+}
+
+#[test]
+fn legacy_missing_tampered_and_unwritable_secret_files_are_handled_safely(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let store = dir.path().join("gateway-secrets");
+    let db = Database::memory()?;
+    let legacy = db.create_gateway_key(policy())?;
+    assert!(db.reveal_gateway_key(&legacy.key.id, &store)?.is_none());
+    let saved = db.create_saved_gateway_key(policy(), &store)?;
+    assert!(db.delete_saved_gateway_key(&saved.key.id, &store).is_err());
+    assert!(store.join(&saved.key.id).exists());
+    std::fs::write(store.join(&saved.key.id), "synthetic-tampered-secret")?;
+    assert!(db.reveal_gateway_key(&saved.key.id, &store).is_err());
+    std::fs::remove_file(store.join(&saved.key.id))?;
+    assert!(db.reveal_gateway_key(&saved.key.id, &store)?.is_none());
+    let blocked = dir.path().join("not-a-directory");
+    std::fs::write(&blocked, "fixture")?;
+    assert!(db.create_saved_gateway_key(policy(), &blocked).is_err());
+    assert_eq!(db.list_gateway_keys()?.len(), 2);
+    assert!(db.reveal_gateway_key("../outside", &store)?.is_none());
+    Ok(())
+}
+
+#[test]
 fn deletes_only_revoked_unbound_keys_and_removes_their_usage(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::memory()?;
