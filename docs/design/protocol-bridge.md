@@ -6,6 +6,14 @@ The provider's upstream format describes the protocol accepted by that provider.
 
 Configure the real provider URL, key, and model. Do not use the local proxy as its own upstream. Gemini official OAuth does not expose custom format selection; third-party providers can select any supported format.
 
+### Configuration detection
+
+Claude, Codex and Gemini custom API-key forms retrieve a model catalog 800 ms after leaving the URL/key fields. Editing cancels pending discovery and changing credentials discards old results. Catalog failures remain silent and manual model entry stays available. A catalog is not evidence of protocol support.
+
+The explicit **Detect configuration** button tests the selected model against all four upstream formats, first with a small JSON text request and then, only after success, with SSE. This sends at most eight inference requests and may incur charges. Each request has a 20-second limit and a 256 KiB response limit; redirects are not followed. Authentication, missing endpoints, rate limits, timeouts and upstream failures have distinct messages and are never treated as proof of permanent protocol incompatibility. Diagnostics contain status categories rather than raw upstream errors or credentials.
+
+Only a new custom provider with an untouched format can automatically adopt a verified format. Existing providers and manual selections remain unchanged; a verified alternative can be applied explicitly. Detection does not save or activate a provider or enable route takeover. Results are discarded when the URL, key, model or Anthropic authentication mode changes. Official/OAuth, cloud-provider and full-request-URL forms retain their existing workflows. The checks use standard protocol paths and authentication; provider-specific custom headers, body overrides, tools and images still require separate testing.
+
 ## Conversion matrix
 
 | Client protocol | Anthropic upstream | Chat upstream | Responses upstream | Gemini upstream |

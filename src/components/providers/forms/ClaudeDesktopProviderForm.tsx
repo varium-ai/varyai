@@ -1,3 +1,4 @@
+import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -873,6 +874,22 @@ export function ClaudeDesktopProviderForm({
           />
         )}
 
+        <ConnectionPresetPicker
+          disabled={isOfficial || usesManagedOAuth}
+          current={{
+            name: form.watch("name"),
+            baseUrl,
+            apiKey,
+            apiFormat: needsModelMapping ? apiFormat : "anthropic",
+          }}
+          supportedFormats={needsModelMapping ? undefined : ["anthropic"]}
+          onApply={(preset) => {
+            if (preset.apiFormat) setApiFormat(preset.apiFormat);
+            form.setValue("name", preset.name);
+            setBaseUrl(preset.baseUrl);
+            setApiKey(preset.apiKey);
+          }}
+        />
         <BasicFormFields form={form} />
 
         {isOfficial && (

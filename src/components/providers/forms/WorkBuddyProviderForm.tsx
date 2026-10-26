@@ -1,3 +1,4 @@
+import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useForm } from "react-hook-form";
@@ -363,6 +364,32 @@ export function WorkBuddyProviderForm({
         className="space-y-6 glass rounded-xl p-6"
         onSubmit={form.handleSubmit(save)}
       >
+        <ConnectionPresetPicker
+          supportedFormats={
+            desktopClient === "qoder"
+              ? ["openai_chat", "openai_responses", "anthropic"]
+              : ["openai_chat"]
+          }
+          disabled={isOfficial && !onAddThirdParty}
+          current={{ name: form.watch("name"), baseUrl: url, apiKey }}
+          onApply={(preset) => {
+            if (
+              desktopClient === "qoder" &&
+              preset.apiFormat &&
+              preset.apiFormat !== "gemini_native"
+            )
+              setProtocol(
+                {
+                  anthropic: "anthropic",
+                  openai_chat: "openai",
+                  openai_responses: "openai-responses",
+                }[preset.apiFormat],
+              );
+            form.setValue("name", preset.name);
+            setUrl(preset.baseUrl);
+            setApiKey(preset.apiKey);
+          }}
+        />
         <BasicFormFields form={form} defaultIcon={desktopClient} />
         {!initialData && (
           <label className="flex items-center gap-2 text-sm">

@@ -308,6 +308,7 @@ impl ProxyServer {
         Router::new()
             // 健康检查
             .route("/health", get(handlers::health_check))
+            .route("/gateway/*path", post(super::gateway::handle))
             .route("/private/trae/audit", post(super::trae::audit))
             .route("/pi/*path", any(super::pi::handle))
             .route(
@@ -1338,3 +1339,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "gateway/server_tests.rs"]
+mod gateway_tests;

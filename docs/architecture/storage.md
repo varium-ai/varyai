@@ -4,7 +4,7 @@ Provider, MCP, prompt, skill, proxy configuration and usage data remain in `cc-s
 
 ## Version boundaries
 
-The shared database follows the upstream schema chain. The current shared version is 20; the extension version is independently 1. Historical single-database version 24 is a compatibility/export format, not the version to apply to the current shared file. Inspect schema structure as well as version because historical VaryAI databases reused some upstream version numbers.
+The shared database follows the upstream schema chain. The current shared version is 20; the extension version is independently 2. Version 2 adds hashed local gateway credentials and per-key token counters (`gateway_keys`, `gateway_usage`). Historical single-database version 24 is a compatibility/export format, not the version to apply to the current shared file. Inspect schema structure as well as version because historical VaryAI databases reused some upstream version numbers.
 
 Before changing shared storage, check the corresponding upstream structure. Increment the extension version for VaryAI-only schema changes.
 
@@ -16,7 +16,7 @@ The split uses SQLite ATTACH and a single transaction, DELETE rollback journalin
 
 ## Locking, backup and sync
 
-Public DAOs use the shared connection and security/tool-risk DAOs use the extension connection. Operations needing both always lock shared before extension. Audit persistence remains asynchronous and must not hold database locks in request forwarding.
+Public DAOs use the shared connection and security/tool-risk and gateway-key DAOs use the extension connection. Gateway admission reads run on blocking workers; gateway usage persistence runs through an asynchronous queue. Operations needing both always lock shared before extension. Audit persistence remains asynchronous and must not hold database locks in request forwarding.
 
 Portable SQL/binary exports combine the two files into the compatibility format. Import validates and migrates staged data, creates current safety backups, then writes the two current files transactionally. Preserve local tool-risk settings, rules, lists, events and change history according to the existing synchronization rules.
 

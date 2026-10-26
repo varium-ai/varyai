@@ -28,6 +28,7 @@ import type { ProxyStatus } from "@/types/proxy";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { GatewayKeysPanel } from "./GatewayKeysPanel";
 import { ClaudeDesktopRouteToggle } from "./ClaudeDesktopRouteToggle";
 import {
   APP_IDS,
@@ -240,6 +241,8 @@ export function ProxyPanel({ onToggleProxy, isProxyPending }: ProxyPanelProps) {
             disabled={isProxyPending}
           />
         </div>
+
+        <GatewayKeysPanel port={listenPort} />
 
         {/* [1] App takeover switches — animated, visible only when proxy is running */}
         <AnimatePresence>

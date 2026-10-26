@@ -209,9 +209,24 @@ pub fn is_proxy_enabled() -> bool {
     get_current_proxy_url().is_some()
 }
 
-/// 构建 HTTP 客户端
+/// Detection must not forward credentials to a redirected endpoint.
+pub(crate) fn get_without_redirects() -> Result<Client, String> {
+    build_client_with_redirects(
+        get_current_proxy_url().as_deref(),
+        reqwest::redirect::Policy::none(),
+    )
+}
+
 fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
+    build_client_with_redirects(proxy_url, reqwest::redirect::Policy::default())
+}
+
+fn build_client_with_redirects(
+    proxy_url: Option<&str>,
+    redirects: reqwest::redirect::Policy,
+) -> Result<Client, String> {
     let mut builder = Client::builder()
+        .redirect(redirects)
         .timeout(Duration::from_secs(600))
         .connect_timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(10)
