@@ -1,12 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ChevronRight,
-  FileText,
-  Loader2,
-  RefreshCw,
-  Trash2,
-} from "lucide-react";
+import { ChevronRight, FileText, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,6 +38,7 @@ import {
 } from "@/types/toolRisk";
 import type { UsageRangeSelection, UsageRangePreset } from "@/types/usage";
 import { SecurityEventDetailsDialog } from "./SecurityEventDetailsDialog";
+import { SecurityEventsLoading } from "./SecurityEventsLoading";
 import { ToolRiskEventsPanel } from "./ToolRiskEventsPanel";
 import {
   securityEventName,
@@ -53,6 +48,7 @@ import {
 } from "./securityEventLabels";
 
 type Option = { value: string; label: string };
+
 function FilterSelect({
   label,
   value,
@@ -301,7 +297,9 @@ export function SecurityEventsPanel({
     }
   };
   const tableLoading = isLoading || isRefreshing;
-  const status = isLoading || isError || !eventsResult?.items.length;
+  const clearDisabled =
+    tableLoading || isError || isClearBusy || !eventsResult?.total;
+  const status = isError || !eventsResult?.items.length;
   return (
     <section
       className="mt-6 space-y-5"
@@ -554,39 +552,44 @@ export function SecurityEventsPanel({
           >
             {t("security.resetFilters")}
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={t("security.refreshLogs")}
-            title={t("security.refreshLogs")}
-            aria-busy={tableLoading}
-            onClick={refresh}
-            disabled={isLoading || isRefreshing}
-          >
-            <RefreshCw
-              className={
-                "h-4 w-4 " + (isLoading || isRefreshing ? "animate-spin" : "")
-              }
-            />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={t("securityEvents.clearFiltered")}
+          <span className="inline-flex" title={t("security.refreshLogs")}>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={t("security.refreshLogs")}
+              title={t("security.refreshLogs")}
+              aria-busy={tableLoading}
+              onClick={refresh}
+              disabled={isLoading || isRefreshing}
+            >
+              <RefreshCw
+                className={
+                  "h-4 w-4 " + (isLoading || isRefreshing ? "animate-spin" : "")
+                }
+              />
+            </Button>
+          </span>
+          <span
+            className="inline-flex"
             title={t("securityEvents.clearFiltered")}
-            disabled={
-              tableLoading || isError || isClearBusy || !eventsResult?.total
-            }
-            onClick={() => {
-              setClearFailed(false);
-              setClearPreview({
-                filter: { ...queryFilter },
-                total: eventsResult?.total,
-              });
-            }}
           >
-            <Trash2 className="h-4 w-4" />
-          </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={t("securityEvents.clearFiltered")}
+              title={t("securityEvents.clearFiltered")}
+              disabled={clearDisabled}
+              onClick={() => {
+                setClearFailed(false);
+                setClearPreview({
+                  filter: { ...queryFilter },
+                  total: eventsResult?.total,
+                });
+              }}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </span>
         </div>
       </div>
       {dlpVisible && (
@@ -607,10 +610,7 @@ export function SecurityEventsPanel({
         )}
         : {count(eventsResult?.total, isLoading, isError)}
       </p>
-      <div
-        className={isRefreshing ? "relative min-h-48" : "relative"}
-        aria-busy={tableLoading}
-      >
+      <div aria-busy={tableLoading}>
         {filter.view === "tool_calls" ? (
           <ToolRiskEventsPanel
             controlled={{
@@ -759,14 +759,14 @@ export function SecurityEventsPanel({
                 </tbody>
               </table>
             </div>
-            {!isRefreshing && status && (
+            {tableLoading ? (
+              <SecurityEventsLoading />
+            ) : status ? (
               <div
                 role="status"
                 className="flex flex-col items-center justify-center px-4 py-14 text-center text-xs"
               >
-                {isLoading ? (
-                  t("security.loadingLogs")
-                ) : isError ? (
+                {isError ? (
                   t("securityEvents.queryError")
                 ) : (
                   <>
@@ -775,17 +775,7 @@ export function SecurityEventsPanel({
                   </>
                 )}
               </div>
-            )}
-          </div>
-        )}
-        {isRefreshing && (
-          <div
-            role="status"
-            data-testid="security-events-loading"
-            className="absolute inset-0 flex min-h-32 flex-col items-center justify-center gap-2 rounded-2xl bg-card/95 text-xs text-muted-foreground"
-          >
-            <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
-            {t("security.loadingLogs")}
+            ) : null}
           </div>
         )}
       </div>
