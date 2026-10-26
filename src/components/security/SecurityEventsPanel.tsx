@@ -396,7 +396,7 @@ export function SecurityEventsPanel({
                       ? undefined
                       : (value as "dlp" | "tool_risk"),
                   category: undefined,
-                  ...(value === "tool_risk"
+                  ...(value !== "dlp"
                     ? { sessionId: undefined, keyword: undefined }
                     : {}),
                 })
@@ -515,7 +515,7 @@ export function SecurityEventsPanel({
               }
             />
           )}
-          {dlpVisible && (
+          {filter.view === "security_events" && filter.eventType === "dlp" && (
             <>
               <Input
                 aria-label={t("security.sessionFilter")}

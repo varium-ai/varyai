@@ -298,7 +298,10 @@ export function WorkBuddyProviderForm({
             ? native.models.find((model) => model.id === id)
             : {}),
           id,
-          name: modelIds.length > 1 ? `${modelName} · ${id}` : modelName,
+          name:
+            desktopClient === "qoder" && modelIds.length > 1
+              ? `${modelName} · ${id}`
+              : modelName,
         }));
       }
     }

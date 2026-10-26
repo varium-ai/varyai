@@ -67,7 +67,7 @@ Apply all specified filters with AND before sorting and pagination:
 | keyword | Literal substring of DLP rule name/masked snippet only; excludes tools |
 | toolVerdict | Only legal in tool_calls; omitted includes historical null verdicts |
 
-Selecting a pure tool source clears and hides DLP session/keyword controls. Pure DLP hides tool categories. Switching views retains applicable common filters, clears unsupported filters, and returns to page one. The default risky restriction cannot be widened by another filter. Valid but incompatible filters yield zero rows; illegal combinations return explicit errors.
+DLP session/keyword controls appear only when the DLP source is explicitly selected. Selecting all sources or a pure tool source clears and hides those controls. Pure DLP hides tool categories. Switching views retains applicable common filters, clears unsupported filters, and returns to page one. The default risky restriction cannot be widened by another filter. Valid but incompatible filters yield zero rows; illegal combinations return explicit errors.
 
 Today/7d/30d ranges have an open upper bound. Fixed custom ranges include the last second through +999ms and retain liveEndTime semantics. Dates remain stable while reading deeper pages, including across midnight. Filter/date changes return to page one. Errors display an unknown count instead of zero or stale totals.
 

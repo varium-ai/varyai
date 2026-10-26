@@ -463,6 +463,10 @@ describe("SecurityCenterPage", () => {
 
   it("keeps both filter focus rings consistent and inside the scroll area", () => {
     render(<SecurityCenterPage />);
+    fireEvent.click(
+      screen.getByRole("combobox", { name: "securityEvents.source" }),
+    );
+    fireEvent.click(screen.getByRole("option", { name: "securityEvents.dlp" }));
     const session = screen.getByRole("textbox", {
       name: "security.sessionFilter",
     });
@@ -700,6 +704,10 @@ it("shows session IDs and unknown sessions and filters by exact session ID", () 
     within(screen.getByRole("dialog")).getByText("session-a"),
   ).toBeInTheDocument();
   fireEvent.click(within(screen.getByRole("dialog")).getByText("common.done"));
+  fireEvent.click(
+    screen.getByRole("combobox", { name: "securityEvents.source" }),
+  );
+  fireEvent.click(screen.getByRole("option", { name: "securityEvents.dlp" }));
   fireEvent.change(
     screen.getByRole("textbox", { name: "security.sessionFilter" }),
     { target: { value: "session-a" } },
@@ -709,8 +717,8 @@ it("shows session IDs and unknown sessions and filters by exact session ID", () 
   ).toBe(true);
   fireEvent.click(screen.getByText("security.resetFilters"));
   expect(
-    screen.getByRole("textbox", { name: "security.sessionFilter" }),
-  ).toHaveValue("");
+    screen.queryByRole("textbox", { name: "security.sessionFilter" }),
+  ).toBeNull();
 });
 
 it("keeps audit details and the backdrop above navigation with a scrollable body", async () => {
@@ -848,6 +856,12 @@ describe("security event date ranges", () => {
       vi.spyOn(Date, "now").mockReturnValue(now);
       auditRows.total = 50;
       render(<SecurityCenterPage />);
+      fireEvent.click(
+        screen.getByRole("combobox", { name: "securityEvents.source" }),
+      );
+      fireEvent.click(
+        screen.getByRole("option", { name: "securityEvents.dlp" }),
+      );
       fireEvent.change(
         screen.getByRole("textbox", { name: "security.sessionFilter" }),
         { target: { value: "session-a" } },
@@ -880,8 +894,8 @@ describe("security event date ranges", () => {
       expect(queries[1].filter.sessionId).toBeUndefined();
       fireEvent.click(screen.getByText("security.resetFilters"));
       expect(
-        screen.getByRole("textbox", { name: "security.sessionFilter" }),
-      ).toHaveValue("");
+        screen.queryByRole("textbox", { name: "security.sessionFilter" }),
+      ).toBeNull();
       expect(auditRows.queries.slice(-2)[0].filter.startTimestamp).toBe(
         startTimestamp,
       );

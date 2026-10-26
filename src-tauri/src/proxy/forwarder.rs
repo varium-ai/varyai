@@ -397,6 +397,9 @@ impl RequestForwarder {
         extensions: Extensions,
         providers: Vec<Provider>,
     ) -> Result<ForwardResult, ForwardError> {
+        let gateway_model = extensions
+            .get::<super::gateway::GatewayUpstreamModel>()
+            .cloned();
         let guard = ActiveConnectionGuard::acquire(self.status.clone()).await;
         {
             let mut s = self.status.write().await;
@@ -412,6 +415,9 @@ impl RequestForwarder {
         // 在流式 body 的 future 内才真正 drop。
         // Err 路径：guard 在函数 scope 内随返回值落地时自动 drop。
         result.map(|mut fr| {
+            if let Some(trace) = gateway_model {
+                trace.record(fr.outbound_model.as_deref());
+            }
             fr.connection_guard = Some(guard);
             fr
         })

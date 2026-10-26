@@ -1446,9 +1446,14 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_gateway_keys,
+            commands::get_gateway_catalog,
+            commands::bind_gateway_agent,
+            commands::list_gateway_usage,
             commands::create_gateway_key,
+            commands::reveal_gateway_key,
             commands::update_gateway_key,
             commands::revoke_gateway_key,
+            commands::delete_gateway_key,
             commands::get_providers,
             commands::get_current_provider,
             commands::add_provider,

@@ -84,6 +84,10 @@ describe("WorkBuddyProviderForm", () => {
       "model-a",
       "model-b",
     ]);
+    expect(config.models.map((model: any) => model.name)).toEqual([
+      "Gateway",
+      "Gateway",
+    ]);
   });
 
   it("keeps a saved model list editable and adds fetched models without duplicates", async () => {
@@ -105,8 +109,12 @@ describe("WorkBuddyProviderForm", () => {
             url: "https://example.com/v1",
             apiKey: "synthetic-key",
             models: [
-              { id: "model-a" },
-              { id: "model-b", supportsReasoning: true },
+              { id: "model-a", name: "Gateway · model-a" },
+              {
+                id: "model-b",
+                name: "Gateway · model-b",
+                supportsReasoning: true,
+              },
             ],
           },
         }}
@@ -130,6 +138,11 @@ describe("WorkBuddyProviderForm", () => {
       "model-c",
     ]);
     expect(config.models[1].supportsReasoning).toBe(true);
+    expect(config.models.map((model: any) => model.name)).toEqual([
+      "Gateway",
+      "Gateway",
+      "Gateway",
+    ]);
   });
 
   describe("model discovery", () => {
