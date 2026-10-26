@@ -45,6 +45,8 @@ The Windows-to-WSL2 CI contract keeps the distribution running with a detached L
 
 Run `pnpm audit --prod` for application dependencies and `pnpm audit` for the complete development tree. The checked-in overrides set security floors for build and test dependencies; review compatibility when removing or changing them.
 
+Zod is pinned to 4.6.7 to address GHSA-mrhx-c7xc-m3w5. Its pnpm patch rewords two explanatory comments that Rollup mistakes for misplaced pure annotations; it does not change executable code or actual optimization annotations. Recheck whether the patch is needed when upgrading Zod. Validation code has a separate renderer chunk to retain the existing bundle size budget without suppressing build warnings.
+
 The remaining known development dependency advisory is [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm) in `braces` 3.0.3, used by the Tailwind 3 globbing toolchain. As of October 22, 2026, no patched version is published. This package is absent from the production dependency tree. The documented build consumes repository-controlled patterns rather than a public glob-processing API; this limits exposure but does not fix the dependency. Maintainers must revisit the exception when a patch or a compatible toolchain replacement becomes available, or when a workflow starts accepting untrusted patterns. Do not suppress the advisory as though it were fixed.
 
 ## Optional statistics destination
