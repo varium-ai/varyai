@@ -7,7 +7,8 @@ Profiles capture selected client configuration so you can restore a known setup 
 1. Configure each client normally and back up its files.
 2. Open the profile controls, create a named profile, and select the supported clients and resource categories to capture.
 3. Review the selected scope before applying a saved profile. Read any validation errors or warnings instead of assuming every category was restored.
-4. Use the explicit refresh/update action to replace a saved multi-agent snapshot with the current configuration. Renaming or deleting a profile affects the shared profile entity.
+4. After applying, follow the client restart or new-session instructions in the completion notification. A successful apply updates saved configuration; running clients may still need to reload it.
+5. Use the explicit refresh/update action to replace a saved multi-agent snapshot with the current configuration. Renaming or deleting a profile affects the shared profile entity.
 
 Some older profiles contain only a single client group. Provider selection for Claude Code and Claude Desktop is independent. An uncaptured category is different from a captured empty category: the former leaves that category untouched; the latter can clear its enabled resources when applied.
 

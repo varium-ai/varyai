@@ -589,7 +589,7 @@ export function SecurityEventsPanel({
           </Button>
         </div>
       </div>
-      {dlpVisible && (
+      {filter.view === "security_events" && filter.eventType === "dlp" && (
         <p className="text-xs text-muted-foreground">
           {t("securityEvents.keywordHint")}
         </p>

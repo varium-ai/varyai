@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -7,10 +8,15 @@ import {
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
+import i18n from "i18next";
+
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import { ConnectionPresetPicker } from "@/components/providers/forms/ConnectionPresetPicker";
 import { connectionPresetsApi } from "@/lib/api/connection-presets";
 import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 vi.mock("@/lib/api/provider-protocol-detection", () => ({
   detectProviderProtocols: vi.fn(),
@@ -33,6 +39,12 @@ const fixture = {
 describe("reusable connection presets", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    i18n.addResource(
+      "zh",
+      "translation",
+      "connectionPresets.deleteConfirmMessage",
+      'Delete preset "{{name}}"?',
+    );
     vi.mocked(connectionPresetsApi.list).mockResolvedValue([fixture]);
     vi.mocked(connectionPresetsApi.save).mockResolvedValue(undefined);
     vi.mocked(connectionPresetsApi.remove).mockResolvedValue(undefined);
@@ -246,6 +258,15 @@ describe("reusable connection presets", () => {
         }),
       ),
     );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "connectionPresets.saveSuccess",
+    );
+    expect(toast.success).toHaveBeenCalledWith(
+      "connectionPresets.saveSuccess",
+      {
+        closeButton: true,
+      },
+    );
     expect(submit).not.toHaveBeenCalled();
     expect(apply).not.toHaveBeenCalled();
   });
@@ -283,10 +304,160 @@ describe("reusable connection presets", () => {
         name: `connectionPresets.delete Renamed relay`,
       }),
     );
+    expect(connectionPresetsApi.remove).not.toHaveBeenCalled();
+    const confirmation = screen.getByRole("dialog", {
+      name: "connectionPresets.deleteConfirmTitle",
+    });
+    expect(confirmation).toHaveTextContent('Delete preset "Renamed relay"?');
+    fireEvent.click(
+      within(confirmation).getByRole("button", {
+        name: "connectionPresets.delete",
+      }),
+    );
     await waitFor(() =>
       expect(connectionPresetsApi.remove).toHaveBeenCalledWith(fixture.id),
     );
+    expect(toast.success).toHaveBeenLastCalledWith(
+      "connectionPresets.deleteSuccess",
+      { closeButton: true },
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "connectionPresets.deleteSuccess",
+    );
     expect(apply).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels deletion without changing the preset or the unsaved draft", async () => {
+    const user = userEvent.setup();
+    render(<ConnectionPresetPicker onApply={vi.fn()} />);
+    await screen.findByRole("option", { name: fixture.name });
+    await user.click(
+      screen.getByRole("button", { name: "connectionPresets.manage" }),
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: `connectionPresets.edit ${fixture.name}`,
+      }),
+    );
+    fireEvent.change(screen.getByLabelText("connectionPresets.name"), {
+      target: { value: "Unsaved draft" },
+    });
+    await user.click(
+      screen.getByRole("button", {
+        name: `connectionPresets.delete ${fixture.name}`,
+      }),
+    );
+    const confirmation = screen.getByRole("dialog", {
+      name: "connectionPresets.deleteConfirmTitle",
+    });
+    expect(confirmation).toHaveTextContent(`Delete preset "${fixture.name}"?`);
+    expect(confirmation).not.toHaveTextContent(fixture.apiKey);
+    expect(confirmation).not.toHaveTextContent(fixture.baseUrl);
+    expect(connectionPresetsApi.remove).not.toHaveBeenCalled();
+    await user.click(
+      within(confirmation).getByRole("button", { name: "common.cancel" }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "connectionPresets.manage" }),
+    ).toBeVisible();
+    expect(screen.getByLabelText("connectionPresets.name")).toHaveValue(
+      "Unsaved draft",
+    );
+    expect(connectionPresetsApi.remove).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("prevents repeated confirmation and dismissal while deletion is pending", async () => {
+    let finish!: () => void;
+    vi.mocked(connectionPresetsApi.remove).mockReturnValue(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    render(<ConnectionPresetPicker onApply={vi.fn()} />);
+    await screen.findByRole("option", { name: fixture.name });
+    await user.click(
+      screen.getByRole("button", { name: "connectionPresets.manage" }),
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: `connectionPresets.delete ${fixture.name}`,
+      }),
+    );
+    const confirmation = screen.getByRole("dialog", {
+      name: "connectionPresets.deleteConfirmTitle",
+    });
+    const confirm = within(confirmation).getByRole("button", {
+      name: "connectionPresets.delete",
+    });
+    await user.click(confirm);
+    expect(confirm).toBeDisabled();
+    expect(
+      within(confirmation).getByRole("button", { name: "common.cancel" }),
+    ).toBeDisabled();
+    await user.click(confirm);
+    await user.keyboard("{Escape}");
+    expect(confirmation).toBeVisible();
+    expect(connectionPresetsApi.remove).toHaveBeenCalledOnce();
+    expect(toast.success).not.toHaveBeenCalled();
+    await act(async () => finish());
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", {
+          name: "connectionPresets.deleteConfirmTitle",
+        }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "connectionPresets.manage" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", {
+        name: `connectionPresets.delete ${fixture.name}`,
+      }),
+    ).not.toBeInTheDocument();
+    expect(toast.success).toHaveBeenCalledWith(
+      "connectionPresets.deleteSuccess",
+      { closeButton: true },
+    );
+  });
+
+  it("reports a safe deletion failure and retains the preset for retry", async () => {
+    vi.mocked(connectionPresetsApi.remove).mockRejectedValue(
+      new Error("private delete detail"),
+    );
+    render(<ConnectionPresetPicker onApply={vi.fn()} />);
+    await screen.findByRole("option", { name: fixture.name });
+    fireEvent.click(
+      screen.getByRole("button", { name: "connectionPresets.manage" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: `connectionPresets.delete ${fixture.name}`,
+      }),
+    );
+    const confirmation = screen.getByRole("dialog", {
+      name: "connectionPresets.deleteConfirmTitle",
+    });
+    fireEvent.click(
+      within(confirmation).getByRole("button", {
+        name: "connectionPresets.delete",
+      }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "connectionPresets.deleteFailed",
+    );
+    expect(toast.error).toHaveBeenCalledWith("connectionPresets.deleteFailed", {
+      closeButton: true,
+    });
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(screen.queryByText("private delete detail")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: `connectionPresets.delete ${fixture.name}`,
+      }),
+    ).toBeEnabled();
   });
 
   it("shows a safe failure and leaves existing choices intact when saving fails", async () => {
@@ -310,6 +481,8 @@ describe("reusable connection presets", () => {
       await screen.findByText("connectionPresets.saveFailed"),
     ).toBeVisible();
     expect(screen.queryByText("private error detail")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(toast.success).not.toHaveBeenCalled();
     expect(
       screen.getByRole("option", { name: fixture.name, hidden: true }),
     ).toBeInTheDocument();

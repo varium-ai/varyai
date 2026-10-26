@@ -1,8 +1,10 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { ClaudeApiFormat } from "@/types";
 import { ProviderConfigDetection } from "./ProviderConfigDetection";
 import {
@@ -47,6 +49,13 @@ export function ConnectionPresetPicker({
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState<
+    "saveSuccess" | "deleteSuccess" | null
+  >(null);
+  const [deleteTarget, setDeleteTarget] = useState<Pick<
+    ConnectionPreset,
+    "id" | "name"
+  > | null>(null);
   const [testModel, setTestModel] = useState("");
   const [editingCredentials, setEditingCredentials] = useState(false);
   const [draft, setDraft] = useState<ConnectionPreset>({
@@ -84,6 +93,7 @@ export function ConnectionPresetPicker({
     });
     setTestModel("");
     setError("");
+    setSuccess(null);
   };
 
   const canApply = (preset: ConnectionPreset) =>
@@ -93,6 +103,7 @@ export function ConnectionPresetPicker({
 
   const save = async () => {
     if (pending) return;
+    setSuccess(null);
     let endpoint: URL;
     try {
       endpoint = new URL(draft.baseUrl.trim());
@@ -125,6 +136,8 @@ export function ConnectionPresetPicker({
         preset,
       ]);
       startNew();
+      setSuccess("saveSuccess");
+      toast.success(t("connectionPresets.saveSuccess"), { closeButton: true });
     } catch {
       setError("saveFailed");
     } finally {
@@ -132,18 +145,26 @@ export function ConnectionPresetPicker({
     }
   };
 
-  const remove = async (presetId: string) => {
-    if (pending) return;
+  const remove = async () => {
+    if (pending || !deleteTarget) return;
+    const presetId = deleteTarget.id;
     setPending(true);
     setError("");
+    setSuccess(null);
     try {
       await connectionPresetsApi.remove(presetId);
       setPresets((items) => items.filter((item) => item.id !== presetId));
       if (draft.id === presetId) startNew();
+      setSuccess("deleteSuccess");
+      toast.success(t("connectionPresets.deleteSuccess"), {
+        closeButton: true,
+      });
     } catch {
       setError("deleteFailed");
+      toast.error(t("connectionPresets.deleteFailed"), { closeButton: true });
     } finally {
       setPending(false);
+      setDeleteTarget(null);
     }
   };
 
@@ -213,12 +234,15 @@ export function ConnectionPresetPicker({
       <Dialog
         open={open}
         onOpenChange={(value) => {
-          if (!pending) setOpen(value);
+          if (!pending) {
+            setOpen(value);
+            if (!value) setDeleteTarget(null);
+          }
         }}
       >
         <DialogContent
           zIndex="top"
-          className="max-h-[85vh] overflow-y-auto"
+          className="max-h-[85vh]"
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             manageButtonRef.current?.focus();
@@ -228,7 +252,7 @@ export function ConnectionPresetPicker({
             <DialogTitle>{t("connectionPresets.manage")}</DialogTitle>
             <DialogDescription>{t("connectionPresets.hint")}</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 px-6 py-4">
+          <div className="min-h-0 space-y-4 overflow-y-auto px-6 py-4">
             <div className="max-h-48 overflow-auto">
               <table className="w-full text-left text-sm">
                 <thead>
@@ -266,6 +290,7 @@ export function ConnectionPresetPicker({
                             setDraft({ ...preset });
                             setTestModel("");
                             setError("");
+                            setSuccess(null);
                           }}
                         >
                           {t("connectionPresets.edit")}
@@ -276,7 +301,12 @@ export function ConnectionPresetPicker({
                           size="sm"
                           disabled={pending}
                           aria-label={`${t("connectionPresets.delete")} ${preset.name}`}
-                          onClick={() => remove(preset.id)}
+                          onClick={() =>
+                            setDeleteTarget({
+                              id: preset.id,
+                              name: preset.name,
+                            })
+                          }
                         >
                           {t("connectionPresets.delete")}
                         </Button>
@@ -414,6 +444,14 @@ export function ConnectionPresetPicker({
             )}
           </div>
           <DialogFooter>
+            {success && (
+              <p
+                role="status"
+                className="mr-auto text-sm font-medium text-emerald-600 dark:text-emerald-400"
+              >
+                {t(`connectionPresets.${success}`)}
+              </p>
+            )}
             <DialogClose asChild>
               <Button type="button" variant="outline" disabled={pending}>
                 {t("common.close")}
@@ -423,6 +461,22 @@ export function ConnectionPresetPicker({
               {t("connectionPresets.save")}
             </Button>
           </DialogFooter>
+          {deleteTarget && (
+            <ConfirmDialog
+              isOpen
+              zIndex="top"
+              pending={pending}
+              title={t("connectionPresets.deleteConfirmTitle")}
+              message={t("connectionPresets.deleteConfirmMessage", {
+                name: deleteTarget.name,
+              })}
+              confirmText={t("connectionPresets.delete")}
+              onConfirm={() => void remove()}
+              onCancel={() => {
+                if (!pending) setDeleteTarget(null);
+              }}
+            />
+          )}
         </DialogContent>
       </Dialog>
     </div>
