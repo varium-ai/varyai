@@ -4,6 +4,10 @@ VaryAI supports selectable official and API-key WorkBuddy configurations. Offici
 
 Enable takeover deliberately, back up the client settings and restart WorkBuddy when it needs to reread its endpoint. Disabling takeover or exiting normally restores the owned settings. An abnormal termination cannot perform normal exit cleanup; recovery uses the persisted backup at the next start.
 
+When no official endpoint is set in `settings.json`, routing reads the newest product cache in the WorkBuddy configuration directory. Both `cache/acc-product-config-v3.json` and `cache/acc-product-config-v3-*.json` are supported. Start WorkBuddy first if no cache exists. An unreadable or invalid newest cache stops setup without changing client settings.
+
+If adding a provider reports an existing model ID, use the saved provider or import the native configuration before editing it. WorkBuddy's native model catalog requires unique model IDs; adding the same IDs again does not select the existing provider. Click **Use this** on its card to make it current.
+
 After enabling protection, restart WorkBuddy and open a new conversation before testing. The global protection confirmation includes this restart instruction. The saved takeover status means routing is configured; it does not prove that an already running client has reloaded its endpoint. If Security Center shows no WorkBuddy events, verify that new requests reach the local proxy before diagnosing individual detection rules. Optional catalog rules must also have Alert or Hide enabled; they default to Allow.
 
 The active status requires a running proxy, a recovery backup, and the injected endpoint still present in WorkBuddy settings. A saved enabled preference alone is insufficient: after normal exit restores direct routing, enabling protection must apply the endpoint again. External changes to the endpoint also invalidate the active status.
