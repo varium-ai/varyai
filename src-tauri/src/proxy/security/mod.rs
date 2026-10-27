@@ -8,12 +8,29 @@
 mod aggregation;
 pub mod audit_logger;
 pub mod builtin_rules;
+pub(crate) mod completion_evidence;
+pub(crate) mod completion_json;
+mod completed_context;
+mod completion_tools;
 pub mod engine;
 pub mod extractor;
 mod identity;
+mod payload_budget;
+mod payload_buffer;
+mod payload_json;
+mod payload_metadata;
+mod payload_text;
 pub mod pii;
+mod request_carriers;
+mod request_detection;
+mod request_plan;
+mod request_preparation;
+mod request_transaction;
 pub mod response;
+mod restoration_policy;
 pub mod runtime;
+mod token_store_owners;
+mod tokenization;
 pub mod types;
 
 #[allow(unused_imports)]
@@ -32,6 +49,38 @@ pub use types::*;
 
 #[cfg(test)]
 mod aggregation_tests;
+#[cfg(test)]
+mod reversible_buffer_tests;
+#[cfg(test)]
+mod reversible_carrier_tests;
+#[cfg(test)]
+mod reversible_completion_tests;
+#[cfg(test)]
+mod reversible_context_tests;
+#[cfg(test)]
+mod reversible_detection_tests;
+#[cfg(test)]
+mod reversible_json_tests;
+#[cfg(test)]
+mod reversible_metadata_tests;
+#[cfg(test)]
+mod reversible_payload_tests;
+#[cfg(test)]
+mod reversible_plan_tests;
+#[cfg(test)]
+mod reversible_policy_tests;
+#[cfg(test)]
+mod reversible_preparation_tests;
+#[cfg(test)]
+mod reversible_runtime_tests;
+#[cfg(test)]
+mod reversible_store_owner_tests;
+#[cfg(test)]
+mod reversible_tests;
+#[cfg(test)]
+mod reversible_text_tests;
+#[cfg(test)]
+mod reversible_transaction_tests;
 #[cfg(test)]
 mod tests;
 
@@ -71,7 +120,11 @@ pub(crate) fn inspect_with_context(
         return Ok(None);
     }
     let session_id = audit_session_id(app_type, headers, body);
-    let runtime = get_security_runtime();
+    let admission = match runtime::admit_security_runtime() {
+        Ok(admission) => admission,
+        Err(_) => return response::build_unavailable_response(wire).map(Some),
+    };
+    let runtime = admission.runtime;
     let detected_at = std::time::Instant::now();
     let now = chrono::Utc::now().timestamp_millis();
     let inspection = SecurityAuditEngine::inspect_and_redact_with_runtime(body, &runtime);

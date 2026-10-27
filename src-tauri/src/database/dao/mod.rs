@@ -10,6 +10,7 @@ pub mod providers;
 pub mod providers_seed;
 pub mod proxy;
 pub mod security;
+pub mod security_events;
 pub mod settings;
 pub mod skills;
 pub mod stream_check;
@@ -24,6 +25,11 @@ pub use profiles::Profile;
 pub use security::{
     AuditBatchOutcome, AuditLogEvent, AuditLogFilter, AuditLogPageResult, AuditLogRecord,
     AuditRowTarget, AuditWrite, AuditWriteReceipt, CustomSecurityRule, SecurityAuditSettings,
+};
+pub use security_events::{
+    SecurityEvent, SecurityEventError, SecurityEventFilter, SecurityEventPage, SecurityEventRecord,
+    SecurityEventResult, SecurityEventRiskLevel, SecurityEventSummary, SecurityEventToolVerdict,
+    SecurityEventType, SecurityEventView, SecurityEventsClearResult,
 };
 pub use tool_risk::{
     ToolRiskActor, ToolRiskAuditStatus, ToolRiskChangeKind, ToolRiskEventInput,

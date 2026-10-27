@@ -68,3 +68,26 @@ pub fn build_blocked_response(app_type: &AppType, reason: &str) -> Result<Respon
         .body(axum::body::Body::from(body_bytes))
         .map_err(|e| ProxyError::Internal(format!("Failed to build security block response: {e}")))
 }
+
+/// Fixed, non-sensitive admission failure; never expose persistence/parser details.
+pub(super) fn build_unavailable_response(app_type: &AppType) -> Result<Response, ProxyError> {
+    let body = match app_type {
+        AppType::Claude | AppType::ClaudeDesktop => json!({
+            "type": "error",
+            "error": { "type": "api_error", "message": "dlp_unavailable" }
+        }),
+        AppType::Gemini => json!({
+            "error": { "code": 503, "message": "dlp_unavailable", "status": "UNAVAILABLE" }
+        }),
+        _ => json!({
+            "error": { "type": "server_error", "message": "dlp_unavailable", "code": "dlp_unavailable", "param": null }
+        }),
+    };
+    let bytes =
+        serde_json::to_vec(&body).map_err(|_| ProxyError::Internal("dlp_unavailable".into()))?;
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(bytes))
+        .map_err(|_| ProxyError::Internal("dlp_unavailable".into()))
+}

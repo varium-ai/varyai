@@ -9,7 +9,6 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   parseToolRiskToolRefs,
-  type ToolRiskEventRecord,
   type ToolRiskRule,
   type ToolRiskRuleItem,
 } from "@/types/toolRisk";
@@ -22,7 +21,6 @@ const resetBuiltinRule = vi.fn().mockResolvedValue(undefined);
 const deleteRule = vi.fn().mockResolvedValue(undefined);
 const testSandbox = vi.fn().mockResolvedValue(undefined);
 let items: ToolRiskRuleItem[];
-let events: ToolRiskEventRecord[] = [];
 
 const customItem: ToolRiskRuleItem = {
   id: "custom-1",
@@ -95,6 +93,13 @@ vi.mock("@/hooks/useToolRisk", () => ({
     isTesting: false,
     reset: vi.fn(),
   }),
+  useToolRiskEvents: () => ({
+    events: [],
+    isLoading: false,
+    refetch: vi.fn(),
+    clearEvents: vi.fn(),
+    isClearing: false,
+  }),
   useToolRiskPolicyChanges: () => ({
     changes: [],
     isLoading: false,
@@ -102,13 +107,6 @@ vi.mock("@/hooks/useToolRisk", () => ({
     isFetching: false,
     refetch: vi.fn(),
     clearChanges: vi.fn(),
-    isClearing: false,
-  }),
-  useToolRiskEvents: () => ({
-    events,
-    isLoading: false,
-    refetch: vi.fn(),
-    clearEvents: vi.fn(),
     isClearing: false,
   }),
 }));
@@ -626,7 +624,6 @@ describe("ToolRiskRulesPanel visible rules", () => {
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
-  events = [];
 });
 
 /** Operation targets use semantic fields; tool targets keep free-text JSON Pointers. */
@@ -724,22 +721,7 @@ describe("risk rule draft and condition safety", () => {
   it.each(["shell_exec", "file_read", "network_request"] as const)(
     "does not inherit a remote execution detector for a %s event without a class",
     (operationCategory) => {
-      events = [
-        {
-          id: 19,
-          timestamp: 1,
-          source: "model_response",
-          stage: "response",
-          operationCategory,
-          detectionScope: "in_scope",
-          integrityStatus: "complete",
-          policyVersion: 1,
-          ruleIds: [],
-          suppressedCount: 0,
-        },
-      ];
-      render(<ToolRiskRulesPanel />);
-      fireEvent.click(screen.getByTestId("tool-risk-create-rule-19"));
+      render(<ToolRiskRulesPanel pendingRuleSeed={{ operationCategory }} />);
       expect(conditionField()).toHaveTextContent("toolRisk.pickConditionField");
       expect(screen.getByTestId("tool-risk-save")).toBeDisabled();
       expect(
@@ -754,23 +736,14 @@ describe("risk rule draft and condition safety", () => {
   );
 
   it("uses the event command class as an equality condition", async () => {
-    events = [
-      {
-        id: 19,
-        timestamp: 1,
-        source: "model_response",
-        stage: "response",
-        operationCategory: "shell_exec",
-        commandClass: "unknown",
-        detectionScope: "in_scope",
-        integrityStatus: "complete",
-        policyVersion: 1,
-        ruleIds: [],
-        suppressedCount: 0,
-      },
-    ];
-    render(<ToolRiskRulesPanel />);
-    fireEvent.click(screen.getByTestId("tool-risk-create-rule-19"));
+    render(
+      <ToolRiskRulesPanel
+        pendingRuleSeed={{
+          operationCategory: "shell_exec",
+          commandClass: "unknown",
+        }}
+      />,
+    );
     expect(
       screen.getByLabelText("toolRisk.fieldCommandClass"),
     ).toHaveTextContent("toolRisk.commandClass.unknown");
@@ -1283,7 +1256,6 @@ describe("database rule capability readiness", () => {
   };
 
   beforeEach(() => {
-    events = [];
     toggleRule.mockClear();
   });
 
@@ -1424,5 +1396,39 @@ describe("P2-9 policy history entry and safe errors", () => {
       expect(toast.error).toHaveBeenLastCalledWith("toolRisk.ruleLoadFailed"),
     );
     expect(screen.queryByTestId("tool-risk-save")).toBeNull();
+  });
+});
+
+describe("unified tool log migration", () => {
+  it("keeps the rules page free of embedded records and the extra tool-call link", () => {
+    render(<ToolRiskRulesPanel />);
+    expect(screen.queryByTestId("tool-risk-events-table")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "securityEvents.openToolCalls" }),
+    ).toBeNull();
+  });
+  it("consumes a pending enum seed once without reopening on rerender", () => {
+    const consume = vi.fn();
+    const seed = {
+      operationCategory: "shell_exec" as const,
+      commandClass: "network_egress" as const,
+    };
+    const { rerender } = render(
+      <ToolRiskRulesPanel
+        pendingRuleSeed={seed}
+        onRuleSeedConsumed={consume}
+      />,
+    );
+    expect(consume).toHaveBeenCalledOnce();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "common.cancel" }));
+    rerender(
+      <ToolRiskRulesPanel
+        pendingRuleSeed={seed}
+        onRuleSeedConsumed={consume}
+      />,
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(consume).toHaveBeenCalledOnce();
   });
 });

@@ -960,12 +960,10 @@ impl ProxyService {
         if settings.enabled && !self.is_running().await {
             self.start().await?;
         }
-        self.db
-            .update_security_settings(settings)
-            .map_err(|e| e.to_string())?;
-        if let Err(e) = crate::proxy::security::reload_security_runtime(&self.db) {
-            log::warn!("[SecurityAudit] 热更新安全运行时配置失败: {e}");
-        }
+        crate::proxy::security::runtime::update_security_runtime(&self.db, |db| {
+            db.update_security_settings(settings)
+        })
+        .map_err(|e| e.to_string())?;
         if let Some(app) = self.app_handle.read().await.as_ref() {
             crate::tray::update_security_audit_icon(app, settings.enabled);
         }
@@ -4940,6 +4938,84 @@ mod tests {
                 });
             });
         }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn security_settings_save_requires_successful_policy_publication(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        struct Restore(crate::proxy::security::SecurityRuntimeConfig);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _restore = Restore((*crate::proxy::security::get_security_runtime()).clone());
+        let db = Arc::new(Database::memory()?);
+        crate::proxy::security::reload_security_runtime(&db)?;
+        db.extension_connection()
+            .lock()
+            .map_err(|_| "fixture lock")?
+            .execute_batch("DROP TABLE security_custom_rules")?;
+        let service = ProxyService::new(db.clone());
+        let result = service
+            .update_security_audit_settings(&crate::database::SecurityAuditSettings {
+                enabled: false,
+            })
+            .await;
+        assert_eq!(result, Err("dlp_unavailable".into()));
+        assert!(
+            !db.get_security_settings()?.enabled,
+            "save committed before source load failed"
+        );
+        let mut body = json!({"input":"synthetic harmless fixture"});
+        let response = crate::proxy::security::inspect_and_intercept_mut(
+            &crate::app_config::AppType::Codex,
+            &mut body,
+        )?;
+        assert_eq!(
+            response
+                .ok_or("failed publication must close HTTP admission")?
+                .status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn security_settings_persistence_failure_closes_policy_before_attempting_save(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        struct Restore(crate::proxy::security::SecurityRuntimeConfig);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _restore = Restore((*crate::proxy::security::get_security_runtime()).clone());
+        let db = Arc::new(Database::memory()?);
+        crate::proxy::security::reload_security_runtime(&db)?;
+        db.extension_connection().lock().map_err(|_| "fixture lock")?
+            .execute_batch("CREATE TRIGGER synthetic_settings_save_failure BEFORE INSERT ON security_settings BEGIN SELECT RAISE(ABORT, 'synthetic private persistence detail'); END")?;
+        let service = ProxyService::new(db);
+        let result = service
+            .update_security_audit_settings(&crate::database::SecurityAuditSettings {
+                enabled: false,
+            })
+            .await;
+        assert_eq!(result, Err("dlp_unavailable".into()));
+        let mut body = json!({"input":"synthetic harmless fixture"});
+        let response = crate::proxy::security::inspect_and_intercept_mut(
+            &crate::app_config::AppType::Codex,
+            &mut body,
+        )?;
+        assert_eq!(
+            response
+                .ok_or("save failure must leave admission closed")?
+                .status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        Ok(())
     }
 
     #[tokio::test]

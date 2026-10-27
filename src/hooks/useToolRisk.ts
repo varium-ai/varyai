@@ -5,6 +5,10 @@ import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { toolRiskApi } from "@/lib/api";
 import { reportFrontendError } from "@/lib/frontendLogger";
+import {
+  invalidateSecurityEventsQueries,
+  invalidateSecurityEventDomains,
+} from "@/hooks/useSecurityEvents";
 import type {
   SaveCommandListInput,
   SaveCustomRuleInput,
@@ -193,7 +197,7 @@ export function useToolRiskEvents(
     mutationFn: (beforeTimestamp?: number) =>
       toolRiskApi.clearEvents(beforeTimestamp),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: toolRiskKeys.all });
+      void invalidateSecurityEventDomains(queryClient);
       toast.success(
         t("toolRisk.eventsCleared", { defaultValue: "调用记录已清空" }),
       );
@@ -220,6 +224,7 @@ export function useToolRiskEventBridge(onRecorded?: () => void) {
     let disposed = false;
     let unlisten: UnlistenFn | undefined;
     const refresh = () => {
+      void invalidateSecurityEventsQueries(queryClient);
       try {
         void Promise.resolve(
           queryClient.invalidateQueries({ queryKey: toolRiskKeys.all }),

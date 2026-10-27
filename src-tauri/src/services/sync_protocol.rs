@@ -366,28 +366,32 @@ pub(crate) fn apply_snapshot(
             format!("SQL is not valid UTF-8: {e}"),
         )
     })?;
-    // Exclude installs, uninstalls, updates, and local projection while Skills
-    // are backed up/replaced and the corresponding database snapshot is applied.
-    let _skill_state_guard = skill_state_write_guard();
-    let skills_backup = backup_current_skills()?;
+    crate::proxy::security::runtime::update_security_runtime(db, |db| {
+        // Exclude installs, uninstalls, updates, and local projection while Skills
+        // are backed up/replaced and the corresponding database snapshot is applied.
+        let _skill_state_guard = skill_state_write_guard();
+        let skills_backup = backup_current_skills()?;
 
-    // Replace skills first, then import database; roll back skills on DB failure.
-    restore_skills_zip(skills_zip)?;
+        // Replace skills first, then import database; roll back skills on DB failure.
+        restore_skills_zip(skills_zip)?;
 
-    if let Err(db_err) = db.import_sql_string_for_sync(sql_str) {
-        if let Err(rollback_err) = restore_skills_from_backup(&skills_backup) {
-            return Err(localized(
-                "sync.db_import_and_rollback_failed",
-                format!("导入数据库失败: {db_err}; 同时回滚 Skills 失败: {rollback_err}"),
-                format!(
-                    "Database import failed: {db_err}; skills rollback also failed: {rollback_err}"
-                ),
-            ));
+        if let Err(db_err) = db.import_sql_string_for_sync(sql_str) {
+            if let Err(rollback_err) = restore_skills_from_backup(&skills_backup) {
+                return Err(localized(
+                    "sync.db_import_and_rollback_failed",
+                    format!("导入数据库失败: {db_err}; 同时回滚 Skills 失败: {rollback_err}"),
+                    format!(
+                        "Database import failed: {db_err}; skills rollback also failed: {rollback_err}"
+                    ),
+                ));
+            }
+            return Err(db_err);
         }
-        return Err(db_err);
-    }
 
-    Ok(())
+        // Publication happens after this closure releases the skill/DB guards.
+        // A publication failure must not roll back skills after the DB committed.
+        Ok(())
+    })
 }
 
 // ─── Utilities ───────────────────────────────────────────────
@@ -743,5 +747,367 @@ mod tests {
             size: data.len() as u64,
         };
         assert!(verify_artifact(data, "test.bin", &meta).is_ok());
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod security_publication_test_support {
+    use crate::database::{CustomSecurityRule, Database, SecurityAuditSettings};
+    use crate::proxy::security::runtime::{
+        get_security_runtime, reload_security_runtime, set_security_runtime_for_test,
+        SecurityRuntimeConfig,
+    };
+    use std::path::PathBuf;
+
+    pub(crate) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    pub(crate) struct Fixture {
+        pub(crate) home: tempfile::TempDir,
+        previous_home: Option<std::ffi::OsString>,
+        previous_runtime: SecurityRuntimeConfig,
+    }
+
+    impl Fixture {
+        pub(crate) fn new() -> TestResult<Self> {
+            let home = tempfile::tempdir()?;
+            let previous_home = std::env::var_os("CC_SWITCH_TEST_HOME");
+            let previous_runtime = (*get_security_runtime()).clone();
+            let fixture = Self {
+                home,
+                previous_home,
+                previous_runtime,
+            };
+            std::env::set_var("CC_SWITCH_TEST_HOME", fixture.home.path());
+            let config = fixture.home.path().join(".cc-switch");
+            std::fs::create_dir_all(&config)?;
+            std::fs::File::create(config.join("cc-switch.db"))?;
+            assert!(crate::config::get_app_config_dir().starts_with(fixture.home.path()));
+            crate::settings::reload_settings()?;
+            set_security_runtime_for_test(SecurityRuntimeConfig::default());
+            Ok(fixture)
+        }
+
+        pub(crate) fn target(&self) -> TestResult<Database> {
+            let db = Database::init_at(&self.home.path().join("target/cc-switch.db"))?;
+            seed_policy(&db, "stale-rule")?;
+            reload_security_runtime(&db)?;
+            Ok(db)
+        }
+
+        pub(crate) fn backup(&self, source: &Database, filename: &str) -> TestResult<PathBuf> {
+            let directory = self.home.path().join("target/backups");
+            std::fs::create_dir_all(&directory)?;
+            let path = directory.join(filename);
+            let snapshot = source.snapshot_to_memory()?;
+            let mut destination = rusqlite::Connection::open(&path)?;
+            let backup = rusqlite::backup::Backup::new(&snapshot, &mut destination)?;
+            assert_eq!(backup.step(-1)?, rusqlite::backup::StepResult::Done);
+            Ok(path)
+        }
+
+        pub(crate) fn skills(&self, contents: &str) -> TestResult<PathBuf> {
+            let directory = crate::services::skill::SkillService::get_ssot_dir()?;
+            assert!(directory.starts_with(self.home.path()));
+            let path = directory.join("synthetic-skill/SKILL.md");
+            std::fs::create_dir_all(path.parent().ok_or("missing fixture parent")?)?;
+            std::fs::write(&path, contents)?;
+            Ok(path)
+        }
+
+        pub(crate) fn skills_zip(&self, contents: &str) -> TestResult<Vec<u8>> {
+            use std::io::Write;
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            writer.start_file(
+                "synthetic-skill/SKILL.md",
+                zip::write::SimpleFileOptions::default(),
+            )?;
+            writer.write_all(contents.as_bytes())?;
+            Ok(writer.finish()?.into_inner())
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            set_security_runtime_for_test(self.previous_runtime.clone());
+            match self.previous_home.as_ref() {
+                Some(previous) => std::env::set_var("CC_SWITCH_TEST_HOME", previous),
+                None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+            let _ = crate::settings::reload_settings();
+        }
+    }
+
+    pub(crate) fn seed_policy(db: &Database, id: &str) -> TestResult {
+        db.update_security_settings(&SecurityAuditSettings { enabled: true })?;
+        db.save_custom_security_rule(&CustomSecurityRule {
+            id: id.into(),
+            name: "Synthetic policy rule".into(),
+            rule_type: "keyword".into(),
+            pattern: "synthetic_policy_marker".into(),
+            risk_level: "HIGH".into(),
+            action: "redact".into(),
+            enabled: true,
+            description: None,
+            updated_at: 1,
+        })?;
+        db.update_builtin_security_rule_action("chinese_phone_number", Some("audit"))?;
+        Ok(())
+    }
+
+    pub(crate) fn source(unreadable: bool) -> TestResult<Database> {
+        let db = Database::memory()?;
+        seed_policy(&db, "imported-rule")?;
+        if unreadable {
+            db.extension_connection()
+                .lock()
+                .map_err(|_| "fixture lock failed")?
+                .execute_batch(
+                    "UPDATE security_custom_rules SET pattern = X'80' WHERE id = 'imported-rule';",
+                )?;
+        }
+        Ok(db)
+    }
+
+    pub(crate) fn legacy_source() -> TestResult<Database> {
+        let connection = rusqlite::Connection::open_in_memory()?;
+        Database::create_shared_tables_on_conn(&connection)?;
+        Database::set_user_version(&connection, crate::database::SHARED_SCHEMA_VERSION)?;
+        Ok(Database {
+            conn: std::sync::Mutex::new(connection),
+            extension_conn: None,
+        })
+    }
+
+    pub(crate) fn assert_empty_policy(db: &Database) -> TestResult {
+        let runtime = get_security_runtime();
+        assert!(db.get_custom_security_rules()?.is_empty());
+        assert!(runtime.enabled);
+        assert!(runtime.custom_rules.is_empty());
+        assert!(runtime.builtin_action_overrides.is_empty());
+        let mut body = serde_json::json!({"input": "synthetic_policy_marker"});
+        assert!(crate::proxy::security::inspect_and_intercept_mut(
+            &crate::app_config::AppType::Codex,
+            &mut body,
+        )?
+        .is_none());
+        assert_eq!(body["input"], "synthetic_policy_marker");
+        Ok(())
+    }
+
+    pub(crate) fn assert_published(db: &Database) -> TestResult {
+        let runtime = get_security_runtime();
+        assert_eq!(db.get_custom_security_rules()?[0].id, "imported-rule");
+        assert!(runtime.enabled);
+        assert_eq!(runtime.custom_rules.len(), 1);
+        assert_eq!(runtime.custom_rules[0].id, "imported-rule");
+        assert_eq!(
+            runtime.builtin_action_overrides.get("chinese_phone_number"),
+            Some(&crate::proxy::security::types::AuditAction::Audit)
+        );
+        let mut body = serde_json::json!({"input": "synthetic_policy_marker"});
+        let inspection =
+            crate::proxy::security::SecurityAuditEngine::inspect_and_redact_with_runtime(
+                &mut body, &runtime,
+            );
+        assert!(!inspection.is_blocked());
+        assert!(inspection
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == "imported-rule"));
+        assert_ne!(body["input"], "synthetic_policy_marker");
+        let mut body = serde_json::json!({"input": "synthetic harmless fixture"});
+        assert!(crate::proxy::security::inspect_and_intercept_mut(
+            &crate::app_config::AppType::Codex,
+            &mut body,
+        )?
+        .is_none());
+        Ok(())
+    }
+
+    pub(crate) fn assert_closed() -> TestResult {
+        let mut body = serde_json::json!({"input": "synthetic harmless fixture"});
+        let response = crate::proxy::security::inspect_and_intercept_mut(
+            &crate::app_config::AppType::Codex,
+            &mut body,
+        )?
+        .ok_or("closed policy must reject HTTP admission")?;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        Ok(())
+    }
+
+    pub(crate) fn assert_committed_unreadable_policy(db: &Database) -> TestResult {
+        let connection = db
+            .extension_connection()
+            .lock()
+            .map_err(|_| "fixture lock failed")?;
+        let imported: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM security_custom_rules
+             WHERE id = 'imported-rule' AND typeof(pattern) = 'blob')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(imported, "fixture must reach the live extension database");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod security_publication_tests {
+    use super::apply_snapshot;
+    use super::security_publication_test_support::{
+        assert_closed, assert_committed_unreadable_policy, assert_empty_policy, assert_published,
+        legacy_source, source, Fixture, TestResult,
+    };
+
+    #[test]
+    #[serial_test::serial]
+    fn sync_import_publishes_effective_policy_and_skills() -> TestResult {
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        let skill = fixture.skills("old synthetic skill")?;
+        let sql = source(false)?.export_sql_string_for_sync()?;
+        apply_snapshot(
+            &db,
+            sql.as_bytes(),
+            &fixture.skills_zip("imported synthetic skill")?,
+        )?;
+        assert_eq!(std::fs::read_to_string(skill)?, "imported synthetic skill");
+        assert_published(&db)
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn sync_committed_publication_failure_keeps_imported_skills_and_closes() -> TestResult {
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        let skill = fixture.skills("old synthetic skill")?;
+        let sql = source(true)?.export_sql_string_for_sync()?;
+        let result = apply_snapshot(
+            &db,
+            sql.as_bytes(),
+            &fixture.skills_zip("imported synthetic skill")?,
+        );
+        assert_committed_unreadable_policy(&db)?;
+        assert_eq!(std::fs::read_to_string(skill)?, "imported synthetic skill");
+        assert_eq!(
+            result.err().map(|error| error.to_string()).as_deref(),
+            Some("dlp_unavailable")
+        );
+        assert_closed()
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn sync_database_failure_rolls_back_skills_and_stays_closed() -> TestResult {
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        let skill = fixture.skills("old synthetic skill")?;
+        let result = apply_snapshot(
+            &db,
+            b"synthetic invalid SQL",
+            &fixture.skills_zip("imported synthetic skill")?,
+        );
+        assert_eq!(std::fs::read_to_string(skill)?, "old synthetic skill");
+        assert_eq!(db.get_custom_security_rules()?[0].id, "stale-rule");
+        assert_eq!(
+            result.err().map(|error| error.to_string()).as_deref(),
+            Some("dlp_unavailable")
+        );
+        assert_closed()
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn sync_skill_archive_failure_stays_closed_without_import() -> TestResult {
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        let skill = fixture.skills("old synthetic skill")?;
+        let sql = source(false)?.export_sql_string_for_sync()?;
+        let result = apply_snapshot(&db, sql.as_bytes(), b"synthetic invalid ZIP");
+        assert_eq!(std::fs::read_to_string(skill)?, "old synthetic skill");
+        assert_eq!(db.get_custom_security_rules()?[0].id, "stale-rule");
+        assert_eq!(
+            result.err().map(|error| error.to_string()).as_deref(),
+            Some("dlp_unavailable")
+        );
+        assert_closed()
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn sync_closes_admission_before_waiting_for_skill_lock() -> TestResult {
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        let sql = source(false)?.export_sql_string_for_sync()?;
+        let zip = fixture.skills_zip("imported synthetic skill")?;
+        let skill_guard = crate::services::skill::skill_state_write_guard();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (closed, result) = std::thread::scope(|scope| {
+            let task = scope.spawn(|| {
+                let _ = started_tx.send(());
+                apply_snapshot(&db, sql.as_bytes(), &zip)
+            });
+            let started = started_rx.recv_timeout(std::time::Duration::from_secs(5));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let mut closed = false;
+            while started.is_ok() && std::time::Instant::now() < deadline {
+                if assert_closed().is_ok() {
+                    closed = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            drop(skill_guard);
+            (closed, task.join())
+        });
+        result.map_err(|_| "snapshot worker panicked")??;
+        assert!(
+            closed,
+            "admission must close before the skill state lock is acquired"
+        );
+        assert_published(&db)
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn sync_legacy_snapshot_clears_stale_policy() -> TestResult {
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        let sql = legacy_source()?.export_sql_string_for_sync()?;
+        apply_snapshot(
+            &db,
+            sql.as_bytes(),
+            &fixture.skills_zip("legacy synthetic skill")?,
+        )?;
+        assert_empty_policy(&db)
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn sync_invalid_utf8_does_not_begin_security_transaction() -> TestResult {
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        let skill = fixture.skills("old synthetic skill")?;
+        let result = apply_snapshot(
+            &db,
+            &[0x80],
+            &fixture.skills_zip("imported synthetic skill")?,
+        );
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(skill)?, "old synthetic skill");
+        assert_eq!(
+            crate::proxy::security::runtime::get_security_runtime().custom_rules[0].id,
+            "stale-rule"
+        );
+        let mut body = serde_json::json!({"input": "synthetic harmless fixture"});
+        assert!(crate::proxy::security::inspect_and_intercept_mut(
+            &crate::app_config::AppType::Codex,
+            &mut body,
+        )?
+        .is_none());
+        Ok(())
     }
 }

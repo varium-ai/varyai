@@ -330,3 +330,17 @@ describe("P2-9 saved policy and sandbox wording", () => {
     },
   );
 });
+
+describe("security critical risk localization", () => {
+  it.each([
+    ["ja", ja, "CRITICAL（重大）"],
+    ["zh-TW", zhTW, "CRITICAL 嚴重"],
+  ] as const)(
+    "retains the reachable critical risk label in %s",
+    (_locale, tree, label) => {
+      expect((tree.security as Record<string, unknown>).riskCritical).toBe(
+        label,
+      );
+    },
+  );
+});

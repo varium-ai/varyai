@@ -57,7 +57,10 @@ pub(crate) use dao::proxy::{
 pub use dao::{
     AuditBatchOutcome, AuditLogEvent, AuditLogFilter, AuditLogPageResult, AuditLogRecord,
     AuditRowTarget, AuditWrite, AuditWriteReceipt, CustomSecurityRule, FailoverQueueItem, Profile,
-    SecurityAuditSettings, ToolRiskActor, ToolRiskAuditStatus, ToolRiskChangeKind,
+    SecurityAuditSettings, SecurityEvent, SecurityEventError, SecurityEventFilter,
+    SecurityEventPage, SecurityEventRecord, SecurityEventResult, SecurityEventRiskLevel,
+    SecurityEventSummary, SecurityEventToolVerdict, SecurityEventType, SecurityEventView,
+    SecurityEventsClearResult, ToolRiskActor, ToolRiskAuditStatus, ToolRiskChangeKind,
     ToolRiskEventInput, ToolRiskEventRecord, ToolRiskPolicyChange, ToolRiskSettings,
     ToolRiskStoredAuditStatus, ToolRiskWriteReceipt,
 };

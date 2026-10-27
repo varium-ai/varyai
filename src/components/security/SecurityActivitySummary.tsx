@@ -1,7 +1,7 @@
 import { ChevronRight, Eye, ShieldAlert, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { resolveUsageRange } from "@/lib/usageRange";
-import { useSecurityAuditLogs } from "@/hooks/useSecurityAudit";
+import { useSecurityEventsSummary } from "@/hooks/useSecurityEvents";
 
 export function SecurityActivitySummary({
   onOpenSecurity,
@@ -11,25 +11,11 @@ export function SecurityActivitySummary({
   const { t, i18n } = useTranslation();
   const { startDate } = resolveUsageRange({ preset: "today" });
   const startTimestamp = startDate * 1000;
-  const blocked = useSecurityAuditLogs(
-    { action: "block", startTimestamp },
-    1,
-    1,
-  );
-  const redacted = useSecurityAuditLogs(
-    { action: "redact", startTimestamp },
-    1,
-    1,
-  );
-  const audited = useSecurityAuditLogs(
-    { action: "audit", startTimestamp },
-    1,
-    1,
-  );
-  const values = [blocked, redacted, audited];
-  const total = values.every((value) => !value.isError && value.logsResult)
-    ? values.reduce((sum, value) => sum + (value.logsResult?.total ?? 0), 0)
-    : undefined;
+  const summary = useSecurityEventsSummary({
+    view: "security_events",
+    startTimestamp,
+  });
+  const total = summary.isError ? undefined : summary.data?.total;
   const display = (value: number | undefined, loading: boolean) =>
     loading
       ? "…"
@@ -41,16 +27,21 @@ export function SecurityActivitySummary({
     {
       key: "protectiveBlocked",
       icon: ShieldAlert,
-      result: blocked,
+      value: summary.data?.protectiveBlocked,
       color: "text-rose-600",
     },
     {
       key: "redacted",
       icon: ShieldCheck,
-      result: redacted,
+      value: summary.data?.redacted,
       color: "text-blue-600",
     },
-    { key: "audited", icon: Eye, result: audited, color: "text-amber-600" },
+    {
+      key: "warnings",
+      icon: Eye,
+      value: summary.data?.warnings,
+      color: "text-amber-600",
+    },
   ] as const;
 
   return (
@@ -74,13 +65,10 @@ export function SecurityActivitySummary({
             {t("securityStats.events")}
           </span>
           <div className="mt-2 text-2xl font-semibold tabular-nums text-blue-600">
-            {display(
-              total,
-              values.some((value) => value.isLoading),
-            )}
+            {display(total, summary.isLoading)}
           </div>
         </div>
-        {cards.map(({ key, icon: Icon, result, color }) => (
+        {cards.map(({ key, icon: Icon, value, color }) => (
           <div
             key={key}
             className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-border dark:bg-card"
@@ -92,10 +80,7 @@ export function SecurityActivitySummary({
             <div
               className={`mt-2 text-2xl font-semibold tabular-nums ${color}`}
             >
-              {display(
-                result.isError ? undefined : result.logsResult?.total,
-                result.isLoading,
-              )}
+              {display(summary.isError ? undefined : value, summary.isLoading)}
             </div>
           </div>
         ))}

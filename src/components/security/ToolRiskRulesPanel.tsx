@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
@@ -49,7 +49,6 @@ import {
 } from "@/hooks/useToolRisk";
 import { ToolRiskPolicyChangesPanel } from "./ToolRiskPolicyChangesPanel";
 import { ShellCommandListsPanel } from "./ShellCommandListsPanel";
-import { ToolRiskEventsPanel } from "@/components/security/ToolRiskEventsPanel";
 import { toolRiskApi } from "@/lib/api";
 import { getToolRiskRuleName } from "@/lib/toolRiskRuleLocalization";
 import { toast } from "sonner";
@@ -173,7 +172,13 @@ function conditionSetOptionLabel(t: TFunction, field: string, value: string) {
 /** Limit visible conditions and summarize overflow to keep the table within its bounds. */
 const MAX_LIST_CONDITION_TERMS = 3;
 
-export function ToolRiskRulesPanel() {
+export function ToolRiskRulesPanel({
+  pendingRuleSeed,
+  onRuleSeedConsumed,
+}: {
+  pendingRuleSeed?: ToolRiskRuleSeed | null;
+  onRuleSeedConsumed?: () => void;
+} = {}) {
   const { t } = useTranslation();
   const {
     settings,
@@ -248,6 +253,14 @@ export function ToolRiskRulesPanel() {
     setToolRefsText("[]");
     setIsDialogOpen(true);
   };
+
+  const consumedSeed = useRef<ToolRiskRuleSeed | null>(null);
+  useEffect(() => {
+    if (!pendingRuleSeed || consumedSeed.current === pendingRuleSeed) return;
+    consumedSeed.current = pendingRuleSeed;
+    openCreate(pendingRuleSeed);
+    onRuleSeedConsumed?.();
+  }, [pendingRuleSeed, onRuleSeedConsumed]);
 
   const openEdit = async (rule: ToolRiskRuleItem) => {
     let full: ToolRiskRule | null = null;
@@ -790,9 +803,6 @@ export function ToolRiskRulesPanel() {
           </div>
         )}
       </div>
-
-      {}
-      <ToolRiskEventsPanel onCreateRule={openCreate} />
 
       {}
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>

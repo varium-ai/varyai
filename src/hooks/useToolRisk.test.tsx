@@ -222,7 +222,12 @@ describe("event verdict query cache", () => {
       await result.current.clearEvents();
     });
     expect(api.clearEvents).toHaveBeenLastCalledWith(undefined);
-    expect(invalidate).toHaveBeenLastCalledWith({ queryKey: toolRiskKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: toolRiskKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["security"] });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["securityEvents", "summary"],
+      refetchType: "active",
+    });
     unmount();
     client.clear();
   });

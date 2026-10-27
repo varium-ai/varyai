@@ -16,6 +16,12 @@ The base credential/PII rules, including private-key material, default to redact
 
 Confirm behavior in `builtin_rules.rs`, `runtime.rs`, and the security DAO before changing settings or documentation.
 
+## Unified security events
+
+The Security Center reads DLP audit rows and tool-risk observations from the Vary extension database through `get_security_events`, `get_security_events_summary`, and `clear_security_events`. These bounded, filtered read/clear operations run in a blocking worker, not in the request-forwarding path. The default security-events view combines DLP rows with risky tool observations; the tool-calls view also includes unchecked, uncertain, low-risk, and historical observations. Prefixed keys distinguish the sources. The existing DLP and tool-risk APIs remain available.
+
+Filtering and clearing share validated predicates. Clearing event rows does not remove policies, rules, or settings; database failures return fixed codes rather than stored content or query details. Tool summaries retain the existing read-time privacy projection, including for imported rows. Event results describe observations and DLP actions, not enforcement of tool execution. The queries cannot guarantee every observation was recorded.
+
 ## Privacy and persistence
 
 Client errors and notifications must not contain matched sensitive plaintext. Stored audit summaries are masked; masking is not a proof of complete anonymity. Event aggregation and asynchronous notifications do not establish that every attempted event was persisted or displayed.

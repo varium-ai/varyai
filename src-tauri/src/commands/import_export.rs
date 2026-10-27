@@ -25,6 +25,17 @@ where
     start_operation().await
 }
 
+// Keep blocking restore work in one synchronous boundary for command tests.
+fn run_database_restore<T>(
+    db: &Database,
+    restore: impl FnOnce(&Database) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    crate::proxy::security::runtime::update_security_runtime(db, |db| {
+        let _skill_state_guard = skill_state_write_guard();
+        restore(db)
+    })
+}
+
 // ─── File import/export ──────────────────────────────────────
 
 /// 导出数据库为 SQL 备份
@@ -59,12 +70,7 @@ pub async fn import_config_from_file(
     run_with_database_restore_lock(move || {
         tauri::async_runtime::spawn_blocking(move || {
             let path_buf = PathBuf::from(&filePath);
-            let backup_id = {
-                // SQL restore replaces the `skills` table. Exclude local Skill
-                // mutations while the database image is being swapped.
-                let _skill_state_guard = skill_state_write_guard();
-                db.import_sql(&path_buf)?
-            };
+            let backup_id = run_database_restore(&db, |db| db.import_sql(&path_buf))?;
             let warning =
                 post_sync_warning_from_result(Ok(run_post_import_sync(&app_state_for_sync)));
             if let Some(msg) = warning.as_ref() {
@@ -176,10 +182,7 @@ pub async fn restore_db_backup(
     let db = app_state_for_sync.db.clone();
     run_with_database_restore_lock(move || {
         tauri::async_runtime::spawn_blocking(move || {
-            let restored = {
-                let _skill_state_guard = skill_state_write_guard();
-                db.restore_from_backup(&filename)?
-            };
+            let restored = run_database_restore(&db, |db| db.restore_from_backup(&filename))?;
             let warning =
                 post_sync_warning_from_result(Ok(run_post_import_sync(&app_state_for_sync)));
             if let Some(message) = warning {
@@ -244,5 +247,174 @@ mod tests {
             .expect("restore should start after lock release")
             .expect("blocking restore task should complete");
         assert!(entered.load(Ordering::SeqCst));
+    }
+}
+
+#[cfg(test)]
+mod security_publication_tests {
+    use super::run_database_restore;
+    use crate::error::AppError;
+    use crate::services::sync_protocol::security_publication_test_support::{
+        assert_closed, assert_committed_unreadable_policy, assert_empty_policy, assert_published,
+        legacy_source, source, Fixture, TestResult,
+    };
+
+    #[test]
+    #[serial_test::serial]
+    fn manual_sql_import_publishes_effective_policy() -> TestResult {
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        let path = fixture.home.path().join("import.sql");
+        source(false)?.export_sql(&path)?;
+        run_database_restore(&db, |db| db.import_sql(&path))?;
+        assert_published(&db)
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn manual_backup_restore_publishes_effective_policy() -> TestResult {
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        fixture.backup(&source(false)?, "synthetic-policy.db")?;
+        run_database_restore(&db, |db| db.restore_from_backup("synthetic-policy.db"))?;
+        assert_published(&db)
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn manual_sql_import_committed_source_failure_is_closed() -> TestResult {
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        let path = fixture.home.path().join("unreadable.sql");
+        source(true)?.export_sql(&path)?;
+        let result = run_database_restore(&db, |db| db.import_sql(&path));
+        assert_committed_unreadable_policy(&db)?;
+        assert_eq!(
+            result.err().map(|error| error.to_string()).as_deref(),
+            Some("dlp_unavailable")
+        );
+        assert_closed()
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn manual_backup_restore_committed_source_failure_is_closed() -> TestResult {
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        fixture.backup(&source(true)?, "unreadable-policy.db")?;
+        let result = run_database_restore(&db, |db| db.restore_from_backup("unreadable-policy.db"));
+        assert_committed_unreadable_policy(&db)?;
+        assert_eq!(
+            result.err().map(|error| error.to_string()).as_deref(),
+            Some("dlp_unavailable")
+        );
+        assert_closed()
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn manual_restore_closes_admission_before_save() -> TestResult {
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        run_database_restore(&db, |_| {
+            assert_closed().map_err(|_| AppError::Message("admission remained open".into()))
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn manual_restore_save_error_after_commit_is_sanitized_and_closed() -> TestResult {
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        let path = fixture.home.path().join("committed.sql");
+        source(false)?.export_sql(&path)?;
+        let result = run_database_restore(&db, |db| {
+            db.import_sql(&path)?;
+            Err::<(), _>(AppError::Message("synthetic private save detail".into()))
+        });
+        assert_eq!(db.get_custom_security_rules()?[0].id, "imported-rule");
+        assert_eq!(
+            result.err().map(|error| error.to_string()).as_deref(),
+            Some("dlp_unavailable")
+        );
+        assert_closed()
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn manual_restore_unwind_leaves_admission_closed() -> TestResult {
+        const CHILD: &str = "VARYAI_SYNTHETIC_RESTORE_UNWIND_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            // Deliberate unwinding poisons the process-global Skills write lock.
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "commands::import_export::security_publication_tests::manual_restore_unwind_leaves_admission_closed",
+                ])
+                .env(CHILD, "1")
+                .output()?;
+            assert!(
+                output.status.success(),
+                "isolated restore unwind regression failed"
+            );
+            return Ok(());
+        }
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_database_restore(&db, |_| -> Result<(), AppError> {
+                panic!("synthetic restore cancellation");
+            })
+        }));
+        assert!(unwound.is_err());
+        assert_closed()
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn manual_restore_aborted_waiter_keeps_blocking_transaction_closed() -> TestResult {
+        let fixture = Fixture::new()?;
+        let db = fixture.target()?;
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let task = tokio::task::spawn_blocking(move || {
+            run_database_restore(&db, |_| {
+                started_tx
+                    .send(())
+                    .map_err(|_| AppError::Message("fixture channel failed".into()))?;
+                finish_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .map_err(|_| AppError::Message("fixture channel failed".into()))?;
+                Err::<(), _>(AppError::Message("synthetic interrupted restore".into()))
+            })
+        });
+        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        task.abort();
+        let during = assert_closed();
+        finish_tx.send(())?;
+        let result = task.await?;
+        during?;
+        assert_eq!(
+            result.err().map(|error| error.to_string()).as_deref(),
+            Some("dlp_unavailable")
+        );
+        assert_closed()
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn manual_legacy_import_and_restore_clear_stale_policy() -> TestResult {
+        let fixture = Fixture::new()?;
+        let source = legacy_source()?;
+        let path = fixture.home.path().join("legacy.sql");
+        source.export_sql(&path)?;
+        fixture.backup(&source, "legacy-policy.db")?;
+        let db = fixture.target()?;
+        run_database_restore(&db, |db| db.import_sql(&path))?;
+        assert_empty_policy(&db)?;
+        let db = fixture.target()?;
+        run_database_restore(&db, |db| db.restore_from_backup("legacy-policy.db"))?;
+        assert_empty_policy(&db)
     }
 }

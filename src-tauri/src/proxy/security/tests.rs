@@ -1312,8 +1312,17 @@ fn test_custom_allow_passes_without_rewriting_or_blocking() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn test_mut_intercept_redacts_by_default() {
     use crate::app_config::AppType;
+    struct Restore(super::runtime::SecurityRuntimeConfig);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            super::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _restore = Restore((*super::runtime::get_security_runtime()).clone());
+    super::runtime::set_security_runtime_for_test(Default::default());
     let mut body = json!({"messages": [{"role":"user", "content":"ghp_111122223333444455556666777788889999"}]});
     let response =
         super::inspect_and_intercept_mut(&AppType::Claude, &mut body).expect("inspection");

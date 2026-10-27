@@ -30,5 +30,18 @@
 - [Shared and extension storage](architecture/storage.md)
 - [Upstream provenance](upstream-provenance.md)
 - [Security policy](../SECURITY.md)
+- [Synthetic security sandbox testing guide](guides/security-testing-guide.md)
 
-These documents describe the current Vary AI source. Historical CC Switch manuals and release notes remain available in the retained upstream Git history. They are not Vary AI release or support promises. Runtime localization remains available independently of documentation language.
+## Design specifications (not release promises)
+
+- [Multi-agent profiles](design/profile-schemes.md)
+- [Unified Security Events](design/security-events-unified-entry-spec.md)
+- [Reversible DLP tokenization proposal — not implemented](design/security-dlp-reversible-tokenization-spec.md)
+
+## Messaging and research (review before external use)
+
+- [Qualified security features brief](marketing/security-features.md)
+- [VaryAI and bos-api commercialization proposal](marketing/varyai-bos-api-commercialization-proposal.md)
+- [aaPanel business model research](research/aapanel-ai-products-business-model-research.md)
+
+Implementation references and the testing guide describe current source, not a certified release. Design, messaging and research separate proposals and unverified hypotheses from current behavior. Historical CC Switch manuals and release notes remain in retained upstream Git history. Runtime localization remains available independently of documentation language.

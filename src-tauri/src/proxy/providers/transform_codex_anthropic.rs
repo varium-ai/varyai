@@ -121,19 +121,11 @@ pub(crate) fn responses_reasoning_item_from_anthropic_block(
 pub(crate) fn map_anthropic_stop_reason_to_status(
     stop_reason: Option<&str>,
 ) -> (&'static str, Option<&'static str>) {
-    match stop_reason {
-        Some("max_tokens") => ("incomplete", Some("max_output_tokens")),
-        // Safety refusal: report as incomplete to avoid Codex treating it as a normally-completed empty reply.
-        Some("refusal") => ("incomplete", Some("content_filter")),
-        Some("model_context_window_exceeded") => ("incomplete", Some("max_output_tokens")),
-        // pause_turn is unreachable on this path (Codex requests do not declare Anthropic server-side tools);
-        // if it does occur, log a warning and treat it as completed.
-        Some("pause_turn") => {
-            log::warn!("[Codex] Received unexpected Anthropic stop_reason=pause_turn, treating it as completed");
-            ("completed", None)
-        }
-        _ => ("completed", None),
+    if stop_reason == Some("pause_turn") {
+        log::warn!("[Codex] Received unexpected Anthropic stop_reason=pause_turn, treating it as completed");
     }
+    crate::proxy::security::completion_evidence::AnthropicCompletionReason::new(stop_reason)
+        .legacy_status()
 }
 
 /// Builds Responses usage from Anthropic usage.

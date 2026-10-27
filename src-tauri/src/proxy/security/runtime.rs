@@ -1,7 +1,10 @@
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 
-use super::types::{AuditAction, RiskLevel};
+use super::{
+    restoration_policy::{DlpPolicyGate, RestorationPolicy},
+    types::{AuditAction, RiskLevel},
+};
 use crate::database::Database;
 use crate::error::AppError;
 
@@ -89,29 +92,98 @@ fn parse_risk(value: &str) -> RiskLevel {
     }
 }
 
-static RUNTIME_CONFIG: OnceLock<RwLock<Arc<SecurityRuntimeConfig>>> = OnceLock::new();
+static POLICY_GATE: OnceLock<DlpPolicyGate> = OnceLock::new();
+const DETECTION_CATALOG_REVISION: u64 = 1;
 
-fn runtime_cell() -> &'static RwLock<Arc<SecurityRuntimeConfig>> {
-    RUNTIME_CONFIG.get_or_init(|| RwLock::new(Arc::new(SecurityRuntimeConfig::default())))
+fn policy_gate() -> &'static DlpPolicyGate {
+    POLICY_GATE.get_or_init(DlpPolicyGate::new)
 }
 
-/// Read the current configuration snapshot without acquiring a database lock.
+pub(super) fn admit_security_runtime(
+) -> Result<super::restoration_policy::DlpPolicyAdmission, super::tokenization::TokenError> {
+    policy_gate().admit()
+}
+
+/// Presentation and legacy callers only; forwarding admission must use the gate.
 pub fn get_security_runtime() -> Arc<SecurityRuntimeConfig> {
-    runtime_cell()
-        .read()
-        .map(|guard| guard.clone())
-        .unwrap_or_else(|_| Arc::new(SecurityRuntimeConfig::default()))
+    policy_gate()
+        .runtime_snapshot()
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| Arc::new(SecurityRuntimeConfig::default()))
 }
 
-/// Set a test-only runtime configuration.
+/// Set a synthetic runtime without reading persistent configuration.
 pub fn set_security_runtime_for_test(config: SecurityRuntimeConfig) {
-    if let Ok(mut guard) = runtime_cell().write() {
-        *guard = Arc::new(config);
+    let rules: Vec<_> = config
+        .custom_rules
+        .iter()
+        .map(|rule| crate::database::CustomSecurityRule {
+            id: rule.id.clone(),
+            name: rule.name.clone(),
+            rule_type: rule.rule_type.clone(),
+            pattern: rule.pattern.clone(),
+            risk_level: rule.risk_level.as_str().into(),
+            action: rule.action.as_str().into(),
+            enabled: rule.enabled,
+            description: None,
+            updated_at: 0,
+        })
+        .collect();
+    let policy = RestorationPolicy::from_sources(
+        &crate::database::SecurityAuditSettings {
+            enabled: config.enabled,
+        },
+        &rules,
+        &config.builtin_action_overrides,
+        DETECTION_CATALOG_REVISION,
+    );
+    if let Ok(update) = policy_gate().begin_update() {
+        let _ = update.publish(Arc::new(config), policy);
     }
 }
 
-/// Reload settings and custom rules from SQLite and publish a runtime snapshot.
+fn unavailable() -> AppError {
+    AppError::Message("dlp_unavailable".into())
+}
+
+/// Serialize persistence, source loading and atomic publication. Failures leave
+/// admission closed because a failed persistence call may already have committed.
+pub(crate) fn update_security_runtime<T>(
+    db: &Database,
+    save: impl FnOnce(&Database) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    update_with_gate(db, policy_gate(), save)
+}
+
+pub(super) fn update_with_gate<T>(
+    db: &Database,
+    gate: &DlpPolicyGate,
+    save: impl FnOnce(&Database) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let update = gate.begin_update().map_err(|_| unavailable())?;
+    let saved = save(db).map_err(|_| unavailable())?;
+    let previous = update.previous_runtime().map_err(|_| unavailable())?;
+    let (runtime, policy) = load_runtime(db, &previous).map_err(|_| unavailable())?;
+    update
+        .publish(Arc::new(runtime), policy)
+        .map_err(|_| unavailable())?;
+    Ok(saved)
+}
+
+pub(super) fn reload_with_gate(db: &Database, gate: &DlpPolicyGate) -> Result<(), AppError> {
+    update_with_gate(db, gate, |_| Ok(()))
+}
+
+/// Reload settings and custom rules from SQLite and atomically publish policy.
 pub fn reload_security_runtime(db: &Database) -> Result<(), AppError> {
+    reload_with_gate(db, policy_gate())
+}
+
+fn load_runtime(
+    db: &Database,
+    previous: &SecurityRuntimeConfig,
+) -> Result<(SecurityRuntimeConfig, RestorationPolicy), AppError> {
     let settings = db.get_security_settings()?;
     let custom_rules = db.get_custom_security_rules()?;
     let builtin_action_overrides = db
@@ -128,6 +200,13 @@ pub fn reload_security_runtime(db: &Database) -> Result<(), AppError> {
             Some((id, action))
         })
         .collect();
+
+    let policy = RestorationPolicy::from_sources(
+        &settings,
+        &custom_rules,
+        &builtin_action_overrides,
+        DETECTION_CATALOG_REVISION,
+    );
 
     // Include disabled rules in metadata so toggles preserve their risk epoch.
     let mut levels: HashMap<String, RiskLevel> = super::builtin_rules::BUILTIN_RULES
@@ -149,14 +228,19 @@ pub fn reload_security_runtime(db: &Database) -> Result<(), AppError> {
         let (regex, is_valid) = if rule.rule_type == "regex" {
             match regex::Regex::new(&rule.pattern) {
                 Ok(re) => (Some(re), true),
-                Err(e) => {
-                    log::warn!(
-                        "[SecurityAudit] 自定义正则规则 '{}' 语法无效: {e}",
-                        rule.name
-                    );
+                Err(_) => {
+                    log::warn!("[SecurityAudit] Invalid custom regex rule; rule disabled");
                     (None, false)
                 }
             }
+        } else if rule.rule_type == "keyword" && !rule.pattern.is_empty() {
+            // Keep failed keyword compilation visible to private fail-closed
+            // detection; legacy callers retain their existing keyword path.
+            let compiled = regex::RegexBuilder::new(&regex::escape(&rule.pattern))
+                .case_insensitive(true)
+                .build()
+                .ok();
+            (compiled, true)
         } else {
             (None, true)
         };
@@ -187,24 +271,14 @@ pub fn reload_security_runtime(db: &Database) -> Result<(), AppError> {
         }
     }
 
-    let rule_count = compiled_rules.len();
     let mut new_cfg = SecurityRuntimeConfig {
         enabled: settings.enabled,
         custom_rules: compiled_rules,
         builtin_action_overrides,
         ..Default::default()
     };
-
-    if let Ok(mut guard) = runtime_cell().write() {
-        new_cfg.assign_versions(&guard, levels);
-        *guard = Arc::new(new_cfg);
-    }
-    log::info!(
-        "[SecurityAudit] 安全审计运行时配置已热更新 (enabled: {}, rules: {})",
-        settings.enabled,
-        rule_count
-    );
-    Ok(())
+    new_cfg.assign_versions(previous, levels);
+    Ok((new_cfg, policy))
 }
 
 #[cfg(test)]

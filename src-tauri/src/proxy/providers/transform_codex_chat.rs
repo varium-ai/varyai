@@ -2036,10 +2036,8 @@ pub(crate) fn response_id_from_chat_id(id: Option<&str>) -> String {
 }
 
 pub(crate) fn response_status_from_finish_reason(finish_reason: Option<&str>) -> &'static str {
-    match finish_reason {
-        Some("length") => "incomplete",
-        _ => "completed",
-    }
+    crate::proxy::security::completion_evidence::ChatCompletionReason::new(finish_reason)
+        .legacy_status()
 }
 
 /// 把 Chat Completions 上游的错误体规整成 OpenAI Responses API 风格的错误对象。

@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useQueryClient } from "@tanstack/react-query";
 import { reportFrontendError } from "@/lib/frontendLogger";
 import { securityKeys } from "@/hooks/useSecurityAudit";
+import { invalidateSecurityEventsQueries } from "@/hooks/useSecurityEvents";
 
 export function useSecurityEventBridge(onRecorded: () => void) {
   const queryClient = useQueryClient();
@@ -13,6 +14,7 @@ export function useSecurityEventBridge(onRecorded: () => void) {
     let disposed = false;
     let unlisten: UnlistenFn | undefined;
     const refreshQueries = () => {
+      void invalidateSecurityEventsQueries(queryClient);
       try {
         void Promise.resolve(
           queryClient.invalidateQueries({ queryKey: securityKeys.all }),

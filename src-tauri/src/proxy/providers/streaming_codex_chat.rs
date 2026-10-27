@@ -63,10 +63,9 @@ struct ToolCallState {
     done: bool,
 }
 
-#[derive(Debug)]
 struct ChatToResponsesState {
     response_started: bool,
-    completed: bool,
+    completion: crate::proxy::security::completion_evidence::SseCompletion,
     response_id: String,
     model: String,
     created_at: u64,
@@ -88,7 +87,7 @@ impl Default for ChatToResponsesState {
     fn default() -> Self {
         Self {
             response_started: false,
-            completed: false,
+            completion: crate::proxy::security::completion_evidence::SseCompletion::chat(),
             response_id: "resp_ccswitch".to_string(),
             model: String::new(),
             created_at: 0,
@@ -532,7 +531,7 @@ impl ChatToResponsesState {
     }
 
     fn finalize(&mut self) -> Vec<Bytes> {
-        if self.completed {
+        if self.completion.legacy_completed() {
             return Vec::new();
         }
 
@@ -570,7 +569,7 @@ impl ChatToResponsesState {
         }
 
         events.push(sse::response_completed(&response));
-        self.completed = true;
+        self.completion.finish_legacy();
         events
     }
 
@@ -758,7 +757,7 @@ impl ChatToResponsesState {
     }
 
     fn failed_event(&mut self, message: String, error_type: Option<String>) -> Bytes {
-        self.completed = true;
+        self.completion.finish_legacy();
         let mut error = json!({ "message": message });
         if let Some(error_type) = error_type.filter(|value| !value.is_empty()) {
             error["type"] = json!(error_type);
@@ -812,20 +811,37 @@ pub fn create_responses_sse_stream_from_chat_with_context<E: std::error::Error +
     stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static,
     tool_context: CodexToolContext,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    create_responses_sse_stream_from_chat_observed(stream, tool_context, |_| {})
+}
+
+/// Inspect borrowed upstream facts before the legacy converter changes them.
+/// The callback is private plumbing, not completed-context authorization.
+pub(crate) fn create_responses_sse_stream_from_chat_observed<
+    E: std::error::Error + Send + 'static,
+>(
+    stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static,
+    tool_context: CodexToolContext,
+    mut observe: impl for<'a> FnMut(crate::proxy::security::completion_evidence::CompletionObservation<'a>)
+        + Send,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    use crate::proxy::security::completion_evidence::CompletionObservation;
     async_stream::stream! {
         let mut buffer = String::new();
         let mut utf8_remainder: Vec<u8> = Vec::new();
         let mut state = ChatToResponsesState::with_tool_context(tool_context);
-        let mut stream_failed = false;
+        let mut transport = crate::proxy::security::completion_evidence::CompletionTransport::default();
 
         tokio::pin!(stream);
 
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(bytes) => {
-                    crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
+                    if crate::proxy::sse::append_utf8_safe_observed(&mut buffer, &mut utf8_remainder, &bytes) {
+                        observe(CompletionObservation::InvalidUtf8);
+                    }
 
                     while let Some(block) = take_sse_block(&mut buffer) {
+                        observe(CompletionObservation::RawFrame(&block));
                         if block.trim().is_empty() {
                             continue;
                         }
@@ -847,6 +863,7 @@ pub fn create_responses_sse_stream_from_chat_with_context<E: std::error::Error +
 
                         let data = data_parts.join("\n");
                         if data.trim() == "[DONE]" {
+                            observe(CompletionObservation::ChatDone);
                             for event in state.finalize() {
                                 yield Ok(event);
                             }
@@ -855,13 +872,17 @@ pub fn create_responses_sse_stream_from_chat_with_context<E: std::error::Error +
 
                         let chunk: Value = match serde_json::from_str(&data) {
                             Ok(value) => value,
-                            Err(_) => continue,
+                            Err(_) => {
+                                observe(CompletionObservation::InvalidJson);
+                                continue;
+                            }
                         };
 
+                        observe(CompletionObservation::ChatChunk(&chunk));
                         if event_name.as_deref() == Some("error") || chunk.get("error").is_some() {
                             let (message, error_type) = extract_chat_sse_error(&chunk);
                             yield Ok(state.failed_event(message, error_type));
-                            stream_failed = true;
+                            transport.abort();
                             break;
                         }
 
@@ -870,23 +891,31 @@ pub fn create_responses_sse_stream_from_chat_with_context<E: std::error::Error +
                         }
                     }
 
-                    if stream_failed {
+                    if transport.legacy_failed() {
                         break;
                     }
                 }
                 Err(e) => {
+                    observe(CompletionObservation::IoFailure);
                     yield Ok(state.failed_event(
                         format!("Stream error: {e}"),
                         Some("stream_error".to_string()),
                     ));
-                    stream_failed = true;
+                    transport.abort();
                     break;
                 }
             }
         }
 
-        if !stream_failed {
-            if state.completed || state.finish_reason.is_some() {
+        let entity_end = CompletionObservation::EntityEnd {
+            reached_eof: !transport.legacy_failed(),
+            unfinished_frame: !buffer.trim().is_empty(),
+            unfinished_utf8: !utf8_remainder.is_empty(),
+        };
+        transport.observe(&entity_end);
+        observe(entity_end);
+        if !transport.legacy_failed() {
+            if state.completion.legacy_completed() || state.finish_reason.is_some() {
                 for event in state.finalize() {
                     yield Ok(event);
                 }

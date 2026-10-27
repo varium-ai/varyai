@@ -34,6 +34,17 @@ pub(crate) fn take_sse_block(buffer: &mut String) -> Option<String> {
 /// A defensive guard discards `remainder` via lossy conversion if it ever
 /// exceeds 3 bytes, which cannot happen with well-formed UTF-8 streams.
 pub(crate) fn append_utf8_safe(buffer: &mut String, remainder: &mut Vec<u8>, new_bytes: &[u8]) {
+    append_utf8_safe_observed(buffer, remainder, new_bytes);
+}
+
+/// Preserve legacy decoding while reporting genuinely invalid input before repair.
+/// An incomplete trailing sequence is not invalid until more input or entity end.
+pub(crate) fn append_utf8_safe_observed(
+    buffer: &mut String,
+    remainder: &mut Vec<u8>,
+    new_bytes: &[u8],
+) -> bool {
+    let mut invalid = false;
     // Build the byte slice to decode: prepend any leftover bytes from previous chunk.
     let (owned, bytes): (Option<Vec<u8>>, &[u8]) = if remainder.is_empty() {
         (None, new_bytes)
@@ -43,6 +54,7 @@ pub(crate) fn append_utf8_safe(buffer: &mut String, remainder: &mut Vec<u8>, new
         // does, the stream is producing genuinely invalid bytes; flush them lossy
         // and start fresh.
         if remainder.len() > 3 {
+            invalid = true;
             buffer.push_str(&String::from_utf8_lossy(remainder));
             remainder.clear();
             (None, new_bytes)
@@ -62,23 +74,27 @@ pub(crate) fn append_utf8_safe(buffer: &mut String, remainder: &mut Vec<u8>, new
             Ok(s) => {
                 buffer.push_str(s);
                 // Everything consumed – remainder stays empty.
-                return;
+                return invalid;
             }
             Err(e) => {
                 let valid_up_to = pos + e.valid_up_to();
                 let valid_slice = &input[pos..valid_up_to];
                 match std::str::from_utf8(valid_slice) {
                     Ok(valid) => buffer.push_str(valid),
-                    Err(_) => buffer.push_str(&String::from_utf8_lossy(valid_slice)),
+                    Err(_) => {
+                        invalid = true;
+                        buffer.push_str(&String::from_utf8_lossy(valid_slice));
+                    }
                 }
                 if let Some(invalid_len) = e.error_len() {
+                    invalid = true;
                     // Genuinely invalid byte(s) – emit U+FFFD and continue.
                     buffer.push('\u{FFFD}');
                     pos = valid_up_to + invalid_len;
                 } else {
                     // Incomplete trailing sequence – stash for next chunk.
                     *remainder = input[valid_up_to..].to_vec();
-                    return;
+                    return invalid;
                 }
             }
         }

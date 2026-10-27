@@ -2373,17 +2373,32 @@ async fn responses_sse_stream_to_anthropic_message(
 /// 复用 `proxy::sse` 的 `take_sse_block`/`strip_sse_field`：`take_sse_block` 同时支持
 /// `\n\n` 与 `\r\n\r\n` 两种分隔符，`strip_sse_field` 兼容带/不带空格的字段写法。
 fn responses_sse_to_response_value(body: &str) -> Result<Value, ProxyError> {
+    responses_sse_to_response_value_observed(body, |_| {})
+}
+
+/// Observe original buffered protocol facts without granting entity or lease authority.
+pub(crate) fn responses_sse_to_response_value_observed(
+    body: &str,
+    mut observe: impl for<'a> FnMut(
+        crate::proxy::security::completion_evidence::CompletionObservation<'a>,
+    ),
+) -> Result<Value, ProxyError> {
+    use crate::proxy::security::completion_evidence::CompletionObservation;
     let mut buffer = body.trim_start_matches('\u{feff}').to_string();
     let mut completed_response: Option<Value> = None;
+    let mut native_completion =
+        crate::proxy::security::completion_json::NativeSseCompletion::new();
     let mut output_items = Vec::new();
 
     // strict=false 用于残余尾块：截断的半截 JSON 忽略而非报错，避免破坏
     // 已聚合好的完整响应（codex_oauth 聚合路径也复用本函数）
     let mut process_block = |block: &str, strict: bool| -> Result<(), ProxyError> {
-        // 残余尾块（strict=false）在已拿到 completed 后整体跳过——codex_oauth 聚合
-        // 路径也复用本函数，已完成后再执行残余里的完整 response.failed/杂事件会把
-        // 成功响应翻成 422（C8）。
-        if !strict && completed_response.is_some() {
+        // Observe nonempty provenance even when legacy aggregation ignores the tail.
+        if !block.trim().is_empty() {
+            observe(CompletionObservation::RawFrame(block));
+        }
+        // Preserve completed legacy responses instead of processing residual failures.
+        if !strict && native_completion.legacy_completed() {
             return Ok(());
         }
         let mut event_name = "";
@@ -2409,21 +2424,32 @@ fn responses_sse_to_response_value(body: &str) -> Result<Value, ProxyError> {
 
         let data: Value = match serde_json::from_str(&data_str) {
             Ok(v) => v,
-            Err(_) if !strict => return Ok(()),
             Err(e) => {
+                observe(CompletionObservation::InvalidJson);
+                if !strict {
+                    return Ok(());
+                }
                 return Err(ProxyError::TransformError(format!(
                     "Failed to parse upstream SSE event: {e}"
-                )))
+                )));
             }
         };
 
+        observe(CompletionObservation::NativeEvent {
+            event_name,
+            data: &data,
+        });
         match event_name {
             "response.output_item.done" => {
                 if let Some(item) = data.get("item") {
                     output_items.push(item.clone());
                 }
             }
-            "response.completed" => {
+            _ if crate::proxy::security::completion_evidence::NativeCompletionEvent::new(
+                event_name, &data,
+            )
+            .legacy_is_completed() => {
+                native_completion.finish_legacy();
                 completed_response = Some(data.get("response").cloned().unwrap_or(data));
             }
             "response.failed" => {
@@ -2445,6 +2471,9 @@ fn responses_sse_to_response_value(body: &str) -> Result<Value, ProxyError> {
     // 残余 buffer 当最后一块处理，否则尾部的 response.completed 会被丢掉。
     // 已完成时的跳过判定在闭包内（C8）。
     process_block(&buffer, false)?;
+    observe(CompletionObservation::BufferedBodyEnd {
+        unfinished_frame: !buffer.trim().is_empty(),
+    });
 
     let mut response = completed_response.ok_or_else(|| {
         ProxyError::TransformError("No response.completed event in upstream SSE".to_string())

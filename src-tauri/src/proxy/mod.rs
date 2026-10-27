@@ -32,6 +32,8 @@ pub mod response_processor;
 pub mod security;
 pub(crate) mod server;
 pub mod session;
+#[cfg(test)]
+mod session_identity_tests;
 pub(crate) mod sse;
 pub(crate) mod switch_lock;
 pub mod thinking_budget_rectifier;
