@@ -449,6 +449,7 @@ export function CodexFormFields({
     isFullUrl,
     codexApiKey,
     customUserAgent,
+    apiFormat,
     isXaiOauthPreset,
     isXaiOauthAuthenticated,
     selectedXaiAccountId,
@@ -593,6 +594,12 @@ export function CodexFormFields({
               isFullUrl,
               undefined,
               customUserAgent,
+              {
+                apiFormat:
+                  apiFormat === "gemini_native"
+                    ? "google-generative-ai"
+                    : undefined,
+              },
             );
         if (seq !== fetchModelsSeqRef.current) return;
         setFetchedModels(models);
@@ -618,6 +625,7 @@ export function CodexFormFields({
       codexApiKey,
       isFullUrl,
       customUserAgent,
+      apiFormat,
       isXaiOauthPreset,
       selectedXaiAccountId,
       t,

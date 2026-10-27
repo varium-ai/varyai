@@ -300,7 +300,7 @@ export function ClaudeFormFields({
     return () => {
       modelCatalogRequest.current += 1;
     };
-  }, [baseUrl, apiKey, isFullUrl, customUserAgent]);
+  }, [baseUrl, apiKey, isFullUrl, customUserAgent, apiFormat]);
 
   const showModelFetchResult = useCallback(
     (count: number) => {
@@ -338,6 +338,10 @@ export function ClaudeFormFields({
         isFullUrl,
         modelsUrl,
         customUserAgent,
+        {
+          apiFormat:
+            apiFormat === "gemini_native" ? "google-generative-ai" : undefined,
+        },
       )
         .then((models) => {
           if (request !== modelCatalogRequest.current) return;
@@ -354,7 +358,15 @@ export function ClaudeFormFields({
             setIsFetchingModels(false);
         });
     },
-    [baseUrl, apiKey, isFullUrl, customUserAgent, showModelFetchResult, t],
+    [
+      baseUrl,
+      apiKey,
+      isFullUrl,
+      customUserAgent,
+      apiFormat,
+      showModelFetchResult,
+      t,
+    ],
   );
 
   const handleFetchCopilotModels = useCallback(

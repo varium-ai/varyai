@@ -5,6 +5,12 @@ import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeDesktopProviderForm } from "@/components/providers/forms/ClaudeDesktopProviderForm";
 import { createTestQueryClient } from "../utils/testQueryClient";
+import { fetchModelsForConfig } from "@/lib/api/model-fetch";
+
+vi.mock("@/lib/api/model-fetch", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api/model-fetch")>()),
+  fetchModelsForConfig: vi.fn().mockResolvedValue([]),
+}));
 
 const authState = vi.hoisted(() => ({
   codexReauthRequired: false,
@@ -85,6 +91,31 @@ function renderForm(
 }
 
 describe("ClaudeDesktopProviderForm", () => {
+  it("fetches mapped Gemini models using the native protocol", async () => {
+    renderForm({
+      name: "Gemini fixture",
+      category: "third_party",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: "https://fixture.example",
+          ANTHROPIC_API_KEY: "synthetic-key",
+        },
+      },
+      meta: { claudeDesktopMode: "proxy", apiFormat: "gemini_native" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
+    await waitFor(() =>
+      expect(fetchModelsForConfig).toHaveBeenCalledWith(
+        "https://fixture.example",
+        "synthetic-key",
+        undefined,
+        undefined,
+        undefined,
+        { apiFormat: "google-generative-ai" },
+      ),
+    );
+  });
+
   beforeEach(() => {
     authState.codexReauthRequired = false;
   });
