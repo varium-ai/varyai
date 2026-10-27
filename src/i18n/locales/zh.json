@@ -21,7 +21,11 @@
     "save": "保存预设",
     "invalid": "请填写名称、Key 和有效的 http(s) API 地址。",
     "loadFailed": "预设加载失败，请关闭后重新打开配置页。",
+    "saveSuccess": "预设已保存",
     "saveFailed": "保存预设失败，请检查输入后重试。",
+    "deleteConfirmTitle": "确认删除预设",
+    "deleteConfirmMessage": "确定要删除连接预设“{{name}}”吗？不会改动已使用该预设配置的供应商。",
+    "deleteSuccess": "预设已删除",
     "deleteFailed": "删除预设失败，请重试。"
   },
   "providerDetection": {

@@ -21,7 +21,11 @@
     "save": "Save preset",
     "invalid": "Enter a name, key and valid http(s) API URL.",
     "loadFailed": "Could not load presets. Reopen the configuration page to retry.",
+    "saveSuccess": "Preset saved",
     "saveFailed": "Could not save the preset. Check the fields and retry.",
+    "deleteConfirmTitle": "Delete preset",
+    "deleteConfirmMessage": "Delete the connection preset \"{{name}}\"? Providers already configured with it will stay unchanged.",
+    "deleteSuccess": "Preset deleted",
     "deleteFailed": "Could not delete the preset. Please retry."
   },
   "providerDetection": {

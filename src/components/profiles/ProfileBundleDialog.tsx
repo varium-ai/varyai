@@ -30,6 +30,15 @@ export function ProfileBundleDialog({
     "zcode",
     "trae",
   ]);
+  const restartHint = (app: string) =>
+    t(
+      app === "trae"
+        ? "profiles.bundle.clientSyncHint"
+        : restartClients.has(app)
+          ? "profiles.bundle.restartClient"
+          : "profiles.bundle.restartSession",
+      { app: t(`apps.${app}`) },
+    );
   const [preview, setPreview] = useState<ProfilePreview>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -70,21 +79,29 @@ export function ProfileBundleDialog({
         return;
       }
       const message = t("profiles.bundle.applied", { name: profile.name });
+      const restartHints = preview.changes.map((change) =>
+        restartHint(change.app),
+      );
       if (result.warnings.length) {
         toast.warning(message, {
-          description: [...new Set(result.warnings)]
-            .map((warning) =>
+          description: [
+            ...[...new Set(result.warnings)].map((warning) =>
               t(
                 warning.startsWith("profiles.bundle.")
                   ? warning
                   : "profiles.bundle.applyWarning",
               ),
-            )
-            .join("\n"),
+            ),
+            ...restartHints,
+          ].join("\n"),
           duration: 8000,
         });
       } else {
-        toast.success(message);
+        toast.success(message, {
+          description: restartHints.join("\n"),
+          duration: 10000,
+          closeButton: true,
+        });
       }
       onClose();
     } catch (value) {
@@ -108,14 +125,14 @@ export function ProfileBundleDialog({
         overlayClassName="backdrop-blur-none"
       >
         <DialogHeader>
-          <DialogTitle>
+          <DialogTitle className="line-clamp-2 break-all" title={profile.name}>
             {t("profiles.bundle.previewTitle", { name: profile.name })}
           </DialogTitle>
           <DialogDescription>
             {t("profiles.bundle.previewDescription")}
           </DialogDescription>
         </DialogHeader>
-        <div className="max-h-[60vh] space-y-3 overflow-y-auto px-6 py-3">
+        <div className="min-h-0 max-h-[60vh] space-y-3 overflow-y-auto px-6 py-3">
           {!preview && !error && <p>{t("common.loading")}</p>}
           {preview && (
             <div className="space-y-2 text-sm text-muted-foreground">
@@ -124,7 +141,10 @@ export function ProfileBundleDialog({
             </div>
           )}
           {preview?.changes.map((change) => (
-            <div key={change.app} className="rounded-md border p-3 text-sm">
+            <div
+              key={change.app}
+              className="rounded-md border p-3 text-sm [overflow-wrap:anywhere]"
+            >
               <p className="font-medium">{t(`apps.${change.app}`)}</p>
               <p>
                 {change.currentProvider ||
@@ -148,14 +168,7 @@ export function ProfileBundleDialog({
                 </p>
               )}
               <p className="mt-2 text-xs text-muted-foreground">
-                {t(
-                  change.app === "trae"
-                    ? "profiles.bundle.clientSyncHint"
-                    : restartClients.has(change.app)
-                      ? "profiles.bundle.restartClient"
-                      : "profiles.bundle.restartSession",
-                  { app: t(`apps.${change.app}`) },
-                )}
+                {restartHint(change.app)}
               </p>
               {change.clientSyncPending && (
                 <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">

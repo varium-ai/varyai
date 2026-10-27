@@ -11,6 +11,12 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { profilesApi, type Profile } from "@/lib/api/profiles";
 import { useQueryClient } from "@tanstack/react-query";
@@ -50,22 +56,22 @@ export function ProfileManageDialog({
   const [editingName, setEditingName] = useState("");
   const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
   const queryClient = useQueryClient();
-  const [refreshing, setRefreshing] = useState(false);
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const refreshBundle = async (profile: Profile) => {
-    if (!profile.payload.bundle) return;
-    setRefreshing(true);
+    if (!profile.payload.bundle || refreshingId) return;
+    setRefreshingId(profile.id);
     try {
       await profilesApi.captureBundle(
         profile.name,
         profile.payload.bundle.selections.map((s) => s.app),
         profile.id,
       );
-      await queryClient.invalidateQueries({ queryKey: ["profiles"] });
       toast.success(t("profiles.updateSuccess"));
+      await queryClient.invalidateQueries({ queryKey: ["profiles"] });
     } catch {
       toast.error(t("profiles.bundle.operationFailed"));
     } finally {
-      setRefreshing(false);
+      setRefreshingId(null);
     }
   };
 
@@ -111,7 +117,7 @@ export function ProfileManageDialog({
               {t("profiles.manageDescription")}
             </DialogDescription>
           </DialogHeader>
-          <div className="max-h-[50vh] space-y-1 overflow-y-auto px-6 pb-4 pt-3">
+          <div className="min-h-0 max-h-[50vh] space-y-1 overflow-y-auto px-6 pb-4 pt-3">
             {profiles.length === 0 && (
               <div className="py-4 text-center text-sm text-muted-foreground">
                 {t("profiles.empty")}
@@ -120,7 +126,7 @@ export function ProfileManageDialog({
             {profiles.map((profile) => (
               <div
                 key={profile.id}
-                className="flex items-center gap-1.5 rounded-md px-2 py-1.5 hover:bg-muted/50"
+                className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 hover:bg-muted/50"
               >
                 {editingId === profile.id ? (
                   <>
@@ -128,7 +134,7 @@ export function ProfileManageDialog({
                       placeholder={t("profiles.namePlaceholder")}
                       value={editingName}
                       onChange={(e) => setEditingName(e.target.value)}
-                      className="h-7 flex-1"
+                      className="h-7 min-w-0 flex-1"
                       autoFocus
                       onKeyDown={(e) => {
                         if (e.key === "Enter") saveRename();
@@ -138,7 +144,7 @@ export function ProfileManageDialog({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
+                      className="h-7 w-7 shrink-0"
                       title={t("common.confirm")}
                       onClick={saveRename}
                       disabled={!editingName.trim() || updateMutation.isPending}
@@ -148,7 +154,7 @@ export function ProfileManageDialog({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
+                      className="h-7 w-7 shrink-0"
                       title={t("common.cancel")}
                       onClick={cancelRename}
                     >
@@ -157,25 +163,40 @@ export function ProfileManageDialog({
                   </>
                 ) : (
                   <>
-                    <span className="flex-1 truncate text-sm">
+                    <span
+                      className="min-w-0 flex-1 truncate text-sm"
+                      title={profile.name}
+                    >
                       {profile.name}
                     </span>
                     {profile.payload.bundle && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        title={t("profiles.bundle.recapture")}
-                        onClick={() => void refreshBundle(profile)}
-                        disabled={refreshing}
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" />
-                      </Button>
+                      <TooltipProvider delayDuration={0}>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 shrink-0"
+                              aria-label={t("profiles.bundle.recapture")}
+                              onClick={() => void refreshBundle(profile)}
+                              disabled={refreshingId !== null}
+                              aria-busy={refreshingId === profile.id}
+                            >
+                              <RefreshCw
+                                className={`h-3.5 w-3.5 ${refreshingId === profile.id ? "animate-spin" : ""}`}
+                              />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {t("profiles.bundle.recapture")}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
                     )}
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
+                      className="h-7 w-7 shrink-0"
                       title={t("profiles.rename")}
                       onClick={() => startRename(profile.id, profile.name)}
                     >
@@ -184,7 +205,7 @@ export function ProfileManageDialog({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
+                      className="h-7 w-7 shrink-0"
                       title={t("profiles.delete")}
                       onClick={() =>
                         setConfirm({

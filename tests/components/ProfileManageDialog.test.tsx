@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ProfileManageDialog } from "@/components/profiles/ProfileManageDialog";
@@ -59,7 +65,9 @@ it("explains explicit snapshot updates and edits a named bundle without applying
     vi.mocked(useUpdateProfileMutation).mock.results[0].value.mutate,
   ).toHaveBeenCalledWith({ id: "work", name: "个人" }, expect.anything());
   fireEvent.click(screen.getByTitle("取消"));
-  fireEvent.click(screen.getByTitle("用当前配置更新快照"));
+  fireEvent.click(
+    screen.getByRole("button", { name: zh.profiles.bundle.recapture }),
+  );
   await waitFor(() =>
     expect(profilesApi.captureBundle).toHaveBeenCalledWith(
       "工作",
@@ -70,4 +78,67 @@ it("explains explicit snapshot updates and edits a named bundle without applying
   await waitFor(() =>
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["profiles"] }),
   );
+});
+
+it("shows progress immediately and prevents duplicate snapshot refreshes", async () => {
+  let finish!: () => void;
+  vi.mocked(profilesApi.captureBundle).mockReturnValue(
+    new Promise((resolve) => {
+      finish = () => resolve({} as never);
+    }),
+  );
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ProfileManageDialog isOpen onClose={vi.fn()} />
+    </QueryClientProvider>,
+  );
+  const refresh = screen.getByRole("button", {
+    name: zh.profiles.bundle.recapture,
+  });
+  fireEvent.click(refresh);
+  expect(refresh).toHaveAttribute("aria-busy", "true");
+  expect(refresh).toBeDisabled();
+  fireEvent.click(refresh);
+  expect(profilesApi.captureBundle).toHaveBeenCalledOnce();
+  await act(async () => finish());
+  await waitFor(() => expect(refresh).toBeEnabled());
+  expect(refresh).toHaveAttribute("aria-busy", "false");
+});
+
+it("keeps a long profile name identifiable and allows cancelling deletion", async () => {
+  const name = "LongProfileName".repeat(100);
+  const data = vi.mocked(useProfilesQuery)().data!;
+  vi.mocked(useProfilesQuery).mockReturnValue({
+    data: { ...data, profiles: [{ ...data.profiles[0], name }] },
+  } as ReturnType<typeof useProfilesQuery>);
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ProfileManageDialog isOpen onClose={vi.fn()} />
+    </QueryClientProvider>,
+  );
+  expect(screen.getByTitle(name)).toBeInTheDocument();
+  fireEvent.click(screen.getByTitle("删除"));
+  expect(
+    await screen.findByRole("dialog", { name: zh.profiles.deleteConfirmTitle }),
+  ).toHaveTextContent(name);
+  fireEvent.click(screen.getByRole("button", { name: zh.common.cancel }));
+  expect(
+    screen.queryByRole("dialog", { name: zh.profiles.deleteConfirmTitle }),
+  ).toBeNull();
+});
+
+it("shows the snapshot refresh hint on hover without the native tooltip delay", async () => {
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ProfileManageDialog isOpen onClose={vi.fn()} />
+    </QueryClientProvider>,
+  );
+  const refresh = screen.getByRole("button", {
+    name: zh.profiles.bundle.recapture,
+  });
+  fireEvent.pointerMove(refresh, { pointerType: "mouse" });
+  expect(
+    await screen.findByRole("tooltip", {}, { timeout: 200 }),
+  ).toHaveTextContent(zh.profiles.bundle.recapture);
+  expect(profilesApi.captureBundle).not.toHaveBeenCalled();
 });

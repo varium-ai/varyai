@@ -129,7 +129,7 @@ export const useApplyProfileMutation = () => {
   return useMutation({
     mutationFn: ({ id, scope }: { id: string; scope: ProfileScope }) =>
       profilesApi.apply(id, scope),
-    onSuccess: async (warnings) => {
+    onSuccess: async (warnings, { scope }) => {
       await queryClient.invalidateQueries({ queryKey: ["profiles"] });
       await queryClient.invalidateQueries({
         queryKey: ["providers", "claude"],
@@ -142,16 +142,26 @@ export const useApplyProfileMutation = () => {
       await queryClient.invalidateQueries({ queryKey: ["skills"] });
       await updateTrayMenuSafely();
 
+      const restartHint = t(
+        scope === "claude"
+          ? "profiles.bundle.restartSession"
+          : "profiles.bundle.restartClient",
+        { app: t(`apps.${scope}`) },
+      );
       if (warnings.length > 0) {
         toast.warning(
           t("profiles.applyWarnings", {
             warningCount: warnings.length,
             details: warnings.join("\n"),
           }),
-          { closeButton: true, duration: 10000 },
+          { closeButton: true, duration: 10000, description: restartHint },
         );
       } else {
-        toast.success(t("profiles.applySuccess"), { closeButton: true });
+        toast.success(t("profiles.applySuccess"), {
+          closeButton: true,
+          duration: 10000,
+          description: restartHint,
+        });
       }
     },
     onError: (error: Error) => {
