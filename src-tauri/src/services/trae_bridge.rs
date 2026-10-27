@@ -45,6 +45,13 @@ fn request_socket(path: &std::path::Path, command: &Value) -> Result<Value, AppE
         .map_err(|_| unavailable())?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
     if value.get("error").is_some() {
+        if matches!(command["op"].as_str(), Some("apply" | "remove")) {
+            return Err(AppError::localized(
+                "agents.trae_model_configuration",
+                "TRAE 模型配置失败，请在 TRAE CN 中检查自定义模型设置后重试",
+                "TRAE model configuration failed. Check custom model settings in TRAE CN and retry",
+            ));
+        }
         return Err(unavailable());
     }
     value.get("result").cloned().ok_or_else(unavailable)
@@ -71,18 +78,22 @@ fn socket_paths(directory: &std::path::Path, include_legacy: bool) -> Vec<PathBu
 }
 fn request(command: &Value, all: bool) -> Result<Value, AppError> {
     let mut result = None;
+    let mut failure = unavailable();
     for path in socket_paths(
         &directory()?,
         command["op"] == "disable" || !cfg!(target_os = "macos"),
     ) {
-        if let Ok(value) = request_socket(&path, command) {
-            result = Some(value);
-            if !all {
-                break;
+        match request_socket(&path, command) {
+            Ok(value) => {
+                result = Some(value);
+                if !all {
+                    break;
+                }
             }
+            Err(error) => failure = error,
         }
     }
-    result.ok_or_else(unavailable)
+    result.ok_or(failure)
 }
 pub(crate) fn active() -> bool {
     AUDIT_TOKEN.lock().ok().is_some_and(|token| token.is_some())
@@ -367,6 +378,52 @@ pub(crate) fn apply_connected(provider: &Provider) -> Result<(), AppError> {
     )?;
     Ok(())
 }
+pub(crate) fn switch_provider(target: &Provider, previous: &[Provider]) -> Result<(), AppError> {
+    if target.category.as_deref() != Some("official") {
+        super::agent_clients::validate(&target.settings_config)?;
+        ensure_ready()?;
+    }
+    for provider in previous {
+        super::agent_clients::validate(&provider.settings_config)?;
+    }
+    replace_with(target, previous, apply_connected, remove)
+}
+fn replace_with(
+    target: &Provider,
+    previous: &[Provider],
+    mut apply: impl FnMut(&Provider) -> Result<(), AppError>,
+    mut remove: impl FnMut(&str) -> Result<(), AppError>,
+) -> Result<(), AppError> {
+    let mut withdrawn = Vec::new();
+    let operation = (|| {
+        // TRAE rejects overlapping request model IDs even under different labels.
+        for provider in previous {
+            withdrawn.push(provider);
+            remove(&provider.id)?;
+        }
+        if target.category.as_deref() != Some("official") {
+            apply(target)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = operation {
+        let mut restored = true;
+        for provider in withdrawn {
+            if apply(provider).is_err() {
+                restored = false;
+            }
+        }
+        if !restored {
+            return Err(AppError::localized(
+                "agents.trae_switch_restore",
+                "TRAE 切换失败，原模型未能完整恢复，请重新应用原供应商",
+                "TRAE switching failed and the original models could not be fully restored. Apply the original provider again",
+            ));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
 pub(crate) fn remove(id: &str) -> Result<(), AppError> {
     request(&json!({"op":"remove","id":id}), false)?;
     Ok(())
@@ -374,6 +431,121 @@ pub(crate) fn remove(id: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn direct_switch_releases_overlapping_models_before_adding_the_target() {
+        use std::{cell::RefCell, collections::HashMap};
+        let old = Provider::with_id("old".into(), "Old".into(), json!({}), None);
+        let target = Provider::with_id("target".into(), "Target".into(), json!({}), None);
+        let mut official = Provider::with_id("official".into(), "Official".into(), json!({}), None);
+        official.category = Some("official".into());
+        let models = RefCell::new(HashMap::from([
+            ("old".to_string(), vec!["shared", "extra"]),
+            ("user".to_string(), vec!["user-model"]),
+        ]));
+        let mut apply = |provider: &Provider| {
+            let mut models = models.borrow_mut();
+            if models.values().any(|names| names.contains(&"shared")) {
+                return Err(AppError::Message("synthetic duplicate model".into()));
+            }
+            models.insert(
+                provider.id.clone(),
+                if provider.id == "old" {
+                    vec!["shared", "extra"]
+                } else {
+                    vec!["shared"]
+                },
+            );
+            Ok(())
+        };
+        let mut remove = |id: &str| {
+            models.borrow_mut().remove(id);
+            Ok(())
+        };
+        replace_with(&target, std::slice::from_ref(&old), &mut apply, &mut remove).unwrap();
+        assert_eq!(models.borrow()["target"], vec!["shared"]);
+        replace_with(&old, std::slice::from_ref(&target), &mut apply, &mut remove).unwrap();
+        assert_eq!(models.borrow()["old"], vec!["shared", "extra"]);
+        replace_with(
+            &official,
+            std::slice::from_ref(&old),
+            &mut apply,
+            &mut remove,
+        )
+        .unwrap();
+        assert_eq!(models.borrow().len(), 1);
+        replace_with(&old, &[], &mut apply, &mut remove).unwrap();
+        assert_eq!(models.borrow()["user"], vec!["user-model"]);
+    }
+    #[test]
+    fn failed_direct_switch_restores_previous_models_including_partial_removals() {
+        use std::cell::RefCell;
+        let old = Provider::with_id("old".into(), "Old".into(), json!({}), None);
+        let target = Provider::with_id("target".into(), "Target".into(), json!({}), None);
+        for fail_remove in [false, true] {
+            let events = RefCell::new(Vec::new());
+            let result = replace_with(
+                &target,
+                std::slice::from_ref(&old),
+                |provider| {
+                    events.borrow_mut().push(format!("apply:{}", provider.id));
+                    if provider.id == "target" {
+                        Err(AppError::Message("synthetic add failure".into()))
+                    } else {
+                        Ok(())
+                    }
+                },
+                |id| {
+                    events.borrow_mut().push(format!("remove:{id}"));
+                    if fail_remove {
+                        Err(AppError::Message("synthetic partial removal".into()))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(result.is_err());
+            assert_eq!(
+                events.borrow().last().map(String::as_str),
+                Some("apply:old")
+            );
+            assert_eq!(events.borrow()[0], "remove:old");
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn model_operation_errors_do_not_claim_disconnection_or_echo_native_details() {
+        use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge-agent-test.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                writeln!(
+                    stream,
+                    "{}",
+                    json!({"error":"synthetic-private-native-detail"})
+                )
+                .unwrap();
+            }
+        });
+        for op in ["apply", "remove"] {
+            let error = request_socket(&path, &json!({"op":op}))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("TRAE model configuration failed"), "{error}");
+            assert!(!error.contains("synthetic-private-native-detail"));
+            assert!(!error.contains("not connected"));
+        }
+        let error = request_socket(&path, &json!({"op":"health"}))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not connected"));
+        server.join().unwrap();
+    }
     #[test]
     fn prepares_passive_connection_and_restores_original_launch_config() {
         let dir = tempfile::tempdir().unwrap();

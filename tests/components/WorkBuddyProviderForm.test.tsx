@@ -184,12 +184,43 @@ describe("WorkBuddyProviderForm", () => {
       const onSubmit = renderCustom(url);
       fireEvent.click(fetchButton());
       await screen.findByRole("button", { name: "Select model" });
-      expect(fetchModelsForConfig).toHaveBeenLastCalledWith(base, "test-key");
+      expect(fetchModelsForConfig).toHaveBeenLastCalledWith(
+        base,
+        "test-key",
+        undefined,
+        undefined,
+        undefined,
+        { apiFormat: "openai_chat" },
+      );
       expect(screen.getByLabelText("workbuddy.form.url")).toHaveValue(url);
       expect(screen.getByLabelText("workbuddy.form.modelId")).toHaveValue(
         "old-model",
       );
       expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it("uses the selected Gemini upstream for model discovery", async () => {
+      Element.prototype.scrollIntoView = vi.fn();
+      vi.mocked(fetchModelsForConfig).mockResolvedValue([
+        { id: "gemini-fixture", ownedBy: null },
+      ]);
+      renderCustom("https://models.example/v1beta");
+      fireEvent.click(screen.getByLabelText("providerForm.apiFormat"));
+      fireEvent.click(
+        await screen.findByRole("option", {
+          name: "providerForm.apiFormatGeminiNative",
+        }),
+      );
+      fireEvent.click(fetchButton());
+      await screen.findByRole("button", { name: "Select model" });
+      expect(fetchModelsForConfig).toHaveBeenLastCalledWith(
+        "https://models.example/v1beta",
+        "test-key",
+        undefined,
+        undefined,
+        undefined,
+        { apiFormat: "gemini_native" },
+      );
     });
 
     it("fills the selected model ID and clears the list when credentials change", async () => {
@@ -305,9 +336,7 @@ describe("WorkBuddyProviderForm", () => {
         }}
       />,
     );
-    expect(
-      screen.getByText("desktopModels.officialLogin"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("desktopModels.officialLogin")).toBeInTheDocument();
     expect(
       screen.queryByLabelText("workbuddy.form.modelId"),
     ).not.toBeInTheDocument();

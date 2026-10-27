@@ -1,3 +1,9 @@
+import {
+  UpstreamProtocolSelect,
+  UPSTREAM_FORMATS,
+  nativeUpstreamFormat,
+} from "./shared/UpstreamProtocolSelect";
+import type { ClaudeApiFormat } from "@/types";
 import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -10,13 +16,6 @@ import { Form } from "@/components/ui/form";
 import { ImeSafeInput } from "@/components/ui/ime-safe-input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import JsonEditor from "@/components/JsonEditor";
 import {
   providersApi,
@@ -55,6 +54,20 @@ export function WorkBuddyProviderForm({
   const text = (key: string) =>
     typeof native[key] === "string" ? (native[key] as string) : "";
   const [protocol, setProtocol] = useState(text("protocol") || "openai");
+  const [upstreamFormat, setUpstreamFormat] = useState<ClaudeApiFormat>(
+    initialData?.meta?.apiFormat ?? nativeUpstreamFormat(text("protocol")),
+  );
+  function selectUpstream(format: ClaudeApiFormat) {
+    setUpstreamFormat(format);
+    if (desktopClient === "qoder" && format !== "gemini_native")
+      setProtocol(
+        {
+          anthropic: "anthropic",
+          openai_chat: "openai",
+          openai_responses: "openai-responses",
+        }[format],
+      );
+  }
   const [modelId, setModelId] = useState(text("id"));
   const [additionalModels, setAdditionalModels] = useState<string[]>(() =>
     Array.isArray(native.models)
@@ -171,7 +184,14 @@ export function WorkBuddyProviderForm({
     setIsFetchingModels(true);
     setFetchedModels([]);
     try {
-      const models = await fetchModelsForConfig(baseUrl, apiKey.trim());
+      const models = await fetchModelsForConfig(
+        baseUrl,
+        apiKey.trim(),
+        undefined,
+        undefined,
+        undefined,
+        { apiFormat: upstreamFormat },
+      );
       if (sequence !== modelFetchSequence.current) return;
       setFetchedModels(models);
       if (models.length === 0) {
@@ -314,6 +334,7 @@ export function WorkBuddyProviderForm({
             name: modelId.trim(),
             settingsConfig: JSON.stringify(config, null, 2),
             presetCategory: "custom",
+            meta: { ...initialData?.meta, apiFormat: upstreamFormat },
           });
         } catch (error) {
           toast.error(
@@ -353,7 +374,9 @@ export function WorkBuddyProviderForm({
         name,
         settingsConfig: JSON.stringify(isOfficial ? {} : config, null, 2),
         presetCategory: isOfficial ? "official" : "custom",
-        meta: initialData?.meta,
+        meta: isOfficial
+          ? initialData?.meta
+          : { ...initialData?.meta, apiFormat: upstreamFormat },
       });
     } finally {
       setSubmitting(false);
@@ -368,26 +391,16 @@ export function WorkBuddyProviderForm({
         onSubmit={form.handleSubmit(save)}
       >
         <ConnectionPresetPicker
-          supportedFormats={
-            desktopClient === "qoder"
-              ? ["openai_chat", "openai_responses", "anthropic"]
-              : ["openai_chat"]
-          }
+          supportedFormats={UPSTREAM_FORMATS}
           disabled={isOfficial && !onAddThirdParty}
-          current={{ name: form.watch("name"), baseUrl: url, apiKey }}
+          current={{
+            name: form.watch("name"),
+            baseUrl: url,
+            apiKey,
+            apiFormat: upstreamFormat,
+          }}
           onApply={(preset) => {
-            if (
-              desktopClient === "qoder" &&
-              preset.apiFormat &&
-              preset.apiFormat !== "gemini_native"
-            )
-              setProtocol(
-                {
-                  anthropic: "anthropic",
-                  openai_chat: "openai",
-                  openai_responses: "openai-responses",
-                }[preset.apiFormat],
-              );
+            if (preset.apiFormat) selectUpstream(preset.apiFormat);
             form.setValue("name", preset.name);
             setUrl(preset.baseUrl);
             setApiKey(preset.apiKey);
@@ -423,41 +436,10 @@ export function WorkBuddyProviderForm({
             <p className="text-sm text-muted-foreground">
               {t(`${desktopClient}.form.description`)}
             </p>
-            {desktopClient === "qoder" && (
-              <div className="space-y-2">
-                <Label htmlFor="qoder-protocol">
-                  {t("qoder.form.protocol")}
-                </Label>
-                <Select value={protocol} onValueChange={setProtocol}>
-                  <SelectTrigger
-                    id="qoder-protocol"
-                    className="h-11 rounded-xl px-4 text-sm"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="rounded-xl">
-                    <SelectItem
-                      value="openai"
-                      className="min-h-11 rounded-lg pr-4"
-                    >
-                      OpenAI Chat Completions
-                    </SelectItem>
-                    <SelectItem
-                      value="openai-responses"
-                      className="min-h-11 rounded-lg pr-4"
-                    >
-                      OpenAI Responses
-                    </SelectItem>
-                    <SelectItem
-                      value="anthropic"
-                      className="min-h-11 rounded-lg pr-4"
-                    >
-                      Anthropic Messages
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
+            <UpstreamProtocolSelect
+              value={upstreamFormat}
+              onChange={selectUpstream}
+            />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <div className="flex items-center justify-between">

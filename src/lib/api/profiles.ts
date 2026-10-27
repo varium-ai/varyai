@@ -109,6 +109,7 @@ export interface ProfileUndo {
 export interface ProfilesResponse {
   profiles: Profile[];
   currentIds: CurrentProfileIds;
+  currentBundleId?: string | null;
   agents?: ProfileAgent[];
   undo?: ProfileUndo | null;
 }
@@ -162,7 +163,7 @@ export const profilesApi = {
   },
 
   /** Clear the active marker for a scope without changing client configuration. */
-  async clearCurrent(scope: AppId): Promise<void> {
+  async clearCurrent(scope: AppId | "bundle"): Promise<void> {
     return await invoke("clear_current_profile", { scope });
   },
 };

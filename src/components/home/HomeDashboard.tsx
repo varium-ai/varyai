@@ -13,7 +13,7 @@ import { useTranslation } from "react-i18next";
 import { settingsApi, type AppId } from "@/lib/api";
 import type { Provider, VisibleApps } from "@/types";
 import { isTakeoverAppId } from "@/config/appConfig";
-import { useSecurityAuditLogs } from "@/hooks/useSecurityAudit";
+import { useSecurityEventsSummary } from "@/hooks/useSecurityEvents";
 import { useSecurityProtection } from "@/hooks/useSecurityProtection";
 import { resolveUsageRange } from "@/lib/usageRange";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -141,21 +141,11 @@ function SecurityStatusRow({
   const protection = useSecurityProtection(appType);
   const { startDate } = resolveUsageRange({ preset: "today" });
   const startTimestamp = startDate * 1000;
-  const blockedLogs = useSecurityAuditLogs(
-    { appType, action: "block", startTimestamp },
-    1,
-    1,
-  );
-  const redactedLogs = useSecurityAuditLogs(
-    { appType, action: "redact", startTimestamp },
-    1,
-    1,
-  );
-  const auditedLogs = useSecurityAuditLogs(
-    { appType, action: "audit", startTimestamp },
-    1,
-    1,
-  );
+  const summary = useSecurityEventsSummary({
+    view: "security_events",
+    appType,
+    startTimestamp,
+  });
 
   const isLoading = protection.isLoading;
   const isProtected =
@@ -165,20 +155,15 @@ function SecurityStatusRow({
     if (value === undefined) return "—";
     return value.toLocaleString(i18n.language);
   };
-  const handledCount =
-    (blockedLogs.logsResult?.total ?? 0) +
-    (redactedLogs.logsResult?.total ?? 0);
-  const hasCountError =
-    blockedLogs.isError || redactedLogs.isError || auditedLogs.isError;
-  const handledDisplay = hasCountError
+  const handledCount = summary.data
+    ? summary.data.protectiveBlocked + summary.data.redacted
+    : undefined;
+  const handledDisplay = summary.isError
     ? "—"
-    : displayCount(
-        handledCount,
-        blockedLogs.isLoading || redactedLogs.isLoading,
-      );
-  const warnedDisplay = hasCountError
+    : displayCount(handledCount, summary.isLoading);
+  const warnedDisplay = summary.isError
     ? "—"
-    : displayCount(auditedLogs.logsResult?.total, auditedLogs.isLoading);
+    : displayCount(summary.data?.warnings, summary.isLoading);
   const actions = (
     <div className="flex shrink-0 flex-wrap items-center justify-end gap-4">
       {protection.waiting && (

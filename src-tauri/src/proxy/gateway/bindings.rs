@@ -27,6 +27,7 @@ pub fn supports_binding(app: &str) -> bool {
             | "pi"
             | "workbuddy"
             | "qoder"
+            | "hermes"
             | "doubaowork"
             | "trae"
             | "kimi"
@@ -226,6 +227,11 @@ fn route_agent(path: &str) -> Option<&str> {
         {
             return Some(app);
         }
+    }
+    if let Some(path) = path.strip_prefix("/upstream/") {
+        let (app, suffix) = path.split_once('/')?;
+        return (matches!(app, "hermes" | "trae") && suffix.starts_with("providers/"))
+            .then_some(app);
     }
     if path.starts_with("/v1beta/") {
         return Some("gemini");

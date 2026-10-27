@@ -799,7 +799,7 @@ pub(crate) fn build_effective_provider_for_live_with_codex_oauth_manager(
         build_effective_settings_with_common_config(db, app_type, provider)?;
     apply_codex_official_auth(app_type, &mut effective_provider, Some(codex_oauth_manager))?;
     neutralize_codex_proxy_oauth_fallback(app_type, &mut effective_provider);
-    Ok(effective_provider)
+    crate::services::upstream_protocol::project(db, app_type, &effective_provider)
 }
 
 /// Proxy-managed OAuth cards (xai_oauth, github_copilot, …) are keyless by
@@ -2420,7 +2420,7 @@ pub fn import_hermes_providers_from_live(state: &AppState) -> Result<usize, AppE
     let mut updated = 0;
     let existing_ids = state.db.get_provider_ids("hermes")?;
 
-    for (name, config) in providers {
+    for (name, mut config) in providers {
         // Validate: skip entries with empty name
         if name.trim().is_empty() {
             log::warn!("Skipping Hermes provider with empty name");
@@ -2430,6 +2430,20 @@ pub fn import_hermes_providers_from_live(state: &AppState) -> Result<usize, AppE
         if existing_ids.contains(&name) {
             match state.db.get_provider_by_id(&name, "hermes") {
                 Ok(Some(existing)) => {
+                    let projected = crate::services::upstream_protocol::project(
+                        state.db.as_ref(),
+                        &AppType::Hermes,
+                        &existing,
+                    )?;
+                    if config["base_url"] == projected.settings_config["base_url"]
+                        && projected.settings_config["base_url"]
+                            != existing.settings_config["base_url"]
+                    {
+                        config["base_url"] = existing.settings_config["base_url"].clone();
+                        if config["api_key"] == projected.settings_config["api_key"] {
+                            config["api_key"] = existing.settings_config["api_key"].clone();
+                        }
+                    }
                     if existing.settings_config != config {
                         let mut provider = existing;
                         provider.settings_config = config;

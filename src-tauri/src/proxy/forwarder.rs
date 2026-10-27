@@ -1168,7 +1168,7 @@ impl RequestForwarder {
     /// 成功时返回 `(response, claude_api_format, outbound_model)`，其中
     /// `outbound_model` 是最终发往上游的模型名（所有映射/改写之后）。
     #[allow(clippy::too_many_arguments)]
-    async fn forward(
+    pub(super) async fn forward(
         &self,
         app_type: &AppType,
         method: &http::Method,

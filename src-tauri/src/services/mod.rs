@@ -63,3 +63,5 @@ pub(crate) mod agent_clients;
 pub(crate) mod trae_bridge;
 
 pub(crate) mod doubao_work;
+
+pub(crate) mod upstream_protocol;

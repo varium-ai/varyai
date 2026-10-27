@@ -573,7 +573,7 @@ impl Database {
             let (key, action) = row.map_err(|e| AppError::Database(e.to_string()))?;
             let action = normalize_security_rule_action(&action);
             if let Some(id) = key.strip_prefix("builtin_action:") {
-                if is_builtin_security_rule_id(id) && is_valid_builtin_action(id, &action) {
+                if is_builtin_security_rule_id(id) && is_valid_builtin_action(&action) {
                     actions.insert(id.to_owned(), action);
                 }
             }
@@ -591,13 +591,10 @@ impl Database {
         }
         let action = action.map(normalize_security_rule_action);
         if let Some(action) = action.as_deref() {
-            if !is_valid_builtin_action(id, action) {
-                let message = if id == "catalog:generic-sk-key-notice" {
-                    "通用 sk- 提醒规则仅支持 audit 或 allow 动作"
-                } else {
-                    "无效的处理动作，仅支持 redact、audit、allow"
-                };
-                return Err(AppError::Database(message.to_string()));
+            if !is_valid_builtin_action(action) {
+                return Err(AppError::Database(
+                    "Invalid action; expected redact, audit or allow".into(),
+                ));
             }
         }
         let key = format!("builtin_action:{id}");
@@ -622,9 +619,8 @@ fn is_builtin_security_rule_id(id: &str) -> bool {
             .any(|rule| rule.id == id)
 }
 
-fn is_valid_builtin_action(id: &str, action: &str) -> bool {
+fn is_valid_builtin_action(action: &str) -> bool {
     matches!(action, "audit" | "redact" | "allow")
-        && (id != "catalog:generic-sk-key-notice" || matches!(action, "audit" | "allow"))
 }
 
 #[cfg(test)]

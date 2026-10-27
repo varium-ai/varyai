@@ -3825,6 +3825,44 @@ wire_api = "responses"
 
     #[test]
     #[serial]
+    fn import_hermes_projected_upstream_preserves_supplier_connection(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        with_test_home(|state, _| -> Result<(), Box<dyn std::error::Error>> {
+            let mut provider = hermes_provider("gemini-fixture");
+            provider.settings_config["models"] = json!([{"id":"fixture","name":"Fixture"}]);
+            provider.meta = Some(serde_json::from_value(
+                json!({"apiFormat":"gemini_native"}),
+            )?);
+            state.db.save_provider("hermes", &provider)?;
+            let projected = crate::services::upstream_protocol::project(
+                state.db.as_ref(),
+                &AppType::Hermes,
+                &provider,
+            )?;
+            crate::hermes_config::set_provider(&provider.id, projected.settings_config)?;
+            import_hermes_providers_from_live(state)?;
+            let saved = state
+                .db
+                .get_provider_by_id(&provider.id, "hermes")?
+                .ok_or("missing fixture")?;
+            assert_eq!(
+                saved.settings_config["base_url"],
+                provider.settings_config["base_url"]
+            );
+            assert_eq!(
+                saved.settings_config["api_key"],
+                provider.settings_config["api_key"]
+            );
+            assert_eq!(
+                saved.meta.and_then(|m| m.api_format).as_deref(),
+                Some("gemini_native")
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[serial]
     fn import_hermes_providers_from_live_updates_existing_provider_from_live() {
         with_test_home(|state, _| {
             let provider = hermes_provider("existing-hermes");

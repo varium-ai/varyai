@@ -370,14 +370,6 @@ export function SecurityCenterPage({
                       configuredAction === "block"
                         ? "redact"
                         : configuredAction;
-                    const availableActionOptions =
-                      rule.id === "catalog:generic-sk-key-notice"
-                        ? defaultActionOptions.filter(
-                            (option) =>
-                              option.value === "audit" ||
-                              option.value === "allow",
-                          )
-                        : defaultActionOptions;
                     return (
                       <div
                         key={rule.id}
@@ -391,13 +383,16 @@ export function SecurityCenterPage({
                           <div className="truncate text-base font-extrabold tracking-tight text-foreground">
                             {getRuleName(rule.id, rule.name)}
                           </div>
-                          <p className="truncate text-xs text-muted-foreground">
+                          <p
+                            className="break-words text-xs text-muted-foreground"
+                            title={getRuleDescription(rule)}
+                          >
                             {getRuleDescription(rule)}
                           </p>
                         </div>
 
                         <div className="flex shrink-0 items-center gap-2.5">
-                          {availableActionOptions.map((option) => {
+                          {defaultActionOptions.map((option) => {
                             const selected = effectiveAction === option.value;
                             const selectedClass =
                               option.value === "audit"

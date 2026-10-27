@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import type { AppId } from "@/lib/api/types";
 import {
   Tooltip,
   TooltipContent,
@@ -30,6 +31,7 @@ import {
 interface ProfileManageDialogProps {
   isOpen: boolean;
   onClose: () => void;
+  selectedApps: AppId[];
 }
 
 type PendingConfirm = {
@@ -46,6 +48,7 @@ type PendingConfirm = {
 export function ProfileManageDialog({
   isOpen,
   onClose,
+  selectedApps,
 }: ProfileManageDialogProps) {
   const { t } = useTranslation();
   const { data } = useProfilesQuery();
@@ -61,11 +64,14 @@ export function ProfileManageDialog({
     if (!profile.payload.bundle || refreshingId) return;
     setRefreshingId(profile.id);
     try {
-      await profilesApi.captureBundle(
-        profile.name,
-        profile.payload.bundle.selections.map((s) => s.app),
-        profile.id,
-      );
+      const latest = await profilesApi.list();
+      const apps =
+        latest.agents
+          ?.filter(
+            (agent) => selectedApps.includes(agent.app) && agent.available,
+          )
+          .map((agent) => agent.app) ?? [];
+      await profilesApi.captureBundle(profile.name, apps, profile.id);
       toast.success(t("profiles.updateSuccess"));
       await queryClient.invalidateQueries({ queryKey: ["profiles"] });
     } catch {
@@ -76,6 +82,10 @@ export function ProfileManageDialog({
   };
 
   const profiles = data?.profiles ?? [];
+  const duplicateName = profiles.some(
+    (profile) =>
+      profile.id !== editingId && profile.name.trim() === editingName.trim(),
+  );
 
   const startRename = (id: string, name: string) => {
     setEditingId(id);
@@ -89,7 +99,8 @@ export function ProfileManageDialog({
 
   const saveRename = () => {
     const name = editingName.trim();
-    if (!name || !editingId) return;
+    if (!name || !editingId || duplicateName || updateMutation.isPending)
+      return;
     updateMutation.mutate({ id: editingId, name }, { onSuccess: cancelRename });
   };
 
@@ -147,7 +158,11 @@ export function ProfileManageDialog({
                       className="h-7 w-7 shrink-0"
                       title={t("common.confirm")}
                       onClick={saveRename}
-                      disabled={!editingName.trim() || updateMutation.isPending}
+                      disabled={
+                        !editingName.trim() ||
+                        duplicateName ||
+                        updateMutation.isPending
+                      }
                     >
                       <Check className="h-3.5 w-3.5" />
                     </Button>
@@ -220,6 +235,11 @@ export function ProfileManageDialog({
                 )}
               </div>
             ))}
+            {editingId && duplicateName && (
+              <p role="alert" className="text-sm text-destructive">
+                {t("profiles.nameExists")}
+              </p>
+            )}
           </div>
           <DialogFooter>
             <Button

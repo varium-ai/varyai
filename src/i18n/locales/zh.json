@@ -26,7 +26,8 @@
     "deleteConfirmTitle": "确认删除预设",
     "deleteConfirmMessage": "确定要删除连接预设“{{name}}”吗？不会改动已使用该预设配置的供应商。",
     "deleteSuccess": "预设已删除",
-    "deleteFailed": "删除预设失败，请重试。"
+    "deleteFailed": "删除预设失败，请重试。",
+    "newDraft": "已新建空白预设，请填写信息后点击保存。"
   },
   "providerDetection": {
     "title": "检测配置",
@@ -1238,6 +1239,12 @@
     "manualInstallCommands": "手动安装命令",
     "oneClickInstallHint": "安装或升级 Claude Code / Codex / Gemini CLI / OpenCode / OpenClaw / Hermes / Pi",
     "localEnvCheck": "本地环境检查",
+    "agentInstallationStatus": "安装状态",
+    "agentInstalled": "已安装",
+    "agentDetectionUnsupported": "当前系统暂不支持检测",
+    "agentDetectionFailed": "检测失败，请刷新重试",
+    "agentRetryDetection": "请刷新以重新检测",
+    "agentManualManagement": "请通过客户端或官方安装程序安装和更新。",
     "updateAllTools": "全部升级（{{count}}）",
     "currentVersion": "当前版本",
     "latestVersion": "最新版本",
@@ -1704,7 +1711,7 @@
     "visitWebsite": "访问 {{url}}",
     "anthropicModel": "主模型",
     "anthropicSmallFastModel": "快速模型",
-    "apiFormat": "上游格式",
+    "apiFormat": "上游协议",
     "apiFormatHint": "供应商原生为 Anthropic Messages API 就选 Anthropic Messages（直连，不转换格式）；使用 Chat Completions 协议就选 Chat；使用 Responses API 就选 Responses；使用 Gemini generateContent 协议就选 Gemini Native。Chat、Responses 与 Gemini Native 均需开启路由接管才能转换为 Anthropic Messages。",
     "customUserAgent": "自定义 User-Agent",
     "customUserAgentHint": "仅在开启本地路由/代理接管后生效，会替换转发到供应商 API 请求中的 User-Agent。",
@@ -1784,7 +1791,8 @@
     "fetchModelsNotSupported": "该供应商不支持获取模型列表",
     "fetchModelsEndpointNotFound": "未找到可用的模型列表端点，请检查 Base URL 或确认供应商是否开放该接口",
     "fetchModelsTimeout": "请求超时，请检查网络连接",
-    "requiredFields": "请填写供应商名称、API 地址、API Key 和模型"
+    "requiredFields": "请填写供应商名称、API 地址、API Key 和模型",
+    "clientProtocol": "客户端协议"
   },
   "copilot": {
     "authSection": "GitHub Copilot 认证",
@@ -1954,7 +1962,7 @@
     "saveFailed": "保存失败: {{error}}",
     "modelNameHint": "指定使用的模型，将自动更新到 config.toml 中",
     "modelName": "模型名称",
-    "upstreamFormatLabel": "上游格式",
+    "upstreamFormatLabel": "上游协议",
     "upstreamFormatHint": "供应商原生为 Responses API 就选 Responses（直连，不转换格式）；使用 Chat Completions 协议就选 Chat；供应商只提供原生 Anthropic Messages 协议就选 Anthropic Messages。Chat 与 Anthropic Messages 均需开启路由接管才能转换为 Responses。",
     "upstreamFormatChat": "Chat Completions（需开启路由）",
     "upstreamFormatResponses": "Responses（原生）",
@@ -2038,7 +2046,7 @@
     "configReplaceFailed": "配置替换失败: {{error}}"
   },
   "opencode": {
-    "npmPackage": "接口格式",
+    "npmPackage": "上游协议",
     "selectPackage": "选择接口格式",
     "npmPackageHint": "选择 AI 服务的 API 接口格式",
     "baseUrl": "Base URL",
@@ -2668,7 +2676,8 @@
   "profiles": {
     "bundle": {
       "create": "多 Agent 配置方案（Profile）",
-      "chooseAgents": "选择至少两个 Agent",
+      "chooseAgents": "选择要保存的 Agent",
+      "captureCurrentHint": "保存当前 {{app}} 的供应商、模型配置及支持的资源。勾选“多 Agent 配置方案”后，默认包含主界面当前选中的 Agent。",
       "captureHint": "保存所选 Agent 的供应商、模型配置与列表，以及各工具支持的 MCP、Skills 和指令。账号凭据不复制到方案。",
       "previewTitle": "预览方案：{{name}}",
       "previewDescription": "核对以下工具的供应商和模型变更；若工具已运行，请按各项提示重启后使用。",
@@ -2686,7 +2695,7 @@
       "apply": "应用方案",
       "recapture": "用当前配置更新快照",
       "previewRequired": "请先预览方案再应用。",
-      "selectAgents": "请至少选择两个受支持的 Agent。",
+      "selectAgents": "请至少选择一个受支持的 Agent。",
       "nameRequired": "请输入方案名称。",
       "noProvider": "供应商不存在或尚未选择，请先配置供应商。",
       "invalidConfig": "模型或方案配置无效，请重新保存快照。",
@@ -2698,7 +2707,7 @@
       "undoExpired": "恢复记录已失效。仅保留本次运行中最近一次切换。",
       "operationFailed": "操作失败，请检查配置并重试。",
       "unsupportedAgent": "此 Agent 暂不支持跨 Agent 方案。",
-      "switcherHint": "保存并切换多个 Agent 的配置方案",
+      "switcherHint": "保存并切换 Agent 配置方案",
       "modelsLabel": "模型配置与列表",
       "noEnabledProviders": "未启用供应商",
       "providersLabel": "启用的供应商",
@@ -2735,7 +2744,7 @@
     },
     "manage": "管理配置方案…",
     "manageTitle": "管理配置方案",
-    "manageDescription": "多 Agent 方案不会自动保存。先调整各工具的配置，再点“用当前配置更新快照”更新该方案；覆盖的工具保持不变。旧的单工具配置方案保留切换时自动保存的行为。",
+    "manageDescription": "新建方案不会自动保存。点击“用当前配置更新快照”，会用当前选中管理且已配置的全部 Agent 及其当前配置整体替换该方案。旧的单工具配置方案保留切换时自动保存的行为。",
     "namePlaceholder": "例如：工作、个人",
     "rename": "重命名",
     "noSnapshotForScope": "本侧未保存",
@@ -2751,7 +2760,12 @@
     "applySuccess": "配置方案已应用",
     "applyFailed": "应用配置方案失败: {{detail}}",
     "applyWarnings": "配置方案已应用，{{warningCount}} 条警告：\n{{details}}",
-    "clearSuccess": "已切换为不使用配置方案"
+    "clearSuccess": "已切换为不使用配置方案",
+    "nameExists": "配置方案名称已存在，请使用其他名称。",
+    "legacyDescription": "查看此客户端已保存的供应商、MCP、Skills 和提示词引用。单客户端方案会在切换时自动保存，模型使用该供应商当前的配置。",
+    "legacyProvider": "供应商",
+    "noneSelected": "未选择",
+    "unchanged": "保持不变（未保存）"
   },
   "workspace": {
     "title": "Workspace 文件管理",
@@ -2803,8 +2817,8 @@
     "providerKeyRequired": "请填写供应商标识",
     "providerKeyDuplicate": "此标识已被使用，请更换",
     "providerKeyInvalid": "标识格式无效，只能使用小写字母、数字和连字符",
-    "apiProtocol": "API 协议",
-    "selectProtocol": "选择 API 协议",
+    "apiProtocol": "上游协议",
+    "selectProtocol": "选择上游协议",
     "apiProtocolHint": "选择与供应商 API 兼容的协议类型。大多数供应商使用 OpenAI Completions 格式。",
     "baseUrl": "API 端点",
     "baseUrlHint": "供应商的 API 端点地址。",
@@ -2909,7 +2923,7 @@
       "providerKeyInvalid": "供应商标识只能包含小写字母、数字和连字符",
       "providerKeyDuplicate": "该供应商标识已存在",
       "apiMode": "API 模式",
-      "apiModeHint": "供应商 API 协议。请根据端点选择正确的协议。",
+      "apiModeHint": "Hermes 客户端发出请求使用的协议。与上游协议不同时，由 Vary AI 本地路由转换。",
       "apiModeChatCompletions": "OpenAI Chat Completions",
       "apiModeAnthropicMessages": "Anthropic Messages",
       "apiModeCodexResponses": "OpenAI Responses",
@@ -4307,7 +4321,7 @@
       "required": "请填写配置名称、模型 ID 和 API Key。",
       "invalidUrl": "请输入有效的 HTTP 或 HTTPS 接口地址。",
       "invalidTokens": "Token 上限必须是正整数。",
-      "protocol": "API 协议"
+      "protocol": "上游协议"
     },
     "certificate": {
       "authTitle": "Qoder 证书操作需要系统认证",
@@ -4349,7 +4363,7 @@
     "description": "保存供应商后，点击“改用这个”并重启 {{app}}，在客户端选择需要的模型。官方登录由客户端保留。",
     "baseUrl": "Base URL",
     "apiKey": "API Key",
-    "protocol": "API 协议",
+    "protocol": "上游协议",
     "models": "模型 ID",
     "modelsHint": "每行填写一个实际可用的模型 ID",
     "fetchModels": "获取模型列表",

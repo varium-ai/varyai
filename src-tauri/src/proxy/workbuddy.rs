@@ -23,7 +23,7 @@ pub(crate) async fn handle(
     .await
     .map_err(|_| ProxyError::ConfigError("Cannot load WorkBuddy configuration".into()))?
     .map_err(|_| ProxyError::ConfigError("Cannot load WorkBuddy configuration".into()))?;
-    forward_to_provider(upstream, provider, request).await
+    forward_to_provider(Some(state), upstream, provider, request).await
 }
 
 pub(crate) async fn handle_custom(
@@ -39,15 +39,16 @@ pub(crate) async fn handle_custom(
         .map_err(|_| ProxyError::ConfigError("Cannot load WorkBuddy configuration".into()))?
         .filter(|p| p.category.as_deref() != Some("official"))
         .ok_or_else(|| ProxyError::ConfigError("WorkBuddy API configuration is missing".into()))?;
-    forward_to_provider(upstream, Some(provider), request).await
+    forward_to_provider(Some(state), upstream, Some(provider), request).await
 }
 
 #[cfg(test)]
 async fn forward(upstream: Option<String>, request: Request) -> Result<Response, ProxyError> {
-    forward_to_provider(upstream, None, request).await
+    forward_to_provider(None, upstream, None, request).await
 }
 
 async fn forward_to_provider(
+    state: Option<ProxyState>,
     upstream: Option<String>,
     provider: Option<crate::provider::Provider>,
     request: Request,
@@ -105,6 +106,23 @@ async fn forward_to_provider(
         }
         headers.insert(header::AUTHORIZATION, auth);
         parts.headers = headers;
+        if super::native_protocol::needs_conversion(&provider, &parts.uri)? {
+            let state = state
+                .as_ref()
+                .ok_or_else(|| ProxyError::ConfigError("WorkBuddy route unavailable".into()))?;
+            let mut provider = provider.clone();
+            provider.settings_config["baseUrl"] = serde_json::Value::String(target.clone());
+            provider.settings_config["apiKey"] = config["apiKey"].clone();
+            return super::native_protocol::forward(
+                state,
+                crate::app_config::AppType::WorkBuddy,
+                &provider,
+                parts,
+                payload,
+                None,
+            )
+            .await;
+        }
     }
     let body = serde_json::to_vec(&payload)
         .map_err(|_| ProxyError::InvalidRequest("Cannot encode WorkBuddy request".into()))?;
@@ -426,6 +444,7 @@ mod tests {
             let request = Request::builder().method("POST").uri("/workbuddy/v1/chat/completions").header("cookie", "synthetic-official-session")
                 .body(Body::from(json!({"model":requested,"messages":[{"role":"user","content":"hello"}],"unknown":{"keep":true}}).to_string())).expect("request");
             let response = forward_to_provider(
+                None,
                 Some("https://official.example/v2".into()),
                 Some(provider.clone()),
                 request,
@@ -518,6 +537,7 @@ mod tests {
             )
         };
         let response = forward_to_provider(
+            None,
             Some("https://official.example/v2".into()),
             Some(provider("redirect")),
             req(),
@@ -533,6 +553,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         for path in ["cross", "loop"] {
             let error = forward_to_provider(
+                None,
                 Some("https://official.example/v2".into()),
                 Some(provider(path)),
                 req(),
@@ -591,10 +612,14 @@ mod tests {
             "x-codebuddy-token",
             "synthetic-native-token".parse().expect("token"),
         );
-        let response =
-            forward_to_provider(Some("http://127.0.0.1:1/v2".into()), Some(provider), req)
-                .await
-                .expect("custom upstream");
+        let response = forward_to_provider(
+            None,
+            Some("http://127.0.0.1:1/v2".into()),
+            Some(provider),
+            req,
+        )
+        .await
+        .expect("custom upstream");
         assert_eq!(response.status(), 200);
         assert_eq!(
             to_bytes(response.into_body(), 1024).await.expect("stream"),

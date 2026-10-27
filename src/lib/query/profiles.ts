@@ -44,7 +44,10 @@ export const useCreateProfileMutation = () => {
       toast.success(t("profiles.createSuccess"), { closeButton: true });
     },
     onError: (error: Error) => {
-      const detail = extractErrorMessage(error) || t("common.unknown");
+      const message = extractErrorMessage(error);
+      const detail = message?.includes("profiles.nameExists")
+        ? t("profiles.nameExists")
+        : message || t("common.unknown");
       toast.error(t("profiles.createFailed", { detail }), {
         closeButton: true,
       });
@@ -74,7 +77,10 @@ export const useUpdateProfileMutation = () => {
       toast.success(t("profiles.updateSuccess"), { closeButton: true });
     },
     onError: (error: Error) => {
-      const detail = extractErrorMessage(error) || t("common.unknown");
+      const message = extractErrorMessage(error);
+      const detail = message?.includes("profiles.nameExists")
+        ? t("profiles.nameExists")
+        : message || t("common.unknown");
       toast.error(t("profiles.updateFailed", { detail }), {
         closeButton: true,
       });
@@ -107,7 +113,7 @@ export const useClearProfileMutation = () => {
   const { t } = useTranslation();
 
   return useMutation({
-    mutationFn: (scope: AppId) => profilesApi.clearCurrent(scope),
+    mutationFn: (scope: AppId | "bundle") => profilesApi.clearCurrent(scope),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["profiles"] });
       await updateTrayMenuSafely();

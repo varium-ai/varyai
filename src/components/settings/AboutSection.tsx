@@ -24,7 +24,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { getVersion } from "@tauri-apps/api/app";
-import { settingsApi } from "@/lib/api";
+import { proxyApi, settingsApi } from "@/lib/api";
 import type {
   ToolInstallation,
   ToolInstallationReport,
@@ -32,11 +32,11 @@ import type {
 import { Badge } from "@/components/ui/badge";
 import { motion } from "framer-motion";
 import appIcon from "@/assets/icons/app-icon.png";
-import { APP_ICON_MAP } from "@/config/appConfig";
+import { APP_ICON_MAP, APP_IDS } from "@/config/appConfig";
 import { APP_DISPLAY_NAME, OFFICIAL_WEBSITE_URL } from "@/config/brand";
 import type { AppId } from "@/lib/api/types";
 import { extractErrorMessage } from "@/utils/errorUtils";
-import { isWindows } from "@/lib/platform";
+import { isMac, isWindows } from "@/lib/platform";
 import { isUpdateAvailable } from "@/lib/version";
 import { ToolUpgradeConfirmDialog } from "./ToolUpgradeConfirmDialog";
 import { ToolInstallRow } from "./ToolInstallRow";
@@ -191,6 +191,20 @@ const TOOL_APP_IDS: Record<ToolName, AppId> = {
   pi: "pi",
 };
 
+const OTHER_AGENT_IDS = APP_IDS.filter(
+  (app) => !Object.values(TOOL_APP_IDS).includes(app),
+);
+const CLI_INSTALLATION_CHECKS = ["workbuddy", "kimi", "qwen"];
+const MAC_DESKTOP_INSTALLATION_CHECKS = [
+  "claude-desktop",
+  "workbuddy",
+  "qoder",
+  "doubaowork",
+  "trae",
+  "kimi",
+  "zcode",
+];
+
 // 工具版本探测代价高：每个工具一次 `--version` 子进程 + 一次 npm/github/pypi 网络请求。
 // 设置页用 Radix Tabs，非激活 Tab 会被卸载——每次切回「关于」都重挂 AboutSection，若都
 // 全量重查纯属浪费。用「模块级」缓存（生命周期 = JS 模块 = 应用会话，不随组件卸载销毁）
@@ -262,6 +276,11 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     Record<string, WslShellPreference>
   >({});
   const [loadingTools, setLoadingTools] = useState<Record<string, boolean>>({});
+  const [agentInstallations, setAgentInstallations] = useState<Record<
+    string,
+    boolean
+  > | null>(null);
+  const [isLoadingAgents, setIsLoadingAgents] = useState(true);
   // 多处安装冲突诊断结果：按工具存储，有冲突的工具会在其卡片下方展示。
   // 来源两路：顶部「诊断安装冲突」按钮一次性扫全部，或升级后版本未变时自动补诊。
   const [toolDiagnostics, setToolDiagnostics] = useState<
@@ -301,6 +320,17 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     [toolVersionByName],
   );
 
+  const refreshAgentInstallations = useCallback(async () => {
+    setIsLoadingAgents(true);
+    try {
+      setAgentInstallations(await proxyApi.getAgentInstallations());
+    } catch {
+      setAgentInstallations(null);
+    } finally {
+      setIsLoadingAgents(false);
+    }
+  }, []);
+
   const refreshToolVersions = useCallback(
     async (
       toolNames: ToolName[],
@@ -321,19 +351,42 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           wslOverrides,
         );
 
-        setToolVersions((prev) => mergeToolVersions(prev, updated));
+        setToolVersions((prev) =>
+          mergeToolVersions(
+            prev.filter(
+              (tool) => !toolNames.some((name) => name === tool.name),
+            ),
+            updated,
+          ),
+        );
         // 同步进模块缓存，供切 Tab 重挂时复用。时间戳沿用上次「全量加载」的（单工具
         // 刷新不算全量、不重置 TTL）；缓存为空时以 at=0 起步——0 是「尚未完成全量加载」
         // 的过期哨兵，确保探测中途切走/切回时，残缺缓存被判过期而触发重查，而非把半套
         // 数据当成完整结果复用。真实时间戳只由 loadAllToolVersions 的 finally 盖上。
         toolVersionsCache = {
-          data: mergeToolVersions(toolVersionsCache?.data ?? [], updated),
+          data: mergeToolVersions(
+            (toolVersionsCache?.data ?? []).filter(
+              (tool) => !toolNames.some((name) => name === tool.name),
+            ),
+            updated,
+          ),
           at: toolVersionsCache?.at ?? 0,
         };
 
         // 返回刷新结果，调用方可据此判断版本是否真的探到（避免读 state 撞 stale closure）。
         return updated;
       } catch (error) {
+        setToolVersions((prev) =>
+          prev.filter((tool) => !toolNames.some((name) => name === tool.name)),
+        );
+        if (toolVersionsCache) {
+          toolVersionsCache = {
+            ...toolVersionsCache,
+            data: toolVersionsCache.data.filter(
+              (tool) => !toolNames.some((name) => name === tool.name),
+            ),
+          };
+        }
         console.error("[AboutSection] Failed to refresh tools", error);
         return [];
       } finally {
@@ -350,6 +403,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   const loadAllToolVersions = useCallback(
     async (options?: { force?: boolean }) => {
       const force = options?.force ?? false;
+      void refreshAgentInstallations();
       // 命中新鲜缓存：切回「关于」Tab 触发的重挂直接复用上次结果，跳过 6 个 `--version`
       // 子进程 + 6 个 latest 版本网络请求。手动「刷新」传 force 绕过缓存强制重查。
       if (
@@ -381,7 +435,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         setIsLoadingTools(false);
       }
     },
-    [wslShellByTool, refreshToolVersions],
+    [wslShellByTool, refreshToolVersions, refreshAgentInstallations],
   );
 
   const handleToolShellChange = async (toolName: ToolName, value: string) => {
@@ -882,14 +936,18 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               variant="outline"
               className="h-7 gap-1.5 text-xs"
               onClick={() => loadAllToolVersions({ force: true })}
-              disabled={isLoadingTools || isAnyBusy}
+              disabled={isLoadingTools || isLoadingAgents || isAnyBusy}
             >
               <RefreshCw
                 className={
-                  isLoadingTools ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"
+                  isLoadingTools || isLoadingAgents
+                    ? "h-3.5 w-3.5 animate-spin"
+                    : "h-3.5 w-3.5"
                 }
               />
-              {isLoadingTools ? t("common.refreshing") : t("common.refresh")}
+              {isLoadingTools || isLoadingAgents
+                ? t("common.refreshing")
+                : t("common.refresh")}
             </Button>
             <Button
               size="sm"
@@ -935,9 +993,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             // 已安装却跑不起来（如 Node 版本不达标）：用它区分卡片文案与按钮，避免把
             // "装了跑不起来"误判成"未安装"而给出无用的安装按钮（重装同一版本解决不了）。
             const installedButBroken = Boolean(tool?.installed_but_broken);
-            // loading 和 broken 都没有可执行动作；其余按是否已装/是否过期选择。
+            const checkFailed = !isToolVersionLoading && !tool;
+            // Loading, failed checks and broken installations have no lifecycle action.
             const action: ToolLifecycleAction | null =
-              isToolVersionLoading || installedButBroken
+              isToolVersionLoading || installedButBroken || checkFailed
                 ? null
                 : !tool?.version
                   ? "install"
@@ -949,7 +1008,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             const conflicts = toolDiagnostics[toolName];
 
             return (
-              <motion.div
+              <motion.article
                 key={toolName}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -1001,11 +1060,13 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                     >
                       {isToolVersionLoading
                         ? t("common.loading")
-                        : tool?.version
-                          ? tool.version
-                          : installedButBroken
-                            ? t("settings.installedNotRunnable")
-                            : t("common.notInstalled")}
+                        : checkFailed
+                          ? t("settings.agentDetectionFailed")
+                          : tool?.version
+                            ? tool.version
+                            : installedButBroken
+                              ? t("settings.installedNotRunnable")
+                              : t("common.notInstalled")}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
@@ -1090,6 +1151,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                     <span className="text-xs text-muted-foreground">
                       {t("common.loading")}
                     </span>
+                  ) : checkFailed ? (
+                    <span className="text-xs text-muted-foreground">
+                      {t("settings.agentRetryDetection")}
+                    </span>
                   ) : installedButBroken ? (
                     // 已安装但跑不起来：重装无济于事，不给按钮，给一句指向环境的提示。
                     <span className="text-xs text-yellow-600 dark:text-yellow-400">
@@ -1124,7 +1189,47 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                     </span>
                   )}
                 </div>
-              </motion.div>
+              </motion.article>
+            );
+          })}
+          {OTHER_AGENT_IDS.map((appId) => {
+            const app = APP_ICON_MAP[appId];
+            const canDetect =
+              CLI_INSTALLATION_CHECKS.includes(appId) ||
+              (isMac() && MAC_DESKTOP_INSTALLATION_CHECKS.includes(appId));
+            const installed = agentInstallations?.[appId];
+            const status = !canDetect
+              ? t("settings.agentDetectionUnsupported")
+              : isLoadingAgents
+                ? t("common.loading")
+                : installed === true
+                  ? t("settings.agentInstalled")
+                  : installed === false
+                    ? t("common.notInstalled")
+                    : t("settings.agentDetectionFailed");
+            return (
+              <article
+                key={appId}
+                className="flex min-h-[150px] flex-col gap-3 rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-4 shadow-sm"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-background/80 text-muted-foreground">
+                    {app.icon}
+                  </span>
+                  <span className="text-sm font-medium">{app.label}</span>
+                </div>
+                <div className="flex items-start justify-between gap-3 text-xs">
+                  <span className="shrink-0 text-muted-foreground">
+                    {t("settings.agentInstallationStatus")}
+                  </span>
+                  <span role="status" className="text-right">
+                    {status}
+                  </span>
+                </div>
+                <p className="mt-auto text-xs text-muted-foreground">
+                  {t("settings.agentManualManagement")}
+                </p>
+              </article>
             );
           })}
         </div>

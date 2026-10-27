@@ -26,7 +26,8 @@
     "deleteConfirmTitle": "Delete preset",
     "deleteConfirmMessage": "Delete the connection preset \"{{name}}\"? Providers already configured with it will stay unchanged.",
     "deleteSuccess": "Preset deleted",
-    "deleteFailed": "Could not delete the preset. Please retry."
+    "deleteFailed": "Could not delete the preset. Please retry.",
+    "newDraft": "New preset draft ready. Enter its details and click Save."
   },
   "providerDetection": {
     "title": "Detect configuration",
@@ -1238,6 +1239,12 @@
     "manualInstallCommands": "Manual Install Commands",
     "oneClickInstallHint": "Install or upgrade Claude Code / Codex / Gemini CLI / OpenCode / OpenClaw / Hermes / Pi",
     "localEnvCheck": "Local environment check",
+    "agentInstallationStatus": "Installation status",
+    "agentInstalled": "Installed",
+    "agentDetectionUnsupported": "Detection is not supported on this system",
+    "agentDetectionFailed": "Detection failed. Refresh to retry.",
+    "agentRetryDetection": "Refresh to retry detection",
+    "agentManualManagement": "Manage installation and updates through the client or its official installer.",
     "updateAllTools": "Update All ({{count}})",
     "currentVersion": "Current Version",
     "latestVersion": "Latest Version",
@@ -1704,7 +1711,7 @@
     "visitWebsite": "Visit {{url}}",
     "anthropicModel": "Main Model",
     "anthropicSmallFastModel": "Fast Model",
-    "apiFormat": "Upstream Format",
+    "apiFormat": "Upstream protocol",
     "apiFormatHint": "Pick Anthropic Messages when your provider is natively an Anthropic Messages API (direct, no format conversion); pick Chat when it uses Chat Completions; pick Responses when it uses the Responses API; pick Gemini Native when it uses Gemini generateContent. Chat, Responses, and Gemini Native require routing takeover to convert to Anthropic Messages.",
     "customUserAgent": "Custom User-Agent",
     "customUserAgentHint": "Only takes effect when local routing/proxy takeover is enabled; replaces the User-Agent in requests forwarded to the provider API.",
@@ -1784,7 +1791,8 @@
     "fetchModelsNotSupported": "This provider does not support fetching model list",
     "fetchModelsEndpointNotFound": "No reachable models endpoint found. Please check the Base URL or confirm whether the provider exposes this API.",
     "fetchModelsTimeout": "Request timed out, please check network connection",
-    "requiredFields": "Please fill in provider name, API endpoint, API Key and model"
+    "requiredFields": "Please fill in provider name, API endpoint, API Key and model",
+    "clientProtocol": "Client protocol"
   },
   "copilot": {
     "authSection": "GitHub Copilot Authentication",
@@ -1954,7 +1962,7 @@
     "saveFailed": "Save failed: {{error}}",
     "modelNameHint": "Specify the model to use, will be auto-updated in config.toml",
     "modelName": "Model Name",
-    "upstreamFormatLabel": "Upstream Format",
+    "upstreamFormatLabel": "Upstream protocol",
     "upstreamFormatHint": "Pick Responses when your provider is natively a Responses API (direct, no format conversion); pick Chat when it uses the Chat Completions protocol; pick Anthropic Messages when it only offers the native Anthropic Messages protocol. Chat and Anthropic Messages both require routing takeover to convert to Responses.",
     "upstreamFormatChat": "Chat Completions (routing required)",
     "upstreamFormatResponses": "Responses (native)",
@@ -2038,7 +2046,7 @@
     "configReplaceFailed": "Config replace failed: {{error}}"
   },
   "opencode": {
-    "npmPackage": "API Format",
+    "npmPackage": "Upstream protocol",
     "selectPackage": "Select API format",
     "npmPackageHint": "Select the API format for the AI service",
     "baseUrl": "Base URL",
@@ -2668,7 +2676,8 @@
   "profiles": {
     "bundle": {
       "create": "Multi-agent profile",
-      "chooseAgents": "Select at least two agents",
+      "chooseAgents": "Select agents to save",
+      "captureCurrentHint": "Save the current {{app}} provider, model settings and supported resources. Enable Multi-agent profile to include the agents currently selected in the main window.",
       "captureHint": "Save providers, model settings and lists, plus MCP, Skills and instructions supported by each selected agent. Account credentials are not copied into profiles.",
       "previewTitle": "Preview scheme: {{name}}",
       "previewDescription": "Review the provider and model changes below. For tools already running, follow each restart instruction before use.",
@@ -2686,7 +2695,7 @@
       "apply": "Apply scheme",
       "recapture": "Refresh snapshot from current configuration",
       "previewRequired": "Preview the scheme before applying.",
-      "selectAgents": "Select at least two supported agents.",
+      "selectAgents": "Select at least one supported agent.",
       "nameRequired": "Enter a scheme name.",
       "noProvider": "A provider is missing or not selected. Configure providers first.",
       "invalidConfig": "Invalid model or scheme configuration. Capture a new snapshot.",
@@ -2735,7 +2744,7 @@
     },
     "manage": "Manage profiles…",
     "manageTitle": "Manage Profiles",
-    "manageDescription": "Multi-agent profiles do not save automatically. Adjust each tool, then use “Refresh snapshot from current configuration” to update the profile; its tools stay the same. Legacy single-tool profiles still save automatically when switching.",
+    "manageDescription": "New profiles do not save automatically. “Refresh snapshot from current configuration” replaces the profile with all currently selected, configured agents and their current configuration. Legacy single-tool profiles still save automatically when switching.",
     "namePlaceholder": "e.g. Work, Personal",
     "rename": "Rename",
     "noSnapshotForScope": "Not saved for this app yet",
@@ -2751,7 +2760,12 @@
     "applySuccess": "Profile applied",
     "applyFailed": "Failed to apply profile: {{detail}}",
     "applyWarnings": "Profile applied with {{warningCount}} warning(s):\n{{details}}",
-    "clearSuccess": "Switched to no profile"
+    "clearSuccess": "Switched to no profile",
+    "nameExists": "A profile with this name already exists. Choose another name.",
+    "legacyDescription": "Review the saved provider, MCP, Skills and prompt references for this client. Single-client profiles save automatically when switching; they use the provider’s current model settings.",
+    "legacyProvider": "Provider",
+    "noneSelected": "None selected",
+    "unchanged": "Unchanged (not saved)"
   },
   "workspace": {
     "title": "Workspace Files",
@@ -2803,8 +2817,8 @@
     "providerKeyRequired": "Provider key is required",
     "providerKeyDuplicate": "This key is already in use",
     "providerKeyInvalid": "Invalid format. Use lowercase letters, numbers, and hyphens only.",
-    "apiProtocol": "API Protocol",
-    "selectProtocol": "Select API Protocol",
+    "apiProtocol": "Upstream protocol",
+    "selectProtocol": "Select upstream protocol",
     "apiProtocolHint": "Select the protocol type compatible with the provider's API. Most providers use OpenAI Completions format.",
     "baseUrl": "API Endpoint",
     "baseUrlHint": "The provider's API endpoint address.",
@@ -2909,7 +2923,7 @@
       "providerKeyInvalid": "Provider key can only contain lowercase letters, numbers, and hyphens",
       "providerKeyDuplicate": "This provider key already exists",
       "apiMode": "API Mode",
-      "apiModeHint": "Provider API protocol. Choose the format that matches your endpoint.",
+      "apiModeHint": "The protocol used by Hermes for outgoing requests. Vary AI converts to the selected upstream protocol when these differ.",
       "apiModeChatCompletions": "OpenAI Chat Completions",
       "apiModeAnthropicMessages": "Anthropic Messages",
       "apiModeCodexResponses": "OpenAI Responses",
@@ -4307,7 +4321,7 @@
       "required": "Enter a configuration name, model ID and API key.",
       "invalidUrl": "Enter a valid HTTP or HTTPS endpoint URL.",
       "invalidTokens": "Token limits must be positive integers.",
-      "protocol": "API protocol"
+      "protocol": "Upstream protocol"
     },
     "certificate": {
       "authTitle": "Qoder certificate authentication",
@@ -4349,7 +4363,7 @@
     "description": "Save a provider, then apply it and restart {{app}}. Choose the model inside the client. Native login stays in the client.",
     "baseUrl": "Base URL",
     "apiKey": "API Key",
-    "protocol": "API protocol",
+    "protocol": "Upstream protocol",
     "models": "Model IDs",
     "modelsHint": "One model ID per line",
     "fetchModels": "Fetch model list",

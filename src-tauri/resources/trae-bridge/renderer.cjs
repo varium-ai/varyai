@@ -1,11 +1,67 @@
 "use strict";
 // Kept self-contained because the vendor component API executes this function in the workbench.
-function createBridge(service, audit, refreshModels = async () => {}) {
+function createBridge(
+  service,
+  audit,
+  refreshModels = async () => {},
+  storage = globalThis.localStorage,
+) {
   let undo;
   const sessions = new Map(),
     reported = new Set(),
     controllers = new Set();
-  const ownedName = (id, model) => `VaryAI/${id}/${model}`;
+  const ownedName = async (id, model) => {
+    const prefix = `VaryAI/${id}/`;
+    if (prefix.length + model.length <= 64) return prefix + model;
+    // TRAE limits display names to 64 characters; keep the request model ID intact.
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(model),
+    );
+    const hash = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    return prefix + hash.slice(0, 64 - prefix.length);
+  };
+  const loadOwned = (id) => {
+    const rows = JSON.parse(
+      storage.getItem(`varyai.trae.models.${id}`) || "[]",
+    );
+    if (
+      !Array.isArray(rows) ||
+      rows.some(
+        (row) =>
+          !row || typeof row.id !== "string" || typeof row.model !== "string",
+      )
+    )
+      throw Error("model_ownership_unavailable");
+    return rows;
+  };
+  const saveOwned = (id, rows) =>
+    storage.setItem(
+      `varyai.trae.models.${id}`,
+      JSON.stringify(rows.map(({ id, model }) => ({ id, model }))),
+    );
+  const isOwned = (id, rows, model) =>
+    rows.some((row) => row.id === model.id) ||
+    model.displayName?.startsWith(`VaryAI/${id}/`);
+  const shortText = (value, limit) =>
+    value.slice(0, limit).replace(/[\uD800-\uDBFF]$/u, "");
+  const displayName = (model, provider, used) => {
+    const label =
+      model.displayName?.trim() || model.model.split("/").pop() || model.model;
+    const suffix = ` · ${shortText(provider.trim() || "VaryAI", 32)}`;
+    let index = 1,
+      value;
+    do {
+      const number = index === 1 ? "" : ` (${index})`;
+      value =
+        shortText(label, 64 - suffix.length - number.length) + number + suffix;
+      index++;
+    } while (used.has(value));
+    used.add(value);
+    return value;
+  };
   async function list() {
     const result = await service.getModelList();
     if (!Array.isArray(result.model_list))
@@ -19,16 +75,18 @@ function createBridge(service, audit, refreshModels = async () => {}) {
     }));
   }
   async function remove(id) {
+    let owned = loadOwned(id);
     const models = await list();
-    for (const m of models.filter(
-      (m) => m.id && m.displayName?.startsWith(`VaryAI/${id}/`),
-    )) {
+    for (const m of models.filter((m) => m.id && isOwned(id, owned, m))) {
       const result = await service.updateCustomModel({
         action: "delete",
         id: m.id,
       });
       if (result.code !== 0) throw Error("model_remove_failed");
+      owned = owned.filter((row) => row.id !== m.id);
+      saveOwned(id, owned);
     }
+    saveOwned(id, []);
     await refreshModels();
   }
   async function apply(id, name, config) {
@@ -46,12 +104,29 @@ function createBridge(service, audit, refreshModels = async () => {}) {
         config.protocol === "anthropic" && baseUrl.endsWith("/v1")
           ? "/messages"
           : suffix;
+    let owned = loadOwned(id);
+    // Native writes do not invalidate TRAE's model-list cache automatically.
+    await refreshModels();
     const existing = await list();
+    owned = owned.filter((row) =>
+      existing.some((model) => model.id === row.id),
+    );
+    const used = new Set(
+      existing
+        .filter((model) => !isOwned(id, owned, model))
+        .map((model) => model.displayName),
+    );
     const added = [];
+    const addedIds = new Set(),
+      wanted = new Set();
     try {
       for (const model of config.models) {
-        const display_name = ownedName(id, model.model);
-        const match = existing.find((m) => m.displayName === display_name);
+        const legacyName = await ownedName(id, model.model);
+        const previous = owned.find((row) => row.model === model.model);
+        let match =
+          (previous && existing.find((m) => m.id === previous.id)) ||
+          existing.find((m) => m.id && m.displayName === legacyName);
+        const display_name = displayName(model, name, used);
         const fields = {
           provider: {
             openai: "custom_openai_compatible",
@@ -68,23 +143,38 @@ function createBridge(service, audit, refreshModels = async () => {}) {
           custom_model_type: "chat_model",
         };
         if (!fields.provider) throw Error("invalid_protocol");
-        const result = match
-          ? await service.updateCustomModel({
-              action: "update",
-              id: match.id,
-              ...fields,
-            })
-          : await service.addCustomModel(fields);
+        if (!match) {
+          // Keep the recoverable legacy marker until native ownership is persisted.
+          const result = await service.addCustomModel({
+            ...fields,
+            display_name: legacyName,
+          });
+          if (result.code !== 0) throw Error("model_apply_failed");
+          added.push(legacyName);
+          await refreshModels();
+          match = (await list()).find(
+            (m) => m.displayName === legacyName && m.id,
+          );
+          if (!match) throw Error("model_apply_failed");
+          addedIds.add(match.id);
+        }
+        owned = owned.filter(
+          (row) => row.model !== model.model && row.id !== match.id,
+        );
+        owned.push({ id: match.id, model: model.model });
+        // Persist before replacing a legacy label, including during partial migrations.
+        saveOwned(id, owned);
+        const result = await service.updateCustomModel({
+          action: "update",
+          id: match.id,
+          ...fields,
+        });
         if (result.code !== 0) throw Error("model_apply_failed");
-        if (!match) added.push(display_name);
+        wanted.add(match.id);
       }
       const all = await list();
-      const wanted = new Set(config.models.map((m) => ownedName(id, m.model)));
       for (const old of all.filter(
-        (m) =>
-          m.id &&
-          m.displayName?.startsWith(`VaryAI/${id}/`) &&
-          !wanted.has(m.displayName),
+        (m) => m.id && isOwned(id, owned, m) && !wanted.has(m.id),
       )) {
         const result = await service.updateCustomModel({
           action: "delete",
@@ -92,13 +182,25 @@ function createBridge(service, audit, refreshModels = async () => {}) {
         });
         if (result.code !== 0) throw Error("model_remove_failed");
       }
+      saveOwned(
+        id,
+        owned.filter((row) => wanted.has(row.id)),
+      );
       await refreshModels();
-      return all.filter((m) => wanted.has(m.displayName));
+      return all.filter((m) => wanted.has(m.id));
     } catch (error) {
       // Roll back newly created entries only. Never remove pre-existing native models.
       const all = await list();
-      for (const m of all.filter((m) => added.includes(m.displayName)))
+      for (const m of all.filter(
+        (m) => addedIds.has(m.id) || added.includes(m.displayName),
+      ))
         await service.updateCustomModel({ action: "delete", id: m.id });
+      try {
+        saveOwned(
+          id,
+          owned.filter((row) => !addedIds.has(row.id)),
+        );
+      } catch {}
       throw error;
     }
   }

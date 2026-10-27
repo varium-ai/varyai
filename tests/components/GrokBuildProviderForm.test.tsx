@@ -103,7 +103,7 @@ describe("GrokBuildProviderForm", () => {
     expect(container.querySelector("#grokbuild-context-window")).toHaveValue(
       500000,
     );
-    expect(screen.getByText("上游格式")).toBeInTheDocument();
+    expect(screen.getByText("上游协议")).toBeInTheDocument();
   });
 
   it("keeps the Grok client on Responses when the upstream uses Chat", async () => {

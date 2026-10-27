@@ -184,6 +184,17 @@ pub(crate) async fn handle_custom(
         status: 0,
         streaming: payload["stream"].as_bool().unwrap_or(false),
     });
+    if is_model && super::native_protocol::needs_conversion(&provider, &parts.uri)? {
+        return super::native_protocol::forward(
+            &state,
+            AppType::Qoder,
+            &provider,
+            parts,
+            payload,
+            job,
+        )
+        .await;
+    }
     send(target.into(), parts, bytes, job).await
 }
 pub(crate) async fn handle_official(
@@ -310,7 +321,7 @@ pub(crate) async fn send(
     target: String,
     mut parts: http::request::Parts,
     bytes: Vec<u8>,
-    mut job: Option<Job>,
+    job: Option<Job>,
 ) -> Result<Response, ProxyError> {
     let start = Instant::now();
     let gateway_model = parts
@@ -338,6 +349,15 @@ pub(crate) async fn send(
     )
     .await
     .map_err(|_| ProxyError::ForwardFailed("Qoder upstream connection failed".into()))?;
+    relay_response(response, job, start, gateway_model).await
+}
+
+pub(super) async fn relay_response(
+    response: super::hyper_client::ProxyResponse,
+    mut job: Option<Job>,
+    start: Instant,
+    gateway_model: Option<super::gateway::GatewayUpstreamModel>,
+) -> Result<Response, ProxyError> {
     let status = response.status();
     if status.is_success() {
         if let (Some(trace), Some(item)) = (&gateway_model, &job) {

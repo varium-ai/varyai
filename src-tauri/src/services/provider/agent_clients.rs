@@ -61,7 +61,11 @@ pub(super) fn update(
     ProviderService::set_provider_live_config_managed(&mut provider, managed);
     if app == "trae" {
         if managed && provider.category.as_deref() != Some("official") {
-            crate::services::trae_bridge::apply(&provider)?;
+            crate::services::trae_bridge::apply(&crate::services::upstream_protocol::project(
+                state.db.as_ref(),
+                &AppType::Trae,
+                &provider,
+            )?)?;
         }
         state.db.save_provider(app, &provider)?;
         return Ok(true);
@@ -125,15 +129,37 @@ pub(super) fn enable_with_lock(
         .ok_or_else(|| AppError::InvalidInput("Provider not found".into()))?;
     if app == "trae" {
         let official = provider.category.as_deref() == Some("official");
-        if !official {
-            crate::services::trae_bridge::apply(&provider)?;
-        }
-        for mut other in state.db.get_all_providers(app)?.into_values().filter(|p| {
-            p.id != id
-                && ProviderService::provider_live_config_managed(p) == Some(true)
-                && p.category.as_deref() != Some("official")
-        }) {
-            crate::services::trae_bridge::remove(&other.id)?;
+        let previous: Vec<_> = state
+            .db
+            .get_all_providers(app)?
+            .into_values()
+            .filter(|p| {
+                p.id != id
+                    && ProviderService::provider_live_config_managed(p) == Some(true)
+                    && p.category.as_deref() != Some("official")
+            })
+            .collect();
+        let target = if official {
+            provider.clone()
+        } else {
+            crate::services::upstream_protocol::project(
+                state.db.as_ref(),
+                &AppType::Trae,
+                &provider,
+            )?
+        };
+        let projected_previous = previous
+            .iter()
+            .map(|other| {
+                crate::services::upstream_protocol::project(
+                    state.db.as_ref(),
+                    &AppType::Trae,
+                    other,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        crate::services::trae_bridge::switch_provider(&target, &projected_previous)?;
+        for mut other in previous {
             ProviderService::set_provider_live_config_managed(&mut other, false);
             state.db.save_provider(app, &other)?;
         }

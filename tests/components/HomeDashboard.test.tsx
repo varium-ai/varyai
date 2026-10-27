@@ -12,6 +12,14 @@ import {
 } from "@/config/appConfig";
 import type { Provider } from "@/types";
 import zh from "@/i18n/locales/zh.json";
+import { useSecurityEventsSummary } from "@/hooks/useSecurityEvents";
+vi.mock("@/hooks/useSecurityEvents", () => ({
+  useSecurityEventsSummary: vi.fn(() => ({
+    data: { protectiveBlocked: 0, redacted: 0, warnings: 0 },
+    isLoading: false,
+    isError: false,
+  })),
+}));
 const protection = vi.hoisted(() => ({
   connected: false,
   waiting: false,
@@ -84,12 +92,57 @@ function renderDashboard(
 
 describe("HomeDashboard current provider", () => {
   beforeEach(() => {
+    vi.mocked(useSecurityEventsSummary).mockReturnValue({
+      data: { protectiveBlocked: 0, redacted: 0, warnings: 0 },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useSecurityEventsSummary>);
     protection.connected = false;
     protection.waiting = false;
     protection.enabled = false;
     protection.busy = false;
     protection.setAppEnabled.mockReset().mockResolvedValue(undefined);
     i18n.addResourceBundle("zh", "translation", zh, true, true);
+  });
+  it("uses unified per-agent totals so tool-risk warnings are included on the home page", () => {
+    protection.connected = true;
+    protection.enabled = true;
+    vi.mocked(useSecurityEventsSummary).mockReturnValue({
+      data: { protectiveBlocked: 2, redacted: 3, warnings: 7 },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useSecurityEventsSummary>);
+    renderDashboard();
+    expect(
+      screen.getByText(
+        zh.homeAudit.auditSummary
+          .replace("{{handled}}", "5")
+          .replace("{{warned}}", "7"),
+      ),
+    ).toBeInTheDocument();
+    expect(useSecurityEventsSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        view: "security_events",
+        appType: "codex",
+        startTimestamp: expect.any(Number),
+      }),
+    );
+  });
+  it("shows an unavailable count instead of zero when the unified summary fails", () => {
+    protection.connected = true;
+    protection.enabled = true;
+    vi.mocked(useSecurityEventsSummary).mockReturnValue({
+      isLoading: false,
+      isError: true,
+    } as ReturnType<typeof useSecurityEventsSummary>);
+    renderDashboard();
+    expect(
+      screen.getByText(
+        zh.homeAudit.auditSummary
+          .replace("{{handled}}", "—")
+          .replace("{{warned}}", "—"),
+      ),
+    ).toBeInTheDocument();
   });
   it("shows TRAE pending without claiming protection and lets the user cancel", () => {
     protection.waiting = true;

@@ -270,6 +270,26 @@ pub fn selection(app: &AppType) -> Result<Value, AppError> {
         .map(|key| (key.to_string(), source[*key].clone()))
         .collect::<serde_json::Map<_, _>>()))
 }
+
+pub fn selection_for_provider(app: &AppType, provider: &Provider) -> Result<Value, AppError> {
+    let mut saved = selection(app)?;
+    if *app == AppType::WorkBuddy && provider.category.as_deref() != Some("official") {
+        let config = &provider.settings_config;
+        let ids: Vec<_> = config["models"]
+            .as_array()
+            .map(|models| {
+                models
+                    .iter()
+                    .filter_map(|model| model["id"].as_str())
+                    .collect()
+            })
+            .unwrap_or_else(|| config["id"].as_str().into_iter().collect());
+        if let Some(available) = saved["availableModels"].as_array_mut() {
+            available.retain(|value| value.as_str().is_some_and(|id| ids.contains(&id)));
+        }
+    }
+    Ok(saved)
+}
 pub fn apply_selection(app: &AppType, saved: &Value) -> Result<(), AppError> {
     if crate::services::agent_clients::supported(app.as_str()) {
         let path = crate::services::agent_clients::config_path(app.as_str())?;

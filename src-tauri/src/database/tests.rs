@@ -1564,6 +1564,20 @@ fn legacy_block_rule_settings_are_read_as_redact_and_saved_without_block() {
 }
 
 #[test]
+fn generic_sk_action_override_can_persist_redaction() {
+    let db = Database::memory().expect("memory db");
+    db.update_builtin_security_rule_action("catalog:generic-sk-key-notice", Some("redact"))
+        .expect("save action");
+    assert_eq!(
+        db.get_builtin_security_rule_actions()
+            .expect("load actions")
+            .get("catalog:generic-sk-key-notice")
+            .map(String::as_str),
+        Some("redact")
+    );
+}
+
+#[test]
 fn test_builtin_action_override_persistence_and_validation() {
     let db = Database::memory().expect("memory db");
     assert!(db.get_builtin_security_rule_actions().unwrap().is_empty());
@@ -1598,13 +1612,16 @@ fn test_builtin_action_override_persistence_and_validation() {
     assert!(db
         .update_builtin_security_rule_action("github_token", Some("ignore"))
         .is_err());
-    assert!(db
-        .update_builtin_security_rule_action("catalog:generic-sk-key-notice", Some("block"))
-        .is_err());
-    assert!(db
-        .update_builtin_security_rule_action("catalog:generic-sk-key-notice", Some("redact"))
-        .is_err());
     assert_eq!(db.get_builtin_security_rule_actions().unwrap(), actions);
+    db.update_builtin_security_rule_action("catalog:generic-sk-key-notice", Some("block"))
+        .unwrap();
+    assert_eq!(
+        db.get_builtin_security_rule_actions()
+            .unwrap()
+            .get("catalog:generic-sk-key-notice")
+            .map(String::as_str),
+        Some("redact")
+    );
     db.update_builtin_security_rule_action("github_token", None)
         .unwrap();
     assert!(!db

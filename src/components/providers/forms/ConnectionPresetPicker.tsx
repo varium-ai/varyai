@@ -44,13 +44,14 @@ export function ConnectionPresetPicker({
   const { t } = useTranslation();
   const id = useId();
   const manageButtonRef = useRef<HTMLButtonElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
   const [presets, setPresets] = useState<ConnectionPreset[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState<
-    "saveSuccess" | "deleteSuccess" | null
+    "saveSuccess" | "deleteSuccess" | "newDraft" | null
   >(null);
   const [deleteTarget, setDeleteTarget] = useState<Pick<
     ConnectionPreset,
@@ -83,13 +84,15 @@ export function ConnectionPresetPicker({
     };
   }, []);
 
-  const startNew = () => {
+  const startNew = (fromCurrent = false) => {
     setDraft({
       id: crypto.randomUUID(),
-      name: current?.name ?? "",
-      baseUrl: current?.baseUrl ?? "",
-      apiKey: current?.apiKey ?? "",
-      ...(current?.apiFormat ? { apiFormat: current.apiFormat } : {}),
+      name: fromCurrent ? (current?.name ?? "") : "",
+      baseUrl: fromCurrent ? (current?.baseUrl ?? "") : "",
+      apiKey: fromCurrent ? (current?.apiKey ?? "") : "",
+      ...(fromCurrent && current?.apiFormat
+        ? { apiFormat: current.apiFormat }
+        : {}),
     });
     setTestModel("");
     setError("");
@@ -212,7 +215,7 @@ export function ConnectionPresetPicker({
           variant="outline"
           disabled={loading}
           onClick={() => {
-            startNew();
+            startNew(true);
             setOpen(true);
           }}
         >
@@ -320,7 +323,11 @@ export function ConnectionPresetPicker({
               type="button"
               variant="outline"
               disabled={pending}
-              onClick={startNew}
+              onClick={() => {
+                startNew();
+                setSuccess("newDraft");
+                nameInputRef.current?.focus();
+              }}
             >
               {t("connectionPresets.add")}
             </Button>
@@ -330,6 +337,7 @@ export function ConnectionPresetPicker({
                   {t("connectionPresets.name")}
                 </Label>
                 <Input
+                  ref={nameInputRef}
                   id={`${id}-name`}
                   maxLength={80}
                   value={draft.name}

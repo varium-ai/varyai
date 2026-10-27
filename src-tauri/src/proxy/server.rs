@@ -323,6 +323,10 @@ impl ProxyServer {
                 "/qoder/providers/:id/*path",
                 any(super::qoder::handle_custom),
             )
+            .route(
+                "/upstream/:app/providers/:id/*path",
+                post(super::native_protocol::handle),
+            )
             .route("/status", get(handlers::get_status))
             // Claude API (支持带前缀和不带前缀两种格式)
             .route("/v1/messages", post(handlers::handle_messages))

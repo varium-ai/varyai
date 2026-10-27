@@ -37,6 +37,28 @@ const fixture = {
 };
 
 describe("reusable connection presets", () => {
+  it("starts a visibly empty draft and focuses its name when adding a preset", async () => {
+    render(<ConnectionPresetPicker onApply={vi.fn()} current={fixture} />);
+    await screen.findByRole("option", { name: fixture.name });
+    fireEvent.click(
+      screen.getByRole("button", { name: "connectionPresets.manage" }),
+    );
+    expect(screen.getByLabelText("connectionPresets.name")).toHaveValue(
+      fixture.name,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "connectionPresets.add" }),
+    );
+    expect(screen.getByLabelText("connectionPresets.name")).toHaveValue("");
+    expect(screen.getByLabelText("connectionPresets.baseUrl")).toHaveValue("");
+    expect(screen.getByLabelText("connectionPresets.apiKey")).toHaveValue("");
+    expect(screen.getByLabelText("connectionPresets.name")).toHaveFocus();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "connectionPresets.newDraft",
+    );
+    expect(connectionPresetsApi.save).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     i18n.addResource(

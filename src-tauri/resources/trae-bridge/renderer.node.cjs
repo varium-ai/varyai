@@ -1,8 +1,23 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { createBridge, rendererSource } = require("./renderer.cjs");
+const {
+  createBridge: nativeBridge,
+  rendererSource,
+} = require("./renderer.cjs");
+const stores = new WeakMap();
+function createBridge(service, audit, refresh) {
+  if (!stores.has(service)) {
+    const values = new Map();
+    stores.set(service, {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value),
+    });
+  }
+  return nativeBridge(service, audit, refresh, stores.get(service));
+}
 function fixture() {
   const calls = [];
+  let nextModelId = 0;
   const proto = {
     async convertReqToRustPayload(q) {
       calls.push(q);
@@ -15,7 +30,7 @@ function fixture() {
     _clientManagerService: { getClient: async () => client },
     getModelList: async () => ({ model_list: models }),
     addCustomModel: async (x) => {
-      models.push({ ...x, custom_model_id: "test-id" });
+      models.push({ ...x, custom_model_id: `test-${++nextModelId}` });
       return { code: 0 };
     },
     updateCustomModel: async (x) => {
@@ -107,6 +122,214 @@ test("model management returns no credential and removes only owned models", asy
   await b.remove("p1");
   assert.equal(f.models.length, 1);
   assert.equal(f.models[0].custom_model_id, "user");
+});
+test("native model cache is refreshed before matching and after writes across official switches", async () => {
+  const f = fixture();
+  f.models.push({ custom_model_id: "user", display_name: "User model" });
+  let cached = f.models.map((model) => ({ ...model }));
+  f.service.getModelList = async () => ({ model_list: cached });
+  const refresh = async () => {
+    cached = f.models.map((model) => ({ ...model }));
+  };
+  const add = f.service.addCustomModel;
+  let additions = 0;
+  f.service.addCustomModel = async (fields) => {
+    additions++;
+    if (f.models.some((model) => model.model_name === fields.model_name))
+      return { code: 4024 };
+    return add(fields);
+  };
+  const config = {
+    baseUrl: "https://example.invalid/v1",
+    apiKey: "synthetic",
+    protocol: "openai",
+    models: Array.from({ length: 7 }, (_, index) => ({
+      model: `model-${index}`,
+    })),
+  };
+  // A previous interrupted write exists in native storage but not in its cached list.
+  f.models.push({
+    custom_model_id: "legacy",
+    model_name: "model-0",
+    display_name: "VaryAI/p1/model-0",
+  });
+  const b = createBridge(f.service, async () => ({}), refresh);
+  await b.apply("p1", "Example", config);
+  assert.equal(additions, 6);
+  assert.equal(f.models.length, 8);
+  assert.ok(
+    f.models
+      .slice(1)
+      .every((model) => model.display_name.endsWith(" · Example")),
+  );
+  await b.apply("p1", "Renamed", config);
+  assert.equal(additions, 6);
+  await b.remove("p1");
+  assert.deepEqual(
+    f.models.map((model) => model.custom_model_id),
+    ["user"],
+  );
+  await createBridge(f.service, async () => ({}), refresh).apply(
+    "p1",
+    "Example",
+    config,
+  );
+  assert.equal(additions, 13);
+  assert.equal(f.models.length, 8);
+  assert.equal(new Set(f.models.map((model) => model.custom_model_id)).size, 8);
+});
+test("long model IDs fit TRAE's display name limit without changing request IDs", async () => {
+  const f = fixture();
+  const add = f.service.addCustomModel;
+  f.service.addCustomModel = async (fields) => {
+    if (fields.display_name.length > 64) return { code: -1 };
+    const result = await add(fields);
+    f.models.at(-1).custom_model_id = `model-${f.models.length}`;
+    return result;
+  };
+  const id = "00000000-0000-4000-8000-000000000001";
+  const names = [
+    "example-org/a-very-long-model-name-first",
+    "example-org/a-very-long-model-name-second",
+  ];
+  const b = createBridge(f.service, async () => ({}));
+  const config = {
+    baseUrl: "https://example.invalid/v1",
+    apiKey: "synthetic",
+    protocol: "openai",
+    models: names.map((model) => ({ model })),
+  };
+  await b.apply(id, "Example", config);
+  assert.deepEqual(
+    f.models.map((model) => model.model_name),
+    names,
+  );
+  assert.equal(new Set(f.models.map((model) => model.display_name)).size, 2);
+  assert.ok(f.models.every((model) => model.display_name.length <= 64));
+  const displays = f.models.map((model) => model.display_name);
+  await b.apply(id, "Example", config);
+  assert.deepEqual(
+    f.models.map((model) => model.display_name),
+    displays,
+  );
+  await b.remove(id);
+  assert.equal(f.models.length, 0);
+});
+test("readable labels migrate existing owned models and survive provider renames and bridge reloads", async () => {
+  const f = fixture();
+  const id = "00000000-0000-4000-8000-000000000001";
+  const model = "example-org/model-a";
+  const longModel = "example-org/a-model-name-that-exceeded-the-old-limit";
+  const digest = require("node:crypto")
+    .createHash("sha256")
+    .update(longModel)
+    .digest("hex")
+    .slice(0, 20);
+  f.models.push(
+    { custom_model_id: "legacy", display_name: `VaryAI/${id}/${model}` },
+    { custom_model_id: "hashed", display_name: `VaryAI/${id}/${digest}` },
+    { custom_model_id: "user", display_name: "User model", ak: "private" },
+  );
+  const config = {
+    baseUrl: "https://example.invalid/v1",
+    apiKey: "synthetic",
+    protocol: "openai",
+    models: [
+      { model },
+      { model: "model-b", displayName: "Model B" },
+      { model: longModel },
+    ],
+  };
+  await createBridge(f.service, async () => ({})).apply(id, "Example", config);
+  assert.equal(f.models.length, 4);
+  assert.equal(
+    f.models.find((m) => m.custom_model_id === "legacy").display_name,
+    "model-a · Example",
+  );
+  assert.ok(f.models.some((m) => m.display_name === "Model B · Example"));
+  const ownership = JSON.parse(
+    stores.get(f.service).getItem(`varyai.trae.models.${id}`),
+  );
+  assert.ok(
+    ownership.every((row) => Object.keys(row).sort().join(",") === "id,model"),
+  );
+  assert.equal(
+    f.models.find((m) => m.custom_model_id === "hashed").display_name,
+    "a-model-name-that-exceeded-the-old-limit · Example",
+  );
+  await createBridge(f.service, async () => ({})).apply(id, "Renamed", config);
+  assert.equal(f.models.length, 4);
+  assert.ok(f.models.some((m) => m.display_name === "model-a · Renamed"));
+  await createBridge(f.service, async () => ({})).remove(id);
+  assert.deepEqual(
+    f.models.map((m) => m.custom_model_id),
+    ["user"],
+  );
+});
+test("readable labels retain distinct names within the native limit and preserve user entries", async () => {
+  const f = fixture();
+  const name = "Example";
+  f.models.push({ custom_model_id: "user", display_name: "Same · Example" });
+  const config = {
+    baseUrl: "https://example.invalid/v1",
+    apiKey: "synthetic",
+    protocol: "openai",
+    models: [
+      { model: "org-a/model", displayName: "Same" },
+      { model: "org-b/model", displayName: "Same" },
+      { model: "long-model", displayName: "Long".repeat(30) },
+    ],
+  };
+  await createBridge(f.service, async () => ({})).apply("p1", name, config);
+  assert.equal(new Set(f.models.map((m) => m.display_name)).size, 4);
+  assert.ok(f.models.every((m) => m.display_name.length <= 64));
+  await createBridge(f.service, async () => ({})).apply("p1", name, config);
+  assert.equal(f.models.length, 4);
+  await createBridge(f.service, async () => ({})).remove("p1");
+  assert.equal(f.models[0].custom_model_id, "user");
+  assert.equal(f.models.length, 1);
+});
+test("built-in models without custom IDs are never updated or removed", async () => {
+  const f = fixture();
+  const builtIn = { name: "built-in", display_name: "Built-in" };
+  f.models.push({ ...builtIn });
+  const bridge = createBridge(f.service, async () => ({}));
+  await bridge.apply("p1", "Example", {
+    baseUrl: "https://example.invalid/v1",
+    apiKey: "synthetic",
+    protocol: "openai",
+    models: [{ model: "model" }],
+  });
+  assert.deepEqual(f.models[0], builtIn);
+  assert.equal(f.models[1].display_name, "model · Example");
+  await bridge.remove("p1");
+  assert.deepEqual(f.models, [builtIn]);
+});
+test("failed label migration retains ownership and failed persistence rolls back new entries", async () => {
+  const f = fixture();
+  f.models.push({ custom_model_id: "legacy", display_name: "VaryAI/p1/model" });
+  const update = f.service.updateCustomModel;
+  f.service.updateCustomModel = async (fields) =>
+    fields.action === "update" ? { code: -1 } : update(fields);
+  const config = {
+    baseUrl: "https://example.invalid/v1",
+    apiKey: "synthetic",
+    protocol: "openai",
+    models: [{ model: "model" }],
+  };
+  await assert.rejects(
+    createBridge(f.service, async () => ({})).apply("p1", "Example", config),
+  );
+  f.service.updateCustomModel = update;
+  await createBridge(f.service, async () => ({})).remove("p1");
+  assert.equal(f.models.length, 0);
+  stores.get(f.service).setItem = () => {
+    throw Error("storage unavailable");
+  };
+  await assert.rejects(
+    createBridge(f.service, async () => ({})).apply("p1", "Example", config),
+  );
+  assert.equal(f.models.length, 0);
 });
 test("renderer resolves the existing case-sensitive module URL inside the window", () => {
   assert.match(rendererSource(), /location.href.split/);
@@ -282,7 +505,7 @@ test("native model edits refresh the desktop model selector", async () => {
     apiKey: "fake-only",
     models: [{ model: "test" }],
   });
-  assert.equal(refreshed, 1);
+  assert.equal(refreshed, 3);
   await b.remove("test");
-  assert.equal(refreshed, 2);
+  assert.equal(refreshed, 4);
 });

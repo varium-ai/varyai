@@ -38,6 +38,12 @@ Local development packages may be unsigned or use an ad-hoc signature. Gatekeepe
 
 A missing Launchpad entry does not establish that an application failed to install. Check the actual application path and package before changing system registration or replacing the installed app.
 
+## Agent installation checks
+
+Settings > About > Local environment check lists every supported agent. The eight managed CLI cards retain version checks and installation/update actions. A missing Codex CLI shows **Not installed** and an **Install** button; an installed CLI that cannot run has a separate environment warning. Failed checks show a retry message rather than an installation prompt.
+
+Claude Desktop, WorkBuddy, Qoder CN, Doubao Work, TRAE CN, Kimi Code, Qwen Code and ZCode have installation-status cards. Refresh reruns these checks. Desktop application detection currently supports macOS; WorkBuddy, Kimi Code and Qwen Code also use CLI detection on other platforms. Unsupported checks are labeled explicitly. These additional cards direct installation and updates to the client or its official installer; they do not provide automatic version checks or updates.
+
 ## Client takeover and recovery
 
 Common configuration locations include:
@@ -57,9 +63,17 @@ Codex can rotate its refresh token while an Official provider card still has an 
 
 Custom providers require a provider name, model ID, URL, and API key. Saving lists all empty or whitespace-only fields together and omits fields already filled in. Additional model rows also require an ID. Official login entries do not require custom model credentials unless a custom model is being added. A toast showing `providerForm.nameRequired` indicates a build with a missing translation reference; use a build containing the fix.
 
+### Qoder asks to install the certificate after every restart
+
+The certificate lasts 30 days and is retained across normal restarts. An older trust check supplied only the localhost server certificate, which could fail to locate its CA even when the CA was already trusted. The check now supplies the server and CA certificates together and still uses macOS SSL trust evaluation; it does not force the CA to be trusted. A valid, trusted saved certificate is reused without another installation prompt.
+
 ### Kimi shows an internal ID as the provider group
 
 Apply the saved provider again to migrate its Kimi group to the provider name shown in Vary AI. Renaming it also updates model references while preserving model aliases and the selected model. Choose a unique provider name: Vary AI refuses to overwrite an existing native group with the same name. Restart Kimi when it needs to reload its configuration.
+
+### TRAE CN switching reports a model configuration failure
+
+TRAE can keep an older model-list cache after a custom model is added. Older Vary AI bridges may then report a failed switch even though the model was saved; retrying can return a native duplicate-model error. The bridge now refreshes TRAE's native model store before matching existing models and after each addition. It recovers models carrying the provider's legacy ownership label and retains readable labels without duplicating or adopting unrelated user models. Fully quit and reopen TRAE CN after loading a build containing this fix so its in-memory bridge uses the updated script, then apply the provider again. Direct custom-provider switches also withdraw the previous managed models before adding the target, because TRAE rejects overlapping request model IDs under different labels. A failed switch attempts to restore the previous models and retains the previous provider selection; an incomplete restoration is reported explicitly.
 
 ## Windows VC++ runtime errors
 
