@@ -2,6 +2,10 @@
 
 The DLP engine inspects supported outbound text extracted from requests handled by enabled local routing. It is not a disk scanner or a guarantee that all client traffic or every JSON field is inspected.
 
+For Claude Desktop, the home status offers to enable protection when its proxy route is connected but detection is off. If the Desktop route is not connected, it instead opens routing settings. A running gateway alone does not establish that Desktop is configured to use it.
+
+For clients with a route takeover action, the home status offers **Enable local routing** when that client is disconnected, regardless of the global detection setting. This action enables the client's route and security detection. A connected client with detection off instead shows **Activate protection**, including configured Claude Desktop and Pi routes. The footer also prioritizes the current client's routing state over the global detection setting. Selecting an upstream format alone does not activate routing or protocol conversion.
+
 ## Processing
 
 1. Extract the supported text fields without changing unrelated protocol values.

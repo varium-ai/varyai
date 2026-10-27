@@ -3832,6 +3832,7 @@
     "close": "关闭",
     "claudeScope": "使用量合并 Claude / Desktop；安全事件仅当前应用",
     "activate": "启用防护",
+    "enableRouting": "启用本地路由",
     "unsupported": "当前应用不支持本地路由",
     "desktopSetup": "请先为 Claude Desktop 配置有效的本地代理模式",
     "routeFailed": "路由未成功接管，未启用审计",

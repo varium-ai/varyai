@@ -160,8 +160,6 @@ function SecurityStatusRow({
   const isLoading = protection.isLoading;
   const isProtected =
     protection.settings?.enabled === true && protection.connected;
-  const isConfiguredButDisconnected =
-    protection.settings?.enabled === true && !protection.connected;
   const displayCount = (value: number | undefined, pending: boolean) => {
     if (pending) return "…";
     if (value === undefined) return "—";
@@ -201,7 +199,8 @@ function SecurityStatusRow({
       )}
       {!isProtected &&
         !protection.waiting &&
-        (isTakeoverAppId(appType) ? (
+        (isTakeoverAppId(appType) ||
+        (protection.supported && protection.connected) ? (
           <button
             type="button"
             disabled={protection.isUpdating}
@@ -210,7 +209,11 @@ function SecurityStatusRow({
             }}
             className="flex items-center gap-1 text-sm font-bold text-rose-600 hover:underline disabled:opacity-50 dark:text-rose-300"
           >
-            {t("homeAudit.activate")}
+            {t(
+              protection.connected
+                ? "homeAudit.activate"
+                : "homeAudit.enableRouting",
+            )}
             <ChevronRight className="h-4 w-4" />
           </button>
         ) : (
@@ -285,7 +288,7 @@ function SecurityStatusRow({
               ? appType === "doubaowork"
                 ? "homeAudit.doubaoWaiting"
                 : "homeAudit.traeWaiting"
-              : isConfiguredButDisconnected
+              : !protection.connected
                 ? "homeAudit.notConnected"
                 : "homeAudit.disabled",
           )}

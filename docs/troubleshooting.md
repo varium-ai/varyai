@@ -18,6 +18,8 @@ Quit Vary AI normally from its tray menu before restarting. Confirm which proces
 
 Inspect the relevant status code and sanitized logs. The historical log directory may still be under `~/.cc-switch/logs/`; use the application's diagnostics to locate the active file rather than assuming a new branding-specific directory.
 
+For a generic Gemini `INVALID_ARGUMENT`, compare the `GeminiRequestShape` entries for the affected clients. These entries record message and function counts, parameter formats, and output-token ranges without model names, prompts, tool names, schemas, or argument values. The summary helps identify request differences; it does not establish which field the upstream rejected.
+
 ### HTTP 404: endpoint or protocol mismatch
 
 An upstream that implements `/v1/chat/completions` may not implement `/v1/responses`. Check the provider's configured API format and base URL. When the upstream requires Chat Completions, select the matching conversion/routing mode supported by that client integration. Confirm the resulting endpoint with a synthetic request. Changing a model name alone does not add an unsupported API endpoint.

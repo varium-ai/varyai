@@ -3832,6 +3832,7 @@
     "close": "Close",
     "claudeScope": "Usage combines Claude / Desktop; security events are for the current app only",
     "activate": "Activate protection",
+    "enableRouting": "Enable local routing",
     "unsupported": "This app does not support local routing",
     "desktopSetup": "Configure a valid local proxy profile for Claude Desktop first",
     "routeFailed": "Route takeover is not effective; audit was not enabled",

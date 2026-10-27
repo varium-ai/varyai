@@ -3759,6 +3759,7 @@
     "close": "關閉",
     "claudeScope": "使用量合併 Claude / Desktop；安全事件僅目前應用",
     "activate": "啟用防護",
+    "enableRouting": "啟用本機路由",
     "unsupported": "目前應用不支援本機路由",
     "desktopSetup": "請先為 Claude Desktop 設定有效的本機代理模式",
     "routeFailed": "路由未成功接管，未啟用稽核",

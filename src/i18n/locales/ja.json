@@ -3758,6 +3758,7 @@
     "close": "閉じる",
     "claudeScope": "使用量は Claude / Desktop 合算、セキュリティイベントは現在のアプリのみ",
     "activate": "保護を有効化",
+    "enableRouting": "ローカルルーティングを有効化",
     "unsupported": "このアプリはローカルルーティング非対応です",
     "desktopSetup": "Claude Desktop のローカルプロキシ設定を確認してください",
     "routeFailed": "ルーティングが有効でないため監査を有効化しませんでした",

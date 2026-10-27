@@ -28,6 +28,8 @@ In model-mapping mode, the editor offers Sonnet, Opus, Fable and Haiku role fiel
 
 An omitted Haiku role remains available for background sub-agent calls through an internal fallback to Sonnet or the first configured route, without an extra menu entry. Explicit Haiku mappings take precedence. Gateway allowlists still check the incoming client route ID before this mapping.
 
+When routing Claude Desktop to a third-party endpoint, Vary AI omits Desktop-specific `anthropic-client-*` metadata headers, including `anthropic-client-version` and `anthropic-client-platform`, because some compatible gateways reject them. Anthropic Messages requests retain the protocol's `anthropic-version` header. Requests to `api.anthropic.com` and Claude Code header handling keep their existing behavior.
+
 ## Import all Claude Code models
 
 In the Claude Code provider's model mapping section, **Quick Set** imports every model returned by discovery as a separate editable row. If no catalog has been fetched, the button fetches it first using the current endpoint/key or selected managed account. Empty role fields do not disable import. Failed or superseded requests do not change the rows.
