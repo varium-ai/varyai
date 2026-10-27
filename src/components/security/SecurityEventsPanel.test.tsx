@@ -500,6 +500,24 @@ describe("unified event snapshot and clear boundaries", () => {
 
 describe("manual refresh feedback", () => {
   it.each(["security_events", "tool_calls"] as const)(
+    "keeps initial loading below the headers in %s",
+    (view) => {
+      state.loading = true;
+      render(<Harness />);
+      if (view === "tool_calls")
+        fireEvent.click(screen.getByText("securityEvents.toolCallsView"));
+      const loading = screen.getByTestId("security-events-loading");
+      const table = screen.getByRole("table");
+      expect(loading.previousElementSibling).toContainElement(table);
+      expect(loading).not.toHaveClass("absolute");
+      expect(table.querySelector("tbody")).toBeEmptyDOMElement();
+      expect(within(table).getAllByRole("columnheader").length).toBeGreaterThan(
+        0,
+      );
+    },
+  );
+
+  it.each(["security_events", "tool_calls"] as const)(
     "keeps the original icon spinning and table loading for 300 ms in %s",
     async (view) => {
       vi.useFakeTimers();
@@ -520,6 +538,13 @@ describe("manual refresh feedback", () => {
       expect(loading).toHaveTextContent("security.loadingLogs");
       expect(loading.querySelector("svg")).toHaveClass("animate-spin");
       expect(loading.closest("table")).toBeNull();
+      const table = screen.getByRole("table");
+      expect(within(table).getAllByRole("columnheader").length).toBeGreaterThan(
+        0,
+      );
+      expect(loading.previousElementSibling).toContainElement(table);
+      expect(loading).not.toHaveClass("absolute");
+      expect(table.querySelector("tbody")).toBeEmptyDOMElement();
       expect(screen.getByText("security.nextPage")).toBeDisabled();
       fireEvent.click(button);
       expect(state.refetch).toHaveBeenCalledTimes(1);
@@ -576,12 +601,65 @@ describe("manual refresh feedback", () => {
 });
 
 describe("clear action feedback", () => {
-  it("uses a native scope title and focuses cancel when confirmation opens", async () => {
+  it.each([
+    ["security.refreshLogs", 0],
+    ["security.refreshLogs", 57],
+    ["securityEvents.clearFiltered", 0],
+    ["securityEvents.clearFiltered", 57],
+  ] as const)(
+    "provides the native %s title with %s records, including disabled clear",
+    (name, total) => {
+      state.total = total;
+      render(<Harness />);
+      const button = screen.getByRole("button", { name });
+      expect(button).toHaveAttribute("title", name);
+      expect(button.parentElement).toHaveAttribute("title", name);
+      expect(button.parentElement).not.toHaveClass("pointer-events-none");
+      if (total === 0) {
+        expect(
+          screen.getByRole("button", { name: "securityEvents.clearFiltered" }),
+        ).toBeDisabled();
+      }
+    },
+  );
+
+  it("retains the disabled clear title without enabling deletion", () => {
+    state.total = 0;
     render(<Harness />);
     const button = screen.getByRole("button", {
       name: "securityEvents.clearFiltered",
     });
-    expect(button).toHaveAttribute("title", "securityEvents.clearFiltered");
+    expect(button).toBeDisabled();
+    expect(button.parentElement).toHaveAttribute(
+      "title",
+      "securityEvents.clearFiltered",
+    );
+    fireEvent.click(button);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(state.clear).not.toHaveBeenCalled();
+  });
+
+  it("retains the refresh title while loading and keeps clear disabled", () => {
+    state.loading = true;
+    render(<Harness />);
+    const button = screen.getByRole("button", { name: "security.refreshLogs" });
+    expect(button).toBeDisabled();
+    expect(button.parentElement).toHaveAttribute(
+      "title",
+      "security.refreshLogs",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "securityEvents.clearFiltered" }),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(state.clear).not.toHaveBeenCalled();
+  });
+
+  it("focuses cancel when confirmation opens", async () => {
+    render(<Harness />);
+    const button = screen.getByRole("button", {
+      name: "securityEvents.clearFiltered",
+    });
     fireEvent.click(button);
     await waitFor(() =>
       expect(

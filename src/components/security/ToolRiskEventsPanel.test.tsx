@@ -782,7 +782,17 @@ describe("controlled tool-call labels and observation boundary", () => {
       );
       const table = screen.getByTestId("tool-risk-events-table");
       expect(table.querySelectorAll("thead th")).toHaveLength(10);
-      expect(table.querySelector("tbody td")).toHaveAttribute("colspan", "10");
+      if (state === "loading") {
+        expect(table.querySelector("tbody")).toBeEmptyDOMElement();
+        expect(
+          screen.getByTestId("security-events-loading").previousElementSibling,
+        ).toContainElement(table);
+      } else {
+        expect(table.querySelector("tbody td")).toHaveAttribute(
+          "colspan",
+          "10",
+        );
+      }
     },
   );
 });

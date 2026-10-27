@@ -24,6 +24,14 @@ For a generic Gemini `INVALID_ARGUMENT`, compare the `GeminiRequestShape` entrie
 
 An upstream that implements `/v1/chat/completions` may not implement `/v1/responses`. Check the provider's configured API format and base URL. When the upstream requires Chat Completions, select the matching conversion/routing mode supported by that client integration. Confirm the resulting endpoint with a synthetic request. Changing a model name alone does not add an unsupported API endpoint.
 
+### Gemini model discovery fails with a valid API key
+
+Select **Gemini Native** for a Google Generative Language API key. Model discovery uses the `x-goog-api-key` header, not a Bearer token or a generated `key` query parameter. For `https://generativelanguage.googleapis.com`, it requests `/v1beta/models`; base URLs ending in `/v1` or `/v1beta` are normalized while gateway path prefixes are retained. An explicit model-list URL takes precedence.
+
+The catalog reads `models[].name`, removes the `models/` resource prefix, and follows `nextPageToken` on the same endpoint. Results are sorted and deduplicated. Repeated tokens or more than 100 pages fail rather than silently returning an incomplete catalog. Switching protocols refreshes the discovery catalog. Other protocols retain their existing model-discovery authentication behavior.
+
+Fetching the catalog does not generate model output. If discovery still fails, check the HTTP status, API restrictions, and network connectivity without publishing the API key. A successful catalog request does not establish access or quota for every inference model.
+
 ### HTTP 503: unavailable model or channel
 
 Check the upstream error and the models available to the account. Fetch the provider's model list when supported, review the imported catalog and default model, and select an available model in the client. If the gateway supports model mapping, map only to an actual available target. Check account quota and routing rules as well as model spelling.

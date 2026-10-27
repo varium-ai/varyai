@@ -118,6 +118,23 @@ describe("Codex model mapping actions", () => {
     vi.mocked(fetchXaiOauthModels).mockReset().mockResolvedValue(catalog);
   });
 
+  it("passes the Gemini protocol when fetching models", async () => {
+    renderForm({ apiFormat: "gemini_native" });
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerForm.fetchModels" }),
+    );
+    await waitFor(() =>
+      expect(fetchModelsForConfig).toHaveBeenCalledWith(
+        "https://fixture.example/v1",
+        "fixture-key",
+        false,
+        undefined,
+        "",
+        { apiFormat: "google-generative-ai" },
+      ),
+    );
+  });
+
   it("fetches candidates without changing mappings or the default model", async () => {
     const { props } = renderForm({ codexModel: "" });
     fireEvent.click(

@@ -71,6 +71,8 @@ DLP session/keyword controls appear only when the DLP source is explicitly selec
 
 Today/7d/30d ranges have an open upper bound. Fixed custom ranges include the last second through +999ms and retain liveEndTime semantics. Dates remain stable while reading deeper pages, including across midnight. Filter/date changes return to page one. Errors display an unknown count instead of zero or stale totals.
 
+Initial and manual loading in both list views occupies only the content area below the table headers. Headers and the tool observation notice remain visible. Refresh and clear icon buttons expose localized native hover titles. Wrapper titles keep hints available when the buttons are disabled.
+
 ## IPC, transactions, and privacy
 
 | Command | Arguments | Result |
