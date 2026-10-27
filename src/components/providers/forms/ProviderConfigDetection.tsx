@@ -47,8 +47,14 @@ function validBaseUrl(value: string) {
 
 export function ProviderConfigDetection(props: Props) {
   const { t } = useTranslation();
-  const { baseUrl, apiKey, model, editingCredentials, anthropicAuthField } =
-    props;
+  const {
+    baseUrl,
+    apiKey,
+    apiFormat,
+    model,
+    editingCredentials,
+    anthropicAuthField,
+  } = props;
   const [localModels, setLocalModels] = useState<FetchedModel[]>([]);
   const models = props.catalogModels ?? localModels;
   const setModels = props.onCatalogModelsChange ?? setLocalModels;
@@ -59,16 +65,18 @@ export function ProviderConfigDetection(props: Props) {
   const sequence = useRef(0);
   const latest = useRef(props);
   latest.current = props;
-  const completedCatalog = useRef<{ baseUrl: string; apiKey: string } | null>(
-    null,
-  );
+  const completedCatalog = useRef<{
+    baseUrl: string;
+    apiKey: string;
+    apiFormat?: ClaudeApiFormat;
+  } | null>(null);
   const configured = validBaseUrl(baseUrl) && !!apiKey.trim();
 
   useEffect(() => {
     setModels([]);
     setDiscovering(false);
     completedCatalog.current = null;
-  }, [baseUrl, apiKey, setModels]);
+  }, [baseUrl, apiKey, apiFormat, setModels]);
 
   useEffect(() => {
     let active = true;
@@ -76,12 +84,24 @@ export function ProviderConfigDetection(props: Props) {
     if (
       editingCredentials ||
       !configured ||
-      (completed?.baseUrl === baseUrl && completed.apiKey === apiKey)
+      (completed?.baseUrl === baseUrl &&
+        completed.apiKey === apiKey &&
+        completed.apiFormat === apiFormat)
     )
       return;
     const timer = window.setTimeout(() => {
       setDiscovering(true);
-      fetchModelsForConfig(baseUrl.trim(), apiKey.trim())
+      fetchModelsForConfig(
+        baseUrl.trim(),
+        apiKey.trim(),
+        undefined,
+        undefined,
+        undefined,
+        {
+          apiFormat:
+            apiFormat === "gemini_native" ? "google-generative-ai" : undefined,
+        },
+      )
         .then((catalog) => {
           if (active) setModels(catalog);
         })
@@ -91,7 +111,7 @@ export function ProviderConfigDetection(props: Props) {
         .finally(() => {
           if (!active) return;
           setDiscovering(false);
-          completedCatalog.current = { baseUrl, apiKey };
+          completedCatalog.current = { baseUrl, apiKey, apiFormat };
         });
     }, 800);
     return () => {
@@ -99,7 +119,7 @@ export function ProviderConfigDetection(props: Props) {
       window.clearTimeout(timer);
       setDiscovering(false);
     };
-  }, [baseUrl, apiKey, editingCredentials, configured, setModels]);
+  }, [baseUrl, apiKey, apiFormat, editingCredentials, configured, setModels]);
 
   useEffect(() => {
     sequence.current += 1;

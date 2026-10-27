@@ -96,7 +96,10 @@ export function GeminiFormFields({
       return;
     }
     setIsFetchingModels(true);
-    fetchModelsForConfig(baseUrl, apiKey)
+    fetchModelsForConfig(baseUrl, apiKey, undefined, undefined, undefined, {
+      apiFormat:
+        apiFormat === "gemini_native" ? "google-generative-ai" : undefined,
+    })
       .then((models) => {
         setFetchedModels(models);
         if (models.length === 0) {
@@ -112,7 +115,7 @@ export function GeminiFormFields({
         showFetchModelsError(err, t);
       })
       .finally(() => setIsFetchingModels(false));
-  }, [baseUrl, apiKey, t]);
+  }, [baseUrl, apiKey, apiFormat, t]);
 
   // 检测是否为 Google 官方（使用 OAuth）
   const isGoogleOfficial =

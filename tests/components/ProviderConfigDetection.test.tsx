@@ -48,6 +48,31 @@ const settle = async () => {
 };
 
 describe("provider configuration detection", () => {
+  it("refetches the catalog with the selected protocol", async () => {
+    const p = props();
+    const view = render(<ProviderConfigDetection {...p} />);
+    await settle();
+    expect(fetchModelsForConfig).toHaveBeenLastCalledWith(
+      p.baseUrl,
+      p.apiKey,
+      undefined,
+      undefined,
+      undefined,
+      { apiFormat: "google-generative-ai" },
+    );
+    view.rerender(<ProviderConfigDetection {...p} apiFormat="openai_chat" />);
+    await settle();
+    expect(fetchModelsForConfig).toHaveBeenCalledTimes(2);
+    expect(fetchModelsForConfig).toHaveBeenLastCalledWith(
+      p.baseUrl,
+      p.apiKey,
+      undefined,
+      undefined,
+      undefined,
+      { apiFormat: undefined },
+    );
+  });
+
   it("keeps failed explicit checks safe and allows retrying", async () => {
     vi.mocked(detectProviderProtocols).mockRejectedValueOnce(
       new Error("synthetic-private-input"),

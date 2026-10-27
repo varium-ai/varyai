@@ -227,6 +227,18 @@ describe("provider upstream protocol selection", () => {
           />
         </QueryClientProvider>,
       );
+      vi.mocked(fetchModelsForConfig).mockClear();
+      await user.click(screen.getByRole("button", { name: "获取模型列表" }));
+      await waitFor(() =>
+        expect(vi.mocked(fetchModelsForConfig).mock.calls).toContainEqual([
+          "https://relay.example/v1",
+          "fixture-key",
+          appId === "gemini" ? undefined : false,
+          undefined,
+          appId === "gemini" ? undefined : "",
+          { apiFormat: "google-generative-ai" },
+        ]),
+      );
       await user.click(screen.getByRole("button", { name: "检测配置" }));
       await waitFor(() =>
         expect(detectProviderProtocols).toHaveBeenCalledWith(
