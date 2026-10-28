@@ -74,7 +74,27 @@ export function ProfileBundleDialog({
       );
       onChanged();
       if (!result.success) {
-        setError(t("profiles.bundle.applyRolledBack"));
+        const reasons = [
+          "providerApplyFailed",
+          "nativeSelectionFailed",
+          "nativeModelMissing",
+          "resourceApplyFailed",
+          "missingResource",
+          "invalidConfig",
+          "readFailed",
+        ].map((key) => `profiles.bundle.${key}`);
+        setError(
+          result.failure
+            ? t("profiles.bundle.agentApplyFailed", {
+                app: t(`apps.${result.failure.app}`),
+                reason: t(
+                  reasons.includes(result.failure.reason)
+                    ? result.failure.reason
+                    : "profiles.bundle.operationFailed",
+                ),
+              })
+            : t("profiles.bundle.applyRolledBack"),
+        );
         setPreview(undefined);
         return;
       }

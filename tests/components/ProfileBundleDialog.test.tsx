@@ -193,7 +193,7 @@ describe("cross-agent profile preview", () => {
     expect(toast.warning).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
-        description: expect.stringContaining("TRAE 客户端待同步"),
+        description: expect.stringContaining("连接后将自动生效"),
       }),
     );
     expect(profilesApi.applyBundle).toHaveBeenCalledWith("offline", "offline");
@@ -224,4 +224,61 @@ describe("cross-agent profile preview", () => {
     expect(onClose).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalled();
   });
+
+  it("identifies the failed agent and missing native model after rollback", async () => {
+    vi.mocked(profilesApi.previewBundle).mockResolvedValue({
+      revision: "failed",
+      changes: [],
+    });
+    vi.mocked(profilesApi.applyBundle).mockResolvedValue({
+      success: false,
+      undoId: null,
+      warnings: [],
+      failure: { app: "qwen", reason: "profiles.bundle.nativeModelMissing" },
+    } as Awaited<ReturnType<typeof profilesApi.applyBundle>>);
+    render(
+      <ProfileBundleDialog
+        profile={{ id: "work", name: "Work" }}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "应用方案" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Qwen Code");
+    expect(alert).toHaveTextContent("模型或协议/地址与当前配置不匹配");
+    expect(alert).toHaveTextContent("已恢复切换前配置");
+  });
+
+  it.each(Object.entries(zh.apps))(
+    "identifies %s failures without exposing raw errors",
+    async (app, label) => {
+      vi.mocked(profilesApi.previewBundle).mockResolvedValue({
+        revision: "failed",
+        changes: [],
+      });
+      vi.mocked(profilesApi.applyBundle).mockResolvedValue({
+        success: false,
+        undoId: null,
+        warnings: [],
+        failure: {
+          app,
+          reason: "synthetic-private-key: upstream request failed",
+        },
+      });
+      render(
+        <ProfileBundleDialog
+          profile={{ id: "work", name: "Work" }}
+          onClose={vi.fn()}
+          onChanged={vi.fn()}
+        />,
+      );
+      fireEvent.click(await screen.findByRole("button", { name: "应用方案" }));
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(label);
+      expect(alert).toHaveTextContent("操作失败，请检查配置并重试");
+      expect(alert).toHaveTextContent("已恢复切换前配置");
+      expect(alert).not.toHaveTextContent("synthetic-private-key");
+    },
+  );
 });

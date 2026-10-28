@@ -640,6 +640,13 @@ fn second_agent_failure_restores_first_agent_and_original_files() {
     let result = ProfileBundleService::apply(&state, &profile.id, &preview.revision).unwrap();
     assert!(!result.success);
     assert!(result.undo_id.is_none());
+    let response = serde_json::to_value(&result).unwrap();
+    assert_eq!(response["failure"]["app"], "codex");
+    assert_eq!(
+        response["failure"]["reason"],
+        "profiles.bundle.providerApplyFailed"
+    );
+    assert!(!response.to_string().contains("missing-account"));
     assert_eq!(std::fs::read(path).unwrap(), before);
     assert_eq!(
         ProviderService::current(&state, AppType::Claude).unwrap(),
@@ -649,6 +656,84 @@ fn second_agent_failure_restores_first_agent_and_original_files() {
         ProviderService::current(&state, AppType::Codex).unwrap(),
         "codex-b"
     );
+}
+
+#[test]
+fn qwen_profiles_resolve_legacy_protocol_and_upstream_selection_during_takeover() {
+    let _guard = test_guard();
+    for wire_api in ["chat", "responses"] {
+        let state = seed();
+        let path = support::ensure_test_home().join(".qwen/settings.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let upstream = "https://profile.example/v1";
+        let mut doc = json!({
+            "modelProviders":{"openai":[{"id":"same-model","baseUrl":upstream,"wireApi":wire_api,"envKey":"FIXTURE_KEY"}]},
+            "model":{"name":"same-model","baseUrl":upstream},
+            "security":{"auth":{"selectedType":"openai"}},
+            "env":{"FIXTURE_KEY":"synthetic-private-key"}
+        });
+        std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        let profile =
+            ProfileBundleService::capture(&state, "Upstream", &["qwen".into()], None).unwrap();
+        // Older snapshots stored OpenAI auth even for a Responses-only entry.
+        let mut legacy = profile.clone();
+        let mut payload: serde_json::Value = serde_json::from_str(&legacy.payload).unwrap();
+        payload["bundle"]["selections"][0]["nativeModels"]["auth"] = json!("openai");
+        legacy.payload = payload.to_string();
+        state.db.save_profile(&legacy).unwrap();
+        let mut profiles = vec![legacy];
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        for route_id in ["before-restart", "after-restart"] {
+            let local = format!("http://127.0.0.1:{port}/agents/qwen/providers/{route_id}/v1");
+            doc["modelProviders"]["openai"][0]["baseUrl"] = json!(local);
+            doc["model"]["baseUrl"] = json!(upstream);
+            std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+            let backup = json!({"path":path,"routes":[{
+                "id":route_id,"pointer":"/modelProviders/openai/0/baseUrl","upstream":upstream,
+                "local":local,"models":["same-model"],"provider_id":"native-fixture"
+            }]});
+            futures::executor::block_on(state.db.save_live_backup("qwen", &backup.to_string()))
+                .unwrap();
+            for saved in &profiles {
+                let preview = ProfileBundleService::preview(&state, &saved.id).unwrap();
+                let result =
+                    ProfileBundleService::apply(&state, &saved.id, &preview.revision).unwrap();
+                assert!(
+                    result.success,
+                    "saved upstream selection must survive takeover"
+                );
+            }
+            let applied: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(applied["model"]["baseUrl"], local);
+            assert_eq!(
+                applied["security"]["auth"]["selectedType"],
+                if wire_api == "responses" {
+                    "openai-responses"
+                } else {
+                    "openai"
+                }
+            );
+            let routed = ProfileBundleService::capture(
+                &state,
+                &format!("Routed {route_id}"),
+                &["qwen".into()],
+                None,
+            )
+            .unwrap();
+            let saved: serde_json::Value = serde_json::from_str(&routed.payload).unwrap();
+            assert_eq!(
+                saved["bundle"]["selections"][0]["nativeModels"]["baseUrl"],
+                upstream
+            );
+            assert!(!routed.payload.contains("synthetic-private-key"));
+            profiles.push(routed);
+        }
+    }
 }
 
 #[test]
@@ -964,6 +1049,20 @@ fn closed_trae_does_not_block_profile_preview_apply_or_undo() {
     assert_eq!(
         state.db.get_current_provider("trae").unwrap().as_deref(),
         Some("trae-a")
+    );
+    let revision = ProfileBundleService::preview(&state, &profile.id)
+        .unwrap()
+        .revision;
+    // Background delivery changes transport status, not the chosen configuration.
+    state
+        .db
+        .set_setting("profile_trae_sync_pending", "false")
+        .unwrap();
+    assert_eq!(
+        ProfileBundleService::preview(&state, &profile.id)
+            .unwrap()
+            .revision,
+        revision
     );
     ProfileBundleService::undo(&state, result.undo_id.as_deref().unwrap()).unwrap();
     assert_eq!(

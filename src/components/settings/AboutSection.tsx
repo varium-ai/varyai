@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Download,
   Copy,
@@ -24,8 +30,9 @@ import {
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { getVersion } from "@tauri-apps/api/app";
-import { proxyApi, settingsApi } from "@/lib/api";
+import { settingsApi } from "@/lib/api";
 import type {
+  AgentVersion,
   ToolInstallation,
   ToolInstallationReport,
 } from "@/lib/api/settings";
@@ -36,7 +43,7 @@ import { APP_ICON_MAP, APP_IDS } from "@/config/appConfig";
 import { APP_DISPLAY_NAME, OFFICIAL_WEBSITE_URL } from "@/config/brand";
 import type { AppId } from "@/lib/api/types";
 import { extractErrorMessage } from "@/utils/errorUtils";
-import { isMac, isWindows } from "@/lib/platform";
+import { isWindows } from "@/lib/platform";
 import { isUpdateAvailable } from "@/lib/version";
 import { ToolUpgradeConfirmDialog } from "./ToolUpgradeConfirmDialog";
 import { ToolInstallRow } from "./ToolInstallRow";
@@ -67,6 +74,7 @@ const TOOL_NAMES = [
   "openclaw",
   "hermes",
   "pi",
+  "qwen",
 ] as const;
 type ToolName = (typeof TOOL_NAMES)[number];
 type ToolLifecycleAction = "install" | "update";
@@ -140,7 +148,9 @@ npm i -g openclaw@latest
 # Hermes
 ${posixScriptInstallCommand("https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh")}
 # Pi
-npm i -g @earendil-works/pi-coding-agent@latest`;
+npm i -g @earendil-works/pi-coding-agent@latest
+# Qwen Code
+npm i -g @qwen-code/qwen-code@latest`;
 
 const WINDOWS_ONE_CLICK_INSTALL_COMMANDS = `# Claude Code
 npm i -g @anthropic-ai/claude-code@latest
@@ -157,7 +167,9 @@ npm i -g openclaw@latest
 # Hermes
 ${HERMES_WINDOWS_INSTALL_COMMAND}
 # Pi
-npm i -g @earendil-works/pi-coding-agent@latest`;
+npm i -g @earendil-works/pi-coding-agent@latest
+# Qwen Code
+npm i -g @qwen-code/qwen-code@latest`;
 
 const ONE_CLICK_INSTALL_COMMANDS = isWindows()
   ? WINDOWS_ONE_CLICK_INSTALL_COMMANDS
@@ -172,12 +184,17 @@ const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
   openclaw: "OpenClaw",
   hermes: "Hermes",
   pi: "Pi",
+  qwen: "Qwen Code",
 };
 
 // 后端返回的 tool 是 string；这里收敛唯一的 ToolName 断言与兜底，供升级确认
 // 对话框按工具名展示（避免在 JSX 里内联 cast、且每次渲染都新建闭包）。
 function toolDisplayName(tool: string): string {
-  return TOOL_DISPLAY_NAMES[tool as ToolName] ?? tool;
+  return (
+    TOOL_DISPLAY_NAMES[tool as ToolName] ??
+    APP_ICON_MAP[tool as AppId]?.label ??
+    tool
+  );
 }
 
 const TOOL_APP_IDS: Record<ToolName, AppId> = {
@@ -189,21 +206,12 @@ const TOOL_APP_IDS: Record<ToolName, AppId> = {
   openclaw: "openclaw",
   hermes: "hermes",
   pi: "pi",
+  qwen: "qwen",
 };
 
 const OTHER_AGENT_IDS = APP_IDS.filter(
   (app) => !Object.values(TOOL_APP_IDS).includes(app),
 );
-const CLI_INSTALLATION_CHECKS = ["workbuddy", "kimi", "qwen"];
-const MAC_DESKTOP_INSTALLATION_CHECKS = [
-  "claude-desktop",
-  "workbuddy",
-  "qoder",
-  "doubaowork",
-  "trae",
-  "kimi",
-  "zcode",
-];
 
 // 工具版本探测代价高：每个工具一次 `--version` 子进程 + 一次 npm/github/pypi 网络请求。
 // 设置页用 Radix Tabs，非激活 Tab 会被卸载——每次切回「关于」都重挂 AboutSection，若都
@@ -230,6 +238,119 @@ function mergeToolVersions(
     if (!existing.has(u.name)) merged.push(u);
   }
   return merged;
+}
+
+function ToolActionButton({
+  action,
+  running,
+  disabled,
+  onClick,
+}: {
+  action: ToolLifecycleAction;
+  running: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <Button
+      size="sm"
+      variant={action === "install" ? "outline" : "default"}
+      className="h-7 gap-1.5 text-xs"
+      onClick={onClick}
+      disabled={disabled}
+    >
+      {running ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : action === "install" ? (
+        <Download className="h-3.5 w-3.5" />
+      ) : (
+        <ArrowUpCircle className="h-3.5 w-3.5" />
+      )}
+      {t(action === "install" ? "settings.toolInstall" : "settings.toolUpdate")}
+    </Button>
+  );
+}
+
+function ToolVersionCard({
+  name,
+  icon,
+  badge,
+  loading,
+  outdated,
+  ready,
+  currentVersion,
+  latestVersion,
+  title,
+  index,
+  children,
+}: {
+  name: string;
+  icon: ReactNode;
+  badge?: ReactNode;
+  loading: boolean;
+  outdated: boolean;
+  ready: boolean;
+  currentVersion: ReactNode;
+  latestVersion: ReactNode;
+  title?: string;
+  index: number;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation();
+  return (
+    <motion.article
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, delay: 0.15 + index * 0.04 }}
+      className="flex min-h-[150px] flex-col gap-3 rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-4 shadow-sm transition-colors hover:border-primary/30"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-background/80 text-muted-foreground">
+            {icon}
+          </span>
+          <div className="min-w-0">
+            <div className="truncate text-sm font-medium">{name}</div>
+            {badge}
+          </div>
+        </div>
+        {loading ? (
+          <Loader2 className="mt-1 h-4 w-4 animate-spin text-muted-foreground" />
+        ) : outdated ? (
+          <span className="mt-1 shrink-0 rounded-full border border-yellow-500/20 bg-yellow-500/10 px-1.5 py-0.5 text-[10px] text-yellow-600 dark:text-yellow-400">
+            {t("settings.updateAvailableShort")}
+          </span>
+        ) : ready ? (
+          <CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-green-500" />
+        ) : (
+          <AlertCircle className="mt-1 h-4 w-4 shrink-0 text-yellow-500" />
+        )}
+      </div>
+      <div className="space-y-1.5 text-xs">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-muted-foreground">
+            {t("settings.currentVersion")}
+          </span>
+          <span
+            className="min-w-0 truncate font-mono text-foreground"
+            title={title}
+          >
+            {currentVersion}
+          </span>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-muted-foreground">
+            {t("settings.latestVersion")}
+          </span>
+          <span className="min-w-0 truncate font-mono text-foreground">
+            {latestVersion}
+          </span>
+        </div>
+      </div>
+      {children}
+    </motion.article>
+  );
 }
 
 export function AboutSection({ isPortable }: AboutSectionProps) {
@@ -276,11 +397,13 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     Record<string, WslShellPreference>
   >({});
   const [loadingTools, setLoadingTools] = useState<Record<string, boolean>>({});
-  const [agentInstallations, setAgentInstallations] = useState<Record<
+  const [agentVersions, setAgentVersions] = useState<Record<
     string,
-    boolean
+    AgentVersion
   > | null>(null);
   const [isLoadingAgents, setIsLoadingAgents] = useState(true);
+  const [updatingDesktopAgent, setUpdatingDesktopAgent] =
+    useState<AppId | null>(null);
   // 多处安装冲突诊断结果：按工具存储，有冲突的工具会在其卡片下方展示。
   // 来源两路：顶部「诊断安装冲突」按钮一次性扫全部，或升级后版本未变时自动补诊。
   const [toolDiagnostics, setToolDiagnostics] = useState<
@@ -294,6 +417,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   const [pendingUpgrade, setPendingUpgrade] = useState<{
     toolNames: ToolName[];
     plans: ToolInstallationReport[];
+    desktopApps: AppId[];
     fromBatchEntry: boolean;
   } | null>(null);
   // 升级 preflight(probe 阶段)的 in-flight 工具集合。
@@ -320,12 +444,26 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     [toolVersionByName],
   );
 
-  const refreshAgentInstallations = useCallback(async () => {
+  const updatableDesktopApps = OTHER_AGENT_IDS.filter((appId) => {
+    const info = agentVersions?.[appId];
+    return (
+      info?.source === "desktop" &&
+      info.installed &&
+      isUpdateAvailable(info.version, info.latest_version)
+    );
+  });
+  const updatableCount =
+    updatableToolNames.length + updatableDesktopApps.length;
+
+  const refreshAgentVersions = useCallback(async () => {
     setIsLoadingAgents(true);
     try {
-      setAgentInstallations(await proxyApi.getAgentInstallations());
+      const versions = await settingsApi.getAgentVersions();
+      setAgentVersions(versions);
+      return versions;
     } catch {
-      setAgentInstallations(null);
+      setAgentVersions(null);
+      return null;
     } finally {
       setIsLoadingAgents(false);
     }
@@ -403,7 +541,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   const loadAllToolVersions = useCallback(
     async (options?: { force?: boolean }) => {
       const force = options?.force ?? false;
-      void refreshAgentInstallations();
+      void refreshAgentVersions();
       // 命中新鲜缓存：切回「关于」Tab 触发的重挂直接复用上次结果，跳过 6 个 `--version`
       // 子进程 + 6 个 latest 版本网络请求。手动「刷新」传 force 绕过缓存强制重查。
       if (
@@ -435,7 +573,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         setIsLoadingTools(false);
       }
     },
-    [wslShellByTool, refreshToolVersions, refreshAgentInstallations],
+    [wslShellByTool, refreshToolVersions, refreshAgentVersions],
   );
 
   const handleToolShellChange = async (toolName: ToolName, value: string) => {
@@ -563,8 +701,12 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
 
   // 实际执行安装/升级的串行循环（已通过任何必要的确认后才调用）。
   const executeRun = useCallback(
-    async (toolNames: ToolName[], action: ToolLifecycleAction) => {
-      const isBatch = toolNames.length > 1;
+    async (
+      toolNames: ToolName[],
+      action: ToolLifecycleAction,
+      desktopApps: AppId[] = [],
+    ) => {
+      const isBatch = toolNames.length + desktopApps.length > 1;
       if (isBatch) {
         setBatchAction(action);
       }
@@ -574,7 +716,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       // soft=true 表示"命令成功执行但结果仍需用户介入"（版本没变/装上却跑不起来），
       // 与命令本身报错（soft=false）区别对待：前者不算硬失败，toast 降级为 warning。
       const failures: {
-        toolName: ToolName;
+        toolName: string;
         detail: string;
         soft: boolean;
         kind?: "notRunnable" | "versionUnchanged";
@@ -658,6 +800,62 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         }
       }
 
+      for (const appId of desktopApps) {
+        setUpdatingDesktopAgent(appId);
+        try {
+          await settingsApi.updateDesktopAgent(appId);
+          const refreshed = await refreshAgentVersions();
+          const info = refreshed?.[appId];
+          if (!info?.version) {
+            failures.push({
+              toolName: appId,
+              detail: t("settings.agentVersionUnreadable"),
+              soft: true,
+            });
+          } else if (isUpdateAvailable(info.version, info.latest_version)) {
+            failures.push({
+              toolName: appId,
+              detail: t("settings.toolActionVersionUnchanged", {
+                version: info.version,
+                latest: info.latest_version,
+              }),
+              soft: true,
+              kind: "versionUnchanged",
+            });
+          } else {
+            succeeded += 1;
+          }
+        } catch (error) {
+          const code =
+            typeof error === "string" &&
+            [
+              "busy",
+              "notInstalled",
+              "download",
+              "checksum",
+              "archive",
+              "identity",
+              "signature",
+              "architecture",
+              "running",
+              "replace",
+              "restore",
+              "changed",
+              "unavailable",
+              "unsupported",
+            ].includes(error)
+              ? error
+              : "failed";
+          failures.push({
+            toolName: appId,
+            detail: t(`settings.agentUpdateErrors.${code}`),
+            soft: false,
+          });
+        } finally {
+          setUpdatingDesktopAgent(null);
+        }
+      }
+
       if (isBatch) {
         setBatchAction(null);
       }
@@ -685,9 +883,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       };
       const failureDescription = isBatch
         ? failures
-            .map(
-              (f) => `${TOOL_DISPLAY_NAMES[f.toolName]}: ${lastLine(f.detail)}`,
-            )
+            .map((f) => `${toolDisplayName(f.toolName)}: ${lastLine(f.detail)}`)
             .join("\n")
         : failures[0]?.detail;
 
@@ -731,6 +927,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       toolVersionByName,
       refreshToolVersions,
       diagnoseToolSilently,
+      refreshAgentVersions,
     ],
   );
 
@@ -746,9 +943,10 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     async (
       toolNames: ToolName[],
       action: ToolLifecycleAction,
-      options?: { fromBatchEntry?: boolean },
+      options?: { fromBatchEntry?: boolean; desktopApps?: AppId[] },
     ) => {
-      if (toolNames.length === 0) return;
+      const desktopApps = options?.desktopApps ?? [];
+      if (toolNames.length === 0 && desktopApps.length === 0) return;
       if (
         toolNames.some(
           (name) => preflightTools.has(name) || toolActions[name] !== undefined,
@@ -774,7 +972,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       }
       try {
         if (action === "install") {
-          await executeRun(toolNames, action);
+          await executeRun(toolNames, action, desktopApps);
           return;
         }
         let reports: ToolInstallationReport[];
@@ -783,15 +981,20 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         } catch (error) {
           // 探测失败不应阻断升级：退回直接执行（等同旧行为）。
           console.error("[AboutSection] probeToolInstallations failed", error);
-          await executeRun(toolNames, action);
+          await executeRun(toolNames, action, desktopApps);
           return;
         }
         const needConfirm = reports.filter((r) => r.needs_confirmation);
         if (needConfirm.length === 0) {
-          await executeRun(toolNames, action);
+          await executeRun(toolNames, action, desktopApps);
           return;
         }
-        setPendingUpgrade({ toolNames, plans: needConfirm, fromBatchEntry });
+        setPendingUpgrade({
+          toolNames,
+          plans: needConfirm,
+          fromBatchEntry,
+          desktopApps,
+        });
       } finally {
         if (fromBatchEntry) {
           setBatchAction(null);
@@ -808,13 +1011,13 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
 
   const handleConfirmUpgrade = useCallback(() => {
     if (pendingUpgrade) {
-      const { toolNames, fromBatchEntry } = pendingUpgrade;
+      const { toolNames, fromBatchEntry, desktopApps } = pendingUpgrade;
       // executeRun 按数量判 isBatch，「全部升级(1)」确认后执行期会漏置 batchAction，
       // 由入口来源在这里补上；对 >1 的场景 executeRun 会重复置位/清除，无害。
       if (fromBatchEntry) {
         setBatchAction("update");
       }
-      void executeRun(toolNames, "update").finally(() => {
+      void executeRun(toolNames, "update", desktopApps).finally(() => {
         if (fromBatchEntry) {
           setBatchAction(null);
         }
@@ -833,6 +1036,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   // 还没置位,如果不算进 busy 会留出 1-3 秒的并发触发窗口。
   const isAnyBusy =
     Boolean(batchAction) ||
+    updatingDesktopAgent !== null ||
     Object.keys(toolActions).length > 0 ||
     preflightTools.size > 0;
 
@@ -955,10 +1159,14 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               onClick={() =>
                 handleRunToolAction(updatableToolNames, "update", {
                   fromBatchEntry: true,
+                  desktopApps: updatableDesktopApps,
                 })
               }
               disabled={
-                isLoadingTools || isAnyBusy || updatableToolNames.length === 0
+                isLoadingTools ||
+                isLoadingAgents ||
+                isAnyBusy ||
+                updatableCount === 0
               }
             >
               {batchAction === "update" ? (
@@ -967,7 +1175,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                 <ArrowUpCircle className="h-3.5 w-3.5" />
               )}
               {t("settings.updateAllTools", {
-                count: updatableToolNames.length,
+                count: updatableCount,
               })}
             </Button>
           </div>
@@ -1008,83 +1216,46 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
             const conflicts = toolDiagnostics[toolName];
 
             return (
-              <motion.article
+              <ToolVersionCard
                 key={toolName}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3, delay: 0.15 + index * 0.04 }}
-                className="flex min-h-[150px] flex-col gap-3 rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-4 shadow-sm transition-colors hover:border-primary/30"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-background/80 text-muted-foreground">
-                      {appConfig?.icon ?? <Terminal className="h-4 w-4" />}
-                    </span>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium">
-                        {displayName}
-                      </div>
-                      {tool?.env_type && ENV_BADGE_CONFIG[tool.env_type] && (
-                        <span
-                          className={`mt-1 inline-flex w-fit text-[9px] px-1.5 py-0.5 rounded-full border ${ENV_BADGE_CONFIG[tool.env_type].className}`}
-                        >
-                          {t(ENV_BADGE_CONFIG[tool.env_type].labelKey)}
-                          {tool.wsl_distro ? ` · ${tool.wsl_distro}` : ""}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  {isToolVersionLoading ? (
-                    <Loader2 className="mt-1 h-4 w-4 animate-spin text-muted-foreground" />
-                  ) : tool?.version ? (
-                    isOutdated ? (
-                      <span className="mt-1 shrink-0 rounded-full border border-yellow-500/20 bg-yellow-500/10 px-1.5 py-0.5 text-[10px] text-yellow-600 dark:text-yellow-400">
-                        {t("settings.updateAvailableShort")}
-                      </span>
-                    ) : (
-                      <CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-green-500" />
-                    )
-                  ) : (
-                    <AlertCircle className="mt-1 h-4 w-4 shrink-0 text-yellow-500" />
-                  )}
-                </div>
-
-                <div className="space-y-1.5 text-xs">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-muted-foreground">
-                      {t("settings.currentVersion")}
-                    </span>
+                index={index}
+                name={displayName}
+                icon={appConfig?.icon ?? <Terminal className="h-4 w-4" />}
+                badge={
+                  tool?.env_type && ENV_BADGE_CONFIG[tool.env_type] ? (
                     <span
-                      className="min-w-0 truncate font-mono text-foreground"
-                      title={title}
+                      className={`mt-1 inline-flex w-fit text-[9px] px-1.5 py-0.5 rounded-full border ${ENV_BADGE_CONFIG[tool.env_type].className}`}
                     >
-                      {isToolVersionLoading
-                        ? t("common.loading")
-                        : checkFailed
-                          ? t("settings.agentDetectionFailed")
-                          : tool?.version
-                            ? tool.version
-                            : installedButBroken
-                              ? t("settings.installedNotRunnable")
-                              : t("common.notInstalled")}
+                      {t(ENV_BADGE_CONFIG[tool.env_type].labelKey)}
+                      {tool.wsl_distro ? ` · ${tool.wsl_distro}` : ""}
                     </span>
+                  ) : null
+                }
+                loading={isToolVersionLoading}
+                outdated={isOutdated}
+                ready={Boolean(tool?.version)}
+                currentVersion={
+                  isToolVersionLoading
+                    ? t("common.loading")
+                    : checkFailed
+                      ? t("settings.agentDetectionFailed")
+                      : (tool?.version ??
+                        (installedButBroken
+                          ? t("settings.installedNotRunnable")
+                          : t("common.notInstalled")))
+                }
+                latestVersion={
+                  isToolVersionLoading
+                    ? t("common.loading")
+                    : (tool?.latest_version ?? t("common.unknown"))
+                }
+                title={title}
+              >
+                {!isToolVersionLoading && !tool?.version && tool?.error && (
+                  <div className="truncate text-[11px] text-muted-foreground">
+                    {tool.error}
                   </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-muted-foreground">
-                      {t("settings.latestVersion")}
-                    </span>
-                    <span className="min-w-0 truncate font-mono text-foreground">
-                      {isToolVersionLoading
-                        ? t("common.loading")
-                        : tool?.latest_version || t("common.unknown")}
-                    </span>
-                  </div>
-                  {!isToolVersionLoading && !tool?.version && tool?.error && (
-                    <div className="truncate text-[11px] text-muted-foreground">
-                      {tool.error}
-                    </div>
-                  )}
-                </div>
+                )}
 
                 {tool?.env_type === "wsl" && (
                   <div className="flex flex-wrap gap-2">
@@ -1161,75 +1332,88 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
                       {t("settings.toolCheckEnv")}
                     </span>
                   ) : action ? (
-                    <Button
-                      size="sm"
-                      variant={action === "install" ? "outline" : "default"}
-                      className="h-7 gap-1.5 text-xs"
-                      onClick={() => handleRunToolAction([toolName], action)}
+                    <ToolActionButton
+                      action={action}
+                      onClick={() =>
+                        void handleRunToolAction([toolName], action)
+                      }
                       disabled={isToolVersionLoading || isAnyBusy}
-                    >
-                      {/* preflight（升级前冲突探测）阶段也转圈：此时 toolActions
-                          尚未置位，只 disabled 不转圈会让探测的数秒像"点了没反应"。 */}
-                      {runningAction || preflightTools.has(toolName) ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : action === "install" ? (
-                        <Download className="h-3.5 w-3.5" />
-                      ) : (
-                        <ArrowUpCircle className="h-3.5 w-3.5" />
-                      )}
-                      {/* loading 时文案保持不变、仅图标切换为 spinner，
-                          按钮宽度恒定，避免"升级"→"升级中…"导致的抖动。 */}
-                      {action === "install"
-                        ? t("settings.toolInstall")
-                        : t("settings.toolUpdate")}
-                    </Button>
+                      running={
+                        Boolean(runningAction) || preflightTools.has(toolName)
+                      }
+                    />
                   ) : (
                     <span className="text-xs text-muted-foreground">
                       {t("settings.toolReady")}
                     </span>
                   )}
                 </div>
-              </motion.article>
+              </ToolVersionCard>
             );
           })}
-          {OTHER_AGENT_IDS.map((appId) => {
+          {OTHER_AGENT_IDS.map((appId, index) => {
             const app = APP_ICON_MAP[appId];
-            const canDetect =
-              CLI_INSTALLATION_CHECKS.includes(appId) ||
-              (isMac() && MAC_DESKTOP_INSTALLATION_CHECKS.includes(appId));
-            const installed = agentInstallations?.[appId];
-            const status = !canDetect
-              ? t("settings.agentDetectionUnsupported")
-              : isLoadingAgents
-                ? t("common.loading")
-                : installed === true
-                  ? t("settings.agentInstalled")
-                  : installed === false
+            const info = agentVersions?.[appId];
+            const status = isLoadingAgents
+              ? t("common.loading")
+              : info?.supported === false
+                ? t("settings.agentDetectionUnsupported")
+                : info?.installed === true
+                  ? (info.version ?? t("settings.agentVersionUnreadable"))
+                  : info?.installed === false
                     ? t("common.notInstalled")
                     : t("settings.agentDetectionFailed");
+            const outdated =
+              !isLoadingAgents &&
+              isUpdateAvailable(info?.version, info?.latest_version);
             return (
-              <article
+              <ToolVersionCard
                 key={appId}
-                className="flex min-h-[150px] flex-col gap-3 rounded-xl border border-border bg-gradient-to-br from-card/80 to-card/40 p-4 shadow-sm"
+                index={TOOL_NAMES.length + index}
+                name={app.label}
+                icon={app.icon}
+                badge={
+                  info?.source ? (
+                    <Badge variant="outline" className="mt-1 text-[10px]">
+                      {t(
+                        info.source === "desktop"
+                          ? "settings.agentVersionDesktop"
+                          : "settings.agentVersionCli",
+                      )}
+                    </Badge>
+                  ) : null
+                }
+                loading={isLoadingAgents}
+                outdated={outdated}
+                ready={Boolean(info?.version && info.latest_version)}
+                currentVersion={status}
+                latestVersion={
+                  isLoadingAgents
+                    ? t("common.loading")
+                    : (info?.latest_version ?? t("common.unknown"))
+                }
               >
-                <div className="flex items-center gap-2">
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-background/80 text-muted-foreground">
-                    {app.icon}
-                  </span>
-                  <span className="text-sm font-medium">{app.label}</span>
+                <div className="mt-auto flex items-center justify-end">
+                  {outdated ? (
+                    <ToolActionButton
+                      action="update"
+                      onClick={() => void executeRun([], "update", [appId])}
+                      disabled={isAnyBusy || isLoadingAgents}
+                      running={updatingDesktopAgent === appId}
+                    />
+                  ) : (
+                    <span className="text-xs text-muted-foreground">
+                      {isLoadingAgents
+                        ? t("common.loading")
+                        : !info
+                          ? t("settings.agentRetryDetection")
+                          : info.version && info.latest_version
+                            ? t("settings.toolReady")
+                            : t("settings.agentLatestUnavailable")}
+                    </span>
+                  )}
                 </div>
-                <div className="flex items-start justify-between gap-3 text-xs">
-                  <span className="shrink-0 text-muted-foreground">
-                    {t("settings.agentInstallationStatus")}
-                  </span>
-                  <span role="status" className="text-right">
-                    {status}
-                  </span>
-                </div>
-                <p className="mt-auto text-xs text-muted-foreground">
-                  {t("settings.agentManualManagement")}
-                </p>
-              </article>
+              </ToolVersionCard>
             );
           })}
         </div>

@@ -410,11 +410,14 @@ mod tests {
             std::env::var("VARYAI_NATIVE_TEST_PROTOCOL").unwrap_or_else(|_| "openai".into());
         let only_app = std::env::var("VARYAI_NATIVE_TEST_APP").ok();
         let real = std::env::var("VARYAI_NATIVE_REAL_UPSTREAM").as_deref() == Ok("1");
-        let config = if real {
+        let mut config = if real {
             authorized_test_gateway()
         } else {
             Value::Null
         };
+        if real {
+            config["protocol"] = json!(protocol);
+        }
         let actions = if real {
             vec![AuditAction::Audit]
         } else {

@@ -7,6 +7,14 @@ import type {
 } from "@/types";
 import type { AppId } from "./types";
 
+export interface AgentVersion {
+  supported: boolean;
+  installed: boolean;
+  version: string | null;
+  latest_version: string | null;
+  source: "desktop" | "cli" | null;
+}
+
 export interface ConfigTransferResult {
   success: boolean;
   message: string;
@@ -31,6 +39,9 @@ export interface WebDavSyncResult {
 }
 
 export const settingsApi = {
+  async updateDesktopAgent(app: AppId): Promise<void> {
+    await invoke("update_desktop_agent", { app });
+  },
   async getWorkBuddyDefaultConfigDir(): Promise<string> {
     return await invoke("get_workbuddy_default_config_dir");
   },
@@ -254,6 +265,10 @@ export const settingsApi = {
     }>
   > {
     return await invoke("get_tool_versions", { tools, wslShellByTool });
+  },
+
+  async getAgentVersions(): Promise<Record<string, AgentVersion>> {
+    return await invoke("get_agent_versions");
   },
 
   async runToolLifecycleAction(

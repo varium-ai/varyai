@@ -1,7 +1,7 @@
 mod files;
 mod library;
 mod native;
-mod trae;
+use super::trae_bridge::selection as trae;
 // Reviewed cross-agent profiles. Secrets never enter preview DTOs.
 // Undo is bounded to the last operation in this application session.
 use super::{profile::ProfilePayload, ProviderService};
@@ -93,8 +93,15 @@ pub struct ProfileApplyResult {
     pub success: bool,
     pub undo_id: Option<String>,
     pub warnings: Vec<String>,
+    pub failure: Option<ProfileApplyFailure>,
     #[serde(skip)]
     pub scopes: Vec<AppType>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProfileApplyFailure {
+    pub app: String,
+    pub reason: &'static str,
 }
 
 #[derive(Default)]
@@ -522,9 +529,15 @@ impl AppSnapshot {
     }
 
     fn fingerprint(&self) -> Value {
+        // Delivery acknowledgements do not change a profile's local selection.
+        let settings: Vec<_> = self
+            .settings
+            .iter()
+            .filter(|(key, _)| self.app != AppType::Trae || key != trae::PENDING_KEY)
+            .collect();
         json!({"app":self.app, "providers":self.providers, "current":self.current,
             "local":self.local_current, "profile":self.profile_current, "snippet":self.snippet, "backup":self.backup,
-            "library":self.library_fingerprint,"settings":self.settings,"sources":self.sources.iter().map(files::Tree::fingerprint).collect::<Vec<_>>(),"trees":self.trees.iter().map(files::Tree::fingerprint).collect::<Vec<_>>(),
+            "library":self.library_fingerprint,"settings":settings,"sources":self.sources.iter().map(files::Tree::fingerprint).collect::<Vec<_>>(),"trees":self.trees.iter().map(files::Tree::fingerprint).collect::<Vec<_>>(),
             "files":self.files.iter().map(|f| json!([f.path, f.bytes.as_ref().map(|b| format!("{:x}", Sha256::digest(b)))])).collect::<Vec<_>>()})
     }
 
@@ -873,7 +886,7 @@ impl ProfileBundleService {
                 } else {
                     None
                 },
-                native_models: Some(native::selection_for_provider(app, &provider)?),
+                native_models: Some(native::selection_for_provider(state, app, &provider)?),
                 library: Some(library::LibrarySelection::capture(state, app)?),
             });
         }
@@ -1005,7 +1018,10 @@ impl ProfileBundleService {
                             provider,
                         )?));
                     }
-                    values.extend(native::model_labels(&native::selection(&snapshot.app)?));
+                    values.extend(native::model_labels(&native::selection(
+                        state,
+                        &snapshot.app,
+                    )?));
                     values.sort();
                     values.dedup();
                     values
@@ -1106,6 +1122,7 @@ impl ProfileBundleService {
                             && previous.applied.get(position) == Some(&fingerprints[index])
                     })
             });
+            let mut failure_reason = "profiles.bundle.providerApplyFailed";
             let result = (|| {
                 if unchanged {
                     state
@@ -1115,7 +1132,7 @@ impl ProfileBundleService {
                     return Ok(());
                 }
                 if snapshot.app == AppType::Trae {
-                    trae::select(state, target)?;
+                    trae::select(&state.db, target)?;
                     state
                         .db
                         .set_current_profile_id(selection.app.as_str(), Some(id))?;
@@ -1173,9 +1190,11 @@ impl ProfileBundleService {
                     warnings.push("profiles.bundle.applyWarning".into());
                 }
                 if let Some(models) = &selection.native_models {
-                    native::apply_selection(&snapshot.app, models)?;
+                    failure_reason = "profiles.bundle.nativeSelectionFailed";
+                    native::apply_selection(state, &snapshot.app, models)?;
                 }
                 if let Some(library) = &selection.library {
+                    failure_reason = "profiles.bundle.resourceApplyFailed";
                     library.apply(state, &snapshot.app)?;
                 }
                 state
@@ -1183,7 +1202,7 @@ impl ProfileBundleService {
                     .set_current_profile_id(selection.app.as_str(), Some(id))?;
                 Ok::<(), AppError>(())
             })();
-            if result.is_err() {
+            if let Err(cause) = result {
                 log::warn!(
                     "Profile bundle apply failed for {}; restoring attempted agents",
                     snapshot.app.as_str()
@@ -1197,6 +1216,21 @@ impl ProfileBundleService {
                         success: false,
                         undo_id: None,
                         warnings: vec!["profiles.bundle.applyRolledBack".into()],
+                        failure: Some(ProfileApplyFailure {
+                            app: snapshot.app.as_str().into(),
+                            reason: match &cause {
+                                AppError::Message(message) => [
+                                    "profiles.bundle.nativeModelMissing",
+                                    "profiles.bundle.missingResource",
+                                    "profiles.bundle.invalidConfig",
+                                    "profiles.bundle.readFailed",
+                                ]
+                                .into_iter()
+                                .find(|key| message == key)
+                                .unwrap_or(failure_reason),
+                                _ => failure_reason,
+                            },
+                        }),
                         scopes: bundle.selections.iter().map(|s| s.app.clone()).collect(),
                     })
                 };
@@ -1212,6 +1246,7 @@ impl ProfileBundleService {
                     success: false,
                     undo_id: None,
                     warnings: vec!["profiles.bundle.applyRolledBack".into()],
+                    failure: None,
                     scopes: bundle.selections.iter().map(|s| s.app.clone()).collect(),
                 });
             }
@@ -1222,7 +1257,7 @@ impl ProfileBundleService {
                     key == trae::PENDING_KEY && value.as_deref() == Some("true")
                 })
         }) {
-            if trae::sync(state) {
+            if trae::sync(&state.db) {
                 // Delivery only changes this local status flag. Retain the
                 // file snapshots above so external edits during delivery are
                 // still detected by undo rather than silently accepted.
@@ -1266,6 +1301,7 @@ impl ProfileBundleService {
             success: true,
             undo_id: Some(undo_id),
             warnings,
+            failure: None,
             scopes,
         })
     }
@@ -1304,9 +1340,9 @@ impl ProfileBundleService {
             .any(|s| s.app == AppType::Trae)
         {
             // Restoring the local scheme also succeeds with the client closed.
-            // An unsuccessful delivery remains recorded for the next apply.
+            // An unsuccessful delivery remains pending until the client reconnects.
             state.db.set_setting(trae::PENDING_KEY, "true")?;
-            trae::sync(state);
+            trae::sync(&state.db);
         }
         let scopes = undo
             .bundle

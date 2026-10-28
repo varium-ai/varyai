@@ -1725,6 +1725,12 @@ pub(crate) fn sync_live_for_provider_respecting_takeover(
                 .sync_grok_live_from_provider_while_proxy_active(provider),
         )
         .map_err(|e| AppError::Message(format!("同步 Grok Build Live 配置失败: {e}")))?,
+        AppType::Gemini if live_taken_over => futures::executor::block_on(
+            state
+                .proxy_service
+                .sync_gemini_live_from_provider_while_proxy_active(provider),
+        )
+        .map_err(|e| AppError::Message(format!("Failed to sync Gemini live configuration: {e}")))?,
         _ => {}
     }
 
@@ -2189,6 +2195,29 @@ pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
     // If no config specified or config is null, preserve existing file
     if config_to_write.is_none() && settings_path.exists() {
         config_to_write = Some(read_json_file(&settings_path)?);
+    }
+
+    if let Some(model) = env_map
+        .get("GEMINI_MODEL")
+        .filter(|model| !model.trim().is_empty())
+    {
+        let settings = config_to_write.get_or_insert_with(|| json!({}));
+        json_deep_merge(settings, &json!({ "model": { "name": model } }));
+        // Gemini CLI's dynamic model registry supplies custom entries to /model.
+        // Leave built-in definitions intact so native capabilities remain available.
+        if !model.starts_with("gemini-")
+            && !model.starts_with("models/gemini-")
+            && model != "auto"
+            && !model.starts_with("auto-gemini-")
+        {
+            json_deep_merge(
+                settings,
+                &json!({
+                    "experimental": { "dynamicModelConfiguration": true },
+                    "modelConfigs": { "modelDefinitions": { (model): { "isVisible": true } } }
+                }),
+            );
+        }
     }
 
     match auth_type {
