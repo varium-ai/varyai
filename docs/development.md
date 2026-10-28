@@ -39,6 +39,11 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 Use `pnpm exec vitest run <test-files>` to select frontend tests. There is no `pnpm lint` command. `pnpm format:check` checks `src/`; apply formatting tools to other changed files as appropriate.
 
+Provider tests that read Hermes configuration must isolate `HERMES_HOME` and
+`LOCALAPPDATA` alongside the temporary home directory, and restore their previous
+values afterward. Hermes uses `LOCALAPPDATA` on Windows, so changing `HOME` alone
+can leave providers from earlier tests visible to later tests.
+
 ## Toolchain dependency review
 
 The Windows-to-WSL2 CI contract keeps the distribution running with a detached Linux process while Windows accesses its UNC filesystem. Preparation, contract execution, and cleanup have separate timeouts. Preparation logs distinguish Linux directory setup from Windows UNC access so a stalled runner can be diagnosed without waiting for the whole job timeout. Both the PR workflow and the manual WSL2 workflow use the same lifecycle.
