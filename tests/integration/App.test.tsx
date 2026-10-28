@@ -723,7 +723,9 @@ describe("App integration with MSW", () => {
     renderApp(App);
 
     await screen.findByTestId("home-dashboard");
-    fireEvent.click(screen.getByRole("button", { name: "homeAudit.activate" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "homeAudit.enableRouting" }),
+    );
 
     expect(securityProtectionMock.setAppEnabled).toHaveBeenCalledWith(true);
     expect(screen.queryByTestId("settings-page")).not.toBeInTheDocument();

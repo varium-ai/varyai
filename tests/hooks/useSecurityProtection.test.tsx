@@ -57,6 +57,23 @@ vi.mock("@/lib/api/providers", () => ({
 }));
 describe("current app protection", () => {
   beforeEach(() => vi.resetAllMocks());
+  it("enables detection for a configured Desktop route", async () => {
+    vi.mocked(providersApi.getClaudeDesktopStatus).mockResolvedValue({
+      supported: true,
+      configured: true,
+      mode: "proxy",
+      expectedBaseUrl: "http://localhost",
+      actualBaseUrl: "http://localhost",
+      gatewayTokenConfigured: true,
+      proxyRunning: true,
+    } as any);
+    vi.mocked(securityApi.getSettings).mockResolvedValue({
+      enabled: false,
+    } as any);
+    await setCurrentAppProtection("claude-desktop", true);
+    expect(securityApi.updateSettings).toHaveBeenCalledWith({ enabled: true });
+    expect(proxyApi.setProxyTakeoverForApp).not.toHaveBeenCalled();
+  });
   it("enables the TRAE native bridge from the same home protection control", async () => {
     vi.mocked(proxyApi.getProxyStatus).mockResolvedValue({
       running: true,

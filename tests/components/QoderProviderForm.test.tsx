@@ -139,13 +139,15 @@ it("opens a styled protocol menu and saves the selected API protocol", async () 
     />,
   );
   await user.click(
-    screen.getByRole("combobox", { name: "qoder.form.protocol" }),
+    screen.getByRole("combobox", { name: "providerForm.apiFormat" }),
   );
   expect(await screen.findByRole("listbox")).toBeVisible();
-  await user.click(screen.getByRole("option", { name: "Anthropic Messages" }));
+  await user.click(
+    screen.getByRole("option", { name: "providerForm.apiFormatAnthropic" }),
+  );
   expect(
-    screen.getByRole("combobox", { name: "qoder.form.protocol" }),
-  ).toHaveTextContent("Anthropic Messages");
+    screen.getByRole("combobox", { name: "providerForm.apiFormat" }),
+  ).toHaveTextContent("providerForm.apiFormatAnthropic");
   await user.click(screen.getByRole("button", { name: "Save Qoder" }));
   await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
   expect(JSON.parse(onSubmit.mock.calls[0][0].settingsConfig)).toMatchObject({

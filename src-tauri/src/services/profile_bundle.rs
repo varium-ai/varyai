@@ -16,6 +16,9 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
+// Reserved selection marker for the shared menu, independent of client scopes.
+pub(crate) const BUNDLE_SCOPE: &str = "bundle";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileSelection {
@@ -135,6 +138,7 @@ impl ProfileBundleState {
 struct Undo {
     id: String,
     profile_id: String,
+    previous_bundle_id: Option<String>,
     bundle: ProfileBundle,
     revision: String,
     before: Vec<AppSnapshot>,
@@ -167,6 +171,40 @@ fn error(key: &str) -> AppError {
     AppError::Message(format!("profiles.bundle.{key}"))
 }
 
+fn initialize_providers(
+    state: &AppState,
+    apps: impl IntoIterator<Item = AppType>,
+) -> Result<(), AppError> {
+    for app in apps {
+        if matches!(
+            app,
+            AppType::WorkBuddy
+                | AppType::Qoder
+                | AppType::Kimi
+                | AppType::Qwen
+                | AppType::ZCode
+                | AppType::Trae
+        ) {
+            // The UI lists seed official entries. Do that before the undo snapshot,
+            // so its first read does not look like an external configuration edit.
+            ProviderService::list(state, app)?;
+        }
+    }
+    Ok(())
+}
+
+fn captures_current_supplier(app: &AppType) -> bool {
+    matches!(
+        app,
+        AppType::WorkBuddy
+            | AppType::Qoder
+            | AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::Trae
+    )
+}
+
 fn scopes(apps: &[String]) -> Result<Vec<AppType>, AppError> {
     let mut result = Vec::new();
     for candidate in AppType::all() {
@@ -177,7 +215,7 @@ fn scopes(apps: &[String]) -> Result<Vec<AppType>, AppError> {
             result.push(candidate);
         }
     }
-    if result.len() < 2 || result.len() != apps.len() {
+    if result.is_empty() || result.len() != apps.len() {
         return Err(error("selectAgents"));
     }
     Ok(result)
@@ -600,8 +638,10 @@ fn revision(profile: &Profile, snapshots: &[AppSnapshot]) -> Result<String, AppE
 }
 
 fn fingerprint_revision(profile: &Profile, fingerprints: &[Value]) -> Result<String, AppError> {
-    let bytes = serde_json::to_vec(&json!([profile.payload, fingerprints]))
-        .map_err(|_| error("invalidConfig"))?;
+    let mut value = json!([profile.payload, fingerprints]);
+    // Provider metadata contains HashMaps whose iteration order can change between reads.
+    value.sort_all_objects();
+    let bytes = serde_json::to_vec(&value).map_err(|_| error("invalidConfig"))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
@@ -728,6 +768,18 @@ pub struct ProfileUndo {
     pub apps: Vec<String>,
 }
 impl ProfileBundleService {
+    pub fn clear_current(state: &AppState) -> Result<(), AppError> {
+        let _operation = state.profile_bundles.lock_operation();
+        if let Some(id) = state.db.get_current_profile_id(BUNDLE_SCOPE)? {
+            for app in AppType::all() {
+                if state.db.get_current_profile_id(app.as_str())?.as_deref() == Some(&id) {
+                    state.db.set_current_profile_id(app.as_str(), None)?;
+                }
+            }
+        }
+        state.db.set_current_profile_id(BUNDLE_SCOPE, None)
+    }
+
     pub fn last_undo(state: &AppState) -> Result<Option<ProfileUndo>, AppError> {
         let slot = state.profile_bundles.lock_undo();
         Ok(slot.as_ref().map(|undo| ProfileUndo {
@@ -774,11 +826,16 @@ impl ProfileBundleService {
                 .collect(),
         };
         let _operation = state.profile_bundles.lock_operation();
+        initialize_providers(state, skeleton.selections.iter().map(|s| s.app.clone()))?;
         let _locks = lock_apps(state, &skeleton);
         let mut selections = Vec::new();
         for scope in scopes {
             let app = &scope;
-            let current = crate::settings::get_effective_current_provider(&state.db, app)?;
+            let current = if captures_current_supplier(app) {
+                state.db.get_current_provider(app.as_str())?
+            } else {
+                crate::settings::get_effective_current_provider(&state.db, app)?
+            };
             let all = state.db.get_all_providers(app.as_str())?;
             let id = current
                 .or_else(|| {
@@ -795,13 +852,16 @@ impl ProfileBundleService {
                 .ok_or_else(|| error("noProvider"))?;
             selections.push(ProfileSelection {
                 app: scope.clone(),
-                provider_id: id,
+                provider_id: id.clone(),
                 models: current_models(state, app, &provider)?,
                 providers: if app.is_additive_mode() {
                     let ids = native::enabled(state, app)?;
                     Some(
                         all.values()
-                            .filter(|p| ids.contains(&p.id))
+                            .filter(|p| {
+                                ids.contains(&p.id)
+                                    && (!captures_current_supplier(app) || p.id == id)
+                            })
                             .map(|p| {
                                 Ok(ProviderModels {
                                     id: p.id.clone(),
@@ -813,7 +873,7 @@ impl ProfileBundleService {
                 } else {
                     None
                 },
-                native_models: Some(native::selection(app)?),
+                native_models: Some(native::selection_for_provider(app, &provider)?),
                 library: Some(library::LibrarySelection::capture(state, app)?),
             });
         }
@@ -843,6 +903,7 @@ impl ProfileBundleService {
     pub fn preview(state: &AppState, id: &str) -> Result<ProfilePreview, AppError> {
         let _operation = state.profile_bundles.lock_operation();
         let (profile, bundle) = load(state, id)?;
+        initialize_providers(state, bundle.selections.iter().map(|s| s.app.clone()))?;
         let _locks = lock_apps(state, &bundle);
         let before = snapshots(state, &bundle)?;
         let mut changes = Vec::new();
@@ -866,23 +927,28 @@ impl ProfileBundleService {
                     with_models(&snapshot.app, provider, &saved.models)?;
                 }
             }
-            let current = snapshot
-                .local_current
-                .as_ref()
-                .or(snapshot.current.as_ref());
-            let enabled_now = if selection.providers.is_some() {
-                let ids = native::enabled(state, &snapshot.app)?;
-                snapshot
-                    .providers
-                    .iter()
-                    .filter(|p| ids.contains(&p.id))
-                    .collect::<Vec<_>>()
+            let current = if captures_current_supplier(&snapshot.app) {
+                snapshot.current.as_ref()
             } else {
-                current
-                    .and_then(|id| snapshot.providers.iter().find(|p| &p.id == id))
-                    .into_iter()
-                    .collect()
+                snapshot
+                    .local_current
+                    .as_ref()
+                    .or(snapshot.current.as_ref())
             };
+            let enabled_now =
+                if selection.providers.is_some() && !captures_current_supplier(&snapshot.app) {
+                    let ids = native::enabled(state, &snapshot.app)?;
+                    snapshot
+                        .providers
+                        .iter()
+                        .filter(|p| ids.contains(&p.id))
+                        .collect::<Vec<_>>()
+                } else {
+                    current
+                        .and_then(|id| snapshot.providers.iter().find(|p| &p.id == id))
+                        .into_iter()
+                        .collect()
+                };
             let enabled_targets = selection.providers.as_ref().map(|ps| {
                 ps.iter()
                     .filter_map(|p| snapshot.providers.iter().find(|target| target.id == p.id))
@@ -991,8 +1057,10 @@ impl ProfileBundleService {
         let started = std::time::Instant::now();
         let _operation = state.profile_bundles.lock_operation();
         let (profile, bundle) = load(state, id)?;
+        initialize_providers(state, bundle.selections.iter().map(|s| s.app.clone()))?;
         let _locks = lock_apps(state, &bundle);
         let before = snapshots(state, &bundle)?;
+        let previous_bundle_id = state.db.get_current_profile_id(BUNDLE_SCOPE)?;
         let fingerprints = before
             .iter()
             .map(AppSnapshot::fingerprint)
@@ -1168,11 +1236,20 @@ impl ProfileBundleService {
             .map(AppSnapshot::fingerprint)
             .collect::<Vec<_>>();
         let after_revision = fingerprint_revision(&profile, &applied)?;
+        if state
+            .db
+            .set_current_profile_id(BUNDLE_SCOPE, Some(id))
+            .is_err()
+        {
+            restore_all(state, &before)?;
+            return Err(error("operationFailed"));
+        }
         let undo_id = uuid::Uuid::new_v4().to_string();
         let scopes: Vec<_> = bundle.selections.iter().map(|s| s.app.clone()).collect();
         let undo = Undo {
             id: undo_id.clone(),
             profile_id: id.into(),
+            previous_bundle_id,
             bundle,
             revision: after_revision,
             before,
@@ -1211,6 +1288,15 @@ impl ProfileBundleService {
             undo.revision = revision(&profile, &snapshots(state, &undo.bundle)?)?;
             return Err(error("restoreFailed"));
         }
+        if state
+            .db
+            .set_current_profile_id(BUNDLE_SCOPE, undo.previous_bundle_id.as_deref())
+            .is_err()
+        {
+            restore_all(state, &after)?;
+            undo.revision = revision(&profile, &snapshots(state, &undo.bundle)?)?;
+            return Err(error("restoreFailed"));
+        }
         if undo
             .bundle
             .selections
@@ -1234,6 +1320,46 @@ impl ProfileBundleService {
 }
 
 #[cfg(test)]
+mod revision_tests {
+    use super::*;
+
+    #[test]
+    fn revision_ignores_nested_object_order_but_detects_changed_values_and_arrays() {
+        let profile = Profile {
+            id: "synthetic-profile".into(),
+            name: "Synthetic profile".into(),
+            payload: "{}".into(),
+            sort_order: None,
+            created_at: None,
+            updated_at: None,
+        };
+        let first: Value = serde_json::from_str(
+            r#"{"providers":[{"meta":{"routes":{"a":"model-a","b":"model-b"}},"models":["a","b"]}]}"#,
+        ).unwrap();
+        let reordered: Value = serde_json::from_str(
+            r#"{"providers":[{"models":["a","b"],"meta":{"routes":{"b":"model-b","a":"model-a"}}}]}"#,
+        ).unwrap();
+        let expected = fingerprint_revision(&profile, &[first]).unwrap();
+        assert_eq!(
+            expected,
+            fingerprint_revision(&profile, &[reordered.clone()]).unwrap()
+        );
+        let mut changed = reordered.clone();
+        changed["providers"][0]["meta"]["routes"]["b"] = json!("model-c");
+        assert_ne!(
+            expected,
+            fingerprint_revision(&profile, &[changed]).unwrap()
+        );
+        let mut changed = reordered;
+        changed["providers"][0]["models"] = json!(["b", "a"]);
+        assert_ne!(
+            expected,
+            fingerprint_revision(&profile, &[changed]).unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
 mod recovery_tests {
     use super::*;
     use std::{
@@ -1246,6 +1372,7 @@ mod recovery_tests {
         *state.profile_bundles.undo.lock().unwrap() = Some(Undo {
             id: "old-undo".into(),
             profile_id: "missing-profile".into(),
+            previous_bundle_id: None,
             bundle: ProfileBundle { selections: vec![] },
             revision: "old-revision".into(),
             before: vec![],

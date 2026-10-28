@@ -26,7 +26,8 @@
     "deleteConfirmTitle": "確認刪除預設",
     "deleteConfirmMessage": "確定要刪除連線預設「{{name}}」嗎？不會改動已使用此預設設定的供應商。",
     "deleteSuccess": "預設已刪除",
-    "deleteFailed": "刪除預設失敗，請重試。"
+    "deleteFailed": "刪除預設失敗，請重試。",
+    "newDraft": "已建立空白預設，請填寫資訊後點擊儲存。"
   },
   "providerDetection": {
     "title": "偵測設定",
@@ -1165,6 +1166,12 @@
     "oneClickInstall": "一鍵安裝",
     "oneClickInstallHint": "安裝或更新 Claude Code / Codex / Gemini CLI / OpenCode / OpenClaw / Hermes / Pi",
     "localEnvCheck": "本地環境檢查",
+    "agentInstallationStatus": "安裝狀態",
+    "agentInstalled": "已安裝",
+    "agentDetectionUnsupported": "目前系統暫不支援偵測",
+    "agentDetectionFailed": "偵測失敗，請重新整理後再試",
+    "agentRetryDetection": "請重新整理以再次偵測",
+    "agentManualManagement": "請透過用戶端或官方安裝程式安裝和更新。",
     "updateAllTools": "全部更新（{{count}}）",
     "currentVersion": "目前版本",
     "latestVersion": "最新版本",
@@ -1631,7 +1638,7 @@
     "visitWebsite": "造訪 {{url}}",
     "anthropicModel": "主模型",
     "anthropicSmallFastModel": "快速模型",
-    "apiFormat": "上游格式",
+    "apiFormat": "上游協定",
     "apiFormatHint": "供應商原生為 Anthropic Messages API 就選 Anthropic Messages（直連，不轉換格式）；使用 Chat Completions 協定就選 Chat；使用 Responses API 就選 Responses；使用 Gemini generateContent 協定就選 Gemini Native。Chat、Responses 與 Gemini Native 均需開啟路由接管才能轉換為 Anthropic Messages。",
     "customUserAgent": "自訂 User-Agent",
     "customUserAgentHint": "僅在開啟本地路由/代理接管後生效，會取代轉發至供應商 API 請求中的 User-Agent。",
@@ -1711,7 +1718,8 @@
     "fetchModelsNotSupported": "該供應商不支援取得模型清單",
     "fetchModelsEndpointNotFound": "未找到可用的模型清單端點，請檢查 Base URL 或確認供應商是否開放該 API",
     "fetchModelsTimeout": "請求逾時，請檢查網路連線",
-    "requiredFields": "請填寫供應商名稱、API 位址、API Key 和模型"
+    "requiredFields": "請填寫供應商名稱、API 位址、API Key 和模型",
+    "clientProtocol": "用戶端協定"
   },
   "copilot": {
     "authSection": "GitHub Copilot 驗證",
@@ -1886,7 +1894,7 @@
     "autoCompactLimit": "壓縮閾值",
     "autoCompactLimitHint": "上下文 token 數達到此閾值時自動壓縮歷史",
     "autoCompactLimitPlaceholder": "例如: 90000",
-    "upstreamFormatLabel": "上游格式",
+    "upstreamFormatLabel": "上游協定",
     "upstreamFormatHint": "供應商原生為 Responses API 就選 Responses（直連，不轉換格式）；使用 Chat Completions 協定就選 Chat；供應商只提供原生 Anthropic Messages 協定就選 Anthropic Messages。Chat 與 Anthropic Messages 均需開啟路由接管才能轉換為 Responses。",
     "upstreamFormatChat": "Chat Completions（需開啟路由）",
     "upstreamFormatResponses": "Responses（原生）",
@@ -1965,7 +1973,7 @@
     "configReplaceFailed": "設定替換失敗：{{error}}"
   },
   "opencode": {
-    "npmPackage": "API 格式",
+    "npmPackage": "上游協定",
     "selectPackage": "選擇 API 格式",
     "npmPackageHint": "選擇 AI 服務的 API 格式",
     "baseUrl": "Base URL",
@@ -2595,7 +2603,8 @@
   "profiles": {
     "bundle": {
       "create": "多 Agent 設定方案（Profile）",
-      "chooseAgents": "選擇至少兩個 Agent",
+      "chooseAgents": "選擇要儲存的 Agent",
+      "captureCurrentHint": "儲存目前 {{app}} 的供應商、模型設定及支援的資源。勾選「多 Agent 設定方案」後，預設包含主畫面目前選取的 Agent。",
       "captureHint": "儲存所選 Agent 的供應商、模型設定與清單，以及各工具支援的 MCP、Skills 和指令。帳號憑證不會複製至方案。",
       "previewTitle": "預覽方案：{{name}}",
       "previewDescription": "核對以下工具的供應商和模型變更；若工具已執行，請依各項提示重新啟動後使用。",
@@ -2613,7 +2622,7 @@
       "apply": "套用方案",
       "recapture": "以目前設定更新快照",
       "previewRequired": "請先預覽方案再套用。",
-      "selectAgents": "請至少選擇兩個支援的 Agent。",
+      "selectAgents": "請至少選擇一個支援的 Agent。",
       "nameRequired": "請輸入方案名稱。",
       "noProvider": "供應商不存在或尚未選擇，請先設定供應商。",
       "invalidConfig": "模型或方案設定無效，請重新儲存快照。",
@@ -2625,7 +2634,7 @@
       "undoExpired": "還原記錄已失效。僅保留本次執行中最近一次切換。",
       "operationFailed": "操作失敗，請檢查設定並重試。",
       "unsupportedAgent": "此 Agent 暫不支援跨 Agent 方案。",
-      "switcherHint": "儲存並切換多個 Agent 的設定方案",
+      "switcherHint": "儲存並切換 Agent 的設定方案",
       "modelsLabel": "模型設定與清單",
       "noEnabledProviders": "未啟用供應商",
       "providersLabel": "啟用的供應商",
@@ -2662,7 +2671,7 @@
     },
     "manage": "管理設定方案…",
     "manageTitle": "管理設定方案",
-    "manageDescription": "多 Agent 方案不會自動儲存。先調整各工具的設定，再點「用目前設定更新快照」更新該方案；涵蓋的工具保持不變。舊的單一工具設定方案保留切換時自動儲存的行為。",
+    "manageDescription": "新建方案不會自動儲存。點選「以目前設定更新快照」，會以目前選取管理且已設定的全部 Agent 及其目前設定整體取代該方案。舊的單一工具設定方案保留切換時自動儲存的行為。",
     "namePlaceholder": "例如：工作、個人",
     "rename": "重新命名",
     "noSnapshotForScope": "本側未儲存",
@@ -2678,7 +2687,12 @@
     "applySuccess": "設定方案已套用",
     "applyFailed": "套用設定方案失敗: {{detail}}",
     "applyWarnings": "設定方案已套用，{{warningCount}} 條警告：\n{{details}}",
-    "clearSuccess": "已切換為不使用設定方案"
+    "clearSuccess": "已切換為不使用設定方案",
+    "nameExists": "設定方案名稱已存在，請使用其他名稱。",
+    "legacyDescription": "查看此用戶端已儲存的供應商、MCP、Skills 和提示詞引用。單用戶端方案會在切換時自動儲存，模型使用該供應商目前的設定。",
+    "legacyProvider": "供應商",
+    "noneSelected": "未選擇",
+    "unchanged": "保持不變（未儲存）"
   },
   "workspace": {
     "title": "Workspace 檔案管理",
@@ -2730,8 +2744,8 @@
     "providerKeyRequired": "請填寫供應商標識",
     "providerKeyDuplicate": "此標識已被使用，請更換",
     "providerKeyInvalid": "標識格式無效，只能使用小寫字母、數字和連字號",
-    "apiProtocol": "API 協定",
-    "selectProtocol": "選擇 API 協定",
+    "apiProtocol": "上游協定",
+    "selectProtocol": "選擇上游協定",
     "apiProtocolHint": "選擇與供應商 API 相容的協定類型。大多數供應商使用 OpenAI Completions 格式。",
     "baseUrl": "API 端點",
     "baseUrlHint": "供應商的 API 端點位址。",
@@ -2836,7 +2850,7 @@
       "providerKeyInvalid": "供應商標識只能包含小寫字母、數字和連字號",
       "providerKeyDuplicate": "該供應商標識已存在",
       "apiMode": "API 模式",
-      "apiModeHint": "供應商 API 協定。請根據端點選擇正確的協定。",
+      "apiModeHint": "Hermes 用戶端發出請求使用的協定。與上游協定不同時，由 Vary AI 本機路由轉換。",
       "apiModeChatCompletions": "OpenAI Chat Completions",
       "apiModeAnthropicMessages": "Anthropic Messages",
       "apiModeCodexResponses": "OpenAI Responses",
@@ -3759,6 +3773,7 @@
     "close": "關閉",
     "claudeScope": "使用量合併 Claude / Desktop；安全事件僅目前應用",
     "activate": "啟用防護",
+    "enableRouting": "啟用本機路由",
     "unsupported": "目前應用不支援本機路由",
     "desktopSetup": "請先為 Claude Desktop 設定有效的本機代理模式",
     "routeFailed": "路由未成功接管，未啟用稽核",
@@ -4233,7 +4248,7 @@
       "required": "請填寫設定名稱、模型 ID 和 API Key。",
       "invalidUrl": "請輸入有效的 HTTP 或 HTTPS 介面位址。",
       "invalidTokens": "Token 上限必須是正整數。",
-      "protocol": "API 協定"
+      "protocol": "上游協定"
     },
     "certificate": {
       "authTitle": "Qoder 憑證操作需要系統驗證",
@@ -4275,7 +4290,7 @@
     "description": "儲存供應商後，點擊「改用這個」並重啟 {{app}}，在用戶端選擇模型。官方登入由用戶端保留。",
     "baseUrl": "Base URL",
     "apiKey": "API Key",
-    "protocol": "API 協定",
+    "protocol": "上游協定",
     "models": "模型 ID",
     "modelsHint": "每行填寫一個可用的模型 ID",
     "fetchModels": "取得模型列表",

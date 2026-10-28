@@ -1123,19 +1123,36 @@ enum ShellProbe {
 /// 只执行已定位到的真实可执行文件。
 #[cfg(not(target_os = "windows"))]
 fn try_get_version(tool: &str) -> ShellProbe {
-    use std::process::Command;
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|s| is_valid_shell(s))
+        .unwrap_or_else(|| "sh".to_string());
+    try_get_version_with_shell(tool, &shell)
+}
 
-    let output = {
-        let shell = std::env::var("SHELL")
-            .ok()
-            .filter(|s| is_valid_shell(s))
-            .unwrap_or_else(|| "sh".to_string());
-        let flag = default_flag_for_shell(&shell);
-        Command::new(shell)
+#[cfg(not(target_os = "windows"))]
+fn try_get_version_with_shell(tool: &str, shell: &str) -> ShellProbe {
+    use std::process::{Command, Stdio};
+
+    let output = (|| {
+        let flag = default_flag_for_shell(shell);
+        let mut command = Command::new(shell);
+        command
             .arg(flag)
             .arg(format!("{tool} --version"))
-            .output()
-    };
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        isolate_child_process_group(&mut command);
+        let child = command
+            .spawn()
+            .map_err(|_| ShellProbe::NotFound(NOT_INSTALLED.to_string()))?;
+        wait_child_output(
+            child,
+            CommandDeadline::from_timeout(Some(INSTALL_PROBE_TIMEOUT)),
+        )
+        .map_err(ShellProbe::FoundButFailed)
+    })();
 
     match output {
         Ok(out) => {
@@ -1159,7 +1176,7 @@ fn try_get_version(tool: &str) -> ShellProbe {
                 }
             }
         }
-        Err(_) => ShellProbe::NotFound(NOT_INSTALLED.to_string()),
+        Err(error) => error,
     }
 }
 
@@ -2080,9 +2097,6 @@ fn probe_path_default_version(tool: &str) -> ShellProbe {
 
 /// 扫描常见路径查找 CLI（PATH 主命令未命中时的兜底单探）。
 fn scan_cli_version(tool: &str) -> ShellProbe {
-    #[cfg(not(target_os = "windows"))]
-    use std::process::Command;
-
     let search_paths = build_tool_search_paths(tool);
     #[cfg(target_os = "windows")]
     let current_path = effective_path_string();
@@ -2110,12 +2124,13 @@ fn scan_cli_version(tool: &str) -> ShellProbe {
             let output = run_windows_tool_version_command(&tool_path, &new_path);
 
             #[cfg(not(target_os = "windows"))]
-            let output = {
-                Command::new(&tool_path)
-                    .arg("--version")
-                    .env("PATH", &new_path)
-                    .output()
-            };
+            let output = run_probe_version_command(&tool_path, &new_path);
+
+            if let Err(error) = &output {
+                if exec_diagnostic.is_none() {
+                    exec_diagnostic = Some(error.to_string());
+                }
+            }
 
             if let Ok(out) = output {
                 let stdout = decode_command_output(&out.stdout).trim().to_string();
@@ -2403,10 +2418,8 @@ fn resolve_path_default(
 /// 都会卡住整个"全部升级"预检——到点整组击杀，该条按探测失败降级，预检继续。
 const INSTALL_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// 带超时的 `--version` 探测（非 Windows）。与 `scan_cli_version` 的裸 `output()`
-/// 不同：stdin 显式置 null、经 `isolate_child_process_group` 进独立会话，超时可整组击杀。
-/// `new_path` 取 `&OsStr` 而非 `&str`：与 `prepend_search_dir_to_path` 同一约定，
-/// 非 UTF-8 的 PATH 段不能在传递途中被有损转换丢弃。
+/// Bound CLI version checks and isolate their process group for timeout cleanup.
+/// Preserve non-UTF-8 PATH entries when probing fallback installations.
 #[cfg(not(target_os = "windows"))]
 fn run_probe_version_command(
     tool_path: &Path,
@@ -4897,6 +4910,24 @@ pub async fn set_window_theme(window: tauri::Window, theme: String) -> Result<()
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[cfg(unix)]
+    #[test]
+    fn version_detection_reports_timeout_instead_of_loading_forever() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().expect("temporary shell directory");
+        let shell = temp.path().join("sh");
+        std::fs::write(&shell, "#!/bin/sh\nsleep 12\nprintf 'codex-cli 0.0.1\\n'\n")
+            .expect("write synthetic shell");
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700))
+            .expect("make shell executable");
+        let started = std::time::Instant::now();
+        let result = try_get_version_with_shell("codex", shell.to_str().expect("shell path"));
+        assert!(
+            matches!(result, ShellProbe::FoundButFailed(detail) if detail.contains("timed out"))
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(11));
+    }
 
     /// 探测 helper 正常路径：spawn（含 pre_exec setsid）能启动、输出能捕获。
     /// `/bin/echo --version` 在 macOS/Linux 均即刻成功退出。

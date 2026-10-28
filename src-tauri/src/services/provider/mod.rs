@@ -238,13 +238,25 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
         let old_home = std::env::var_os("HOME");
+        let old_hermes_home = std::env::var_os("HERMES_HOME");
+        let old_local_app_data = std::env::var_os("LOCALAPPDATA");
         std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
         std::env::set_var("HOME", temp.path());
+        std::env::set_var("HERMES_HOME", temp.path().join(".hermes"));
+        std::env::set_var("LOCALAPPDATA", temp.path().join("AppData").join("Local"));
 
         let db = Arc::new(Database::memory().expect("in-memory database"));
         let state = AppState::new(db);
         let result = test(&state, temp.path());
 
+        match old_local_app_data {
+            Some(value) => std::env::set_var("LOCALAPPDATA", value),
+            None => std::env::remove_var("LOCALAPPDATA"),
+        }
+        match old_hermes_home {
+            Some(value) => std::env::set_var("HERMES_HOME", value),
+            None => std::env::remove_var("HERMES_HOME"),
+        }
         match old_test_home {
             Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
             None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
@@ -255,6 +267,48 @@ mod tests {
         }
 
         result
+    }
+
+    #[test]
+    #[serial]
+    fn provider_test_home_isolates_and_restores_hermes_environment() {
+        let ambient = tempfile::tempdir().expect("ambient fixture directory");
+        let old_hermes_home = env::var_os("HERMES_HOME");
+        let old_local_app_data = env::var_os("LOCALAPPDATA");
+        let ambient_hermes = ambient.path().join("hermes");
+        let ambient_local = ambient.path().join("local");
+        env::set_var("HERMES_HOME", &ambient_hermes);
+        env::set_var("LOCALAPPDATA", &ambient_local);
+
+        let (home, hermes_home, local_app_data) = with_test_home(|_, home| {
+            (
+                home.to_path_buf(),
+                env::var_os("HERMES_HOME"),
+                env::var_os("LOCALAPPDATA"),
+            )
+        });
+        let restored_hermes_home = env::var_os("HERMES_HOME");
+        let restored_local_app_data = env::var_os("LOCALAPPDATA");
+
+        match old_hermes_home {
+            Some(value) => env::set_var("HERMES_HOME", value),
+            None => env::remove_var("HERMES_HOME"),
+        }
+        match old_local_app_data {
+            Some(value) => env::set_var("LOCALAPPDATA", value),
+            None => env::remove_var("LOCALAPPDATA"),
+        }
+
+        assert_eq!(hermes_home, Some(home.join(".hermes").into_os_string()));
+        assert_eq!(
+            local_app_data,
+            Some(home.join("AppData").join("Local").into_os_string())
+        );
+        assert_eq!(restored_hermes_home, Some(ambient_hermes.into_os_string()));
+        assert_eq!(
+            restored_local_app_data,
+            Some(ambient_local.into_os_string())
+        );
     }
 
     fn codex_settings(base_url: &str, api_key: &str) -> Value {
@@ -3821,6 +3875,44 @@ wire_api = "responses"
                 json!("Claude Sonnet 4.1")
             );
         });
+    }
+
+    #[test]
+    #[serial]
+    fn import_hermes_projected_upstream_preserves_supplier_connection(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        with_test_home(|state, _| -> Result<(), Box<dyn std::error::Error>> {
+            let mut provider = hermes_provider("gemini-fixture");
+            provider.settings_config["models"] = json!([{"id":"fixture","name":"Fixture"}]);
+            provider.meta = Some(serde_json::from_value(
+                json!({"apiFormat":"gemini_native"}),
+            )?);
+            state.db.save_provider("hermes", &provider)?;
+            let projected = crate::services::upstream_protocol::project(
+                state.db.as_ref(),
+                &AppType::Hermes,
+                &provider,
+            )?;
+            crate::hermes_config::set_provider(&provider.id, projected.settings_config)?;
+            import_hermes_providers_from_live(state)?;
+            let saved = state
+                .db
+                .get_provider_by_id(&provider.id, "hermes")?
+                .ok_or("missing fixture")?;
+            assert_eq!(
+                saved.settings_config["base_url"],
+                provider.settings_config["base_url"]
+            );
+            assert_eq!(
+                saved.settings_config["api_key"],
+                provider.settings_config["api_key"]
+            );
+            assert_eq!(
+                saved.meta.and_then(|m| m.api_format).as_deref(),
+                Some("gemini_native")
+            );
+            Ok(())
+        })
     }
 
     #[test]

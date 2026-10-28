@@ -1168,7 +1168,7 @@ impl RequestForwarder {
     /// 成功时返回 `(response, claude_api_format, outbound_model)`，其中
     /// `outbound_model` 是最终发往上游的模型名（所有映射/改写之后）。
     #[allow(clippy::too_many_arguments)]
-    async fn forward(
+    pub(super) async fn forward(
         &self,
         app_type: &AppType,
         method: &http::Method,
@@ -1796,6 +1796,14 @@ impl RequestForwarder {
         );
         let request_is_streaming =
             is_streaming_request(&effective_endpoint, &filtered_body, headers);
+        if matches!(resolved_claude_api_format.as_deref(), Some("gemini_native")) {
+            log::info!(
+                "[GeminiRequestShape] app={}, streaming={}, shape={}",
+                app_type.as_str(),
+                request_is_streaming,
+                gemini_request_shape(&filtered_body),
+            );
+        }
         let force_identity_encoding = needs_transform
             || codex_responses_to_chat
             || codex_responses_to_anthropic
@@ -2069,6 +2077,8 @@ impl RequestForwarder {
 
         let should_send_anthropic_headers = adapter.name() == "Claude"
             && matches!(resolved_claude_api_format.as_deref(), Some("anthropic"));
+        let strip_desktop_client_metadata = matches!(app_type, AppType::ClaudeDesktop)
+            && url::Url::parse(&url).is_ok_and(|url| url.host_str() != Some("api.anthropic.com"));
 
         // 预计算 anthropic-beta 值（仅 Claude）
         let anthropic_beta_value = if should_send_anthropic_headers {
@@ -2114,6 +2124,12 @@ impl RequestForwarder {
 
         for (key, value) in headers {
             let key_str = key.as_str();
+
+            // Desktop client metadata is not part of Messages protocol versioning.
+            // Third-party gateways may reject it even when they accept Messages.
+            if strip_desktop_client_metadata && key_str.starts_with("anthropic-client-") {
+                continue;
+            }
 
             // --- host — 原位替换为上游 host（保持客户端原始位置） ---
             if key_str.eq_ignore_ascii_case("host") {
@@ -3905,6 +3921,51 @@ fn cache_control_summary(value: &Value) -> String {
     )
 }
 
+fn gemini_request_shape(body: &Value) -> Value {
+    let functions = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| tool.get("functionDeclarations").and_then(Value::as_array))
+        .flatten()
+        .collect::<Vec<_>>();
+    let config = &body["generationConfig"];
+    let max_output_tokens_range = match config.get("maxOutputTokens").and_then(Value::as_u64) {
+        Some(0) => "zero",
+        Some(1..=8192) => "up_to_8192",
+        Some(8193..=32768) => "up_to_32768",
+        Some(32769..=65536) => "up_to_65536",
+        Some(_) => "over_65536",
+        None => "missing_or_invalid",
+    };
+    let generation_fields = [
+        "maxOutputTokens",
+        "temperature",
+        "topP",
+        "stopSequences",
+        "thinkingConfig",
+        "responseMimeType",
+        "responseSchema",
+        "responseJsonSchema",
+    ]
+    .into_iter()
+    .filter(|field| config.get(*field).is_some())
+    .collect::<Vec<_>>();
+    serde_json::json!({
+        "contents_count": body.get("contents").and_then(Value::as_array).map_or(0, Vec::len),
+        "has_system_instruction": body.get("systemInstruction").is_some(),
+        "function_count": functions.len(),
+        "empty_function_name_count": functions.iter().filter(|f| f.get("name").and_then(Value::as_str).is_none_or(|name| name.trim().is_empty())).count(),
+        "json_schema_function_count": functions.iter().filter(|f| f.get("parametersJsonSchema").is_some()).count(),
+        "parameters_function_count": functions.iter().filter(|f| f.get("parameters").is_some()).count(),
+        "has_tool_config": body.get("toolConfig").is_some(),
+        "generation_fields": generation_fields,
+        "max_output_tokens_range": max_output_tokens_range,
+        "stop_sequence_count": config.get("stopSequences").and_then(Value::as_array).map_or(0, Vec::len),
+    })
+}
+
 fn value_for_log(value: &Value) -> String {
     match value {
         Value::Bool(value) => value.to_string(),
@@ -3928,6 +3989,49 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::time::Duration;
+
+    #[test]
+    fn gemini_request_shape_reports_structure_without_private_values() {
+        let shape = gemini_request_shape(&json!({
+            "model":"synthetic-private-model",
+            "systemInstruction":{"parts":[{"text":"synthetic-private-prompt"}]},
+            "contents":[{"role":"user","parts":[{"text":"synthetic-private-input"}]}],
+            "generationConfig":{"maxOutputTokens":131072,"temperature":0.7,"stopSequences":["synthetic-private-stop"]},
+            "tools":[{"functionDeclarations":[
+                {"name":"synthetic-private-tool","parametersJsonSchema":{"type":"object","properties":{"synthetic-private-argument":{"type":"string"}}}},
+                {"name":"","parameters":{"type":"object"}}
+            ]}]
+        }));
+        assert_eq!(shape["contents_count"], 1);
+        assert_eq!(shape["has_system_instruction"], true);
+        assert_eq!(shape["function_count"], 2);
+        assert_eq!(shape["empty_function_name_count"], 1);
+        assert_eq!(shape["json_schema_function_count"], 1);
+        assert_eq!(shape["max_output_tokens_range"], "over_65536");
+        assert_eq!(shape["stop_sequence_count"], 1);
+        assert!(!shape.to_string().contains("synthetic-private"));
+    }
+
+    #[test]
+    fn gemini_request_shape_handles_missing_and_invalid_limits() {
+        assert_eq!(
+            gemini_request_shape(&json!({}))["max_output_tokens_range"],
+            "missing_or_invalid"
+        );
+        for (limit, range) in [
+            (0, "zero"),
+            (8192, "up_to_8192"),
+            (8193, "up_to_32768"),
+            (32769, "up_to_65536"),
+            (65537, "over_65536"),
+        ] {
+            assert_eq!(
+                gemini_request_shape(&json!({"generationConfig":{"maxOutputTokens":limit}}))
+                    ["max_output_tokens_range"],
+                range
+            );
+        }
+    }
 
     fn test_provider_with_type(provider_type: Option<&str>) -> Provider {
         Provider {

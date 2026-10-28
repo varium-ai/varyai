@@ -19,6 +19,10 @@ import { resolveUsageRange } from "@/lib/usageRange";
 import { SecurityCenterPage } from "@/components/security/SecurityCenterPage";
 import type { SecurityEvent } from "@/types/securityEvents";
 import type { ToolRiskRuleSeed } from "@/types/toolRisk";
+import type { SecurityRuleItem } from "@/types/security";
+
+const extraRules = vi.hoisted(() => ({ items: [] as SecurityRuleItem[] }));
+const updateBuiltinAction = vi.hoisted(() => vi.fn());
 
 const toolRiskFlow = vi.hoisted(() => ({
   useRealPanel: false,
@@ -89,12 +93,13 @@ vi.mock("@/hooks/useSecurityAudit", () => ({
         enabled: true,
         isBuiltin: true,
       },
+      ...extraRules.items,
     ],
     isLoading: false,
     toggleRule: vi.fn(),
     saveRule,
     deleteRule,
-    updateBuiltinAction: vi.fn(),
+    updateBuiltinAction,
     updateCustomAction,
     isSaving: false,
   }),
@@ -629,6 +634,8 @@ describe("SecurityCenterPage", () => {
 });
 
 afterEach(() => {
+  extraRules.items = [];
+  updateBuiltinAction.mockClear();
   toolRiskFlow.useRealPanel = false;
   toolRiskFlow.events = [];
   toolRiskFlow.seeds = [];
@@ -644,6 +651,63 @@ afterEach(() => {
     refetch.mockClear(),
   );
   vi.restoreAllMocks();
+});
+
+it("offers hide and send for the generic sk rule without selecting it by default", () => {
+  extraRules.items = [
+    {
+      id: "catalog:generic-sk-key-notice",
+      name: "Generic key",
+      category: "api_token",
+      riskLevel: "MEDIUM",
+      action: "allow",
+      enabled: true,
+      isBuiltin: true,
+    },
+  ];
+  render(<SecurityCenterPage />);
+  fireEvent.click(screen.getByRole("tab", { name: /security\.tabRules/ }));
+  const row = screen.getByTestId("security-rule-catalog:generic-sk-key-notice");
+  expect(
+    within(row).getByRole("button", { name: "security.ruleActionAllow" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  fireEvent.click(
+    within(row).getByRole("button", { name: "security.ruleActionRedact" }),
+  );
+  expect(updateBuiltinAction).toHaveBeenCalledWith(
+    "catalog:generic-sk-key-notice",
+    "redact",
+  );
+});
+
+it("keeps the two password rule descriptions distinct and readable in full", () => {
+  extraRules.items = ["password-field", "password-assignment"].map((id) => ({
+    id: `catalog:${id}`,
+    name: id,
+    category: "password",
+    riskLevel: "HIGH",
+    action: "allow",
+    enabled: true,
+    isBuiltin: true,
+  }));
+  render(<SecurityCenterPage />);
+  fireEvent.click(screen.getByRole("tab", { name: /security\.tabRules/ }));
+  for (const id of ["password-field", "password-assignment"]) {
+    const description = screen.getByText(
+      `security.builtinRules.catalog_${id}.description`,
+    );
+    expect(description).not.toHaveClass("truncate");
+    expect(description).toHaveAttribute(
+      "title",
+      `security.builtinRules.catalog_${id}.description`,
+    );
+  }
+  for (const locale of [en, zh, ja, zhTW]) {
+    const rules = locale.security.builtinRules;
+    expect(rules["catalog_password-field"].description).not.toBe(
+      rules["catalog_password-assignment"].description,
+    );
+  }
 });
 
 it("shows persisted aggregation counts and first/last hit times in the list and detail", () => {

@@ -21,6 +21,12 @@ vi.mock("@/components/providers/forms/CodexConfigEditor", () => ({
   default: () => <div />,
 }));
 
+vi.mock("@/components/JsonEditor", () => ({ default: () => <div /> }));
+vi.mock("@/hooks/useHermes", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/useHermes")>()),
+  useHermesLiveProviderIds: () => ({ data: [], isLoading: false }),
+}));
+
 vi.mock("@/lib/query", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/query")>()),
   useSettingsQuery: () => ({ data: { commonConfigConfirmed: true } }),
@@ -31,6 +37,55 @@ describe("provider upstream protocol selection", () => {
     Element.prototype.scrollIntoView = vi.fn();
     i18n.addResourceBundle("zh", "translation", zh, true, true);
   });
+
+  it.each(["qoder", "workbuddy", "hermes"] as const)(
+    "saves a Gemini upstream separately from the %s client protocol",
+    async (appId) => {
+      const user = userEvent.setup();
+      const onSubmit = vi.fn();
+      render(
+        <QueryClientProvider client={createTestQueryClient()}>
+          <ProviderForm
+            appId={appId}
+            providerId="fixture-provider"
+            submitLabel="Save protocol"
+            onSubmit={onSubmit}
+            onCancel={vi.fn()}
+            initialData={{
+              name: "Gemini fixture",
+              category: "custom",
+              settingsConfig:
+                appId === "hermes"
+                  ? {
+                      base_url: "https://models.example/v1beta",
+                      api_key: "synthetic-key",
+                      api_mode: "chat_completions",
+                      models: [{ id: "fixture" }],
+                    }
+                  : {
+                      baseUrl: "https://models.example/v1beta",
+                      url: "https://models.example/v1beta",
+                      apiKey: "synthetic-key",
+                      protocol: "openai",
+                      model: "fixture",
+                      id: "fixture",
+                      models: [{ id: "fixture", model: "fixture" }],
+                    },
+            }}
+          />
+        </QueryClientProvider>,
+      );
+      await user.click(screen.getByLabelText("上游协议"));
+      await user.click(screen.getByRole("option", { name: /Gemini Native/ }));
+      await user.click(screen.getByRole("button", { name: "Save protocol" }));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      const saved = onSubmit.mock.calls[0][0];
+      expect(saved.meta.apiFormat).toBe("gemini_native");
+      const config = JSON.parse(saved.settingsConfig);
+      if (appId === "hermes") expect(config.api_mode).toBe("chat_completions");
+      else if (appId === "qoder") expect(config.protocol).toBe("openai");
+    },
+  );
 
   it("saves and reopens all Codex models after fetching candidates separately", async () => {
     const user = userEvent.setup();
@@ -249,11 +304,11 @@ describe("provider upstream protocol selection", () => {
           }),
         ),
       );
-      expect(screen.getByLabelText("上游格式")).toHaveTextContent(
+      expect(screen.getByLabelText("上游协议")).toHaveTextContent(
         "Gemini Native",
       );
       await user.click(screen.getByRole("button", { name: "使用此格式" }));
-      expect(screen.getByLabelText("上游格式")).toHaveTextContent(
+      expect(screen.getByLabelText("上游协议")).toHaveTextContent(
         "OpenAI Chat Completions",
       );
       vi.mocked(detectProviderProtocols).mockClear();
@@ -288,7 +343,7 @@ describe("provider upstream protocol selection", () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByLabelText("上游格式")).toHaveTextContent(
+    expect(screen.getByLabelText("上游协议")).toHaveTextContent(
       "OpenAI Chat Completions",
     );
     await user.click(screen.getByRole("button", { name: "Save protocol" }));
@@ -323,7 +378,7 @@ describe("provider upstream protocol selection", () => {
         </QueryClientProvider>,
       );
 
-      await user.click(screen.getByLabelText("上游格式"));
+      await user.click(screen.getByLabelText("上游协议"));
       await user.click(screen.getByRole("option", { name: /Gemini Native/ }));
       await user.click(screen.getByRole("button", { name: "Save protocol" }));
       await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());

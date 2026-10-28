@@ -2,6 +2,10 @@
 
 The DLP engine inspects supported outbound text extracted from requests handled by enabled local routing. It is not a disk scanner or a guarantee that all client traffic or every JSON field is inspected.
 
+For Claude Desktop, the home status offers to enable protection when its proxy route is connected but detection is off. If the Desktop route is not connected, it instead opens routing settings. A running gateway alone does not establish that Desktop is configured to use it.
+
+For clients with a route takeover action, the home status offers **Enable local routing** when that client is disconnected, regardless of the global detection setting. This action enables the client's route and security detection. A connected client with detection off instead shows **Activate protection**, including configured Claude Desktop and Pi routes. The footer also prioritizes the current client's routing state over the global detection setting. Selecting an upstream format alone does not activate routing or protocol conversion.
+
 ## Processing
 
 1. Extract the supported text fields without changing unrelated protocol values.
@@ -12,7 +16,7 @@ The DLP engine inspects supported outbound text extracted from requests handled 
 
 ## Current actions
 
-The base credential/PII rules, including private-key material, default to redaction; private RFC1918 IPs default to audit-only. Optional catalog rules default to allow. The persistence boundary normalizes saved/imported `block` settings to `redact`; historical audit events retain their original action. The engine still has protective error paths when redaction fails. The generic `sk-` notice has its own restricted actions.
+The base credential/PII rules, including private-key material, default to redaction; private RFC1918 IPs default to audit-only. Optional catalog rules default to allow. The persistence boundary normalizes saved/imported `block` settings to `redact`; historical audit events retain their original action. The engine still has protective error paths when redaction fails. The broad generic `sk-` detector also supports explicit redaction, audit or allow overrides; its default remains allow because its prefix can match ordinary text.
 
 Confirm behavior in `builtin_rules.rs`, `runtime.rs`, and the security DAO before changing settings or documentation.
 

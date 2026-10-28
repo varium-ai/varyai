@@ -28,12 +28,6 @@ pub(super) fn sync(state: &AppState) -> bool {
         // enable its bridge or security audit as part of a scheme switch.
         crate::services::trae_bridge::profile_models()?;
         let providers = state.db.get_all_providers("trae")?;
-        for provider in providers.values().filter(|p| {
-            p.category.as_deref() != Some("official")
-                && p.meta.as_ref().and_then(|m| m.live_config_managed) == Some(true)
-        }) {
-            crate::services::trae_bridge::apply_connected(provider)?;
-        }
         // Include DB-only providers: an earlier offline switch may have left
         // one of them in the client. The bridge owns only VaryAI's namespace.
         for provider in providers.values().filter(|p| {
@@ -41,6 +35,19 @@ pub(super) fn sync(state: &AppState) -> bool {
                 && p.meta.as_ref().and_then(|m| m.live_config_managed) != Some(true)
         }) {
             crate::services::trae_bridge::remove(&provider.id)?;
+        }
+        // Withdraw inactive entries before applying overlapping request model IDs.
+        for provider in providers.values().filter(|p| {
+            p.category.as_deref() != Some("official")
+                && p.meta.as_ref().and_then(|m| m.live_config_managed) == Some(true)
+        }) {
+            crate::services::trae_bridge::apply_connected(
+                &crate::services::upstream_protocol::project(
+                    state.db.as_ref(),
+                    &crate::app_config::AppType::Trae,
+                    provider,
+                )?,
+            )?;
         }
         state.db.set_setting(PENDING_KEY, "false")
     };

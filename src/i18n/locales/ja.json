@@ -26,7 +26,8 @@
     "deleteConfirmTitle": "プリセットの削除を確認",
     "deleteConfirmMessage": "接続プリセット「{{name}}」を削除しますか？このプリセットで設定済みのプロバイダーは変更されません。",
     "deleteSuccess": "プリセットを削除しました",
-    "deleteFailed": "削除に失敗しました。再試行してください。"
+    "deleteFailed": "削除に失敗しました。再試行してください。",
+    "newDraft": "新しいプリセットを準備しました。詳細を入力して保存してください。"
   },
   "providerDetection": {
     "title": "設定を検出",
@@ -1164,6 +1165,12 @@
     "manualInstallCommands": "手動インストールコマンド",
     "oneClickInstallHint": "Claude Code / Codex / Gemini CLI / OpenCode / OpenClaw / Hermes / Pi をインストールまたは更新",
     "localEnvCheck": "ローカル環境チェック",
+    "agentInstallationStatus": "インストール状態",
+    "agentInstalled": "インストール済み",
+    "agentDetectionUnsupported": "このシステムでは検出に対応していません",
+    "agentDetectionFailed": "検出に失敗しました。更新して再試行してください。",
+    "agentRetryDetection": "更新して再検出してください",
+    "agentManualManagement": "クライアントまたは公式インストーラーでインストールと更新を行ってください。",
     "updateAllTools": "すべて更新（{{count}}）",
     "currentVersion": "現在のバージョン",
     "latestVersion": "最新バージョン",
@@ -1630,7 +1637,7 @@
     "visitWebsite": "{{url}} を開く",
     "anthropicModel": "メインモデル",
     "anthropicSmallFastModel": "高速モデル",
-    "apiFormat": "上流フォーマット",
+    "apiFormat": "上流プロトコル",
     "apiFormatHint": "プロバイダーがネイティブ Anthropic Messages API なら Anthropic Messages を選択（直結、フォーマット変換なし）。Chat Completions プロトコルなら Chat、Responses API なら Responses、Gemini generateContent プロトコルなら Gemini Native を選択。Chat、Responses、Gemini Native は Anthropic Messages への変換にルーティング引き継ぎの有効化が必要です。",
     "customUserAgent": "カスタム User-Agent",
     "customUserAgentHint": "ローカルルーティング/プロキシ引き継ぎが有効な場合にのみ適用され、プロバイダー API へ転送するリクエストの User-Agent を置き換えます。",
@@ -1710,7 +1717,8 @@
     "fetchModelsNotSupported": "このプロバイダーはモデル一覧の取得に対応していません",
     "fetchModelsEndpointNotFound": "利用可能なモデル一覧エンドポイントが見つかりません。Base URL を確認するか、プロバイダーが該当 API を公開しているかご確認ください",
     "fetchModelsTimeout": "リクエストがタイムアウトしました。ネットワーク接続を確認してください",
-    "requiredFields": "プロバイダー名、API エンドポイント、API Key、モデルを入力してください"
+    "requiredFields": "プロバイダー名、API エンドポイント、API Key、モデルを入力してください",
+    "clientProtocol": "クライアントのプロトコル"
   },
   "copilot": {
     "authSection": "GitHub Copilot 認証",
@@ -1880,7 +1888,7 @@
     "saveFailed": "保存に失敗しました: {{error}}",
     "modelNameHint": "使用するモデルを指定します。config.toml に自動更新されます",
     "modelName": "モデル名",
-    "upstreamFormatLabel": "上流フォーマット",
+    "upstreamFormatLabel": "上流プロトコル",
     "upstreamFormatHint": "プロバイダーがネイティブ Responses API なら Responses を選択（直結、フォーマット変換なし）。Chat Completions プロトコルなら Chat を選択。ネイティブ Anthropic Messages プロトコルのみ提供する場合は Anthropic Messages を選択。Chat と Anthropic Messages はどちらも Responses への変換にルーティング引き継ぎの有効化が必要です。",
     "upstreamFormatChat": "Chat Completions（ルーティング必須）",
     "upstreamFormatResponses": "Responses（ネイティブ）",
@@ -1964,7 +1972,7 @@
     "configReplaceFailed": "設定の置換に失敗しました: {{error}}"
   },
   "opencode": {
-    "npmPackage": "API フォーマット",
+    "npmPackage": "上流プロトコル",
     "selectPackage": "API フォーマットを選択",
     "npmPackageHint": "AI サービスの API フォーマットを選択",
     "baseUrl": "Base URL",
@@ -2594,7 +2602,8 @@
   "profiles": {
     "bundle": {
       "create": "複数 Agent の設定（Profile）",
-      "chooseAgents": "2つ以上のエージェントを選択",
+      "chooseAgents": "保存するエージェントを選択",
+      "captureCurrentHint": "現在の {{app}} のプロバイダー、モデル設定、対応リソースを保存します。複数エージェントを有効にすると、メイン画面で選択中のエージェントが初期選択されます。",
       "captureHint": "選択した Agent のプロバイダー、モデル設定と一覧、対応する MCP・Skills・指示を保存します。認証情報は設定にコピーされません。",
       "previewTitle": "構成をプレビュー：{{name}}",
       "previewDescription": "以下のツールのプロバイダーとモデルの変更を確認してください。起動中の場合は各項目の案内に従って再起動してください。",
@@ -2612,7 +2621,7 @@
       "apply": "構成を適用",
       "recapture": "現在の設定でスナップショットを更新",
       "previewRequired": "適用前に構成をプレビューしてください。",
-      "selectAgents": "対応するエージェントを2つ以上選択してください。",
+      "selectAgents": "対応するエージェントを1つ以上選択してください。",
       "nameRequired": "構成名を入力してください。",
       "noProvider": "プロバイダーが存在しないか未選択です。先に設定してください。",
       "invalidConfig": "モデルまたは構成の設定が無効です。スナップショットを保存し直してください。",
@@ -2624,7 +2633,7 @@
       "undoExpired": "復元記録が期限切れです。今回の起動中の直近の切替のみ保持されます。",
       "operationFailed": "操作に失敗しました。設定を確認して再試行してください。",
       "unsupportedAgent": "このエージェントは複数エージェントの構成に未対応です。",
-      "switcherHint": "複数 Agent の設定を保存して切り替え",
+      "switcherHint": "Agent の設定を保存して切り替え",
       "modelsLabel": "モデル設定と一覧",
       "noEnabledProviders": "有効なプロバイダーなし",
       "providersLabel": "有効なプロバイダー",
@@ -2661,7 +2670,7 @@
     },
     "manage": "設定プロファイルを管理…",
     "manageTitle": "設定プロファイル管理",
-    "manageDescription": "複数 Agent の設定は自動保存されません。各ツールを変更し、「現在の設定からスナップショットを更新」で保存してください。対象ツールは変わりません。従来の単一ツールの設定プロファイルは切り替え時に自動保存されます。",
+    "manageDescription": "新しいプロファイルは自動保存されません。「現在の設定からスナップショットを更新」を押すと、現在管理対象として選択され、設定済みのすべての Agent と現在の設定でプロファイル全体を置き換えます。従来の単一ツールの設定プロファイルは切り替え時に自動保存されます。",
     "namePlaceholder": "例：仕事用、個人用",
     "rename": "名前を変更",
     "noSnapshotForScope": "このアプリ側は未保存",
@@ -2677,7 +2686,12 @@
     "applySuccess": "設定プロファイルを適用しました",
     "applyFailed": "設定プロファイルの適用に失敗しました: {{detail}}",
     "applyWarnings": "設定プロファイルを適用しました（警告 {{warningCount}} 件）：\n{{details}}",
-    "clearSuccess": "設定プロファイルを使用しない状態に切り替えました"
+    "clearSuccess": "設定プロファイルを使用しない状態に切り替えました",
+    "nameExists": "同じ名前のプロファイルが既に存在します。別の名前を入力してください。",
+    "legacyDescription": "このクライアントに保存されたプロバイダー、MCP、Skills、プロンプトの参照を確認します。単一クライアントのプロファイルは切り替え時に自動保存され、プロバイダーの現在のモデル設定を使用します。",
+    "legacyProvider": "プロバイダー",
+    "noneSelected": "未選択",
+    "unchanged": "変更しない（未保存）"
   },
   "workspace": {
     "title": "ワークスペースファイル",
@@ -2729,8 +2743,8 @@
     "providerKeyRequired": "プロバイダーキーを入力してください",
     "providerKeyDuplicate": "このキーは既に使用されています",
     "providerKeyInvalid": "無効な形式です。小文字、数字、ハイフンのみ使用可能。",
-    "apiProtocol": "API プロトコル",
-    "selectProtocol": "API プロトコルを選択",
+    "apiProtocol": "上流プロトコル",
+    "selectProtocol": "上流プロトコルを選択",
     "apiProtocolHint": "プロバイダーの API と互換性のあるプロトコルタイプを選択してください。ほとんどのプロバイダーは OpenAI Completions 形式を使用します。",
     "baseUrl": "API エンドポイント",
     "baseUrlHint": "プロバイダーの API エンドポイントアドレス。",
@@ -2835,7 +2849,7 @@
       "providerKeyInvalid": "プロバイダーキーは小文字、数字、ハイフンのみ使用できます",
       "providerKeyDuplicate": "このプロバイダーキーは既に存在します",
       "apiMode": "API モード",
-      "apiModeHint": "プロバイダーの API プロトコル。エンドポイントに合わせて正しい形式を選択してください。",
+      "apiModeHint": "Hermes がリクエストに使用するプロトコルです。上流プロトコルと異なる場合、Vary AI のローカルルーティングで変換します。",
       "apiModeChatCompletions": "OpenAI Chat Completions",
       "apiModeAnthropicMessages": "Anthropic Messages",
       "apiModeCodexResponses": "OpenAI Responses",
@@ -3758,6 +3772,7 @@
     "close": "閉じる",
     "claudeScope": "使用量は Claude / Desktop 合算、セキュリティイベントは現在のアプリのみ",
     "activate": "保護を有効化",
+    "enableRouting": "ローカルルーティングを有効化",
     "unsupported": "このアプリはローカルルーティング非対応です",
     "desktopSetup": "Claude Desktop のローカルプロキシ設定を確認してください",
     "routeFailed": "ルーティングが有効でないため監査を有効化しませんでした",
@@ -4232,7 +4247,7 @@
       "required": "設定名、モデル ID、API キーを入力してください。",
       "invalidUrl": "有効な HTTP または HTTPS の接続先を入力してください。",
       "invalidTokens": "トークン上限は正の整数で入力してください。",
-      "protocol": "API プロトコル"
+      "protocol": "上流プロトコル"
     },
     "certificate": {
       "authTitle": "Qoder 証明書のシステム認証",
@@ -4274,7 +4289,7 @@
     "description": "保存後に適用して {{app}} を再起動し、クライアント内でモデルを選択してください。公式ログインはクライアントが保持します。",
     "baseUrl": "Base URL",
     "apiKey": "API Key",
-    "protocol": "API プロトコル",
+    "protocol": "上流プロトコル",
     "models": "モデル ID",
     "modelsHint": "利用可能なモデル ID を1行ずつ入力",
     "fetchModels": "モデル一覧を取得",

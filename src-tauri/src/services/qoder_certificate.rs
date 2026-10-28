@@ -1,4 +1,4 @@
-//! One-day, name-constrained local trust retained until explicitly cleared or replaced.
+//! Thirty-day, name-constrained local trust retained until explicitly cleared or replaced.
 use crate::config::atomic_write_private;
 use std::{
     path::{Path, PathBuf},
@@ -56,11 +56,14 @@ pub(crate) fn inspect(directory: &Path) -> Result<Certificate, String> {
 pub(crate) async fn trusted(certificate: &Certificate) -> Result<bool, String> {
     use std::ffi::OsStr;
     let cert = certificate.directory.join("localhost.pem");
+    let ca = certificate.directory.join("ca.pem");
     let keychain = keychain();
     Ok(security(&[
         OsStr::new("verify-cert"),
         OsStr::new("-c"),
         cert.as_os_str(),
+        OsStr::new("-c"),
+        ca.as_os_str(),
         OsStr::new("-p"),
         OsStr::new("ssl"),
         OsStr::new("-L"),
@@ -77,7 +80,7 @@ fn lifetime_seconds(test_value: Option<&str>, development: bool) -> i64 {
     if development && test_value == Some("60") {
         60
     } else {
-        86_400
+        30 * 86_400
     }
 }
 fn openssl(directory: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -114,7 +117,7 @@ pub(crate) async fn create() -> Result<Certificate, String> {
 }
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) fn create_at(directory: PathBuf) -> Result<Certificate, String> {
-    create_at_with_lifetime(directory, 86_400)
+    create_at_with_lifetime(directory, lifetime_seconds(None, false))
 }
 fn create_at_with_lifetime(directory: PathBuf, lifetime: i64) -> Result<Certificate, String> {
     std::fs::create_dir_all(&directory).map_err(|_| failure())?;
@@ -385,9 +388,38 @@ mod tests {
     #[test]
     fn one_minute_mode_is_development_only() {
         assert_eq!(lifetime_seconds(Some("60"), true), 60);
-        assert_eq!(lifetime_seconds(Some("60"), false), 86_400);
-        assert_eq!(lifetime_seconds(None, true), 86_400);
-        assert_eq!(lifetime_seconds(Some("invalid"), true), 86_400);
+        assert_eq!(lifetime_seconds(Some("60"), false), 30 * 86_400);
+        assert_eq!(lifetime_seconds(None, true), 30 * 86_400);
+        assert_eq!(lifetime_seconds(Some("invalid"), true), 30 * 86_400);
+    }
+    #[test]
+    fn standard_certificates_expire_after_thirty_days() {
+        let temp = tempfile::tempdir().expect("dir");
+        let before = chrono::Utc::now().timestamp();
+        let certificate = create_at(temp.path().join("cert")).expect("certificate");
+        let lifetime = 30 * 86_400;
+        assert!(
+            (before + lifetime..=chrono::Utc::now().timestamp() + lifetime)
+                .contains(&certificate.expires_at)
+        );
+        for name in ["ca.pem", "localhost.pem"] {
+            let output = String::from_utf8(
+                openssl(
+                    &certificate.directory,
+                    &["x509", "-in", name, "-noout", "-enddate"],
+                )
+                .expect("date"),
+            )
+            .expect("utf8");
+            let date = chrono::NaiveDateTime::parse_from_str(
+                output.trim().trim_start_matches("notAfter="),
+                "%b %e %H:%M:%S %Y GMT",
+            )
+            .expect("parsed")
+            .and_utc()
+            .timestamp();
+            assert_eq!(date, certificate.expires_at);
+        }
     }
     #[test]
     fn qoder_test_certificates_really_expire_after_one_minute() {
@@ -421,6 +453,9 @@ mod tests {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp = tempfile::tempdir().expect("dir");
         let certificate = create_at(temp.path().join("cert")).expect("certificate");
+        assert!(!trusted(&certificate)
+            .await
+            .expect("untrusted synthetic chain"));
         assert!(!certificate.directory.join("ca-key.pem").exists());
         let description = String::from_utf8(
             openssl(
