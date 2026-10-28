@@ -12,6 +12,14 @@ use tauri::AppHandle;
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 
+mod agent_updates;
+mod agent_versions;
+#[tauri::command]
+pub async fn update_desktop_agent(app: String) -> Result<(), String> {
+    agent_updates::update_desktop_agent(app).await
+}
+pub use agent_versions::AgentVersion;
+
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -111,9 +119,11 @@ pub struct ToolVersion {
     wsl_distro: Option<String>,
 }
 
-const VALID_TOOLS: [&str; 8] = [
-    "claude", "codex", "gemini", "grok", "opencode", "openclaw", "hermes", "pi",
+const VALID_TOOLS: [&str; 9] = [
+    "claude", "codex", "gemini", "grok", "opencode", "openclaw", "hermes", "pi", "qwen",
 ];
+
+static TOOL_LIFECYCLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -197,9 +207,18 @@ pub async fn run_tool_lifecycle_action(
     // build 阶段含锚定探测（对每个工具跑 `--version` 定位命令行实际命中那处），
     // 与执行一并放进 blocking 线程，避免阻塞 async runtime。
     tokio::task::spawn_blocking(move || {
+        let _guard = TOOL_LIFECYCLE_LOCK.try_lock().map_err(|_| {
+            "A tool installation or update is already running. Wait for it to finish and try again."
+                .to_string()
+        })?;
         let command_line =
             build_tool_lifecycle_command(&requested, action, wsl_shell_by_tool.as_ref())?;
-        run_tool_lifecycle_silently(&command_line, label)
+        run_tool_update_with_retry(
+            &requested,
+            action,
+            || run_tool_lifecycle_silently(&command_line, label),
+            std::thread::sleep,
+        )
     })
     .await
     .map_err(|e| format!("tool lifecycle task join error: {e}"))?
@@ -248,8 +267,32 @@ fn run_tool_lifecycle_silently(command_line: &str, label: &str) -> Result<(), St
     finish_lifecycle_output(&output.map_err(|e| format!("启动安装进程失败: {e}"))?)
 }
 
-/// 把子进程退出结果转成 `Result`：成功返回 `Ok`；失败提取 stderr（空则回退 stdout）
-/// 的末尾若干行作为错误详情，避免把整段安装日志塞进 toast。
+/// Retry only a single Claude update when its native updater is temporarily busy.
+fn run_tool_update_with_retry(
+    tools: &[&str],
+    action: ToolLifecycleAction,
+    mut run: impl FnMut() -> Result<(), String>,
+    mut wait: impl FnMut(std::time::Duration),
+) -> Result<(), String> {
+    let retry_busy = tools == ["claude"] && matches!(action, ToolLifecycleAction::Update);
+    let mut retries = 0;
+    loop {
+        let result = run();
+        match &result {
+            Err(error)
+                if retry_busy
+                    && retries < 2
+                    && error.contains("Another instance is currently performing an update") =>
+            {
+                retries += 1;
+                wait(std::time::Duration::from_secs(2 * retries));
+            }
+            _ => return result,
+        }
+    }
+}
+
+/// Return the final output lines when an installation or update command fails.
 fn finish_lifecycle_output(output: &std::process::Output) -> Result<(), String> {
     if output.status.success() {
         return Ok(());
@@ -434,6 +477,7 @@ fn tool_display_name(tool: &str) -> &'static str {
         "openclaw" => "OpenClaw",
         "hermes" => "Hermes",
         "pi" => "Pi",
+        "qwen" => "Qwen Code",
         _ => "Unknown",
     }
 }
@@ -515,6 +559,7 @@ fn npm_install_command_for(tool: &str) -> Option<&'static str> {
         "opencode" => Some("npm i -g opencode-ai@latest"),
         "openclaw" => Some("npm i -g openclaw@latest"),
         "pi" => Some("npm i -g @earendil-works/pi-coding-agent@latest"),
+        "qwen" => Some("npm i -g @qwen-code/qwen-code@latest"),
         _ => None,
     }
 }
@@ -810,6 +855,7 @@ async fn get_single_tool_version_impl(
         }
         "codex" => fetch_npm_latest_for_tool(&client, "@openai/codex", tool, local).await,
         "gemini" => fetch_npm_latest_for_tool(&client, "@google/gemini-cli", tool, local).await,
+        "qwen" => fetch_npm_latest_for_tool(&client, "@qwen-code/qwen-code", tool, local).await,
         "grok" => fetch_npm_latest_for_tool(&client, "@xai-official/grok", tool, local).await,
         "opencode" => {
             if let Some(version) =
@@ -2560,6 +2606,7 @@ fn npm_package_for(tool: &str) -> Option<&'static str> {
         "opencode" => Some("opencode-ai"),
         "openclaw" => Some("openclaw"),
         "pi" => Some("@earendil-works/pi-coding-agent"),
+        "qwen" => Some("@qwen-code/qwen-code"),
         _ => None,
     }
 }
@@ -3714,8 +3761,8 @@ fn is_conflicting(installs: &[ToolInstallation]) -> bool {
     distinct_versions.len() > 1 || runnable_mixed
 }
 
-fn agent_installed_in(app: &str, desktop_roots: &[PathBuf], cli_dirs: &[PathBuf]) -> bool {
-    let bundles: &[&str] = match app {
+fn agent_desktop_bundles(app: &str) -> &'static [&'static str] {
+    match app {
         "claude-desktop" => &["Claude.app"],
         "codex" => &["Codex.app", "ChatGPT.app"],
         "workbuddy" => &["WorkBuddy.app"],
@@ -3725,7 +3772,11 @@ fn agent_installed_in(app: &str, desktop_roots: &[PathBuf], cli_dirs: &[PathBuf]
         "zcode" => &["ZCode.app"],
         "kimi" => &["Kimi Code.app"],
         _ => &[],
-    };
+    }
+}
+
+fn agent_installed_in(app: &str, desktop_roots: &[PathBuf], cli_dirs: &[PathBuf]) -> bool {
+    let bundles = agent_desktop_bundles(app);
     if desktop_roots
         .iter()
         .any(|root| bundles.iter().any(|name| root.join(name).is_dir()))
@@ -3766,6 +3817,11 @@ pub async fn get_agent_installations() -> Result<HashMap<String, bool>, String> 
     })
     .await
     .map_err(|_| "Agent installation check failed".to_string())
+}
+
+#[tauri::command]
+pub async fn get_agent_versions() -> Result<HashMap<String, AgentVersion>, String> {
+    agent_versions::get_versions().await
 }
 
 #[cfg(test)]
@@ -4910,6 +4966,102 @@ pub async fn set_window_theme(window: tauri::Window, theme: String) -> Result<()
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    const CLAUDE_UPDATE_BUSY: &str =
+        "Error: Another instance is currently performing an update Please wait and try again later";
+
+    #[test]
+    fn qwen_uses_the_existing_version_and_lifecycle_pipeline() {
+        assert_eq!(normalize_requested_tools(&["qwen".into()]), vec!["qwen"]);
+        assert_eq!(tool_display_name("qwen"), "Qwen Code");
+        assert_eq!(npm_package_for("qwen"), Some("@qwen-code/qwen-code"));
+        assert_eq!(
+            npm_install_command_for("qwen"),
+            Some("npm i -g @qwen-code/qwen-code@latest")
+        );
+        assert_eq!(official_update_args("qwen"), None);
+        assert_eq!(
+            static_fallback_command("qwen"),
+            "npm i -g @qwen-code/qwen-code@latest"
+        );
+    }
+
+    #[test]
+    fn claude_update_recovers_after_external_updater_releases_lock() {
+        let mut attempts = 0;
+        let mut delays = Vec::new();
+        let result = run_tool_update_with_retry(
+            &["claude"],
+            ToolLifecycleAction::Update,
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(CLAUDE_UPDATE_BUSY.into())
+                } else {
+                    Ok(())
+                }
+            },
+            |delay| delays.push(delay.as_secs()),
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(attempts, 3);
+        assert_eq!(delays, vec![2, 4]);
+    }
+
+    #[test]
+    fn claude_update_stops_after_bounded_lock_retries() {
+        let mut attempts = 0;
+        let result = run_tool_update_with_retry(
+            &["claude"],
+            ToolLifecycleAction::Update,
+            || {
+                attempts += 1;
+                Err(CLAUDE_UPDATE_BUSY.into())
+            },
+            |_| {},
+        );
+        assert_eq!(result, Err(CLAUDE_UPDATE_BUSY.into()));
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn updater_retry_does_not_repeat_installs_batches_or_other_failures() {
+        for (tools, action, error) in [
+            (
+                vec!["claude"],
+                ToolLifecycleAction::Install,
+                CLAUDE_UPDATE_BUSY,
+            ),
+            (
+                vec!["codex"],
+                ToolLifecycleAction::Update,
+                CLAUDE_UPDATE_BUSY,
+            ),
+            (
+                vec!["claude", "codex"],
+                ToolLifecycleAction::Update,
+                CLAUDE_UPDATE_BUSY,
+            ),
+            (
+                vec!["claude"],
+                ToolLifecycleAction::Update,
+                "Synthetic permission failure",
+            ),
+        ] {
+            let mut attempts = 0;
+            let result = run_tool_update_with_retry(
+                &tools,
+                action,
+                || {
+                    attempts += 1;
+                    Err(error.into())
+                },
+                |_| panic!("unrelated command must not be retried"),
+            );
+            assert_eq!(result, Err(error.into()));
+            assert_eq!(attempts, 1);
+        }
+    }
 
     #[cfg(unix)]
     #[test]

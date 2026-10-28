@@ -1,5 +1,7 @@
 //! TRAE's vendor component API owns account authentication and model storage.
 //! Only explicit message text reaches VaryAI; the helper never exports login credentials.
+pub(crate) mod selection;
+
 use crate::{error::AppError, provider::Provider};
 use serde_json::{json, Value};
 #[cfg(unix)]
@@ -364,11 +366,6 @@ pub(crate) fn disable() -> Result<(), AppError> {
 pub(crate) fn profile_models() -> Result<Value, AppError> {
     request(&json!({"op":"list"}), false)
 }
-pub(crate) fn apply(provider: &Provider) -> Result<(), AppError> {
-    super::agent_clients::validate(&provider.settings_config)?;
-    ensure_ready()?;
-    apply_connected(provider)
-}
 /// Deliver configuration without preparing, starting or enabling the bridge.
 pub(crate) fn apply_connected(provider: &Provider) -> Result<(), AppError> {
     super::agent_clients::validate(&provider.settings_config)?;
@@ -378,15 +375,19 @@ pub(crate) fn apply_connected(provider: &Provider) -> Result<(), AppError> {
     )?;
     Ok(())
 }
-pub(crate) fn switch_provider(target: &Provider, previous: &[Provider]) -> Result<(), AppError> {
+/// Return false when delivery must wait for a connected client.
+pub(crate) fn switch_provider(target: &Provider, previous: &[Provider]) -> Result<bool, AppError> {
     if target.category.as_deref() != Some("official") {
         super::agent_clients::validate(&target.settings_config)?;
-        ensure_ready()?;
     }
     for provider in previous {
         super::agent_clients::validate(&provider.settings_config)?;
     }
-    replace_with(target, previous, apply_connected, remove)
+    if !request(&json!({"op":"health"}), false).is_ok_and(|health| health["ready"] == true) {
+        return Ok(false);
+    }
+    replace_with(target, previous, apply_connected, remove)?;
+    Ok(true)
 }
 fn replace_with(
     target: &Provider,

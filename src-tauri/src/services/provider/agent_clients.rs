@@ -1,4 +1,5 @@
 use super::{ProviderService, SwitchResult};
+use crate::services::trae_bridge::selection as trae_selection;
 use crate::{
     app_config::AppType, error::AppError, provider::Provider, services::agent_clients as native,
     store::AppState,
@@ -61,13 +62,25 @@ pub(super) fn update(
     ProviderService::set_provider_live_config_managed(&mut provider, managed);
     if app == "trae" {
         if managed && provider.category.as_deref() != Some("official") {
-            crate::services::trae_bridge::apply(&crate::services::upstream_protocol::project(
+            let pending = state.db.get_bool_flag(trae_selection::PENDING_KEY)?;
+            let projected = crate::services::upstream_protocol::project(
                 state.db.as_ref(),
                 &AppType::Trae,
                 &provider,
-            )?)?;
+            )?;
+            let delivered =
+                !pending && crate::services::trae_bridge::switch_provider(&projected, &[])?;
+            state.db.save_provider(app, &provider)?;
+            state.db.set_setting(
+                trae_selection::PENDING_KEY,
+                if delivered { "false" } else { "true" },
+            )?;
+            if pending {
+                trae_selection::sync(&state.db);
+            }
+        } else {
+            state.db.save_provider(app, &provider)?;
         }
-        state.db.save_provider(app, &provider)?;
         return Ok(true);
     }
     if managed && old.category.as_deref() != Some("official") {
@@ -158,15 +171,25 @@ pub(super) fn enable_with_lock(
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
-        crate::services::trae_bridge::switch_provider(&target, &projected_previous)?;
-        for mut other in previous {
-            ProviderService::set_provider_live_config_managed(&mut other, false);
-            state.db.save_provider(app, &other)?;
-        }
-        ProviderService::set_provider_live_config_managed(&mut provider, !official);
-        state.db.save_provider(app, &provider)?;
-        state.db.set_current_provider(app, id)?;
-        return Ok(SwitchResult::default());
+        let pending = state.db.get_bool_flag(trae_selection::PENDING_KEY)?;
+        let delivered = !pending
+            && crate::services::trae_bridge::switch_provider(&target, &projected_previous)?;
+        trae_selection::select(&state.db, &provider)?;
+        let delivered = if delivered {
+            state.db.set_setting(trae_selection::PENDING_KEY, "false")?;
+            true
+        } else if pending {
+            trae_selection::sync(&state.db)
+        } else {
+            false
+        };
+        return Ok(SwitchResult {
+            warnings: if delivered {
+                Vec::new()
+            } else {
+                vec!["trae_sync_pending".into()]
+            },
+        });
     }
     if provider.category.as_deref() == Some("official") {
         if native::supported(app) {

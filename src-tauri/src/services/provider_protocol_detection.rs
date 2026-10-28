@@ -6,6 +6,8 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 const MARKER: &str = "VARYAI_PROTOCOL_OK";
+// Reasoning models may spend the first few hundred output tokens before answering.
+const OUTPUT_TOKEN_LIMIT: u32 = 1024;
 const BODY_LIMIT: usize = 256 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(20);
 const FORMATS: [&str; 4] = [
@@ -120,11 +122,11 @@ fn request_spec(
     let body = match format {
         "openai_chat" => {
             url.set_path(&format!("{prefix}/v1/chat/completions"));
-            json!({"model":config.model,"messages":[{"role":"user","content":prompt}],"stream":stream,"max_tokens":128})
+            json!({"model":config.model,"messages":[{"role":"user","content":prompt}],"stream":stream,"max_tokens":OUTPUT_TOKEN_LIMIT})
         }
         "openai_responses" => {
             url.set_path(&format!("{prefix}/v1/responses"));
-            json!({"model":config.model,"input":[{"role":"user","content":prompt}],"stream":stream,"max_output_tokens":128})
+            json!({"model":config.model,"input":[{"role":"user","content":prompt}],"stream":stream,"max_output_tokens":OUTPUT_TOKEN_LIMIT})
         }
         "anthropic" => {
             url.set_path(&format!("{prefix}/v1/messages"));
@@ -132,7 +134,7 @@ fn request_spec(
                 "anthropic-version",
                 reqwest::header::HeaderValue::from_static("2023-06-01"),
             );
-            json!({"model":config.model,"messages":[{"role":"user","content":prompt}],"stream":stream,"max_tokens":128})
+            json!({"model":config.model,"messages":[{"role":"user","content":prompt}],"stream":stream,"max_tokens":OUTPUT_TOKEN_LIMIT})
         }
         _ => {
             url.set_path(&format!("{prefix}/v1beta/models"));
@@ -150,7 +152,7 @@ fn request_spec(
             if stream {
                 url.set_query(Some("alt=sse"));
             }
-            json!({"contents":[{"role":"user","parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":128}})
+            json!({"contents":[{"role":"user","parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":OUTPUT_TOKEN_LIMIT}})
         }
     };
     Ok((url, body, headers))
@@ -483,6 +485,14 @@ mod tests {
                 let code = status.load(Ordering::SeqCst);
                 if code != 200 {
                     return (HttpStatus::from_u16(code).unwrap(), [("location", "/redirect-target")], "synthetic-private-input synthetic-key").into_response();
+                }
+                // This fixture needs 300 tokens of reasoning before its short answer.
+                // A truncated reasoning-only response must not verify the protocol.
+                if path.ends_with("responses") && b["max_output_tokens"].as_u64().unwrap_or(0) < 300 {
+                    return axum::Json(json!({"status":"incomplete","output":[{"type":"reasoning","summary":[]}]})).into_response();
+                }
+                if path.ends_with("messages") && b["max_tokens"].as_u64().unwrap_or(0) < 300 {
+                    return axum::Json(json!({"content":[{"type":"thinking","thinking":"Synthetic reasoning"}],"stop_reason":"max_tokens"})).into_response();
                 }
                 let stream = b["stream"] == true || path.contains("streamGenerateContent");
                 let (message, events) = if path.ends_with("chat/completions") {

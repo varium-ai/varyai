@@ -773,6 +773,25 @@ impl ProxyService {
         Ok(())
     }
 
+    pub async fn sync_gemini_live_from_provider_while_proxy_active(
+        &self,
+        provider: &Provider,
+    ) -> Result<(), String> {
+        let mut effective_provider = provider.clone();
+        effective_provider.settings_config = build_effective_settings_with_common_config(
+            self.db.as_ref(),
+            &AppType::Gemini,
+            provider,
+        )
+        .map_err(|e| format!("Failed to build Gemini configuration: {e}"))?;
+        let (proxy_url, _) = self.build_proxy_urls().await?;
+        let settings = &mut effective_provider.settings_config;
+        settings["env"]["GOOGLE_GEMINI_BASE_URL"] = json!(proxy_url);
+        settings["env"]["GEMINI_API_KEY"] = json!(PROXY_TOKEN_PLACEHOLDER);
+        crate::services::provider::write_gemini_live(&effective_provider)
+            .map_err(|e| format!("Failed to write Gemini configuration: {e}"))
+    }
+
     pub async fn sync_grok_live_from_provider_while_proxy_active(
         &self,
         provider: &Provider,
@@ -911,6 +930,9 @@ impl ProxyService {
                 .await
         } else if live_taken_over && matches!(app_type, AppType::GrokBuild) {
             self.sync_grok_live_from_provider_while_proxy_active(&previous_provider)
+                .await
+        } else if live_taken_over && matches!(app_type, AppType::Gemini) {
+            self.sync_gemini_live_from_provider_while_proxy_active(&previous_provider)
                 .await
         } else {
             Ok(())
@@ -1430,23 +1452,36 @@ impl ProxyService {
     }
 
     pub(crate) async fn refresh_trae_takeover(&self) {
-        let _guard = self.lock_trae_audit().await;
-        if !self.is_running().await
-            || !self
-                .db
-                .get_bool_flag(super::trae_bridge::CONSENT_KEY)
-                .unwrap_or(false)
-            || !self
-                .db
-                .get_bool_flag(super::trae_bridge::ENABLED_KEY)
-                .unwrap_or(false)
         {
-            return;
+            let _guard = self.lock_trae_audit().await;
+            if self.is_running().await
+                && self
+                    .db
+                    .get_bool_flag(super::trae_bridge::CONSENT_KEY)
+                    .unwrap_or(false)
+                && self
+                    .db
+                    .get_bool_flag(super::trae_bridge::ENABLED_KEY)
+                    .unwrap_or(false)
+            {
+                if let Ok((origin, _)) = self.build_proxy_urls().await {
+                    let _ =
+                        tokio::task::spawn_blocking(move || super::trae_bridge::reconnect(&origin))
+                            .await;
+                }
+            }
         }
-        let Ok((origin, _)) = self.build_proxy_urls().await else {
-            return;
-        };
-        let _ = tokio::task::spawn_blocking(move || super::trae_bridge::reconnect(&origin)).await;
+        // Model delivery is independent of auditing and contacts only an existing bridge.
+        let pending = super::trae_bridge::selection::PENDING_KEY;
+        if self.db.get_bool_flag(pending).unwrap_or(false) {
+            let _guard = self.lock_switch_for_app("trae").await;
+            if self.db.get_bool_flag(pending).unwrap_or(false) {
+                let db = self.db.clone();
+                let _ =
+                    tokio::task::spawn_blocking(move || super::trae_bridge::selection::sync(&db))
+                        .await;
+            }
+        }
     }
 
     pub async fn set_takeover_for_app(&self, app_type: &str, enabled: bool) -> Result<(), String> {
@@ -3592,6 +3627,9 @@ impl ProxyService {
                 } else if live_taken_over && matches!(app_type_enum, AppType::GrokBuild) {
                     self.sync_grok_live_from_provider_while_proxy_active(&provider)
                         .await?;
+                } else if live_taken_over && matches!(app_type_enum, AppType::Gemini) {
+                    self.sync_gemini_live_from_provider_while_proxy_active(&provider)
+                        .await?;
                 }
             }
 
@@ -4843,6 +4881,118 @@ mod tests {
             .is_err(),
             "audit toggles and reconnects must still serialize with each other"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial]
+    async fn trae_reconnection_delivers_latest_offline_selection_without_enabling_audit() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            os::unix::{fs::PermissionsExt, net::UnixListener},
+            sync::{
+                atomic::{AtomicBool, Ordering},
+                Mutex,
+            },
+        };
+        let _home = TempHome::new();
+        let short_home = tempfile::Builder::new()
+            .prefix("vary-trae-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        env::set_var("CC_SWITCH_TEST_HOME", short_home.path());
+        env::set_var("HOME", short_home.path());
+        let db = Arc::new(Database::memory().unwrap());
+        let state = crate::store::AppState::new(db.clone());
+        crate::services::ProviderService::list(&state, AppType::Trae).unwrap();
+        for id in ["trae-a", "trae-b"] {
+            crate::services::ProviderService::add(&state, AppType::Trae, crate::provider::Provider::with_id(
+                id.into(), id.into(), json!({"baseUrl":"https://upstream.example/v1","apiKey":"synthetic-key","protocol":"openai","models":[{"model":"shared-model"}]}), None
+            ), false).unwrap();
+            crate::services::ProviderService::switch(&state, AppType::Trae, id).unwrap();
+        }
+        let directory = short_home.path().join(".cc-switch/trae-bridge");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("bridge-agent-offline.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let models = Arc::new(Mutex::new(vec!["trae-a".to_string()]));
+        let reject = Arc::new(AtomicBool::new(false));
+        let run = Arc::new(AtomicBool::new(true));
+        let (native_models, reject_target, running) = (models.clone(), reject.clone(), run.clone());
+        let worker = std::thread::spawn(move || {
+            while running.load(Ordering::Relaxed) {
+                let (mut socket, _) = match listener.accept() {
+                    Ok(value) => value,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                let mut line = String::new();
+                BufReader::new(socket.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let mut models = native_models.lock().unwrap();
+                let response = match request["op"].as_str().unwrap() {
+                    "health" => json!({"result":{"ready":true,"enabled":false}}),
+                    "list" => json!({"result":[]}),
+                    "remove" => {
+                        models.retain(|id| id != request["id"].as_str().unwrap());
+                        json!({"result":true})
+                    }
+                    "apply" => {
+                        let id = request["id"].as_str().unwrap();
+                        if (id == "trae-a" && reject_target.load(Ordering::Relaxed))
+                            || models.iter().any(|existing| existing != id)
+                        {
+                            json!({"error":"synthetic native model rejection"})
+                        } else {
+                            *models = vec![id.into()];
+                            json!({"result":true})
+                        }
+                    }
+                    _ => panic!("configuration sync must not enable auditing"),
+                };
+                writeln!(socket, "{response}").unwrap();
+            }
+        });
+        struct Stop(Arc<AtomicBool>, Option<std::thread::JoinHandle<()>>);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Relaxed);
+                self.1.take().unwrap().join().unwrap();
+            }
+        }
+        let _stop = Stop(run, Some(worker));
+        state.proxy_service.refresh_trae_takeover().await;
+        assert_eq!(*models.lock().unwrap(), ["trae-b"]);
+        assert!(!db
+            .get_bool_flag(super::super::trae_bridge::selection::PENDING_KEY)
+            .unwrap());
+
+        // Connected model failures still reject the switch and restore the old provider.
+        reject.store(true, Ordering::Relaxed);
+        assert!(crate::services::ProviderService::switch(&state, AppType::Trae, "trae-a").is_err());
+        assert_eq!(
+            db.get_current_provider("trae").unwrap().as_deref(),
+            Some("trae-b")
+        );
+        assert_eq!(*models.lock().unwrap(), ["trae-b"]);
+        let offline = path.with_extension("offline");
+        std::fs::rename(&path, &offline).unwrap();
+        crate::services::ProviderService::switch(&state, AppType::Trae, "trae-official").unwrap();
+        assert_eq!(*models.lock().unwrap(), ["trae-b"]);
+        std::fs::rename(&offline, &path).unwrap();
+        state.proxy_service.refresh_trae_takeover().await;
+        assert!(models.lock().unwrap().is_empty());
+        assert!(!db
+            .get_bool_flag(super::super::trae_bridge::selection::PENDING_KEY)
+            .unwrap());
+        assert!(!short_home.path().join(".trae-cn/argv.json").exists());
     }
 
     struct TempHome {

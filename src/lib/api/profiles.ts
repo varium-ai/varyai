@@ -79,6 +79,7 @@ export interface ProfileApplyResult {
   success: boolean;
   undoId: string | null;
   warnings: string[];
+  failure?: { app: string; reason: string } | null;
 }
 
 export interface Profile {

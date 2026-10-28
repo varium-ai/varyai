@@ -46,7 +46,6 @@ pub fn import_pi_providers_from_live(state: &AppState) -> Result<usize, AppError
 }
 
 // Internal re-exports (pub(crate))
-pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::{
     build_effective_provider_for_live_with_codex_oauth_manager,
     build_effective_settings_with_common_config, normalize_provider_common_config_for_storage,
@@ -54,11 +53,12 @@ pub(crate) use live::{
     sync_current_provider_for_app_to_live, write_live_with_common_config_for_codex_oauth_manager,
     write_live_with_common_config_for_state, LiveSyncOutcome,
 };
+pub(crate) use live::{sanitize_claude_settings_for_live, write_gemini_live};
 
 // Internal re-exports
 use live::{
     remove_hermes_provider_from_live, remove_openclaw_provider_from_live,
-    remove_opencode_provider_from_live, write_gemini_live,
+    remove_opencode_provider_from_live,
 };
 use usage::validate_usage_script;
 
@@ -1810,6 +1810,221 @@ command = "legacy-cmd"
             extracted.contains("web_search = \"enabled\""),
             "a user-set web_search value is a shareable preference, got: {extracted}"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn trae_closed_client_allows_provider_switch_update_and_official_selection() {
+        let _home = TempHome::new();
+        let state = AppState::new(Arc::new(Database::memory().expect("database")));
+        ProviderService::list(&state, AppType::Trae).expect("seed official");
+        for id in ["trae-a", "trae-b"] {
+            ProviderService::add(
+                &state,
+                AppType::Trae,
+                Provider::with_id(
+                    id.into(),
+                    id.into(),
+                    json!({
+                        "baseUrl":"https://upstream.example/v1", "apiKey":"synthetic-key",
+                        "protocol":"openai", "models":[{"model":"shared-model"}]
+                    }),
+                    None,
+                ),
+                false,
+            )
+            .expect("add provider");
+        }
+        for id in ["trae-a", "trae-b"] {
+            let result = ProviderService::switch(&state, AppType::Trae, id)
+                .expect("closed client must not block local selection");
+            assert_eq!(result.warnings, ["trae_sync_pending"]);
+            assert_eq!(
+                state.db.get_current_provider("trae").unwrap().as_deref(),
+                Some(id)
+            );
+            assert!(state.db.get_bool_flag("profile_trae_sync_pending").unwrap());
+            for provider in state.db.get_all_providers("trae").unwrap().into_values() {
+                assert_eq!(
+                    ProviderService::provider_live_config_managed(&provider),
+                    Some(provider.id == id)
+                );
+            }
+        }
+        let mut provider = state
+            .db
+            .get_provider_by_id("trae-b", "trae")
+            .unwrap()
+            .unwrap();
+        provider.settings_config["models"][0]["model"] = json!("edited-model");
+        ProviderService::update(&state, AppType::Trae, None, provider.clone())
+            .expect("closed client must not block editing the selected provider");
+        assert_eq!(
+            state
+                .db
+                .get_provider_by_id("trae-b", "trae")
+                .unwrap()
+                .unwrap()
+                .settings_config["models"][0]["model"],
+            "edited-model"
+        );
+        provider.settings_config["apiKey"] = json!("");
+        assert!(ProviderService::update(&state, AppType::Trae, None, provider).is_err());
+        assert_eq!(
+            state.db.get_current_provider("trae").unwrap().as_deref(),
+            Some("trae-b")
+        );
+        let result = ProviderService::switch(&state, AppType::Trae, "trae-official")
+            .expect("closed client must allow official selection");
+        assert_eq!(result.warnings, ["trae_sync_pending"]);
+        assert_eq!(
+            state.db.get_current_provider("trae").unwrap().as_deref(),
+            Some("trae-official")
+        );
+        assert!(state
+            .db
+            .get_all_providers("trae")
+            .unwrap()
+            .values()
+            .all(
+                |provider| ProviderService::provider_live_config_managed(provider) == Some(false)
+            ));
+        assert!(!_home.dir.path().join(".trae-cn/argv.json").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn gemini_custom_model_is_selectable_without_losing_native_settings() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let path = crate::gemini_config::get_gemini_settings_path();
+        write_json_file(
+            &path,
+            &json!({
+                "model": { "name": "old-model", "maxSessionTurns": 12 },
+                "mcpServers": { "local": { "command": "synthetic-mcp" } },
+                "experimental": { "otherFlag": true },
+                "modelConfigs": { "modelDefinitions": {
+                    "supplier/custom-model": { "displayName": "My model", "isVisible": false },
+                    "other-model": { "isVisible": true }
+                }}
+            }),
+        )
+        .expect("seed native settings");
+        let mut provider = Provider::with_id(
+            "gemini-custom".into(),
+            "Custom".into(),
+            json!({
+                "env": { "GEMINI_API_KEY": "synthetic-key", "GEMINI_MODEL": "supplier/custom-model" }
+            }),
+            None,
+        );
+        write_gemini_live(&provider).expect("write custom model");
+        let settings: Value = read_json_file(&path).expect("read settings");
+        assert_eq!(settings["model"]["name"], "supplier/custom-model");
+        assert_eq!(settings["model"]["maxSessionTurns"], 12);
+        assert_eq!(settings["experimental"]["dynamicModelConfiguration"], true);
+        assert_eq!(settings["experimental"]["otherFlag"], true);
+        let definitions = &settings["modelConfigs"]["modelDefinitions"];
+        assert_eq!(definitions["supplier/custom-model"]["isVisible"], true);
+        assert_eq!(
+            definitions["supplier/custom-model"]["displayName"],
+            "My model"
+        );
+        assert_eq!(definitions["other-model"]["isVisible"], true);
+        assert_eq!(settings["mcpServers"]["local"]["command"], "synthetic-mcp");
+
+        provider.settings_config["env"]["GEMINI_MODEL"] = json!("gemini-3.5-flash");
+        write_gemini_live(&provider).expect("write native model");
+        let settings: Value = read_json_file(&path).expect("read native model settings");
+        assert_eq!(settings["model"]["name"], "gemini-3.5-flash");
+        assert!(settings["modelConfigs"]["modelDefinitions"]
+            .get("gemini-3.5-flash")
+            .is_none());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn gemini_proxy_edits_and_hot_switch_refresh_native_model() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        let mut provider = Provider::with_id(
+            "gemini-a".into(),
+            "Gemini A".into(),
+            json!({
+                "env": { "GEMINI_API_KEY": "synthetic-upstream-key", "GOOGLE_GEMINI_BASE_URL": "https://upstream.example", "GEMINI_MODEL": "supplier/old-model" }
+            }),
+            None,
+        );
+        db.save_provider("gemini", &provider)
+            .expect("save provider");
+        db.set_current_provider("gemini", &provider.id)
+            .expect("set current provider");
+        crate::settings::set_current_provider(&AppType::Gemini, Some(&provider.id))
+            .expect("set local current");
+        db.update_proxy_config(ProxyConfig {
+            live_takeover_active: true,
+            listen_port: 0,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+        let mut app_config = db
+            .get_proxy_config_for_app("gemini")
+            .await
+            .expect("get app config");
+        app_config.enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable app proxy");
+        crate::gemini_config::write_gemini_env_atomic(&std::collections::HashMap::from([
+            ("GEMINI_MODEL".into(), "supplier/old-model".into()),
+            ("GEMINI_API_KEY".into(), "PROXY_MANAGED".into()),
+            ("GOOGLE_GEMINI_BASE_URL".into(), "http://127.0.0.1:1".into()),
+        ]))
+        .expect("seed takeover env");
+        let info = state.proxy_service.start().await.expect("start proxy");
+        provider.settings_config["env"]["GEMINI_MODEL"] = json!("supplier/edited-model");
+        ProviderService::update(&state, AppType::Gemini, None, provider.clone())
+            .expect("edit active provider");
+        let env = crate::gemini_config::read_gemini_env().expect("read edited env");
+        assert_eq!(env["GEMINI_MODEL"], "supplier/edited-model");
+        assert_eq!(env["GEMINI_API_KEY"], "PROXY_MANAGED");
+        assert_eq!(
+            env["GOOGLE_GEMINI_BASE_URL"],
+            format!("http://127.0.0.1:{}", info.port)
+        );
+        let backup = db
+            .get_live_backup("gemini")
+            .await
+            .expect("read backup")
+            .expect("backup exists");
+        let backup: Value = serde_json::from_str(&backup.original_config).expect("parse backup");
+        assert_eq!(backup["env"]["GEMINI_API_KEY"], "synthetic-upstream-key");
+        assert_eq!(backup["env"]["GEMINI_MODEL"], "supplier/edited-model");
+
+        provider.id = "gemini-b".into();
+        provider.settings_config["env"]["GEMINI_MODEL"] = json!("supplier/switched-model");
+        db.save_provider("gemini", &provider)
+            .expect("save next provider");
+        state
+            .proxy_service
+            .hot_switch_provider("gemini", &provider.id)
+            .await
+            .expect("hot switch");
+        let env = crate::gemini_config::read_gemini_env().expect("read switched env");
+        assert_eq!(env["GEMINI_MODEL"], "supplier/switched-model");
+        assert_eq!(env["GEMINI_API_KEY"], "PROXY_MANAGED");
+        let settings: Value = read_json_file(&crate::gemini_config::get_gemini_settings_path())
+            .expect("read settings");
+        assert_eq!(settings["model"]["name"], "supplier/switched-model");
+        assert_eq!(
+            settings["modelConfigs"]["modelDefinitions"]["supplier/switched-model"]["isVisible"],
+            true
+        );
+        state.proxy_service.stop().await.expect("stop proxy");
     }
 
     #[tokio::test]

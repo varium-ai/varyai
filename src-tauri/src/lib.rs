@@ -1662,6 +1662,8 @@ pub fn run() {
             commands::stop_proxy_with_restore,
             commands::get_proxy_takeover_status,
             commands::get_agent_installations,
+            commands::get_agent_versions,
+            commands::update_desktop_agent,
             commands::get_qoder_certificate_status,
             commands::clear_qoder_certificate,
             commands::rebuild_qoder_certificate,
