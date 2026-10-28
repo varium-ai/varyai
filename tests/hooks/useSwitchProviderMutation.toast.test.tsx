@@ -23,9 +23,8 @@ vi.mock("@/components/theme-provider", () => ({
   useTheme: () => ({ theme: "light" }),
 }));
 
-it("keeps a switch failure open after copying and provides a separate close button", async () => {
+it("shows a standard dismissible switch failure without a copy action", async () => {
   const user = userEvent.setup();
-  const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
   api.switch.mockRejectedValue(new Error("Synthetic native bridge failure"));
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false } },
@@ -42,17 +41,23 @@ it("keeps a switch failure open after copying and provides a separate close butt
       .mutateAsync("synthetic-provider")
       .catch(() => undefined);
   });
-  const copyButton = await screen.findByRole("button", { name: /复制|copy/i });
-  await user.click(copyButton);
-  expect(copy).toHaveBeenCalledWith("Synthetic native bridge failure");
-  expect(copyButton.closest("[data-sonner-toast]")).toHaveAttribute(
+  const closeButton = await screen.findByRole("button", {
+    name: /关闭|close/i,
+  });
+  expect(
+    screen.queryByRole("button", { name: /复制|copy/i }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByText(/Synthetic native bridge failure/),
+  ).toBeInTheDocument();
+  expect(closeButton.closest("[data-sonner-toast]")).toHaveAttribute(
     "data-removed",
     "false",
   );
-  await user.click(screen.getByRole("button", { name: /关闭|close/i }));
+  await user.click(closeButton);
   await waitFor(() =>
     expect(
-      screen.queryByRole("button", { name: /复制|copy/i }),
+      screen.queryByText(/Synthetic native bridge failure/),
     ).not.toBeInTheDocument(),
   );
   toast.dismiss();

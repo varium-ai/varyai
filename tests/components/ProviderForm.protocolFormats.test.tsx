@@ -160,6 +160,107 @@ describe("provider upstream protocol selection", () => {
     vi.mocked(fetchModelsForConfig).mockResolvedValue([]);
   });
 
+  it("imports every Gemini candidate once and reopens the saved native model list", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    vi.mocked(fetchModelsForConfig).mockResolvedValue([
+      { id: "new-a", ownedBy: null },
+      { id: "new-b", ownedBy: null },
+      { id: "new-a", ownedBy: null },
+      { id: " ", ownedBy: null },
+      { id: "keep-model", ownedBy: null },
+    ]);
+    const initialData = {
+      name: "Gemini import fixture",
+      category: "third_party" as const,
+      settingsConfig: {
+        env: {
+          GOOGLE_GEMINI_BASE_URL: "https://relay.example/v1beta",
+          GEMINI_API_KEY: "synthetic-key",
+          GEMINI_MODEL: "existing-default",
+        },
+        config: {
+          experimental: { keepFlag: true },
+          mcpServers: { fixture: { command: "synthetic-mcp" } },
+          modelConfigs: {
+            aliases: { fixture: { model: "keep-model" } },
+            modelDefinitions: {
+              "keep-model": {
+                displayName: "Keep label",
+                isVisible: true,
+                features: { thinking: true },
+              },
+            },
+          },
+        },
+      },
+    };
+    const view = render(
+      <QueryClientProvider client={createTestQueryClient()}>
+        <ProviderForm
+          appId="gemini"
+          providerId="fixture-gemini-import"
+          submitLabel="Save Gemini models"
+          onSubmit={onSubmit}
+          onCancel={vi.fn()}
+          initialData={initialData}
+        />
+      </QueryClientProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: "获取模型列表" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "一键设置" })).toBeEnabled(),
+    );
+    expect(
+      screen.getAllByRole("textbox", { name: "实际请求模型" }),
+    ).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "一键设置" }));
+    await user.click(screen.getByRole("button", { name: "一键设置" }));
+    expect(
+      screen.getAllByRole("textbox", { name: "实际请求模型" }),
+    ).toHaveLength(3);
+    await user.click(
+      screen.getByRole("button", { name: "Save Gemini models" }),
+    );
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    const saved = JSON.parse(onSubmit.mock.calls[0][0].settingsConfig);
+    expect(saved.env).toEqual(initialData.settingsConfig.env);
+    expect(saved.config.experimental).toEqual({
+      keepFlag: true,
+      dynamicModelConfiguration: true,
+    });
+    expect(saved.config.mcpServers).toEqual(
+      initialData.settingsConfig.config.mcpServers,
+    );
+    expect(saved.config.modelConfigs.aliases).toEqual(
+      initialData.settingsConfig.config.modelConfigs.aliases,
+    );
+    expect(saved.config.modelConfigs.modelDefinitions).toEqual({
+      ...initialData.settingsConfig.config.modelConfigs.modelDefinitions,
+      "new-a": { displayName: "new-a", isVisible: true },
+      "new-b": { displayName: "new-b", isVisible: true },
+    });
+    view.unmount();
+    render(
+      <QueryClientProvider client={createTestQueryClient()}>
+        <ProviderForm
+          appId="gemini"
+          providerId="fixture-gemini-import"
+          submitLabel="Save Gemini models"
+          onSubmit={vi.fn()}
+          onCancel={vi.fn()}
+          initialData={{ ...initialData, settingsConfig: saved }}
+        />
+      </QueryClientProvider>,
+    );
+    expect(
+      screen
+        .getAllByRole("textbox", { name: "实际请求模型" })
+        .map((input) => (input as HTMLInputElement).value),
+    ).toEqual(["keep-model", "new-a", "new-b"]);
+    vi.mocked(fetchModelsForConfig).mockResolvedValue([]);
+  });
+
   it("saves and reopens every imported Claude model as a separate row", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();

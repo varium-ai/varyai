@@ -21,7 +21,7 @@ pub(crate) fn error(err: GatewayError) -> Response {
             None,
         ),
         GatewayError::Exhausted(reset) => (
-            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::PAYMENT_REQUIRED,
             "gateway_budget_exhausted",
             reset,
         ),
@@ -31,11 +31,18 @@ pub(crate) fn error(err: GatewayError) -> Response {
             None,
         ),
     };
-    (
-        status,
-        Json(json!({"error":{"code":code,"message":err.to_string(),"resets_at":reset}})),
-    )
-        .into_response()
+    let mut body = json!({"error":{"code":code,"message":err.to_string(),"resets_at":reset}});
+    let exhausted = matches!(err, GatewayError::Exhausted(_));
+    if exhausted {
+        body["error"]["type"] = json!("insufficient_quota");
+    }
+    let mut response = (status, Json(body)).into_response();
+    if exhausted {
+        response
+            .headers_mut()
+            .insert("x-should-retry", http::HeaderValue::from_static("false"));
+    }
+    response
 }
 
 pub async fn handle(State(state): State<ProxyState>, request: Request) -> Response {

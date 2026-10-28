@@ -406,6 +406,27 @@ describe("HomeDashboard current provider", () => {
     expect(screen.queryByText("跟随 Codex 当前登录")).not.toBeInTheDocument();
   });
 
+  it.each(["claude", "claude-desktop"] as const)(
+    "recognizes the Anthropic auth token for %s without displaying it",
+    (app) => {
+      const provider: Provider = {
+        id: "token-provider",
+        name: "Token provider",
+        settingsConfig: {
+          env: { ANTHROPIC_AUTH_TOKEN: "fixture-private-token" },
+        },
+      };
+      renderDashboard({
+        activeApp: app,
+        currentProviderId: provider.id,
+        providers: { [provider.id]: provider },
+      });
+      expect(screen.getByText("已配置凭证")).toBeInTheDocument();
+      expect(screen.queryByText("未配置凭证")).not.toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("fixture-private-token");
+    },
+  );
+
   it("keeps the missing credential label for a custom provider", () => {
     const unconfigured = {
       ...custom,

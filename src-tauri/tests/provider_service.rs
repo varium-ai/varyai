@@ -1229,6 +1229,63 @@ http_headers = { Authorization = "Bearer explicit-header-token" }
 }
 
 #[test]
+fn fixed_codex_official_follows_native_login_without_rewriting_auth() {
+    let _guard = test_mutex().lock().expect("acquire test mutex");
+    reset_test_fs();
+    enable_codex_official_auth_preservation();
+    let _home = ensure_test_home();
+
+    let mut config = MultiAppConfig::default();
+    let manager = config.get_manager_mut(&AppType::Codex).unwrap();
+    manager.current = "third-party".into();
+    manager.providers.insert(
+        "third-party".into(),
+        Provider::with_id(
+            "third-party".into(),
+            "Third party".into(),
+            json!({"auth": {"OPENAI_API_KEY": "synthetic-key"}, "config": "model_provider = \"fixture\"\n[model_providers.fixture]\nname = \"Fixture\"\nbase_url = \"https://fixture.example/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"}),
+            None,
+        ),
+    );
+    manager.providers.insert(
+        "codex-official".into(),
+        Provider::with_id(
+            "codex-official".into(),
+            "OpenAI Official".into(),
+            json!({"auth": {"tokens": {"access_token": "stale-access", "refresh_token": "stale-refresh"}}, "config": ""}),
+            None,
+        ),
+    );
+    let state = create_test_state_with_config(&config).unwrap();
+    ProviderService::switch(&state, AppType::Codex, "third-party").unwrap();
+    let auth_path = cc_switch_lib::get_codex_auth_path();
+    std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+    for native_auth in [
+        Some("{\n  \"tokens\": {\"access_token\": \"native-access\", \"refresh_token\": \"rotated-refresh\"}\n}\n"),
+        Some("{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":\"other-user-access\",\"refresh_token\":\"other-user-refresh\",\"account_id\":\"other-account\"}}"),
+        Some("{\"auth_mode\":\"chatgpt\",\"OPENAI_API_KEY\":null,\"tokens\":{\"id_token\":\"synthetic-header.synthetic-payload.synthetic\",\"access_token\":\"synthetic-web-access\",\"refresh_token\":\"placeholder\",\"account_id\":\"synthetic-account\"},\"last_refresh\":\"2026-10-28T00:00:00Z\"}"),
+        Some("{\"auth_mode\":\"chatgpt\",\"OPENAI_API_KEY\":null,\"tokens\":{\"id_token\":\"synthetic-header.synthetic-payload.synthetic\",\"access_token\":\"synthetic-web-access\",\"refresh_token\":\"synthetic-web-session\",\"account_id\":\"synthetic-account\"},\"last_refresh\":\"2026-10-28T00:00:00Z\"}"),
+        None,
+    ] {
+        if let Some(auth) = native_auth {
+            std::fs::write(&auth_path, auth).unwrap();
+        } else {
+            std::fs::remove_file(&auth_path).unwrap();
+        }
+        ProviderService::switch(&state, AppType::Codex, "codex-official").unwrap();
+        assert_eq!(std::fs::read_to_string(&auth_path).ok().as_deref(), native_auth);
+
+        ProviderService::switch(&state, AppType::Codex, "third-party").unwrap();
+        assert_eq!(std::fs::read_to_string(&auth_path).ok().as_deref(), native_auth);
+        let live_config = std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).unwrap();
+        assert!(live_config.contains("experimental_bearer_token = \"synthetic-key\""));
+        for oauth_value in ["native-access", "rotated-refresh", "other-user-access"] {
+            assert!(!live_config.contains(oauth_value));
+        }
+    }
+}
+
+#[test]
 fn provider_service_switch_codex_supports_official_login_provider_without_auth_write() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();

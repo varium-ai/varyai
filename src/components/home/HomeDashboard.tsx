@@ -112,6 +112,7 @@ function hasProviderCredential(provider: Provider): boolean {
       config.apiKey,
       config.api_key,
       config.auth?.OPENAI_API_KEY,
+      config.env?.ANTHROPIC_AUTH_TOKEN,
       config.env?.ANTHROPIC_API_KEY,
       config.env?.OPENAI_API_KEY,
       config.env?.GEMINI_API_KEY,

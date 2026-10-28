@@ -166,7 +166,8 @@ async fn gateway_rejects_before_upstream_and_meters_independently(
         .json(&json!({"model":"allowed"}))
         .send()
         .await?;
-    assert_eq!(exhausted.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(exhausted.status(), StatusCode::PAYMENT_REQUIRED);
+    assert_eq!(exhausted.headers()["x-should-retry"], "false");
     db.revoke_gateway_key(&b.key.id)?;
     let revoked = client
         .post(&url)
@@ -284,6 +285,30 @@ async fn every_managed_agent_enforces_and_accounts_without_replacing_native_auth
     assert!(usage
         .iter()
         .all(|row| row.requests == 1 && row.tokens == 25 && row.unmetered == 0));
+    db.update_gateway_key(
+        &key.key.id,
+        KeyPolicy {
+            name: "Shared fixture".into(),
+            models: vec!["allowed".into()],
+            all_models: false,
+            token_limit: Some(0),
+            period: Period::Never,
+        },
+    )?;
+    for (agent, path) in routes {
+        let response = app
+            .clone()
+            .call(Request::post(path).body(Body::from(r#"{"model":"allowed"}"#))?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED, "{agent}");
+        assert_eq!(response.headers()["x-should-retry"], "false", "{agent}");
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await?)?;
+        assert_eq!(body["error"]["code"], "gateway_budget_exhausted");
+        assert_eq!(body["error"]["type"], "insufficient_quota");
+        assert!(body["error"]["resets_at"].is_null());
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), routes.len());
     Ok(())
 }
 
@@ -374,7 +399,7 @@ async fn desktop_native_route_uses_bound_policy_and_keeps_desktop_auth(
         .json(&body)
         .send()
         .await?;
-    assert_eq!(denied.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(denied.status(), StatusCode::PAYMENT_REQUIRED);
     let mut policy = key.key.policy;
     policy.token_limit = Some(100);
     db.update_gateway_key(&key.key.id, policy)?;

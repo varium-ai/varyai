@@ -2756,6 +2756,8 @@ function ProviderFormFull({
               shouldShowModelField={true}
               model={geminiModel}
               onModelChange={handleGeminiModelChange}
+              configValue={geminiConfig}
+              onConfigChange={handleGeminiConfigChange}
               speedTestEndpoints={speedTestEndpoints}
             />
           )}

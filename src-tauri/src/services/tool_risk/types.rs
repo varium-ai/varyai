@@ -300,7 +300,15 @@ pub const KNOWN_REASON_CODES: &[&str] = &[
     "destructive_sql",
 ];
 
-pub const KNOWN_CLIENTS: &[&str] = &["claude", "claude_code", "codex", "gemini", "openai", "pi"];
+pub const KNOWN_CLIENTS: &[&str] = &[
+    "claude",
+    "claude_code",
+    "claude-desktop",
+    "codex",
+    "gemini",
+    "openai",
+    "pi",
+];
 pub const KNOWN_SOURCES: &[&str] = &["model_response", "client_hook", "mcp_rpc"];
 pub const OPERATION_FIELDS: &[&str] = &[
     "/target_path",

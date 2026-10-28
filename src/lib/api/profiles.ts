@@ -60,8 +60,14 @@ export interface ProfileAgent {
   available: boolean;
   reason: string | null;
 }
+export interface ProfileSkippedAgent {
+  app: string;
+  reason: string;
+}
+
 export interface ProfilePreview {
   revision: string;
+  skipped?: ProfileSkippedAgent[];
   changes: {
     app: string;
     currentProvider: string;
@@ -79,6 +85,7 @@ export interface ProfileApplyResult {
   success: boolean;
   undoId: string | null;
   warnings: string[];
+  skipped?: ProfileSkippedAgent[];
   failure?: { app: string; reason: string } | null;
 }
 

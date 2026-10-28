@@ -6949,6 +6949,68 @@ wire_api = "responses"
 
     #[tokio::test]
     #[serial]
+    async fn codex_auth_helper_export_survives_public_takeover_round_trip() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        use_ephemeral_proxy_port(&db).await;
+        let service = ProxyService::new(db.clone());
+        let mut provider = Provider::with_id(
+            crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string(),
+            "OpenAI Official".to_string(),
+            json!({ "auth": {}, "config": "model = \"gpt-5.4\"\n" }),
+            None,
+        );
+        provider.category = Some("official".to_string());
+        db.save_provider("codex", &provider).expect("save provider");
+        db.set_current_provider("codex", &provider.id)
+            .expect("set DB current provider");
+        crate::settings::set_current_provider(&AppType::Codex, Some(&provider.id))
+            .expect("set local current provider");
+
+        for preserve in [false, true] {
+            crate::settings::update_settings(crate::settings::AppSettings {
+                preserve_codex_official_auth_on_switch: preserve,
+                ..Default::default()
+            })
+            .expect("set direct-switch preservation");
+            for refresh in ["placeholder", "synthetic-web-session"] {
+                // Match the helper's export shape using synthetic credentials only.
+                let auth = json!({
+                    "auth_mode": "chatgpt",
+                    "OPENAI_API_KEY": null,
+                    "tokens": {
+                        "id_token": "synthetic-header.synthetic-payload.synthetic",
+                        "access_token": "synthetic-web-access",
+                        "refresh_token": refresh,
+                        "account_id": "synthetic-account"
+                    },
+                    "last_refresh": "2026-10-28T00:00:00Z"
+                });
+                crate::codex_config::write_codex_live_atomic(&auth, Some("model = \"gpt-5.4\"\n"))
+                    .expect("seed helper-shaped auth");
+                let auth_path = crate::codex_config::get_codex_auth_path();
+                let original = std::fs::read(&auth_path).expect("read original auth bytes");
+                for enabled in [true, false] {
+                    service
+                        .set_takeover_for_app("codex", enabled)
+                        .await
+                        .expect("toggle Codex takeover");
+                    assert_eq!(
+                        std::fs::read(&auth_path).expect("read auth after toggle"),
+                        original,
+                        "routing must preserve helper-shaped auth byte for byte"
+                    );
+                }
+            }
+        }
+        service.stop_with_restore().await.expect("stop test proxy");
+        crate::settings::update_settings(crate::settings::AppSettings::default())
+            .expect("reset settings");
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn codex_takeover_enabled_commit_failure_restores_native_live_bundle() {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("reload settings");

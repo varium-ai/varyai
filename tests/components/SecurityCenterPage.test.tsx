@@ -40,6 +40,7 @@ const auditRows = vi.hoisted(() => ({
     pageSize: number;
   }>,
   total: undefined as number | undefined,
+  toolCallsTotal: 2,
   isLoading: false,
   isError: false,
   redactedLoading: false,
@@ -47,6 +48,7 @@ const auditRows = vi.hoisted(() => ({
     block: vi.fn(),
     redact: vi.fn(),
     audit: vi.fn(),
+    toolCount: vi.fn(),
   } as Record<string, ReturnType<typeof vi.fn>>,
 }));
 
@@ -145,6 +147,21 @@ vi.mock("@/hooks/useSecurityEvents", () => ({
   ) => {
     auditRows.queries.push({ filter, page, pageSize });
     auditRows.filters.push(filter);
+    if (filter.view === "tool_calls" && pageSize === 1) {
+      return {
+        eventsResult: {
+          items: [],
+          total: auditRows.toolCallsTotal,
+          page,
+          pageSize,
+        },
+        isLoading: auditRows.isLoading,
+        isError: auditRows.isError,
+        refetch: auditRows.refetchByAction.toolCount,
+        clearEvents: vi.fn(),
+        isClearing: false,
+      };
+    }
     return {
       eventsResult: {
         items: [
@@ -391,6 +408,7 @@ describe("SecurityCenterPage", () => {
     );
     expect(auditRows.refetchByAction.audit).toHaveBeenCalledOnce();
     expect(auditRows.refetchByAction.redact).toHaveBeenCalledOnce();
+    expect(auditRows.refetchByAction.toolCount).toHaveBeenCalledOnce();
   });
 
   it("explains the refresh button on hover", () => {
@@ -402,6 +420,7 @@ describe("SecurityCenterPage", () => {
 
   it("shows a true source split instead of a first-page sensitive-type sample", () => {
     auditRows.total = 150;
+    auditRows.toolCallsTotal = 142;
     render(<SecurityCenterPage />);
     expect(
       screen.getByTestId("security-events-summary-total"),
@@ -411,7 +430,7 @@ describe("SecurityCenterPage", () => {
     );
     expect(
       screen.getByTestId("security-events-summary-tool-risk"),
-    ).toHaveTextContent("2");
+    ).toHaveTextContent("142");
     expect(screen.queryByText("securityStats.sensitiveTypesSample")).toBeNull();
   });
 
@@ -644,6 +663,7 @@ afterEach(() => {
   auditRows.filters = [];
   auditRows.queries = [];
   auditRows.total = undefined;
+  auditRows.toolCallsTotal = 2;
   auditRows.isLoading = false;
   auditRows.isError = false;
   auditRows.redactedLoading = false;
@@ -947,15 +967,17 @@ describe("security event date ranges", () => {
       );
       const startTimestamp =
         resolveUsageRange({ preset }, now).startDate * 1000;
-      const queries = auditRows.queries.slice(-2);
-      expect(queries).toHaveLength(2);
+      const queries = auditRows.queries.slice(-3);
+      expect(queries).toHaveLength(3);
       for (const query of queries) {
         expect(query.filter.startTimestamp).toBe(startTimestamp);
         expect(query.filter.endTimestamp).toBeUndefined();
         expect(query.page).toBe(1);
       }
-      expect(queries[0].filter.sessionId).toBe("session-a");
-      expect(queries[1].filter.sessionId).toBeUndefined();
+      expect(queries[0].filter.view).toBe("tool_calls");
+      expect(queries[0].filter.sessionId).toBeUndefined();
+      expect(queries[1].filter.sessionId).toBe("session-a");
+      expect(queries[2].filter.sessionId).toBeUndefined();
       fireEvent.click(screen.getByText("security.resetFilters"));
       expect(
         screen.queryByRole("textbox", { name: "security.sessionFilter" }),

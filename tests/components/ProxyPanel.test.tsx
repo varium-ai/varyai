@@ -7,6 +7,11 @@ import {
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProxyPanel } from "@/components/proxy/ProxyPanel";
+import { toast } from "sonner";
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
+}));
 
 vi.mock("@/components/proxy/GatewayKeysPanel", () => ({
   GatewayKeysPanel: () => <div />,
@@ -109,6 +114,42 @@ describe("ProxyPanel routing applications", () => {
     expect(
       within(screen.getByText("Pi").parentElement!).getByRole("switch"),
     ).toBeDisabled();
+  });
+
+  it.each(["trae", "doubaowork"])(
+    "keeps the %s routing intention checked while waiting and allows cancellation",
+    async (app) => {
+      state.takeoverStatus = { [app]: false, [`${app}_waiting`]: true };
+      render(<ProxyPanel onToggleProxy={vi.fn()} isProxyPending={false} />);
+      const toggle = screen.getByRole("switch", {
+        name: app === "trae" ? "TRAE CN" : "豆包工作",
+      });
+      expect(toggle).toBeChecked();
+      expect(
+        screen.getByText(
+          app === "trae" ? "homeAudit.traeWaiting" : "homeAudit.doubaoWaiting",
+        ),
+      ).toBeInTheDocument();
+      fireEvent.click(toggle);
+      await waitFor(() =>
+        expect(setTakeover).toHaveBeenCalledWith({
+          appType: app,
+          enabled: false,
+        }),
+      );
+    },
+  );
+
+  it("reports pending TRAE connection instead of claiming routing is active", async () => {
+    setTakeover.mockResolvedValue({ trae: false, trae_waiting: true });
+    render(<ProxyPanel onToggleProxy={vi.fn()} isProxyPending={false} />);
+    fireEvent.click(screen.getByRole("switch", { name: "TRAE CN" }));
+    await waitFor(() =>
+      expect(toast.info).toHaveBeenCalledWith("homeAudit.traeWaiting", {
+        closeButton: true,
+      }),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
   });
 
   it("disables Desktop while the master switch is changing applications", () => {

@@ -6,6 +6,7 @@ use crate::proxy::tool_observation::types::{
 use serde_json::Value;
 
 pub const CLAUDE_TOOLS_SCHEMA: &str = "builtin:claude:tools:v1";
+pub const CLAUDE_DESKTOP_TOOLS_SCHEMA: &str = "builtin:claude-desktop:tools:v1";
 pub const CODEX_TOOLS_SCHEMA: &str = "builtin:codex:tools:v1";
 pub const GEMINI_TOOLS_SCHEMA: &str = "builtin:gemini:tools:v1";
 pub const PI_TOOLS_SCHEMA: &str = "builtin:pi:tools:v1";
@@ -126,6 +127,7 @@ fn registered_adapter(obs: &ToolObservation) -> Option<Adapter> {
     let client = obs.tool.client.as_deref()?;
     let schema = match client {
         "claude" | "claude_code" => CLAUDE_TOOLS_SCHEMA,
+        "claude-desktop" => CLAUDE_DESKTOP_TOOLS_SCHEMA,
         "codex" => CODEX_TOOLS_SCHEMA,
         "gemini" => GEMINI_TOOLS_SCHEMA,
         "openai" => OPENAI_TOOLS_SCHEMA,
@@ -139,10 +141,12 @@ fn registered_adapter(obs: &ToolObservation) -> Option<Adapter> {
         ("pi", "bash") => Some(Adapter::Shell("command")),
         ("pi", "read") => Some(Adapter::Read("path")),
         ("pi", "write" | "edit") => Some(Adapter::Write("path")),
-        ("claude" | "claude_code", "Bash") => Some(Adapter::Shell("command")),
-        ("claude" | "claude_code", "Read") => Some(Adapter::Read("file_path")),
-        ("claude" | "claude_code", "Write" | "Edit") => Some(Adapter::Write("file_path")),
-        ("claude" | "claude_code", "WebFetch") => Some(Adapter::Network("url")),
+        ("claude" | "claude_code" | "claude-desktop", "Bash") => Some(Adapter::Shell("command")),
+        ("claude" | "claude_code" | "claude-desktop", "Read") => Some(Adapter::Read("file_path")),
+        ("claude" | "claude_code" | "claude-desktop", "Write" | "Edit") => {
+            Some(Adapter::Write("file_path"))
+        }
+        ("claude" | "claude_code" | "claude-desktop", "WebFetch") => Some(Adapter::Network("url")),
         ("codex", "exec_command") => Some(Adapter::Shell("cmd")),
         ("codex", "shell_command" | "shell") => Some(Adapter::Shell("command")),
         ("codex", "apply_patch") => Some(Adapter::Patch),

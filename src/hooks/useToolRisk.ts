@@ -273,6 +273,20 @@ export function useToolRiskSandbox() {
   };
 }
 
+export function commandListErrorKey(error: unknown): string {
+  const code = error instanceof Error ? error.message : error;
+  switch (code) {
+    case "tool_risk_command_list_duplicate":
+      return "toolRisk.commandLists.duplicate";
+    case "tool_risk_command_list_conflict":
+      return "toolRisk.commandLists.conflict";
+    case "tool_risk_command_list_limit":
+      return "toolRisk.commandLists.limit";
+    default:
+      return "toolRisk.commandLists.mutationFailed";
+  }
+}
+
 export function useToolRiskCommandLists() {
   const { t } = useTranslation();
   const writeNotice = useWriteNotice();
@@ -289,11 +303,18 @@ export function useToolRiskCommandLists() {
       toolRiskApi.saveCommandList(input),
     onSuccess: (receipt) => {
       invalidate();
-      writeNotice(receipt);
+      writeNotice(receipt, "toolRisk.commandLists.saved");
     },
-    onError: () => {
+    onError: (error) => {
       invalidate();
-      toast.error(t("toolRisk.policyWriteFailed"));
+      const key = commandListErrorKey(error);
+      toast.error(
+        t(
+          key === "toolRisk.commandLists.mutationFailed"
+            ? "toolRisk.policyWriteFailed"
+            : key,
+        ),
+      );
     },
   });
   const remove = useMutation({

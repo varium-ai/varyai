@@ -300,8 +300,28 @@ pub(super) fn enable_with_lock(
             &doc.selection(app).to_string(),
         )?;
     }
+    let mut withdrawn = Vec::new();
+    if app == "qwen" {
+        for previous in state
+            .db
+            .get_all_providers(app)?
+            .into_values()
+            .filter(|p| p.id != id && p.category.as_deref() != Some("official"))
+        {
+            if doc.qwen_provider_conflicts(&previous.id, &provider.settings_config) {
+                // Stage the complete owned group removal before inserting overlapping IDs.
+                // Ownership checks preserve native edits; nothing is written on failure.
+                doc.remove(app, &previous.id, &previous.settings_config)?;
+                withdrawn.push(previous);
+            }
+        }
+    }
     doc.apply(app, id, &provider.name, &provider.settings_config)?;
     doc.write(&path)?;
+    for mut previous in withdrawn {
+        ProviderService::set_provider_live_config_managed(&mut previous, false);
+        state.db.save_provider(app, &previous)?;
+    }
     ProviderService::set_provider_live_config_managed(&mut provider, true);
     state.db.save_provider(app, &provider)?;
     state.db.set_current_provider(app, id)?;
@@ -691,5 +711,183 @@ mod tests {
                 .expect("db")
                 .is_none());
         });
+    }
+
+    #[test]
+    fn qwen_supplier_copies_replace_overlapping_models_and_credentials() {
+        for protocol in ["openai", "openai-responses", "anthropic"] {
+            for routed in [false, true] {
+                let dir = tempfile::tempdir().expect("dir");
+                let path = dir.path().join("settings.json");
+                std::fs::write(&path, r#"{"env":{"USER_KEY":"synthetic-user"},"modelProviders":{"openai":[{"id":"manual","envKey":"USER_KEY","baseUrl":"https://user.example/v1"}]},"mcpServers":{"fixture":{"command":"synthetic"}}}"#).expect("fixture");
+                native::with_test_config(&path, || {
+                    let state =
+                        AppState::new(Arc::new(crate::database::Database::memory().expect("db")));
+                    let config = json!({"baseUrl":"https://models.example/v1","apiKey":"synthetic-original","protocol":protocol,"models":[{"model":"alpha"},{"model":"beta"}]});
+                    let mut copy = config.clone();
+                    copy["apiKey"] = json!("synthetic-copy");
+                    copy["models"] = json!([{"model":"alpha"}]);
+                    let mut other = config.clone();
+                    other["baseUrl"] = json!("https://other.example/v1");
+                    for (id, config) in [
+                        ("original", config.clone()),
+                        ("copy", copy.clone()),
+                        ("other", other),
+                    ] {
+                        add(
+                            &state,
+                            "qwen",
+                            Provider::with_id(id.into(), id.into(), config, None),
+                        )
+                        .expect("add");
+                    }
+                    enable(&state, "qwen", "other").expect("unrelated provider");
+                    enable(&state, "qwen", "original").expect("original");
+                    if routed {
+                        futures::executor::block_on(native::enable(
+                            &state.db,
+                            "qwen",
+                            "http://127.0.0.1:1",
+                        ))
+                        .expect("route projection");
+                    }
+                    for (id, previous, expected) in [
+                        ("copy", "original", &copy),
+                        ("original", "copy", &config),
+                        ("copy", "original", &copy),
+                    ] {
+                        enable(&state, "qwen", id).expect("switch overlapping supplier");
+                        let mut doc = native::Document::read("qwen", &path).expect("read");
+                        assert!(doc.selection_owned("qwen", Some(id)));
+                        if routed {
+                            let saved =
+                                futures::executor::block_on(state.db.get_live_backup("qwen"))
+                                    .expect("backup")
+                                    .expect("active backup");
+                            let backup: native::Backup =
+                                serde_json::from_str(&saved.original_config).expect("decode");
+                            doc.restore(&backup.routes)
+                                .expect("inspect upstream configuration");
+                        }
+                        let env = format!("VARYAI_{id}_API_KEY");
+                        let previous_env = format!("VARYAI_{previous}_API_KEY");
+                        assert_eq!(doc.value["env"][&env], expected["apiKey"]);
+                        assert!(doc.value["env"].get(&previous_env).is_none());
+                        let entries: Vec<_> = doc.value["modelProviders"]
+                            .as_object()
+                            .expect("groups")
+                            .values()
+                            .flat_map(|models| models.as_array().expect("models"))
+                            .collect();
+                        assert_eq!(
+                            entries.iter().filter(|m| m["envKey"] == env).count(),
+                            expected["models"]
+                                .as_array()
+                                .expect("expected models")
+                                .len()
+                        );
+                        assert!(!entries.iter().any(|m| m["envKey"] == previous_env));
+                        assert!(entries
+                            .iter()
+                            .any(|m| m["envKey"] == "VARYAI_other_API_KEY"));
+                        assert!(entries.iter().any(|m| m["envKey"] == "USER_KEY"));
+                        assert_eq!(doc.value["mcpServers"]["fixture"]["command"], "synthetic");
+                        assert_eq!(
+                            state
+                                .db
+                                .get_current_provider("qwen")
+                                .expect("current")
+                                .as_deref(),
+                            Some(id)
+                        );
+                        for (provider_id, managed) in
+                            [(id, true), (previous, false), ("other", true)]
+                        {
+                            assert_eq!(
+                                ProviderService::provider_live_config_managed(
+                                    &state
+                                        .db
+                                        .get_provider_by_id(provider_id, "qwen")
+                                        .expect("provider")
+                                        .expect("saved provider")
+                                ),
+                                Some(managed)
+                            );
+                        }
+                    }
+                    assert_eq!(
+                        state
+                            .db
+                            .get_provider_by_id("original", "qwen")
+                            .expect("db")
+                            .expect("original retained")
+                            .settings_config,
+                        config
+                    );
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn qwen_failed_copy_switch_preserves_native_models_and_current_supplier() {
+        for external_edit in [false, true] {
+            let dir = tempfile::tempdir().expect("dir");
+            let path = dir.path().join("settings.json");
+            native::with_test_config(&path, || {
+                let state =
+                    AppState::new(Arc::new(crate::database::Database::memory().expect("db")));
+                let config = json!({"baseUrl":"https://models.example/v1","apiKey":"synthetic-original","protocol":"openai","models":[{"model":"alpha"}]});
+                let mut copy = config.clone();
+                copy["models"] = json!([{"model":"alpha"},{"model":"manual"}]);
+                for (id, config) in [("original", config), ("copy", copy)] {
+                    add(
+                        &state,
+                        "qwen",
+                        Provider::with_id(id.into(), id.into(), config, None),
+                    )
+                    .expect("add");
+                }
+                enable(&state, "qwen", "original").expect("original");
+                let mut doc = native::Document::read("qwen", &path).expect("read");
+                if external_edit {
+                    doc.value["env"]["VARYAI_original_API_KEY"] = json!("synthetic-external-edit");
+                } else {
+                    doc.value["modelProviders"]["openai"].as_array_mut().expect("models").push(json!({"id":"manual","envKey":"USER_KEY","baseUrl":"https://models.example/v1"}));
+                }
+                doc.write(&path).expect("external changes");
+                let before = std::fs::read(&path).expect("before");
+                assert!(enable(&state, "qwen", "copy").is_err());
+                assert_eq!(std::fs::read(&path).expect("after"), before);
+                assert_eq!(
+                    state
+                        .db
+                        .get_current_provider("qwen")
+                        .expect("current")
+                        .as_deref(),
+                    Some("original")
+                );
+                assert_eq!(
+                    ProviderService::provider_live_config_managed(
+                        &state
+                            .db
+                            .get_provider_by_id("original", "qwen")
+                            .expect("db")
+                            .expect("provider")
+                    ),
+                    Some(true)
+                );
+                assert_eq!(
+                    ProviderService::provider_live_config_managed(
+                        &state
+                            .db
+                            .get_provider_by_id("copy", "qwen")
+                            .expect("db")
+                            .expect("provider")
+                    ),
+                    Some(false)
+                );
+            });
+        }
     }
 }
