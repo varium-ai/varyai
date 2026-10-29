@@ -2,6 +2,23 @@
 
 Use synthetic examples when reporting a problem. Logs, provider configuration, client authentication files and database backups may contain credentials or private prompts. Review and redact them before sharing.
 
+## CC Switch rejects a shared database as too new
+
+The compatibility baseline is the official CC Switch release, not upstream `main`. CC Switch v4.0.21 supports shared schema v23. VaryAI must leave that file at v23; its portable monolithic export version and independently versioned `vary-ai.db` are different formats.
+
+An earlier compatibility development build mistakenly added two default-valued `enabled_dsh` columns and advanced the shared file to unreleased v24. Do not delete the file, blindly change `user_version`, or overwrite it with an older backup: that can hide unsupported data or discard newer edits.
+
+For this specific mistake, close **both** applications and stop the development watcher before using the explicit helper. Select the verified v23 backup from before the upgrade under the configuration directory's `backups/storage-split/`. From the repository root, validate without writing:
+
+```bash
+python3 -B scripts/recover-shared-v23.py \
+  --database "$HOME/.cc-switch/cc-switch.db" \
+  --reference /absolute/path/to/verified-v23-backup.db \
+  --backup-dir "$HOME/.cc-switch/backups/shared-v23-recovery"
+```
+
+Only after validation succeeds, repeat with `--apply`. The tool backs up the current file, verifies the complete reversed schema against the reference, checks that the new columns contain only defaults, and uses an exclusive transaction with integrity checks. It retains current data rather than restoring old rows. A failure stops or rolls back the change; preserve the recovery backup. Rebuild VaryAI with the released-v23 fix before starting it again, or an old development build can repeat the unwanted upgrade. Recovery is not applicable to other future schemas or databases with v24-specific data.
+
 ## Local proxy port conflicts
 
 The local proxy normally listens on `127.0.0.1:15721`. An existing application instance can cause `address already in use` errors. A second launch can also foreground the existing instance and exit because the application uses a single-instance plugin.

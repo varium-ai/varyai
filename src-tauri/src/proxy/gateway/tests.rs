@@ -197,7 +197,7 @@ fn usage_preserves_each_forwarded_model_and_keeps_legacy_rows_unknown(
     db.extension_connection().lock().map_err(|_| "database lock")?.execute("INSERT INTO gateway_usage_details(key_id,window,agent,model,tokens,requests,unmetered,last_used) VALUES(?1,0,'external','allowed',7,1,0,1)", [&key.key.id])?;
     drop(db);
     let ext = rusqlite::Connection::open(dir.path().join("vary-ai.db"))?;
-    ext.execute_batch("DROP TABLE IF EXISTS gateway_usage_models; PRAGMA user_version=3;")?;
+    ext.execute_batch("DROP TABLE IF EXISTS gateway_usage_models; DROP TABLE intent_routing_groups; DROP TABLE intent_routing_preferences; PRAGMA user_version=3;")?;
     drop(ext);
     let db = Database::init_at(&path)?;
     for (model, tokens) in [("upstream-a", 20), ("upstream-b", 30)] {
@@ -322,7 +322,7 @@ fn upgrades_v1_extension_and_preserves_credentials_across_restart(
     {
         let ext = rusqlite::Connection::open(dir.path().join("vary-ai.db"))?;
         ext.execute_batch(
-            "DROP TABLE gateway_keys; DROP TABLE gateway_usage; PRAGMA user_version=1;",
+            "DROP TABLE gateway_keys; DROP TABLE gateway_usage; DROP TABLE intent_routing_groups; DROP TABLE intent_routing_preferences; PRAGMA user_version=1;",
         )?;
     }
     let db = Database::init_at(&path)?;
@@ -434,7 +434,7 @@ fn extension_v2_upgrades_without_losing_keys_or_usage() -> Result<(), Box<dyn st
     db.charge_gateway_key(&grant.id, grant.window, 31)?;
     drop(db);
     let ext = rusqlite::Connection::open(dir.path().join("vary-ai.db"))?;
-    ext.execute_batch("DROP TABLE gateway_agent_bindings; DROP TABLE gateway_usage_details; PRAGMA user_version=2;")?;
+    ext.execute_batch("DROP TABLE gateway_agent_bindings; DROP TABLE gateway_usage_details; DROP TABLE intent_routing_groups; DROP TABLE intent_routing_preferences; PRAGMA user_version=2;")?;
     drop(ext);
     let db = Database::init_at(&path)?;
     assert!(db.authorize_gateway_key(&key.secret, "allowed", 1).is_ok());

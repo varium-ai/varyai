@@ -23,6 +23,7 @@ pnpm build:renderer
 pnpm test:unit
 pnpm test:trae-bridge
 pnpm test:qoder-codec
+python3 -B scripts/tests/recover-shared-v23.test.py
 pnpm audit --prod
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --lib --manifest-path src-tauri/Cargo.toml
