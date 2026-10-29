@@ -9,12 +9,10 @@ import {
 } from "react";
 import { motion } from "framer-motion";
 import {
-  CheckCircle2,
   FolderSearch,
   AppWindow,
   Bell,
   Loader2,
-  RefreshCw,
   Save,
   Server,
   SlidersHorizontal,
@@ -55,6 +53,7 @@ import { BackupListSection } from "@/components/settings/BackupListSection";
 import { WebdavSyncSection } from "@/components/settings/WebdavSyncSection";
 import { AboutSection } from "@/components/settings/AboutSection";
 import { LocalProxySettings } from "@/components/settings/LocalProxySettings";
+import { IntentRoutingPanel } from "@/components/routing/IntentRoutingPanel";
 import { ConnectivityCheckConfigPanel } from "@/components/usage/ConnectivityCheckConfigPanel";
 import { LogConfigPanel } from "@/components/settings/LogConfigPanel";
 import { useSettings } from "@/hooks/useSettings";
@@ -67,7 +66,7 @@ interface SettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onImportSuccess?: () => void | Promise<void>;
-  initialTab?: "general" | "advanced" | "about";
+  initialTab?: "general" | "routing" | "advanced" | "about";
 }
 
 interface SettingsPanelProps {
@@ -271,15 +270,10 @@ export function SettingsPage({
 
   const tabItems = [
     { value: "general", label: t("settings.tabGeneral") },
+    { value: "routing", label: t("settings.tabProxy") },
     { value: "advanced", label: t("settings.tabAdvanced") },
     { value: "about", label: t("common.about") },
   ];
-
-  const statusLabel = isSaving
-    ? t("settings.statusSaving")
-    : requiresRestart
-      ? t("settings.statusRestartRequired")
-      : t("settings.statusReady");
 
   return (
     <div className="mx-auto flex h-full w-full max-w-6xl flex-col overflow-hidden px-5 pt-5 sm:px-8">
@@ -314,26 +308,6 @@ export function SettingsPage({
                   </TabsTrigger>
                 ))}
               </TabsList>
-            </div>
-
-            <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200/90 bg-white px-5 py-3.5 shadow-sm dark:border-border dark:bg-card">
-              <div className="flex min-w-0 items-center gap-2.5">
-                <span className="relative flex h-2 w-2 shrink-0">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-                </span>
-                <p className="truncate text-sm text-slate-700 dark:text-slate-200">
-                  {t("settings.statusNotice")}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-                {isSaving ? (
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                )}
-                <span>{statusLabel}</span>
-              </div>
             </div>
           </div>
 
@@ -418,6 +392,18 @@ export function SettingsPage({
                 ) : null}
               </TabsContent>
 
+              <TabsContent value="routing" className="mt-0 pb-4">
+                {settings ? (
+                  <div className="space-y-4">
+                    <LocalProxySettings
+                      settings={settings}
+                      onAutoSave={handleAutoSave}
+                    />
+                    <IntentRoutingPanel />
+                  </div>
+                ) : null}
+              </TabsContent>
+
               <TabsContent value="advanced" className="space-y-6 mt-0 pb-4">
                 {settings ? (
                   <SettingsPanel
@@ -433,11 +419,6 @@ export function SettingsPage({
                       transition={{ duration: 0.3 }}
                       className="space-y-4 p-5 sm:p-6"
                     >
-                      <LocalProxySettings
-                        settings={settings}
-                        onAutoSave={handleAutoSave}
-                      />
-
                       <Accordion
                         type="multiple"
                         defaultValue={[]}

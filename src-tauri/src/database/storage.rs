@@ -10,6 +10,8 @@ use rusqlite::{backup::Backup, Connection, OptionalExtension};
 use std::{path::Path, sync::Mutex, time::Duration};
 
 pub(super) const EXTENSION_TABLES: &[&str] = &[
+    "intent_routing_preferences",
+    "intent_routing_groups",
     "gateway_keys",
     "gateway_usage",
     "security_audit_logs",
@@ -217,6 +219,8 @@ impl Database {
             && EXTENSION_TABLES
                 .iter()
                 .filter(|t| version >= 2 || !matches!(**t, "gateway_keys" | "gateway_usage"))
+                .filter(|t| version >= 3 || **t != "intent_routing_groups")
+                .filter(|t| version >= 4 || **t != "intent_routing_preferences")
                 .any(|t| !tables.iter().any(|name| name == t))
         {
             return Err(AppError::Database(
@@ -441,6 +445,7 @@ impl Database {
             Self::set_user_version(conn, SCHEMA_VERSION)?;
         }
         Self::ensure_upstream_shared_columns(conn)?;
+        Self::normalize_imported_intent_routing(conn)?;
         Ok(())
     }
 

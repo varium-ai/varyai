@@ -397,6 +397,8 @@ pub struct ProxyService {
     qoder: Arc<super::qoder_proxy::Manager>,
     doubaowork: Arc<super::doubao_work::Manager>,
     pub(crate) pi_routing: Arc<super::pi_routing::Manager>,
+    pub(crate) intent_runtime: Arc<crate::proxy::intent::Runtime>,
+    pub(crate) intent_client: Arc<super::intent_routing::client::Manager>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -422,8 +424,26 @@ impl ProxyService {
         let pi_path = std::env::temp_dir()
             .join(format!("vary-pi-test-{}", uuid::Uuid::new_v4()))
             .join("pi-routing.json");
+        let intent_runtime = Arc::new(crate::proxy::intent::Runtime::default());
+        #[cfg(not(test))]
+        let (intent_config, intent_receipt) = (
+            crate::codex_config::get_codex_config_path(),
+            crate::config::get_app_config_dir().join("intent-routing-client.json"),
+        );
+        #[cfg(test)]
+        let (intent_config, intent_receipt) = (
+            pi_path.with_file_name("codex.toml"),
+            pi_path.with_file_name("intent-routing-client.json"),
+        );
+        let intent_client = Arc::new(super::intent_routing::client::Manager::new(
+            intent_config,
+            intent_receipt,
+            intent_runtime.clone(),
+        ));
         Self {
             pi_routing: Arc::new(super::pi_routing::Manager::new(pi_path)),
+            intent_runtime,
+            intent_client,
             qoder: Arc::new(super::qoder_proxy::Manager::new(db.clone())),
             doubaowork: Arc::new(super::doubao_work::Manager::default()),
             db,
@@ -1014,6 +1034,7 @@ impl ProxyService {
         // 4. 创建并启动服务器
         let app_handle = self.app_handle.read().await.clone();
         let server = ProxyServer::new(config.clone(), self.db.clone(), app_handle)
+            .with_intent_runtime(self.intent_runtime.clone())
             .with_pi_runtime(self.pi_routing.runtime.clone());
         let info = server
             .start()
@@ -1080,6 +1101,11 @@ impl ProxyService {
 
     /// 启动代理服务器（带 Live 配置接管）
     pub async fn start_with_takeover(&self) -> Result<ProxyServerInfo, String> {
+        if self.intent_client.active_or_pending() {
+            return Err(
+                "Exit Codex routing-group takeover before enabling ordinary takeover".into(),
+            );
+        }
         // 1. 备份各应用的 Live 配置
         self.backup_live_configs().await?;
 
@@ -1190,7 +1216,8 @@ impl ProxyService {
             .get_proxy_config_for_app("codex")
             .await
             .map(|c| c.enabled)
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || self.intent_client.active_or_pending();
         let gemini_enabled = self
             .db
             .get_proxy_config_for_app("gemini")
@@ -1601,6 +1628,35 @@ impl ProxyService {
         }
         let app_type_str = app.as_str();
         let _guard = self.switch_locks.lock_for_app(app_type_str).await;
+        if app_type == "codex" && self.intent_client.active_or_pending() {
+            if enabled {
+                let manager = self.intent_client.clone();
+                let status = tokio::task::spawn_blocking(move || manager.status())
+                    .await
+                    .map_err(|_| "intentRouting.clientFailed")??;
+                return if status.enabled {
+                    Ok(())
+                } else {
+                    Err("intentRouting.clientConflict".into())
+                };
+            }
+            let manager = self.intent_client.clone();
+            return tokio::task::spawn_blocking(move || manager.restore())
+                .await
+                .map_err(|_| "intentRouting.clientFailed")?;
+        }
+
+        self.set_ordinary_takeover_inner(&app, enabled, true).await
+    }
+
+    // Caller holds the per-app switch lock. Mode changes keep the listener alive.
+    pub(crate) async fn set_ordinary_takeover_inner(
+        &self,
+        app: &AppType,
+        enabled: bool,
+        stop_idle: bool,
+    ) -> Result<(), String> {
+        let app_type_str = app.as_str();
 
         if enabled {
             // 1) 代理服务未运行则自动启动
@@ -1625,7 +1681,7 @@ impl ProxyService {
                     }
                 };
                 let live_matches_current_proxy =
-                    match self.live_takeover_matches_current_proxy(&app).await {
+                    match self.live_takeover_matches_current_proxy(app).await {
                         Ok(value) => value,
                         Err(e) => {
                             log::warn!("检测 {app_type_str} 接管配置失败（将继续重建接管）: {e}");
@@ -1637,7 +1693,7 @@ impl ProxyService {
                 // 只看占位符会把半接管/旧端口残留误判为可复用，导致开启接管后
                 // live 文件仍停留在普通供应商配置。
                 if has_backup && live_matches_current_proxy {
-                    self.refresh_active_target_from_current_provider(&app).await;
+                    self.refresh_active_target_from_current_provider(app).await;
                     return Ok(());
                 }
                 restore_existing_backup_before_takeover = has_backup;
@@ -1649,12 +1705,12 @@ impl ProxyService {
 
             // 3) 备份 Live 配置（严格：目标 app 不存在则报错）
             if restore_existing_backup_before_takeover {
-                self.restore_live_config_for_app_inner(&app).await?;
+                self.restore_live_config_for_app_inner(app).await?;
             } else {
-                self.backup_live_config_strict(&app).await?;
+                self.backup_live_config_strict(app).await?;
 
                 // 4) 同步 Live Token 到数据库（仅当前 app）
-                if let Err(e) = self.sync_live_to_provider(&app).await {
+                if let Err(e) = self.sync_live_to_provider(app).await {
                     let _ = self.db.delete_live_backup(app_type_str).await;
                     return Err(e);
                 }
@@ -1664,7 +1720,7 @@ impl ProxyService {
             // because its refresh token keeps rotating during takeover. Keep an
             // exact in-memory pre-write snapshot for activation failures so a
             // partial managed write can still restore the user's prior login.
-            let codex_live_before_takeover = if matches!(&app, AppType::Codex) {
+            let codex_live_before_takeover = if matches!(app, AppType::Codex) {
                 Some(
                     crate::codex_config::CodexLiveStateSnapshot::capture()
                         .map_err(|error| format!("捕获 Codex 接管前状态失败: {error}"))?,
@@ -1674,10 +1730,10 @@ impl ProxyService {
             };
 
             // 5) 写入接管配置（仅当前 app）
-            if let Err(e) = self.takeover_live_config_strict(&app).await {
+            if let Err(e) = self.takeover_live_config_strict(app).await {
                 log::error!("{app_type_str} 接管 Live 配置失败，尝试恢复: {e}");
                 match self
-                    .rollback_failed_takeover_activation(&app, codex_live_before_takeover.as_ref())
+                    .rollback_failed_takeover_activation(app, codex_live_before_takeover.as_ref())
                     .await
                 {
                     Ok(()) => {
@@ -1710,7 +1766,7 @@ impl ProxyService {
             if let Err(error) = enable_result {
                 log::error!("{app_type_str} 提交接管状态失败，尝试恢复 Live: {error}");
                 match self
-                    .rollback_failed_takeover_activation(&app, codex_live_before_takeover.as_ref())
+                    .rollback_failed_takeover_activation(app, codex_live_before_takeover.as_ref())
                     .await
                 {
                     Ok(()) => {
@@ -1728,16 +1784,16 @@ impl ProxyService {
             // 7) 兼容旧逻辑：写入 any-of 标志（失败不影响功能）
             let _ = self.db.set_live_takeover_active(true).await;
 
-            self.refresh_active_target_from_current_provider(&app).await;
+            self.refresh_active_target_from_current_provider(app).await;
 
             // 8) Warn if the current provider is official (risk of account ban via proxy)
             if let Ok(Some(current_id)) =
-                crate::settings::get_effective_current_provider(&self.db, &app)
+                crate::settings::get_effective_current_provider(&self.db, app)
             {
                 if let Ok(Some(provider)) = self.db.get_provider_by_id(&current_id, app_type_str) {
                     if provider.category.as_deref() == Some("official")
                         && !crate::services::provider::official_provider_supports_proxy_takeover(
-                            &app, &provider,
+                            app, &provider,
                         )
                     {
                         if let Some(handle) = self.app_handle.read().await.as_ref() {
@@ -1772,7 +1828,7 @@ impl ProxyService {
         // 必须走 with_fallback 版本：备份 → SSOT → 清理占位符 的三层兜底。
         // 简版 restore_live_config_for_app 在备份缺失时会静默 Ok(())，
         // 留下接管时写入的占位符（代理地址/PROXY_MANAGED token），客户端无法工作。
-        self.restore_live_config_for_app_with_fallback_inner(&app)
+        self.restore_live_config_for_app_with_fallback_inner(app)
             .await?;
 
         // 2) 删除该 app 的备份（避免长期存储敏感 Token）
@@ -1807,7 +1863,11 @@ impl ProxyService {
             .await
             .map_err(|e| format!("检查接管状态失败: {e}"))?;
 
-        if !any_enabled && !self.pi_routing.enabled().unwrap_or(true) {
+        if stop_idle
+            && !any_enabled
+            && !self.pi_routing.enabled().unwrap_or(true)
+            && !self.intent_client.active_or_pending()
+        {
             let _ = self.db.set_live_takeover_active(false).await;
 
             if self.is_running().await {
@@ -2165,6 +2225,11 @@ impl ProxyService {
 
     /// 停止代理服务器
     pub async fn stop(&self) -> Result<(), String> {
+        let intent_cleanup = if self.intent_client.active_or_pending() {
+            self.disable_intent_client().await
+        } else {
+            Ok(())
+        };
         self.doubaowork.disable().await;
         if let Some(server) = self.server.write().await.take() {
             if let Ok(mut snapshot) = self.pi_routing.runtime.catalog.write() {
@@ -2190,10 +2255,126 @@ impl ProxyService {
             }
 
             log::info!("代理服务器已停止");
-            Ok(())
+            intent_cleanup
         } else {
             Err("代理服务器未运行".to_string())
         }
+    }
+
+    pub(crate) async fn disable_intent_client(&self) -> Result<(), String> {
+        let _guard = self.lock_switch_for_app("codex").await;
+        let manager = self.intent_client.clone();
+        tokio::task::spawn_blocking(move || manager.restore())
+            .await
+            .map_err(|_| "intentRouting.clientFailed")?
+    }
+
+    pub(crate) async fn connect_codex_menu(
+        &self,
+        consent: bool,
+        refresh: bool,
+    ) -> Result<super::intent_routing::client::Status, String> {
+        use super::intent_routing::{catalog, menu};
+        let _guard = self.lock_switch_for_app("codex").await;
+        let result = async {
+            if !consent && !self.intent_runtime.menu_active() {
+                return Err("intentRouting.invalid".into());
+            }
+            if !self.is_running().await {
+                return Err("intentRouting.proxyRequired".into());
+            }
+            let (providers, _) = catalog::prepare_providers(
+                self.db.clone(),
+                self.codex_oauth_manager.clone(),
+                refresh,
+            )
+            .await?;
+            let db = self.db.clone();
+            let discovery = providers.clone();
+            let (groups, current) = tokio::task::spawn_blocking(move || {
+                let groups = db
+                    .intent_routing_catalog_with_providers(Some(discovery))?
+                    .groups;
+                let current = crate::settings::get_effective_current_provider(&db, &AppType::Codex)
+                    .map_err(|_| "intentRouting.failed")?;
+                Ok::<_, String>((groups, current))
+            })
+            .await
+            .map_err(|_| "intentRouting.failed")??;
+            let mut menu =
+                menu::prepare(self.codex_oauth_manager.clone(), providers, groups, current).await?;
+            if let Some(previous) = self.intent_runtime.menu_snapshot()? {
+                menu.preserve_from(&previous);
+            }
+            let port = self
+                .get_status()
+                .await
+                .map_err(|_| "intentRouting.clientFailed")?
+                .port;
+            self.activate_codex_groups(
+                Arc::new(menu),
+                format!("http://127.0.0.1:{port}/intent/v1"),
+            )
+            .await?;
+            let manager = self.intent_client.clone();
+            tokio::task::spawn_blocking(move || manager.status())
+                .await
+                .map_err(|_| "intentRouting.clientFailed")?
+        }
+        .await;
+        if result.is_err() && !consent {
+            // Revoke stale targets before releasing the configuration switch lock.
+            self.intent_runtime.clear_menu();
+        }
+        result
+    }
+
+    // The caller owns Codex's switch lock and has already prepared every target.
+    pub(crate) async fn activate_codex_groups(
+        &self,
+        menu: Arc<crate::proxy::intent::Menu>,
+        base: String,
+    ) -> Result<(), String> {
+        let ordinary = self
+            .db
+            .get_proxy_config_for_app("codex")
+            .await
+            .map_err(|_| "intentRouting.clientFailed")?
+            .enabled;
+        if ordinary {
+            if self.intent_client.active_or_pending() {
+                return Err("intentRouting.clientConflict".into());
+            }
+            self.set_ordinary_takeover_inner(&AppType::Codex, false, false)
+                .await
+                .map_err(|_| "intentRouting.clientFailed")?;
+        }
+        let manager = self.intent_client.clone();
+        let restored = tokio::task::spawn_blocking(move || manager.config_snapshot())
+            .await
+            .map_err(|_| "intentRouting.clientFailed")??;
+        let manager = self.intent_client.clone();
+        let activation = tokio::task::spawn_blocking(move || manager.activate_menu(menu, &base))
+            .await
+            .map_err(|_| "intentRouting.clientFailed".to_string())
+            .and_then(|r| r);
+        if activation.is_err() && ordinary {
+            // A failed journaled install must recover before another writer resumes.
+            let manager = self.intent_client.clone();
+            tokio::task::spawn_blocking(move || {
+                manager.restore()?;
+                if manager.config_snapshot()? != restored {
+                    return Err("intentRouting.clientConflict".into());
+                }
+                Ok::<_, String>(())
+            })
+            .await
+            .map_err(|_| "intentRouting.clientConflict")??;
+            self.set_ordinary_takeover_inner(&AppType::Codex, true, false)
+                .await
+                .map_err(|_| "intentRouting.modeRecoveryRequired")?;
+        }
+        activation
     }
 
     /// 停止代理服务器（恢复 Live 配置，用户手动关闭时使用）
@@ -2216,6 +2397,9 @@ impl ProxyService {
             log::warn!("停止代理服务器失败（将继续恢复 Live 配置）: {e}");
         }
 
+        if self.intent_client.active_or_pending() {
+            return Err("intentRouting.clientConflict".into());
+        }
         // 2. 恢复原始 Live 配置
         self.restore_live_configs().await?;
 
@@ -2287,6 +2471,9 @@ impl ProxyService {
             log::warn!("停止代理服务器失败（将继续恢复 Live 配置）: {e}");
         }
 
+        if self.intent_client.active_or_pending() {
+            return Err("intentRouting.clientConflict".into());
+        }
         // 2. 恢复原始 Live 配置
         self.restore_live_configs().await?;
 
@@ -3473,6 +3660,9 @@ impl ProxyService {
         app_type: &str,
         provider_id: &str,
     ) -> Result<HotSwitchOutcome, String> {
+        if app_type == "codex" && self.intent_client.active_or_pending() {
+            return Err("Exit Codex routing-group takeover before switching providers".into());
+        }
         let app_type_enum =
             AppType::from_str(app_type).map_err(|_| format!("无效的应用类型: {app_type}"))?;
         let provider = self
@@ -4588,6 +4778,7 @@ impl ProxyService {
             self.db.clone(),
             self.app_handle.read().await.clone(),
         )
+        .with_intent_runtime(self.intent_runtime.clone())
         .with_pi_runtime(self.pi_routing.runtime.clone());
         let info = server
             .start()
@@ -4625,6 +4816,17 @@ impl ProxyService {
     }
     /// 更新代理配置
     pub async fn update_config(&self, config: &ProxyConfig) -> Result<(), String> {
+        if self.intent_client.active_or_pending() {
+            let current = self.get_config().await?;
+            if current.listen_port != config.listen_port
+                || current.listen_address != config.listen_address
+            {
+                return Err(
+                    "Exit Codex routing-group takeover before changing the listening address"
+                        .into(),
+                );
+            }
+        }
         // 记录旧配置用于判定是否需要重启
         let previous = self
             .db
@@ -4642,6 +4844,7 @@ impl ProxyService {
                 updated.live_takeover_active = previous.live_takeover_active;
                 let handle = self.app_handle.read().await.clone();
                 let server = ProxyServer::new(updated.clone(), self.db.clone(), handle)
+                    .with_intent_runtime(self.intent_runtime.clone())
                     .with_pi_runtime(self.pi_routing.runtime.clone());
                 let info = server
                     .start()
@@ -4711,6 +4914,7 @@ impl ProxyService {
 
             let app_handle = self.app_handle.read().await.clone();
             let new_server = ProxyServer::new(new_config.clone(), self.db.clone(), app_handle)
+                .with_intent_runtime(self.intent_runtime.clone())
                 .with_pi_runtime(self.pi_routing.runtime.clone());
             let info = new_server
                 .start()
@@ -4902,6 +5106,303 @@ mod tests {
         db.update_proxy_config(proxy_config)
             .await
             .expect("set test proxy config to an ephemeral port");
+    }
+
+    fn synthetic_codex_menu() -> Arc<crate::proxy::intent::Menu> {
+        let group = serde_json::from_value(json!({
+            "id":"fixture", "name":"Fixture", "revision":0,"client":"codex","enabled":false,
+            "members":[{"id":"member","providerId":"fixture","modelId":"fixture-model"}],
+            "defaultMemberId":"member", "fallbackMemberIds":[], "intentRecognitionEnabled":false,
+            "classifierTarget":null,"classificationBudgetMs":2000,"rules":[]
+        }))
+        .expect("group");
+        Arc::new(crate::proxy::intent::Menu {
+            models: Default::default(),
+            default_model: None,
+            omitted_entries: 0,
+            token: "synthetic-local-token".into(),
+            groups: std::collections::HashMap::from([(
+                "vary-auto/fixture".into(),
+                Arc::new(crate::proxy::intent::Session {
+                    group,
+                    targets: Vec::new(),
+                    classifier: None,
+                    client: reqwest::Client::builder()
+                        .no_proxy()
+                        .build()
+                        .expect("client"),
+                    created: std::time::Instant::now(),
+                    bindings: Arc::default(),
+                }),
+            )]),
+        })
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn codex_coexisting_menu_refresh_preserves_only_unchanged_destinations() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("settings");
+        let db = Arc::new(Database::memory().expect("db"));
+        use_ephemeral_proxy_port(&db).await;
+        let mut provider = crate::provider::Provider::with_id(
+            "fixture".into(),
+            "Fixture".into(),
+            json!({
+                "auth":{"OPENAI_API_KEY":"synthetic-key"},"apiFormat":"openai_responses",
+                "config":"model='fixture-model'\nmodel_provider='fixture'\n[model_providers.fixture]\nbase_url='https://synthetic.example/v1'\nwire_api='responses'"
+            }),
+            None,
+        );
+        db.save_provider("codex", &provider).expect("provider");
+        db.set_current_provider("codex", "fixture")
+            .expect("current");
+        crate::settings::set_current_provider(&AppType::Codex, Some("fixture")).expect("settings");
+        let original = "model='original'\n";
+        crate::codex_config::write_codex_live_atomic(
+            &json!({"OPENAI_API_KEY":"synthetic-original"}),
+            Some(original),
+        )
+        .expect("config");
+        let mut service = ProxyService::new(db.clone());
+        service.intent_client = Arc::new(super::super::intent_routing::client::Manager::new(
+            crate::codex_config::get_codex_config_path(),
+            crate::config::get_app_config_dir().join("intent-test.json"),
+            service.intent_runtime.clone(),
+        ));
+        service.start().await.expect("gateway");
+        assert!(service.connect_codex_menu(false, false).await.is_err());
+        service
+            .connect_codex_menu(true, false)
+            .await
+            .expect("connect without groups");
+        let before = service
+            .intent_runtime
+            .menu_snapshot()
+            .expect("runtime")
+            .expect("menu");
+        assert_eq!(before.groups.len(), 1);
+        let direct_alias = before
+            .default_model
+            .clone()
+            .expect("current provider default");
+        let group = synthetic_codex_menu().groups["vary-auto/fixture"]
+            .group
+            .clone();
+        let mut saved = db.save_intent_routing_group(group).expect("save group");
+        super::super::intent_routing::menu::refresh_active(&service).await;
+        let after = service
+            .intent_runtime
+            .menu_snapshot()
+            .expect("runtime")
+            .expect("menu");
+        assert_eq!(after.groups.len(), 2);
+        assert_eq!(after.token, before.token);
+        assert!(Arc::ptr_eq(
+            &before.groups[&direct_alias].bindings,
+            &after.groups[&direct_alias].bindings
+        ));
+        assert!(!Arc::ptr_eq(
+            &after.groups[&direct_alias].bindings,
+            &after.groups["vary-auto/fixture"].bindings
+        ));
+        saved.routing = super::super::intent_routing::RoutingStrategy::Weighted;
+        saved.members[0].weight = 3;
+        saved.members[0].free = Some(true);
+        saved.manual_member_id = Some(saved.members[0].id.clone());
+        saved = db.save_intent_routing_group(saved).expect("save weights");
+        super::super::intent_routing::menu::refresh_active(&service).await;
+        let weighted = service
+            .intent_runtime
+            .menu_snapshot()
+            .expect("runtime")
+            .expect("menu");
+        assert!(Arc::ptr_eq(
+            &after.groups["vary-auto/fixture"].bindings,
+            &weighted.groups["vary-auto/fixture"].bindings
+        ));
+        assert!(Arc::ptr_eq(
+            &after.groups["vary-auto/fixture"].targets[0].scheduling,
+            &weighted.groups["vary-auto/fixture"].targets[0].scheduling
+        ));
+        assert_eq!(
+            weighted.groups["vary-auto/fixture"].group.members[0].weight,
+            3
+        );
+        saved.routing = super::super::intent_routing::RoutingStrategy::Manual;
+        saved = db.save_intent_routing_group(saved).expect("save manual");
+        super::super::intent_routing::menu::refresh_active(&service).await;
+        let manual = service
+            .intent_runtime
+            .menu_snapshot()
+            .expect("runtime")
+            .expect("menu");
+        assert!(Arc::ptr_eq(
+            &after.groups["vary-auto/fixture"].bindings,
+            &manual.groups["vary-auto/fixture"].bindings
+        ));
+        provider.settings_config["auth"]["OPENAI_API_KEY"] = json!("synthetic-new-key");
+        db.save_provider("codex", &provider)
+            .expect("rotate credential");
+        super::super::intent_routing::menu::refresh_active(&service).await;
+        let rotated = service
+            .intent_runtime
+            .menu_snapshot()
+            .expect("runtime")
+            .expect("menu");
+        assert!(!Arc::ptr_eq(
+            &after.groups[&direct_alias].bindings,
+            &rotated.groups[&direct_alias].bindings
+        ));
+        db.delete_intent_routing_group_with_providers(
+            "fixture",
+            saved.revision,
+            Some(vec![provider]),
+        )
+        .expect("delete group");
+        super::super::intent_routing::menu::refresh_active(&service).await;
+        let deleted = service
+            .intent_runtime
+            .menu_snapshot()
+            .expect("runtime")
+            .expect("menu");
+        assert_eq!(deleted.groups.len(), 1);
+        assert!(!deleted.groups.contains_key("vary-auto/fixture"));
+        std::fs::write(
+            crate::codex_config::get_codex_config_path(),
+            "model_provider='external'\n",
+        )
+        .expect("external edit");
+        super::super::intent_routing::menu::refresh_active(&service).await;
+        assert!(!service.intent_runtime.menu_active());
+        assert!(
+            service
+                .intent_client
+                .status()
+                .expect("status")
+                .recovery_pending
+        );
+        service.stop().await.expect("stop");
+        assert!(
+            std::fs::read_to_string(crate::codex_config::get_codex_config_path())
+                .expect("config")
+                .contains("external")
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn codex_unified_menu_switch_preserves_group_projection_and_restores_original() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("settings");
+        let db = Arc::new(Database::memory().expect("db"));
+        use_ephemeral_proxy_port(&db).await;
+        db.init_default_official_providers().expect("seed");
+        let auth = json!({"auth_mode":"chatgpt","tokens":{"access_token":"synthetic","account_id":"synthetic-account"}});
+        let original = "model = 'fixture-model'\n# unrelated setting\n";
+        crate::codex_config::write_codex_live_atomic(&auth, Some(original)).expect("native config");
+        let mut service = ProxyService::new(db.clone());
+        service.intent_client = Arc::new(super::super::intent_routing::client::Manager::new(
+            crate::codex_config::get_codex_config_path(),
+            crate::config::get_app_config_dir().join("intent-test.json"),
+            service.intent_runtime.clone(),
+        ));
+        service
+            .set_takeover_for_app("codex", true)
+            .await
+            .expect("ordinary");
+        assert!(
+            db.get_proxy_config_for_app("codex")
+                .await
+                .expect("ordinary state")
+                .enabled
+        );
+        let port = service.get_status().await.expect("status").port;
+        let base = format!("http://127.0.0.1:{port}/intent/v1");
+        let guard = service.lock_switch_for_app("codex").await;
+        service
+            .activate_codex_groups(synthetic_codex_menu(), base.clone())
+            .await
+            .expect("groups");
+        drop(guard);
+        assert!(
+            !db.get_proxy_config_for_app("codex")
+                .await
+                .expect("state")
+                .enabled
+        );
+        assert!(db.get_live_backup("codex").await.expect("backup").is_none());
+        assert!(service.get_takeover_status().await.expect("state").codex);
+        let projection = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
+            .expect("group config");
+        assert!(projection.contains("vary-auto/fixture"));
+        service
+            .set_takeover_for_app("codex", true)
+            .await
+            .expect("idempotent unified enable");
+        assert_eq!(
+            std::fs::read_to_string(crate::codex_config::get_codex_config_path()).expect("config"),
+            projection
+        );
+        service
+            .set_takeover_for_app("codex", false)
+            .await
+            .expect("unified disable");
+        assert!(!service.get_takeover_status().await.expect("state").codex);
+        assert_eq!(
+            std::fs::read_to_string(crate::codex_config::get_codex_config_path())
+                .expect("restored"),
+            original
+        );
+        assert_eq!(
+            crate::config::read_json_file::<Value>(&crate::codex_config::get_codex_auth_path())
+                .expect("auth"),
+            auth
+        );
+        service.stop().await.expect("stop");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn codex_failed_group_activation_restores_provider_without_stopping_listener() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("settings");
+        let db = Arc::new(Database::memory().expect("db"));
+        use_ephemeral_proxy_port(&db).await;
+        db.init_default_official_providers().expect("seed");
+        crate::codex_config::write_codex_live_atomic(
+            &json!({"auth_mode":"chatgpt","tokens":{"access_token":"synthetic"}}),
+            Some("model='fixture'\n"),
+        )
+        .expect("config");
+        let service = ProxyService::new(db.clone());
+        service
+            .set_takeover_for_app("codex", true)
+            .await
+            .expect("ordinary");
+        let invalid = Arc::new(crate::proxy::intent::Menu {
+            models: Default::default(),
+            default_model: None,
+            omitted_entries: 0,
+            token: "synthetic".into(),
+            groups: Default::default(),
+        });
+        let guard = service.lock_switch_for_app("codex").await;
+        assert!(service
+            .activate_codex_groups(invalid, "http://127.0.0.1:1/intent/v1".into())
+            .await
+            .is_err());
+        drop(guard);
+        assert!(service.is_running().await);
+        assert!(
+            db.get_proxy_config_for_app("codex")
+                .await
+                .expect("state")
+                .enabled
+        );
+        assert!(!service.intent_client.active_or_pending());
+        assert!(!service.intent_runtime.menu_active());
+        service.stop_with_restore().await.expect("restore");
     }
 
     #[test]

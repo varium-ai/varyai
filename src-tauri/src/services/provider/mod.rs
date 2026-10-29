@@ -4773,6 +4773,11 @@ impl ProviderService {
         } else {
             None
         };
+        if app_type == AppType::Codex && state.proxy_service.intent_client.active_or_pending() {
+            return Err(AppError::Message(
+                "Exit Codex routing-group takeover before editing providers".into(),
+            ));
+        }
         let existing_provider = state
             .db
             .get_provider_by_id(&original_id, app_type.as_str())?;
@@ -5347,6 +5352,12 @@ impl ProviderService {
         } else {
             None
         };
+
+        if app_type == AppType::Codex && state.proxy_service.intent_client.active_or_pending() {
+            return Err(AppError::Message(
+                "Exit Codex routing-group takeover before switching providers".into(),
+            ));
+        }
 
         // Check if provider exists
         let providers = state.db.get_all_providers(app_type.as_str())?;

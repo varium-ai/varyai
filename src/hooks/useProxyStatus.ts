@@ -98,6 +98,7 @@ export function useProxyStatus() {
       );
       queryClient.invalidateQueries({ queryKey: proxyKeys.status });
       queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus });
+      queryClient.invalidateQueries({ queryKey: ["intent-routing-client"] });
       queryClient.invalidateQueries({ queryKey: securityKeys.all });
       queryClient.invalidateQueries({ queryKey: ["security-route"] });
       // 彻底删除所有供应商健康状态缓存（后端已清空数据库记录）
@@ -148,6 +149,7 @@ export function useProxyStatus() {
       );
       queryClient.invalidateQueries({ queryKey: proxyKeys.status });
       queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus });
+      queryClient.invalidateQueries({ queryKey: ["intent-routing-client"] });
     },
     onError: (error: Error) => {
       const detail =

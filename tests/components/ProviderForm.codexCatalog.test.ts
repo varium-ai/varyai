@@ -3,6 +3,26 @@ import { normalizeCodexCatalogModelsForSave } from "@/components/providers/forms
 import { mapCodexCatalogModelForForm } from "@/components/providers/forms/hooks/useCodexConfigState";
 
 describe("ProviderForm Codex catalog helpers", () => {
+  it("retains explicit free and paid metadata without guessing missing values", () => {
+    expect(
+      normalizeCodexCatalogModelsForSave(
+        [
+          { model: "free-fixture", free: true },
+          { model: "paid-fixture", is_free: false },
+          { model: "unknown-free-in-name" },
+          {
+            model: "priced-free",
+            pricing: { input: "0", output: 0, cache_read: 0, cache_write: "0" },
+          },
+        ].map(mapCodexCatalogModelForForm),
+      ),
+    ).toEqual([
+      { model: "free-fixture", free: true },
+      { model: "paid-fixture", free: false },
+      { model: "unknown-free-in-name" },
+      { model: "priced-free", free: true },
+    ]);
+  });
   it("normalizes catalog rows and removes empty or duplicate models", () => {
     expect(
       normalizeCodexCatalogModelsForSave([

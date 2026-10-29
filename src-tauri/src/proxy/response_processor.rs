@@ -1119,6 +1119,7 @@ mod tests {
     fn build_state(db: Arc<Database>) -> ProxyState {
         ProxyState {
             pi_runtime: Arc::default(),
+            intent_runtime: Arc::default(),
             db: db.clone(),
             config: Arc::new(RwLock::new(ProxyConfig::default())),
             status: Arc::new(RwLock::new(ProxyStatus::default())),

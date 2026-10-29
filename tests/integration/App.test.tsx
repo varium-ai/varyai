@@ -717,6 +717,22 @@ describe("App integration with MSW", () => {
     expect(screen.getByTestId("add-provider-dialog")).toBeInTheDocument();
   }, 15_000);
 
+  it("opens the dedicated routing tab from the home routing shortcut", async () => {
+    securityProtectionMock.connected = false;
+    localStorage.setItem("cc-switch-last-app", "openclaw");
+    const { default: App } = await import("@/App");
+    renderApp(App);
+
+    await screen.findByTestId("home-dashboard");
+    fireEvent.click(
+      screen.getByRole("button", { name: "homeAudit.configureRouting" }),
+    );
+
+    expect(await screen.findByTestId("settings-page")).toHaveTextContent(
+      "settings:routing",
+    );
+  }, 15_000);
+
   it("enables the current app directly from the unrouted protection warning", async () => {
     securityProtectionMock.connected = false;
     const { default: App } = await import("@/App");

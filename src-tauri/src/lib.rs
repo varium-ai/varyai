@@ -4,6 +4,7 @@ mod auto_launch;
 mod claude_desktop_config;
 mod claude_mcp;
 mod claude_plugin;
+mod codex_client;
 mod codex_config;
 mod codex_history_migration;
 mod codex_state_db;
@@ -690,6 +691,9 @@ pub fn run() {
             }
 
             let app_state = AppState::new(db);
+            if app_state.proxy_service.intent_client.restore().is_err() {
+                log::warn!("[IntentRouting] client recovery requires attention");
+            }
             if let Err(error) = initialize_optional_agent_visibility(&app_state.db) {
                 log::warn!("初始化可选 Agent 列表失败: {error}");
             }
@@ -1446,6 +1450,19 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_gateway_keys,
+            commands::list_intent_routing_providers,
+            commands::list_intent_routing_groups,
+            commands::refresh_intent_routing_catalogs,
+            commands::set_intent_routing_auto_create,
+            commands::save_intent_routing_group,
+            commands::delete_intent_routing_group,
+            commands::preview_intent_routing_plan,
+            commands::trial_intent_routing_classification,
+            commands::intent_routing_client_status,
+            commands::connect_intent_routing_client,
+            commands::disconnect_intent_routing_client,
+            commands::start_intent_routing_session,
+            commands::stop_intent_routing_session,
             commands::create_gateway_key,
             commands::update_gateway_key,
             commands::revoke_gateway_key,

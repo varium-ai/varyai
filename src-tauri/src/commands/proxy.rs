@@ -262,10 +262,56 @@ pub async fn set_proxy_takeover_for_app(
     if app_type == "qoder" && enabled {
         ensure_qoder_consent(&app, state.inner()).await?;
     }
+    if app_type == "codex" && enabled {
+        if state.proxy_service.intent_runtime.menu_active() {
+            return state
+                .proxy_service
+                .set_takeover_for_app("codex", true)
+                .await;
+        }
+        ensure_codex_menu_consent(&app).await?;
+        state.proxy_service.start().await?;
+        state.proxy_service.connect_codex_menu(true, true).await?;
+        return Ok(());
+    }
     state
         .proxy_service
         .set_takeover_for_app(&app_type, enabled)
         .await
+}
+
+async fn ensure_codex_menu_consent(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let language = crate::settings::get_settings()
+        .language
+        .unwrap_or_else(|| "en".into());
+    let source = match language.as_str() {
+        "zh" => include_str!("../../../src/i18n/locales/zh.json"),
+        "zh-TW" => include_str!("../../../src/i18n/locales/zh-TW.json"),
+        "ja" => include_str!("../../../src/i18n/locales/ja.json"),
+        _ => include_str!("../../../src/i18n/locales/en.json"),
+    };
+    let texts: serde_json::Value =
+        serde_json::from_str(source).map_err(|_| "intentRouting.failed")?;
+    let title = texts["intentRouting"]["clientUnifiedTitle"]
+        .as_str()
+        .ok_or("intentRouting.failed")?;
+    let message = texts["intentRouting"]["clientUnifiedConsent"]
+        .as_str()
+        .ok_or("intentRouting.failed")?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(message)
+        .title(title)
+        .kind(MessageDialogKind::Info)
+        .buttons(MessageDialogButtons::OkCancel)
+        .show(move |accepted| {
+            let _ = tx.send(accepted);
+        });
+    if rx.await != Ok(true) {
+        return Err("intentRouting.cancelled".into());
+    }
+    Ok(())
 }
 
 /// 获取代理服务器状态

@@ -156,6 +156,7 @@ function createCatalogRow(seed?: Partial<CodexCatalogModel>): CodexCatalogRow {
   return {
     rowId: crypto.randomUUID(),
     model: seed?.model ?? "",
+    ...(typeof seed?.free === "boolean" ? { free: seed.free } : {}),
     displayName: seed?.displayName ?? "",
     contextWindow: seed?.contextWindow ?? "",
     // Carry native-profile overrides verbatim (not user-editable in the row UI,
@@ -189,6 +190,7 @@ function catalogRowsMatchModels(
     const incoming = models[i];
     return (
       row.model === (incoming.model ?? "") &&
+      (row.free ?? null) === (incoming.free ?? null) &&
       (row.displayName ?? "") === (incoming.displayName ?? "") &&
       String(row.contextWindow ?? "") ===
         String(incoming.contextWindow ?? "") &&

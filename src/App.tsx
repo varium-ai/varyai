@@ -155,7 +155,7 @@ function App() {
   // remains stateful for the lifetime of the current window only.
   const [currentView, setCurrentView] = useState<View>("providers");
   const [settingsInitialTab, setSettingsInitialTab] = useState<
-    "general" | "advanced"
+    "general" | "routing" | "advanced"
   >("general");
   const [skillsDiscoverySource, setSkillsDiscoverySource] =
     useState<SkillsPageSource>("repos");
@@ -1004,7 +1004,7 @@ function App() {
                     setCurrentView("settings");
                   }}
                   onOpenRoutingSettings={() => {
-                    setSettingsInitialTab("advanced");
+                    setSettingsInitialTab("routing");
                     setCurrentView("settings");
                   }}
                 />

@@ -192,6 +192,7 @@ export const normalizeCodexCatalogModelsForSave = (
     normalized.push({
       model,
       ...(displayName ? { displayName } : {}),
+      ...(typeof item.free === "boolean" ? { free: item.free } : {}),
       ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
       // Native Responses profile overrides (ignored by the chat/proxy profile).
       ...(typeof item.supportsParallelToolCalls === "boolean"

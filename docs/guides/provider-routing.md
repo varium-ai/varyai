@@ -48,7 +48,9 @@ Conversion cannot guarantee that every vendor extension, tool schema, reasoning 
 
 ## Enable routing
 
-For supported local-proxy clients, start the routing master switch and enable routing for the selected client. The default listener is `127.0.0.1:15721`. A running listener and a configured provider alone do not establish that the client is using it; check the per-client routing state and the client's active configuration.
+Open **Settings → Routing** and expand **Local routing**. Routing has its own settings tab, separate from Advanced; the home routing shortcut opens the same tab. The routing master switch, gateway keys, per-client takeover, listener configuration and failover controls remain together here, with their existing save behavior.
+
+For supported local-proxy clients, start the routing master switch and enable routing for the selected client. Codex has a single routing switch. After one confirmation, supported provider models and routing groups appear together in its model menu; there is no mode selector or group-publication checklist. Select a provider-labeled model to use that exact provider, or a group-labeled model to use the group plan. Vary AI keeps one configuration owner and synchronizes group changes automatically while the switch is on. Turning the Codex switch off restores the original configuration. The default listener is `127.0.0.1:15721`. A running listener and a configured provider alone do not establish that the client is using it; check the per-client routing state and the client's active configuration.
 
 Taking over a client changes its live endpoint configuration. The client-facing URL can include `/v1` where its protocol requires it. Keep the provider's upstream endpoint separate from that loopback URL. Do not change the listener to a public interface just to resolve an endpoint-format error.
 
@@ -68,3 +70,50 @@ Refer to [troubleshooting](../troubleshooting.md) for diagnostics. Share only re
 The local gateway accepts literal loopback IP addresses only, such as `127.0.0.1` or `::1`. The interface also accepts `localhost` and saves it as `127.0.0.1`. Wildcard and LAN addresses are rejected before saving or starting the listener. This application is not a shared LAN gateway.
 
 If an older installation saved a non-loopback address, change it to a loopback address before restarting local routing. When a VPN intercepts loopback requests, see [local proxy bypass examples](proxy-configs/README.md).
+
+## Reasoning effort in Codex routing groups
+
+Published routing-group aliases no longer inherit the generic `none`/`high`
+model template. Vary AI reads each exact member model's reasoning capabilities
+from its provider catalog. Official ChatGPT/OAuth discovery retains the normalized
+capabilities in the existing account-scoped, 24-hour cache, not just model IDs.
+Older ID-only cache entries remain readable but need a model-list refresh.
+
+Like Magpie, the automatic group menu intersects the levels of members with
+known selectable levels. Unknown and explicitly non-reasoning members do not
+remove other members' levels. If no member supplies levels, or the intersection
+is empty, the group advertises no selectable levels rather than inventing them
+from a model name. The default follows Codex's existing `model_reasoning_effort`
+when supported (otherwise the nearest level); without a matching preference it
+prefers `medium`, then `high`, then the first available level.
+
+Each forwarding attempt adapts the original requested effort independently to
+that target's known levels. Equal-distance choices prefer the higher level;
+`none` is never chosen as an implicit fallback. `ultra` is sent as `max` (or the
+nearest supported level), and unknown-level `xhigh` is capped at `high`, matching
+Magpie's gateway fitting behavior. Explicitly non-reasoning targets have the
+effort field removed. Absent/null effort is left alone. Unrelated reasoning
+options, opaque input and vendor number representations are preserved. This is
+capability-based adaptation, not evidence that every advertised model can be
+called successfully with the current account.
+
+After upgrading, reload the routing model catalogs and enable the Codex routing
+switch, then reopen Codex if it retains the previous catalog. Catalog reloads and
+group changes synchronize automatically while routing is enabled. The gateway must remain running. This implementation covers automatic
+capability-derived levels and per-target fitting; Magpie's manual group-level
+overrides and per-member fixed-effort editor are not included.
+
+Menu synchronization actively refreshes official account capabilities and uses
+that same provider snapshot for the published catalog and execution targets.
+This upgrades ID-only caches without requiring a separate reload action. A
+failed discovery still uses a valid cached catalog; it cannot establish missing
+reasoning levels. The gateway does not invent levels for ID-only catalogs.
+
+Routing-group catalogs allow image input when at least one member is not
+explicitly text-only, consistent with Vary AI's unknown-capability passthrough
+policy. Official discovery caches retain input modalities. Image requests skip
+explicitly text-only candidates within the approved plan; pinned conversations
+are never moved to another account to accommodate an image. Images are forwarded
+unchanged, not stripped. A group can advertise images while a particular pinned
+conversation or rule has no eligible image candidate; that request fails with a
+sanitized capability error instead of silently changing accounts.

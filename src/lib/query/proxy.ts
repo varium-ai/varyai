@@ -58,6 +58,7 @@ export function useSetProxyTakeoverForApp() {
       queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus });
       queryClient.invalidateQueries({ queryKey: proxyKeys.status });
       queryClient.invalidateQueries({ queryKey: ["pi", "routing"] });
+      queryClient.invalidateQueries({ queryKey: ["intent-routing-client"] });
     },
   });
 }

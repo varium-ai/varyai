@@ -262,6 +262,7 @@ export type CodexApiFormat =
   | "gemini_native";
 
 export interface CodexCatalogModel {
+  free?: boolean;
   model: string;
   displayName?: string;
   contextWindow?: string | number;

@@ -8,6 +8,9 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProxyPanel } from "@/components/proxy/ProxyPanel";
 
+vi.mock("@/components/routing/RoutingClient", () => ({
+  RoutingClient: () => <span>Codex</span>,
+}));
 vi.mock("@/components/proxy/GatewayKeysPanel", () => ({
   GatewayKeysPanel: () => <div />,
 }));

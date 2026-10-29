@@ -56,6 +56,18 @@ const optionalBuiltinRuleIds = Object.keys(
 ).filter((key) => key.startsWith("catalog_"));
 
 describe("locale coverage", () => {
+  it.each([
+    ["en", en, "Enable"],
+    ["zh", zh, "启用"],
+    ["ja", ja, "有効化"],
+    ["zh-TW", zhTW, "啟用"],
+  ] as const)(
+    "translates the Codex routing enable action in %s",
+    (_locale, tree, expected) => {
+      expect(flattenStrings(tree).get("common.enable")).toBe(expected);
+    },
+  );
+
   it.each(locales)("covers every Pi translation key in %s", (_name, tree) => {
     const translations = flattenStrings(tree as TranslationTree);
     const missing = [...piReference.keys()].filter(

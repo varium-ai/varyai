@@ -59,6 +59,7 @@ pub use usage_stats::{
     RequestLogDetail, UsageSummary, UsageSummaryByApp,
 };
 pub(crate) mod agent_clients;
+pub(crate) mod intent_routing;
 
 pub(crate) mod trae_bridge;
 

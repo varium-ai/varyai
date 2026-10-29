@@ -4,6 +4,7 @@
 
 pub mod connection_presets;
 pub mod failover;
+pub(crate) mod intent_routing;
 pub mod mcp;
 pub mod profiles;
 pub mod prompts;

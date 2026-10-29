@@ -253,6 +253,10 @@ vi.mock("@/components/settings/WebdavSyncSection", () => ({
   ),
 }));
 
+vi.mock("@/components/routing/IntentRoutingPanel", () => ({
+  IntentRoutingPanel: () => <div data-testid="intent-routing-panel" />,
+}));
+
 let settingsApi: any;
 
 const renderSettingsPage = (
@@ -289,14 +293,14 @@ describe("SettingsPage Component", () => {
       screen.queryByRole("tab", { name: "homeAudit.label" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("tab", { name: "settings.tabProxy" }),
-    ).not.toBeInTheDocument();
-    expect(
       screen.queryByRole("tab", { name: "settings.tabAuth" }),
     ).not.toBeInTheDocument();
-    expect(tabs.indexOf("settings.tabAdvanced")).toBe(
-      tabs.indexOf("settings.tabGeneral") + 1,
-    );
+    expect(tabs).toEqual([
+      "settings.tabGeneral",
+      "settings.tabProxy",
+      "settings.tabAdvanced",
+      "common.about",
+    ]);
     expect(screen.queryByText("settings.codexAuth")).not.toBeInTheDocument();
     expect(screen.getByText("window-settings")).toBeInTheDocument();
   });
@@ -314,18 +318,50 @@ describe("SettingsPage Component", () => {
     expect(categoryRow).toHaveClass("flex-wrap");
   });
 
-  it("renders local routing at the top of advanced settings", () => {
+  it("keeps local routing in its own tab instead of advanced settings", () => {
     renderSettingsPage();
 
+    expect(
+      screen.queryByTestId("local-proxy-settings"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "settings.tabProxy" }));
+    expect(screen.getByTestId("local-proxy-settings")).toBeInTheDocument();
+    expect(screen.getByTestId("intent-routing-panel")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "common.save" }),
+    ).not.toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("tab", { name: "settings.tabAdvanced" }));
+    expect(
+      screen.queryByTestId("intent-routing-panel"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("local-proxy-settings"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "common.save" }),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the routing tab when requested", () => {
+    renderSettingsPage({ initialTab: "routing" });
 
     expect(screen.getByTestId("local-proxy-settings")).toBeInTheDocument();
   });
 
-  it("opens the requested settings tab", () => {
-    renderSettingsPage({ initialTab: "advanced" });
+  it("removes the status banner and the extra routing card padding", () => {
+    renderSettingsPage({ initialTab: "routing" });
 
-    expect(screen.getByTestId("local-proxy-settings")).toBeInTheDocument();
+    expect(screen.queryByText("settings.statusNotice")).not.toBeInTheDocument();
+    expect(screen.queryByText("settings.statusReady")).not.toBeInTheDocument();
+    const routing = screen.getByTestId("tab-routing");
+    const content = screen.getByTestId("local-proxy-settings").parentElement;
+    expect(content?.parentElement).toBe(routing);
+    expect(content).toHaveClass("space-y-4");
+    expect(content).not.toHaveClass("p-5", "sm:p-6", "border", "rounded-2xl");
+    expect(content).toContainElement(
+      screen.getByTestId("intent-routing-panel"),
+    );
   });
 
   it("keeps usage statistics out of the settings tabs", () => {
