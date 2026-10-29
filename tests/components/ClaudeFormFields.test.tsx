@@ -4,6 +4,11 @@ import { useForm } from "react-hook-form";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeFormFields } from "@/components/providers/forms/ClaudeFormFields";
 import { Form } from "@/components/ui/form";
+import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
+
+vi.mock("@/lib/api/provider-protocol-detection", () => ({
+  detectProviderProtocols: vi.fn().mockResolvedValue([]),
+}));
 
 const copilotApiMock = vi.hoisted(() => ({
   copilotGetModels: vi.fn(),
@@ -87,6 +92,8 @@ const renderCopilotForm = (overrides: Partial<ClaudeFormFieldsProps> = {}) => {
     defaultFableModelName: "",
     subagentModel: "",
     onModelChange: vi.fn(),
+    modelPickerOptions: [],
+    onModelPickerOptionsChange: vi.fn(),
     speedTestEndpoints: [],
     apiFormat: "anthropic",
     onApiFormatChange: vi.fn(),
@@ -103,11 +110,14 @@ const renderCopilotForm = (overrides: Partial<ClaudeFormFieldsProps> = {}) => {
     ...overrides,
   };
 
-  return render(
-    <FormShell>
-      <ClaudeFormFields {...props} />
-    </FormShell>,
-  );
+  return {
+    props,
+    ...render(
+      <FormShell>
+        <ClaudeFormFields {...props} />
+      </FormShell>,
+    ),
+  };
 };
 
 const renderCodexOauthForm = (overrides: Partial<ClaudeFormFieldsProps> = {}) =>
@@ -122,6 +132,124 @@ const renderCodexOauthForm = (overrides: Partial<ClaudeFormFieldsProps> = {}) =>
   });
 
 describe("ClaudeFormFields", () => {
+  it("passes the Gemini protocol when fetching models", async () => {
+    renderCopilotForm({
+      isCopilotPreset: false,
+      category: "third_party",
+      apiKey: "fixture-key",
+      baseUrl: "https://fixture.example/v1",
+      apiFormat: "gemini_native",
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerForm.fetchModels" }),
+    );
+    await waitFor(() =>
+      expect(modelFetchApiMock.fetchModelsForConfig).toHaveBeenCalledWith(
+        "https://fixture.example/v1",
+        "fixture-key",
+        expect.anything(),
+        undefined,
+        expect.anything(),
+        { apiFormat: "google-generative-ai" },
+      ),
+    );
+  });
+
+  it("shares discovered models with every role selector", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    modelFetchApiMock.fetchModelsForConfig.mockResolvedValue([
+      { id: "fixture-fast", ownedBy: "fixture" },
+      { id: "fixture-large", ownedBy: "fixture" },
+    ]);
+    const onModelChange = vi.fn();
+    renderCopilotForm({
+      isCopilotPreset: false,
+      category: "third_party",
+      apiKey: "fixture-key",
+      baseUrl: "https://fixture.example/v1",
+      defaultSonnetModel: "",
+      defaultSonnetModelName: "",
+      onModelChange,
+      configurationDetection: {
+        editingCredentials: false,
+        autoSelectFormat: true,
+      },
+    });
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "providerForm.advancedOptionsToggle",
+      }),
+    );
+    await waitFor(
+      () =>
+        expect(
+          screen.getAllByRole("button", { name: "Select model" }),
+        ).toHaveLength(7),
+      { timeout: 2000 },
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "Select model" })[0]);
+    expect(screen.getByRole("option", { name: "fixture-fast" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "fixture-large" })).toBeVisible();
+  });
+
+  it("can detect an explicitly mapped role when the fallback model is empty", async () => {
+    renderCopilotForm({
+      isCopilotPreset: false,
+      category: "third_party",
+      apiKey: "fixture-key",
+      baseUrl: "https://fixture.example/v1",
+      defaultSonnetModel: "fixture-role[1M]",
+      claudeModel: "",
+      configurationDetection: {
+        editingCredentials: false,
+        autoSelectFormat: true,
+      },
+    });
+    expect(
+      screen.getByRole("button", { name: "providerDetection.check" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByText("providerDetection.selectedModel"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerDetection.check" }),
+    );
+    await waitFor(() =>
+      expect(detectProviderProtocols).toHaveBeenCalledWith(
+        expect.objectContaining({ model: "fixture-role" }),
+      ),
+    );
+  });
+
+  it("discards a pending manual catalog when credentials change", async () => {
+    let resolve!: (models: { id: string; ownedBy: null }[]) => void;
+    modelFetchApiMock.fetchModelsForConfig.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const view = renderCopilotForm({
+      isCopilotPreset: false,
+      category: "third_party",
+      apiKey: "fixture-key",
+      baseUrl: "https://fixture.example/v1",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "一键设置" }));
+    view.rerender(
+      <FormShell>
+        <ClaudeFormFields {...view.props} apiKey="new-fixture-key" />
+      </FormShell>,
+    );
+    resolve([{ id: "old-provider-model", ownedBy: null }]);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "一键设置" })).toBeEnabled(),
+    );
+    expect(view.props.onModelPickerOptionsChange).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "Select model" }),
+    ).not.toBeInTheDocument();
+  });
+
   beforeEach(() => {
     copilotApiMock.copilotGetModels.mockResolvedValue([]);
     copilotApiMock.copilotGetModelsForAccount.mockResolvedValue([]);
@@ -175,24 +303,125 @@ describe("ClaudeFormFields", () => {
     });
   });
 
-  it("一键设置会同时写入 Subagent 模型", () => {
+  it("one-click imports every unique model as a row without overwriting roles", async () => {
+    const models = Array.from({ length: 7 }, (_, i) => ({
+      id: `fixture-${i}`,
+      ownedBy: null,
+    }));
+    modelFetchApiMock.fetchModelsForConfig.mockResolvedValue([
+      ...models,
+      models[0],
+      { id: "", ownedBy: null },
+    ]);
     const onModelChange = vi.fn();
-    renderCopilotForm({
-      claudeModel: "shared-model[1M]",
+    const onModelPickerOptionsChange = vi.fn();
+    const view = renderCopilotForm({
+      isCopilotPreset: false,
+      category: "third_party",
+      apiKey: "fixture-key",
+      baseUrl: "https://fixture.example/v1",
+      claudeModel: "",
       defaultSonnetModel: "",
       defaultSonnetModelName: "",
       onModelChange,
+      onModelPickerOptionsChange,
+      modelPickerOptions: [
+        { model: "fixture-0", label: "Keep my name", description: "Keep this" },
+      ],
     });
+    const button = screen.getByRole("button", { name: "一键设置" });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(onModelPickerOptionsChange).toHaveBeenCalledTimes(1),
+    );
+    const imported = onModelPickerOptionsChange.mock.calls[0][0];
+    expect(imported).toEqual([
+      { model: "fixture-0", label: "Keep my name", description: "Keep this" },
+      ...models.slice(1).map(({ id }) => ({ model: id, label: id })),
+    ]);
+    expect(onModelChange).not.toHaveBeenCalled();
+    view.rerender(
+      <FormShell>
+        <ClaudeFormFields {...view.props} modelPickerOptions={imported} />
+      </FormShell>,
+    );
+    expect(
+      screen.getAllByRole("textbox", { name: "Request model" }),
+    ).toHaveLength(7);
+    fireEvent.click(screen.getByRole("button", { name: "一键设置" }));
+    await waitFor(() =>
+      expect(onModelPickerOptionsChange).toHaveBeenCalledTimes(2),
+    );
+    expect(onModelPickerOptionsChange.mock.calls[1][0]).toEqual(imported);
+    expect(modelFetchApiMock.fetchModelsForConfig).toHaveBeenCalledTimes(1);
+    fireEvent.change(
+      screen.getAllByRole("textbox", { name: "Display name" })[0],
+      { target: { value: "Renamed" } },
+    );
+    expect(onModelPickerOptionsChange.mock.lastCall?.[0][0]).toMatchObject({
+      model: "fixture-0",
+      label: "Renamed",
+      description: "Keep this",
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove model" })[0]);
+    expect(onModelPickerOptionsChange.mock.lastCall?.[0]).toHaveLength(6);
+  });
 
+  it("imports from empty role fields and leaves existing rows unchanged on fetch failure", async () => {
+    const onModelPickerOptionsChange = vi.fn();
+    modelFetchApiMock.fetchModelsForConfig.mockRejectedValueOnce(
+      new Error("fixture failure"),
+    );
+    renderCopilotForm({
+      isCopilotPreset: false,
+      apiKey: "fixture-key",
+      baseUrl: "https://fixture.example/v1",
+      claudeModel: "",
+      defaultSonnetModel: "",
+      defaultSonnetModelName: "",
+      onModelPickerOptionsChange,
+    });
     fireEvent.click(
       screen.getByRole("button", {
-        name: "一键设置",
+        name: "providerForm.advancedOptionsToggle",
       }),
     );
+    const button = screen.getByRole("button", { name: "一键设置" });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(modelFetchApiMock.showFetchModelsError).toHaveBeenCalled(),
+    );
+    expect(onModelPickerOptionsChange).not.toHaveBeenCalled();
+    await waitFor(() => expect(button).toBeEnabled());
+    modelFetchApiMock.fetchModelsForConfig.mockResolvedValueOnce([
+      { id: "fixture-new", ownedBy: null },
+    ]);
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(onModelPickerOptionsChange).toHaveBeenCalledWith([
+        { model: "fixture-new", label: "fixture-new" },
+      ]),
+    );
+  });
 
-    expect(onModelChange).toHaveBeenCalledWith(
-      "CLAUDE_CODE_SUBAGENT_MODEL",
-      "shared-model[1M]",
+  it("one-click imports the selected OAuth account's entire catalog", async () => {
+    copilotApiMock.copilotGetModelsForAccount.mockResolvedValue([
+      { id: "fixture-a" },
+      { id: "fixture-b" },
+    ]);
+    const onModelPickerOptionsChange = vi.fn();
+    renderCopilotForm({ onModelPickerOptionsChange });
+    fireEvent.click(screen.getByRole("button", { name: "一键设置" }));
+    await waitFor(() =>
+      expect(onModelPickerOptionsChange).toHaveBeenCalledWith([
+        { model: "fixture-a", label: "fixture-a" },
+        { model: "fixture-b", label: "fixture-b" },
+      ]),
+    );
+    expect(copilotApiMock.copilotGetModelsForAccount).toHaveBeenCalledWith(
+      "gh-1",
     );
   });
 });

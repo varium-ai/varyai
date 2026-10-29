@@ -23,6 +23,7 @@ import {
   Download,
   Loader2,
   Wand2,
+  Trash2,
 } from "lucide-react";
 import EndpointSpeedTest from "./EndpointSpeedTest";
 import {
@@ -48,6 +49,7 @@ import {
 } from "@/lib/api/model-fetch";
 import { CustomUserAgentField } from "./CustomUserAgentField";
 import { LocalProxyRequestOverridesField } from "./LocalProxyRequestOverridesField";
+import { ProviderConfigDetection } from "./ProviderConfigDetection";
 import type {
   ProviderCategory,
   ClaudeApiFormat,
@@ -59,6 +61,7 @@ import {
   setClaudeOneMMarker,
   stripClaudeOneMMarker,
   type ClaudeModelEnvField,
+  type ClaudeModelPickerOption,
 } from "./hooks/useModelState";
 import {
   providerPresets,
@@ -136,6 +139,14 @@ interface ClaudeFormFieldsProps {
   defaultFableModelName: string;
   subagentModel: string;
   onModelChange: (field: ClaudeModelEnvField, value: string) => void;
+  modelPickerOptions: ClaudeModelPickerOption[];
+  onModelPickerOptionsChange: (options: ClaudeModelPickerOption[]) => void;
+  configurationDetection?: {
+    editingCredentials: boolean;
+    autoSelectFormat: boolean;
+    onManualFormatSelect?: () => void;
+    onApiFormatChange?: (format: ClaudeApiFormat) => void;
+  };
 
   // Speed Test Endpoints
   speedTestEndpoints: EndpointCandidate[];
@@ -212,6 +223,9 @@ export function ClaudeFormFields({
   defaultFableModelName,
   subagentModel,
   onModelChange,
+  modelPickerOptions,
+  onModelPickerOptionsChange,
+  configurationDetection,
   speedTestEndpoints,
   apiFormat,
   onApiFormatChange,
@@ -231,6 +245,7 @@ export function ClaudeFormFields({
     localProxyHeadersOverride.trim() || localProxyBodyOverride.trim(),
   );
   const hasAnyAdvancedValue = !!(
+    modelPickerOptions.length ||
     claudeModel ||
     defaultHaikuModel ||
     defaultSonnetModel ||
@@ -273,6 +288,19 @@ export function ClaudeFormFields({
   // 通用模型获取（非 Copilot 供应商）
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const modelCatalogRequest = useRef(0);
+  const [importingModels, setImportingModels] = useState(false);
+  const latestModelPickerOptions = useRef(modelPickerOptions);
+  latestModelPickerOptions.current = modelPickerOptions;
+
+  useEffect(() => {
+    modelCatalogRequest.current += 1;
+    setFetchedModels([]);
+    setIsFetchingModels(false);
+    return () => {
+      modelCatalogRequest.current += 1;
+    };
+  }, [baseUrl, apiKey, isFullUrl, customUserAgent, apiFormat]);
 
   const showModelFetchResult = useCallback(
     (count: number) => {
@@ -285,145 +313,179 @@ export function ClaudeFormFields({
     [t],
   );
 
-  const handleFetchModels = useCallback(() => {
-    if (!baseUrl || !apiKey) {
-      showFetchModelsError(null, t, {
-        hasApiKey: !!apiKey,
-        hasBaseUrl: !!baseUrl,
+  const handleFetchModels = useCallback(
+    (importModels = false) => {
+      if (!baseUrl || !apiKey) {
+        showFetchModelsError(null, t, {
+          hasApiKey: !!apiKey,
+          hasBaseUrl: !!baseUrl,
+        });
+        return;
+      }
+      // 当 baseURL 仍是某预设的默认值时，优先使用预设上的 modelsUrl 覆写
+      // 避免多走一次失败的候选请求（如 DeepSeek 把 /models 挂在根，而不是 /anthropic 子路径下）
+      const matchedPreset = providerPresets.find((p) => {
+        const env = (p.settingsConfig as { env?: Record<string, string> })?.env;
+        return env?.ANTHROPIC_BASE_URL === baseUrl;
       });
-      return;
-    }
-    // 当 baseURL 仍是某预设的默认值时，优先使用预设上的 modelsUrl 覆写
-    // 避免多走一次失败的候选请求（如 DeepSeek 把 /models 挂在根，而不是 /anthropic 子路径下）
-    const matchedPreset = providerPresets.find((p) => {
-      const env = (p.settingsConfig as { env?: Record<string, string> })?.env;
-      return env?.ANTHROPIC_BASE_URL === baseUrl;
-    });
-    const modelsUrl = matchedPreset?.modelsUrl;
+      const modelsUrl = matchedPreset?.modelsUrl;
 
-    setIsFetchingModels(true);
-    fetchModelsForConfig(baseUrl, apiKey, isFullUrl, modelsUrl, customUserAgent)
-      .then((models) => {
-        setFetchedModels(models);
-        showModelFetchResult(models.length);
-      })
-      .catch((err) => {
-        console.warn("[ModelFetch] Failed:", err);
-        showFetchModelsError(err, t);
-      })
-      .finally(() => setIsFetchingModels(false));
-  }, [baseUrl, apiKey, isFullUrl, customUserAgent, showModelFetchResult, t]);
+      const request = ++modelCatalogRequest.current;
+      setIsFetchingModels(true);
+      return fetchModelsForConfig(
+        baseUrl,
+        apiKey,
+        isFullUrl,
+        modelsUrl,
+        customUserAgent,
+        {
+          apiFormat:
+            apiFormat === "gemini_native" ? "google-generative-ai" : undefined,
+        },
+      )
+        .then((models) => {
+          if (request !== modelCatalogRequest.current) return;
+          setFetchedModels(models);
+          if (!importModels) showModelFetchResult(models.length);
+          return models;
+        })
+        .catch((err) => {
+          if (request !== modelCatalogRequest.current) return;
+          showFetchModelsError(err, t);
+        })
+        .finally(() => {
+          if (request === modelCatalogRequest.current)
+            setIsFetchingModels(false);
+        });
+    },
+    [
+      baseUrl,
+      apiKey,
+      isFullUrl,
+      customUserAgent,
+      apiFormat,
+      showModelFetchResult,
+      t,
+    ],
+  );
 
-  const handleFetchCopilotModels = useCallback(() => {
-    if (!isCopilotAuthenticated) {
-      toast.error(
-        t("copilot.loginRequired", {
-          defaultValue: "请先登录 GitHub Copilot",
-        }),
-      );
-      return;
-    }
-
-    const requestId = copilotModelsRequestRef.current + 1;
-    copilotModelsRequestRef.current = requestId;
-    setModelsLoading(true);
-    const fetchModels = selectedGitHubAccountId
-      ? copilotGetModelsForAccount(selectedGitHubAccountId)
-      : copilotGetModels();
-
-    fetchModels
-      .then((models) => {
-        if (copilotModelsRequestRef.current !== requestId) return;
-        setCopilotModels(models);
-        showModelFetchResult(models.length);
-      })
-      .catch((err) => {
-        if (copilotModelsRequestRef.current !== requestId) return;
-        console.warn("[Copilot] Failed to fetch models:", err);
+  const handleFetchCopilotModels = useCallback(
+    (importModels = false) => {
+      if (!isCopilotAuthenticated) {
         toast.error(
-          t("copilot.loadModelsFailed", {
-            defaultValue: "加载 Copilot 模型列表失败",
+          t("copilot.loginRequired", {
+            defaultValue: "请先登录 GitHub Copilot",
           }),
         );
-      })
-      .finally(() => {
-        if (copilotModelsRequestRef.current === requestId) {
-          setModelsLoading(false);
-        }
-      });
-  }, [
-    isCopilotAuthenticated,
-    selectedGitHubAccountId,
-    showModelFetchResult,
-    t,
-  ]);
+        return;
+      }
 
-  const handleFetchCodexOauthModels = useCallback(() => {
-    if (!isCodexOauthAuthenticated) {
-      toast.error(
-        t("codexOauth.loginRequired", {
-          defaultValue: "请先登录 ChatGPT 账号",
-        }),
-      );
-      return;
-    }
+      const requestId = copilotModelsRequestRef.current + 1;
+      copilotModelsRequestRef.current = requestId;
+      setModelsLoading(true);
+      const fetchModels = selectedGitHubAccountId
+        ? copilotGetModelsForAccount(selectedGitHubAccountId)
+        : copilotGetModels();
 
-    const requestId = codexOauthModelsRequestRef.current + 1;
-    codexOauthModelsRequestRef.current = requestId;
-    setCodexOauthModelsLoading(true);
-    fetchCodexOauthModels(selectedCodexAccountId)
-      .then((models) => {
-        if (codexOauthModelsRequestRef.current !== requestId) return;
-        setCodexOauthModels(models);
-        showModelFetchResult(models.length);
-      })
-      .catch((err) => {
-        if (codexOauthModelsRequestRef.current !== requestId) return;
-        console.warn("[CodexOAuth] Failed to fetch models:", err);
-        showFetchModelsError(err, t);
-      })
-      .finally(() => {
-        if (codexOauthModelsRequestRef.current === requestId) {
-          setCodexOauthModelsLoading(false);
-        }
-      });
-  }, [
-    isCodexOauthAuthenticated,
-    selectedCodexAccountId,
-    showModelFetchResult,
-    t,
-  ]);
+      return fetchModels
+        .then((models) => {
+          if (copilotModelsRequestRef.current !== requestId) return;
+          setCopilotModels(models);
+          if (!importModels) showModelFetchResult(models.length);
+          return models;
+        })
+        .catch((err) => {
+          if (copilotModelsRequestRef.current !== requestId) return;
+          console.warn("[Copilot] Failed to fetch models:", err);
+          toast.error(
+            t("copilot.loadModelsFailed", {
+              defaultValue: "加载 Copilot 模型列表失败",
+            }),
+          );
+        })
+        .finally(() => {
+          if (copilotModelsRequestRef.current === requestId) {
+            setModelsLoading(false);
+          }
+        });
+    },
+    [isCopilotAuthenticated, selectedGitHubAccountId, showModelFetchResult, t],
+  );
 
-  const handleFetchXaiOauthModels = useCallback(() => {
-    if (!isXaiOauthAuthenticated) {
-      toast.error(
-        t("xaiOauth.loginRequired", {
-          defaultValue: "请先登录 xAI 账号",
-        }),
-      );
-      return;
-    }
+  const handleFetchCodexOauthModels = useCallback(
+    (importModels = false) => {
+      if (!isCodexOauthAuthenticated) {
+        toast.error(
+          t("codexOauth.loginRequired", {
+            defaultValue: "请先登录 ChatGPT 账号",
+          }),
+        );
+        return;
+      }
 
-    const requestId = xaiOauthModelsRequestRef.current + 1;
-    xaiOauthModelsRequestRef.current = requestId;
-    setXaiOauthModelsLoading(true);
-    fetchXaiOauthModels(selectedXaiAccountId)
-      .then((models) => {
-        if (xaiOauthModelsRequestRef.current !== requestId) return;
-        setXaiOauthModels(models);
-        showModelFetchResult(models.length);
-      })
-      .catch((err) => {
-        if (xaiOauthModelsRequestRef.current !== requestId) return;
-        console.warn("[XaiOAuth] Failed to fetch models:", err);
-        showFetchModelsError(err, t);
-      })
-      .finally(() => {
-        if (xaiOauthModelsRequestRef.current === requestId) {
-          setXaiOauthModelsLoading(false);
-        }
-      });
-  }, [isXaiOauthAuthenticated, selectedXaiAccountId, showModelFetchResult, t]);
+      const requestId = codexOauthModelsRequestRef.current + 1;
+      codexOauthModelsRequestRef.current = requestId;
+      setCodexOauthModelsLoading(true);
+      return fetchCodexOauthModels(selectedCodexAccountId)
+        .then((models) => {
+          if (codexOauthModelsRequestRef.current !== requestId) return;
+          setCodexOauthModels(models);
+          if (!importModels) showModelFetchResult(models.length);
+          return models;
+        })
+        .catch((err) => {
+          if (codexOauthModelsRequestRef.current !== requestId) return;
+          console.warn("[CodexOAuth] Failed to fetch models:", err);
+          showFetchModelsError(err, t);
+        })
+        .finally(() => {
+          if (codexOauthModelsRequestRef.current === requestId) {
+            setCodexOauthModelsLoading(false);
+          }
+        });
+    },
+    [
+      isCodexOauthAuthenticated,
+      selectedCodexAccountId,
+      showModelFetchResult,
+      t,
+    ],
+  );
+
+  const handleFetchXaiOauthModels = useCallback(
+    (importModels = false) => {
+      if (!isXaiOauthAuthenticated) {
+        toast.error(
+          t("xaiOauth.loginRequired", {
+            defaultValue: "请先登录 xAI 账号",
+          }),
+        );
+        return;
+      }
+
+      const requestId = xaiOauthModelsRequestRef.current + 1;
+      xaiOauthModelsRequestRef.current = requestId;
+      setXaiOauthModelsLoading(true);
+      return fetchXaiOauthModels(selectedXaiAccountId)
+        .then((models) => {
+          if (xaiOauthModelsRequestRef.current !== requestId) return;
+          setXaiOauthModels(models);
+          if (!importModels) showModelFetchResult(models.length);
+          return models;
+        })
+        .catch((err) => {
+          if (xaiOauthModelsRequestRef.current !== requestId) return;
+          console.warn("[XaiOAuth] Failed to fetch models:", err);
+          showFetchModelsError(err, t);
+        })
+        .finally(() => {
+          if (xaiOauthModelsRequestRef.current === requestId) {
+            setXaiOauthModelsLoading(false);
+          }
+        });
+    },
+    [isXaiOauthAuthenticated, selectedXaiAccountId, showModelFetchResult, t],
+  );
 
   useEffect(() => {
     copilotModelsRequestRef.current += 1;
@@ -646,6 +708,59 @@ export function ClaudeFormFields({
     handleRoleModelChange(row, setClaudeOneMMarker(row.model, enabled));
   };
 
+  const detectionModel = stripClaudeOneMMarker(
+    claudeModel ||
+      defaultSonnetModel ||
+      defaultOpusModel ||
+      defaultFableModel ||
+      defaultHaikuModel ||
+      subagentModel,
+  );
+
+  const availableModels = isCopilotPreset
+    ? copilotModels
+    : isCodexOauthPreset
+      ? codexOauthModels
+      : isXaiOauthPreset
+        ? xaiOauthModels
+        : fetchedModels;
+  const canFetchModels = isCopilotPreset
+    ? isCopilotAuthenticated
+    : isCodexOauthPreset
+      ? isCodexOauthAuthenticated
+      : isXaiOauthPreset
+        ? isXaiOauthAuthenticated
+        : Boolean(baseUrl.trim() && apiKey.trim());
+
+  const handleQuickSet = async () => {
+    setImportingModels(true);
+    try {
+      const models = availableModels.length
+        ? availableModels
+        : await handleModelFetchClick(true);
+      if (!models) return;
+      const options = [...latestModelPickerOptions.current];
+      const known = new Set(options.map((option) => option.model.trim()));
+      for (const { id } of models) {
+        const model = id.trim();
+        if (!model || known.has(model)) continue;
+        known.add(model);
+        options.push({ model, label: model });
+      }
+      if (!models.length) {
+        toast.info(t("providerForm.fetchModelsEmpty"));
+        return;
+      }
+      onModelPickerOptionsChange(options);
+      setAdvancedExpanded(true);
+      toast.success(
+        t("providerForm.quickSetSuccess", { count: options.length }),
+      );
+    } finally {
+      setImportingModels(false);
+    }
+  };
+
   return (
     <>
       {/* GitHub Copilot OAuth 认证 */}
@@ -821,30 +936,30 @@ export function ClaudeFormFields({
                   <SelectContent>
                     <SelectItem value="anthropic">
                       {t("providerForm.apiFormatAnthropic", {
-                        defaultValue: "Anthropic Messages (原生)",
+                        defaultValue: "Anthropic Messages",
                       })}
                     </SelectItem>
                     <SelectItem value="openai_chat">
                       {t("providerForm.apiFormatOpenAIChat", {
-                        defaultValue: "OpenAI Chat Completions (需转换)",
+                        defaultValue: "OpenAI Chat Completions",
                       })}
                     </SelectItem>
                     <SelectItem value="openai_responses">
                       {t("providerForm.apiFormatOpenAIResponses", {
-                        defaultValue: "OpenAI Responses API (需转换)",
+                        defaultValue: "OpenAI Responses API",
                       })}
                     </SelectItem>
                     <SelectItem value="gemini_native">
                       {t("providerForm.apiFormatGeminiNative", {
-                        defaultValue: "Gemini Native generateContent (需转换)",
+                        defaultValue: "Gemini Native generateContent",
                       })}
                     </SelectItem>
                   </SelectContent>
                 </Select>
                 <p className="text-xs leading-relaxed text-muted-foreground">
-                  {t("providerForm.apiFormatHint", {
+                  {t("providerForm.protocolBridgeHint", {
                     defaultValue:
-                      "供应商原生为 Anthropic Messages API 就选 Anthropic Messages（直连，不转换格式）；使用 Chat Completions 协议就选 Chat；使用 Responses API 就选 Responses；使用 Gemini generateContent 协议就选 Gemini Native。Chat、Responses 与 Gemini Native 均需开启路由接管才能转换为 Anthropic Messages。",
+                      "选择供应商实际提供的上游协议。不同协议需要开启路由接管，由本地代理转换；相同协议直接转发。",
                   })}
                 </p>
               </div>
@@ -886,54 +1001,27 @@ export function ClaudeFormFields({
 
             {/* 模型映射 */}
             <div className="space-y-1 border-t border-border-default pt-2">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <FormLabel>{t("providerForm.modelMappingLabel")}</FormLabel>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   {/* 一键设置按钮 */}
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      // 按面板从上到下取值，默认兜底模型最后使用。
-                      const value =
-                        defaultSonnetModel ||
-                        defaultOpusModel ||
-                        defaultFableModel ||
-                        defaultHaikuModel ||
-                        subagentModel ||
-                        claudeModel;
-                      if (value) {
-                        for (const row of modelRoleRows) {
-                          const roleValue = row.supportsOneM
-                            ? value
-                            : stripClaudeOneMMarker(value);
-                          onModelChange(row.modelField, roleValue);
-                          if (row.displayNameField) {
-                            onModelChange(
-                              row.displayNameField,
-                              stripClaudeOneMMarker(roleValue),
-                            );
-                          }
-                        }
-                        toast.success(
-                          t("providerForm.quickSetSuccess", {
-                            defaultValue: "已将模型名称应用到所有角色",
-                          }),
-                        );
-                      }
-                    }}
+                    onClick={handleQuickSet}
                     disabled={
-                      !claudeModel &&
-                      !defaultHaikuModel &&
-                      !defaultSonnetModel &&
-                      !defaultOpusModel &&
-                      !defaultFableModel &&
-                      !subagentModel
+                      modelFetchLoading ||
+                      importingModels ||
+                      (!availableModels.length && !canFetchModels)
                     }
                     className="h-7 gap-1"
                   >
-                    <Wand2 className="h-3.5 w-3.5" />
+                    {modelFetchLoading || importingModels ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Wand2 className="h-3.5 w-3.5" />
+                    )}
                     {t("providerForm.quickSetModels", {
                       defaultValue: "一键设置",
                     })}
@@ -942,7 +1030,7 @@ export function ClaudeFormFields({
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={handleModelFetchClick}
+                    onClick={() => handleModelFetchClick()}
                     disabled={modelFetchLoading}
                     className="h-7 gap-1"
                   >
@@ -958,6 +1046,67 @@ export function ClaudeFormFields({
               <p className="text-xs text-muted-foreground">
                 {t("providerForm.modelMappingHint")}
               </p>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                {t("providerForm.importModelsHint", {
+                  defaultValue:
+                    "One-click setup imports every model below. Claude Code 2.1.242+ displays these entries in /model; restart Claude Code after saving.",
+                })}
+              </p>
+              {modelPickerOptions.map((option, index) => (
+                <div
+                  key={index}
+                  className="grid grid-cols-[1fr_1fr_36px] gap-2"
+                >
+                  <Input
+                    value={option.label ?? ""}
+                    aria-label={t("providerForm.importModelName", {
+                      defaultValue: "Display name",
+                    })}
+                    onChange={(event) =>
+                      onModelPickerOptionsChange(
+                        modelPickerOptions.map((row, i) =>
+                          i === index
+                            ? { ...row, label: event.target.value }
+                            : row,
+                        ),
+                      )
+                    }
+                  />
+                  <Input
+                    value={option.model}
+                    aria-label={t("providerForm.importModelId", {
+                      defaultValue: "Request model",
+                    })}
+                    onChange={(event) =>
+                      onModelPickerOptionsChange(
+                        modelPickerOptions.map((row, i) =>
+                          i === index
+                            ? { ...row, model: event.target.value }
+                            : row,
+                        ),
+                      )
+                    }
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label={t("providerForm.removeImportedModel", {
+                      defaultValue: "Remove model",
+                    })}
+                    onClick={() =>
+                      onModelPickerOptionsChange(
+                        modelPickerOptions.filter((_, i) => i !== index),
+                      )
+                    }
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
             </div>
 
             <div className="space-y-3">
@@ -1111,6 +1260,22 @@ export function ClaudeFormFields({
             </div>
           </CollapsibleContent>
         </Collapsible>
+      )}
+      {configurationDetection && (
+        <ProviderConfigDetection
+          {...configurationDetection}
+          baseUrl={baseUrl}
+          apiKey={apiKey}
+          model={detectionModel}
+          apiFormat={apiFormat}
+          anthropicAuthField={apiKeyField}
+          onModelChange={(model) => onModelChange("ANTHROPIC_MODEL", model)}
+          onApiFormatChange={
+            configurationDetection.onApiFormatChange ?? onApiFormatChange
+          }
+          catalogModels={fetchedModels}
+          onCatalogModelsChange={setFetchedModels}
+        />
       )}
     </>
   );

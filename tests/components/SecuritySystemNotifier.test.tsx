@@ -4,6 +4,8 @@ import { act, render, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SecuritySystemNotifier } from "@/components/SecuritySystemNotifier";
 import type { AuditLogRecord } from "@/types/security";
+import i18n from "i18next";
+import zh from "@/i18n/locales/zh.json";
 
 const { toastMock } = vi.hoisted(() => ({
   toastMock: { warning: vi.fn(), info: vi.fn(), error: vi.fn() },
@@ -112,6 +114,38 @@ describe("SecuritySystemNotifier", () => {
   });
   // restore Date.now before the next test file
   afterEach(() => vi.restoreAllMocks());
+
+  it("distinguishes password assignment and structured field alerts in both channels", async () => {
+    i18n.addResourceBundle("zh", "translation", zh, true, true);
+    try {
+      batchMock.mockResolvedValueOnce([
+        record(1, {
+          ruleId: "catalog:password-assignment",
+          ruleName: "Legacy password rule",
+          actionTaken: "audit",
+        }),
+        record(2, {
+          ruleId: "catalog:password-field",
+          ruleName: "Legacy password rule",
+          actionTaken: "audit",
+        }),
+      ]);
+      setup();
+      await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(2));
+      const names = ["配置文本中的密码赋值", "结构化参数中的密码字段"];
+      names.forEach((name, index) => {
+        const notification = sendMock.mock.calls[index][0];
+        expect(notification.title).toBe("检测到敏感信息");
+        expect(notification.body).toContain(name);
+        expect(notification.body).not.toContain(names[1 - index]);
+        expect(toastMock.warning.mock.calls[index][1].description).toBe(
+          notification.body,
+        );
+      });
+    } finally {
+      i18n.removeResourceBundle("zh", "translation");
+    }
+  });
 
   it("先成功订阅再首读，挂载毫秒边界包含；事件使日志刷新", async () => {
     const subscribe = deferred<() => void>();

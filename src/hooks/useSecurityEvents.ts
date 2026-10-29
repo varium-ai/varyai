@@ -10,7 +10,7 @@ import { securityEventsApi } from "@/lib/api";
 import { reportFrontendError } from "@/lib/frontendLogger";
 import type { SecurityEventFilter } from "@/types/securityEvents";
 
-/** Normalize only contract-approved empty values; let IPC reject invalid combinations. */
+/** Normalize allowed empty values; let IPC reject invalid filter combinations. */
 export function normalizeSecurityEventFilter(
   filter: SecurityEventFilter,
 ): SecurityEventFilter {
@@ -46,7 +46,7 @@ export const securityEventsKeys = {
     ] as const,
 };
 
-/** Failure to invalidate one query domain must not block others or notification catch-up. */
+/** A failed invalidation must not block other domains or notification catch-up. */
 async function safelyInvalidate(action: () => Promise<unknown>): Promise<void> {
   try {
     await action();
@@ -55,7 +55,7 @@ async function safelyInvalidate(action: () => Promise<unknown>): Promise<void> {
   }
 }
 
-/** Persisted-event signals refetch active summaries; each list controls its own page refresh. */
+/** Refresh active summaries; let each list decide when to refetch its page. */
 export function invalidateSecurityEventsQueries(client: QueryClient) {
   return Promise.all([
     safelyInvalidate(() =>
@@ -73,7 +73,7 @@ export function invalidateSecurityEventsQueries(client: QueryClient) {
   ]);
 }
 
-/** Legacy and unified clear paths invalidate all three domains without a persisted-event signal. */
+/** Invalidate legacy and unified domains after clearing, without recorded events. */
 export function invalidateSecurityEventDomains(client: QueryClient) {
   return Promise.all([
     safelyInvalidate(() =>
@@ -96,7 +96,7 @@ export function useSecurityEvents(
   const query = useQuery({
     queryKey: securityEventsKeys.page(normalizedFilter, page, pageSize),
     queryFn: ({ signal }) => {
-      // IPC cannot be aborted; consume the signal so Query discards cancelled request results.
+      // Consume the signal so Query discards late results even though IPC cannot abort.
       void signal;
       return securityEventsApi.getEvents(normalizedFilter, page, pageSize);
     },
@@ -139,7 +139,7 @@ export function useSecurityEventsSummary(
   });
 }
 
-/** Payload-free signals refresh page one; deeper pages remain snapshots until manual refresh. */
+/** Refresh page one on payload-free signals; preserve deeper pages until manual refresh. */
 export function useSecurityEventsLiveRefresh(
   page: number,
   onRefresh: () => unknown,
@@ -167,7 +167,7 @@ export function useSecurityEventsLiveRefresh(
         reportFrontendError("security_events_refresh", "failed");
       }
     };
-    // Clear emits no recorded signal; observe page invalidation to notify deeper pages.
+    // Clearing emits no recorded signal; page invalidation alerts other deep-page readers.
     const unsubscribeCache = client.getQueryCache().subscribe((event) => {
       if (disposed || current.current.page === 1) return;
       if (
@@ -179,7 +179,7 @@ export function useSecurityEventsLiveRefresh(
         setHasUpdates(true);
       }
     });
-    // Already-stale queries may not emit invalidation again; successful clears still notify deeper pages.
+    // Already-stale queries emit no new invalidation; successful clears must still alert deep pages.
     const unsubscribeMutations = client
       .getMutationCache()
       .subscribe((event) => {
@@ -213,7 +213,7 @@ export function useSecurityEventsLiveRefresh(
         }
       }),
     ).then((subscribed) => {
-      // Catch up after subscription; failure of one listener must not block the other source.
+      // Read once after subscription; one failed subscription must not block the other source.
       if (subscribed.some(Boolean)) refresh();
     });
     return () => {

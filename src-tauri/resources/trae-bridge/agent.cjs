@@ -6,6 +6,12 @@ const net = require("node:net");
 const { PassThrough } = require("node:stream");
 const { createBridge } = require("./renderer.cjs");
 const SLOT = "__varyaiTraeNativeBridge";
+function safeModelError(message) {
+  return typeof message === "string" &&
+    /^model_(add|update|remove)_failed(?::-?\d{1,16})?$/.test(message)
+    ? message
+    : "TRAE native bridge unavailable";
+}
 function isChatTarget(target, appRoot) {
   if (target.type !== "page") return false;
   try {
@@ -297,7 +303,14 @@ async function run(endpoint, directory) {
       { expression, awaitPromise: true, returnByValue: true },
       sessionId,
     );
-    if (value.exceptionDetails) throw Error("native_bridge_unavailable");
+    if (value.exceptionDetails)
+      throw Error(
+        safeModelError(
+          value.exceptionDetails.exception?.description
+            ?.split("\n")[0]
+            ?.replace(/^Error: /, ""),
+        ),
+      );
     return value.result?.value;
   };
   const invoke = (sessionId, op, ...args) =>
@@ -487,10 +500,9 @@ async function run(endpoint, directory) {
         .then(() => control(JSON.parse(buffer.slice(0, end))))
         .then(
           (result) => socket.end(JSON.stringify({ result }) + "\n"),
-          () =>
+          (error) =>
             socket.end(
-              JSON.stringify({ error: "TRAE native bridge unavailable" }) +
-                "\n",
+              JSON.stringify({ error: safeModelError(error?.message) }) + "\n",
             ),
         );
     });
@@ -530,6 +542,7 @@ async function run(endpoint, directory) {
   await scan();
 }
 module.exports = {
+  safeModelError,
   isChatTarget,
   bootstrapSource,
   initializeSolo,

@@ -15,6 +15,7 @@ pub mod profile;
 pub mod profile_bundle;
 pub mod prompt;
 pub mod provider;
+pub mod provider_protocol_detection;
 pub mod proxy;
 pub(crate) mod qoder_certificate;
 pub(crate) mod qoder_proxy;
@@ -62,3 +63,5 @@ pub(crate) mod agent_clients;
 pub(crate) mod trae_bridge;
 
 pub(crate) mod doubao_work;
+
+pub(crate) mod upstream_protocol;

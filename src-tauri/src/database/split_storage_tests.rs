@@ -47,7 +47,10 @@ fn existing_users_are_split_without_losing_data_and_can_reopen() -> Result<(), A
         }
         {
             let extension = lock_conn!(db.extension_connection());
-            assert_eq!(Database::get_user_version(&extension)?, 1);
+            assert_eq!(
+                Database::get_user_version(&extension)?,
+                super::EXTENSION_SCHEMA_VERSION
+            );
             let row: (i64, i64, String) = extension.query_row("SELECT trigger_count, last_seen_at, session_id FROM security_audit_logs WHERE id=42", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
             assert_eq!(row, (7, 200, "session".into()));
             assert_eq!(
@@ -196,7 +199,7 @@ fn future_extension_is_rejected_without_touching_shared_file() -> Result<(), App
     let db = Database::init_at(&path)?;
     drop(db);
     let ext = Connection::open(dir.path().join("vary-ai.db"))?;
-    ext.execute_batch("PRAGMA user_version=2;")?;
+    ext.execute_batch("PRAGMA user_version=999;")?;
     drop(ext);
     let before = std::fs::read(&path).expect("read shared file");
     assert!(Database::init_at(&path).is_err());
@@ -272,7 +275,10 @@ fn split_sync_preserves_local_tool_policy_and_sequences() -> Result<(), AppError
         )?,
         "git status"
     );
-    assert_eq!(Database::get_user_version(&ext)?, 1);
+    assert_eq!(
+        Database::get_user_version(&ext)?,
+        super::EXTENSION_SCHEMA_VERSION
+    );
     drop(ext);
     let shared = lock_conn!(local.conn);
     assert_eq!(Database::get_user_version(&shared)?, 20);
@@ -394,13 +400,16 @@ fn startup_preflight_reports_the_file_and_its_own_supported_version() -> Result<
     drop(db);
     let extension_path = dir.path().join("vary-ai.db");
     let ext = Connection::open(&extension_path)?;
-    ext.execute_batch("PRAGMA user_version=2;")?;
+    ext.execute_batch("PRAGMA user_version=999;")?;
     drop(ext);
     let unsupported =
         Database::stored_user_version_exceeds_supported(&path)?.expect("future extension");
     assert_eq!(unsupported.path, extension_path);
-    assert_eq!(unsupported.version, 2);
-    assert_eq!(unsupported.supported_version, 1);
+    assert_eq!(unsupported.version, 999);
+    assert_eq!(
+        unsupported.supported_version,
+        super::EXTENSION_SCHEMA_VERSION
+    );
     let shared = Connection::open(&path)?;
     shared.execute_batch("PRAGMA user_version=25;")?;
     drop(shared);

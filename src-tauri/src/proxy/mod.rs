@@ -12,6 +12,7 @@ pub mod error;
 pub mod error_mapper;
 pub(crate) mod failover_switch;
 mod forwarder;
+pub(crate) mod gateway;
 pub mod gemini_url;
 pub mod handler_config;
 pub mod handler_context;
@@ -22,6 +23,8 @@ pub(crate) mod json_canonical;
 pub mod log_codes;
 pub mod media_sanitizer;
 pub mod model_mapper;
+mod native_protocol;
+mod protocol_bridge;
 pub mod provider_router;
 pub mod providers;
 pub(crate) mod qoder;
@@ -65,3 +68,6 @@ pub use types::{ProxyConfig, ProxyServerInfo, ProxyStatus};
 #[allow(unused_imports)]
 pub(crate) use types::*;
 pub(crate) mod pi;
+
+#[cfg(test)]
+mod protocol_matrix_tests;

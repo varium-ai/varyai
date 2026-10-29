@@ -84,6 +84,10 @@ describe("WorkBuddyProviderForm", () => {
       "model-a",
       "model-b",
     ]);
+    expect(config.models.map((model: any) => model.name)).toEqual([
+      "Gateway",
+      "Gateway",
+    ]);
   });
 
   it("keeps a saved model list editable and adds fetched models without duplicates", async () => {
@@ -105,8 +109,12 @@ describe("WorkBuddyProviderForm", () => {
             url: "https://example.com/v1",
             apiKey: "synthetic-key",
             models: [
-              { id: "model-a" },
-              { id: "model-b", supportsReasoning: true },
+              { id: "model-a", name: "Gateway · model-a" },
+              {
+                id: "model-b",
+                name: "Gateway · model-b",
+                supportsReasoning: true,
+              },
             ],
           },
         }}
@@ -130,6 +138,11 @@ describe("WorkBuddyProviderForm", () => {
       "model-c",
     ]);
     expect(config.models[1].supportsReasoning).toBe(true);
+    expect(config.models.map((model: any) => model.name)).toEqual([
+      "Gateway",
+      "Gateway",
+      "Gateway",
+    ]);
   });
 
   describe("model discovery", () => {
@@ -171,12 +184,43 @@ describe("WorkBuddyProviderForm", () => {
       const onSubmit = renderCustom(url);
       fireEvent.click(fetchButton());
       await screen.findByRole("button", { name: "Select model" });
-      expect(fetchModelsForConfig).toHaveBeenLastCalledWith(base, "test-key");
+      expect(fetchModelsForConfig).toHaveBeenLastCalledWith(
+        base,
+        "test-key",
+        undefined,
+        undefined,
+        undefined,
+        { apiFormat: "openai_chat" },
+      );
       expect(screen.getByLabelText("workbuddy.form.url")).toHaveValue(url);
       expect(screen.getByLabelText("workbuddy.form.modelId")).toHaveValue(
         "old-model",
       );
       expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it("uses the selected Gemini upstream for model discovery", async () => {
+      Element.prototype.scrollIntoView = vi.fn();
+      vi.mocked(fetchModelsForConfig).mockResolvedValue([
+        { id: "gemini-fixture", ownedBy: null },
+      ]);
+      renderCustom("https://models.example/v1beta");
+      fireEvent.click(screen.getByLabelText("providerForm.apiFormat"));
+      fireEvent.click(
+        await screen.findByRole("option", {
+          name: "providerForm.apiFormatGeminiNative",
+        }),
+      );
+      fireEvent.click(fetchButton());
+      await screen.findByRole("button", { name: "Select model" });
+      expect(fetchModelsForConfig).toHaveBeenLastCalledWith(
+        "https://models.example/v1beta",
+        "test-key",
+        undefined,
+        undefined,
+        undefined,
+        { apiFormat: "gemini_native" },
+      );
     });
 
     it("fills the selected model ID and clears the list when credentials change", async () => {
@@ -292,9 +336,7 @@ describe("WorkBuddyProviderForm", () => {
         }}
       />,
     );
-    expect(
-      screen.getByText("desktopModels.officialLogin"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("desktopModels.officialLogin")).toBeInTheDocument();
     expect(
       screen.queryByLabelText("workbuddy.form.modelId"),
     ).not.toBeInTheDocument();

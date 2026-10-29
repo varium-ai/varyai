@@ -231,13 +231,66 @@ fn selection_fields(app: &AppType) -> &'static [&'static str] {
         _ => &[],
     }
 }
-pub fn selection(app: &AppType) -> Result<Value, AppError> {
+fn qwen_routes(state: &AppState) -> Result<Vec<crate::services::agent_clients::Route>, AppError> {
+    futures::executor::block_on(state.db.get_live_backup("qwen"))?
+        .map(|saved| {
+            serde_json::from_str::<crate::services::agent_clients::Backup>(&saved.original_config)
+        })
+        .transpose()
+        .map(|backup| backup.map(|backup| backup.routes).unwrap_or_default())
+        .map_err(|_| error("invalidConfig"))
+}
+
+fn qwen_profile_selection(
+    doc: &crate::services::agent_clients::Document,
+    saved: &Value,
+    routes: &[crate::services::agent_clients::Route],
+) -> Option<Value> {
+    let upstream = |value: &Value| {
+        routes
+            .iter()
+            .find(|route| value == &route.local)
+            .map(|route| json!(route.upstream))
+            .unwrap_or_else(|| value.clone())
+    };
+    let mut exact = Vec::new();
+    let mut legacy = Vec::new();
+    for (provider, models) in doc.value["modelProviders"].as_object()? {
+        for model in models.as_array().into_iter().flatten() {
+            if model["id"] != saved["model"]
+                || (!saved["baseUrl"].is_null()
+                    && upstream(&model["baseUrl"]) != upstream(&saved["baseUrl"]))
+            {
+                continue;
+            }
+            let protocol = doc.qwen_model_protocol(provider, model);
+            let resolved = json!({"model":model["id"],"baseUrl":model["baseUrl"],"auth":protocol});
+            if saved["auth"] == protocol {
+                exact.push(resolved);
+            } else if saved["auth"] == "openai" && protocol == "openai-responses" {
+                legacy.push(resolved);
+            }
+        }
+    }
+    // Prefer the exact wire API. Migrate old OpenAI selectors only when one
+    // native identity matches, never guessing between providers or endpoints.
+    let mut matches = if exact.is_empty() { legacy } else { exact };
+    (matches.len() == 1).then(|| matches.remove(0))
+}
+
+pub fn selection(state: &AppState, app: &AppType) -> Result<Value, AppError> {
     if crate::services::agent_clients::supported(app.as_str()) {
-        return Ok(crate::services::agent_clients::Document::read(
+        let mut doc = crate::services::agent_clients::Document::read(
             app.as_str(),
             &crate::services::agent_clients::config_path(app.as_str())?,
-        )?
-        .selection(app.as_str()));
+        )?;
+        if *app == AppType::Qwen {
+            // Profile identities survive proxy ports and route IDs changing.
+            doc.restore(&qwen_routes(state)?)?;
+            let saved = doc.selection("qwen");
+            return Ok(qwen_profile_selection(&doc, &saved, &[]).unwrap_or(saved));
+        }
+        return Ok(doc.selection(app.as_str()));
     }
     if *app == AppType::OpenClaw {
         return Ok(
@@ -270,7 +323,31 @@ pub fn selection(app: &AppType) -> Result<Value, AppError> {
         .map(|key| (key.to_string(), source[*key].clone()))
         .collect::<serde_json::Map<_, _>>()))
 }
-pub fn apply_selection(app: &AppType, saved: &Value) -> Result<(), AppError> {
+
+pub fn selection_for_provider(
+    state: &AppState,
+    app: &AppType,
+    provider: &Provider,
+) -> Result<Value, AppError> {
+    let mut saved = selection(state, app)?;
+    if *app == AppType::WorkBuddy && provider.category.as_deref() != Some("official") {
+        let config = &provider.settings_config;
+        let ids: Vec<_> = config["models"]
+            .as_array()
+            .map(|models| {
+                models
+                    .iter()
+                    .filter_map(|model| model["id"].as_str())
+                    .collect()
+            })
+            .unwrap_or_else(|| config["id"].as_str().into_iter().collect());
+        if let Some(available) = saved["availableModels"].as_array_mut() {
+            available.retain(|value| value.as_str().is_some_and(|id| ids.contains(&id)));
+        }
+    }
+    Ok(saved)
+}
+pub fn apply_selection(state: &AppState, app: &AppType, saved: &Value) -> Result<(), AppError> {
     if crate::services::agent_clients::supported(app.as_str()) {
         let path = crate::services::agent_clients::config_path(app.as_str())?;
         let mut doc = crate::services::agent_clients::Document::read(app.as_str(), &path)?;
@@ -283,8 +360,16 @@ pub fn apply_selection(app: &AppType, saved: &Value) -> Result<(), AppError> {
                 && saved["providerId"]
                     .as_str()
                     .is_some_and(|id| !id.starts_with("varyai-"));
+        let resolved;
+        let saved = if *app == AppType::Qwen && !saved.is_null() && !native_default {
+            resolved = qwen_profile_selection(&doc, saved, &qwen_routes(state)?)
+                .ok_or_else(|| error("nativeModelMissing"))?;
+            &resolved
+        } else {
+            saved
+        };
         if !saved.is_null() && !native_default && !doc.selection_available(app.as_str(), saved) {
-            return Err(error("missingResource"));
+            return Err(error("nativeModelMissing"));
         }
         doc.set_selection(app.as_str(), saved)?;
         return doc.write(&path);
@@ -430,6 +515,41 @@ pub fn model_labels(value: &Value) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qwen_profile_identity_preserves_protocol_endpoint_and_ambiguity_checks() {
+        let doc = crate::services::agent_clients::Document::parse(
+            "qwen",
+            &json!({
+                "modelProviders":{"openai":[
+                    {"id":"same","baseUrl":"https://first.example/v1","wireApi":"chat"},
+                    {"id":"same","baseUrl":"https://first.example/v1","wireApi":"responses"},
+                    {"id":"same","baseUrl":"https://second.example/v1","wireApi":"chat"}
+                ]}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        for auth in ["openai", "openai-responses"] {
+            let saved = json!({"model":"same","baseUrl":"https://first.example/v1","auth":auth});
+            assert_eq!(qwen_profile_selection(&doc, &saved, &[]), Some(saved));
+        }
+        assert!(
+            qwen_profile_selection(&doc, &json!({"model":"same","auth":"openai"}), &[]).is_none()
+        );
+        assert!(qwen_profile_selection(
+            &doc,
+            &json!({"model":"same","baseUrl":"https://missing.example/v1","auth":"openai"}),
+            &[]
+        )
+        .is_none());
+        assert!(qwen_profile_selection(
+            &doc,
+            &json!({"model":"missing","baseUrl":"https://first.example/v1","auth":"openai"}),
+            &[]
+        )
+        .is_none());
+    }
 
     #[test]
     fn model_lists_restore_optional_fields_missing_from_current_provider() {

@@ -1,7 +1,7 @@
 import type { AuditLogRecord, RiskLevel } from "./security";
 import type { ToolRiskEventRecord, ToolRiskVerdict } from "./toolRisk";
 
-/** Product event type, distinct from the tool record's collection source. */
+/** Product event type, distinct from the tool collection source in record.source. */
 export type SecurityEventType = "dlp" | "tool_risk";
 export type SecurityEventView = "security_events" | "tool_calls";
 export type SecurityEventResult =

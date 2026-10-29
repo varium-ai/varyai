@@ -30,6 +30,7 @@ let entries: CommandListEntry[] = [];
 vi.mock("@/hooks/useToolRisk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/hooks/useToolRisk")>();
   return {
+    commandListErrorKey: actual.commandListErrorKey,
     useToolRiskCommandLists: () =>
       useRealHooks
         ? actual.useToolRiskCommandLists()
@@ -339,6 +340,26 @@ describe("ShellCommandListsPanel", () => {
     );
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
+  it.each(["duplicate", "conflict", "limit"])(
+    "explains a %s rejection without discarding the draft",
+    async (reason) => {
+      saveEntry.mockRejectedValueOnce(`tool_risk_command_list_${reason}`);
+      render(<ShellCommandListDialog open onOpenChange={vi.fn()} />);
+      change("pattern", "git status");
+      confirm();
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "toolRisk.commandLists.confirmSave",
+        }),
+      );
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        `toolRisk.commandLists.${reason}`,
+      );
+      expect(
+        screen.getByLabelText("toolRisk.commandLists.pattern"),
+      ).toHaveValue("git status");
+    },
+  );
   it.each([
     "python -c '[REDACTED]'",
     "unknown-program arg…",
@@ -530,6 +551,9 @@ describe("risk boundary explanations", () => {
         "singleSegmentWhitelistHint",
         "whitelistHint",
         "description",
+        "duplicate",
+        "conflict",
+        "limit",
       ]) {
         expect(lists[name]).toEqual(expect.any(String));
         expect(lists[name]?.trim().length).toBeGreaterThan(0);
@@ -847,7 +871,13 @@ describe("P2-9 command list UI real receipt integration", () => {
       if (runtimeStatus === "apply_failed") {
         expect(toast.warning).toHaveBeenCalledWith("toolRisk.savedNotApplied");
         expect(toast.warning).toHaveBeenCalledWith("toolRisk.auditUnavailable");
-      } else expect(toast.warning).not.toHaveBeenCalled();
+        expect(toast.success).not.toHaveBeenCalled();
+      } else {
+        expect(toast.warning).not.toHaveBeenCalled();
+        expect(toast.success).toHaveBeenCalledExactlyOnceWith(
+          "toolRisk.commandLists.saved",
+        );
+      }
       expect(screen.queryByRole("alert")).toBeNull();
     },
   );
@@ -881,5 +911,6 @@ describe("P2-9 command list UI real receipt integration", () => {
     expect(close).not.toHaveBeenCalled();
     expect(document.body.textContent).not.toContain("secret");
     expect(toast.error).toHaveBeenCalledWith("toolRisk.policyWriteFailed");
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });

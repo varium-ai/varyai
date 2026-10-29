@@ -50,6 +50,7 @@ export function rendererChunk(id: string): string | undefined {
       return "vendor-motion";
     }
     if (name === "cmdk") return "vendor-command";
+    if (name === "zod") return "vendor-validation";
     return "vendor-base";
   }
 
@@ -68,6 +69,25 @@ export function rendererChunk(id: string): string | undefined {
     return "provider-presets";
   }
   if (relative === "utils/grokBuildConfig.ts") return "provider-presets";
+  if (
+    [
+      "components/providers/forms/ConnectionPresetPicker.tsx",
+      "components/providers/forms/ProviderConfigDetection.tsx",
+      "components/providers/forms/shared/ModelDropdown.tsx",
+    ].includes(relative)
+  ) {
+    return "ui-connection-presets";
+  }
+  if (
+    [
+      "components/proxy/GatewayKeysPanel.tsx",
+      "components/proxy/ProxyPanel.tsx",
+      "components/proxy/ClaudeDesktopRouteToggle.tsx",
+      "components/providers/ProviderHealthBadge.tsx",
+    ].includes(relative)
+  ) {
+    return "ui-local-routing";
+  }
   if (relative.startsWith("icons/")) return "icons";
   if (relative.startsWith("components/")) {
     const parts = relative.slice("components/".length).split("/");

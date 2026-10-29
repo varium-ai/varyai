@@ -1,4 +1,5 @@
 use super::{ProviderService, SwitchResult};
+use crate::services::trae_bridge::selection as trae_selection;
 use crate::{
     app_config::AppType, error::AppError, provider::Provider, services::agent_clients as native,
     store::AppState,
@@ -61,9 +62,25 @@ pub(super) fn update(
     ProviderService::set_provider_live_config_managed(&mut provider, managed);
     if app == "trae" {
         if managed && provider.category.as_deref() != Some("official") {
-            crate::services::trae_bridge::apply(&provider)?;
+            let pending = state.db.get_bool_flag(trae_selection::PENDING_KEY)?;
+            let projected = crate::services::upstream_protocol::project(
+                state.db.as_ref(),
+                &AppType::Trae,
+                &provider,
+            )?;
+            let delivered =
+                !pending && crate::services::trae_bridge::switch_provider(&projected, &[])?;
+            state.db.save_provider(app, &provider)?;
+            state.db.set_setting(
+                trae_selection::PENDING_KEY,
+                if delivered { "false" } else { "true" },
+            )?;
+            if pending {
+                trae_selection::sync(&state.db);
+            }
+        } else {
+            state.db.save_provider(app, &provider)?;
         }
-        state.db.save_provider(app, &provider)?;
         return Ok(true);
     }
     if managed && old.category.as_deref() != Some("official") {
@@ -125,22 +142,54 @@ pub(super) fn enable_with_lock(
         .ok_or_else(|| AppError::InvalidInput("Provider not found".into()))?;
     if app == "trae" {
         let official = provider.category.as_deref() == Some("official");
-        if !official {
-            crate::services::trae_bridge::apply(&provider)?;
-        }
-        for mut other in state.db.get_all_providers(app)?.into_values().filter(|p| {
-            p.id != id
-                && ProviderService::provider_live_config_managed(p) == Some(true)
-                && p.category.as_deref() != Some("official")
-        }) {
-            crate::services::trae_bridge::remove(&other.id)?;
-            ProviderService::set_provider_live_config_managed(&mut other, false);
-            state.db.save_provider(app, &other)?;
-        }
-        ProviderService::set_provider_live_config_managed(&mut provider, !official);
-        state.db.save_provider(app, &provider)?;
-        state.db.set_current_provider(app, id)?;
-        return Ok(SwitchResult::default());
+        let previous: Vec<_> = state
+            .db
+            .get_all_providers(app)?
+            .into_values()
+            .filter(|p| {
+                p.id != id
+                    && ProviderService::provider_live_config_managed(p) == Some(true)
+                    && p.category.as_deref() != Some("official")
+            })
+            .collect();
+        let target = if official {
+            provider.clone()
+        } else {
+            crate::services::upstream_protocol::project(
+                state.db.as_ref(),
+                &AppType::Trae,
+                &provider,
+            )?
+        };
+        let projected_previous = previous
+            .iter()
+            .map(|other| {
+                crate::services::upstream_protocol::project(
+                    state.db.as_ref(),
+                    &AppType::Trae,
+                    other,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let pending = state.db.get_bool_flag(trae_selection::PENDING_KEY)?;
+        let delivered = !pending
+            && crate::services::trae_bridge::switch_provider(&target, &projected_previous)?;
+        trae_selection::select(&state.db, &provider)?;
+        let delivered = if delivered {
+            state.db.set_setting(trae_selection::PENDING_KEY, "false")?;
+            true
+        } else if pending {
+            trae_selection::sync(&state.db)
+        } else {
+            false
+        };
+        return Ok(SwitchResult {
+            warnings: if delivered {
+                Vec::new()
+            } else {
+                vec!["trae_sync_pending".into()]
+            },
+        });
     }
     if provider.category.as_deref() == Some("official") {
         if native::supported(app) {
@@ -251,8 +300,28 @@ pub(super) fn enable_with_lock(
             &doc.selection(app).to_string(),
         )?;
     }
+    let mut withdrawn = Vec::new();
+    if app == "qwen" {
+        for previous in state
+            .db
+            .get_all_providers(app)?
+            .into_values()
+            .filter(|p| p.id != id && p.category.as_deref() != Some("official"))
+        {
+            if doc.qwen_provider_conflicts(&previous.id, &provider.settings_config) {
+                // Stage the complete owned group removal before inserting overlapping IDs.
+                // Ownership checks preserve native edits; nothing is written on failure.
+                doc.remove(app, &previous.id, &previous.settings_config)?;
+                withdrawn.push(previous);
+            }
+        }
+    }
     doc.apply(app, id, &provider.name, &provider.settings_config)?;
     doc.write(&path)?;
+    for mut previous in withdrawn {
+        ProviderService::set_provider_live_config_managed(&mut previous, false);
+        state.db.save_provider(app, &previous)?;
+    }
     ProviderService::set_provider_live_config_managed(&mut provider, true);
     state.db.save_provider(app, &provider)?;
     state.db.set_current_provider(app, id)?;
@@ -607,10 +676,7 @@ mod tests {
             edited.settings_config["apiKey"] = json!("synthetic-new");
             update(&state, "kimi", edited).expect("update");
             let doc = native::Document::read("kimi", &path).expect("doc");
-            assert_eq!(
-                doc.value["providers"]["varyai-saved"]["api_key"],
-                "synthetic-new"
-            );
+            assert_eq!(doc.value["providers"]["Test"]["api_key"], "synthetic-new");
             assert_eq!(doc.value["default_model"], "native");
         });
     }
@@ -645,5 +711,183 @@ mod tests {
                 .expect("db")
                 .is_none());
         });
+    }
+
+    #[test]
+    fn qwen_supplier_copies_replace_overlapping_models_and_credentials() {
+        for protocol in ["openai", "openai-responses", "anthropic"] {
+            for routed in [false, true] {
+                let dir = tempfile::tempdir().expect("dir");
+                let path = dir.path().join("settings.json");
+                std::fs::write(&path, r#"{"env":{"USER_KEY":"synthetic-user"},"modelProviders":{"openai":[{"id":"manual","envKey":"USER_KEY","baseUrl":"https://user.example/v1"}]},"mcpServers":{"fixture":{"command":"synthetic"}}}"#).expect("fixture");
+                native::with_test_config(&path, || {
+                    let state =
+                        AppState::new(Arc::new(crate::database::Database::memory().expect("db")));
+                    let config = json!({"baseUrl":"https://models.example/v1","apiKey":"synthetic-original","protocol":protocol,"models":[{"model":"alpha"},{"model":"beta"}]});
+                    let mut copy = config.clone();
+                    copy["apiKey"] = json!("synthetic-copy");
+                    copy["models"] = json!([{"model":"alpha"}]);
+                    let mut other = config.clone();
+                    other["baseUrl"] = json!("https://other.example/v1");
+                    for (id, config) in [
+                        ("original", config.clone()),
+                        ("copy", copy.clone()),
+                        ("other", other),
+                    ] {
+                        add(
+                            &state,
+                            "qwen",
+                            Provider::with_id(id.into(), id.into(), config, None),
+                        )
+                        .expect("add");
+                    }
+                    enable(&state, "qwen", "other").expect("unrelated provider");
+                    enable(&state, "qwen", "original").expect("original");
+                    if routed {
+                        futures::executor::block_on(native::enable(
+                            &state.db,
+                            "qwen",
+                            "http://127.0.0.1:1",
+                        ))
+                        .expect("route projection");
+                    }
+                    for (id, previous, expected) in [
+                        ("copy", "original", &copy),
+                        ("original", "copy", &config),
+                        ("copy", "original", &copy),
+                    ] {
+                        enable(&state, "qwen", id).expect("switch overlapping supplier");
+                        let mut doc = native::Document::read("qwen", &path).expect("read");
+                        assert!(doc.selection_owned("qwen", Some(id)));
+                        if routed {
+                            let saved =
+                                futures::executor::block_on(state.db.get_live_backup("qwen"))
+                                    .expect("backup")
+                                    .expect("active backup");
+                            let backup: native::Backup =
+                                serde_json::from_str(&saved.original_config).expect("decode");
+                            doc.restore(&backup.routes)
+                                .expect("inspect upstream configuration");
+                        }
+                        let env = format!("VARYAI_{id}_API_KEY");
+                        let previous_env = format!("VARYAI_{previous}_API_KEY");
+                        assert_eq!(doc.value["env"][&env], expected["apiKey"]);
+                        assert!(doc.value["env"].get(&previous_env).is_none());
+                        let entries: Vec<_> = doc.value["modelProviders"]
+                            .as_object()
+                            .expect("groups")
+                            .values()
+                            .flat_map(|models| models.as_array().expect("models"))
+                            .collect();
+                        assert_eq!(
+                            entries.iter().filter(|m| m["envKey"] == env).count(),
+                            expected["models"]
+                                .as_array()
+                                .expect("expected models")
+                                .len()
+                        );
+                        assert!(!entries.iter().any(|m| m["envKey"] == previous_env));
+                        assert!(entries
+                            .iter()
+                            .any(|m| m["envKey"] == "VARYAI_other_API_KEY"));
+                        assert!(entries.iter().any(|m| m["envKey"] == "USER_KEY"));
+                        assert_eq!(doc.value["mcpServers"]["fixture"]["command"], "synthetic");
+                        assert_eq!(
+                            state
+                                .db
+                                .get_current_provider("qwen")
+                                .expect("current")
+                                .as_deref(),
+                            Some(id)
+                        );
+                        for (provider_id, managed) in
+                            [(id, true), (previous, false), ("other", true)]
+                        {
+                            assert_eq!(
+                                ProviderService::provider_live_config_managed(
+                                    &state
+                                        .db
+                                        .get_provider_by_id(provider_id, "qwen")
+                                        .expect("provider")
+                                        .expect("saved provider")
+                                ),
+                                Some(managed)
+                            );
+                        }
+                    }
+                    assert_eq!(
+                        state
+                            .db
+                            .get_provider_by_id("original", "qwen")
+                            .expect("db")
+                            .expect("original retained")
+                            .settings_config,
+                        config
+                    );
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn qwen_failed_copy_switch_preserves_native_models_and_current_supplier() {
+        for external_edit in [false, true] {
+            let dir = tempfile::tempdir().expect("dir");
+            let path = dir.path().join("settings.json");
+            native::with_test_config(&path, || {
+                let state =
+                    AppState::new(Arc::new(crate::database::Database::memory().expect("db")));
+                let config = json!({"baseUrl":"https://models.example/v1","apiKey":"synthetic-original","protocol":"openai","models":[{"model":"alpha"}]});
+                let mut copy = config.clone();
+                copy["models"] = json!([{"model":"alpha"},{"model":"manual"}]);
+                for (id, config) in [("original", config), ("copy", copy)] {
+                    add(
+                        &state,
+                        "qwen",
+                        Provider::with_id(id.into(), id.into(), config, None),
+                    )
+                    .expect("add");
+                }
+                enable(&state, "qwen", "original").expect("original");
+                let mut doc = native::Document::read("qwen", &path).expect("read");
+                if external_edit {
+                    doc.value["env"]["VARYAI_original_API_KEY"] = json!("synthetic-external-edit");
+                } else {
+                    doc.value["modelProviders"]["openai"].as_array_mut().expect("models").push(json!({"id":"manual","envKey":"USER_KEY","baseUrl":"https://models.example/v1"}));
+                }
+                doc.write(&path).expect("external changes");
+                let before = std::fs::read(&path).expect("before");
+                assert!(enable(&state, "qwen", "copy").is_err());
+                assert_eq!(std::fs::read(&path).expect("after"), before);
+                assert_eq!(
+                    state
+                        .db
+                        .get_current_provider("qwen")
+                        .expect("current")
+                        .as_deref(),
+                    Some("original")
+                );
+                assert_eq!(
+                    ProviderService::provider_live_config_managed(
+                        &state
+                            .db
+                            .get_provider_by_id("original", "qwen")
+                            .expect("db")
+                            .expect("provider")
+                    ),
+                    Some(true)
+                );
+                assert_eq!(
+                    ProviderService::provider_live_config_managed(
+                        &state
+                            .db
+                            .get_provider_by_id("copy", "qwen")
+                            .expect("db")
+                            .expect("provider")
+                    ),
+                    Some(false)
+                );
+            });
+        }
     }
 }

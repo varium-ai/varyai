@@ -10,6 +10,11 @@ use rusqlite::{backup::Backup, Connection, OptionalExtension};
 use std::{path::Path, sync::Mutex, time::Duration};
 
 pub(super) const EXTENSION_TABLES: &[&str] = &[
+    "gateway_keys",
+    "gateway_usage",
+    "gateway_agent_bindings",
+    "gateway_usage_details",
+    "gateway_usage_models",
     "security_audit_logs",
     "security_custom_rules",
     "security_settings",
@@ -156,10 +161,12 @@ impl Database {
                                 .into(),
                         ));
                     }
-                    Self::copy_attached_table(&tx, "main", "vary", table)?;
+                    if Self::table_exists(&tx, table)? {
+                        Self::copy_attached_table(&tx, "main", "vary", table)?;
+                    }
                 }
                 for table in EXTENSION_TABLES {
-                    tx.execute(&format!("DROP TABLE main.\"{table}\""), [])?;
+                    tx.execute(&format!("DROP TABLE IF EXISTS main.\"{table}\""), [])?;
                 }
             }
             tx.execute_batch(&format!("PRAGMA main.user_version={SHARED_SCHEMA_VERSION}; PRAGMA vary.user_version={EXTENSION_SCHEMA_VERSION};"))?;
@@ -208,9 +215,16 @@ impl Database {
                 ));
             }
         }
-        if Self::get_user_version(conn)? == EXTENSION_SCHEMA_VERSION
+        let version = Self::get_user_version(conn)?;
+        if version > 0
             && EXTENSION_TABLES
                 .iter()
+                .filter(|t| version >= 2 || !matches!(**t, "gateway_keys" | "gateway_usage"))
+                .filter(|t| {
+                    version >= 3
+                        || !matches!(**t, "gateway_agent_bindings" | "gateway_usage_details")
+                })
+                .filter(|t| version >= 4 || **t != "gateway_usage_models")
                 .any(|t| !tables.iter().any(|name| name == t))
         {
             return Err(AppError::Database(

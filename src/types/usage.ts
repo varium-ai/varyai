@@ -207,9 +207,9 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
  * 1. `inputTokens` already includes the cached portion (must subtract
  *    `cacheReadTokens` to get fresh-input semantics — see
  *    [getFreshInputTokens]).
- * 2. The protocol does not report cache _creation_ separately, only cache
- *    _reads_. So `cacheCreationTokens` is always 0 for these app types and
- *    the UI should label it as N/A rather than 0.
+ * 2. Native protocols usually report cache reads without separate creation.
+ *    Converted upstream protocols may still report creation for these clients.
+ *    Missing creation data must not be presented as a measured zero.
  *
  * Mirror of the Rust `CACHE_INCLUSIVE_APP_TYPES` whitelist.
  */
@@ -236,12 +236,14 @@ export type CacheWriteAvailability = "ok" | "partial" | "na";
 
 export function getCacheWriteAvailability(
   appTypes: readonly string[],
+  reportedCreationTokens = 0,
 ): CacheWriteAvailability {
   if (appTypes.length === 0) return "ok";
   const unavailable = appTypes.filter((appType) =>
     CACHE_INCLUSIVE_APP_TYPES.has(appType),
   ).length;
-  if (unavailable === appTypes.length) return "na";
+  if (unavailable === appTypes.length)
+    return reportedCreationTokens > 0 ? "partial" : "na";
   const partial = appTypes.some((appType) =>
     PARTIAL_CACHE_WRITE_APP_TYPES.has(appType),
   );

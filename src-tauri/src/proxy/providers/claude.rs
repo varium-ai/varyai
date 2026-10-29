@@ -809,13 +809,19 @@ impl ProviderAdapter for ClaudeAdapter {
             ProviderType::OpenRouter => Some(AuthInfo::new(key, AuthStrategy::Bearer)),
             ProviderType::ClaudeAuth => Some(AuthInfo::new(key, AuthStrategy::ClaudeAuth)),
             _ => {
-                // 按 env 中的变量名推断鉴权策略，对齐 Anthropic SDK 语义：
+                // OpenAI formats use Bearer; Anthropic infers authentication from the environment key:
                 // ANTHROPIC_AUTH_TOKEN → Authorization: Bearer
                 // ANTHROPIC_API_KEY    → x-api-key
                 // 其他来源（apiKey 直填等）默认走 x-api-key（Anthropic 官方协议）。
-                let strategy = self
-                    .infer_anthropic_auth_strategy(provider)
-                    .unwrap_or(AuthStrategy::Anthropic);
+                let strategy = if matches!(
+                    self.get_api_format(provider),
+                    "openai_chat" | "openai_responses"
+                ) {
+                    AuthStrategy::Bearer
+                } else {
+                    self.infer_anthropic_auth_strategy(provider)
+                        .unwrap_or(AuthStrategy::Anthropic)
+                };
                 Some(AuthInfo::new(key, strategy))
             }
         }

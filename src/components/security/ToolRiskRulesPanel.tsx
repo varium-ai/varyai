@@ -804,7 +804,7 @@ export function ToolRiskRulesPanel({
         )}
       </div>
 
-      {}
+      {/* Rule editor */}
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent
           zIndex="top"

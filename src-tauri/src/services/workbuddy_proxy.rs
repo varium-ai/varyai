@@ -92,8 +92,27 @@ impl Backup {
             Some(Value::String(endpoint)) if !endpoint.trim().is_empty() => endpoint.clone(),
             Some(_) => return Err(invalid_settings()),
             None => {
-                let product: Value = std::fs::read(directory.join("cache/acc-product-config-v3.json"))
-                    .ok().and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                let product: Value = std::fs::read_dir(directory.join("cache"))
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Result::ok)
+                    .filter(|entry| {
+                        let name = entry.file_name();
+                        let name = name.to_string_lossy();
+                        (name == "acc-product-config-v3.json"
+                            || (name.starts_with("acc-product-config-v3-")
+                                && name.ends_with(".json")))
+                            && entry.path().is_file()
+                    })
+                    .max_by_key(|entry| {
+                        (
+                            entry.metadata().and_then(|meta| meta.modified()).ok(),
+                            entry.file_name(),
+                        )
+                    })
+                    .and_then(|entry| std::fs::read(entry.path()).ok())
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
                     .ok_or_else(|| crate::error::AppError::localized(
                         "workbuddy.proxy.product_missing", "请先启动并登录 WorkBuddy，以读取官方服务配置", "Start and sign in to WorkBuddy first to load its official service configuration"
                     ).to_string())?;
@@ -185,6 +204,22 @@ impl Backup {
             return Err(changed_settings());
         }
         write_settings(&path, self.injected.as_bytes())
+    }
+
+    pub(crate) fn is_applied(&self) -> Result<bool, String> {
+        let current = read_settings(&self.directory.join("settings.json"))?;
+        let current = parse_settings(current.as_deref())?;
+        let injected = parse_settings(Some(&self.injected))?;
+        let Some(expected) = injected
+            .pointer("/env/CODEBUDDY_BASE_URL")
+            .and_then(Value::as_str)
+        else {
+            return Ok(false);
+        };
+        Ok(current
+            .pointer("/env/CODEBUDDY_BASE_URL")
+            .and_then(Value::as_str)
+            == Some(expected))
     }
 
     pub fn restore(&self) -> Result<(), String> {
@@ -286,6 +321,94 @@ mod tests {
             std::fs::write(dir.path().join("settings.json"), settings).expect("settings");
         }
         dir
+    }
+
+    #[test]
+    fn routing_reads_the_latest_versioned_product_cache_and_restores_settings() {
+        let original = r#"{"env":{"OTHER":"keep"}}"#;
+        let dir = fixture(Some(original));
+        let cache = dir.path().join("cache");
+        let legacy = cache.join("acc-product-config-v3.json");
+        std::fs::remove_file(&legacy).expect("remove legacy cache");
+        for (name, endpoint, age) in [
+            (
+                "acc-product-config-v3-100-fixture.json",
+                "https://old.example",
+                1,
+            ),
+            (
+                "acc-product-config-v3-200-fixture.json",
+                "https://current.example",
+                2,
+            ),
+        ] {
+            let path = cache.join(name);
+            std::fs::write(&path, json!({"endpoint":endpoint}).to_string()).expect("cache");
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .expect("file")
+                .set_times(
+                    std::fs::FileTimes::new()
+                        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(age)),
+                )
+                .expect("cache modification time");
+        }
+        std::fs::write(cache.join("unrelated.json"), "{}").expect("unrelated cache");
+        let backup =
+            Backup::prepare(dir.path(), "http://127.0.0.1:19999/workbuddy/v1").expect("prepare");
+        assert_eq!(backup.upstream, "https://current.example/v2");
+        backup.apply().expect("apply");
+        assert!(backup.is_applied().expect("active route"));
+        backup.restore().expect("restore");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("settings.json")).expect("settings"),
+            original
+        );
+    }
+
+    #[test]
+    fn routing_rejects_an_invalid_latest_cache_without_modifying_settings() {
+        let original = r#"{"env":{"OTHER":"keep"}}"#;
+        let dir = fixture(Some(original));
+        let cache = dir
+            .path()
+            .join("cache/acc-product-config-v3-200-fixture.json");
+        for invalid in ["not json", "{}", r#"{"endpoint":"file:///private"}"#] {
+            std::fs::write(&cache, invalid).expect("invalid cache");
+            std::fs::File::options()
+                .write(true)
+                .open(&cache)
+                .expect("cache")
+                .set_times(std::fs::FileTimes::new().set_modified(
+                    std::time::SystemTime::now() + std::time::Duration::from_secs(10),
+                ))
+                .expect("latest cache");
+            assert!(Backup::prepare(dir.path(), "http://127.0.0.1:19999/workbuddy/v1").is_err());
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("settings.json")).expect("settings"),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn active_route_requires_the_injected_endpoint_and_preserves_unrelated_edits() {
+        let dir = fixture(Some("{}"));
+        let backup =
+            Backup::prepare(dir.path(), "http://127.0.0.1:19999/workbuddy/v1").expect("backup");
+        assert!(!backup.is_applied().expect("original"));
+        backup.apply().expect("apply");
+        assert!(backup.is_applied().expect("applied"));
+        let path = dir.path().join("settings.json");
+        let mut current: Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+        current["unrelated"] = json!(true);
+        std::fs::write(&path, current.to_string()).expect("external edit");
+        assert!(backup.is_applied().expect("unrelated edit"));
+        current["env"][ENDPOINT_KEY] = json!("https://official.example/v2");
+        std::fs::write(&path, current.to_string()).expect("endpoint edit");
+        assert!(!backup.is_applied().expect("external endpoint"));
     }
 
     #[test]

@@ -5,6 +5,12 @@ import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeDesktopProviderForm } from "@/components/providers/forms/ClaudeDesktopProviderForm";
 import { createTestQueryClient } from "../utils/testQueryClient";
+import { fetchModelsForConfig } from "@/lib/api/model-fetch";
+
+vi.mock("@/lib/api/model-fetch", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api/model-fetch")>()),
+  fetchModelsForConfig: vi.fn().mockResolvedValue([]),
+}));
 
 const authState = vi.hoisted(() => ({
   codexReauthRequired: false,
@@ -85,6 +91,31 @@ function renderForm(
 }
 
 describe("ClaudeDesktopProviderForm", () => {
+  it("fetches mapped Gemini models using the native protocol", async () => {
+    renderForm({
+      name: "Gemini fixture",
+      category: "third_party",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: "https://fixture.example",
+          ANTHROPIC_API_KEY: "synthetic-key",
+        },
+      },
+      meta: { claudeDesktopMode: "proxy", apiFormat: "gemini_native" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
+    await waitFor(() =>
+      expect(fetchModelsForConfig).toHaveBeenCalledWith(
+        "https://fixture.example",
+        "synthetic-key",
+        undefined,
+        undefined,
+        undefined,
+        { apiFormat: "google-generative-ai" },
+      ),
+    );
+  });
+
   beforeEach(() => {
     authState.codexReauthRequired = false;
   });
@@ -330,7 +361,7 @@ describe("ClaudeDesktopProviderForm", () => {
     expect(screen.queryAllByPlaceholderText("DeepSeek V4 Pro")).toHaveLength(0);
   });
 
-  it("保存模型映射时补齐固定四档并把留空档回填为 Sonnet 模型", async () => {
+  it("saves only explicitly configured proxy tiers", async () => {
     const onSubmit = vi.fn();
     renderForm(
       {
@@ -357,28 +388,16 @@ describe("ClaudeDesktopProviderForm", () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     const submitted = onSubmit.mock.calls[0][0];
-    // claude-old 迁移到 Sonnet；留空的 Opus / Fable / Haiku 回填为 Sonnet 的
-    // 上游模型，保证落库四档齐全，子 agent 调用的各档始终可解析。
-    expect(submitted.meta.claudeDesktopModelRoutes).toMatchObject({
+    expect(submitted.meta.claudeDesktopModelRoutes).toEqual({
       "claude-sonnet-5": {
         model: "upstream-old",
         labelOverride: "upstream-old",
+        supports1m: undefined,
       },
-      "claude-opus-5": { model: "upstream-old" },
-      "claude-fable-5": { model: "upstream-old" },
-      "claude-haiku-4-5": { model: "upstream-old" },
     });
-    expect(Object.keys(submitted.meta.claudeDesktopModelRoutes).sort()).toEqual(
-      [
-        "claude-fable-5",
-        "claude-haiku-4-5",
-        "claude-opus-5",
-        "claude-sonnet-5",
-      ],
-    );
   });
 
-  it("回填空档时继承 Sonnet 的 1M 声明", async () => {
+  it("does not create additional menu entries from a tier's 1M declaration", async () => {
     const onSubmit = vi.fn();
     renderForm(
       {
@@ -403,19 +422,50 @@ describe("ClaudeDesktopProviderForm", () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     const routes = onSubmit.mock.calls[0][0].meta.claudeDesktopModelRoutes;
-    // 留空的 Opus / Haiku 回填同一上游模型，1M 声明应与 Sonnet 一致。
     expect(routes["claude-sonnet-5"]).toMatchObject({
       model: "deepseek-v4-pro",
       supports1m: true,
     });
-    expect(routes["claude-opus-5"]).toMatchObject({
-      model: "deepseek-v4-pro",
-      supports1m: true,
+    expect(Object.keys(routes)).toEqual(["claude-sonnet-5"]);
+  });
+
+  it("keeps three menu mappings after clearing the fourth model", async () => {
+    const { onSubmit } = renderForm({
+      name: "Synthetic relay",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_API_KEY: "synthetic-key",
+          ANTHROPIC_BASE_URL: "https://example.com",
+        },
+      },
+      meta: {
+        claudeDesktopMode: "proxy",
+        claudeDesktopModelRoutes: {
+          "claude-sonnet-5": { model: "model-a", supports1m: true },
+          "claude-opus-5": { model: "model-b", supports1m: true },
+          "claude-fable-5": { model: "model-c", supports1m: true },
+          "claude-haiku-4-5": {
+            model: "model-a",
+            labelOverride: "Model A",
+            supports1m: true,
+          },
+        },
+      },
     });
-    expect(routes["claude-haiku-4-5"]).toMatchObject({
-      model: "deepseek-v4-pro",
-      supports1m: true,
+    fireEvent.change(screen.getByPlaceholderText("deepseek-v4-flash"), {
+      target: { value: "" },
     });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    const routes = onSubmit.mock.calls[0][0].meta.claudeDesktopModelRoutes;
+    expect(Object.keys(routes)).toEqual([
+      "claude-sonnet-5",
+      "claude-opus-5",
+      "claude-fable-5",
+    ]);
+    expect(Object.values(routes).every((route: any) => route.supports1m)).toBe(
+      true,
+    );
   });
 
   it("保存直连模型列表时不会保留旧 route 作为隐藏映射目标", async () => {

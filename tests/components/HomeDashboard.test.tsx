@@ -4,9 +4,22 @@ import i18n from "i18next";
 import type { ComponentProps } from "react";
 import { GlobalStatusBar } from "@/components/layout/GlobalStatusBar";
 import { HomeDashboard } from "@/components/home/HomeDashboard";
-import { DEFAULT_VISIBLE_APPS } from "@/config/appConfig";
+import {
+  APP_IDS,
+  DEFAULT_VISIBLE_APPS,
+  TAKEOVER_APP_IDS,
+  isRoutingAppId,
+} from "@/config/appConfig";
 import type { Provider } from "@/types";
 import zh from "@/i18n/locales/zh.json";
+import { useSecurityEventsSummary } from "@/hooks/useSecurityEvents";
+vi.mock("@/hooks/useSecurityEvents", () => ({
+  useSecurityEventsSummary: vi.fn(() => ({
+    data: { protectiveBlocked: 0, redacted: 0, warnings: 0 },
+    isLoading: false,
+    isError: false,
+  })),
+}));
 const protection = vi.hoisted(() => ({
   connected: false,
   waiting: false,
@@ -16,21 +29,15 @@ const protection = vi.hoisted(() => ({
 }));
 
 vi.mock("@/hooks/useSecurityProtection", () => ({
-  useSecurityProtection: () => ({
+  useSecurityProtection: (app: string) => ({
     isLoading: false,
     connected: protection.connected,
     waiting: protection.waiting,
     settings: { enabled: protection.enabled },
     isUpdating: protection.busy,
+    supported: isRoutingAppId(app) || app === "claude-desktop",
     setAppEnabled: protection.setAppEnabled,
     setEnabled: vi.fn(),
-  }),
-}));
-vi.mock("@/hooks/useSecurityEvents", () => ({
-  useSecurityEventsSummary: () => ({
-    isLoading: false,
-    isError: false,
-    data: { redacted: 0, warnings: 0, protectiveBlocked: 0 },
   }),
 }));
 vi.mock("@/components/providers/ProviderList", () => ({
@@ -39,6 +46,9 @@ vi.mock("@/components/providers/ProviderList", () => ({
 vi.mock("@/components/ProviderIcon", () => ({ ProviderIcon: () => null }));
 vi.mock("@/components/QoderCertificatePanel", () => ({
   QoderCertificatePanel: () => null,
+}));
+vi.mock("@/components/DoubaoWorkPanel", () => ({
+  DoubaoWorkPanel: () => null,
 }));
 
 const official: Provider = {
@@ -79,12 +89,57 @@ function renderDashboard(
 
 describe("HomeDashboard current provider", () => {
   beforeEach(() => {
+    vi.mocked(useSecurityEventsSummary).mockReturnValue({
+      data: { protectiveBlocked: 0, redacted: 0, warnings: 0 },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useSecurityEventsSummary>);
     protection.connected = false;
     protection.waiting = false;
     protection.enabled = false;
     protection.busy = false;
     protection.setAppEnabled.mockReset().mockResolvedValue(undefined);
     i18n.addResourceBundle("zh", "translation", zh, true, true);
+  });
+  it("uses unified per-agent totals so tool-risk warnings are included on the home page", () => {
+    protection.connected = true;
+    protection.enabled = true;
+    vi.mocked(useSecurityEventsSummary).mockReturnValue({
+      data: { protectiveBlocked: 2, redacted: 3, warnings: 7 },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useSecurityEventsSummary>);
+    renderDashboard();
+    expect(
+      screen.getByText(
+        zh.homeAudit.auditSummary
+          .replace("{{handled}}", "5")
+          .replace("{{warned}}", "7"),
+      ),
+    ).toBeInTheDocument();
+    expect(useSecurityEventsSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        view: "security_events",
+        appType: "codex",
+        startTimestamp: expect.any(Number),
+      }),
+    );
+  });
+  it("shows an unavailable count instead of zero when the unified summary fails", () => {
+    protection.connected = true;
+    protection.enabled = true;
+    vi.mocked(useSecurityEventsSummary).mockReturnValue({
+      isLoading: false,
+      isError: true,
+    } as ReturnType<typeof useSecurityEventsSummary>);
+    renderDashboard();
+    expect(
+      screen.getByText(
+        zh.homeAudit.auditSummary
+          .replace("{{handled}}", "—")
+          .replace("{{warned}}", "—"),
+      ),
+    ).toBeInTheDocument();
   });
   it("shows TRAE pending without claiming protection and lets the user cancel", () => {
     protection.waiting = true;
@@ -99,19 +154,49 @@ describe("HomeDashboard current provider", () => {
     );
     expect(protection.setAppEnabled).toHaveBeenCalledWith(false);
   });
-  it.each(["codex", "workbuddy", "qoder"] as const)(
-    "enables %s protection directly from its home row",
+  it.each(TAKEOVER_APP_IDS)(
+    "offers local routing when %s is disconnected",
     (app) => {
+      renderDashboard({ activeApp: app });
+      fireEvent.click(screen.getByRole("button", { name: "启用本地路由" }));
+      expect(protection.setAppEnabled).toHaveBeenCalledWith(true);
+      expect(screen.getByText(zh.homeAudit.notConnected)).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: zh.homeAudit.activate }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: zh.homeAudit.viewLogs }),
+      ).toBeInTheDocument();
+    },
+  );
+  it.each([...TAKEOVER_APP_IDS, "claude-desktop", "pi"] as const)(
+    "enables %s protection when its route is already connected",
+    (app) => {
+      protection.connected = true;
       renderDashboard({ activeApp: app });
       fireEvent.click(
         screen.getByRole("button", { name: zh.homeAudit.activate }),
       );
       expect(protection.setAppEnabled).toHaveBeenCalledWith(true);
       expect(
-        screen.getByRole("button", { name: zh.homeAudit.viewLogs }),
-      ).toBeInTheDocument();
+        screen.queryByRole("button", { name: zh.homeAudit.configureRouting }),
+      ).not.toBeInTheDocument();
     },
   );
+  it("still offers Claude routing when global detection is enabled", () => {
+    protection.enabled = true;
+    renderDashboard({ activeApp: "claude" });
+    expect(screen.getByText(zh.homeAudit.notConnected)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "启用本地路由" }),
+    ).toBeInTheDocument();
+  });
+  it("offers Desktop routing configuration when its route is disconnected", () => {
+    renderDashboard({ activeApp: "claude-desktop" });
+    expect(
+      screen.getByRole("button", { name: zh.homeAudit.configureRouting }),
+    ).toBeInTheDocument();
+  });
   it("explains TRAE IDE and Agent coverage and its managed launch requirement", () => {
     renderDashboard({ activeApp: "trae" });
     const note = screen.getByRole("note", { name: "TRAE 防护说明" });
@@ -136,7 +221,7 @@ describe("HomeDashboard current provider", () => {
       screen.queryByRole("note", { name: "TRAE 防护说明" }),
     ).not.toBeInTheDocument();
   });
-  it.each(["opencode", "openclaw", "hermes", "pi"] as const)(
+  it.each(["claude-desktop", "opencode", "openclaw", "hermes", "pi"] as const)(
     "opens routing settings from the %s home row",
     (app) => {
       protection.enabled = true;
@@ -153,8 +238,9 @@ describe("HomeDashboard current provider", () => {
     },
   );
   it.each([
-    [false, false, "disabled"],
+    [false, false, "notConnected"],
     [true, false, "notConnected"],
+    [false, true, "disabled"],
     [true, true, "ready"],
   ] as const)(
     "shows the common Pi status row (audit=%s, route=%s)",
@@ -197,6 +283,15 @@ describe("HomeDashboard current provider", () => {
       screen.getByText(zh.globalStatus.auditStates.running),
     ).toBeInTheDocument();
   });
+  it.each(APP_IDS)(
+    "shows %s as unrouted in the footer even when detection is off",
+    (app) => {
+      render(<GlobalStatusBar activeApp={app} isProxyRunning />);
+      expect(
+        screen.getByText(zh.globalStatus.auditStates.notConnected),
+      ).toBeInTheDocument();
+    },
+  );
   it("shows only the event link when this app is already protected", () => {
     protection.connected = true;
     protection.enabled = true;
@@ -209,13 +304,19 @@ describe("HomeDashboard current provider", () => {
       screen.getByRole("button", { name: zh.homeAudit.viewLogs }),
     ).toBeInTheDocument();
   });
-  it("prevents duplicate clicks while changing protection", () => {
-    protection.busy = true;
-    renderDashboard();
-    expect(
-      screen.getByRole("button", { name: zh.homeAudit.activate }),
-    ).toBeDisabled();
-  });
+  it.each([false, true])(
+    "prevents duplicate clicks while changing protection (connected=%s)",
+    (connected) => {
+      protection.busy = true;
+      protection.connected = connected;
+      renderDashboard();
+      expect(
+        screen.getByRole("button", {
+          name: connected ? zh.homeAudit.activate : "启用本地路由",
+        }),
+      ).toBeDisabled();
+    },
+  );
   it("keeps optional agents off the default tabs and offers the agent manager", () => {
     const onManageAgents = vi.fn();
     renderDashboard({ onManageAgents });
@@ -301,6 +402,27 @@ describe("HomeDashboard current provider", () => {
     expect(screen.getByText("已配置凭证")).toBeInTheDocument();
     expect(screen.queryByText("跟随 Codex 当前登录")).not.toBeInTheDocument();
   });
+
+  it.each(["claude", "claude-desktop"] as const)(
+    "recognizes the Anthropic auth token for %s without displaying it",
+    (app) => {
+      const provider: Provider = {
+        id: "token-provider",
+        name: "Token provider",
+        settingsConfig: {
+          env: { ANTHROPIC_AUTH_TOKEN: "fixture-private-token" },
+        },
+      };
+      renderDashboard({
+        activeApp: app,
+        currentProviderId: provider.id,
+        providers: { [provider.id]: provider },
+      });
+      expect(screen.getByText("已配置凭证")).toBeInTheDocument();
+      expect(screen.queryByText("未配置凭证")).not.toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("fixture-private-token");
+    },
+  );
 
   it("keeps the missing credential label for a custom provider", () => {
     const unconfigured = {

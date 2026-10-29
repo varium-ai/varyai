@@ -91,7 +91,7 @@ export const openclawApiProtocols = [
   { value: "openai-completions", label: "OpenAI Completions" },
   { value: "openai-responses", label: "OpenAI Responses" },
   { value: "anthropic-messages", label: "Anthropic Messages" },
-  { value: "google-generative-ai", label: "Google Generative AI" },
+  { value: "google-generative-ai", label: "Gemini Native generateContent" },
   { value: "bedrock-converse-stream", label: "AWS Bedrock" },
 ] as const;
 

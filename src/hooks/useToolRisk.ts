@@ -4,11 +4,11 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { toolRiskApi } from "@/lib/api";
-import { reportFrontendError } from "@/lib/frontendLogger";
 import {
-  invalidateSecurityEventsQueries,
   invalidateSecurityEventDomains,
+  invalidateSecurityEventsQueries,
 } from "@/hooks/useSecurityEvents";
+import { reportFrontendError } from "@/lib/frontendLogger";
 import type {
   SaveCommandListInput,
   SaveCustomRuleInput,
@@ -194,6 +194,7 @@ export function useToolRiskEvents(
   });
 
   const clearMutation = useMutation({
+    mutationKey: ["toolRisk", "clearEvents"],
     mutationFn: (beforeTimestamp?: number) =>
       toolRiskApi.clearEvents(beforeTimestamp),
     onSuccess: () => {
@@ -224,7 +225,6 @@ export function useToolRiskEventBridge(onRecorded?: () => void) {
     let disposed = false;
     let unlisten: UnlistenFn | undefined;
     const refresh = () => {
-      void invalidateSecurityEventsQueries(queryClient);
       try {
         void Promise.resolve(
           queryClient.invalidateQueries({ queryKey: toolRiskKeys.all }),
@@ -232,6 +232,7 @@ export function useToolRiskEventBridge(onRecorded?: () => void) {
       } catch {
         reportFrontendError("tool_risk_invalidate", "failed");
       }
+      void invalidateSecurityEventsQueries(queryClient);
     };
     void (async () => {
       try {
@@ -272,6 +273,20 @@ export function useToolRiskSandbox() {
   };
 }
 
+export function commandListErrorKey(error: unknown): string {
+  const code = error instanceof Error ? error.message : error;
+  switch (code) {
+    case "tool_risk_command_list_duplicate":
+      return "toolRisk.commandLists.duplicate";
+    case "tool_risk_command_list_conflict":
+      return "toolRisk.commandLists.conflict";
+    case "tool_risk_command_list_limit":
+      return "toolRisk.commandLists.limit";
+    default:
+      return "toolRisk.commandLists.mutationFailed";
+  }
+}
+
 export function useToolRiskCommandLists() {
   const { t } = useTranslation();
   const writeNotice = useWriteNotice();
@@ -288,11 +303,18 @@ export function useToolRiskCommandLists() {
       toolRiskApi.saveCommandList(input),
     onSuccess: (receipt) => {
       invalidate();
-      writeNotice(receipt);
+      writeNotice(receipt, "toolRisk.commandLists.saved");
     },
-    onError: () => {
+    onError: (error) => {
       invalidate();
-      toast.error(t("toolRisk.policyWriteFailed"));
+      const key = commandListErrorKey(error);
+      toast.error(
+        t(
+          key === "toolRisk.commandLists.mutationFailed"
+            ? "toolRisk.policyWriteFailed"
+            : key,
+        ),
+      );
     },
   });
   const remove = useMutation({

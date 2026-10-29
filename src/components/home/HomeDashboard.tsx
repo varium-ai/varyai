@@ -112,6 +112,7 @@ function hasProviderCredential(provider: Provider): boolean {
       config.apiKey,
       config.api_key,
       config.auth?.OPENAI_API_KEY,
+      config.env?.ANTHROPIC_AUTH_TOKEN,
       config.env?.ANTHROPIC_API_KEY,
       config.env?.OPENAI_API_KEY,
       config.env?.GEMINI_API_KEY,
@@ -150,15 +151,14 @@ export function SecurityStatusRow({
   const isLoading = protection.isLoading;
   const isProtected =
     protection.settings?.enabled === true && protection.connected;
-  const isConfiguredButDisconnected =
-    protection.settings?.enabled === true && !protection.connected;
   const displayCount = (value: number | undefined, pending: boolean) => {
     if (pending) return "…";
     if (value === undefined) return "—";
     return value.toLocaleString(i18n.language);
   };
-  const handledCount =
-    (summary.data?.protectiveBlocked ?? 0) + (summary.data?.redacted ?? 0);
+  const handledCount = summary.data
+    ? summary.data.protectiveBlocked + summary.data.redacted
+    : undefined;
   const handledDisplay = summary.isError
     ? "—"
     : displayCount(handledCount, summary.isLoading);
@@ -185,7 +185,8 @@ export function SecurityStatusRow({
       )}
       {!isProtected &&
         !protection.waiting &&
-        (isTakeoverAppId(appType) ? (
+        (isTakeoverAppId(appType) ||
+        (protection.supported && protection.connected) ? (
           <button
             type="button"
             disabled={protection.isUpdating}
@@ -194,7 +195,11 @@ export function SecurityStatusRow({
             }}
             className="flex items-center gap-1 text-sm font-bold text-rose-600 hover:underline disabled:opacity-50 dark:text-rose-300"
           >
-            {t("homeAudit.activate")}
+            {t(
+              protection.connected
+                ? "homeAudit.activate"
+                : "homeAudit.enableRouting",
+            )}
             <ChevronRight className="h-4 w-4" />
           </button>
         ) : (
@@ -269,7 +274,7 @@ export function SecurityStatusRow({
               ? appType === "doubaowork"
                 ? "homeAudit.doubaoWaiting"
                 : "homeAudit.traeWaiting"
-              : isConfiguredButDisconnected
+              : !protection.connected
                 ? "homeAudit.notConnected"
                 : "homeAudit.disabled",
           )}

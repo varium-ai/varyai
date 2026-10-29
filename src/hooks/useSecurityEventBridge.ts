@@ -14,7 +14,6 @@ export function useSecurityEventBridge(onRecorded: () => void) {
     let disposed = false;
     let unlisten: UnlistenFn | undefined;
     const refreshQueries = () => {
-      void invalidateSecurityEventsQueries(queryClient);
       try {
         void Promise.resolve(
           queryClient.invalidateQueries({ queryKey: securityKeys.all }),
@@ -24,6 +23,7 @@ export function useSecurityEventBridge(onRecorded: () => void) {
       } catch {
         reportFrontendError("security_audit_invalidate", "failed");
       }
+      void invalidateSecurityEventsQueries(queryClient);
     };
     void (async () => {
       try {

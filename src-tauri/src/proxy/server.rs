@@ -321,6 +321,7 @@ impl ProxyServer {
         Router::new()
             // 健康检查
             .route("/health", get(handlers::health_check))
+            .route("/gateway/*path", post(super::gateway::handle))
             .route("/private/trae/audit", post(super::trae::audit))
             .route("/pi/*path", any(super::pi::handle))
             .route(
@@ -334,6 +335,10 @@ impl ProxyServer {
             .route(
                 "/qoder/providers/:id/*path",
                 any(super::qoder::handle_custom),
+            )
+            .route(
+                "/upstream/:app/providers/:id/*path",
+                post(super::native_protocol::handle),
             )
             .route("/status", get(handlers::get_status))
             // Claude API (支持带前缀和不带前缀两种格式)
@@ -447,6 +452,10 @@ impl ProxyServer {
             .route("/gemini/v1/*path", any(handlers::handle_gemini))
             // 提高默认请求体大小限制（避免 413 Payload Too Large）
             .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
+            .layer(axum::middleware::from_fn_with_state(
+                self.state.clone(),
+                super::gateway::enforce_agent,
+            ))
             .with_state(self.state.clone())
     }
 
@@ -1351,3 +1360,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "gateway/server_tests.rs"]
+mod gateway_tests;

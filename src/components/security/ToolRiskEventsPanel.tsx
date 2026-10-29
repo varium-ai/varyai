@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/table";
 import { useToolRiskEvents } from "@/hooks/useToolRisk";
 import { ShellCommandListDialog } from "./ShellCommandListsPanel";
+import { SecurityEventsLoading } from "./SecurityEventsLoading";
 import { groupToolRiskEvents } from "./toolRiskEventGroups";
 import {
   EVENT_REASON_CODES,
@@ -65,7 +66,7 @@ function formatTimestamp(ts: number): string {
   }
 }
 
-/** Display only the bounded backend summary; never reconstruct commands from raw tool input. */
+/** Display bounded backend summaries without reconstructing raw tool inputs. */
 export function ToolRiskEventsPanel(props: ToolRiskEventsPanelProps = {}) {
   return props.controlled ? (
     <ToolRiskEventsTable {...props} />
@@ -432,7 +433,7 @@ function ToolRiskEventsTable({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {controlled?.isError ? (
+          {controlled && isLoading ? null : controlled?.isError ? (
             <TableRow>
               <TableCell colSpan={controlled ? 10 : 9}>
                 {t("securityEvents.queryError")}
@@ -472,6 +473,7 @@ function ToolRiskEventsTable({
           )}
         </TableBody>
       </Table>
+      {controlled && isLoading && <SecurityEventsLoading />}
 
       {(hasPrev || hasNext) && (
         <div className="flex items-center justify-end gap-2 border-t border-border/80 px-5 py-3">

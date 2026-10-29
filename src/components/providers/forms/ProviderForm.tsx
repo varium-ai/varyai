@@ -1,3 +1,4 @@
+import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -62,6 +63,7 @@ import type { UniversalProviderPreset } from "@/config/universalProviderPresets"
 import {
   applyTemplateValues,
   hasApiKeyField,
+  setApiKeyInConfig,
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
 import {
@@ -85,6 +87,7 @@ import { ClaudeDesktopProviderForm } from "./ClaudeDesktopProviderForm";
 import { GrokBuildProviderForm } from "./GrokBuildProviderForm";
 import { CodexFormFields } from "./CodexFormFields";
 import { GeminiFormFields } from "./GeminiFormFields";
+import { ProviderConfigDetection } from "./ProviderConfigDetection";
 import { ManagedAgentProviderForm } from "./ManagedAgentProviderForm";
 import { QoderProviderForm } from "./QoderProviderForm";
 import { WorkBuddyProviderForm } from "./WorkBuddyProviderForm";
@@ -316,6 +319,13 @@ function ProviderFormFull({
 
   const { t } = useTranslation();
   const isEditMode = Boolean(initialData);
+  const [editingCredentials, setEditingCredentials] = useState(false);
+  const [protocolManuallySelected, setProtocolManuallySelected] =
+    useState(false);
+
+  useEffect(() => {
+    setProtocolManuallySelected(false);
+  }, [appId]);
   const initialCodexOfficialIdentity =
     appId === "codex" && initialData
       ? resolveCodexOfficialIdentity(appId, {
@@ -543,6 +553,8 @@ function ProviderFormFull({
     defaultFableModelName,
     subagentModel,
     handleModelChange,
+    modelPickerOptions,
+    handleModelPickerOptionsChange,
   } = useModelState({
     settingsConfig: form.getValues("settingsConfig"),
     onConfigChange: handleSettingsConfigChange,
@@ -663,22 +675,35 @@ function ProviderFormFull({
   } = useCodexConfigState({ initialData });
 
   const initialCodexApiFormat: CodexApiFormat =
-    initialData?.meta?.apiFormat === "openai_chat"
-      ? "openai_chat"
-      : initialData?.meta?.apiFormat === "anthropic"
-        ? "anthropic"
-        : initialData?.meta?.apiFormat === "openai_responses"
-          ? "openai_responses"
-          : (codexApiFormatFromWireApi(
-              extractCodexWireApi(
-                typeof initialData?.settingsConfig?.config === "string"
-                  ? initialData.settingsConfig.config
-                  : "",
-              ),
-            ) ?? "openai_responses");
+    initialData?.meta?.apiFormat === "gemini_native"
+      ? "gemini_native"
+      : initialData?.meta?.apiFormat === "openai_chat"
+        ? "openai_chat"
+        : initialData?.meta?.apiFormat === "anthropic"
+          ? "anthropic"
+          : initialData?.meta?.apiFormat === "openai_responses"
+            ? "openai_responses"
+            : (codexApiFormatFromWireApi(
+                extractCodexWireApi(
+                  typeof initialData?.settingsConfig?.config === "string"
+                    ? initialData.settingsConfig.config
+                    : "",
+                ),
+              ) ?? "openai_responses");
 
   const [localCodexApiFormat, setLocalCodexApiFormat] =
     useState<CodexApiFormat>(initialCodexApiFormat);
+  const [localHermesApiFormat, setLocalHermesApiFormat] =
+    useState<ClaudeApiFormat>(
+      initialData?.meta?.apiFormat ??
+        (initialData?.settingsConfig?.api_mode === "anthropic_messages"
+          ? "anthropic"
+          : initialData?.settingsConfig?.api_mode === "codex_responses"
+            ? "openai_responses"
+            : "openai_chat"),
+    );
+  const [localGeminiApiFormat, setLocalGeminiApiFormat] =
+    useState<ClaudeApiFormat>(initialData?.meta?.apiFormat ?? "gemini_native");
 
   // Auth-field choice for the Anthropic Messages upstream (defaults to the Bearer form)
   const initialCodexAnthropicAuthField: ClaudeApiKeyField =
@@ -1802,7 +1827,12 @@ function ProviderFormFull({
             ? isXaiOauthProvider
               ? "openai_responses"
               : localCodexApiFormat
-            : undefined,
+            : appId === "gemini" && category !== "official"
+              ? localGeminiApiFormat
+              : appId === "hermes" &&
+                  hermesForm.hermesApiMode !== "bedrock_converse"
+                ? localHermesApiFormat
+                : undefined,
       apiKeyField:
         appId === "claude" &&
         category !== "official" &&
@@ -1969,6 +1999,7 @@ function ProviderFormFull({
       }
       if (appId === "gemini") {
         resetGeminiConfig({}, {});
+        setLocalGeminiApiFormat("gemini_native");
       }
       if (appId === "opencode") {
         opencodeForm.resetOpencodeState();
@@ -1980,6 +2011,7 @@ function ProviderFormFull({
       }
       if (appId === "hermes") {
         hermesForm.resetHermesState();
+        setLocalHermesApiFormat("openai_chat");
       }
       return;
     }
@@ -2026,6 +2058,7 @@ function ProviderFormFull({
       const config = (preset.settingsConfig as any)?.config ?? {};
 
       resetGeminiConfig(env, config);
+      setLocalGeminiApiFormat("gemini_native");
 
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
@@ -2098,6 +2131,13 @@ function ProviderFormFull({
       const config = preset.settingsConfig;
 
       hermesForm.resetHermesState(config);
+      setLocalHermesApiFormat(
+        config.api_mode === "anthropic_messages"
+          ? "anthropic"
+          : config.api_mode === "codex_responses"
+            ? "openai_responses"
+            : "openai_chat",
+      );
 
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
@@ -2151,6 +2191,24 @@ function ProviderFormFull({
         <form
           id="provider-form"
           onSubmit={form.handleSubmit(handleSubmit)}
+          onFocusCapture={(event) => {
+            if (
+              ["apiKey", "baseUrl", "codexApiKey", "codexBaseUrl"].includes(
+                event.target.id,
+              )
+            ) {
+              setEditingCredentials(true);
+            }
+          }}
+          onBlurCapture={(event) => {
+            if (
+              ["apiKey", "baseUrl", "codexApiKey", "codexBaseUrl"].includes(
+                event.target.id,
+              )
+            ) {
+              setEditingCredentials(false);
+            }
+          }}
           className="space-y-6 glass rounded-xl p-6 border border-white/10"
         >
           {!initialData && (
@@ -2164,6 +2222,125 @@ function ProviderFormFull({
               category={category}
             />
           )}
+
+          <ConnectionPresetPicker
+            current={{
+              name: form.watch("name"),
+              apiFormat:
+                appId === "claude"
+                  ? localApiFormat
+                  : appId === "codex"
+                    ? localCodexApiFormat
+                    : appId === "gemini"
+                      ? localGeminiApiFormat
+                      : appId === "hermes"
+                        ? localHermesApiFormat
+                        : undefined,
+              ...((
+                {
+                  codex: { baseUrl: codexBaseUrl, apiKey: codexApiKey },
+                  gemini: { baseUrl: geminiBaseUrl, apiKey: geminiApiKey },
+                  opencode: {
+                    baseUrl: opencodeForm.opencodeBaseUrl,
+                    apiKey: opencodeForm.opencodeApiKey,
+                  },
+                  openclaw: {
+                    baseUrl: openclawForm.openclawBaseUrl,
+                    apiKey: openclawForm.openclawApiKey,
+                  },
+                  hermes: {
+                    baseUrl: hermesForm.hermesBaseUrl,
+                    apiKey: hermesForm.hermesApiKey,
+                  },
+                } as Partial<Record<AppId, { baseUrl: string; apiKey: string }>>
+              )[appId] ?? { baseUrl, apiKey }),
+            }}
+            disabled={
+              category === "official" ||
+              isCopilotProvider ||
+              isClaudeCodexOauthProvider ||
+              isXaiOauthProvider ||
+              isCodexOfficialProvider ||
+              isAnyOmoCategory
+            }
+            onApply={(preset) => {
+              form.setValue("name", preset.name, { shouldDirty: true });
+              if (preset.apiFormat) setProtocolManuallySelected(true);
+              if (appId === "codex") {
+                if (preset.apiFormat)
+                  handleCodexApiFormatChange(preset.apiFormat);
+                handleCodexBaseUrlChange(preset.baseUrl);
+                handleCodexApiKeyChange(preset.apiKey);
+              } else if (appId === "gemini") {
+                if (preset.apiFormat) setLocalGeminiApiFormat(preset.apiFormat);
+                const env = envStringToObj(geminiEnv);
+                env.GOOGLE_GEMINI_BASE_URL = preset.baseUrl;
+                env.GEMINI_API_KEY = preset.apiKey;
+                handleGeminiEnvChange(envObjToString(env));
+                updateGeminiEnvField("GOOGLE_GEMINI_BASE_URL", preset.baseUrl);
+                updateGeminiEnvField("GEMINI_API_KEY", preset.apiKey);
+              } else if (appId === "opencode") {
+                if (preset.apiFormat)
+                  opencodeForm.handleOpencodeNpmChange(
+                    {
+                      anthropic: "@ai-sdk/anthropic",
+                      openai_chat: "@ai-sdk/openai-compatible",
+                      openai_responses: "@ai-sdk/openai",
+                      gemini_native: "@ai-sdk/google",
+                    }[preset.apiFormat],
+                  );
+                opencodeForm.handleOpencodeBaseUrlChange(preset.baseUrl);
+                opencodeForm.handleOpencodeApiKeyChange(preset.apiKey);
+              } else if (appId === "openclaw") {
+                if (preset.apiFormat)
+                  openclawForm.handleOpenclawApiChange(
+                    {
+                      anthropic: "anthropic-messages",
+                      openai_chat: "openai-completions",
+                      openai_responses: "openai-responses",
+                      gemini_native: "google-generative-ai",
+                    }[preset.apiFormat],
+                  );
+                openclawForm.handleOpenclawBaseUrlChange(preset.baseUrl);
+                openclawForm.handleOpenclawApiKeyChange(preset.apiKey);
+              } else if (appId === "hermes") {
+                if (preset.apiFormat) setLocalHermesApiFormat(preset.apiFormat);
+                if (preset.apiFormat && preset.apiFormat !== "gemini_native")
+                  hermesForm.handleHermesApiModeChange(
+                    {
+                      anthropic: "anthropic_messages",
+                      openai_chat: "chat_completions",
+                      openai_responses: "codex_responses",
+                    }[preset.apiFormat] as
+                      | "anthropic_messages"
+                      | "chat_completions"
+                      | "codex_responses",
+                  );
+                hermesForm.handleHermesBaseUrlChange(preset.baseUrl);
+                hermesForm.handleHermesApiKeyChange(preset.apiKey);
+              } else {
+                if (preset.apiFormat) handleApiFormatChange(preset.apiFormat);
+                try {
+                  const config = JSON.parse(
+                    form.getValues("settingsConfig") || "{}",
+                  );
+                  config.env = {
+                    ...config.env,
+                    ANTHROPIC_BASE_URL: preset.baseUrl,
+                  };
+                  handleSettingsConfigChange(
+                    setApiKeyInConfig(JSON.stringify(config), preset.apiKey, {
+                      createIfMissing: true,
+                      appType: appId,
+                      apiKeyField: localApiKeyField,
+                    }),
+                  );
+                } catch {
+                  toast.error(t("jsonEditor.invalidJson"));
+                }
+              }
+            }}
+          />
 
           <BasicFormFields
             form={form}
@@ -2431,9 +2608,33 @@ function ProviderFormFull({
               defaultFableModelName={defaultFableModelName}
               subagentModel={subagentModel}
               onModelChange={handleModelChange}
+              modelPickerOptions={modelPickerOptions}
+              onModelPickerOptionsChange={handleModelPickerOptionsChange}
+              configurationDetection={
+                category !== "official" &&
+                category !== "cloud_provider" &&
+                !isCopilotProvider &&
+                !isClaudeCodexOauthProvider &&
+                !isXaiOauthProvider &&
+                !localIsFullUrl
+                  ? {
+                      editingCredentials,
+                      autoSelectFormat:
+                        !isEditMode &&
+                        selectedPresetId === "custom" &&
+                        !protocolManuallySelected,
+                      onManualFormatSelect: () =>
+                        setProtocolManuallySelected(true),
+                      onApiFormatChange: handleApiFormatChange,
+                    }
+                  : undefined
+              }
               speedTestEndpoints={speedTestEndpoints}
               apiFormat={localApiFormat}
-              onApiFormatChange={handleApiFormatChange}
+              onApiFormatChange={(format) => {
+                setProtocolManuallySelected(true);
+                handleApiFormatChange(format);
+              }}
               apiKeyField={localApiKeyField}
               onApiKeyFieldChange={handleApiKeyFieldChange}
               isFullUrl={localIsFullUrl}
@@ -2499,7 +2700,10 @@ function ProviderFormFull({
               codexModel={codexModel}
               onModelChange={handleCodexModelChange}
               apiFormat={localCodexApiFormat}
-              onApiFormatChange={handleCodexApiFormatChange}
+              onApiFormatChange={(format) => {
+                setProtocolManuallySelected(true);
+                handleCodexApiFormatChange(format);
+              }}
               anthropicAuthField={localCodexAnthropicAuthField}
               onAnthropicAuthFieldChange={setLocalCodexAnthropicAuthField}
               impersonateClaudeCode={localCodexImpersonateClaudeCode}
@@ -2524,6 +2728,11 @@ function ProviderFormFull({
 
           {appId === "gemini" && (
             <GeminiFormFields
+              apiFormat={localGeminiApiFormat}
+              onApiFormatChange={(format) => {
+                setProtocolManuallySelected(true);
+                setLocalGeminiApiFormat(format);
+              }}
               providerId={providerId}
               shouldShowApiKey={shouldShowApiKey(
                 form.getValues("settingsConfig"),
@@ -2547,6 +2756,8 @@ function ProviderFormFull({
               shouldShowModelField={true}
               model={geminiModel}
               onModelChange={handleGeminiModelChange}
+              configValue={geminiConfig}
+              onConfigChange={handleGeminiConfigChange}
               speedTestEndpoints={speedTestEndpoints}
             />
           )}
@@ -2628,6 +2839,8 @@ function ProviderFormFull({
               websiteUrl={hermesWebsiteUrl}
               isPartner={isHermesPartner}
               partnerPromotionKey={hermesPartnerPromotionKey}
+              apiFormat={localHermesApiFormat}
+              onApiFormatChange={setLocalHermesApiFormat}
               apiMode={hermesForm.hermesApiMode}
               onApiModeChange={hermesForm.handleHermesApiModeChange}
               models={hermesForm.hermesModels}
@@ -2638,6 +2851,44 @@ function ProviderFormFull({
               }
             />
           )}
+
+          {(appId === "codex" || appId === "gemini") &&
+            category !== "official" &&
+            category !== "cloud_provider" &&
+            !isXaiOauthProvider &&
+            !isCodexOfficialProvider &&
+            geminiPartnerPromotionKey?.toLowerCase() !== "google-official" &&
+            (appId === "gemini" || !localIsFullUrl) && (
+              <ProviderConfigDetection
+                key={`${appId}:${selectedPresetId}`}
+                baseUrl={appId === "codex" ? codexBaseUrl : geminiBaseUrl}
+                apiKey={appId === "codex" ? codexApiKey : geminiApiKey}
+                model={appId === "codex" ? codexModel : geminiModel}
+                apiFormat={
+                  appId === "codex" ? localCodexApiFormat : localGeminiApiFormat
+                }
+                anthropicAuthField={
+                  appId === "codex" ? localCodexAnthropicAuthField : undefined
+                }
+                editingCredentials={editingCredentials}
+                autoSelectFormat={
+                  !isEditMode &&
+                  selectedPresetId === "custom" &&
+                  !protocolManuallySelected
+                }
+                onModelChange={
+                  appId === "codex"
+                    ? handleCodexModelChange
+                    : handleGeminiModelChange
+                }
+                onManualFormatSelect={() => setProtocolManuallySelected(true)}
+                onApiFormatChange={
+                  appId === "codex"
+                    ? handleCodexApiFormatChange
+                    : setLocalGeminiApiFormat
+                }
+              />
+            )}
 
           {/* 配置编辑器：Codex、Claude、Gemini 分别使用不同的编辑器 */}
           {appId === "codex" ? (

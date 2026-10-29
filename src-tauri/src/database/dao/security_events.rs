@@ -1,4 +1,4 @@
-//! Unified queries over extension-only event storage. No detection or notification side effects.
+//! Unified queries over extension-only event storage. No detection/notification side effects.
 
 use std::collections::HashMap;
 

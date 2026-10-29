@@ -15,7 +15,7 @@ export function SecurityActivitySummary({
     view: "security_events",
     startTimestamp,
   });
-  const total = summary.isError ? undefined : summary.data?.total;
+  const data = summary.isError ? undefined : summary.data;
   const display = (value: number | undefined, loading: boolean) =>
     loading
       ? "…"
@@ -27,19 +27,19 @@ export function SecurityActivitySummary({
     {
       key: "protectiveBlocked",
       icon: ShieldAlert,
-      value: summary.data?.protectiveBlocked,
+      value: data?.protectiveBlocked,
       color: "text-rose-600",
     },
     {
       key: "redacted",
       icon: ShieldCheck,
-      value: summary.data?.redacted,
+      value: data?.redacted,
       color: "text-blue-600",
     },
     {
-      key: "warnings",
+      key: "audited",
       icon: Eye,
-      value: summary.data?.warnings,
+      value: data?.warnings,
       color: "text-amber-600",
     },
   ] as const;
@@ -65,7 +65,7 @@ export function SecurityActivitySummary({
             {t("securityStats.events")}
           </span>
           <div className="mt-2 text-2xl font-semibold tabular-nums text-blue-600">
-            {display(total, summary.isLoading)}
+            {display(data?.total, summary.isLoading)}
           </div>
         </div>
         {cards.map(({ key, icon: Icon, value, color }) => (
@@ -80,7 +80,7 @@ export function SecurityActivitySummary({
             <div
               className={`mt-2 text-2xl font-semibold tabular-nums ${color}`}
             >
-              {display(summary.isError ? undefined : value, summary.isLoading)}
+              {display(value, summary.isLoading)}
             </div>
           </div>
         ))}

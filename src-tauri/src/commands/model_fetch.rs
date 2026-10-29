@@ -117,6 +117,14 @@ pub async fn fetch_models_for_config(
     .await
 }
 
+/// Run inference probes only after the user explicitly requests detection.
+#[tauri::command]
+pub async fn detect_provider_protocols(
+    config: crate::services::provider_protocol_detection::DetectionConfig,
+) -> Result<Vec<crate::services::provider_protocol_detection::ProtocolDetection>, String> {
+    crate::services::provider_protocol_detection::detect(config).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_opencode_models, OpenCodeModelRef};

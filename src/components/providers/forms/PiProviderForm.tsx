@@ -1,3 +1,4 @@
+import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -71,7 +72,7 @@ const PI_API_FORMATS = [
   { value: "openai-completions", label: "OpenAI Chat Completions" },
   { value: "openai-responses", label: "OpenAI Responses" },
   { value: "anthropic-messages", label: "Anthropic Messages" },
-  { value: "google-generative-ai", label: "Google Generative AI" },
+  { value: "google-generative-ai", label: "Gemini Native generateContent" },
   { value: "bedrock-converse-stream", label: "Amazon Bedrock" },
 ] as const satisfies ReadonlyArray<{ value: PiApiFormat; label: string }>;
 
@@ -1323,6 +1324,23 @@ export function PiProviderForm({
           />
         )}
 
+        <ConnectionPresetPicker
+          current={{ name: form.watch("name"), baseUrl, apiKey }}
+          onApply={(preset) => {
+            if (preset.apiFormat)
+              handleApiChange(
+                {
+                  anthropic: "anthropic-messages",
+                  openai_chat: "openai-completions",
+                  openai_responses: "openai-responses",
+                  gemini_native: "google-generative-ai",
+                }[preset.apiFormat],
+              );
+            form.setValue("name", preset.name);
+            handleBaseUrlChange(preset.baseUrl);
+            handleApiKeyChange(preset.apiKey);
+          }}
+        />
         {formError && (
           <div
             role="alert"

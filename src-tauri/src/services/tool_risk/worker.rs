@@ -78,7 +78,7 @@ pub fn project_event(obs: &ToolObservation) -> Option<ToolRiskEventInput> {
         stage: obs.stage.as_str().to_string(),
         client_category: obs.tool.client.as_deref().and_then(|client| match client {
             "claude" | "claude_code" => Some("claude".into()),
-            "codex" | "gemini" | "openai" | "grokbuild" => Some(client.into()),
+            "claude-desktop" | "codex" | "gemini" | "openai" | "grokbuild" => Some(client.into()),
             _ => None,
         }),
         operation_category: decision
@@ -323,6 +323,69 @@ mod tests {
             Vec::new(),
             &HashMap::new(),
         ));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn claude_desktop_shell_calls_reach_history_without_command_summary() {
+        use crate::proxy::tool_observation::{channel::*, mount};
+        use crate::services::tool_risk::response_parser::ResponseProcessor;
+        use bytes::Bytes;
+        use serde_json::json;
+
+        enable_runtime();
+        let request = json!({"tools":[{"name":"Bash","input_schema":{
+            "type":"object","properties":{"command":{"type":"string"}},"required":["command"]
+        }}]});
+        let definitions = mount::collect_tool_schemas(&request, "claude-desktop");
+        assert_eq!(definitions.len(), 1);
+        let db = Database::memory().unwrap();
+        for transport in [Transport::Json, Transport::Sse] {
+            let body = match transport {
+                Transport::Json => json!({"content":[{"type":"tool_use","id":"fixture","name":"Bash","input":{"command":"pwd"}}],"stop_reason":"tool_use"}).to_string(),
+                Transport::Sse => concat!(
+                    "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"fixture\",\"name\":\"Bash\",\"input\":{}}}\n\n",
+                    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\":\\\"pwd\\\"}\"}}\n\n",
+                    "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+                    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n",
+                    "data: {\"type\":\"message_stop\"}\n\n"
+                ).to_string(),
+            };
+            let (sender, mut receiver) = create_channel(2);
+            let metadata = mount::metadata(
+                "anthropic_messages",
+                "claude-desktop",
+                transport,
+                OutputQuality::Native,
+                definitions.clone(),
+            );
+            let mut tap = sender.start(metadata, 7).unwrap();
+            tap.push(&Bytes::from(body));
+            drop(tap);
+            let mut parser = ResponseProcessor::default();
+            let mut observations = parser.ingest(&receiver.recv().await.unwrap());
+            observations.extend(parser.sweep());
+            assert_eq!(observations.len(), 1);
+            let event =
+                project_event(&observations[0]).expect("desktop shell call must be recorded");
+            assert_eq!(event.client_category.as_deref(), Some("claude-desktop"));
+            assert!(event.command_summary.is_none());
+            assert_eq!(event.operation_category.as_deref(), Some("shell_exec"));
+            assert_eq!(event.stage, "proposed");
+            db.insert_tool_risk_events_batch(&[event]).unwrap();
+            let mut untrusted = observations[0].clone();
+            untrusted.tool.definition_ref =
+                Some(super::super::adapters::CLAUDE_TOOLS_SCHEMA.into());
+            assert!(project_event(&untrusted).is_none());
+            untrusted.tool.definition_ref = observations[0].tool.definition_ref.clone();
+            untrusted.tool.namespace = Some("mcp".into());
+            untrusted.tool.server_id = Some("fixture-server".into());
+            assert!(project_event(&untrusted).is_none());
+        }
+        let previews = db.get_tool_risk_command_summary_preview().unwrap();
+        assert!(previews.is_empty());
+        assert_eq!(db.get_tool_risk_events(10, 0).unwrap().len(), 2);
+        set_tool_risk_runtime_for_test(ToolRiskRuntime::default());
     }
 
     #[test]

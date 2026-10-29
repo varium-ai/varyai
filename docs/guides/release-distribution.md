@@ -6,7 +6,7 @@ The application repository contains product code, issues, pull requests, tests, 
 
 A separate private infrastructure repository holds production release orchestration, company environment configuration, upload and notification adapters, and internal operations documentation. Credentials are injected by the release environment; they are never checked into either repository.
 
-Official installers and updater artifacts may be hosted in a separate public distribution repository. That repository's Git history and automatic Source code archives do not establish the application source revision. Every release must explicitly identify its public application source repository, tag, full commit SHA, and artifact hashes. Internally, also record the fixed private tool SHA and build receipts.
+Official installers and updater artifacts are published to [varium-ai/varyai](https://github.com/varium-ai/varyai/releases). Every release must explicitly identify its public application source repository, tag, full commit SHA, and artifact hashes. Internally, also record the fixed private tool SHA and build receipts.
 
 ## Development builds
 
@@ -31,7 +31,9 @@ Environment-specific operations are documented with the private release infrastr
 
 ## Update compatibility
 
-The current application configuration retains the existing public distribution endpoint in `src-tauri/tauri.conf.json`. Its updater public key is a verification key; it is safe and necessary to distribute with the application. The matching private signing key stays in the release environment.
+The application checks `https://github.com/varium-ai/varyai/releases/latest/download/latest.json`, configured in `src-tauri/tauri.conf.json`. The manual update command opens the same repository's latest release page. Its updater public key remains unchanged and is a verification key; it is safe and necessary to distribute with the application. The matching private signing key stays in the release environment.
+
+Clients built with the previous `secure-typex/varyai-releases` endpoint continue checking that address. Keep a migration release available there, signed with the key trusted by those clients, or direct users to manually install a release from the new repository. Changing this source configuration alone does not migrate installed clients.
 
 Before changing the distribution repository, endpoint, signing key, or artifact naming, plan and test the update path for already installed clients. Do not assume older clients will automatically discover a new endpoint or public key.
 

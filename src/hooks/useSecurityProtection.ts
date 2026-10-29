@@ -134,14 +134,15 @@ export async function ensureAddedSecurityRoutes() {
   return result;
 }
 export async function setCurrentAppProtection(app: string, enabled: boolean) {
-  if (!isRoutingAppId(app)) throw new Error("homeAudit.unsupported");
+  if (!isRoutingAppId(app) && !(app === "claude-desktop" && enabled))
+    throw new Error("homeAudit.unsupported");
   if (enabled) {
     await ensureSecurityRoute(app);
     const settings = await securityApi.getSettings();
     if (!settings.enabled)
       await securityApi.updateSettings({ ...settings, enabled: true });
   } else {
-    await proxyApi.setProxyTakeoverForApp(app, false);
+    if (isRoutingAppId(app)) await proxyApi.setProxyTakeoverForApp(app, false);
   }
 }
 
@@ -226,6 +227,14 @@ export function useSecurityProtection(app: string) {
     },
     onSuccess: (routes, enabled) => {
       if (enabled) {
+        const nextSteps = [
+          ...(routes?.activated ?? [])
+            .filter((app) => ["qoder", "workbuddy", "kimi"].includes(app))
+            .map((app) =>
+              t("homeAudit.appProtectionRestart", { app: t(`apps.${app}`) }),
+            ),
+          t("homeAudit.newConversationNotice"),
+        ].join(" ");
         if (routes && (routes.failed.length || routes.skipped.length)) {
           const labels = (apps: string[]) =>
             apps.map((app) => t(`apps.${app}`)).join(", ") || "—";
@@ -237,16 +246,13 @@ export function useSecurityProtection(app: string) {
                 failed: labels(routes.failed),
               }) +
               " " +
-              t("homeAudit.newConversationNotice"),
+              nextSteps,
             closeButton: true,
           });
           return;
         }
         toast.success(t("homeAudit.enabled"), {
-          description:
-            t("homeAudit.protectionDetail") +
-            " " +
-            t("homeAudit.newConversationNotice"),
+          description: t("homeAudit.protectionDetail") + " " + nextSteps,
         });
       } else {
         toast.warning(t("homeAudit.disabled"), {

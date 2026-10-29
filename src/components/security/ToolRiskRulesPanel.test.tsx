@@ -9,6 +9,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   parseToolRiskToolRefs,
+  type ToolRiskEventRecord,
   type ToolRiskRule,
   type ToolRiskRuleItem,
 } from "@/types/toolRisk";
@@ -21,6 +22,7 @@ const resetBuiltinRule = vi.fn().mockResolvedValue(undefined);
 const deleteRule = vi.fn().mockResolvedValue(undefined);
 const testSandbox = vi.fn().mockResolvedValue(undefined);
 let items: ToolRiskRuleItem[];
+let events: ToolRiskEventRecord[] = [];
 
 const customItem: ToolRiskRuleItem = {
   id: "custom-1",
@@ -93,13 +95,6 @@ vi.mock("@/hooks/useToolRisk", () => ({
     isTesting: false,
     reset: vi.fn(),
   }),
-  useToolRiskEvents: () => ({
-    events: [],
-    isLoading: false,
-    refetch: vi.fn(),
-    clearEvents: vi.fn(),
-    isClearing: false,
-  }),
   useToolRiskPolicyChanges: () => ({
     changes: [],
     isLoading: false,
@@ -107,6 +102,13 @@ vi.mock("@/hooks/useToolRisk", () => ({
     isFetching: false,
     refetch: vi.fn(),
     clearChanges: vi.fn(),
+    isClearing: false,
+  }),
+  useToolRiskEvents: () => ({
+    events,
+    isLoading: false,
+    refetch: vi.fn(),
+    clearEvents: vi.fn(),
     isClearing: false,
   }),
 }));
@@ -624,6 +626,7 @@ describe("ToolRiskRulesPanel visible rules", () => {
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
+  events = [];
 });
 
 /** Operation targets use semantic fields; tool targets keep free-text JSON Pointers. */
@@ -721,7 +724,26 @@ describe("risk rule draft and condition safety", () => {
   it.each(["shell_exec", "file_read", "network_request"] as const)(
     "does not inherit a remote execution detector for a %s event without a class",
     (operationCategory) => {
-      render(<ToolRiskRulesPanel pendingRuleSeed={{ operationCategory }} />);
+      events = [
+        {
+          id: 19,
+          timestamp: 1,
+          source: "model_response",
+          stage: "response",
+          operationCategory,
+          detectionScope: "in_scope",
+          integrityStatus: "complete",
+          policyVersion: 1,
+          ruleIds: [],
+          suppressedCount: 0,
+        },
+      ];
+      render(
+        <ToolRiskRulesPanel
+          pendingRuleSeed={{ operationCategory }}
+          onRuleSeedConsumed={vi.fn()}
+        />,
+      );
       expect(conditionField()).toHaveTextContent("toolRisk.pickConditionField");
       expect(screen.getByTestId("tool-risk-save")).toBeDisabled();
       expect(
@@ -736,12 +758,28 @@ describe("risk rule draft and condition safety", () => {
   );
 
   it("uses the event command class as an equality condition", async () => {
+    events = [
+      {
+        id: 19,
+        timestamp: 1,
+        source: "model_response",
+        stage: "response",
+        operationCategory: "shell_exec",
+        commandClass: "unknown",
+        detectionScope: "in_scope",
+        integrityStatus: "complete",
+        policyVersion: 1,
+        ruleIds: [],
+        suppressedCount: 0,
+      },
+    ];
     render(
       <ToolRiskRulesPanel
         pendingRuleSeed={{
           operationCategory: "shell_exec",
           commandClass: "unknown",
         }}
+        onRuleSeedConsumed={vi.fn()}
       />,
     );
     expect(
@@ -1256,6 +1294,7 @@ describe("database rule capability readiness", () => {
   };
 
   beforeEach(() => {
+    events = [];
     toggleRule.mockClear();
   });
 

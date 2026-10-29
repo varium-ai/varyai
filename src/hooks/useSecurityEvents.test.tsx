@@ -522,7 +522,7 @@ describe("clear and controlled refresh integration", () => {
     );
     await waitFor(() => expect(result.current.live.hasUpdates).toBe(true));
     await waitFor(() => expect(result.current.query.isLoading).toBe(false));
-    // The component controls pagination: return to page one, refetch the current key, then clear the marker.
+    // The component resets the page, refetches the current key, then clears the update flag.
     rerender({ page: 1 });
     await waitFor(() =>
       expect(result.current.query.eventsResult?.total).toBe(12),

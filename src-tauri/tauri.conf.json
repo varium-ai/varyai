@@ -62,7 +62,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3NUI2QTFFQkM1RTgyMjMKUldRamdsNjhIbXBiTnk4RndHVCtSb0pYTEF0aXd4cnp1dUZwbVdzQXFVMjV4bjIrT3J0SGthbDkK",
       "endpoints": [
-        "https://github.com/secure-typex/varyai-releases/releases/latest/download/latest.json"
+        "https://github.com/varium-ai/varyai/releases/latest/download/latest.json"
       ]
     }
   }

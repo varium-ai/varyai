@@ -14,6 +14,7 @@ pub struct ModelMapping {
     pub fable_model: Option<String>,
     pub subagent_model: Option<String>,
     pub default_model: Option<String>,
+    picker_models: Vec<String>,
 }
 
 impl ModelMapping {
@@ -22,6 +23,16 @@ impl ModelMapping {
         let env = provider.settings_config.get("env");
 
         Self {
+            picker_models: provider
+                .settings_config
+                .pointer("/modelPicker/options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|row| row.get("model").and_then(Value::as_str))
+                .filter(|model| !model.trim().is_empty())
+                .map(String::from)
+                .collect(),
             haiku_model: env
                 .and_then(|e| e.get("ANTHROPIC_DEFAULT_HAIKU_MODEL"))
                 .and_then(|v| v.as_str())
@@ -67,6 +78,13 @@ impl ModelMapping {
 
     /// 根据原始模型名称获取映射后的模型
     pub fn map_model(&self, original_model: &str) -> String {
+        // Explicit picker selections take precedence over role and fallback mappings.
+        if self.picker_models.iter().any(|model| {
+            strip_one_m_suffix_for_upstream(model)
+                == strip_one_m_suffix_for_upstream(original_model)
+        }) {
+            return original_model.to_string();
+        }
         let model_lower = original_model.to_lowercase();
 
         // 1. 按模型类型匹配
@@ -227,6 +245,29 @@ pub fn strip_one_m_suffix_for_upstream_from_body(mut body: Value) -> Value {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn imported_picker_models_preserve_the_selected_model_over_role_and_default_mappings() {
+        let mut provider = create_provider_with_mapping();
+        provider.settings_config["modelPicker"] = json!({"options": [
+            {"model": "fixture-large", "label": "Large"},
+            {"model": "gateway/claude-sonnet-fixture", "label": "Custom Sonnet"}
+        ]});
+        for model in [
+            "fixture-large",
+            "gateway/claude-sonnet-fixture",
+            "fixture-large[1M]",
+        ] {
+            let body = json!({"model": model, "temperature": 0.2});
+            let (actual, _, mapped) = apply_model_mapping(body.clone(), &provider);
+            assert_eq!(actual, body);
+            assert_eq!(mapped, None);
+        }
+        let (actual, _, _) = apply_model_mapping(json!({"model": "claude-sonnet-5"}), &provider);
+        assert_eq!(actual["model"], "sonnet-mapped");
+        let (actual, _, _) = apply_model_mapping(json!({"model": "unknown"}), &provider);
+        assert_eq!(actual["model"], "default-model");
+    }
 
     fn create_provider_with_mapping() -> Provider {
         Provider {

@@ -1,3 +1,10 @@
+import {
+  UpstreamProtocolSelect,
+  UPSTREAM_FORMATS,
+  nativeUpstreamFormat,
+} from "./shared/UpstreamProtocolSelect";
+import type { ClaudeApiFormat } from "@/types";
+import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
 import { useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -5,13 +12,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from "@/components/ui/select";
 import {
   fetchModelsForConfig,
   showFetchModelsError,
@@ -36,6 +36,20 @@ export function ManagedAgentProviderForm({
   const [baseUrl, setBaseUrl] = useState(String(config.baseUrl ?? ""));
   const [apiKey, setApiKey] = useState(String(config.apiKey ?? ""));
   const [protocol, setProtocol] = useState(String(config.protocol ?? "openai"));
+  const [upstreamFormat, setUpstreamFormat] = useState<ClaudeApiFormat>(
+    initialData?.meta?.apiFormat ?? nativeUpstreamFormat(config.protocol),
+  );
+  function selectUpstream(format: ClaudeApiFormat) {
+    setUpstreamFormat(format);
+    if (format !== "gemini_native")
+      setProtocol(
+        {
+          anthropic: "anthropic",
+          openai_chat: "openai",
+          openai_responses: "openai-responses",
+        }[format],
+      );
+  }
   const [models, setModels] = useState(
     Array.isArray(config.models)
       ? config.models.map((m) => m.model).join("\n")
@@ -103,6 +117,7 @@ export function ManagedAgentProviderForm({
           })),
         }),
         presetCategory: "custom" as const,
+        meta: { ...initialData?.meta, apiFormat: upstreamFormat },
       };
       if (official && custom) {
         if (!onAddThirdParty) throw new Error();
@@ -129,7 +144,14 @@ export function ManagedAgentProviderForm({
   async function fetchModels() {
     setFetching(true);
     try {
-      const fetched = await fetchModelsForConfig(baseUrl.trim(), apiKey.trim());
+      const fetched = await fetchModelsForConfig(
+        baseUrl.trim(),
+        apiKey.trim(),
+        undefined,
+        undefined,
+        undefined,
+        { apiFormat: upstreamFormat },
+      );
       setModels(
         [
           ...new Set([
@@ -166,6 +188,16 @@ export function ManagedAgentProviderForm({
           {t("managedAgent.traePending")}
         </p>
       )}
+      <ConnectionPresetPicker
+        supportedFormats={UPSTREAM_FORMATS}
+        current={{ name, baseUrl, apiKey, apiFormat: upstreamFormat }}
+        onApply={(preset) => {
+          if (preset.apiFormat) selectUpstream(preset.apiFormat);
+          setName(preset.name);
+          setBaseUrl(preset.baseUrl);
+          setApiKey(preset.apiKey);
+        }}
+      />
       <div className="space-y-2">
         <Label htmlFor="agent-name">{t("provider.name")}</Label>
         <Input
@@ -198,19 +230,10 @@ export function ManagedAgentProviderForm({
           onChange={(e) => setApiKey(e.target.value)}
         />
       </div>
-      <div className="space-y-2">
-        <Label htmlFor="agent-protocol">{t("managedAgent.protocol")}</Label>
-        <Select value={protocol} onValueChange={setProtocol}>
-          <SelectTrigger id="agent-protocol" className="h-11 rounded-xl">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="openai">OpenAI Chat Completions</SelectItem>
-            <SelectItem value="openai-responses">OpenAI Responses</SelectItem>
-            <SelectItem value="anthropic">Anthropic Messages</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+      <UpstreamProtocolSelect
+        value={upstreamFormat}
+        onChange={selectUpstream}
+      />
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <Label htmlFor="agent-models">{t("managedAgent.models")}</Label>

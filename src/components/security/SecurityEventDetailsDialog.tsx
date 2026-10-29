@@ -141,6 +141,9 @@ export function SecurityEventDetailsDialog({
                   <div className="max-h-32 overflow-y-auto break-all rounded-xl border bg-muted p-3.5 font-mono text-xs">
                     {event.record.matchedSnippetMasked}
                   </div>
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    {t("security.auditSnippetHint")}
+                  </p>
                 </div>
               ) : (
                 <>

@@ -35,11 +35,11 @@ import type {
   RuleType,
 } from "@/types/security";
 import type { UsageRangeSelection } from "@/types/usage";
-import type { SecurityEventFilter } from "@/types/securityEvents";
-import type { ToolRiskRuleSeed } from "@/types/toolRisk";
-import { SecurityEventsPanel } from "./SecurityEventsPanel";
 import { ToolRiskRulesPanel } from "@/components/security/ToolRiskRulesPanel";
 import { toast } from "sonner";
+import { SecurityEventsPanel } from "./SecurityEventsPanel";
+import type { SecurityEventFilter } from "@/types/securityEvents";
+import type { ToolRiskRuleSeed } from "@/types/toolRisk";
 
 type SecurityTab = "records" | "rules" | "toolRisk";
 
@@ -245,10 +245,10 @@ export function SecurityCenterPage({
     }
   };
 
-  const ruleCategories = Array.from(
-    new Set(rules.map((rule) => rule.category).filter(Boolean)),
-  );
-  const defaultActionOptions: Array<{ value: AuditAction; label: string }> = [
+  const defaultActionOptions: Array<{
+    value: AuditAction;
+    label: string;
+  }> = [
     { value: "redact", label: t("security.ruleActionRedact") },
     { value: "redact_restore", label: t("security.ruleActionRedactRestore") },
     { value: "audit", label: t("security.ruleActionAlert") },
@@ -327,10 +327,9 @@ export function SecurityCenterPage({
           onPageChange={setLogPage}
           range={range}
           onRangeChange={setRange}
-          dlpCategories={ruleCategories.map((value) => ({
-            value,
-            label: getCategoryLabel(value),
-          }))}
+          dlpCategories={Array.from(
+            new Set(rules.map((rule) => rule.category).filter(Boolean)),
+          ).map((value) => ({ value, label: getCategoryLabel(value) }))}
           onOpenDlpRules={() => setActiveTab("rules")}
           onCreateRule={(seed) => {
             setPendingRuleSeed(seed);
@@ -398,7 +397,10 @@ export function SecurityCenterPage({
                           <div className="truncate text-base font-extrabold tracking-tight text-foreground">
                             {getRuleName(rule.id, rule.name)}
                           </div>
-                          <p className="truncate text-xs text-muted-foreground">
+                          <p
+                            className="break-words text-xs text-muted-foreground"
+                            title={getRuleDescription(rule)}
+                          >
                             {getRuleDescription(rule)}
                           </p>
                         </div>

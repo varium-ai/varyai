@@ -132,6 +132,61 @@ describe("useModelState", () => {
     expect(env.CLAUDE_CODE_SUBAGENT_MODEL).toBeUndefined();
   });
 
+  it("persists imported model rows and preserves role mappings and picker options", () => {
+    let latestConfig = JSON.stringify({
+      env: {
+        ANTHROPIC_MODEL: "fallback",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "role-model",
+      },
+      modelPicker: {
+        replaceBuiltInOptions: true,
+        options: [
+          { model: "existing", label: "My name", description: "Keep this" },
+        ],
+      },
+      permissions: { allow: ["Read"] },
+    });
+    const { result, rerender } = renderHook(() =>
+      useModelState({
+        settingsConfig: latestConfig,
+        onConfigChange: (config) => {
+          latestConfig = config;
+        },
+      }),
+    );
+    expect(result.current.modelPickerOptions).toEqual([
+      { model: "existing", label: "My name", description: "Keep this" },
+    ]);
+    act(() =>
+      result.current.handleModelPickerOptionsChange([
+        ...result.current.modelPickerOptions,
+        { model: "fixture-large", label: "Large" },
+      ]),
+    );
+    const saved = JSON.parse(latestConfig);
+    expect(saved.env).toEqual({
+      ANTHROPIC_MODEL: "fallback",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "role-model",
+    });
+    expect(saved.modelPicker.replaceBuiltInOptions).toBe(true);
+    expect(saved.permissions).toEqual({ allow: ["Read"] });
+    rerender();
+    act(() =>
+      result.current.handleModelChange("CLAUDE_CODE_SUBAGENT_MODEL", "worker"),
+    );
+    expect(JSON.parse(latestConfig).modelPicker.options).toEqual(
+      saved.modelPicker.options,
+    );
+    const reopened = renderHook(() =>
+      useModelState({ settingsConfig: latestConfig, onConfigChange: vi.fn() }),
+    );
+    expect(reopened.result.current.modelPickerOptions).toEqual(
+      saved.modelPicker.options,
+    );
+    act(() => reopened.result.current.handleModelPickerOptionsChange([]));
+    expect(reopened.result.current.modelPickerOptions).toEqual([]);
+  });
+
   it("normalizes Claude Code 1M markers for UI toggles", () => {
     expect(hasClaudeOneMMarker("deepseek-v4-pro[1m]")).toBe(true);
     expect(hasClaudeOneMMarker("deepseek-v4-pro [1M]  ")).toBe(true);

@@ -1,8 +1,6 @@
 import type { CodexCatalogModel } from "@/types";
 import type { FetchedModel } from "@/lib/api/model-fetch";
 
-export const MAX_AUTO_IMPORT_CATALOG_MODELS = 10;
-
 export interface AutoImportCatalogResult {
   nextCatalogModels: CodexCatalogModel[];
   importedCount: number;
@@ -14,7 +12,6 @@ export function computeAutoImportCatalogModels(
   currentCatalogModels: CodexCatalogModel[],
   fetchedModels: FetchedModel[],
   currentDefaultModel: string = "",
-  maxQuota: number = MAX_AUTO_IMPORT_CATALOG_MODELS,
 ): AutoImportCatalogResult {
   const validModels: FetchedModel[] = [];
   const seenFetchedIds = new Set<string>();
@@ -39,13 +36,7 @@ export function computeAutoImportCatalogModels(
       .filter((id) => id.length > 0),
   );
 
-  const remainingQuota = Math.max(0, maxQuota - existingRows.length);
-  const newModelsToAdd =
-    remainingQuota > 0
-      ? validModels
-          .filter((m) => !existingModelIds.has(m.id))
-          .slice(0, remainingQuota)
-      : [];
+  const newModelsToAdd = validModels.filter((m) => !existingModelIds.has(m.id));
 
   const createdRows: CodexCatalogModel[] = newModelsToAdd.map((m) => ({
     model: m.id,

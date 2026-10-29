@@ -52,9 +52,20 @@ export function useSetProxyTakeoverForApp() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ appType, enabled }: { appType: string; enabled: boolean }) =>
-      proxyApi.setProxyTakeoverForApp(appType, enabled),
-    onSuccess: () => {
+    mutationFn: async ({
+      appType,
+      enabled,
+    }: {
+      appType: string;
+      enabled: boolean;
+    }) => {
+      await proxyApi.setProxyTakeoverForApp(appType, enabled);
+      if (appType === "trae" || appType === "doubaowork") {
+        return proxyApi.getProxyTakeoverStatus();
+      }
+    },
+    onSuccess: (status) => {
+      if (status) queryClient.setQueryData(proxyKeys.takeoverStatus, status);
       queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus });
       queryClient.invalidateQueries({ queryKey: proxyKeys.status });
       queryClient.invalidateQueries({ queryKey: ["pi", "routing"] });

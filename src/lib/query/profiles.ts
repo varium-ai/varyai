@@ -44,7 +44,10 @@ export const useCreateProfileMutation = () => {
       toast.success(t("profiles.createSuccess"), { closeButton: true });
     },
     onError: (error: Error) => {
-      const detail = extractErrorMessage(error) || t("common.unknown");
+      const message = extractErrorMessage(error);
+      const detail = message?.includes("profiles.nameExists")
+        ? t("profiles.nameExists")
+        : message || t("common.unknown");
       toast.error(t("profiles.createFailed", { detail }), {
         closeButton: true,
       });
@@ -74,7 +77,10 @@ export const useUpdateProfileMutation = () => {
       toast.success(t("profiles.updateSuccess"), { closeButton: true });
     },
     onError: (error: Error) => {
-      const detail = extractErrorMessage(error) || t("common.unknown");
+      const message = extractErrorMessage(error);
+      const detail = message?.includes("profiles.nameExists")
+        ? t("profiles.nameExists")
+        : message || t("common.unknown");
       toast.error(t("profiles.updateFailed", { detail }), {
         closeButton: true,
       });
@@ -107,7 +113,7 @@ export const useClearProfileMutation = () => {
   const { t } = useTranslation();
 
   return useMutation({
-    mutationFn: (scope: AppId) => profilesApi.clearCurrent(scope),
+    mutationFn: (scope: AppId | "bundle") => profilesApi.clearCurrent(scope),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["profiles"] });
       await updateTrayMenuSafely();
@@ -129,7 +135,7 @@ export const useApplyProfileMutation = () => {
   return useMutation({
     mutationFn: ({ id, scope }: { id: string; scope: ProfileScope }) =>
       profilesApi.apply(id, scope),
-    onSuccess: async (warnings) => {
+    onSuccess: async (warnings, { scope }) => {
       await queryClient.invalidateQueries({ queryKey: ["profiles"] });
       await queryClient.invalidateQueries({
         queryKey: ["providers", "claude"],
@@ -142,16 +148,26 @@ export const useApplyProfileMutation = () => {
       await queryClient.invalidateQueries({ queryKey: ["skills"] });
       await updateTrayMenuSafely();
 
+      const restartHint = t(
+        scope === "claude"
+          ? "profiles.bundle.restartSession"
+          : "profiles.bundle.restartClient",
+        { app: t(`apps.${scope}`) },
+      );
       if (warnings.length > 0) {
         toast.warning(
           t("profiles.applyWarnings", {
             warningCount: warnings.length,
             details: warnings.join("\n"),
           }),
-          { closeButton: true, duration: 10000 },
+          { closeButton: true, duration: 10000, description: restartHint },
         );
       } else {
-        toast.success(t("profiles.applySuccess"), { closeButton: true });
+        toast.success(t("profiles.applySuccess"), {
+          closeButton: true,
+          duration: 10000,
+          description: restartHint,
+        });
       }
     },
     onError: (error: Error) => {

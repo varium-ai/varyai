@@ -262,6 +262,20 @@ async fn handle_messages_for_app(
 
     // Claude 特有：格式转换处理
     if needs_transform {
+        ctx.tool_schemas = std::sync::Arc::new(
+            result
+                .upstream_tool_schemas
+                .iter()
+                .filter(|outbound| {
+                    ctx.tool_schemas.iter().any(|original| {
+                        original.name == outbound.name
+                            && original.namespace == outbound.namespace
+                            && original.schema == outbound.schema
+                    })
+                })
+                .cloned()
+                .collect(),
+        );
         return handle_claude_transform(
             response,
             &ctx,
@@ -399,6 +413,27 @@ fn spawn_claude_usage_log(
     });
 }
 
+fn claude_upstream_observation_metadata(
+    ctx: &RequestContext,
+    api_format: &str,
+    transport: crate::proxy::tool_observation::channel::Transport,
+) -> crate::proxy::tool_observation::channel::ResponseMetadata {
+    use crate::proxy::tool_observation::{channel::OutputQuality, mount};
+    let (protocol, quality) = match api_format {
+        "openai_chat" => ("openai_chat", OutputQuality::Native),
+        "openai_responses" => ("openai_responses", OutputQuality::Native),
+        "gemini_native" => ("gemini_generate_content", OutputQuality::Native),
+        _ => ("anthropic_messages", OutputQuality::ConvertedUnknown),
+    };
+    mount::metadata(
+        protocol,
+        ctx.app_type_str,
+        transport,
+        quality,
+        ctx.tool_schemas.clone(),
+    )
+}
+
 async fn handle_claude_transform(
     response: super::hyper_client::ProxyResponse,
     ctx: &RequestContext,
@@ -441,7 +476,14 @@ async fn handle_claude_transform(
 
     if use_streaming {
         // 根据 api_format 选择流式转换器
-        let stream = response.bytes_stream();
+        let stream = crate::proxy::tool_observation::mount::observe_stream(
+            response.bytes_stream(),
+            claude_upstream_observation_metadata(
+                ctx,
+                api_format,
+                crate::proxy::tool_observation::channel::Transport::Sse,
+            ),
+        );
         let sse_stream: Box<
             dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send + Unpin,
         > = if api_format == "openai_responses" {
@@ -535,13 +577,7 @@ async fn handle_claude_transform(
         let logged_stream = create_logged_passthrough_stream(
             sse_stream,
             "Claude/OpenRouter",
-            Some(crate::proxy::tool_observation::mount::metadata(
-                "anthropic_messages",
-                ctx.app_type_str,
-                crate::proxy::tool_observation::channel::Transport::Sse,
-                crate::proxy::tool_observation::channel::OutputQuality::ConvertedUnknown,
-                ctx.tool_schemas.clone(),
-            )),
+            None,
             usage_collector,
             timeout_config,
             connection_guard,
@@ -582,7 +618,14 @@ async fn handle_claude_transform(
             }
             let response_headers = response.headers().clone();
             let message = responses_sse_stream_to_anthropic_message(
-                response.bytes_stream(),
+                crate::proxy::tool_observation::mount::observe_stream(
+                    response.bytes_stream(),
+                    claude_upstream_observation_metadata(
+                        ctx,
+                        api_format,
+                        crate::proxy::tool_observation::channel::Transport::Sse,
+                    ),
+                ),
                 hosted_web_search_name.clone(),
                 hosted_web_search_max_uses,
                 body_timeout,
@@ -593,6 +636,15 @@ async fn handle_claude_transform(
             let (response_headers, _status, body_bytes) =
                 read_decoded_body(response, ctx.tag, body_timeout).await?;
             let body_str = String::from_utf8_lossy(&body_bytes);
+            let transport = if body_looks_like_sse(&body_str) {
+                crate::proxy::tool_observation::channel::Transport::Sse
+            } else {
+                crate::proxy::tool_observation::channel::Transport::Json
+            };
+            crate::proxy::tool_observation::mount::observe_non_streaming(
+                &body_bytes,
+                claude_upstream_observation_metadata(ctx, api_format, transport),
+            );
             let upstream_response = if aggregate_codex_oauth_responses_sse {
                 responses_sse_to_response_value(&body_str)?
             } else {
@@ -721,16 +773,6 @@ async fn handle_claude_transform(
         ProxyError::TransformError(format!("Failed to serialize response: {e}"))
     })?;
     let response_body = bytes::Bytes::from(response_body);
-    crate::proxy::tool_observation::mount::observe_non_streaming(
-        &response_body,
-        crate::proxy::tool_observation::mount::metadata(
-            "anthropic_messages",
-            ctx.app_type_str,
-            crate::proxy::tool_observation::channel::Transport::Json,
-            crate::proxy::tool_observation::channel::OutputQuality::ConvertedUnknown,
-            ctx.tool_schemas.clone(),
-        ),
-    );
 
     let body = axum::body::Body::from(response_body);
     builder.body(body).map_err(|e| {
@@ -860,6 +902,7 @@ pub async fn handle_chat_completions(
     };
 
     let connection_guard = result.connection_guard.take();
+    ctx.converted_output = result.claude_api_format.is_some();
     ctx.outbound_model = result.outbound_model.take();
     ctx.provider = result.provider;
     let response = result.response;
@@ -978,6 +1021,7 @@ async fn handle_responses_for_app(
         .as_ref()
         .and_then(|attempt| attempt.upstream_sse_evidence_tracker());
     let connection_guard = result.connection_guard.take();
+    ctx.converted_output = result.claude_api_format.is_some();
     ctx.outbound_model = result.outbound_model.take();
     ctx.provider = result.provider;
     let response = result.response;
@@ -2745,6 +2789,7 @@ pub async fn handle_gemini(
     };
 
     let connection_guard = result.connection_guard.take();
+    ctx.converted_output = result.claude_api_format.is_some();
     ctx.outbound_model = result.outbound_model.take();
     ctx.provider = result.provider;
     let response = result.response;

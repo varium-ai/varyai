@@ -24,10 +24,11 @@ import {
   useGlobalProxyConfig,
   useUpdateGlobalProxyConfig,
 } from "@/lib/query/proxy";
-import type { ProxyStatus } from "@/types/proxy";
+import type { ProxyStatus, ProxyTakeoverStatus } from "@/types/proxy";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { GatewayKeysPanel } from "./GatewayKeysPanel";
 import { ClaudeDesktopRouteToggle } from "./ClaudeDesktopRouteToggle";
 import {
   APP_IDS,
@@ -73,9 +74,21 @@ export function ProxyPanel({ onToggleProxy, isProxyPending }: ProxyPanelProps) {
   const { data: geminiQueue = [] } = useFailoverQueue("gemini");
   const { data: grokQueue = [] } = useFailoverQueue("grokbuild");
 
+  const waitingHint = (appType: string, state?: ProxyTakeoverStatus) => {
+    if (appType === "trae" && state?.trae_waiting)
+      return t("homeAudit.traeWaiting");
+    if (appType === "doubaowork" && state?.doubaowork_waiting)
+      return t("homeAudit.doubaoWaiting");
+  };
+
   const handleTakeoverChange = async (appType: string, enabled: boolean) => {
     try {
-      await setTakeoverForApp.mutateAsync({ appType, enabled });
+      const status = await setTakeoverForApp.mutateAsync({ appType, enabled });
+      const hint = waitingHint(appType, status || undefined);
+      if (enabled && hint) {
+        toast.info(hint, { closeButton: true });
+        return;
+      }
       toast.success(
         enabled
           ? t(
@@ -241,6 +254,12 @@ export function ProxyPanel({ onToggleProxy, isProxyPending }: ProxyPanelProps) {
           />
         </div>
 
+        <GatewayKeysPanel
+          port={listenPort}
+          running={isRunning}
+          takeoverStatus={takeoverStatus}
+        />
+
         {/* [1] App takeover switches — animated, visible only when proxy is running */}
         <AnimatePresence>
           {isRunning && (
@@ -262,8 +281,9 @@ export function ProxyPanel({ onToggleProxy, isProxyPending }: ProxyPanelProps) {
                     (appType) =>
                       isRoutingAppId(appType) || appType === "claude-desktop",
                   ).map((appType) => {
+                    const waiting = waitingHint(appType, takeoverStatus);
                     const isEnabled = isRoutingAppId(appType)
-                      ? (takeoverStatus?.[appType] ?? false)
+                      ? Boolean(takeoverStatus?.[appType] || waiting)
                       : false;
                     return (
                       <div
@@ -272,6 +292,11 @@ export function ProxyPanel({ onToggleProxy, isProxyPending }: ProxyPanelProps) {
                       >
                         <span className="text-sm font-medium">
                           {getAppLabel(appType)}
+                          {waiting && (
+                            <span className="block text-xs font-normal text-muted-foreground">
+                              {waiting}
+                            </span>
+                          )}
                         </span>
                         {appType === "claude-desktop" ? (
                           <ClaudeDesktopRouteToggle
@@ -488,6 +513,9 @@ export function ProxyPanel({ onToggleProxy, isProxyPending }: ProxyPanelProps) {
             </div>
 
             {/* [5] Stats cards */}
+            <p className="text-xs text-muted-foreground">
+              {t("gatewayKeys.serviceStats")}
+            </p>
             <div className="grid gap-3 md:grid-cols-4">
               <StatCard
                 icon={<Activity className="h-4 w-4" />}

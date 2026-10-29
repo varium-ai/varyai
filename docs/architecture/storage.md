@@ -4,7 +4,7 @@ Provider, MCP, prompt, skill, proxy configuration and usage data remain in `cc-s
 
 ## Version boundaries
 
-The shared database follows the upstream schema chain. The current shared version is 20; the extension version is independently 1. Historical single-database version 24 is a compatibility/export format, not the version to apply to the current shared file. Inspect schema structure as well as version because historical VaryAI databases reused some upstream version numbers.
+The shared database follows the upstream schema chain. The current shared version is 20; the extension version is independently 4. Version 2 added hashed local gateway credentials and per-key token counters (`gateway_keys`, `gateway_usage`). Version 3 added local agent policy bindings and usage aggregates by agent/model (`gateway_agent_bindings`, `gateway_usage_details`). Version 4 adds `gateway_usage_models` to distinguish the original client model from the resolved outbound model at request time. New observations use that table; reads include legacy detail rows with an unknown outbound model. Existing credentials, counters and historical aggregates remain intact. Historical single-database version 24 is a compatibility/export format, not the version to apply to the current shared file. Inspect schema structure as well as version because historical VaryAI databases reused some upstream version numbers.
 
 Before changing shared storage, check the corresponding upstream structure. Increment the extension version for VaryAI-only schema changes.
 
@@ -16,7 +16,9 @@ The split uses SQLite ATTACH and a single transaction, DELETE rollback journalin
 
 ## Locking, backup and sync
 
-Public DAOs use the shared connection and security/tool-risk DAOs use the extension connection. Operations needing both always lock shared before extension. Audit persistence remains asynchronous and must not hold database locks in request forwarding.
+Public DAOs use the shared connection and security/tool-risk and gateway-key DAOs use the extension connection. Gateway admission reads run on blocking workers; gateway usage persistence runs through an asynchronous queue. Operations needing both always lock shared before extension. Audit persistence remains asynchronous and must not hold database locks in request forwarding.
+
+Gateway authentication still stores only SHA-256 hashes in the extension database. Newly created gateway secrets also have device-local copies under `gateway-secrets/<key UUID>` in the application configuration directory, outside both databases and their export/sync payloads. Private atomic writes use `0600` on Unix; these files are not encrypted. The separate reveal command validates a saved copy against an active key's hash before returning it. Lists contain only an availability flag. Missing copies leave authentication and local agent policies intact. Old hash-only credentials cannot be reconstructed. Failed secret-file writes roll back key creation; deleting a revoked, unbound key removes its local copy.
 
 Portable SQL/binary exports combine the two files into the compatibility format. Import validates and migrates staged data, creates current safety backups, then writes the two current files transactionally. Preserve local tool-risk settings, rules, lists, events and change history according to the existing synchronization rules.
 
