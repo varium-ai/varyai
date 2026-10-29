@@ -315,6 +315,16 @@ impl ProfileService {
                 state.db.set_current_profile_id(scope.as_str(), None)?;
             }
         }
+        if state
+            .db
+            .get_current_profile_id(super::profile_bundle::BUNDLE_SCOPE)?
+            .as_deref()
+            == Some(id)
+        {
+            state
+                .db
+                .set_current_profile_id(super::profile_bundle::BUNDLE_SCOPE, None)?;
+        }
         Ok(())
     }
 
@@ -472,6 +482,9 @@ impl ProfileService {
         state
             .db
             .set_current_profile_id(scope.as_str(), Some(profile_id))?;
+        state
+            .db
+            .set_current_profile_id(super::profile_bundle::BUNDLE_SCOPE, None)?;
 
         // 当前分组内所有接管已关闭；若其它应用也无接管，可停止代理服务。
         let should_stop_proxy = !state.db.is_live_takeover_active_sync()

@@ -331,6 +331,10 @@ impl ProxyServer {
                 "/qoder/providers/:id/*path",
                 any(super::qoder::handle_custom),
             )
+            .route(
+                "/upstream/:app/providers/:id/*path",
+                post(super::native_protocol::handle),
+            )
             .route("/status", get(handlers::get_status))
             // Claude API (支持带前缀和不带前缀两种格式)
             .route("/v1/messages", post(handlers::handle_messages))
@@ -443,6 +447,10 @@ impl ProxyServer {
             .route("/gemini/v1/*path", any(handlers::handle_gemini))
             // 提高默认请求体大小限制（避免 413 Payload Too Large）
             .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
+            .layer(axum::middleware::from_fn_with_state(
+                self.state.clone(),
+                super::gateway::enforce_agent,
+            ))
             .with_state(self.state.clone())
     }
 

@@ -78,8 +78,15 @@ export function rendererChunk(id: string): string | undefined {
   ) {
     return "ui-connection-presets";
   }
-  if (relative === "components/proxy/GatewayKeysPanel.tsx") {
-    return "ui-gateway-keys";
+  if (
+    [
+      "components/proxy/GatewayKeysPanel.tsx",
+      "components/proxy/ProxyPanel.tsx",
+      "components/proxy/ClaudeDesktopRouteToggle.tsx",
+      "components/providers/ProviderHealthBadge.tsx",
+    ].includes(relative)
+  ) {
+    return "ui-local-routing";
   }
   if (relative.startsWith("icons/")) return "icons";
   if (relative.startsWith("components/")) {

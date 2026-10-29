@@ -977,7 +977,10 @@ function App() {
                   activeApp={activeApp}
                   projectSwitcher={
                     (settingsData?.showProfileSwitcher ?? true) ? (
-                      <ProfileSwitcher activeApp={activeApp} />
+                      <ProfileSwitcher
+                        activeApp={activeApp}
+                        selectedApps={APP_IDS.filter((app) => visibleApps[app])}
+                      />
                     ) : undefined
                   }
                   visibleApps={visibleApps}

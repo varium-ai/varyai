@@ -24,7 +24,7 @@ export const opencodeNpmPackages = [
   { value: "@ai-sdk/openai-compatible", label: "OpenAI Compatible" },
   { value: "@ai-sdk/anthropic", label: "Anthropic" },
   { value: "@ai-sdk/amazon-bedrock", label: "Amazon Bedrock" },
-  { value: "@ai-sdk/google", label: "Google (Gemini)" },
+  { value: "@ai-sdk/google", label: "Gemini Native generateContent" },
 ] as const;
 
 export interface PresetModelVariant {

@@ -60,8 +60,14 @@ export interface ProfileAgent {
   available: boolean;
   reason: string | null;
 }
+export interface ProfileSkippedAgent {
+  app: string;
+  reason: string;
+}
+
 export interface ProfilePreview {
   revision: string;
+  skipped?: ProfileSkippedAgent[];
   changes: {
     app: string;
     currentProvider: string;
@@ -79,6 +85,8 @@ export interface ProfileApplyResult {
   success: boolean;
   undoId: string | null;
   warnings: string[];
+  skipped?: ProfileSkippedAgent[];
+  failure?: { app: string; reason: string } | null;
 }
 
 export interface Profile {
@@ -109,6 +117,7 @@ export interface ProfileUndo {
 export interface ProfilesResponse {
   profiles: Profile[];
   currentIds: CurrentProfileIds;
+  currentBundleId?: string | null;
   agents?: ProfileAgent[];
   undo?: ProfileUndo | null;
 }
@@ -162,7 +171,7 @@ export const profilesApi = {
   },
 
   /** Clear the active marker for a scope without changing client configuration. */
-  async clearCurrent(scope: AppId): Promise<void> {
+  async clearCurrent(scope: AppId | "bundle"): Promise<void> {
     return await invoke("clear_current_profile", { scope });
   },
 };

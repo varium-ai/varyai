@@ -22,6 +22,14 @@ Choose a saved connection when adding or editing a custom provider to fill its n
 
 Connection presets differ from Universal Providers, whose application-specific configurations can be synchronized across clients. Saving a connection preset alone does not configure an agent or activate local routing.
 
+## Claude Desktop menu mappings
+
+In model-mapping mode, the editor offers Sonnet, Opus, Fable and Haiku role fields. Only roles with an actual request model are saved to the Desktop menu. Clear a role's actual request model and save to remove that entry; an old display label or checked 1M declaration does not keep it published. Reopen Desktop after applying the provider to reload its menu. Three configured roles with 1M declared can appear as six options in Desktop: regular and 1M context for each role. The declaration does not grant additional upstream capacity.
+
+An omitted Haiku role remains available for background sub-agent calls through an internal fallback to Sonnet or the first configured route, without an extra menu entry. Explicit Haiku mappings take precedence. Gateway allowlists still check the incoming client route ID before this mapping.
+
+When routing Claude Desktop to a third-party endpoint, Vary AI omits Desktop-specific `anthropic-client-*` metadata headers, including `anthropic-client-version` and `anthropic-client-platform`, because some compatible gateways reject them. Anthropic Messages requests retain the protocol's `anthropic-version` header. Requests to `api.anthropic.com` and Claude Code header handling keep their existing behavior.
+
 ## Import all Claude Code models
 
 In the Claude Code provider's model mapping section, **Quick Set** imports every model returned by discovery as a separate editable row. If no catalog has been fetched, the button fetches it first using the current endpoint/key or selected managed account. Empty role fields do not disable import. Failed or superseded requests do not change the rows.
@@ -42,7 +50,11 @@ The format controls conversion when the supported client is routed through Vary 
 | Claude Code Messages | Anthropic Messages                    | Native upstream format.                                                                                                     |
 | Claude Code Messages | Chat Completions, Responses or Gemini | Requires the corresponding local conversion path. Endpoint capabilities and conversion limits still apply.                  |
 
-The provider form exposes the applicable options. Do not set Codex's wire protocol to Chat Completions to work around an upstream mismatch: its client-facing path remains Responses, with the upstream format selected in Vary AI. Authentication and model catalog behavior also differ between official account integrations and API-key providers.
+Custom HTTP provider forms use **Upstream protocol** for the supplier-facing format: Anthropic Messages, OpenAI Chat Completions, OpenAI Responses or Gemini Native generateContent. OpenCode, OpenClaw and Pi use their native SDK/API identifiers for these formats. Model discovery uses the selected upstream format where supported; selecting Gemini does not establish that a particular supplier implements Gemini's API.
+
+Qoder, Kimi, Qwen, ZCode and TRAE retain a supported native client protocol when Gemini is selected and convert through local routing. WorkBuddy keeps its native Chat Completions requests and can convert to any of the other three upstream formats. Hermes exposes **Client protocol** separately; its HTTP modes can use any of the four upstream formats, while Bedrock Converse retains its native configuration. Hermes and TRAE receive a provider-specific loopback endpoint when conversion is required; their saved provider keeps the original supplier URL and key. Keep the local gateway running while using these projected configurations. Official account configurations retain their existing authentication and routing paths.
+
+Do not set Codex's wire protocol to Chat Completions to work around an upstream mismatch: its client-facing path remains Responses, with the upstream format selected in Vary AI. Authentication and model catalog behavior also differ between official account integrations and API-key providers.
 
 Conversion cannot guarantee that every vendor extension, tool schema, reasoning parameter or streaming event is interchangeable. Confirm the intended feature with a small synthetic request before using production data.
 
@@ -57,6 +69,8 @@ Taking over a client changes its live endpoint configuration. The client-facing 
 The current local proxy covers Claude Code, Codex, Gemini CLI and Grok Build. Other client integrations have separate capabilities. [WorkBuddy](workbuddy.md) and [Qoder](qoder.md) have their own takeover and recovery paths; a provider appearing in the app does not imply identical proxy coverage.
 
 ## Verify and recover
+
+TRAE CN displays managed models as **Model name · Provider name**. An explicit model display name takes precedence; otherwise the last segment of the supplier model ID is used. Labels fit TRAE's 64-character limit, with a short number distinguishing duplicate labels. Supplier request model IDs remain unchanged. Older UUID and hash labels are updated in place when the provider is applied or saved again. Ownership is stored separately in TRAE's local browser storage as native model IDs and request model IDs, without credentials; switching and removal do not depend on readable labels. Clearing that storage removes those ownership records, so remove managed models before clearing it. After a TRAE bridge update, fully quit and reopen TRAE CN to load the new helper. A native model configuration failure is reported separately from a missing local connection.
 
 - Confirm the client, active provider, routing state, selected format and exact model ID.
 - Make a short synthetic request and review its status. A successful model-list fetch is not a completed inference request.

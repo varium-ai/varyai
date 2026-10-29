@@ -746,6 +746,16 @@ pub fn map_proxy_request_model(mut body: Value, provider: &Provider) -> Result<V
                         })
                         .flatten()
                 })
+                .or_else(|| {
+                    // Keep background Haiku calls available without publishing a duplicate menu entry.
+                    if role != "haiku" {
+                        return None;
+                    }
+                    routes
+                        .iter()
+                        .find(|route| claude_role_keyword(&route.route_id) == Some("sonnet"))
+                        .or_else(|| routes.first())
+                })
                 .map(|route| route.upstream_model.clone())
         })
         .ok_or_else(|| {
@@ -1638,6 +1648,56 @@ mod tests {
         let err = map_proxy_request_model(json!({"model": "claude-opus-4-8"}), &provider)
             .expect_err("unknown route should fail");
         assert!(err.to_string().contains("claude-opus-4-8"));
+    }
+
+    #[test]
+    fn omitted_haiku_uses_internal_fallback_without_adding_a_menu_entry() {
+        let mut provider = proxy_provider("proxy");
+        let routes = &mut provider
+            .meta
+            .as_mut()
+            .expect("meta")
+            .claude_desktop_model_routes;
+        routes.clear();
+        for (role, model) in [
+            ("sonnet", "model-a"),
+            ("opus", "model-b"),
+            ("fable", "model-c"),
+        ] {
+            routes.insert(
+                format!("claude-{role}-5"),
+                ClaudeDesktopModelRoute {
+                    model: model.into(),
+                    label_override: Some(model.into()),
+                    supports_1m: Some(true),
+                },
+            );
+        }
+        let mapped = map_proxy_request_model(
+            json!({"model":"claude-haiku-4-5-20251001[1m]","messages":[]}),
+            &provider,
+        )
+        .expect("internal Haiku fallback");
+        assert_eq!(mapped["model"], "model-a");
+        let models = model_list_response(&provider).expect("model list");
+        let menu = models["data"].as_array().expect("models");
+        assert_eq!(menu.len(), 3);
+        assert!(menu.iter().all(|model| model["supports1m"] == true));
+        assert!(menu
+            .iter()
+            .all(|model| !model["id"].as_str().expect("id").contains("haiku")));
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+        apply_provider_to_paths(&test_db(), &provider, &paths).expect("apply");
+        let profile: Value = read_json_file(&paths.profile_path).expect("profile");
+        assert_eq!(
+            profile["inferenceModels"]
+                .as_array()
+                .expect("profile models")
+                .len(),
+            3
+        );
+        assert!(map_proxy_request_model(json!({"model":"arbitrary-model"}), &provider).is_err());
     }
 
     #[test]

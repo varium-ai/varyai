@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { APP_IDS } from "@/config/appConfig";
 
 export function ProfileBundleDialog({
   profile,
@@ -30,11 +31,44 @@ export function ProfileBundleDialog({
     "zcode",
     "trae",
   ]);
+  const restartHint = (app: string) =>
+    t(
+      app === "trae"
+        ? "profiles.bundle.clientSyncHint"
+        : restartClients.has(app)
+          ? "profiles.bundle.restartClient"
+          : "profiles.bundle.restartSession",
+      { app: t(`apps.${app}`) },
+    );
   const [preview, setPreview] = useState<ProfilePreview>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const describeError = (value: unknown) => {
     const message = value instanceof Error ? value.message : String(value);
+    if (message.startsWith("profiles.bundle.agentError:")) {
+      const match = message.match(
+        /^profiles\.bundle\.agentError:([a-z-]+):(profiles\.bundle\.[a-zA-Z]+)$/,
+      );
+      const reasons = [
+        "noProvider",
+        "missingResource",
+        "invalidConfig",
+        "readFailed",
+        "nativeModelMissing",
+        "operationFailed",
+      ].map((key) => `profiles.bundle.${key}`);
+      if (
+        match &&
+        (APP_IDS as readonly string[]).includes(match[1]) &&
+        reasons.includes(match[2])
+      ) {
+        return t("profiles.bundle.agentPreviewFailed", {
+          app: t(`apps.${match[1]}`),
+          reason: t(match[2]),
+        });
+      }
+      return t("profiles.bundle.operationFailed");
+    }
     const key = message.match(/profiles\.bundle\.[a-zA-Z]+/)?.[0];
     return t(key ?? "profiles.bundle.operationFailed");
   };
@@ -65,26 +99,63 @@ export function ProfileBundleDialog({
       );
       onChanged();
       if (!result.success) {
-        setError(t("profiles.bundle.applyRolledBack"));
+        if (result.warnings.includes("profiles.bundle.noApplicableAgents")) {
+          setError(t("profiles.bundle.noApplicableAgents"));
+          setPreview(undefined);
+          return;
+        }
+        const reasons = [
+          "providerApplyFailed",
+          "nativeSelectionFailed",
+          "nativeModelMissing",
+          "resourceApplyFailed",
+          "missingResource",
+          "invalidConfig",
+          "readFailed",
+        ].map((key) => `profiles.bundle.${key}`);
+        setError(
+          result.failure
+            ? t("profiles.bundle.agentApplyFailed", {
+                app: t(`apps.${result.failure.app}`),
+                reason: t(
+                  reasons.includes(result.failure.reason)
+                    ? result.failure.reason
+                    : "profiles.bundle.operationFailed",
+                ),
+              })
+            : t("profiles.bundle.applyRolledBack"),
+        );
         setPreview(undefined);
         return;
       }
       const message = t("profiles.bundle.applied", { name: profile.name });
-      if (result.warnings.length) {
+      const restartHints = preview.changes.map((change) =>
+        restartHint(change.app),
+      );
+      const skippedHints = (result.skipped ?? []).map(({ app }) =>
+        t("profiles.bundle.providerMissingSkipped", { app: t(`apps.${app}`) }),
+      );
+      if (result.warnings.length || skippedHints.length) {
         toast.warning(message, {
-          description: [...new Set(result.warnings)]
-            .map((warning) =>
+          description: [
+            ...[...new Set(result.warnings)].map((warning) =>
               t(
                 warning.startsWith("profiles.bundle.")
                   ? warning
                   : "profiles.bundle.applyWarning",
               ),
-            )
-            .join("\n"),
+            ),
+            ...skippedHints,
+            ...restartHints,
+          ].join("\n"),
           duration: 8000,
         });
       } else {
-        toast.success(message);
+        toast.success(message, {
+          description: restartHints.join("\n"),
+          duration: 10000,
+          closeButton: true,
+        });
       }
       onClose();
     } catch (value) {
@@ -108,14 +179,14 @@ export function ProfileBundleDialog({
         overlayClassName="backdrop-blur-none"
       >
         <DialogHeader>
-          <DialogTitle>
+          <DialogTitle className="line-clamp-2 break-all" title={profile.name}>
             {t("profiles.bundle.previewTitle", { name: profile.name })}
           </DialogTitle>
           <DialogDescription>
             {t("profiles.bundle.previewDescription")}
           </DialogDescription>
         </DialogHeader>
-        <div className="max-h-[60vh] space-y-3 overflow-y-auto px-6 py-3">
+        <div className="min-h-0 max-h-[60vh] space-y-3 overflow-y-auto px-6 py-3">
           {!preview && !error && <p>{t("common.loading")}</p>}
           {preview && (
             <div className="space-y-2 text-sm text-muted-foreground">
@@ -124,7 +195,10 @@ export function ProfileBundleDialog({
             </div>
           )}
           {preview?.changes.map((change) => (
-            <div key={change.app} className="rounded-md border p-3 text-sm">
+            <div
+              key={change.app}
+              className="rounded-md border p-3 text-sm [overflow-wrap:anywhere]"
+            >
               <p className="font-medium">{t(`apps.${change.app}`)}</p>
               <p>
                 {change.currentProvider ||
@@ -148,14 +222,7 @@ export function ProfileBundleDialog({
                 </p>
               )}
               <p className="mt-2 text-xs text-muted-foreground">
-                {t(
-                  change.app === "trae"
-                    ? "profiles.bundle.clientSyncHint"
-                    : restartClients.has(change.app)
-                      ? "profiles.bundle.restartClient"
-                      : "profiles.bundle.restartSession",
-                  { app: t(`apps.${change.app}`) },
-                )}
+                {restartHint(change.app)}
               </p>
               {change.clientSyncPending && (
                 <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
@@ -164,6 +231,21 @@ export function ProfileBundleDialog({
               )}
             </div>
           ))}
+          {preview?.skipped?.map(({ app }) => (
+            <div
+              key={app}
+              className="rounded-md border border-amber-500/30 p-3 text-sm text-amber-600 dark:text-amber-400"
+            >
+              {t("profiles.bundle.providerMissingSkipped", {
+                app: t(`apps.${app}`),
+              })}
+            </div>
+          ))}
+          {preview?.changes.length === 0 && !!preview.skipped?.length && (
+            <p className="text-sm text-muted-foreground">
+              {t("profiles.bundle.noApplicableAgents")}
+            </p>
+          )}
           {error && (
             <p role="alert" className="text-sm text-destructive">
               {error}
@@ -174,11 +256,12 @@ export function ProfileBundleDialog({
           <Button variant="outline" onClick={onClose} disabled={busy}>
             {t("common.close")}
           </Button>
-          {preview && (
-            <Button onClick={apply} disabled={busy}>
-              {t(busy ? "profiles.bundle.applying" : "profiles.bundle.apply")}
-            </Button>
-          )}
+          {preview &&
+            (preview.changes.length > 0 || !preview.skipped?.length) && (
+              <Button onClick={apply} disabled={busy}>
+                {t(busy ? "profiles.bundle.applying" : "profiles.bundle.apply")}
+              </Button>
+            )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

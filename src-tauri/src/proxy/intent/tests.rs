@@ -1,6 +1,153 @@
 use super::*;
 use serde_json::json;
 
+#[tokio::test]
+#[serial_test::serial]
+async fn codex_group_and_temporary_routes_preserve_bound_gateway_policies(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::{
+        database::Database,
+        proxy::{
+            gateway::{KeyPolicy, Period},
+            server::ProxyServer,
+            ProxyConfig,
+        },
+    };
+    use axum::{routing::post, Json, Router};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, Router::new().route("/responses", post(move |Json(body): Json<Value>| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(body["model"], "synthetic-upstream-model");
+            std::future::ready(Json(json!({"model":"supplier-echo", "usage":{"input_tokens":7,"output_tokens":3}})))
+        }))).await;
+    });
+    let group: RoutingGroup = serde_json::from_value(json!({
+        "id":"policy-group", "name":"Synthetic group", "revision":0,
+        "client":"codex", "enabled":false,
+        "members":[{"id":"a","providerId":"synthetic-provider","modelId":"synthetic-upstream-model"}],
+        "defaultMemberId":"a", "fallbackMemberIds":[], "intentRecognitionEnabled":false,
+        "classifierTarget":null, "classificationBudgetMs":2000, "rules":[]
+    }))?;
+    let alias = group.alias();
+    let session = || Session {
+        group: group.clone(),
+        targets: vec![Target {
+            provider_id: "synthetic-provider".into(),
+            model: "synthetic-upstream-model".into(),
+            effort: Default::default(),
+            url: format!("http://{address}/responses")
+                .parse()
+                .expect("fixture URL"),
+            headers: Default::default(),
+            official: false,
+            credentials: None,
+            scheduling: Arc::new(scheduling::Scheduling::new(false)),
+        }],
+        classifier: None,
+        client: reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("fixture client"),
+        created: Instant::now(),
+        bindings: Arc::default(),
+    };
+    let runtime = Arc::new(Runtime::default());
+    let temporary = runtime.install(session(), None).expect("temporary session");
+    runtime
+        .set_menu(Arc::new(Menu {
+            token: "synthetic-menu-token".into(),
+            models: Default::default(),
+            default_model: None,
+            omitted_entries: 0,
+            groups: HashMap::from([(alias.clone(), Arc::new(session()))]),
+        }))
+        .expect("menu");
+    let db = Arc::new(Database::memory()?);
+    let key = db.create_gateway_key(KeyPolicy {
+        name: "Synthetic Codex policy".into(),
+        models: vec![alias.clone()],
+        all_models: false,
+        token_limit: None,
+        period: Period::Never,
+    })?;
+    db.bind_gateway_agent("codex", Some(&key.key.id))?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        db.clone(),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let info = server.start().await?;
+    let url = format!("http://127.0.0.1:{}/intent/v1/responses", info.port);
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let tokens = [temporary.as_str(), "synthetic-menu-token"];
+    for token in tokens {
+        let response = client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&json!({"model":"not-allowed", "input":"synthetic"}))
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let error: Value = response.json().await?;
+        assert_eq!(error["error"]["code"], "model_not_allowed");
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    for token in tokens {
+        let response = client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&json!({"model":alias, "input":"synthetic"}))
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let reply: Value = response.json().await?;
+        assert_eq!(reply["model"], "supplier-echo");
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let rows = db.list_gateway_usage(Some(&key.key.id)).expect("usage");
+            if rows.iter().any(|row| row.requests == 2 && row.tokens == 20) {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].agent, "codex");
+                assert_eq!(rows[0].model, alias);
+                assert_eq!(
+                    rows[0].upstream_model.as_deref(),
+                    Some("synthetic-upstream-model")
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    let mut policy = key.key.policy;
+    policy.token_limit = Some(0);
+    db.update_gateway_key(&key.key.id, policy)?;
+    for token in tokens {
+        let response = client
+            .post(&url)
+            .bearer_auth(token)
+            .json(&json!({"model":alias, "input":"synthetic"}))
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    server.stop().await?;
+    task.abort();
+    Ok(())
+}
+
 #[test]
 fn unknown_or_conflicting_continuations_fail_closed() {
     let mut bindings = Bindings::default();

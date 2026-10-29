@@ -98,6 +98,13 @@ fn validate_codex_official_authorization(
     }
 }
 
+pub(super) type ForwardResponse = (
+    ProxyResponse,
+    Option<String>,
+    Option<String>,
+    Arc<Vec<super::tool_observation::channel::ToolSchemaRef>>,
+);
+
 pub struct ForwardResult {
     pub response: ProxyResponse,
     pub provider: Provider,
@@ -107,6 +114,8 @@ pub struct ForwardResult {
     /// usage 归因不能依赖 ctx.request_model（映射前的客户端别名）：上游响应
     /// 缺失 model 或回显别名时，接管流量会被记成 claude-* 并按其定价计费。
     pub outbound_model: Option<String>,
+    /// Bounded schema references from the actual outbound Claude tools.
+    pub upstream_tool_schemas: Arc<Vec<super::tool_observation::channel::ToolSchemaRef>>,
     /// 活跃连接 RAII guard：随响应一起流转到 response_processor / handle_claude_transform，
     /// 最终被 move 进流式 body future（或非流式响应作用域），覆盖整个响应生命周期。
     pub(crate) connection_guard: Option<ActiveConnectionGuard>,
@@ -397,6 +406,9 @@ impl RequestForwarder {
         extensions: Extensions,
         providers: Vec<Provider>,
     ) -> Result<ForwardResult, ForwardError> {
+        let gateway_model = extensions
+            .get::<super::gateway::GatewayUpstreamModel>()
+            .cloned();
         let guard = ActiveConnectionGuard::acquire(self.status.clone()).await;
         {
             let mut s = self.status.write().await;
@@ -412,6 +424,9 @@ impl RequestForwarder {
         // 在流式 body 的 future 内才真正 drop。
         // Err 路径：guard 在函数 scope 内随返回值落地时自动 drop。
         result.map(|mut fr| {
+            if let Some(trace) = gateway_model {
+                trace.record(fr.outbound_model.as_deref());
+            }
             fr.connection_guard = Some(guard);
             fr
         })
@@ -540,7 +555,7 @@ impl RequestForwarder {
                 )
                 .await
             {
-                Ok((response, claude_api_format, outbound_model)) => {
+                Ok((response, claude_api_format, outbound_model, upstream_tool_schemas)) => {
                     // 成功：普通闭合熔断状态异步记录，避免阻塞流式首包返回；
                     // HalfOpen 探测仍同步等待，保证 permit 与熔断状态及时释放。
                     self.record_success_result(&provider.id, app_type_str, used_half_open_permit)
@@ -589,6 +604,7 @@ impl RequestForwarder {
                         provider: provider.clone(),
                         claude_api_format,
                         outbound_model,
+                        upstream_tool_schemas,
                         connection_guard: None,
                     });
                 }
@@ -639,7 +655,12 @@ impl RequestForwarder {
                                 )
                                 .await
                             {
-                                Ok((response, claude_api_format, outbound_model)) => {
+                                Ok((
+                                    response,
+                                    claude_api_format,
+                                    outbound_model,
+                                    upstream_tool_schemas,
+                                )) => {
                                     log::info!(
                                         "[{app_type_str}] [Media] Unsupported-image retry succeeded"
                                     );
@@ -692,6 +713,7 @@ impl RequestForwarder {
                                         provider: provider.clone(),
                                         claude_api_format,
                                         outbound_model,
+                                        upstream_tool_schemas,
                                         connection_guard: None,
                                     });
                                 }
@@ -785,7 +807,12 @@ impl RequestForwarder {
                                     )
                                     .await
                                 {
-                                    Ok((response, claude_api_format, outbound_model)) => {
+                                    Ok((
+                                        response,
+                                        claude_api_format,
+                                        outbound_model,
+                                        upstream_tool_schemas,
+                                    )) => {
                                         log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
                                         self.record_success_result(
                                             &provider.id,
@@ -841,6 +868,7 @@ impl RequestForwarder {
                                             provider: provider.clone(),
                                             claude_api_format,
                                             outbound_model,
+                                            upstream_tool_schemas,
                                             connection_guard: None,
                                         });
                                     }
@@ -951,7 +979,12 @@ impl RequestForwarder {
                                 )
                                 .await
                             {
-                                Ok((response, claude_api_format, outbound_model)) => {
+                                Ok((
+                                    response,
+                                    claude_api_format,
+                                    outbound_model,
+                                    upstream_tool_schemas,
+                                )) => {
                                     log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
                                     self.record_success_result(
                                         &provider.id,
@@ -1001,6 +1034,7 @@ impl RequestForwarder {
                                         provider: provider.clone(),
                                         claude_api_format,
                                         outbound_model,
+                                        upstream_tool_schemas,
                                         connection_guard: None,
                                     });
                                 }
@@ -1159,10 +1193,11 @@ impl RequestForwarder {
 
     /// 转发单个请求（使用适配器）
     ///
-    /// 成功时返回 `(response, claude_api_format, outbound_model)`，其中
+    /// Success includes the response, API format, model and bounded outbound tool schemas.
+    ///
     /// `outbound_model` 是最终发往上游的模型名（所有映射/改写之后）。
     #[allow(clippy::too_many_arguments)]
-    async fn forward(
+    pub(super) async fn forward(
         &self,
         app_type: &AppType,
         method: &http::Method,
@@ -1172,7 +1207,7 @@ impl RequestForwarder {
         headers: &axum::http::HeaderMap,
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
-    ) -> Result<(ProxyResponse, Option<String>, Option<String>), ProxyError> {
+    ) -> Result<ForwardResponse, ProxyError> {
         if let Some(bridge) = super::protocol_bridge::Bridge::route(app_type, endpoint, provider) {
             let mut body = body.clone();
             if bridge.input == super::protocol_bridge::Protocol::Responses {
@@ -1202,7 +1237,7 @@ impl RequestForwarder {
                 output: bridge.output,
             };
             let bridge_endpoint = bridge.endpoint(endpoint);
-            let (response, format, model) = self
+            let (response, format, model, _) = self
                 .forward_native(
                     app_type,
                     method,
@@ -1225,6 +1260,7 @@ impl RequestForwarder {
                     .await?,
                 format,
                 model,
+                Arc::new(Vec::new()),
             ));
         }
         self.forward_native(
@@ -1244,7 +1280,7 @@ impl RequestForwarder {
         headers: &axum::http::HeaderMap,
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
-    ) -> Result<(ProxyResponse, Option<String>, Option<String>), ProxyError> {
+    ) -> Result<ForwardResponse, ProxyError> {
         // 使用适配器提取 base_url
         let mut base_url = adapter.extract_base_url(provider)?;
 
@@ -1790,6 +1826,14 @@ impl RequestForwarder {
         );
         let request_is_streaming =
             is_streaming_request(&effective_endpoint, &filtered_body, headers);
+        if matches!(resolved_claude_api_format.as_deref(), Some("gemini_native")) {
+            log::info!(
+                "[GeminiRequestShape] app={}, streaming={}, shape={}",
+                app_type.as_str(),
+                request_is_streaming,
+                gemini_request_shape(&filtered_body),
+            );
+        }
         let force_identity_encoding = needs_transform
             || codex_responses_to_chat
             || codex_responses_to_anthropic
@@ -2063,6 +2107,8 @@ impl RequestForwarder {
 
         let should_send_anthropic_headers = adapter.name() == "Claude"
             && matches!(resolved_claude_api_format.as_deref(), Some("anthropic"));
+        let strip_desktop_client_metadata = matches!(app_type, AppType::ClaudeDesktop)
+            && url::Url::parse(&url).is_ok_and(|url| url.host_str() != Some("api.anthropic.com"));
 
         // 预计算 anthropic-beta 值（仅 Claude）
         let anthropic_beta_value = if should_send_anthropic_headers {
@@ -2108,6 +2154,12 @@ impl RequestForwarder {
 
         for (key, value) in headers {
             let key_str = key.as_str();
+
+            // Desktop client metadata is not part of Messages protocol versioning.
+            // Third-party gateways may reject it even when they accept Messages.
+            if strip_desktop_client_metadata && key_str.starts_with("anthropic-client-") {
+                continue;
+            }
 
             // --- host — 原位替换为上游 host（保持客户端原始位置） ---
             if key_str.eq_ignore_ascii_case("host") {
@@ -2334,6 +2386,22 @@ impl RequestForwarder {
             ordered_headers.insert(name, value);
         }
 
+        let upstream_tool_schemas = if needs_transform
+            && matches!(app_type, AppType::Claude | AppType::ClaudeDesktop)
+            && crate::services::tool_risk::runtime::collection_enabled()
+        {
+            super::tool_observation::mount::collect_tool_schemas(
+                &filtered_body,
+                if matches!(app_type, AppType::ClaudeDesktop) {
+                    "claude-desktop"
+                } else {
+                    "claude"
+                },
+            )
+        } else {
+            Arc::new(Vec::new())
+        };
+
         // 序列化请求体。GET/HEAD 是 idempotent/safe 方法，按 HTTP 语义不应携带 body；
         // 强行附带 JSON body 会让某些上游（如 Google Gemini 的 models.list）拒绝请求。
         let body_bytes = if matches!(method, &http::Method::GET | &http::Method::HEAD) {
@@ -2506,7 +2574,12 @@ impl RequestForwarder {
                     response = self.validate_responses_stream_start(response).await?;
                 }
             }
-            Ok((response, resolved_claude_api_format, outbound_model))
+            Ok((
+                response,
+                resolved_claude_api_format,
+                outbound_model,
+                upstream_tool_schemas,
+            ))
         } else {
             let status_code = status.as_u16();
             // 错误响应同样可能被上游压缩（content-encoding）。reqwest 未启用任何
@@ -3899,6 +3972,51 @@ fn cache_control_summary(value: &Value) -> String {
     )
 }
 
+fn gemini_request_shape(body: &Value) -> Value {
+    let functions = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| tool.get("functionDeclarations").and_then(Value::as_array))
+        .flatten()
+        .collect::<Vec<_>>();
+    let config = &body["generationConfig"];
+    let max_output_tokens_range = match config.get("maxOutputTokens").and_then(Value::as_u64) {
+        Some(0) => "zero",
+        Some(1..=8192) => "up_to_8192",
+        Some(8193..=32768) => "up_to_32768",
+        Some(32769..=65536) => "up_to_65536",
+        Some(_) => "over_65536",
+        None => "missing_or_invalid",
+    };
+    let generation_fields = [
+        "maxOutputTokens",
+        "temperature",
+        "topP",
+        "stopSequences",
+        "thinkingConfig",
+        "responseMimeType",
+        "responseSchema",
+        "responseJsonSchema",
+    ]
+    .into_iter()
+    .filter(|field| config.get(*field).is_some())
+    .collect::<Vec<_>>();
+    serde_json::json!({
+        "contents_count": body.get("contents").and_then(Value::as_array).map_or(0, Vec::len),
+        "has_system_instruction": body.get("systemInstruction").is_some(),
+        "function_count": functions.len(),
+        "empty_function_name_count": functions.iter().filter(|f| f.get("name").and_then(Value::as_str).is_none_or(|name| name.trim().is_empty())).count(),
+        "json_schema_function_count": functions.iter().filter(|f| f.get("parametersJsonSchema").is_some()).count(),
+        "parameters_function_count": functions.iter().filter(|f| f.get("parameters").is_some()).count(),
+        "has_tool_config": body.get("toolConfig").is_some(),
+        "generation_fields": generation_fields,
+        "max_output_tokens_range": max_output_tokens_range,
+        "stop_sequence_count": config.get("stopSequences").and_then(Value::as_array).map_or(0, Vec::len),
+    })
+}
+
 fn value_for_log(value: &Value) -> String {
     match value {
         Value::Bool(value) => value.to_string(),
@@ -3922,6 +4040,49 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::time::Duration;
+
+    #[test]
+    fn gemini_request_shape_reports_structure_without_private_values() {
+        let shape = gemini_request_shape(&json!({
+            "model":"synthetic-private-model",
+            "systemInstruction":{"parts":[{"text":"synthetic-private-prompt"}]},
+            "contents":[{"role":"user","parts":[{"text":"synthetic-private-input"}]}],
+            "generationConfig":{"maxOutputTokens":131072,"temperature":0.7,"stopSequences":["synthetic-private-stop"]},
+            "tools":[{"functionDeclarations":[
+                {"name":"synthetic-private-tool","parametersJsonSchema":{"type":"object","properties":{"synthetic-private-argument":{"type":"string"}}}},
+                {"name":"","parameters":{"type":"object"}}
+            ]}]
+        }));
+        assert_eq!(shape["contents_count"], 1);
+        assert_eq!(shape["has_system_instruction"], true);
+        assert_eq!(shape["function_count"], 2);
+        assert_eq!(shape["empty_function_name_count"], 1);
+        assert_eq!(shape["json_schema_function_count"], 1);
+        assert_eq!(shape["max_output_tokens_range"], "over_65536");
+        assert_eq!(shape["stop_sequence_count"], 1);
+        assert!(!shape.to_string().contains("synthetic-private"));
+    }
+
+    #[test]
+    fn gemini_request_shape_handles_missing_and_invalid_limits() {
+        assert_eq!(
+            gemini_request_shape(&json!({}))["max_output_tokens_range"],
+            "missing_or_invalid"
+        );
+        for (limit, range) in [
+            (0, "zero"),
+            (8192, "up_to_8192"),
+            (8193, "up_to_32768"),
+            (32769, "up_to_65536"),
+            (65537, "over_65536"),
+        ] {
+            assert_eq!(
+                gemini_request_shape(&json!({"generationConfig":{"maxOutputTokens":limit}}))
+                    ["max_output_tokens_range"],
+                range
+            );
+        }
+    }
 
     fn test_provider_with_type(provider_type: Option<&str>) -> Provider {
         Provider {

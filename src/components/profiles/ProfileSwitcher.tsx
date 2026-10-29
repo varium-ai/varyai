@@ -35,13 +35,13 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import type { AppId } from "@/lib/api/types";
 import {
-  useApplyProfileMutation,
   useClearProfileMutation,
   useCreateProfileMutation,
   useProfilesQuery,
 } from "@/lib/query/profiles";
 import { ProfileManageDialog } from "./ProfileManageDialog";
 import { ProfileBundleDialog } from "./ProfileBundleDialog";
+import { ProfileLegacyDialog } from "./ProfileLegacyDialog";
 import { APP_PROFILE_SCOPE, hasScopeSnapshot } from "./scope";
 import type {
   CurrentProfileIds,
@@ -62,10 +62,14 @@ const CURRENT_ID_KEY: Record<ProfileScope, keyof CurrentProfileIds> = {
 
 interface ProfileSwitcherProps {
   activeApp: AppId;
+  selectedApps: AppId[];
 }
 
 /** Shared project menu: legacy profiles apply to their scope; bundles preview all selected agents. */
-export function ProfileSwitcher({ activeApp }: ProfileSwitcherProps) {
+export function ProfileSwitcher({
+  activeApp,
+  selectedApps,
+}: ProfileSwitcherProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -76,10 +80,10 @@ export function ProfileSwitcher({ activeApp }: ProfileSwitcherProps) {
   const [pendingUndo, setPendingUndo] = useState<ProfileUndo | null>(null);
   const [undoing, setUndoing] = useState(false);
   const [bundlePreview, setBundlePreview] = useState<Profile | null>(null);
+  const [legacyPreview, setLegacyPreview] = useState<Profile | null>(null);
   const queryClient = useQueryClient();
 
   const { data } = useProfilesQuery();
-  const applyMutation = useApplyProfileMutation();
   const clearMutation = useClearProfileMutation();
   const createMutation = useCreateProfileMutation();
 
@@ -99,12 +103,33 @@ export function ProfileSwitcher({ activeApp }: ProfileSwitcherProps) {
       instructions: false,
       provider: app !== "doubaowork",
     }));
-  const isBundle = createBundle || !scope;
-  const currentId =
+  const captureApps = agents
+    .filter(
+      (agent) =>
+        agent.available &&
+        (createBundle
+          ? bundleApps.includes(agent.app)
+          : agent.app === activeApp),
+    )
+    .map((agent) => agent.app);
+  const selectedAvailableApps = agents
+    .filter((agent) => agent.available && selectedApps.includes(agent.app))
+    .map((agent) => agent.app);
+  const currentAgent = agents.find((agent) => agent.app === activeApp);
+  const scopedCurrentId =
     data?.currentIds?.byApp?.[activeApp] ??
     (scope ? data?.currentIds?.[CURRENT_ID_KEY[scope]] : null) ??
     null;
+  const scopedProfile = profiles.find((p) => p.id === scopedCurrentId);
+  const currentId =
+    data?.currentBundleId ??
+    (data?.currentBundleId !== undefined && scopedProfile?.payload.bundle
+      ? null
+      : scopedCurrentId);
   const currentProfile = profiles.find((p) => p.id === currentId);
+  const duplicateName = (data?.profiles ?? []).some(
+    (profile) => profile.name.trim() === newName.trim(),
+  );
 
   const undoLast = async () => {
     if (!pendingUndo || undoing) return;
@@ -129,9 +154,7 @@ export function ProfileSwitcher({ activeApp }: ProfileSwitcherProps) {
       setBundlePreview(profile);
       return;
     }
-    if (scope && id !== currentId) {
-      applyMutation.mutate({ id, scope });
-    }
+    if (scope && profile) setLegacyPreview(profile);
   };
 
   const closeCreateDialog = () => {
@@ -143,12 +166,18 @@ export function ProfileSwitcher({ activeApp }: ProfileSwitcherProps) {
 
   const handleCreate = () => {
     const name = newName.trim();
-    if (!name || (isBundle && bundleApps.length < 2)) return;
+    if (
+      !name ||
+      duplicateName ||
+      createMutation.isPending ||
+      captureApps.length === 0
+    )
+      return;
     createMutation.mutate(
       {
         name,
         scope: scope ?? "claude",
-        apps: isBundle ? bundleApps : undefined,
+        apps: captureApps,
       },
       { onSuccess: closeCreateDialog },
     );
@@ -156,7 +185,15 @@ export function ProfileSwitcher({ activeApp }: ProfileSwitcherProps) {
 
   return (
     <>
-      <Popover open={open} onOpenChange={setOpen}>
+      <Popover
+        open={open}
+        onOpenChange={(nextOpen) => {
+          setOpen(nextOpen);
+          if (nextOpen) {
+            void queryClient.invalidateQueries({ queryKey: ["profiles"] });
+          }
+        }}
+      >
         <PopoverTrigger asChild>
           <button
             type="button"
@@ -226,9 +263,8 @@ export function ProfileSwitcher({ activeApp }: ProfileSwitcherProps) {
                   keywords={[t("profiles.createFromCurrent")]}
                   onSelect={() => {
                     setOpen(false);
-                    setBundleApps(
-                      agents.filter((a) => a.available).map((a) => a.app),
-                    );
+                    setCreateBundle(false);
+                    setBundleApps(selectedAvailableApps);
                     setIsCreateOpen(true);
                   }}
                 >
@@ -253,7 +289,9 @@ export function ProfileSwitcher({ activeApp }: ProfileSwitcherProps) {
                     keywords={[t("profiles.none")]}
                     onSelect={() => {
                       setOpen(false);
-                      clearMutation.mutate(activeApp);
+                      clearMutation.mutate(
+                        data?.currentBundleId ? "bundle" : activeApp,
+                      );
                     }}
                   >
                     <X className="mr-2 h-4 w-4 shrink-0" />
@@ -290,9 +328,10 @@ export function ProfileSwitcher({ activeApp }: ProfileSwitcherProps) {
             <DialogTitle>{t("profiles.createFromCurrent")}</DialogTitle>
             <DialogDescription>
               {t(
-                isBundle
+                createBundle
                   ? "profiles.bundle.captureHint"
-                  : `profiles.createDescription.${scope}`,
+                  : "profiles.bundle.captureCurrentHint",
+                { app: t(`apps.${activeApp}`) },
               )}
             </DialogDescription>
           </DialogHeader>
@@ -306,20 +345,27 @@ export function ProfileSwitcher({ activeApp }: ProfileSwitcherProps) {
                 if (e.key === "Enter") handleCreate();
               }}
             />
+            {duplicateName && (
+              <p role="alert" className="mt-2 text-sm text-destructive">
+                {t("profiles.nameExists")}
+              </p>
+            )}
             <label className="mt-3 flex items-center gap-2 text-sm">
               <Checkbox
-                checked={isBundle}
-                disabled={!scope}
+                checked={createBundle}
                 onCheckedChange={(checked) => {
                   setCreateBundle(checked === true);
-                  setBundleApps(
-                    agents.filter((a) => a.available).map((a) => a.app),
-                  );
+                  setBundleApps(selectedAvailableApps);
                 }}
               />
               {t("profiles.bundle.create")}
             </label>
-            {isBundle && (
+            {!createBundle && currentAgent?.reason && (
+              <p className="mt-3 text-sm text-muted-foreground">
+                {t(currentAgent.reason)}
+              </p>
+            )}
+            {createBundle && (
               <fieldset className="mt-3 max-h-[45vh] space-y-3 overflow-y-auto text-sm">
                 <legend className="mb-2 text-muted-foreground">
                   {t("profiles.bundle.chooseAgents")}
@@ -375,8 +421,9 @@ export function ProfileSwitcher({ activeApp }: ProfileSwitcherProps) {
               onClick={handleCreate}
               disabled={
                 !newName.trim() ||
+                duplicateName ||
                 createMutation.isPending ||
-                (isBundle && bundleApps.length < 2)
+                captureApps.length === 0
               }
             >
               {t("common.confirm")}
@@ -401,6 +448,7 @@ export function ProfileSwitcher({ activeApp }: ProfileSwitcherProps) {
         }}
       />
       <ProfileManageDialog
+        selectedApps={selectedApps}
         isOpen={isManageOpen}
         onClose={() => setIsManageOpen(false)}
       />
@@ -411,6 +459,13 @@ export function ProfileSwitcher({ activeApp }: ProfileSwitcherProps) {
           onChanged={() => {
             void queryClient.invalidateQueries({ queryKey: ["profiles"] });
           }}
+        />
+      )}
+      {legacyPreview && scope && (
+        <ProfileLegacyDialog
+          profile={legacyPreview}
+          scope={scope}
+          onClose={() => setLegacyPreview(null)}
         />
       )}
     </>

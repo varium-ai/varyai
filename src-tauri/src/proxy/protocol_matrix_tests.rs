@@ -658,3 +658,165 @@ async fn installed_gemini_cli_uses_chat_bridge() {
         .iter()
         .any(|body| body["messages"].is_array() && body["tools"].is_array()));
 }
+
+#[tokio::test]
+#[serial_test::serial]
+async fn claude_converted_tool_calls_reach_history_from_native_responses() {
+    use super::tool_observation::channel::test_channel;
+    use crate::services::tool_risk::{
+        response_parser::ResponseProcessor, runtime::*, worker::project_event,
+    };
+    use std::{collections::HashMap, time::Duration};
+
+    let mock = Router::new().fallback(post(|request: axum::extract::Request| async move {
+        let (parts, body) = request.into_parts();
+        let body = http_body_util::BodyExt::collect(body).await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        let path = parts.uri.path();
+        let stream = body["stream"].as_bool().unwrap_or(false) || path.contains("streamGenerateContent");
+        let args = json!({"command":"pwd"});
+        let function = json!({"name":"Bash","arguments":args.to_string()});
+        let item = json!({"type":"function_call","id":"fc_fixture","call_id":"call_fixture","name":"Bash","arguments":args.to_string(),"status":"completed"});
+        let value = if path.ends_with("responses") {
+            json!({"id":"resp_fixture","model":"fixture","status":"completed","output":[item],"usage":{"input_tokens":1,"output_tokens":1}})
+        } else if path.ends_with("chat/completions") {
+            json!({"id":"chat_fixture","model":"fixture","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_fixture","type":"function","function":function}]},"finish_reason":"tool_calls"}]})
+        } else {
+            json!({"candidates":[{"index":0,"content":{"role":"model","parts":[{"functionCall":{"name":"Bash","args":args}}]},"finishReason":"STOP"}]})
+        };
+        if !stream {
+            return ([(header::CONTENT_TYPE,"application/json")], value.to_string()).into_response();
+        }
+        let frames = if path.ends_with("responses") {
+            let mut start = item.clone(); start["arguments"] = json!(""); start["status"] = json!("in_progress");
+            vec![
+                json!({"type":"response.created","response":{"id":"resp_fixture","model":"fixture","output":[]}}),
+                json!({"type":"response.output_item.added","output_index":0,"item":start}),
+                json!({"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_fixture","delta":args.to_string()}),
+                json!({"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_fixture","arguments":args.to_string()}),
+                json!({"type":"response.output_item.done","output_index":0,"item":item}),
+                json!({"type":"response.completed","response":value}),
+            ]
+        } else if path.ends_with("chat/completions") {
+            vec![
+                json!({"id":"chat_fixture","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_fixture","type":"function","function":function}]},"finish_reason":null}]}),
+                json!({"id":"chat_fixture","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+            ]
+        } else { vec![value] };
+        let mut bytes = frames.iter().map(|v| format!("data: {v}\n\n")).collect::<String>();
+        if path.ends_with("chat/completions") { bytes.push_str("data: [DONE]\n\n"); }
+        ([(header::CONTENT_TYPE,"text/event-stream")],bytes).into_response()
+    }));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, mock).await.unwrap();
+    });
+    let db = Arc::new(Database::memory().unwrap());
+    db.save_tool_risk_settings(&crate::database::ToolRiskSettings {
+        enabled: true,
+        policy_version: 0,
+    })
+    .unwrap();
+    let policy = db.get_tool_risk_settings().unwrap().policy_version;
+    set_tool_risk_runtime_for_test(ToolRiskRuntime::build(
+        true,
+        policy,
+        vec![],
+        &HashMap::new(),
+    ));
+    let (_, mut receiver) = test_channel().await;
+    let proxy = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            max_retries: 0,
+            ..Default::default()
+        },
+        db.clone(),
+        None,
+    );
+    let info = proxy.start().await.unwrap();
+    let client = reqwest::Client::new();
+    for app in ["claude", "claude-desktop"] {
+        for format in ["openai_responses", "openai_chat", "gemini_native"] {
+            let mut provider = Provider::with_id(
+                format!("fixture-{app}-{format}"),
+                "Fixture".into(),
+                json!({"env":{"ANTHROPIC_BASE_URL":format!("http://{addr}"),"ANTHROPIC_API_KEY":"fixture-key","ANTHROPIC_MODEL":"fixture"}}),
+                None,
+            );
+            provider.meta = Some(ProviderMeta {
+                api_format: Some(format.into()),
+                ..Default::default()
+            });
+            if app == "claude-desktop" {
+                provider.meta = Some(
+                    serde_json::from_value(json!({
+                        "apiFormat":format,"claudeDesktopMode":"proxy",
+                        "claudeDesktopModelRoutes":{"claude-sonnet-fixture":{"model":"fixture"}}
+                    }))
+                    .unwrap(),
+                );
+            }
+            db.save_provider(app, &provider).unwrap();
+            db.set_current_provider(app, &provider.id).unwrap();
+            for (stream, namespaced) in [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let mut request = json!({"model":"fixture","max_tokens":128,"stream":stream,"messages":[{"role":"user","content":"fixture"}],"tools":[{"name":"Bash","input_schema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}]});
+                if app == "claude-desktop" {
+                    request["model"] = json!("claude-sonnet-fixture");
+                }
+                if namespaced {
+                    request["tools"][0]["namespace"] = json!("mcp");
+                }
+                let path = if app == "claude" {
+                    "/v1/messages"
+                } else {
+                    "/claude-desktop/v1/messages"
+                };
+                let mut call = client
+                    .post(format!("http://127.0.0.1:{}{path}", info.port))
+                    .json(&request);
+                if app == "claude-desktop" {
+                    call = call.bearer_auth(
+                        crate::claude_desktop_config::get_or_create_gateway_token(&db).unwrap(),
+                    );
+                }
+                let response = call.send().await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK, "{app}/{format}/{stream}");
+                let bytes = response.bytes().await.unwrap();
+                assert!(std::str::from_utf8(&bytes).unwrap().contains("pwd"));
+                let mut parser = ResponseProcessor::default();
+                let mut observations = Vec::new();
+                while let Ok(Some(piece)) =
+                    tokio::time::timeout(Duration::from_millis(10), receiver.recv()).await
+                {
+                    observations.extend(parser.ingest(&piece));
+                }
+                observations.extend(parser.sweep());
+                let events: Vec<_> = observations.iter().filter_map(project_event).collect();
+                assert_eq!(
+                    events.len(),
+                    usize::from(!namespaced),
+                    "{app}/{format}/{stream}/{namespaced}"
+                );
+                if namespaced {
+                    continue;
+                }
+                assert_eq!(events[0].client_category.as_deref(), Some(app));
+                assert_eq!(events[0].command_summary.as_deref(), Some("pwd"));
+                assert_eq!(events[0].stage, "proposed");
+                db.insert_current_tool_risk_events_batch(&events).unwrap();
+            }
+        }
+    }
+    assert_eq!(
+        db.get_tool_risk_command_summary_preview().unwrap().len(),
+        12
+    );
+    proxy.stop().await.unwrap();
+    server.abort();
+    set_tool_risk_runtime_for_test(ToolRiskRuntime::default());
+}

@@ -5,8 +5,8 @@ use super::channel::{
 #[cfg(test)]
 use super::parsers::{PROTOCOL_OPENAI_CHAT, PROTOCOL_OPENAI_RESPONSES};
 use crate::services::tool_risk::adapters::{
-    CLAUDE_TOOLS_SCHEMA, CODEX_TOOLS_SCHEMA, GEMINI_TOOLS_SCHEMA, OPENAI_TOOLS_SCHEMA,
-    PI_TOOLS_SCHEMA,
+    CLAUDE_DESKTOP_TOOLS_SCHEMA, CLAUDE_TOOLS_SCHEMA, CODEX_TOOLS_SCHEMA, GEMINI_TOOLS_SCHEMA,
+    OPENAI_TOOLS_SCHEMA, PI_TOOLS_SCHEMA,
 };
 use bytes::Bytes;
 use serde_json::Value;
@@ -76,6 +76,7 @@ pub(crate) fn collect_tool_schemas_from_tools(
 ) -> Arc<Vec<ToolSchemaRef>> {
     let schema = match client {
         "claude" => CLAUDE_TOOLS_SCHEMA,
+        "claude-desktop" => CLAUDE_DESKTOP_TOOLS_SCHEMA,
         "codex" => CODEX_TOOLS_SCHEMA,
         "gemini" => GEMINI_TOOLS_SCHEMA,
         "openai" => OPENAI_TOOLS_SCHEMA,
@@ -139,9 +140,9 @@ pub(crate) fn collect_tool_schemas_from_tools(
         let field = match (client, name) {
             ("pi", "bash") => "command",
             ("pi", "read" | "write" | "edit") => "path",
-            ("claude", "Bash") => "command",
-            ("claude", "Read" | "Write" | "Edit") => "file_path",
-            ("claude", "WebFetch") => "url",
+            ("claude" | "claude-desktop", "Bash") => "command",
+            ("claude" | "claude-desktop", "Read" | "Write" | "Edit") => "file_path",
+            ("claude" | "claude-desktop", "WebFetch") => "url",
             ("codex", "exec_command" | "shell_command") => {
                 if name == "exec_command" {
                     "cmd"
@@ -156,7 +157,12 @@ pub(crate) fn collect_tool_schemas_from_tools(
             // OpenAI has no built-in client-side tool semantics.
             _ => continue,
         };
-        let input = if client == "codex" {
+        let input = if let Some(schema) = tool.get("parametersJsonSchema") {
+            if tool.get("parameters").is_some() || tool.get("input_schema").is_some() {
+                continue;
+            }
+            Some(schema)
+        } else if client == "codex" {
             tool.get("parameters")
         } else {
             tool.get("input_schema").or_else(|| tool.get("parameters"))

@@ -321,9 +321,7 @@ fn builtin_action(rule: &BuiltinRule, runtime: &SecurityRuntimeConfig) -> AuditA
         .copied()
         .unwrap_or(rule.default_action);
 
-    if rule.id == "catalog:generic-sk-key-notice"
-        && matches!(action, AuditAction::Block | AuditAction::Redact)
-    {
+    if rule.id == "catalog:generic-sk-key-notice" && action == AuditAction::Block {
         return rule.default_action;
     }
     action

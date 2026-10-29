@@ -14,4 +14,6 @@ For the supported macOS path, explicit takeover can require local certificate tr
 
 Valid certificate metadata and trust can be reused across temporary routing stops and normal restarts. Clearing a certificate first stops takeover and restores configuration, then removes the corresponding trust and local files. A manual-clear state must not silently regenerate trust. The application does not read or store the system authentication password.
 
+New local CA and server certificates are valid for 30 days. Existing certificates retain their original expiration date until they expire or the user explicitly rebuilds them. The one-minute certificate override remains available only in development builds for expiration testing.
+
 See [takeover service](../../src-tauri/src/services/qoder_proxy.rs), [certificate handling](../../src-tauri/src/services/qoder_certificate.rs), and [native codec](../../src-tauri/src/proxy/qoder_codec.rs). Synthetic codec tests are not a claim that every vendor version, account, model, installed package or system trust configuration has been accepted.

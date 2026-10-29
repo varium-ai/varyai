@@ -24,6 +24,8 @@ pub struct FetchedModel {
 struct ModelsResponse {
     data: Option<Vec<ModelEntry>>,
     models: Option<serde_json::Value>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,12 +44,20 @@ fn catalog_model_ids(models: Option<serde_json::Value>) -> Vec<String> {
             ["slug", "id"]
                 .iter()
                 .find_map(|key| entry.get(key)?.as_str().filter(|id| !id.is_empty()))
+                .or_else(|| {
+                    entry
+                        .get("name")?
+                        .as_str()?
+                        .strip_prefix("models/")
+                        .filter(|id| !id.is_empty())
+                })
         })
         .map(str::to_string)
         .collect()
 }
 
 const FETCH_TIMEOUT_SECS: u64 = 15;
+const MAX_MODEL_PAGES: usize = 100;
 const MAX_REQUEST_HEADERS: usize = 64;
 const MAX_HEADER_NAME_BYTES: usize = 256;
 const MAX_HEADER_VALUE_BYTES: usize = 16 * 1024;
@@ -81,7 +91,16 @@ pub async fn fetch_models(
     api_format: Option<&str>,
     request_headers: Option<&BTreeMap<String, String>>,
 ) -> Result<Vec<FetchedModel>, String> {
-    let candidates = build_models_url_candidates(base_url, is_full_url, models_url_override)?;
+    let is_gemini = matches!(api_format, Some("google-generative-ai" | "gemini_native"));
+    let candidates = if is_gemini {
+        vec![build_gemini_models_url(
+            base_url,
+            is_full_url,
+            models_url_override,
+        )?]
+    } else {
+        build_models_url_candidates(base_url, is_full_url, models_url_override)?
+    };
     let headers =
         build_model_fetch_headers(api_key, api_format, user_agent.as_ref(), request_headers)?;
     let client = crate::proxy::http_client::get();
@@ -91,68 +110,136 @@ pub async fn fetch_models(
         known_secrets.extend(request_headers.values().cloned());
     }
 
-    for url in &candidates {
+    'candidates: for url in &candidates {
         log::debug!(
             "[ModelFetch] Trying endpoint: {}",
             crate::url_for_log_with_secrets(url, &known_secrets)
         );
-        let request = client
-            .get(url)
-            .headers(headers.clone())
-            .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS));
-        let response = match request.send().await {
-            Ok(r) => r,
-            Err(e) => {
-                return Err(format!("Request failed: {e}"));
-            }
-        };
-
-        let status = response.status();
-
-        if status.is_success() {
-            let resp: ModelsResponse = response
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse response: {e}"))?;
-
-            let mut models: Vec<FetchedModel> = if let Some(data) = resp.data {
-                data.into_iter()
-                    .map(|m| FetchedModel {
-                        id: m.id,
-                        owned_by: m.owned_by,
-                    })
-                    .collect()
-            } else {
-                catalog_model_ids(resp.models)
-                    .into_iter()
-                    .map(|id| FetchedModel { id, owned_by: None })
-                    .collect()
+        let mut models = Vec::new();
+        let mut seen_tokens = std::collections::HashSet::new();
+        let mut page_url =
+            url::Url::parse(url).map_err(|_| "Invalid models endpoint".to_string())?;
+        if let Some((_, token)) = page_url.query_pairs().find(|(key, _)| key == "pageToken") {
+            seen_tokens.insert(token.into_owned());
+        }
+        for page in 0..MAX_MODEL_PAGES {
+            let request = client
+                .get(page_url.clone())
+                .headers(headers.clone())
+                .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS));
+            let response = match request.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    return Err(redact_model_fetch_error_body(
+                        format!("Request failed: {}", e.without_url()),
+                        &known_secrets,
+                    ));
+                }
             };
 
-            models.sort_by(|a, b| a.id.cmp(&b.id));
-            return Ok(models);
-        }
+            let status = response.status();
 
-        if status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED {
+            if status.is_success() {
+                let resp: ModelsResponse = response
+                    .json()
+                    .await
+                    .map_err(|e| format!("Failed to parse response: {e}"))?;
+
+                let page_models: Vec<FetchedModel> = if let Some(data) = resp.data {
+                    data.into_iter()
+                        .map(|m| FetchedModel {
+                            id: m.id,
+                            owned_by: m.owned_by,
+                        })
+                        .collect()
+                } else {
+                    catalog_model_ids(resp.models)
+                        .into_iter()
+                        .map(|id| FetchedModel { id, owned_by: None })
+                        .collect()
+                };
+
+                models.extend(page_models);
+                if let Some(token) = resp
+                    .next_page_token
+                    .filter(|token| is_gemini && !token.is_empty())
+                {
+                    if !seen_tokens.insert(token.clone()) || page + 1 == MAX_MODEL_PAGES {
+                        return Err("Model catalog pagination did not terminate".to_string());
+                    }
+                    // Tokens are opaque query values, never URLs or credentials.
+                    let query: Vec<(String, String)> = page_url
+                        .query_pairs()
+                        .filter(|(key, _)| key != "pageToken")
+                        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                        .collect();
+                    page_url.set_query(None);
+                    page_url
+                        .query_pairs_mut()
+                        .extend_pairs(query)
+                        .append_pair("pageToken", &token);
+                    continue;
+                }
+                models.sort_by(|a, b| a.id.cmp(&b.id));
+                if is_gemini {
+                    models.dedup_by(|a, b| a.id == b.id);
+                }
+                return Ok(models);
+            }
+
+            if page == 0
+                && (status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED)
+            {
+                let body = redact_model_fetch_error_body(
+                    response.text().await.unwrap_or_default(),
+                    &known_secrets,
+                );
+                last_err = Some(format!("HTTP {status}: {body}"));
+                continue 'candidates;
+            }
+
             let body = redact_model_fetch_error_body(
                 response.text().await.unwrap_or_default(),
                 &known_secrets,
             );
-            last_err = Some(format!("HTTP {status}: {body}"));
-            continue;
+            return Err(format!("HTTP {status}: {body}"));
         }
-
-        let body = redact_model_fetch_error_body(
-            response.text().await.unwrap_or_default(),
-            &known_secrets,
-        );
-        return Err(format!("HTTP {status}: {body}"));
     }
 
     Err(format!(
         "All candidates failed: {}",
         last_err.unwrap_or_else(|| "no candidates".to_string())
     ))
+}
+
+fn build_gemini_models_url(
+    base_url: &str,
+    is_full_url: bool,
+    models_url_override: Option<&str>,
+) -> Result<String, String> {
+    if let Some(value) = models_url_override.map(str::trim).filter(|s| !s.is_empty()) {
+        return Ok(value.to_string());
+    }
+    let mut url =
+        url::Url::parse(base_url.trim()).map_err(|_| "Invalid Gemini base URL".to_string())?;
+    let path = url.path().trim_end_matches('/');
+    let path = if is_full_url {
+        let index = path
+            .find("/models/")
+            .ok_or_else(|| "Cannot derive models endpoint from full URL".to_string())?;
+        format!("{}/models", &path[..index])
+    } else if path.ends_with("/models") {
+        path.to_string()
+    } else {
+        let prefix = path
+            .strip_suffix("/v1beta")
+            .or_else(|| path.strip_suffix("/v1"))
+            .unwrap_or(path);
+        format!("{prefix}/v1beta/models")
+    };
+    url.set_path(&path);
+    url.set_fragment(None);
+    Ok(url.into())
 }
 
 fn redact_model_fetch_error_body(body: String, known_secrets: &[String]) -> String {
@@ -183,7 +270,7 @@ fn build_model_fetch_headers(
                 HeaderValue::from_str(api_key)
                     .map_err(|error| format!("Invalid API Key header value: {error}"))?,
             ),
-            Some("google-generative-ai") => (
+            Some("google-generative-ai" | "gemini_native") => (
                 HeaderName::from_static("x-goog-api-key"),
                 HeaderValue::from_str(api_key)
                     .map_err(|error| format!("Invalid API Key header value: {error}"))?,
@@ -333,6 +420,120 @@ fn ends_with_version_segment(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gemini_catalog_reads_resource_names() {
+        assert_eq!(
+            catalog_model_ids(Some(serde_json::json!([
+                {"name":"models/gemini-fixture"}, {"name":"models/"},
+                {"name":"unrelated"}, {"slug":"legacy", "name":"models/ignored"}
+            ]))),
+            vec!["gemini-fixture", "legacy"]
+        );
+    }
+
+    #[test]
+    fn gemini_endpoints_preserve_prefixes_and_explicit_overrides() {
+        for (base, full, expected) in [
+            (
+                "https://fixture.example/proxy/v1beta/",
+                false,
+                "https://fixture.example/proxy/v1beta/models",
+            ),
+            (
+                "https://fixture.example/v1beta/models/a:generateContent",
+                true,
+                "https://fixture.example/v1beta/models",
+            ),
+            (
+                "https://fixture.example/v1beta/models",
+                false,
+                "https://fixture.example/v1beta/models",
+            ),
+        ] {
+            assert_eq!(build_gemini_models_url(base, full, None).unwrap(), expected);
+        }
+        assert_eq!(
+            build_gemini_models_url("https://fixture.example", false, Some("  ")).unwrap(),
+            "https://fixture.example/v1beta/models"
+        );
+        assert_eq!(
+            build_gemini_models_url("invalid", true, Some("https://fixture.example/catalog"))
+                .unwrap(),
+            "https://fixture.example/catalog"
+        );
+        assert!(build_gemini_models_url("https://fixture.example/opaque", true, None).is_err());
+        let headers =
+            build_model_fetch_headers("synthetic-key", Some("gemini_native"), None, None).unwrap();
+        assert_eq!(headers["x-goog-api-key"], "synthetic-key");
+        assert!(!headers.contains_key(AUTHORIZATION));
+    }
+
+    #[tokio::test]
+    async fn gemini_catalog_rejects_repeated_page_tokens() {
+        use axum::{routing::get, Json, Router};
+        let app = Router::new().route(
+            "/v1beta/models",
+            get(|| async { Json(serde_json::json!({"models":[],"nextPageToken":"repeat"})) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let result = fetch_models(
+            &base,
+            "synthetic-key",
+            false,
+            None,
+            None,
+            Some("google-generative-ai"),
+            None,
+        )
+        .await;
+        server.abort();
+        assert_eq!(
+            result.unwrap_err(),
+            "Model catalog pagination did not terminate"
+        );
+    }
+
+    #[tokio::test]
+    async fn gemini_catalog_uses_header_and_collects_pages() {
+        use axum::{extract::Query, routing::get, Json, Router};
+        let app = Router::new().route("/v1beta/models", get(
+            |headers: HeaderMap, Query(query): Query<BTreeMap<String, String>>| async move {
+                assert_eq!(headers["x-goog-api-key"], "synthetic-key");
+                assert!(!headers.contains_key(AUTHORIZATION));
+                assert!(!query.contains_key("key"));
+                if query.get("pageToken").is_some_and(|token| token == "page+two/=") {
+                    Json(serde_json::json!({"models":[{"name":"models/a"},{"name":"models/z"}]}))
+                } else {
+                    assert!(!query.contains_key("pageToken"));
+                    Json(serde_json::json!({"models":[{"name":"models/z"}],"nextPageToken":"page+two/="}))
+                }
+            }
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        for suffix in ["", "/v1", "/v1beta"] {
+            let result = fetch_models(
+                &format!("{base}{suffix}"),
+                "synthetic-key",
+                false,
+                None,
+                None,
+                Some("google-generative-ai"),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                result.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+                vec!["a", "z"]
+            );
+        }
+        server.abort();
+    }
 
     #[test]
     fn model_fetch_headers_follow_pi_api_format() {

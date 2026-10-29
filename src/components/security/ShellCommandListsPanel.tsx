@@ -28,7 +28,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useToolRiskCommandLists } from "@/hooks/useToolRisk";
+import {
+  commandListErrorKey,
+  useToolRiskCommandLists,
+} from "@/hooks/useToolRisk";
 import { toolRiskApi } from "@/lib/api";
 import {
   RISK_CATEGORIES,
@@ -193,8 +196,10 @@ function CommandListEditor({
               : "medium",
       });
       onOpenChange(false);
-    } catch {
-      setError("mutationFailed");
+    } catch (error) {
+      setError(
+        commandListErrorKey(error).split(".").at(-1) ?? "mutationFailed",
+      );
     }
   };
   return (

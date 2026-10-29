@@ -799,7 +799,7 @@ pub(crate) fn build_effective_provider_for_live_with_codex_oauth_manager(
         build_effective_settings_with_common_config(db, app_type, provider)?;
     apply_codex_official_auth(app_type, &mut effective_provider, Some(codex_oauth_manager))?;
     neutralize_codex_proxy_oauth_fallback(app_type, &mut effective_provider);
-    Ok(effective_provider)
+    crate::services::upstream_protocol::project(db, app_type, &effective_provider)
 }
 
 /// Proxy-managed OAuth cards (xai_oauth, github_copilot, …) are keyless by
@@ -850,6 +850,16 @@ fn apply_codex_official_auth(
         .map(|id| id.trim().to_string())
         .filter(|id| !id.is_empty())
     else {
+        if provider.id == "codex-official" {
+            // The fixed card follows native login, including rotation and logout.
+            // Apply only config.toml so a concurrent native refresh is never overwritten.
+            let settings = provider
+                .settings_config
+                .as_object_mut()
+                .ok_or_else(|| AppError::Config("Codex 供应商配置必须是 JSON 对象".to_string()))?;
+            settings.insert("auth".to_string(), serde_json::json!({}));
+            return Ok(());
+        }
         // Native Codex may rotate a refresh token while this card is inactive.
         // Never replace a newer login for the same user/workspace with its saved snapshot.
         if let (Some(saved), Ok(live)) = (
@@ -1725,6 +1735,12 @@ pub(crate) fn sync_live_for_provider_respecting_takeover(
                 .sync_grok_live_from_provider_while_proxy_active(provider),
         )
         .map_err(|e| AppError::Message(format!("同步 Grok Build Live 配置失败: {e}")))?,
+        AppType::Gemini if live_taken_over => futures::executor::block_on(
+            state
+                .proxy_service
+                .sync_gemini_live_from_provider_while_proxy_active(provider),
+        )
+        .map_err(|e| AppError::Message(format!("Failed to sync Gemini live configuration: {e}")))?,
         _ => {}
     }
 
@@ -2191,6 +2207,29 @@ pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
         config_to_write = Some(read_json_file(&settings_path)?);
     }
 
+    if let Some(model) = env_map
+        .get("GEMINI_MODEL")
+        .filter(|model| !model.trim().is_empty())
+    {
+        let settings = config_to_write.get_or_insert_with(|| json!({}));
+        json_deep_merge(settings, &json!({ "model": { "name": model } }));
+        // Gemini CLI's dynamic model registry supplies custom entries to /model.
+        // Leave built-in definitions intact so native capabilities remain available.
+        if !model.starts_with("gemini-")
+            && !model.starts_with("models/gemini-")
+            && model != "auto"
+            && !model.starts_with("auto-gemini-")
+        {
+            json_deep_merge(
+                settings,
+                &json!({
+                    "experimental": { "dynamicModelConfiguration": true },
+                    "modelConfigs": { "modelDefinitions": { (model): { "isVisible": true } } }
+                }),
+            );
+        }
+    }
+
     match auth_type {
         GeminiAuthType::GoogleOfficial => {
             // Google Official uses OAuth, no API key validation needed.
@@ -2420,7 +2459,7 @@ pub fn import_hermes_providers_from_live(state: &AppState) -> Result<usize, AppE
     let mut updated = 0;
     let existing_ids = state.db.get_provider_ids("hermes")?;
 
-    for (name, config) in providers {
+    for (name, mut config) in providers {
         // Validate: skip entries with empty name
         if name.trim().is_empty() {
             log::warn!("Skipping Hermes provider with empty name");
@@ -2430,6 +2469,20 @@ pub fn import_hermes_providers_from_live(state: &AppState) -> Result<usize, AppE
         if existing_ids.contains(&name) {
             match state.db.get_provider_by_id(&name, "hermes") {
                 Ok(Some(existing)) => {
+                    let projected = crate::services::upstream_protocol::project(
+                        state.db.as_ref(),
+                        &AppType::Hermes,
+                        &existing,
+                    )?;
+                    if config["base_url"] == projected.settings_config["base_url"]
+                        && projected.settings_config["base_url"]
+                            != existing.settings_config["base_url"]
+                    {
+                        config["base_url"] = existing.settings_config["base_url"].clone();
+                        if config["api_key"] == projected.settings_config["api_key"] {
+                            config["api_key"] = existing.settings_config["api_key"].clone();
+                        }
+                    }
                     if existing.settings_config != config {
                         let mut provider = existing;
                         provider.settings_config = config;

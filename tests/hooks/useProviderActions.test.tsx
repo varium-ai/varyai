@@ -782,6 +782,26 @@ describe("useProviderActions", () => {
     ).rejects.toThrow("delete failed");
   });
 
+  it("explains a deferred TRAE selection without reporting backfill failure", async () => {
+    switchProviderMutateAsync.mockResolvedValueOnce({
+      warnings: ["trae_sync_pending"],
+    });
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useProviderActions("trae"), {
+      wrapper,
+    });
+    await act(async () => {
+      await result.current.switchProvider(
+        createProvider({ category: "custom" }),
+      );
+    });
+    expect(toastWarningMock).not.toHaveBeenCalled();
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      expect.stringMatching(/TRAE.*(连接|connect)/i),
+      { closeButton: true },
+    );
+  });
+
   it("handles switch mutation errors silently", async () => {
     switchProviderMutateAsync.mockRejectedValueOnce(new Error("switch failed"));
     const { wrapper } = createWrapper();

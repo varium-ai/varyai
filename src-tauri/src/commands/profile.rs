@@ -143,6 +143,7 @@ pub struct CurrentProfileIds {
 pub struct ProfilesResponse {
     pub profiles: Vec<ProfileDto>,
     pub current_ids: CurrentProfileIds,
+    pub current_bundle_id: Option<String>,
     pub agents: Vec<crate::services::profile_bundle::ProfileAgent>,
     pub undo: Option<crate::services::profile_bundle::ProfileUndo>,
 }
@@ -244,6 +245,10 @@ pub fn list_profiles(state: State<'_, AppState>) -> Result<ProfilesResponse, Str
     Ok(ProfilesResponse {
         profiles: profiles.into_iter().map(ProfileDto::from).collect(),
         current_ids,
+        current_bundle_id: state
+            .db
+            .get_current_profile_id(crate::services::profile_bundle::BUNDLE_SCOPE)
+            .map_err(|e| e.to_string())?,
         agents: crate::services::profile_bundle::agents(&state).map_err(|e| e.to_string())?,
         undo: ProfileBundleService::last_undo(&state).map_err(|e| e.to_string())?,
     })
@@ -285,6 +290,9 @@ pub fn delete_profile(state: State<'_, AppState>, id: String) -> Result<(), Stri
 
 #[tauri::command]
 pub fn clear_current_profile(state: State<'_, AppState>, scope: String) -> Result<(), String> {
+    if scope == crate::services::profile_bundle::BUNDLE_SCOPE {
+        return ProfileBundleService::clear_current(&state).map_err(|e| e.to_string());
+    }
     let scope = scope
         .parse::<crate::app_config::AppType>()
         .map_err(|e| e.to_string())?;

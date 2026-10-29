@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { HomeDashboard } from "@/components/home/HomeDashboard";
-import { useSecurityAuditLogs } from "@/hooks/useSecurityAudit";
+import { useSecurityEventsSummary } from "@/hooks/useSecurityEvents";
 import type { Provider } from "@/types";
 import { DEFAULT_VISIBLE_APPS } from "@/config/appConfig";
 
@@ -13,12 +13,9 @@ vi.mock("@/hooks/useSecurityProtection", () => ({
     isLoading: false,
   }),
 }));
-vi.mock("@/hooks/useSecurityAudit", () => ({
-  useSecurityAuditLogs: vi.fn((filters) => ({
-    logsResult: {
-      total:
-        filters.action === "block" ? 2 : filters.action === "redact" ? 3 : 4,
-    },
+vi.mock("@/hooks/useSecurityEvents", () => ({
+  useSecurityEventsSummary: vi.fn(() => ({
+    data: { protectiveBlocked: 2, redacted: 3, warnings: 4 },
     isError: false,
     isLoading: false,
   })),
@@ -73,17 +70,13 @@ describe("WorkBuddy home configuration", () => {
       </QueryClientProvider>,
     );
     expect(screen.getByText("Handled 5, warned 4")).toBeInTheDocument();
-    for (const action of ["block", "redact", "audit"]) {
-      expect(useSecurityAuditLogs).toHaveBeenCalledWith(
-        expect.objectContaining({
-          appType: "workbuddy",
-          action,
-          startTimestamp: expect.any(Number),
-        }),
-        1,
-        1,
-      );
-    }
+    expect(useSecurityEventsSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        view: "security_events",
+        appType: "workbuddy",
+        startTimestamp: expect.any(Number),
+      }),
+    );
     expect(screen.getByText("provider.inUse")).toBeInTheDocument();
     expect(
       screen.queryByRole("switch", { name: "workbuddy.routing.title" }),

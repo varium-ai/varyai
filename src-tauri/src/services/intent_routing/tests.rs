@@ -305,8 +305,15 @@ fn version_two_extension_upgrades_without_moving_groups_into_shared_storage() {
     db.save_provider("codex", &provider()).expect("provider");
     drop(db);
     let ext = rusqlite::Connection::open(dir.path().join("vary-ai.db")).expect("extension");
-    ext.execute_batch("DROP TABLE intent_routing_groups; PRAGMA user_version=2;")
-        .expect("v2 fixture");
+    ext.execute_batch(
+        "DROP TABLE intent_routing_groups;
+         DROP TABLE intent_routing_preferences;
+         DROP TABLE gateway_agent_bindings;
+         DROP TABLE gateway_usage_details;
+         DROP TABLE gateway_usage_models;
+         PRAGMA user_version=2;",
+    )
+    .expect("v2 fixture");
     drop(ext);
     let db = Database::init_at(&path).expect("upgrade v2");
     db.save_intent_routing_group(fixture()).expect("save");
@@ -321,7 +328,7 @@ fn version_two_extension_upgrades_without_moving_groups_into_shared_storage() {
         shared
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i32>(0))
             .expect("version"),
-        20
+        crate::database::SHARED_SCHEMA_VERSION
     );
 }
 
@@ -423,8 +430,14 @@ fn automatic_group_setting_survives_reopen_and_v3_upgrade_but_import_disables_it
     let path = dir.path().join("cc-switch.db");
     drop(Database::init_at(&path).expect("initialize"));
     let ext = rusqlite::Connection::open(dir.path().join("vary-ai.db")).expect("extension");
-    ext.execute_batch("DROP TABLE intent_routing_preferences; PRAGMA user_version=3;")
-        .expect("v3");
+    ext.execute_batch(
+        "DROP TABLE intent_routing_preferences;
+         DROP TABLE gateway_agent_bindings;
+         DROP TABLE gateway_usage_details;
+         DROP TABLE gateway_usage_models;
+         PRAGMA user_version=3;",
+    )
+    .expect("v3");
     drop(ext);
     let db = Database::init_at(&path).expect("upgrade");
     db.set_intent_routing_auto_create(true).expect("on");

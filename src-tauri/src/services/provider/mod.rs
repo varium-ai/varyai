@@ -46,7 +46,6 @@ pub fn import_pi_providers_from_live(state: &AppState) -> Result<usize, AppError
 }
 
 // Internal re-exports (pub(crate))
-pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::{
     build_effective_provider_for_live_with_codex_oauth_manager,
     build_effective_settings_with_common_config, normalize_provider_common_config_for_storage,
@@ -54,11 +53,12 @@ pub(crate) use live::{
     sync_current_provider_for_app_to_live, write_live_with_common_config_for_codex_oauth_manager,
     write_live_with_common_config_for_state, LiveSyncOutcome,
 };
+pub(crate) use live::{sanitize_claude_settings_for_live, write_gemini_live};
 
 // Internal re-exports
 use live::{
     remove_hermes_provider_from_live, remove_openclaw_provider_from_live,
-    remove_opencode_provider_from_live, write_gemini_live,
+    remove_opencode_provider_from_live,
 };
 use usage::validate_usage_script;
 
@@ -238,13 +238,25 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let old_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
         let old_home = std::env::var_os("HOME");
+        let old_hermes_home = std::env::var_os("HERMES_HOME");
+        let old_local_app_data = std::env::var_os("LOCALAPPDATA");
         std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
         std::env::set_var("HOME", temp.path());
+        std::env::set_var("HERMES_HOME", temp.path().join(".hermes"));
+        std::env::set_var("LOCALAPPDATA", temp.path().join("AppData").join("Local"));
 
         let db = Arc::new(Database::memory().expect("in-memory database"));
         let state = AppState::new(db);
         let result = test(&state, temp.path());
 
+        match old_local_app_data {
+            Some(value) => std::env::set_var("LOCALAPPDATA", value),
+            None => std::env::remove_var("LOCALAPPDATA"),
+        }
+        match old_hermes_home {
+            Some(value) => std::env::set_var("HERMES_HOME", value),
+            None => std::env::remove_var("HERMES_HOME"),
+        }
         match old_test_home {
             Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
             None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
@@ -255,6 +267,48 @@ mod tests {
         }
 
         result
+    }
+
+    #[test]
+    #[serial]
+    fn provider_test_home_isolates_and_restores_hermes_environment() {
+        let ambient = tempfile::tempdir().expect("ambient fixture directory");
+        let old_hermes_home = env::var_os("HERMES_HOME");
+        let old_local_app_data = env::var_os("LOCALAPPDATA");
+        let ambient_hermes = ambient.path().join("hermes");
+        let ambient_local = ambient.path().join("local");
+        env::set_var("HERMES_HOME", &ambient_hermes);
+        env::set_var("LOCALAPPDATA", &ambient_local);
+
+        let (home, hermes_home, local_app_data) = with_test_home(|_, home| {
+            (
+                home.to_path_buf(),
+                env::var_os("HERMES_HOME"),
+                env::var_os("LOCALAPPDATA"),
+            )
+        });
+        let restored_hermes_home = env::var_os("HERMES_HOME");
+        let restored_local_app_data = env::var_os("LOCALAPPDATA");
+
+        match old_hermes_home {
+            Some(value) => env::set_var("HERMES_HOME", value),
+            None => env::remove_var("HERMES_HOME"),
+        }
+        match old_local_app_data {
+            Some(value) => env::set_var("LOCALAPPDATA", value),
+            None => env::remove_var("LOCALAPPDATA"),
+        }
+
+        assert_eq!(hermes_home, Some(home.join(".hermes").into_os_string()));
+        assert_eq!(
+            local_app_data,
+            Some(home.join("AppData").join("Local").into_os_string())
+        );
+        assert_eq!(restored_hermes_home, Some(ambient_hermes.into_os_string()));
+        assert_eq!(
+            restored_local_app_data,
+            Some(ambient_local.into_os_string())
+        );
     }
 
     fn codex_settings(base_url: &str, api_key: &str) -> Value {
@@ -1756,6 +1810,221 @@ command = "legacy-cmd"
             extracted.contains("web_search = \"enabled\""),
             "a user-set web_search value is a shareable preference, got: {extracted}"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn trae_closed_client_allows_provider_switch_update_and_official_selection() {
+        let _home = TempHome::new();
+        let state = AppState::new(Arc::new(Database::memory().expect("database")));
+        ProviderService::list(&state, AppType::Trae).expect("seed official");
+        for id in ["trae-a", "trae-b"] {
+            ProviderService::add(
+                &state,
+                AppType::Trae,
+                Provider::with_id(
+                    id.into(),
+                    id.into(),
+                    json!({
+                        "baseUrl":"https://upstream.example/v1", "apiKey":"synthetic-key",
+                        "protocol":"openai", "models":[{"model":"shared-model"}]
+                    }),
+                    None,
+                ),
+                false,
+            )
+            .expect("add provider");
+        }
+        for id in ["trae-a", "trae-b"] {
+            let result = ProviderService::switch(&state, AppType::Trae, id)
+                .expect("closed client must not block local selection");
+            assert_eq!(result.warnings, ["trae_sync_pending"]);
+            assert_eq!(
+                state.db.get_current_provider("trae").unwrap().as_deref(),
+                Some(id)
+            );
+            assert!(state.db.get_bool_flag("profile_trae_sync_pending").unwrap());
+            for provider in state.db.get_all_providers("trae").unwrap().into_values() {
+                assert_eq!(
+                    ProviderService::provider_live_config_managed(&provider),
+                    Some(provider.id == id)
+                );
+            }
+        }
+        let mut provider = state
+            .db
+            .get_provider_by_id("trae-b", "trae")
+            .unwrap()
+            .unwrap();
+        provider.settings_config["models"][0]["model"] = json!("edited-model");
+        ProviderService::update(&state, AppType::Trae, None, provider.clone())
+            .expect("closed client must not block editing the selected provider");
+        assert_eq!(
+            state
+                .db
+                .get_provider_by_id("trae-b", "trae")
+                .unwrap()
+                .unwrap()
+                .settings_config["models"][0]["model"],
+            "edited-model"
+        );
+        provider.settings_config["apiKey"] = json!("");
+        assert!(ProviderService::update(&state, AppType::Trae, None, provider).is_err());
+        assert_eq!(
+            state.db.get_current_provider("trae").unwrap().as_deref(),
+            Some("trae-b")
+        );
+        let result = ProviderService::switch(&state, AppType::Trae, "trae-official")
+            .expect("closed client must allow official selection");
+        assert_eq!(result.warnings, ["trae_sync_pending"]);
+        assert_eq!(
+            state.db.get_current_provider("trae").unwrap().as_deref(),
+            Some("trae-official")
+        );
+        assert!(state
+            .db
+            .get_all_providers("trae")
+            .unwrap()
+            .values()
+            .all(
+                |provider| ProviderService::provider_live_config_managed(provider) == Some(false)
+            ));
+        assert!(!_home.dir.path().join(".trae-cn/argv.json").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn gemini_custom_model_is_selectable_without_losing_native_settings() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let path = crate::gemini_config::get_gemini_settings_path();
+        write_json_file(
+            &path,
+            &json!({
+                "model": { "name": "old-model", "maxSessionTurns": 12 },
+                "mcpServers": { "local": { "command": "synthetic-mcp" } },
+                "experimental": { "otherFlag": true },
+                "modelConfigs": { "modelDefinitions": {
+                    "supplier/custom-model": { "displayName": "My model", "isVisible": false },
+                    "other-model": { "isVisible": true }
+                }}
+            }),
+        )
+        .expect("seed native settings");
+        let mut provider = Provider::with_id(
+            "gemini-custom".into(),
+            "Custom".into(),
+            json!({
+                "env": { "GEMINI_API_KEY": "synthetic-key", "GEMINI_MODEL": "supplier/custom-model" }
+            }),
+            None,
+        );
+        write_gemini_live(&provider).expect("write custom model");
+        let settings: Value = read_json_file(&path).expect("read settings");
+        assert_eq!(settings["model"]["name"], "supplier/custom-model");
+        assert_eq!(settings["model"]["maxSessionTurns"], 12);
+        assert_eq!(settings["experimental"]["dynamicModelConfiguration"], true);
+        assert_eq!(settings["experimental"]["otherFlag"], true);
+        let definitions = &settings["modelConfigs"]["modelDefinitions"];
+        assert_eq!(definitions["supplier/custom-model"]["isVisible"], true);
+        assert_eq!(
+            definitions["supplier/custom-model"]["displayName"],
+            "My model"
+        );
+        assert_eq!(definitions["other-model"]["isVisible"], true);
+        assert_eq!(settings["mcpServers"]["local"]["command"], "synthetic-mcp");
+
+        provider.settings_config["env"]["GEMINI_MODEL"] = json!("gemini-3.5-flash");
+        write_gemini_live(&provider).expect("write native model");
+        let settings: Value = read_json_file(&path).expect("read native model settings");
+        assert_eq!(settings["model"]["name"], "gemini-3.5-flash");
+        assert!(settings["modelConfigs"]["modelDefinitions"]
+            .get("gemini-3.5-flash")
+            .is_none());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn gemini_proxy_edits_and_hot_switch_refresh_native_model() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        let db = Arc::new(Database::memory().expect("init db"));
+        let state = AppState::new(db.clone());
+        let mut provider = Provider::with_id(
+            "gemini-a".into(),
+            "Gemini A".into(),
+            json!({
+                "env": { "GEMINI_API_KEY": "synthetic-upstream-key", "GOOGLE_GEMINI_BASE_URL": "https://upstream.example", "GEMINI_MODEL": "supplier/old-model" }
+            }),
+            None,
+        );
+        db.save_provider("gemini", &provider)
+            .expect("save provider");
+        db.set_current_provider("gemini", &provider.id)
+            .expect("set current provider");
+        crate::settings::set_current_provider(&AppType::Gemini, Some(&provider.id))
+            .expect("set local current");
+        db.update_proxy_config(ProxyConfig {
+            live_takeover_active: true,
+            listen_port: 0,
+            ..Default::default()
+        })
+        .await
+        .expect("set proxy config");
+        let mut app_config = db
+            .get_proxy_config_for_app("gemini")
+            .await
+            .expect("get app config");
+        app_config.enabled = true;
+        db.update_proxy_config_for_app(app_config)
+            .await
+            .expect("enable app proxy");
+        crate::gemini_config::write_gemini_env_atomic(&std::collections::HashMap::from([
+            ("GEMINI_MODEL".into(), "supplier/old-model".into()),
+            ("GEMINI_API_KEY".into(), "PROXY_MANAGED".into()),
+            ("GOOGLE_GEMINI_BASE_URL".into(), "http://127.0.0.1:1".into()),
+        ]))
+        .expect("seed takeover env");
+        let info = state.proxy_service.start().await.expect("start proxy");
+        provider.settings_config["env"]["GEMINI_MODEL"] = json!("supplier/edited-model");
+        ProviderService::update(&state, AppType::Gemini, None, provider.clone())
+            .expect("edit active provider");
+        let env = crate::gemini_config::read_gemini_env().expect("read edited env");
+        assert_eq!(env["GEMINI_MODEL"], "supplier/edited-model");
+        assert_eq!(env["GEMINI_API_KEY"], "PROXY_MANAGED");
+        assert_eq!(
+            env["GOOGLE_GEMINI_BASE_URL"],
+            format!("http://127.0.0.1:{}", info.port)
+        );
+        let backup = db
+            .get_live_backup("gemini")
+            .await
+            .expect("read backup")
+            .expect("backup exists");
+        let backup: Value = serde_json::from_str(&backup.original_config).expect("parse backup");
+        assert_eq!(backup["env"]["GEMINI_API_KEY"], "synthetic-upstream-key");
+        assert_eq!(backup["env"]["GEMINI_MODEL"], "supplier/edited-model");
+
+        provider.id = "gemini-b".into();
+        provider.settings_config["env"]["GEMINI_MODEL"] = json!("supplier/switched-model");
+        db.save_provider("gemini", &provider)
+            .expect("save next provider");
+        state
+            .proxy_service
+            .hot_switch_provider("gemini", &provider.id)
+            .await
+            .expect("hot switch");
+        let env = crate::gemini_config::read_gemini_env().expect("read switched env");
+        assert_eq!(env["GEMINI_MODEL"], "supplier/switched-model");
+        assert_eq!(env["GEMINI_API_KEY"], "PROXY_MANAGED");
+        let settings: Value = read_json_file(&crate::gemini_config::get_gemini_settings_path())
+            .expect("read settings");
+        assert_eq!(settings["model"]["name"], "supplier/switched-model");
+        assert_eq!(
+            settings["modelConfigs"]["modelDefinitions"]["supplier/switched-model"]["isVisible"],
+            true
+        );
+        state.proxy_service.stop().await.expect("stop proxy");
     }
 
     #[tokio::test]
@@ -3821,6 +4090,44 @@ wire_api = "responses"
                 json!("Claude Sonnet 4.1")
             );
         });
+    }
+
+    #[test]
+    #[serial]
+    fn import_hermes_projected_upstream_preserves_supplier_connection(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        with_test_home(|state, _| -> Result<(), Box<dyn std::error::Error>> {
+            let mut provider = hermes_provider("gemini-fixture");
+            provider.settings_config["models"] = json!([{"id":"fixture","name":"Fixture"}]);
+            provider.meta = Some(serde_json::from_value(
+                json!({"apiFormat":"gemini_native"}),
+            )?);
+            state.db.save_provider("hermes", &provider)?;
+            let projected = crate::services::upstream_protocol::project(
+                state.db.as_ref(),
+                &AppType::Hermes,
+                &provider,
+            )?;
+            crate::hermes_config::set_provider(&provider.id, projected.settings_config)?;
+            import_hermes_providers_from_live(state)?;
+            let saved = state
+                .db
+                .get_provider_by_id(&provider.id, "hermes")?
+                .ok_or("missing fixture")?;
+            assert_eq!(
+                saved.settings_config["base_url"],
+                provider.settings_config["base_url"]
+            );
+            assert_eq!(
+                saved.settings_config["api_key"],
+                provider.settings_config["api_key"]
+            );
+            assert_eq!(
+                saved.meta.and_then(|m| m.api_format).as_deref(),
+                Some("gemini_native")
+            );
+            Ok(())
+        })
     }
 
     #[test]

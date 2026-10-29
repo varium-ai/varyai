@@ -61,6 +61,264 @@ fn seed() -> cc_switch_lib::AppState {
 }
 
 #[test]
+fn selected_bundle_is_independent_of_uncaptured_agents_and_restored_by_undo() {
+    let _guard = test_guard();
+    let state = seed();
+    state
+        .db
+        .set_current_profile_id("kimi", Some("other-profile"))
+        .unwrap();
+    let first = ProfileBundleService::capture(
+        &state,
+        "First bundle",
+        &["claude".into(), "codex".into()],
+        None,
+    )
+    .unwrap();
+    let second = ProfileBundleService::capture(
+        &state,
+        "Second bundle",
+        &["claude".into(), "codex".into()],
+        None,
+    )
+    .unwrap();
+    for profile in [&first, &second] {
+        let preview = ProfileBundleService::preview(&state, &profile.id).unwrap();
+        assert!(
+            ProfileBundleService::apply(&state, &profile.id, &preview.revision)
+                .unwrap()
+                .success
+        );
+        assert_eq!(
+            state
+                .db
+                .get_current_profile_id("bundle")
+                .unwrap()
+                .as_deref(),
+            Some(profile.id.as_str())
+        );
+        assert_eq!(
+            state.db.get_current_profile_id("kimi").unwrap().as_deref(),
+            Some("other-profile")
+        );
+    }
+    let undo = ProfileBundleService::last_undo(&state).unwrap().unwrap();
+    ProfileBundleService::undo(&state, &undo.id).unwrap();
+    assert_eq!(
+        state
+            .db
+            .get_current_profile_id("bundle")
+            .unwrap()
+            .as_deref(),
+        Some(first.id.as_str())
+    );
+    ProfileService::delete(&state, &first.id).unwrap();
+    assert_eq!(state.db.get_current_profile_id("bundle").unwrap(), None);
+    let preview = ProfileBundleService::preview(&state, &second.id).unwrap();
+    assert!(
+        ProfileBundleService::apply(&state, &second.id, &preview.revision)
+            .unwrap()
+            .success
+    );
+    let path = cc_switch_lib::get_claude_settings_path();
+    let contents = std::fs::read(&path).unwrap();
+    ProfileBundleService::clear_current(&state).unwrap();
+    assert_eq!(state.db.get_current_profile_id("bundle").unwrap(), None);
+    assert_eq!(state.db.get_current_profile_id("claude").unwrap(), None);
+    assert_eq!(state.db.get_current_profile_id("codex").unwrap(), None);
+    assert_eq!(
+        state.db.get_current_profile_id("kimi").unwrap().as_deref(),
+        Some("other-profile")
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), contents);
+}
+
+#[test]
+fn unchanged_provider_metadata_does_not_invalidate_profile_preview() {
+    let _guard = test_guard();
+    let state = seed();
+    let mut provider = state
+        .db
+        .get_provider_by_id("claude-a", "claude")
+        .unwrap()
+        .unwrap();
+    let routes = (0..8)
+        .map(|index| {
+            (
+                format!("route-{index}"),
+                json!({"model": format!("model-{index}")}),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    provider.meta =
+        Some(serde_json::from_value(json!({"claudeDesktopModelRoutes": routes})).unwrap());
+    state.db.save_provider("claude", &provider).unwrap();
+    let profile = ProfileBundleService::capture(
+        &state,
+        "Stable metadata",
+        &["claude".into(), "codex".into()],
+        None,
+    )
+    .unwrap();
+    let preview = ProfileBundleService::preview(&state, &profile.id).unwrap();
+    for _ in 0..8 {
+        assert_eq!(
+            preview.revision,
+            ProfileBundleService::preview(&state, &profile.id)
+                .unwrap()
+                .revision
+        );
+    }
+    let result = ProfileBundleService::apply(&state, &profile.id, &preview.revision).unwrap();
+    assert!(result.success);
+    ProfileBundleService::undo(&state, result.undo_id.as_deref().unwrap()).unwrap();
+}
+
+#[test]
+fn profiles_capture_only_the_current_supplier_for_clients_with_one_selection() {
+    let _guard = test_guard();
+    for app in [
+        AppType::WorkBuddy,
+        AppType::Qoder,
+        AppType::Kimi,
+        AppType::Qwen,
+        AppType::ZCode,
+    ] {
+        let state = seed();
+        for (id, model) in [("extra-a", "model-a"), ("extra-b", "model-b")] {
+            state
+                .db
+                .save_provider(
+                    app.as_str(),
+                    &Provider::with_id(id.into(), id.into(), extra_config(&app, model), None),
+                )
+                .unwrap();
+            ProviderService::switch(&state, app.clone(), id).unwrap();
+        }
+        let profile = ProfileBundleService::capture(
+            &state,
+            "Current supplier",
+            &["claude".into(), app.as_str().into()],
+            None,
+        )
+        .unwrap();
+        let preview = ProfileBundleService::preview(&state, &profile.id).unwrap();
+        let change = preview
+            .changes
+            .iter()
+            .find(|c| c.app == app.as_str())
+            .unwrap();
+        assert_eq!(
+            change.target_provider,
+            "extra-b",
+            "{} captured inactive suppliers",
+            app.as_str()
+        );
+        assert!(change.models.contains(&"model-b".into()));
+        assert!(
+            !change.models.iter().any(|m| m.contains("model-a")),
+            "{} captured inactive models",
+            app.as_str()
+        );
+        let path = match app {
+            AppType::WorkBuddy => support::ensure_test_home().join(".workbuddy-ai/models.json"),
+            AppType::Qoder => support::ensure_test_home().join(".qoder-cn/settings.json"),
+            AppType::Kimi => support::ensure_test_home().join(".kimi-code/config.toml"),
+            AppType::Qwen => support::ensure_test_home().join(".qwen/settings.json"),
+            AppType::ZCode => support::ensure_test_home().join(".zcode/v2/provider_config.json"),
+            _ => unreachable!(),
+        };
+        let saved_native = std::fs::read(&path).unwrap();
+        ProviderService::switch(&state, app.clone(), "extra-a").unwrap();
+        let mut provider = state
+            .db
+            .get_provider_by_id("extra-b", app.as_str())
+            .unwrap()
+            .unwrap();
+        provider.settings_config = extra_config(&app, "edited-model-b");
+        ProviderService::update(&state, app.clone(), None, provider).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let preview = ProfileBundleService::preview(&state, &profile.id).unwrap();
+        let result = ProfileBundleService::apply(&state, &profile.id, &preview.revision).unwrap();
+        assert!(
+            result.success,
+            "{} failed to restore saved selection",
+            app.as_str()
+        );
+        assert_eq!(
+            ProviderService::current(&state, app.clone()).unwrap(),
+            "extra-b"
+        );
+        let applied = std::fs::read_to_string(&path).unwrap();
+        assert!(applied.contains("model-b"));
+        assert!(!applied.contains("edited-model-b"));
+        assert!(
+            !applied.contains("model-a"),
+            "{} left the previous supplier active",
+            app.as_str()
+        );
+        if matches!(app, AppType::Kimi | AppType::Qwen | AppType::ZCode) {
+            let selection = |bytes: &[u8]| {
+                let value: serde_json::Value = if app == AppType::Kimi {
+                    serde_json::to_value(
+                        toml::from_str::<toml::Value>(std::str::from_utf8(bytes).unwrap()).unwrap(),
+                    )
+                    .unwrap()
+                } else {
+                    serde_json::from_slice(bytes).unwrap()
+                };
+                match app {
+                    AppType::Kimi => value["default_model"].clone(),
+                    AppType::Qwen => {
+                        json!({"model":value["model"]["name"],"auth":value["security"]["auth"]["selectedType"]})
+                    }
+                    _ => value["config"]["defaultModelSelection"].clone(),
+                }
+            };
+            assert_eq!(selection(applied.as_bytes()), selection(&saved_native));
+        }
+        ProfileBundleService::undo(&state, result.undo_id.as_deref().unwrap()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+}
+
+#[test]
+fn undo_remains_available_after_provider_lists_are_read() {
+    let _guard = test_guard();
+    let state = seed();
+    for app in [AppType::WorkBuddy, AppType::Qoder, AppType::Kimi] {
+        for (id, model) in [("extra-a", "model-a"), ("extra-b", "model-b")] {
+            state
+                .db
+                .save_provider(
+                    app.as_str(),
+                    &Provider::with_id(id.into(), id.into(), extra_config(&app, model), None),
+                )
+                .unwrap();
+        }
+        ProviderService::switch(&state, app, "extra-a").unwrap();
+    }
+    let apps = ["claude", "codex", "workbuddy", "qoder", "kimi"].map(String::from);
+    let profile = ProfileBundleService::capture(&state, "Read-only refresh", &apps, None).unwrap();
+    ProviderService::switch(&state, AppType::Codex, "codex-b").unwrap();
+    let preview = ProfileBundleService::preview(&state, &profile.id).unwrap();
+    let result = ProfileBundleService::apply(&state, &profile.id, &preview.revision).unwrap();
+    assert!(result.success);
+    for app in [
+        AppType::Claude,
+        AppType::Codex,
+        AppType::WorkBuddy,
+        AppType::Qoder,
+        AppType::Kimi,
+    ] {
+        ProviderService::list(&state, app.clone()).unwrap();
+        ProviderService::current(&state, app).unwrap();
+    }
+    ProfileBundleService::undo(&state, result.undo_id.as_deref().unwrap())
+        .expect("read-only UI refresh must not conflict with undo");
+}
+
+#[test]
 fn pi_bundle_merges_native_model_fields_missing_from_saved_provider_and_can_undo() {
     let _guard = test_guard();
     let state = seed();
@@ -211,6 +469,45 @@ fn bundle_captures_live_instructions_alongside_provider_models() {
 }
 
 #[test]
+fn single_agent_snapshot_applies_and_undoes_without_changing_other_agents() {
+    let _guard = test_guard();
+    let state = seed();
+    let profile = ProfileBundleService::capture(&state, "Current agent", &["claude".into()], None)
+        .expect("capture one agent");
+    ProviderService::switch(&state, AppType::Claude, "claude-b").unwrap();
+    ProviderService::switch(&state, AppType::Codex, "codex-b").unwrap();
+    let codex_path = cc_switch_lib::get_codex_config_path();
+    let codex_before = std::fs::read(&codex_path).unwrap();
+    let preview = ProfileBundleService::preview(&state, &profile.id).unwrap();
+    assert_eq!(preview.changes.len(), 1);
+    assert_eq!(preview.changes[0].app, "claude");
+    let result = ProfileBundleService::apply(&state, &profile.id, &preview.revision).unwrap();
+    assert!(result.success);
+    assert_eq!(
+        ProviderService::current(&state, AppType::Claude).unwrap(),
+        "claude-a"
+    );
+    assert_eq!(
+        ProviderService::current(&state, AppType::Codex).unwrap(),
+        "codex-b"
+    );
+    assert_eq!(std::fs::read(&codex_path).unwrap(), codex_before);
+    ProfileBundleService::undo(&state, result.undo_id.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        ProviderService::current(&state, AppType::Claude).unwrap(),
+        "claude-b"
+    );
+    assert_eq!(std::fs::read(codex_path).unwrap(), codex_before);
+    for apps in [
+        vec![],
+        vec!["claude".into(), "claude".into()],
+        vec!["unknown".into()],
+    ] {
+        assert!(ProfileBundleService::capture(&state, "Invalid scope", &apps, None).is_err());
+    }
+}
+
+#[test]
 fn bundle_previews_and_restores_provider_and_model_for_two_agents() {
     let _guard = test_guard();
     let state = seed();
@@ -343,6 +640,13 @@ fn second_agent_failure_restores_first_agent_and_original_files() {
     let result = ProfileBundleService::apply(&state, &profile.id, &preview.revision).unwrap();
     assert!(!result.success);
     assert!(result.undo_id.is_none());
+    let response = serde_json::to_value(&result).unwrap();
+    assert_eq!(response["failure"]["app"], "codex");
+    assert_eq!(
+        response["failure"]["reason"],
+        "profiles.bundle.providerApplyFailed"
+    );
+    assert!(!response.to_string().contains("missing-account"));
     assert_eq!(std::fs::read(path).unwrap(), before);
     assert_eq!(
         ProviderService::current(&state, AppType::Claude).unwrap(),
@@ -352,6 +656,84 @@ fn second_agent_failure_restores_first_agent_and_original_files() {
         ProviderService::current(&state, AppType::Codex).unwrap(),
         "codex-b"
     );
+}
+
+#[test]
+fn qwen_profiles_resolve_legacy_protocol_and_upstream_selection_during_takeover() {
+    let _guard = test_guard();
+    for wire_api in ["chat", "responses"] {
+        let state = seed();
+        let path = support::ensure_test_home().join(".qwen/settings.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let upstream = "https://profile.example/v1";
+        let mut doc = json!({
+            "modelProviders":{"openai":[{"id":"same-model","baseUrl":upstream,"wireApi":wire_api,"envKey":"FIXTURE_KEY"}]},
+            "model":{"name":"same-model","baseUrl":upstream},
+            "security":{"auth":{"selectedType":"openai"}},
+            "env":{"FIXTURE_KEY":"synthetic-private-key"}
+        });
+        std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        let profile =
+            ProfileBundleService::capture(&state, "Upstream", &["qwen".into()], None).unwrap();
+        // Older snapshots stored OpenAI auth even for a Responses-only entry.
+        let mut legacy = profile.clone();
+        let mut payload: serde_json::Value = serde_json::from_str(&legacy.payload).unwrap();
+        payload["bundle"]["selections"][0]["nativeModels"]["auth"] = json!("openai");
+        legacy.payload = payload.to_string();
+        state.db.save_profile(&legacy).unwrap();
+        let mut profiles = vec![legacy];
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        for route_id in ["before-restart", "after-restart"] {
+            let local = format!("http://127.0.0.1:{port}/agents/qwen/providers/{route_id}/v1");
+            doc["modelProviders"]["openai"][0]["baseUrl"] = json!(local);
+            doc["model"]["baseUrl"] = json!(upstream);
+            std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+            let backup = json!({"path":path,"routes":[{
+                "id":route_id,"pointer":"/modelProviders/openai/0/baseUrl","upstream":upstream,
+                "local":local,"models":["same-model"],"provider_id":"native-fixture"
+            }]});
+            futures::executor::block_on(state.db.save_live_backup("qwen", &backup.to_string()))
+                .unwrap();
+            for saved in &profiles {
+                let preview = ProfileBundleService::preview(&state, &saved.id).unwrap();
+                let result =
+                    ProfileBundleService::apply(&state, &saved.id, &preview.revision).unwrap();
+                assert!(
+                    result.success,
+                    "saved upstream selection must survive takeover"
+                );
+            }
+            let applied: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(applied["model"]["baseUrl"], local);
+            assert_eq!(
+                applied["security"]["auth"]["selectedType"],
+                if wire_api == "responses" {
+                    "openai-responses"
+                } else {
+                    "openai"
+                }
+            );
+            let routed = ProfileBundleService::capture(
+                &state,
+                &format!("Routed {route_id}"),
+                &["qwen".into()],
+                None,
+            )
+            .unwrap();
+            let saved: serde_json::Value = serde_json::from_str(&routed.payload).unwrap();
+            assert_eq!(
+                saved["bundle"]["selections"][0]["nativeModels"]["baseUrl"],
+                upstream
+            );
+            assert!(!routed.payload.contains("synthetic-private-key"));
+            profiles.push(routed);
+        }
+    }
 }
 
 #[test]
@@ -668,6 +1050,20 @@ fn closed_trae_does_not_block_profile_preview_apply_or_undo() {
         state.db.get_current_provider("trae").unwrap().as_deref(),
         Some("trae-a")
     );
+    let revision = ProfileBundleService::preview(&state, &profile.id)
+        .unwrap()
+        .revision;
+    // Background delivery changes transport status, not the chosen configuration.
+    state
+        .db
+        .set_setting("profile_trae_sync_pending", "false")
+        .unwrap();
+    assert_eq!(
+        ProfileBundleService::preview(&state, &profile.id)
+            .unwrap()
+            .revision,
+        revision
+    );
     ProfileBundleService::undo(&state, result.undo_id.as_deref().unwrap()).unwrap();
     assert_eq!(
         state.db.get_current_provider("claude").unwrap().as_deref(),
@@ -811,7 +1207,15 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
             let result=match request["op"].as_str().unwrap(){
             "health"=>json!({"ready":true,"enabled":false}),
             "list"=>json!(server_models.lock().unwrap().iter().map(|(id,c)|json!({"id":id,"name":c["models"][0]["model"],"displayName":format!("VaryAI/{id}/{}",c["models"][0]["model"].as_str().unwrap()),"baseUrl":c["baseUrl"]})).collect::<Vec<_>>()),
-            "apply"=>{server_models.lock().unwrap().insert(request["id"].as_str().unwrap().into(),request["config"].clone());json!(true)},
+            "apply"=>{
+                let id = request["id"].as_str().unwrap();
+                let mut models = server_models.lock().unwrap();
+                if models.iter().any(|(other, config)| other != id && config["models"][0]["model"] == request["config"]["models"][0]["model"]) {
+                    writeln!(socket, "{}", json!({"error":"synthetic duplicate request model"})).unwrap();
+                    continue;
+                }
+                models.insert(id.into(),request["config"].clone());json!(true)
+            },
             "remove"=>{server_models.lock().unwrap().remove(request["id"].as_str().unwrap());json!(true)},
             _=>panic!("unexpected operation"),
         };
@@ -826,7 +1230,7 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
         }
     }
     let _stop = Stop(running, Some(worker));
-    for (id, model) in [("trae-a", "model-a"), ("trae-b", "model-b")] {
+    for (id, model) in [("trae-a", "shared-model"), ("trae-b", "shared-model")] {
         state
             .db
             .save_provider(
@@ -1263,4 +1667,307 @@ fn later_custom_suppliers_can_be_captured_without_changing_old_profiles_or_copyi
     // Updating an older profile to include the new vendor is explicit.
     let updated = ProfileBundleService::capture(&state, "Original", &apps, Some(&old.id)).unwrap();
     assert!(updated.payload.contains(id));
+}
+
+#[test]
+fn missing_profile_suppliers_are_skipped_for_every_agent_without_guessing_a_replacement() {
+    let _guard = test_guard();
+    for app in AppType::all().filter(|app| *app != AppType::DoubaoWork) {
+        for missing_secondary in [false, true] {
+            let state = seed();
+            let working = if app == AppType::Claude {
+                AppType::Codex
+            } else {
+                AppType::Claude
+            };
+            let mut profile = ProfileBundleService::capture(
+                &state,
+                "Legacy suppliers",
+                &[working.as_str().into()],
+                None,
+            )
+            .unwrap();
+            let current_id = match app {
+                AppType::Claude => "claude-b",
+                AppType::Codex => "codex-b",
+                _ => "current-fixture",
+            };
+            if !matches!(app, AppType::Claude | AppType::Codex) {
+                state
+                    .db
+                    .save_provider(
+                        app.as_str(),
+                        &Provider::with_id(
+                            current_id.into(),
+                            "Current supplier must not be substituted".into(),
+                            json!({"syntheticInvalidConfig": true}),
+                            None,
+                        ),
+                    )
+                    .unwrap();
+            }
+            state
+                .db
+                .set_current_provider(app.as_str(), current_id)
+                .unwrap();
+            state
+                .db
+                .set_current_profile_id(app.as_str(), Some("unrelated-profile"))
+                .unwrap();
+            let mut payload: serde_json::Value = serde_json::from_str(&profile.payload).unwrap();
+            let mut selection = json!({
+                "app": app.as_str(),
+                "providerId": if missing_secondary { current_id } else { "deleted-fixture" },
+                "models": {"syntheticInvalidModelSnapshot": true}
+            });
+            if missing_secondary {
+                selection["providers"] = json!([{
+                    "id": "deleted-secondary-fixture",
+                    "models": {}
+                }]);
+            }
+            payload["bundle"]["selections"]
+                .as_array_mut()
+                .unwrap()
+                .push(selection);
+            profile.payload = payload.to_string();
+            state.db.save_profile(&profile).unwrap();
+            ProviderService::switch(&state, working.clone(), &format!("{}-b", working.as_str()))
+                .unwrap();
+            let providers_before =
+                serde_json::to_value(state.db.get_all_providers(app.as_str()).unwrap()).unwrap();
+            let preview = ProfileBundleService::preview(&state, &profile.id)
+                .expect("one missing supplier must not block other agents");
+            assert_eq!(preview.changes.len(), 1, "{}", app.as_str());
+            assert_eq!(preview.changes[0].app, working.as_str());
+            let preview_json = serde_json::to_value(&preview).unwrap();
+            assert_eq!(
+                preview_json["skipped"],
+                json!([{"app":app.as_str(), "reason":"profiles.bundle.providerMissingSkipped"}]),
+                "{} must identify a missing supplier without choosing another one",
+                app.as_str()
+            );
+            let result =
+                ProfileBundleService::apply(&state, &profile.id, &preview.revision).unwrap();
+            assert!(result.success, "{}", app.as_str());
+            assert_eq!(result.scopes, vec![working.clone()]);
+            assert_eq!(
+                ProviderService::current(&state, working.clone()).unwrap(),
+                format!("{}-a", working.as_str())
+            );
+            assert_eq!(
+                serde_json::to_value(&result).unwrap()["skipped"],
+                preview_json["skipped"]
+            );
+            assert_eq!(
+                serde_json::to_value(state.db.get_all_providers(app.as_str()).unwrap()).unwrap(),
+                providers_before,
+                "{} changed an unavailable agent's supplier state",
+                app.as_str()
+            );
+            assert_eq!(
+                state
+                    .db
+                    .get_current_provider(app.as_str())
+                    .unwrap()
+                    .as_deref(),
+                Some(current_id)
+            );
+            assert_eq!(
+                state
+                    .db
+                    .get_current_profile_id(app.as_str())
+                    .unwrap()
+                    .as_deref(),
+                Some("unrelated-profile")
+            );
+            assert_eq!(
+                state.db.get_profile(&profile.id).unwrap().unwrap().payload,
+                profile.payload
+            );
+        }
+    }
+}
+
+#[test]
+fn skipped_agent_native_files_are_not_read_or_restored_by_profile_undo() {
+    let _guard = test_guard();
+    let state = seed();
+    let mut profile =
+        ProfileBundleService::capture(&state, "Skip unavailable Gemini", &["claude".into()], None)
+            .unwrap();
+    let mut payload: serde_json::Value = serde_json::from_str(&profile.payload).unwrap();
+    payload["bundle"]["selections"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "app":"gemini", "providerId":"deleted-gemini", "models":{}
+        }));
+    profile.payload = payload.to_string();
+    state.db.save_profile(&profile).unwrap();
+    let path = support::ensure_test_home().join(".gemini/settings.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "synthetic malformed settings").unwrap();
+    ProviderService::switch(&state, AppType::Claude, "claude-b").unwrap();
+    let preview = ProfileBundleService::preview(&state, &profile.id).unwrap();
+    let result = ProfileBundleService::apply(&state, &profile.id, &preview.revision).unwrap();
+    assert!(result.success);
+    assert_eq!(
+        ProviderService::current(&state, AppType::Claude).unwrap(),
+        "claude-a"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "synthetic malformed settings"
+    );
+    std::fs::write(&path, "external edit after profile switch").unwrap();
+    state
+        .db
+        .set_current_profile_id("gemini", Some("external-profile"))
+        .unwrap();
+    ProfileBundleService::undo(&state, result.undo_id.as_deref().unwrap())
+        .expect("an external edit to a skipped agent must not conflict with undo");
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        "external edit after profile switch"
+    );
+    assert_eq!(
+        state
+            .db
+            .get_current_profile_id("gemini")
+            .unwrap()
+            .as_deref(),
+        Some("external-profile")
+    );
+    assert_eq!(
+        ProviderService::current(&state, AppType::Claude).unwrap(),
+        "claude-b"
+    );
+}
+
+#[test]
+fn old_profiles_leave_later_added_gemini_configuration_untouched_in_both_directions() {
+    let _guard = test_guard();
+    let state = seed();
+    let profile = ProfileBundleService::capture(
+        &state,
+        "Before Gemini",
+        &["claude".into(), "codex".into()],
+        None,
+    )
+    .unwrap();
+    let gemini = Provider::with_id(
+        "gemini-later".into(),
+        "Later Gemini supplier".into(),
+        json!({
+            "env":{"GEMINI_API_KEY":"synthetic-key", "GOOGLE_GEMINI_BASE_URL":"https://later.example.test", "GEMINI_MODEL":"later-model"},
+            "config":{"modelConfigs":{"modelDefinitions":{"later-model":{"isVisible":true}, "other-model":{"isVisible":true}}}}
+        }),
+        None,
+    );
+    state.db.save_provider("gemini", &gemini).unwrap();
+    ProviderService::switch(&state, AppType::Gemini, "gemini-later").unwrap();
+    state
+        .db
+        .set_current_profile_id("gemini", Some("new-gemini-profile"))
+        .unwrap();
+    let home = support::ensure_test_home();
+    let paths = [
+        home.join(".gemini/settings.json"),
+        home.join(".gemini/.env"),
+    ];
+    let before: Vec<_> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    ProviderService::switch(&state, AppType::Claude, "claude-b").unwrap();
+    ProviderService::switch(&state, AppType::Codex, "codex-b").unwrap();
+    let preview = ProfileBundleService::preview(&state, &profile.id).unwrap();
+    assert!(preview.changes.iter().all(|change| change.app != "gemini"));
+    let result = ProfileBundleService::apply(&state, &profile.id, &preview.revision).unwrap();
+    assert!(result.success);
+    for (path, bytes) in paths.iter().zip(&before) {
+        assert_eq!(&std::fs::read(path).unwrap(), bytes);
+    }
+    ProfileBundleService::undo(&state, result.undo_id.as_deref().unwrap()).unwrap();
+    for (path, bytes) in paths.iter().zip(&before) {
+        assert_eq!(&std::fs::read(path).unwrap(), bytes);
+    }
+    assert_eq!(
+        ProviderService::current(&state, AppType::Gemini).unwrap(),
+        "gemini-later"
+    );
+    assert_eq!(
+        state
+            .db
+            .get_current_profile_id("gemini")
+            .unwrap()
+            .as_deref(),
+        Some("new-gemini-profile")
+    );
+    assert_eq!(
+        state.db.get_profile(&profile.id).unwrap().unwrap().payload,
+        profile.payload
+    );
+}
+
+#[test]
+fn profiles_with_no_remaining_suppliers_do_not_change_active_markers_or_undo() {
+    let _guard = test_guard();
+    let state = seed();
+    let profile =
+        ProfileBundleService::capture(&state, "Deleted supplier", &["claude".into()], None)
+            .unwrap();
+    let previous =
+        ProfileBundleService::capture(&state, "Previous valid bundle", &["codex".into()], None)
+            .unwrap();
+    let previous_preview = ProfileBundleService::preview(&state, &previous.id).unwrap();
+    let previous_undo =
+        ProfileBundleService::apply(&state, &previous.id, &previous_preview.revision)
+            .unwrap()
+            .undo_id
+            .unwrap();
+    ProviderService::switch(&state, AppType::Claude, "claude-b").unwrap();
+    state.db.delete_provider("claude", "claude-a").unwrap();
+    state
+        .db
+        .set_current_profile_id("bundle", Some("previous-bundle"))
+        .unwrap();
+    state
+        .db
+        .set_current_profile_id("claude", Some("previous-agent-profile"))
+        .unwrap();
+    let path = cc_switch_lib::get_claude_settings_path();
+    let before = std::fs::read(&path).unwrap();
+    let preview = ProfileBundleService::preview(&state, &profile.id).unwrap();
+    assert!(preview.changes.is_empty());
+    assert_eq!(
+        serde_json::to_value(&preview).unwrap()["skipped"][0]["app"],
+        "claude"
+    );
+    let result = ProfileBundleService::apply(&state, &profile.id, &preview.revision).unwrap();
+    assert!(!result.success);
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning == "profiles.bundle.noApplicableAgents"));
+    assert!(result.undo_id.is_none());
+    assert_eq!(std::fs::read(path).unwrap(), before);
+    assert_eq!(
+        state
+            .db
+            .get_current_profile_id("bundle")
+            .unwrap()
+            .as_deref(),
+        Some("previous-bundle")
+    );
+    assert_eq!(
+        state
+            .db
+            .get_current_profile_id("claude")
+            .unwrap()
+            .as_deref(),
+        Some("previous-agent-profile")
+    );
+    assert_eq!(
+        ProfileBundleService::last_undo(&state).unwrap().unwrap().id,
+        previous_undo
+    );
 }

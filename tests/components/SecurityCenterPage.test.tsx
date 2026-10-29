@@ -19,6 +19,10 @@ import { resolveUsageRange } from "@/lib/usageRange";
 import { SecurityCenterPage } from "@/components/security/SecurityCenterPage";
 import type { SecurityEvent } from "@/types/securityEvents";
 import type { ToolRiskRuleSeed } from "@/types/toolRisk";
+import type { SecurityRuleItem } from "@/types/security";
+
+const extraRules = vi.hoisted(() => ({ items: [] as SecurityRuleItem[] }));
+const updateBuiltinAction = vi.hoisted(() => vi.fn());
 
 const toolRiskFlow = vi.hoisted(() => ({
   useRealPanel: false,
@@ -36,6 +40,7 @@ const auditRows = vi.hoisted(() => ({
     pageSize: number;
   }>,
   total: undefined as number | undefined,
+  toolCallsTotal: 2,
   isLoading: false,
   isError: false,
   redactedLoading: false,
@@ -43,6 +48,7 @@ const auditRows = vi.hoisted(() => ({
     block: vi.fn(),
     redact: vi.fn(),
     audit: vi.fn(),
+    toolCount: vi.fn(),
   } as Record<string, ReturnType<typeof vi.fn>>,
 }));
 
@@ -89,12 +95,13 @@ vi.mock("@/hooks/useSecurityAudit", () => ({
         enabled: true,
         isBuiltin: true,
       },
+      ...extraRules.items,
     ],
     isLoading: false,
     toggleRule: vi.fn(),
     saveRule,
     deleteRule,
-    updateBuiltinAction: vi.fn(),
+    updateBuiltinAction,
     updateCustomAction,
     isSaving: false,
   }),
@@ -140,6 +147,21 @@ vi.mock("@/hooks/useSecurityEvents", () => ({
   ) => {
     auditRows.queries.push({ filter, page, pageSize });
     auditRows.filters.push(filter);
+    if (filter.view === "tool_calls" && pageSize === 1) {
+      return {
+        eventsResult: {
+          items: [],
+          total: auditRows.toolCallsTotal,
+          page,
+          pageSize,
+        },
+        isLoading: auditRows.isLoading,
+        isError: auditRows.isError,
+        refetch: auditRows.refetchByAction.toolCount,
+        clearEvents: vi.fn(),
+        isClearing: false,
+      };
+    }
     return {
       eventsResult: {
         items: [
@@ -386,6 +408,7 @@ describe("SecurityCenterPage", () => {
     );
     expect(auditRows.refetchByAction.audit).toHaveBeenCalledOnce();
     expect(auditRows.refetchByAction.redact).toHaveBeenCalledOnce();
+    expect(auditRows.refetchByAction.toolCount).toHaveBeenCalledOnce();
   });
 
   it("explains the refresh button on hover", () => {
@@ -397,6 +420,7 @@ describe("SecurityCenterPage", () => {
 
   it("shows a true source split instead of a first-page sensitive-type sample", () => {
     auditRows.total = 150;
+    auditRows.toolCallsTotal = 142;
     render(<SecurityCenterPage />);
     expect(
       screen.getByTestId("security-events-summary-total"),
@@ -406,7 +430,7 @@ describe("SecurityCenterPage", () => {
     );
     expect(
       screen.getByTestId("security-events-summary-tool-risk"),
-    ).toHaveTextContent("2");
+    ).toHaveTextContent("142");
     expect(screen.queryByText("securityStats.sensitiveTypesSample")).toBeNull();
   });
 
@@ -463,6 +487,10 @@ describe("SecurityCenterPage", () => {
 
   it("keeps both filter focus rings consistent and inside the scroll area", () => {
     render(<SecurityCenterPage />);
+    fireEvent.click(
+      screen.getByRole("combobox", { name: "securityEvents.source" }),
+    );
+    fireEvent.click(screen.getByRole("option", { name: "securityEvents.dlp" }));
     const session = screen.getByRole("textbox", {
       name: "security.sessionFilter",
     });
@@ -625,6 +653,8 @@ describe("SecurityCenterPage", () => {
 });
 
 afterEach(() => {
+  extraRules.items = [];
+  updateBuiltinAction.mockClear();
   toolRiskFlow.useRealPanel = false;
   toolRiskFlow.events = [];
   toolRiskFlow.seeds = [];
@@ -633,6 +663,7 @@ afterEach(() => {
   auditRows.filters = [];
   auditRows.queries = [];
   auditRows.total = undefined;
+  auditRows.toolCallsTotal = 2;
   auditRows.isLoading = false;
   auditRows.isError = false;
   auditRows.redactedLoading = false;
@@ -640,6 +671,63 @@ afterEach(() => {
     refetch.mockClear(),
   );
   vi.restoreAllMocks();
+});
+
+it("offers hide and send for the generic sk rule without selecting it by default", () => {
+  extraRules.items = [
+    {
+      id: "catalog:generic-sk-key-notice",
+      name: "Generic key",
+      category: "api_token",
+      riskLevel: "MEDIUM",
+      action: "allow",
+      enabled: true,
+      isBuiltin: true,
+    },
+  ];
+  render(<SecurityCenterPage />);
+  fireEvent.click(screen.getByRole("tab", { name: /security\.tabRules/ }));
+  const row = screen.getByTestId("security-rule-catalog:generic-sk-key-notice");
+  expect(
+    within(row).getByRole("button", { name: "security.ruleActionAllow" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  fireEvent.click(
+    within(row).getByRole("button", { name: "security.ruleActionRedact" }),
+  );
+  expect(updateBuiltinAction).toHaveBeenCalledWith(
+    "catalog:generic-sk-key-notice",
+    "redact",
+  );
+});
+
+it("keeps the two password rule descriptions distinct and readable in full", () => {
+  extraRules.items = ["password-field", "password-assignment"].map((id) => ({
+    id: `catalog:${id}`,
+    name: id,
+    category: "password",
+    riskLevel: "HIGH",
+    action: "allow",
+    enabled: true,
+    isBuiltin: true,
+  }));
+  render(<SecurityCenterPage />);
+  fireEvent.click(screen.getByRole("tab", { name: /security\.tabRules/ }));
+  for (const id of ["password-field", "password-assignment"]) {
+    const description = screen.getByText(
+      `security.builtinRules.catalog_${id}.description`,
+    );
+    expect(description).not.toHaveClass("truncate");
+    expect(description).toHaveAttribute(
+      "title",
+      `security.builtinRules.catalog_${id}.description`,
+    );
+  }
+  for (const locale of [en, zh, ja, zhTW]) {
+    const rules = locale.security.builtinRules;
+    expect(rules["catalog_password-field"].description).not.toBe(
+      rules["catalog_password-assignment"].description,
+    );
+  }
 });
 
 it("shows persisted aggregation counts and first/last hit times in the list and detail", () => {
@@ -700,6 +788,10 @@ it("shows session IDs and unknown sessions and filters by exact session ID", () 
     within(screen.getByRole("dialog")).getByText("session-a"),
   ).toBeInTheDocument();
   fireEvent.click(within(screen.getByRole("dialog")).getByText("common.done"));
+  fireEvent.click(
+    screen.getByRole("combobox", { name: "securityEvents.source" }),
+  );
+  fireEvent.click(screen.getByRole("option", { name: "securityEvents.dlp" }));
   fireEvent.change(
     screen.getByRole("textbox", { name: "security.sessionFilter" }),
     { target: { value: "session-a" } },
@@ -709,8 +801,8 @@ it("shows session IDs and unknown sessions and filters by exact session ID", () 
   ).toBe(true);
   fireEvent.click(screen.getByText("security.resetFilters"));
   expect(
-    screen.getByRole("textbox", { name: "security.sessionFilter" }),
-  ).toHaveValue("");
+    screen.queryByRole("textbox", { name: "security.sessionFilter" }),
+  ).toBeNull();
 });
 
 it("keeps audit details and the backdrop above navigation with a scrollable body", async () => {
@@ -848,6 +940,12 @@ describe("security event date ranges", () => {
       vi.spyOn(Date, "now").mockReturnValue(now);
       auditRows.total = 50;
       render(<SecurityCenterPage />);
+      fireEvent.click(
+        screen.getByRole("combobox", { name: "securityEvents.source" }),
+      );
+      fireEvent.click(
+        screen.getByRole("option", { name: "securityEvents.dlp" }),
+      );
       fireEvent.change(
         screen.getByRole("textbox", { name: "security.sessionFilter" }),
         { target: { value: "session-a" } },
@@ -869,19 +967,21 @@ describe("security event date ranges", () => {
       );
       const startTimestamp =
         resolveUsageRange({ preset }, now).startDate * 1000;
-      const queries = auditRows.queries.slice(-2);
-      expect(queries).toHaveLength(2);
+      const queries = auditRows.queries.slice(-3);
+      expect(queries).toHaveLength(3);
       for (const query of queries) {
         expect(query.filter.startTimestamp).toBe(startTimestamp);
         expect(query.filter.endTimestamp).toBeUndefined();
         expect(query.page).toBe(1);
       }
-      expect(queries[0].filter.sessionId).toBe("session-a");
-      expect(queries[1].filter.sessionId).toBeUndefined();
+      expect(queries[0].filter.view).toBe("tool_calls");
+      expect(queries[0].filter.sessionId).toBeUndefined();
+      expect(queries[1].filter.sessionId).toBe("session-a");
+      expect(queries[2].filter.sessionId).toBeUndefined();
       fireEvent.click(screen.getByText("security.resetFilters"));
       expect(
-        screen.getByRole("textbox", { name: "security.sessionFilter" }),
-      ).toHaveValue("");
+        screen.queryByRole("textbox", { name: "security.sessionFilter" }),
+      ).toBeNull();
       expect(auditRows.queries.slice(-2)[0].filter.startTimestamp).toBe(
         startTimestamp,
       );

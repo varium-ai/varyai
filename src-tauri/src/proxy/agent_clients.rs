@@ -133,7 +133,7 @@ pub(crate) async fn handle(
     );
     parts.headers = headers;
     let job = is_model.then(|| Job {
-        app_type: app,
+        app_type: app.clone(),
         db: state.db.clone(),
         provider_id: route.provider_id.clone(),
         request_model: model,
@@ -143,6 +143,25 @@ pub(crate) async fn handle(
         status: 0,
         streaming: payload["stream"].as_bool().unwrap_or(false),
     });
+    if is_model {
+        let db = state.db.clone();
+        let provider_id = route.provider_id.clone();
+        let lookup = app_type.as_str().to_owned();
+        let provider =
+            tokio::task::spawn_blocking(move || db.get_provider_by_id(&provider_id, &lookup))
+                .await
+                .map_err(|_| invalid())?
+                .map_err(|_| invalid())?;
+        if let Some(mut provider) = provider {
+            if super::native_protocol::needs_conversion(&provider, &parts.uri)? {
+                provider.settings_config["baseUrl"] = Value::String(route.upstream.clone());
+                return super::native_protocol::forward(
+                    &state, app_type, &provider, parts, payload, job,
+                )
+                .await;
+            }
+        }
+    }
     let bytes = if is_model {
         serde_json::to_vec(&payload).map_err(|_| invalid())?
     } else {
@@ -391,11 +410,14 @@ mod tests {
             std::env::var("VARYAI_NATIVE_TEST_PROTOCOL").unwrap_or_else(|_| "openai".into());
         let only_app = std::env::var("VARYAI_NATIVE_TEST_APP").ok();
         let real = std::env::var("VARYAI_NATIVE_REAL_UPSTREAM").as_deref() == Ok("1");
-        let config = if real {
+        let mut config = if real {
             authorized_test_gateway()
         } else {
             Value::Null
         };
+        if real {
+            config["protocol"] = json!(protocol);
+        }
         let actions = if real {
             vec![AuditAction::Audit]
         } else {

@@ -72,7 +72,7 @@ export function ConfirmDialog({
             <IconComponent className={iconClass} />
             {title}
           </DialogTitle>
-          <DialogDescription className="whitespace-pre-line text-sm leading-relaxed">
+          <DialogDescription className="max-h-[50vh] overflow-y-auto whitespace-pre-line break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
             {message}
           </DialogDescription>
         </DialogHeader>

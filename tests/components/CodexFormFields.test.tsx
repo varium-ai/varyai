@@ -80,9 +80,59 @@ function renderForm(overrides: Partial<Props> = {}) {
 }
 
 describe("Codex model mapping actions", () => {
+  it.each(["", "old-model", "Custom label"])(
+    "updates an automatic model label while preserving %j",
+    async (displayName) => {
+      const { props } = renderForm({
+        catalogModels: [{ model: "old-model", displayName }],
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: "providerForm.fetchModels" }),
+      );
+      await waitFor(() =>
+        expect(
+          screen.getAllByRole("button", { name: "Select model" }),
+        ).toHaveLength(2),
+      );
+      fireEvent.click(
+        screen.getAllByRole("button", { name: "Select model" })[1],
+      );
+      fireEvent.click(
+        await screen.findByRole("option", { name: catalog[0].id }),
+      );
+      await waitFor(() =>
+        expect(props.onCatalogModelsChange).toHaveBeenLastCalledWith([
+          expect.objectContaining({
+            model: catalog[0].id,
+            displayName:
+              displayName === "Custom label" ? displayName : catalog[0].id,
+          }),
+        ]),
+      );
+    },
+  );
+
   beforeEach(() => {
+    HTMLElement.prototype.scrollIntoView = vi.fn();
     vi.mocked(fetchModelsForConfig).mockReset().mockResolvedValue(catalog);
     vi.mocked(fetchXaiOauthModels).mockReset().mockResolvedValue(catalog);
+  });
+
+  it("passes the Gemini protocol when fetching models", async () => {
+    renderForm({ apiFormat: "gemini_native" });
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerForm.fetchModels" }),
+    );
+    await waitFor(() =>
+      expect(fetchModelsForConfig).toHaveBeenCalledWith(
+        "https://fixture.example/v1",
+        "fixture-key",
+        false,
+        undefined,
+        "",
+        { apiFormat: "google-generative-ai" },
+      ),
+    );
   });
 
   it("fetches candidates without changing mappings or the default model", async () => {

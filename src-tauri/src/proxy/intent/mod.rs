@@ -809,6 +809,12 @@ pub(crate) async fn handle(
                 "routing_upstream_encoding_unsupported",
             );
         }
+        if let Some(trace) = parts
+            .extensions
+            .get::<super::gateway::GatewayUpstreamModel>()
+        {
+            trace.record(Some(&target.model));
+        }
         target.scheduling.succeeded();
         if session.group.routing == crate::services::intent_routing::RoutingStrategy::Weighted {
             bindings.pool.reassign(index);

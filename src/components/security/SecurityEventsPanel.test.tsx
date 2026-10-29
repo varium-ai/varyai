@@ -20,6 +20,10 @@ import { SecurityEventsPanel } from "./SecurityEventsPanel";
 const state = vi.hoisted(() => ({
   items: [] as SecurityEvent[],
   total: 57,
+  toolCallsTotal: 57,
+  toolSummaryError: false,
+  countQuery: vi.fn(),
+  countRefetch: vi.fn(),
   loading: false,
   error: false,
   summaryError: false,
@@ -41,6 +45,22 @@ vi.mock("@/hooks/useSecurityEvents", () => ({
     page: number,
     pageSize: number,
   ) => {
+    if (pageSize === 1 && filter.view === "tool_calls") {
+      state.countQuery(filter, page, pageSize);
+      return {
+        eventsResult: {
+          items: [],
+          total: state.toolCallsTotal,
+          page,
+          pageSize,
+        },
+        isLoading: state.loading,
+        isError: state.toolSummaryError,
+        refetch: state.countRefetch,
+        clearEvents: state.clear,
+        isClearing: false,
+      };
+    }
     state.query(filter, page, pageSize);
     return {
       eventsResult: { items: state.items, total: state.total, page, pageSize },
@@ -175,8 +195,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.refetch.mockReset();
   state.summaryRefetch.mockReset();
+  state.countQuery.mockReset();
+  state.countRefetch.mockReset();
   state.items = [dlp, tool];
   state.total = 57;
+  state.toolCallsTotal = 57;
+  state.toolSummaryError = false;
   state.loading = false;
   state.error = false;
   state.summaryError = false;
@@ -216,17 +240,66 @@ describe("unified security event list", () => {
     });
     expect(
       screen.getByTestId("security-events-summary-total"),
-    ).toHaveTextContent("101");
+    ).toHaveTextContent("137");
     expect(screen.getByTestId("security-events-summary-dlp")).toHaveTextContent(
       "80",
     );
     expect(
       screen.getByTestId("security-events-summary-tool-risk"),
-    ).toHaveTextContent("21");
+    ).toHaveTextContent("57");
     expect(screen.queryByText("securityStats.sensitiveTypesSample")).toBeNull();
   });
+  it("counts all tool records separately from warnings, independent of visible page filters", () => {
+    render(<Harness />);
+    choose("security.allRisks", "security.levelHighShort");
+    expect(
+      screen.getByTestId("security-events-summary-tool-risk"),
+    ).toHaveTextContent("57");
+    expect(
+      screen.getByTestId("security-events-summary-total"),
+    ).toHaveTextContent("137");
+    expect(state.countQuery).toHaveBeenCalledWith(
+      {
+        view: "tool_calls",
+        startTimestamp: expect.any(Number),
+        endTimestamp: undefined,
+      },
+      1,
+      1,
+    );
+    expect(
+      state.summary.mock.calls.every(
+        ([filter]) => filter.view === "security_events",
+      ),
+    ).toBe(true);
+    expect(
+      screen.getByText("securityStats.warnings").parentElement,
+    ).toHaveTextContent("51");
+  });
+
+  it("shows unknown totals when the all-tool count fails without hiding valid warning counts", () => {
+    state.toolSummaryError = true;
+    render(<Harness />);
+    expect(
+      screen.getByTestId("security-events-summary-tool-risk"),
+    ).toHaveTextContent("—");
+    expect(
+      screen.getByTestId("security-events-summary-total"),
+    ).toHaveTextContent("—");
+    expect(screen.getByTestId("security-events-summary-dlp")).toHaveTextContent(
+      "80",
+    );
+    expect(
+      screen.getByText("securityStats.warnings").parentElement,
+    ).toHaveTextContent("51");
+    expect(
+      screen.getByRole("button", { name: "securityEvents.retry" }),
+    ).toBeInTheDocument();
+  });
+
   it("switches views keeping public filters, clearing source-specific ones, and never requests the standalone tool query", () => {
     render(<Harness />);
+    choose("securityEvents.source", "securityEvents.dlp");
     choose("security.allApps", "OpenAI");
     choose("security.allRisks", "security.levelHighShort");
     fireEvent.change(
@@ -264,6 +337,7 @@ describe("unified security event list", () => {
   });
   it("selecting pure tool source hides and clears DLP-only search and session", () => {
     render(<Harness />);
+    choose("securityEvents.source", "securityEvents.dlp");
     fireEvent.change(
       screen.getByRole("textbox", { name: "security.sessionFilter" }),
       { target: { value: "session" } },
@@ -273,6 +347,30 @@ describe("unified security event list", () => {
     expect(
       screen.queryByPlaceholderText("security.searchPlaceholder"),
     ).toBeNull();
+  });
+  it("shows source-specific search only when the selected source is DLP", () => {
+    render(<Harness />);
+    expect(screen.queryByText("securityEvents.keywordHint")).toBeNull();
+    expect(
+      screen.queryByPlaceholderText("security.searchPlaceholder"),
+    ).toBeNull();
+    choose("securityEvents.source", "securityEvents.dlp");
+    fireEvent.change(
+      screen.getByPlaceholderText("security.searchPlaceholder"),
+      {
+        target: { value: "token" },
+      },
+    );
+    expect(latestFilter()).toMatchObject({
+      eventType: "dlp",
+      keyword: "token",
+    });
+    choose("securityEvents.source", "securityEvents.allSources");
+    expect(
+      screen.queryByPlaceholderText("security.searchPlaceholder"),
+    ).toBeNull();
+    expect(latestFilter().keyword).toBeUndefined();
+    expect(screen.queryByText("securityEvents.keywordHint")).toBeNull();
   });
   it("does not display stale total as zero or old records on query errors, and supports retry", () => {
     state.error = true;
@@ -474,6 +572,24 @@ describe("unified event snapshot and clear boundaries", () => {
 
 describe("manual refresh feedback", () => {
   it.each(["security_events", "tool_calls"] as const)(
+    "keeps initial loading below the headers in %s",
+    (view) => {
+      state.loading = true;
+      render(<Harness />);
+      if (view === "tool_calls")
+        fireEvent.click(screen.getByText("securityEvents.toolCallsView"));
+      const loading = screen.getByTestId("security-events-loading");
+      const table = screen.getByRole("table");
+      expect(loading.previousElementSibling).toContainElement(table);
+      expect(loading).not.toHaveClass("absolute");
+      expect(table.querySelector("tbody")).toBeEmptyDOMElement();
+      expect(within(table).getAllByRole("columnheader").length).toBeGreaterThan(
+        0,
+      );
+    },
+  );
+
+  it.each(["security_events", "tool_calls"] as const)(
     "keeps the original icon spinning and table loading for 300 ms in %s",
     async (view) => {
       vi.useFakeTimers();
@@ -494,6 +610,13 @@ describe("manual refresh feedback", () => {
       expect(loading).toHaveTextContent("security.loadingLogs");
       expect(loading.querySelector("svg")).toHaveClass("animate-spin");
       expect(loading.closest("table")).toBeNull();
+      const table = screen.getByRole("table");
+      expect(within(table).getAllByRole("columnheader").length).toBeGreaterThan(
+        0,
+      );
+      expect(loading.previousElementSibling).toContainElement(table);
+      expect(loading).not.toHaveClass("absolute");
+      expect(table.querySelector("tbody")).toBeEmptyDOMElement();
       expect(screen.getByText("security.nextPage")).toBeDisabled();
       fireEvent.click(button);
       expect(state.refetch).toHaveBeenCalledTimes(1);
@@ -550,12 +673,65 @@ describe("manual refresh feedback", () => {
 });
 
 describe("clear action feedback", () => {
-  it("uses a native scope title and focuses cancel when confirmation opens", async () => {
+  it.each([
+    ["security.refreshLogs", 0],
+    ["security.refreshLogs", 57],
+    ["securityEvents.clearFiltered", 0],
+    ["securityEvents.clearFiltered", 57],
+  ] as const)(
+    "provides the native %s title with %s records, including disabled clear",
+    (name, total) => {
+      state.total = total;
+      render(<Harness />);
+      const button = screen.getByRole("button", { name });
+      expect(button).toHaveAttribute("title", name);
+      expect(button.parentElement).toHaveAttribute("title", name);
+      expect(button.parentElement).not.toHaveClass("pointer-events-none");
+      if (total === 0) {
+        expect(
+          screen.getByRole("button", { name: "securityEvents.clearFiltered" }),
+        ).toBeDisabled();
+      }
+    },
+  );
+
+  it("retains the disabled clear title without enabling deletion", () => {
+    state.total = 0;
     render(<Harness />);
     const button = screen.getByRole("button", {
       name: "securityEvents.clearFiltered",
     });
-    expect(button).toHaveAttribute("title", "securityEvents.clearFiltered");
+    expect(button).toBeDisabled();
+    expect(button.parentElement).toHaveAttribute(
+      "title",
+      "securityEvents.clearFiltered",
+    );
+    fireEvent.click(button);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(state.clear).not.toHaveBeenCalled();
+  });
+
+  it("retains the refresh title while loading and keeps clear disabled", () => {
+    state.loading = true;
+    render(<Harness />);
+    const button = screen.getByRole("button", { name: "security.refreshLogs" });
+    expect(button).toBeDisabled();
+    expect(button.parentElement).toHaveAttribute(
+      "title",
+      "security.refreshLogs",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "securityEvents.clearFiltered" }),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(state.clear).not.toHaveBeenCalled();
+  });
+
+  it("focuses cancel when confirmation opens", async () => {
+    render(<Harness />);
+    const button = screen.getByRole("button", {
+      name: "securityEvents.clearFiltered",
+    });
     fireEvent.click(button);
     await waitFor(() =>
       expect(

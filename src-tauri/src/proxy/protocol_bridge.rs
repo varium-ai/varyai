@@ -25,7 +25,7 @@ pub(super) enum Protocol {
     Gemini,
 }
 impl Protocol {
-    fn from_format(format: &str) -> Option<Self> {
+    pub(super) fn from_format(format: &str) -> Option<Self> {
         match format {
             "anthropic" | "anthropic_messages" => Some(Self::Anthropic),
             "openai_chat" | "chat_completions" => Some(Self::Chat),
@@ -80,10 +80,22 @@ impl Bridge {
     }
     pub fn route(app: &AppType, endpoint: &str, provider: &Provider) -> Option<Self> {
         let path = endpoint.split('?').next().unwrap_or(endpoint);
+        let native = matches!(
+            app,
+            AppType::Qoder
+                | AppType::WorkBuddy
+                | AppType::Kimi
+                | AppType::Qwen
+                | AppType::ZCode
+                | AppType::Trae
+                | AppType::Hermes
+        );
         let input = if path.ends_with("/chat/completions") {
             Protocol::Chat
         } else if path.ends_with("/responses") {
             Protocol::Responses
+        } else if native && path.ends_with("/messages") {
+            Protocol::Anthropic
         } else if *app == AppType::Gemini
             && (path.ends_with(":generateContent") || path.ends_with(":streamGenerateContent"))
         {
@@ -114,11 +126,15 @@ impl Bridge {
         } else {
             output
         };
-        let missing = match input {
-            Protocol::Chat => output != Protocol::Chat,
-            Protocol::Responses => output == Protocol::Gemini,
-            Protocol::Gemini => output != Protocol::Gemini,
-            _ => false,
+        let missing = if native {
+            input != output
+        } else {
+            match input {
+                Protocol::Chat => output != Protocol::Chat,
+                Protocol::Responses => output == Protocol::Gemini,
+                Protocol::Gemini => output != Protocol::Gemini,
+                _ => false,
+            }
         };
         missing.then_some(Self { input, output })
     }
@@ -938,6 +954,47 @@ fn gemini_response(body: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_agents_bridge_every_selected_upstream_protocol() {
+        for app in [
+            AppType::Qoder,
+            AppType::WorkBuddy,
+            AppType::Kimi,
+            AppType::Qwen,
+            AppType::ZCode,
+            AppType::Trae,
+            AppType::Hermes,
+        ] {
+            for (endpoint, input) in [
+                ("/v1/chat/completions", Protocol::Chat),
+                ("/v1/responses", Protocol::Responses),
+                ("/v1/messages", Protocol::Anthropic),
+            ] {
+                for output in [
+                    Protocol::Chat,
+                    Protocol::Responses,
+                    Protocol::Anthropic,
+                    Protocol::Gemini,
+                ] {
+                    let mut provider =
+                        Provider::with_id("fixture".into(), "Fixture".into(), json!({}), None);
+                    provider
+                        .meta
+                        .get_or_insert_with(Default::default)
+                        .api_format = Some(output.format().into());
+                    let bridge = Bridge::route(&app, endpoint, &provider);
+                    assert_eq!(
+                        bridge.is_some(),
+                        input != output,
+                        "{} {endpoint} -> {}",
+                        app.as_str(),
+                        output.format()
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn gemini_cli_unsigned_tool_marker_is_not_opaque_thought_history() {
         for signature in ["skip_thought_signature_validator", "opaque"] {

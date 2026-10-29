@@ -94,7 +94,7 @@ The Responses extractor excludes instructions, attachments, tool payloads and un
 
 ## Storage and safety
 
-Configuration is stored in `intent_routing_groups` in the extension database `vary-ai.db`, schema version 4. The public shared schema remains version 20. Members and ordered rules are stored inside one versioned JSON document per group, making each update atomic without duplicating credentials. Updates and deletes require the current revision to prevent lost edits.
+Configuration is stored in `intent_routing_groups` in the extension database `vary-ai.db`, schema version 5. The public shared schema follows released CC Switch version 23. Historical intent-routing extension versions 3 and 4 upgrade without losing saved groups or preferences. Members and ordered rules are stored inside one versioned JSON document per group, making each update atomic without duplicating credentials. Updates and deletes require the current revision to prevent lost edits.
 
 Existing database export, sync and backup mechanisms include draft configuration. Import/restore validates group structure and disables group activation and intent recognition. Provider existence is rechecked on draft save; plan validation additionally checks task transport configuration. Stale references are not evidence of readiness. No prompts, classification history or decision records are stored by this phase.
 

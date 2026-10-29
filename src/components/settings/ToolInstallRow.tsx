@@ -8,12 +8,12 @@ import type { ToolInstallation } from "@/lib/api/settings";
 export function ToolInstallRow({ inst }: { inst: ToolInstallation }) {
   const { t } = useTranslation();
   return (
-    <div className="flex items-center gap-1.5 text-[10px]">
+    <div className="flex items-start gap-1.5 text-[10px]">
       <span className="shrink-0 rounded bg-background/80 px-1 py-0.5 font-mono text-muted-foreground">
         {inst.source}
       </span>
       <span
-        className="min-w-0 flex-1 truncate font-mono text-muted-foreground"
+        className="min-w-0 flex-1 break-all font-mono text-muted-foreground"
         title={inst.path}
       >
         {inst.path}

@@ -23,6 +23,7 @@ pnpm build:renderer
 pnpm test:unit
 pnpm test:trae-bridge
 pnpm test:qoder-codec
+python3 -B scripts/tests/recover-shared-v23.test.py
 pnpm audit --prod
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --lib --manifest-path src-tauri/Cargo.toml
@@ -38,6 +39,17 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 Use `pnpm exec vitest run <test-files>` to select frontend tests. There is no `pnpm lint` command. `pnpm format:check` checks `src/`; apply formatting tools to other changed files as appropriate.
+
+Provider tests that read Hermes configuration must isolate `HERMES_HOME` and
+`LOCALAPPDATA` alongside the temporary home directory, and restore their previous
+values afterward. Hermes uses `LOCALAPPDATA` on Windows, so changing `HOME` alone
+can leave providers from earlier tests visible to later tests.
+
+The Qoder TLS listener owns its accepted connection tasks and cancels and joins
+them during shutdown. Its certificate test keeps both an immediate same-address
+rebind assertion and pending TLS handshakes to verify that stopping the listener
+releases active sockets. The test uses an isolated certificate and never installs
+system trust.
 
 ## Toolchain dependency review
 

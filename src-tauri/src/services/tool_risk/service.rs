@@ -206,7 +206,11 @@ fn mutate_with_publisher<T>(
         AppError::Database(code)
             if matches!(
                 code.as_str(),
-                "tool_risk_builtin_duplicate" | "tool_risk_risk_severity_required"
+                "tool_risk_builtin_duplicate"
+                    | "tool_risk_risk_severity_required"
+                    | "tool_risk_command_list_duplicate"
+                    | "tool_risk_command_list_conflict"
+                    | "tool_risk_command_list_limit"
             ) =>
         {
             code
@@ -544,6 +548,32 @@ mod command_list_tests {
         assert!(delete_command_list(&db, &id, 2).unwrap().value);
         assert!(get_tool_risk_runtime().command_lists.is_empty());
         assert_eq!(get_tool_risk_runtime().policy_version, 3);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn reported_kubectl_regex_can_be_created_after_preview() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = Database::init_at(&directory.path().join("cc-switch.db")).unwrap();
+        let mut input = input();
+        input.match_kind = CommandMatchKind::Regex;
+        input.pattern = r"^kubectl\s+delete\s+".into();
+        input.risk_category = RiskCategory::DestructiveChange;
+        preview_command_pattern(&db, input.match_kind, &input.pattern).unwrap();
+        let receipt = save_command_list(&db, input).unwrap();
+        assert_eq!(get_command_lists(&db).unwrap()[0].id, receipt.value);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn duplicate_command_list_reports_a_specific_safe_error() {
+        let db = Database::memory().unwrap();
+        save_command_list(&db, input()).unwrap();
+        assert_eq!(
+            save_command_list(&db, input()).unwrap_err(),
+            "tool_risk_command_list_duplicate"
+        );
+        assert_eq!(get_command_lists(&db).unwrap().len(), 1);
     }
 
     #[test]
@@ -2078,6 +2108,9 @@ mod validation_code_tests {
         for code in [
             "tool_risk_builtin_duplicate",
             "tool_risk_risk_severity_required",
+            "tool_risk_command_list_duplicate",
+            "tool_risk_command_list_conflict",
+            "tool_risk_command_list_limit",
         ] {
             // Real SQLite failure: only the entire fixed code is allowed through.
             db.conn.lock().unwrap().execute_batch(&format!("DROP TRIGGER IF EXISTS fail_validation_prefix; CREATE TRIGGER fail_validation_prefix BEFORE INSERT ON tool_risk_custom_rules BEGIN SELECT RAISE(ABORT, '{code}: SECRET_DATABASE_TEXT'); END;")).unwrap();

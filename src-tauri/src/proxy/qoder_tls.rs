@@ -53,18 +53,22 @@ impl Server {
         let (tx, mut rx) = oneshot::channel();
         let (closed, _) = watch::channel(false);
         let task = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
                  _=&mut rx=>{let _=closed.send(true);break;},
                  accepted=listener.accept()=>{let Ok((stream,_))=accepted else{break;};let acceptor=acceptor.clone();let app=router.clone();let mut closed=closed.subscribe();
-                  tokio::spawn(async move{let connection=async{
+                  connections.spawn(async move{let connection=async{
                    let Ok(Ok(tls))=tokio::time::timeout(std::time::Duration::from_secs(10),acceptor.accept(stream)).await else{return;};
                    let service=hyper::service::service_fn(move|request:hyper::Request<hyper::body::Incoming>|{let mut app=app.clone();async move{let(parts,body)=request.into_parts();let request=http::Request::from_parts(parts,axum::body::Body::new(body));<Router as tower::Service<http::Request<axum::body::Body>>>::call(&mut app,request).await}});
                    let _=hyper::server::conn::http1::Builder::new().serve_connection(hyper_util::rt::TokioIo::new(tls),service).await;
                   };tokio::select!{_ = connection=>{},_ = closed.changed()=>{}}});
-                 }
+                 },
+                 Some(_) = connections.join_next(), if !connections.is_empty()=>{}
                 }
             }
+            connections.abort_all();
+            while connections.join_next().await.is_some() {}
         });
         Ok(Self {
             stop: Some(tx),

@@ -26,11 +26,11 @@ export function GlobalStatusBar({
       ? "unavailable"
       : !protection.settings
         ? "unavailable"
-        : !protection.settings.enabled
-          ? "disabled"
-          : protection.connected
+        : !protection.connected
+          ? "notConnected"
+          : protection.settings.enabled
             ? "running"
-            : "notConnected";
+            : "disabled";
   const gatewayState: GatewayState = !proxyStatus
     ? "unavailable"
     : isProxyRunning

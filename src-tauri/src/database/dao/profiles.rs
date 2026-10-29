@@ -88,13 +88,24 @@ impl Database {
     /// 保存项目（插入或整行替换）
     pub fn save_profile(&self, profile: &Profile) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
+        let duplicate: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM profiles WHERE name = ?1 AND id <> ?2)
+                 AND NOT EXISTS(SELECT 1 FROM profiles WHERE id = ?2 AND name = ?1)",
+                params![profile.name.trim(), profile.id],
+                |row| row.get(0),
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        if duplicate {
+            return Err(AppError::Message("profiles.nameExists".into()));
+        }
         conn.execute(
             "INSERT OR REPLACE INTO profiles
              (id, name, payload, sort_order, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 profile.id,
-                profile.name,
+                profile.name.trim(),
                 profile.payload,
                 profile.sort_order,
                 profile.created_at,
@@ -147,6 +158,47 @@ mod tests {
             created_at: Some(1_000),
             updated_at: Some(1_000),
         }
+    }
+
+    #[test]
+    fn test_profile_names_must_be_unique_for_create_and_rename() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        db.save_profile(&sample("a", "Work", None))?;
+        db.save_profile(&sample("b", "Personal", None))?;
+        let duplicate = db.save_profile(&sample("c", "  Work  ", None));
+        assert!(
+            matches!(duplicate, Err(AppError::Message(ref key)) if key == "profiles.nameExists")
+        );
+        assert!(db.get_profile("c")?.is_none());
+        let rename = db.save_profile(&sample("b", "Work", None));
+        assert!(matches!(rename, Err(AppError::Message(ref key)) if key == "profiles.nameExists"));
+        assert_eq!(
+            db.get_profile("b")?.map(|p| p.name),
+            Some("Personal".into())
+        );
+        db.save_profile(&sample("a", "Work", None))?;
+        db.save_profile(&sample("a", "Renamed", None))?;
+        db.save_profile(&sample("c", "Work", None))?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_existing_duplicate_profiles_can_still_refresh_or_be_renamed() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        db.save_profile(&sample("a", "Work", None))?;
+        db.save_profile(&sample("b", "Personal", None))?;
+        {
+            let conn = lock_conn!(db.conn);
+            conn.execute("UPDATE profiles SET name = 'Work' WHERE id = 'b'", [])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+        }
+        let mut refreshed = sample("b", "Work", None);
+        refreshed.payload = "{}".into();
+        db.save_profile(&refreshed)?;
+        assert_eq!(db.get_profile("b")?.map(|p| p.payload), Some("{}".into()));
+        refreshed.name = "Personal".into();
+        db.save_profile(&refreshed)?;
+        Ok(())
     }
 
     #[test]

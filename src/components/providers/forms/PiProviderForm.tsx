@@ -72,7 +72,7 @@ const PI_API_FORMATS = [
   { value: "openai-completions", label: "OpenAI Chat Completions" },
   { value: "openai-responses", label: "OpenAI Responses" },
   { value: "anthropic-messages", label: "Anthropic Messages" },
-  { value: "google-generative-ai", label: "Google Generative AI" },
+  { value: "google-generative-ai", label: "Gemini Native generateContent" },
   { value: "bedrock-converse-stream", label: "Amazon Bedrock" },
 ] as const satisfies ReadonlyArray<{ value: PiApiFormat; label: string }>;
 

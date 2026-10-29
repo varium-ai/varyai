@@ -456,6 +456,39 @@ fn test_optional_password_rules_can_be_changed_to_redact_without_leaking_values(
 }
 
 #[test]
+fn generic_sk_rule_redacts_only_when_explicitly_selected() {
+    let secret = "sk-synthetic-fixture";
+    let original =
+        json!({"messages": [{"role": "user", "content": format!("Token {secret} for testing")}]});
+    let mut default_body = original.clone();
+    SecurityAuditEngine::inspect_and_redact_with_runtime(
+        &mut default_body,
+        &SecurityRuntimeConfig::default(),
+    );
+    assert_eq!(default_body, original);
+    let mut runtime = SecurityRuntimeConfig::default();
+    runtime
+        .builtin_action_overrides
+        .insert("catalog:generic-sk-key-notice".into(), AuditAction::Redact);
+    let mut body = original;
+    let result = SecurityAuditEngine::inspect_and_redact_with_runtime(&mut body, &runtime);
+    assert!(!result.blocked);
+    assert_eq!(
+        body["messages"][0]["content"],
+        "Token [REDACTED] for testing"
+    );
+    assert!(result
+        .findings
+        .iter()
+        .any(|finding| finding.rule_id == "catalog:generic-sk-key-notice"
+            && finding.action == AuditAction::Redact));
+    assert!(result
+        .findings
+        .iter()
+        .all(|finding| !finding.matched_snippet_masked.contains(secret)));
+}
+
+#[test]
 fn test_generic_sk_catalog_rule_does_not_override_existing_openai_rule() {
     let token = format!("sk-proj-{}", "a".repeat(32));
     let body = json!({"messages": [{"role": "user", "content": token}]});

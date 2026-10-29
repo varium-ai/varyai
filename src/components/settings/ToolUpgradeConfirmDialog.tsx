@@ -41,7 +41,7 @@ export function ToolUpgradeConfirmDialog({
         if (!open) onCancel();
       }}
     >
-      <DialogContent className="max-w-md" zIndex="alert">
+      <DialogContent className="w-[calc(100%-2rem)] max-w-2xl" zIndex="alert">
         <DialogHeader className="space-y-2 border-b-0 bg-transparent pb-0">
           <DialogTitle className="flex items-center gap-2 text-base font-semibold">
             <AlertTriangle className="h-5 w-5 text-yellow-500" />
@@ -52,7 +52,7 @@ export function ToolUpgradeConfirmDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="max-h-[50vh] space-y-3 overflow-y-auto">
+        <div className="min-h-0 space-y-3 overflow-y-auto px-6 py-4">
           {plans.map((plan) => (
             <div
               key={plan.tool}
@@ -78,7 +78,7 @@ export function ToolUpgradeConfirmDialog({
                   {t("settings.toolUpgradeWillRun")}
                 </div>
                 <code
-                  className="block truncate rounded bg-background/80 px-1.5 py-0.5 font-mono text-[10px] text-foreground"
+                  className="block whitespace-pre-wrap break-all rounded bg-background/80 px-1.5 py-0.5 font-mono text-[10px] text-foreground"
                   title={plan.command}
                 >
                   {plan.command}

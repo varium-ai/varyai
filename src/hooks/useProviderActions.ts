@@ -306,7 +306,9 @@ export function useProviderActions(
             warning.startsWith("codex_auth_cleanup_failed"),
           );
           const hasOtherWarnings = result.warnings.some(
-            (warning) => !warning.startsWith("codex_auth_cleanup_failed"),
+            (warning) =>
+              !warning.startsWith("codex_auth_cleanup_failed") &&
+              warning !== "trae_sync_pending",
           );
           if (authCleanupFailed) {
             toast.warning(
@@ -332,7 +334,14 @@ export function useProviderActions(
         if (!proxyRequiredReason) {
           let messageKey = "notifications.switchSuccess";
           let defaultMessage = "切换成功！";
-          if (activeApp === "qoder") {
+          if (
+            activeApp === "trae" &&
+            result?.warnings?.includes("trae_sync_pending")
+          ) {
+            messageKey = "profiles.bundle.clientSyncPending";
+            defaultMessage =
+              "供应商选择已保存，TRAE CN 连接后将自动生效，请保持 Vary AI 运行";
+          } else if (activeApp === "qoder") {
             messageKey = "qoder.routing.restartRequired";
             defaultMessage = "请重启 Qoder，并在模型菜单中选择已添加的模型";
           } else if (activeApp === "workbuddy" && !routingReady) {

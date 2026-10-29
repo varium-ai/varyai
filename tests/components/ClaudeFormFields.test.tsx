@@ -132,6 +132,29 @@ const renderCodexOauthForm = (overrides: Partial<ClaudeFormFieldsProps> = {}) =>
   });
 
 describe("ClaudeFormFields", () => {
+  it("passes the Gemini protocol when fetching models", async () => {
+    renderCopilotForm({
+      isCopilotPreset: false,
+      category: "third_party",
+      apiKey: "fixture-key",
+      baseUrl: "https://fixture.example/v1",
+      apiFormat: "gemini_native",
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerForm.fetchModels" }),
+    );
+    await waitFor(() =>
+      expect(modelFetchApiMock.fetchModelsForConfig).toHaveBeenCalledWith(
+        "https://fixture.example/v1",
+        "fixture-key",
+        expect.anything(),
+        undefined,
+        expect.anything(),
+        { apiFormat: "google-generative-ai" },
+      ),
+    );
+  });
+
   it("shares discovered models with every role selector", async () => {
     Element.prototype.scrollIntoView = vi.fn();
     modelFetchApiMock.fetchModelsForConfig.mockResolvedValue([

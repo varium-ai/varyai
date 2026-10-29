@@ -1,3 +1,4 @@
+import userEvent from "@testing-library/user-event";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { ManagedAgentProviderForm } from "@/components/providers/forms/ManagedAgentProviderForm";
@@ -79,3 +80,42 @@ it("preserves saved per-model capabilities when editing the model list", async (
     { model: "beta" },
   ]);
 });
+
+it.each(["kimi", "qwen", "zcode", "trae"] as const)(
+  "saves Gemini as the %s upstream without inventing a native Gemini protocol",
+  async (appId) => {
+    const submit = vi.fn();
+    render(
+      <ManagedAgentProviderForm
+        appId={appId}
+        initialData={{
+          name: "Gateway",
+          category: "custom",
+          settingsConfig: {
+            baseUrl: "https://models.example/v1beta",
+            apiKey: "synthetic-key",
+            protocol: "openai",
+            models: [{ model: "fixture" }],
+          },
+        }}
+        onSubmit={submit}
+        onCancel={vi.fn()}
+        submitLabel="Save"
+      />,
+    );
+    Element.prototype.scrollIntoView = vi.fn();
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("providerForm.apiFormat"));
+    await user.click(
+      screen.getByRole("option", {
+        name: "providerForm.apiFormatGeminiNative",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+    expect(submit.mock.calls[0][0].meta.apiFormat).toBe("gemini_native");
+    expect(JSON.parse(submit.mock.calls[0][0].settingsConfig).protocol).toBe(
+      "openai",
+    );
+  },
+);

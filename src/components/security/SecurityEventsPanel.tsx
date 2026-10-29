@@ -1,12 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ChevronRight,
-  FileText,
-  Loader2,
-  RefreshCw,
-  Trash2,
-} from "lucide-react";
+import { ChevronRight, FileText, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,6 +38,7 @@ import {
 } from "@/types/toolRisk";
 import type { UsageRangeSelection, UsageRangePreset } from "@/types/usage";
 import { SecurityEventDetailsDialog } from "./SecurityEventDetailsDialog";
+import { SecurityEventsLoading } from "./SecurityEventsLoading";
 import { ToolRiskEventsPanel } from "./ToolRiskEventsPanel";
 import {
   securityEventName,
@@ -53,6 +48,7 @@ import {
 } from "./securityEventLabels";
 
 type Option = { value: string; label: string };
+
 function FilterSelect({
   label,
   value,
@@ -132,6 +128,11 @@ export function SecurityEventsPanel({
   };
   const queryFilter = { ...filter, ...timeFilter };
   const pageSize = filter.view === "tool_calls" ? 50 : 20;
+  const toolCallsCount = useSecurityEvents(
+    { view: "tool_calls", ...timeFilter },
+    1,
+    1,
+  );
   const { eventsResult, isLoading, isError, refetch, clearEvents, isClearing } =
     useSecurityEvents(queryFilter, page, pageSize);
   const summary = useSecurityEventsSummary({
@@ -162,6 +163,7 @@ export function SecurityEventsPanel({
       const results = await Promise.allSettled([
         refetch(),
         summary.refetch(),
+        toolCallsCount.refetch(),
         ...(manual
           ? [new Promise<void>((resolve) => setTimeout(resolve, 300))]
           : []),
@@ -218,6 +220,11 @@ export function SecurityEventsPanel({
         : value.toLocaleString(i18n.language);
   const summaryCount = (value?: number) =>
     count(value, summary.isLoading, summary.isError);
+  const totalRecordCount =
+    summary.data?.dlpCount !== undefined &&
+    toolCallsCount.eventsResult?.total !== undefined
+      ? summary.data.dlpCount + toolCallsCount.eventsResult.total
+      : undefined;
   const dlpVisible =
     filter.view === "security_events" && filter.eventType !== "tool_risk";
   const all = (label: string): Option => ({ value: "all", label: t(label) });
@@ -301,7 +308,9 @@ export function SecurityEventsPanel({
     }
   };
   const tableLoading = isLoading || isRefreshing;
-  const status = isLoading || isError || !eventsResult?.items.length;
+  const clearDisabled =
+    tableLoading || isError || isClearBusy || !eventsResult?.total;
+  const status = isError || !eventsResult?.items.length;
   return (
     <section
       className="mt-6 space-y-5"
@@ -332,7 +341,11 @@ export function SecurityEventsPanel({
         <div className="mt-2 flex flex-wrap gap-4">
           <span data-testid="security-events-summary-total">
             {t("securityEvents.totalRecords")}:{" "}
-            {summaryCount(summary.data?.total)}
+            {count(
+              totalRecordCount,
+              summary.isLoading || toolCallsCount.isLoading,
+              summary.isError || toolCallsCount.isError,
+            )}
           </span>
           <span data-testid="security-events-summary-dlp">
             {t("securityEvents.dlpCount")}:{" "}
@@ -340,7 +353,11 @@ export function SecurityEventsPanel({
           </span>
           <span data-testid="security-events-summary-tool-risk">
             {t("securityEvents.toolRiskCount")}:{" "}
-            {summaryCount(summary.data?.toolRiskCount)}
+            {count(
+              toolCallsCount.eventsResult?.total,
+              toolCallsCount.isLoading,
+              toolCallsCount.isError,
+            )}
           </span>
         </div>
       </div>
@@ -398,7 +415,7 @@ export function SecurityEventsPanel({
                       ? undefined
                       : (value as "dlp" | "tool_risk"),
                   category: undefined,
-                  ...(value === "tool_risk"
+                  ...(value !== "dlp"
                     ? { sessionId: undefined, keyword: undefined }
                     : {}),
                 })
@@ -517,7 +534,7 @@ export function SecurityEventsPanel({
               }
             />
           )}
-          {dlpVisible && (
+          {filter.view === "security_events" && filter.eventType === "dlp" && (
             <>
               <Input
                 aria-label={t("security.sessionFilter")}
@@ -554,42 +571,47 @@ export function SecurityEventsPanel({
           >
             {t("security.resetFilters")}
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={t("security.refreshLogs")}
-            title={t("security.refreshLogs")}
-            aria-busy={tableLoading}
-            onClick={refresh}
-            disabled={isLoading || isRefreshing}
-          >
-            <RefreshCw
-              className={
-                "h-4 w-4 " + (isLoading || isRefreshing ? "animate-spin" : "")
-              }
-            />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={t("securityEvents.clearFiltered")}
+          <span className="inline-flex" title={t("security.refreshLogs")}>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={t("security.refreshLogs")}
+              title={t("security.refreshLogs")}
+              aria-busy={tableLoading}
+              onClick={refresh}
+              disabled={isLoading || isRefreshing}
+            >
+              <RefreshCw
+                className={
+                  "h-4 w-4 " + (isLoading || isRefreshing ? "animate-spin" : "")
+                }
+              />
+            </Button>
+          </span>
+          <span
+            className="inline-flex"
             title={t("securityEvents.clearFiltered")}
-            disabled={
-              tableLoading || isError || isClearBusy || !eventsResult?.total
-            }
-            onClick={() => {
-              setClearFailed(false);
-              setClearPreview({
-                filter: { ...queryFilter },
-                total: eventsResult?.total,
-              });
-            }}
           >
-            <Trash2 className="h-4 w-4" />
-          </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={t("securityEvents.clearFiltered")}
+              title={t("securityEvents.clearFiltered")}
+              disabled={clearDisabled}
+              onClick={() => {
+                setClearFailed(false);
+                setClearPreview({
+                  filter: { ...queryFilter },
+                  total: eventsResult?.total,
+                });
+              }}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </span>
         </div>
       </div>
-      {dlpVisible && (
+      {filter.view === "security_events" && filter.eventType === "dlp" && (
         <p className="text-xs text-muted-foreground">
           {t("securityEvents.keywordHint")}
         </p>
@@ -607,10 +629,7 @@ export function SecurityEventsPanel({
         )}
         : {count(eventsResult?.total, isLoading, isError)}
       </p>
-      <div
-        className={isRefreshing ? "relative min-h-48" : "relative"}
-        aria-busy={tableLoading}
-      >
+      <div aria-busy={tableLoading}>
         {filter.view === "tool_calls" ? (
           <ToolRiskEventsPanel
             controlled={{
@@ -759,14 +778,14 @@ export function SecurityEventsPanel({
                 </tbody>
               </table>
             </div>
-            {!isRefreshing && status && (
+            {tableLoading ? (
+              <SecurityEventsLoading />
+            ) : status ? (
               <div
                 role="status"
                 className="flex flex-col items-center justify-center px-4 py-14 text-center text-xs"
               >
-                {isLoading ? (
-                  t("security.loadingLogs")
-                ) : isError ? (
+                {isError ? (
                   t("securityEvents.queryError")
                 ) : (
                   <>
@@ -775,21 +794,11 @@ export function SecurityEventsPanel({
                   </>
                 )}
               </div>
-            )}
-          </div>
-        )}
-        {isRefreshing && (
-          <div
-            role="status"
-            data-testid="security-events-loading"
-            className="absolute inset-0 flex min-h-32 flex-col items-center justify-center gap-2 rounded-2xl bg-card/95 text-xs text-muted-foreground"
-          >
-            <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
-            {t("security.loadingLogs")}
+            ) : null}
           </div>
         )}
       </div>
-      {(isError || summary.isError) && (
+      {(isError || summary.isError || toolCallsCount.isError) && (
         <Button variant="outline" disabled={tableLoading} onClick={refresh}>
           {t("securityEvents.retry")}
         </Button>

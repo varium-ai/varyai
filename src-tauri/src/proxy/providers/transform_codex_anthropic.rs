@@ -459,8 +459,10 @@ fn chat_tool_to_anthropic_tool(chat_tool: &Value) -> Option<Value> {
     if let Some(description) = function.get("description").and_then(|value| value.as_str()) {
         tool["description"] = json!(description);
     }
-    if let Some(strict) = function.get("strict").and_then(|value| value.as_bool()) {
-        tool["strict"] = json!(strict);
+    // Anthropic is non-strict by default. Omit the redundant false flag for
+    // compatible gateways that reject it, but preserve an explicit guarantee.
+    if function.get("strict").and_then(Value::as_bool) == Some(true) {
+        tool["strict"] = json!(true);
     }
     Some(tool)
 }
@@ -1620,6 +1622,27 @@ fn append_str_field(block: &mut Value, field: &str, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_function_tool_strict_modes_preserve_anthropic_semantics() {
+        for strict in [true, false] {
+            let schema = json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false});
+            let body = json!({
+                "model":"synthetic-model",
+                "input":[{"role":"user","content":"hello"}],
+                "tools":[{"type":"function","name":"read_file","strict":strict,"parameters":schema}]
+            });
+            let converted = responses_request_to_anthropic(body, 1024)
+                .expect("Codex function tools must convert without rejecting strict");
+            if strict {
+                assert_eq!(converted["tools"][0]["strict"], true);
+            } else {
+                assert!(converted["tools"][0].get("strict").is_none());
+            }
+            assert_eq!(converted["tools"][0]["input_schema"], schema);
+            assert_eq!(converted["tools"][0]["name"], "read_file");
+        }
+    }
 
     // ==================== Request: Responses → Anthropic ====================
 

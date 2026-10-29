@@ -694,6 +694,15 @@ function ProviderFormFull({
 
   const [localCodexApiFormat, setLocalCodexApiFormat] =
     useState<CodexApiFormat>(initialCodexApiFormat);
+  const [localHermesApiFormat, setLocalHermesApiFormat] =
+    useState<ClaudeApiFormat>(
+      initialData?.meta?.apiFormat ??
+        (initialData?.settingsConfig?.api_mode === "anthropic_messages"
+          ? "anthropic"
+          : initialData?.settingsConfig?.api_mode === "codex_responses"
+            ? "openai_responses"
+            : "openai_chat"),
+    );
   const [localGeminiApiFormat, setLocalGeminiApiFormat] =
     useState<ClaudeApiFormat>(initialData?.meta?.apiFormat ?? "gemini_native");
 
@@ -1821,7 +1830,10 @@ function ProviderFormFull({
               : localCodexApiFormat
             : appId === "gemini" && category !== "official"
               ? localGeminiApiFormat
-              : undefined,
+              : appId === "hermes" &&
+                  hermesForm.hermesApiMode !== "bedrock_converse"
+                ? localHermesApiFormat
+                : undefined,
       apiKeyField:
         appId === "claude" &&
         category !== "official" &&
@@ -2000,6 +2012,7 @@ function ProviderFormFull({
       }
       if (appId === "hermes") {
         hermesForm.resetHermesState();
+        setLocalHermesApiFormat("openai_chat");
       }
       return;
     }
@@ -2119,6 +2132,13 @@ function ProviderFormFull({
       const config = preset.settingsConfig;
 
       hermesForm.resetHermesState(config);
+      setLocalHermesApiFormat(
+        config.api_mode === "anthropic_messages"
+          ? "anthropic"
+          : config.api_mode === "codex_responses"
+            ? "openai_responses"
+            : "openai_chat",
+      );
 
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
@@ -2214,7 +2234,9 @@ function ProviderFormFull({
                     ? localCodexApiFormat
                     : appId === "gemini"
                       ? localGeminiApiFormat
-                      : undefined,
+                      : appId === "hermes"
+                        ? localHermesApiFormat
+                        : undefined,
               ...((
                 {
                   codex: { baseUrl: codexBaseUrl, apiKey: codexApiKey },
@@ -2234,11 +2256,6 @@ function ProviderFormFull({
                 } as Partial<Record<AppId, { baseUrl: string; apiKey: string }>>
               )[appId] ?? { baseUrl, apiKey }),
             }}
-            supportedFormats={
-              appId === "hermes"
-                ? ["openai_chat", "openai_responses", "anthropic"]
-                : undefined
-            }
             disabled={
               category === "official" ||
               isCopilotProvider ||
@@ -2288,6 +2305,7 @@ function ProviderFormFull({
                 openclawForm.handleOpenclawBaseUrlChange(preset.baseUrl);
                 openclawForm.handleOpenclawApiKeyChange(preset.apiKey);
               } else if (appId === "hermes") {
+                if (preset.apiFormat) setLocalHermesApiFormat(preset.apiFormat);
                 if (preset.apiFormat && preset.apiFormat !== "gemini_native")
                   hermesForm.handleHermesApiModeChange(
                     {
@@ -2739,6 +2757,8 @@ function ProviderFormFull({
               shouldShowModelField={true}
               model={geminiModel}
               onModelChange={handleGeminiModelChange}
+              configValue={geminiConfig}
+              onConfigChange={handleGeminiConfigChange}
               speedTestEndpoints={speedTestEndpoints}
             />
           )}
@@ -2820,6 +2840,8 @@ function ProviderFormFull({
               websiteUrl={hermesWebsiteUrl}
               isPartner={isHermesPartner}
               partnerPromotionKey={hermesPartnerPromotionKey}
+              apiFormat={localHermesApiFormat}
+              onApiFormatChange={setLocalHermesApiFormat}
               apiMode={hermesForm.hermesApiMode}
               onApiModeChange={hermesForm.handleHermesApiModeChange}
               models={hermesForm.hermesModels}

@@ -451,6 +451,7 @@ export function CodexFormFields({
     isFullUrl,
     codexApiKey,
     customUserAgent,
+    apiFormat,
     isXaiOauthPreset,
     isXaiOauthAuthenticated,
     selectedXaiAccountId,
@@ -595,6 +596,12 @@ export function CodexFormFields({
               isFullUrl,
               undefined,
               customUserAgent,
+              {
+                apiFormat:
+                  apiFormat === "gemini_native"
+                    ? "google-generative-ai"
+                    : undefined,
+              },
             );
         if (seq !== fetchModelsSeqRef.current) return;
         setFetchedModels(models);
@@ -620,6 +627,7 @@ export function CodexFormFields({
       codexApiKey,
       isFullUrl,
       customUserAgent,
+      apiFormat,
       isXaiOauthPreset,
       selectedXaiAccountId,
       t,
@@ -672,7 +680,18 @@ export function CodexFormFields({
   const handleUpdateCatalogRow = useCallback(
     (index: number, patch: Partial<CodexCatalogModel>) => {
       setCatalogRows((current) =>
-        current.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+        current.map((row, i) =>
+          i === index
+            ? {
+                ...row,
+                ...patch,
+                ...(patch.model !== undefined &&
+                (!row.displayName?.trim() || row.displayName === row.model)
+                  ? { displayName: patch.model }
+                  : {}),
+              }
+            : row,
+        ),
       );
     },
     [],
@@ -972,7 +991,7 @@ export function CodexFormFields({
                 <div className="space-y-1.5">
                   <FormLabel htmlFor="codex-upstream-format">
                     {t("codexConfig.upstreamFormatLabel", {
-                      defaultValue: "上游格式",
+                      defaultValue: "上游协议",
                     })}
                   </FormLabel>
                   <Select
@@ -1350,9 +1369,6 @@ export function CodexFormFields({
                               onSelect={(id) =>
                                 handleUpdateCatalogRow(index, {
                                   model: id,
-                                  displayName: row.displayName?.trim()
-                                    ? row.displayName
-                                    : id,
                                 })
                               }
                             />

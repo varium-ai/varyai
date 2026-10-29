@@ -1,3 +1,5 @@
+import { UpstreamProtocolSelect } from "./shared/UpstreamProtocolSelect";
+import type { ClaudeApiFormat } from "@/types";
 import { useTranslation } from "react-i18next";
 import { useState, useRef, useCallback, useMemo } from "react";
 import { FormLabel } from "@/components/ui/form";
@@ -37,6 +39,8 @@ interface HermesFormFieldsProps {
   websiteUrl: string;
   isPartner?: boolean;
   partnerPromotionKey?: string;
+  apiFormat?: ClaudeApiFormat;
+  onApiFormatChange?: (format: ClaudeApiFormat) => void;
   apiMode: HermesApiMode;
   onApiModeChange: (mode: HermesApiMode) => void;
   models: HermesModel[];
@@ -87,6 +91,8 @@ export function HermesFormFields({
   isPartner,
   partnerPromotionKey,
   apiMode,
+  apiFormat,
+  onApiFormatChange,
   onApiModeChange,
   models,
   onModelsChange,
@@ -144,7 +150,9 @@ export function HermesFormFields({
       return;
     }
     setIsFetchingModels(true);
-    fetchModelsForConfig(baseUrl, apiKey)
+    fetchModelsForConfig(baseUrl, apiKey, undefined, undefined, undefined, {
+      apiFormat,
+    })
       .then((fetched) => {
         setFetchedModels(fetched);
         if (fetched.length === 0) {
@@ -160,7 +168,7 @@ export function HermesFormFields({
         showFetchModelsError(err, t);
       })
       .finally(() => setIsFetchingModels(false));
-  }, [baseUrl, apiKey, t]);
+  }, [baseUrl, apiKey, apiFormat, t]);
 
   const handleRemoveModel = (index: number) => {
     const removedKey = modelKeysRef.current[index];
@@ -187,9 +195,15 @@ export function HermesFormFields({
 
   return (
     <>
+      {apiFormat && onApiFormatChange && apiMode !== "bedrock_converse" && (
+        <UpstreamProtocolSelect
+          value={apiFormat}
+          onChange={onApiFormatChange}
+        />
+      )}
       <div className="space-y-2">
         <FormLabel htmlFor="hermes-api-mode">
-          {t("hermes.form.apiMode", { defaultValue: "API 模式" })}
+          {t("providerForm.clientProtocol")}
         </FormLabel>
         <Select
           value={apiMode}

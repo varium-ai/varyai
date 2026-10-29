@@ -3,6 +3,18 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { isChatTarget, bootstrapSource, PipeClient } = require("./agent.cjs");
 const { PassThrough } = require("node:stream");
+test("model diagnostics expose only a recognized operation and numeric code", () => {
+  const { safeModelError } = require("./agent.cjs");
+  assert.equal(safeModelError("model_add_failed:409"), "model_add_failed:409");
+  for (const message of [
+    "synthetic-private-detail",
+    "model_add_failed:409 synthetic-secret",
+    "model_remove_failed:secret",
+    "model_update_failed:409\nprivate",
+  ]) {
+    assert.equal(safeModelError(message), "TRAE native bridge unavailable");
+  }
+});
 test("accepts only local TRAE chat windows, not browser previews or other targets", () => {
   const root = "/Applications/Trae CN.app/Contents/Resources/app";
   assert.equal(
