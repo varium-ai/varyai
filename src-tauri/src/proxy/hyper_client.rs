@@ -634,31 +634,30 @@ fn build_raw_request(
     //
     // This replaces the old `for name in headers.keys()` loop which iterated
     // in hash-map order, destroying the original header sequence.
-    let mut emitted: std::collections::HashSet<String> =
+    let mut emitted: std::collections::HashSet<&str> =
         std::collections::HashSet::with_capacity(original_cases.cases.len());
-    // Per-name cursor: how many values we have already emitted for each name.
-    let mut value_cursor: std::collections::HashMap<String, usize> =
+    // Borrow names from the existing maps instead of copying them into indexes.
+    let mut value_cursor: std::collections::HashMap<&str, usize> =
         std::collections::HashMap::with_capacity(original_cases.cases.len());
 
     for (lower_name, orig_name_bytes) in &original_cases.cases {
         if let Ok(header_name) = http::header::HeaderName::from_bytes(lower_name.as_bytes()) {
-            let all_values: Vec<_> = headers.get_all(&header_name).iter().collect();
-            let cursor = value_cursor.entry(lower_name.clone()).or_insert(0);
-            if let Some(value) = all_values.get(*cursor) {
+            let cursor = value_cursor.entry(lower_name.as_str()).or_insert(0);
+            if let Some(value) = headers.get_all(&header_name).iter().nth(*cursor) {
                 raw.extend_from_slice(orig_name_bytes);
                 raw.extend_from_slice(b": ");
                 raw.extend_from_slice(value.as_bytes());
                 raw.extend_from_slice(b"\r\n");
                 *cursor += 1;
-                emitted.insert(lower_name.clone());
+                emitted.insert(lower_name.as_str());
             }
         }
     }
 
     // Append proxy-added headers (not present in the original request).
     for name in headers.keys() {
-        let lower = name.as_str().to_ascii_lowercase();
-        if !emitted.contains(&lower) {
+        let lower = name.as_str();
+        if !emitted.contains(lower) {
             for value in headers.get_all(name) {
                 raw.extend_from_slice(name.as_str().as_bytes());
                 raw.extend_from_slice(b": ");
@@ -799,6 +798,44 @@ mod tests {
             framed,
             expected.as_bytes(),
             "raw framing must retain only headers; the original payload is written separately"
+        );
+    }
+
+    #[test]
+    fn raw_request_preserves_interleaved_rewritten_and_proxy_added_headers() {
+        let mut headers = http::HeaderMap::new();
+        headers.append("x-synthetic", http::HeaderValue::from_static("first"));
+        headers.append("x-synthetic", http::HeaderValue::from_static("second"));
+        headers.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer synthetic-rewritten-account"),
+        );
+        headers.insert("x-proxy-added", http::HeaderValue::from_static("added"));
+        headers.insert(
+            http::header::CONTENT_LENGTH,
+            http::HeaderValue::from_static("7"),
+        );
+        let cases = OriginalHeaderCases {
+            cases: vec![
+                ("x-synthetic".into(), b"X-Synthetic".to_vec()),
+                ("x-removed".into(), b"X-Removed".to_vec()),
+                ("authorization".into(), b"Authorization".to_vec()),
+                ("x-synthetic".into(), b"x-SYNTHETIC".to_vec()),
+                ("x-synthetic".into(), b"X-SYNTHETIC".to_vec()),
+                ("content-length".into(), b"Content-Length".to_vec()),
+            ],
+        };
+        let framed = build_raw_request(
+            &http::Method::POST,
+            "/synthetic?ordered=1",
+            &headers,
+            &cases,
+            b"fixture",
+        );
+        assert_eq!(
+            framed,
+            b"POST /synthetic?ordered=1 HTTP/1.1\r\nX-Synthetic: first\r\nAuthorization: Bearer synthetic-rewritten-account\r\nx-SYNTHETIC: second\r\nContent-Length: 7\r\nx-proxy-added: added\r\n\r\n",
+            "header refactoring must preserve exact case/order, rewritten credentials, duplicates and framing"
         );
     }
 

@@ -30,6 +30,16 @@ Check the upstream error and the models available to the account. Fetch the prov
 
 The upstream reverse proxy or provider can reject a request even when it is below the local proxy's limit. Reduce oversized attachments and pasted logs, or compact the conversation using the client's supported command. Operators of an upstream gateway should check its documented body limits before changing them. A local setting does not override the provider's limit.
 
+## Reversible Codex HTTP DLP: temporary limits
+
+- Compressed SSE with an active restoration lease is unsupported and fails closed. Compact SSE is separately unsupported; Compact JSON coverage does not establish SSE support. Do not remove the rejection checks to enable either mode.
+- New tool-risk events omit command summaries until custom-DLP policy can be carried safely through projection and persistence. Risk detection and structured events remain enabled; existing stored summaries are not rewritten.
+- Full allocation accounting remains incomplete for request sanitizers, provider/model configuration, response parsers/converters, persistent Chat metadata/index snapshots, codecs and HTTP transport. Logical budgets are not a proven physical-memory or RSS cap; header allocation cleanup does not close transport accounting.
+- Raw observation queues, caches, asynchronous audit/usage persistence and every diagnostic sink are not established as custom-DLP-safe end to end. Summary omission and a nonblocking queue regression do not close that wider boundary.
+- Restored protocol output is not execution authorization or proof of tool-task correctness. Shell quoting, embedded JSON and patch semantics still require independent validation; no generated commands are executed by the regression tests.
+
+These limits are deferred, not release acceptance. The local WIP and follow-up checks do not establish merge readiness or live Codex/model behavior. Earlier execution/closure records remain historical snapshots, not current test results.
+
 ## macOS launch and installation problems
 
 Local development packages may be unsigned or use an ad-hoc signature. Gatekeeper warnings and signature failures require checking the artifact's origin, hash and signing status. Follow the [macOS build guide](guides/local-macos-build.md) for deliberate local build and signing options. Unit-test success does not establish notarization or installer acceptance.

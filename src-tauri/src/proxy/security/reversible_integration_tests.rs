@@ -7490,9 +7490,40 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
             ..Default::default()
         },
     );
-    let (_sender, mut observation_queue) =
+    let (sender, mut observation_queue) =
         crate::proxy::tool_observation::channel::test_channel().await;
-    let observations_before = observation_queue.counters.snapshot().delivered;
+    // Saturate the real shared queue without closing its process-wide receiver.
+    // The handler must still restore and deliver the response, without a retry.
+    let _queue_occupant = if mode == "observation_full" {
+        use crate::proxy::tool_observation::channel::{
+            OutputQuality, ResponseMetadata, Transport, DEFAULT_QUEUE_CAPACITY,
+        };
+        let mut tap = sender
+            .start(
+                ResponseMetadata {
+                    protocol: "openai_responses",
+                    client: "codex",
+                    transport: Transport::Json,
+                    quality: OutputQuality::Native,
+                    definitions: Arc::new(Vec::new()),
+                },
+                917,
+            )
+            .ok_or("synthetic queue reservation unavailable")?;
+        let before = observation_queue.counters.snapshot().delivered;
+        for _ in 0..DEFAULT_QUEUE_CAPACITY {
+            tap.push(&bytes::Bytes::from_static(b" "));
+        }
+        assert_eq!(
+            observation_queue.counters.snapshot().delivered - before,
+            DEFAULT_QUEUE_CAPACITY as u64,
+            "the actual observation queue must be full before forwarding"
+        );
+        Some(tap)
+    } else {
+        None
+    };
+    let observations_before = observation_queue.counters.snapshot();
     let response_id = format!("resp_wire_xai_json_{mode}");
     let upstream_id = response_id.clone();
     let app = Router::new().fallback(post(move |Json(body): Json<Value>| {
@@ -7652,8 +7683,18 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
     assert_eq!(status, if mode == "refuse" { http::StatusCode::BAD_GATEWAY } else { http::StatusCode::OK },
         "target xAI JSON wire serialization must fail closed when its independent budget reservation is refused");
     let value: Value = serde_json::from_slice(&wire)?;
-    let observations = observation_queue.counters.snapshot().delivered - observations_before;
-    if mode == "refuse" {
+    let observations_after = observation_queue.counters.snapshot();
+    let observations = observations_after.delivered - observations_before.delivered;
+    if mode == "observation_full" {
+        assert_eq!(
+            observations, 0,
+            "a saturated queue must not accept response bytes"
+        );
+        assert!(
+            observations_after.dropped_queue_full > observations_before.dropped_queue_full,
+            "the real handler must attempt observation and encounter the full queue"
+        );
+    } else if mode == "refuse" {
         assert_eq!(
             observations, 0,
             "wire serialization failure must precede tool observation/publication"
@@ -7830,6 +7871,12 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
 #[serial_test::serial]
 async fn reversible_wire_xai_json_serialization_budget_failure() -> TestResult {
     run_reversible_wire_xai_json("refuse").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reversible_wire_xai_json_observation_queue_full_preserves_forwarding() -> TestResult {
+    run_reversible_wire_xai_json("observation_full").await
 }
 
 #[tokio::test]

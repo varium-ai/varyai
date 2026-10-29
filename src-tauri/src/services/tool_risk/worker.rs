@@ -3,8 +3,7 @@
 //! Parse the bounded queue away from forwarding and evaluate the versioned policy.
 //! The forwarding path only uses try_send; this worker handles detection and batched writes.
 //! Never persist raw call IDs, full input objects, tool names or rule names.
-//! Stored shell summaries retain ordinary content and mask recognized private values;
-//! they are not a guarantee of complete anonymity.
+//! New events omit command summaries because built-in sanitization cannot cover custom DLP.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -67,22 +66,9 @@ pub fn project_event(obs: &ToolObservation) -> Option<ToolRiskEventInput> {
         Verdict::LowRisk => "low_risk",
     });
 
-    // Only the registered, quality-checked shell adapter may provide a command.
-    // Redaction works on this record copy, never on the client payload.
-    let command_summary = super::adapters::adapt_observation(obs)
-        .operations
-        .iter()
-        .find(|operation| operation.op_type == super::types::OperationType::ShellExec)
-        .and_then(|operation| operation.command.as_deref())
-        .map(super::sanitize::summarize_command)
-        .filter(|summary| !summary.is_empty());
-
     // A coverage failure belongs in diagnostics, not an empty per-call audit row.
-    // Keep concrete operations and exact-tool risk hits, even without a shell summary.
-    if decision.operation_categories.is_empty()
-        && command_summary.is_none()
-        && decision.hits.is_empty()
-    {
+    // Keep concrete operations and exact-tool risk hits without a shell summary.
+    if decision.operation_categories.is_empty() && decision.hits.is_empty() {
         return None;
     }
 
@@ -99,7 +85,8 @@ pub fn project_event(obs: &ToolObservation) -> Option<ToolRiskEventInput> {
             .operation_categories
             .first()
             .map(|op| op.as_str().to_string()),
-        command_summary,
+        // Built-in sanitization cannot cover custom DLP; keep raw-input detection only.
+        command_summary: None,
         detection_scope: "in_scope".to_string(),
         integrity_status: integrity_status(obs).to_string(),
         verdict: verdict.map(str::to_string),
@@ -447,7 +434,7 @@ mod tests {
                 let o = &mut observations[0];
                 o.tool.definition_ref = Some("builtin:codex:tools:v1".into());
                 let event = project_event(o).expect("real shell input must remain auditable");
-                assert_eq!(event.command_summary.as_deref(), Some(command));
+                assert!(event.command_summary.is_none());
                 assert_eq!(event.operation_category.as_deref(), Some("shell_exec"));
                 let expected = if carrier.is_null() && verdict == "unchecked" {
                     "low_risk"
@@ -495,6 +482,119 @@ mod tests {
 
     #[test]
     #[serial]
+    fn regression_new_command_summary_is_null_without_changing_risk_or_input() {
+        use super::super::types::{ConditionOp, RuleCondition, RuleOrigin, RuleTarget};
+
+        let db = Database::memory().unwrap();
+        db.save_tool_risk_settings(&crate::database::ToolRiskSettings {
+            enabled: true,
+            policy_version: 0,
+        })
+        .unwrap();
+        let policy = db.get_tool_risk_settings().unwrap().policy_version;
+        let command = "rm -rf /tmp/SYNTHETIC_ORG_MARKER/*";
+        let observation = obs("Bash", serde_json::json!({"command": command}));
+        let original = observation.clone();
+        let mut rule = super::super::builtin::builtin_rules().remove(0);
+        rule.id = "custom.synthetic-command-match".into();
+        rule.origin = RuleOrigin::Custom;
+        rule.selector.target =
+            serde_json::from_value::<RuleTarget>(serde_json::json!({"kind":"tool","tool_refs":[{
+                "client":observation.tool.client,"name":observation.tool.name,
+                "namespace":observation.tool.namespace,"definitionRef":observation.tool.definition_ref,
+                "serverIdentity":observation.tool.server_id
+            }]}))
+            .unwrap();
+        rule.conditions = vec![RuleCondition {
+            field: "/command".into(),
+            op: ConditionOp::Eq,
+            value: Some(command.into()),
+            values: None,
+        }];
+        rule.validate().unwrap();
+        set_tool_risk_runtime_for_test(ToolRiskRuntime::build(
+            true,
+            policy,
+            vec![rule],
+            &HashMap::new(),
+        ));
+
+        let runtime = get_tool_risk_runtime();
+        let decision = evaluate(&EngineInput {
+            observation: &observation,
+            rules: &runtime.rules,
+            lists: &runtime.command_lists,
+        });
+        assert_eq!(decision.verdict, Some(Verdict::Risky));
+        let event = project_event(&observation).expect("risky shell remains auditable");
+        assert_eq!(event.verdict.as_deref(), Some("risky"));
+        assert_eq!(event.operation_category.as_deref(), Some("shell_exec"));
+        assert_eq!(event.risk_category.as_deref(), Some("destructive_change"));
+        assert_eq!(event.severity.as_deref(), Some("high"));
+        assert_eq!(event.reason_code.as_deref(), Some("destructive_target"));
+        assert_eq!(event.source, "model_response");
+        assert_eq!(event.stage, "proposed");
+        assert_eq!(event.client_category.as_deref(), Some("claude"));
+        assert_eq!(event.detection_scope, "in_scope");
+        assert_eq!(event.integrity_status, "complete");
+        assert_eq!(event.policy_version, policy as i64);
+        assert!(event
+            .rule_ids
+            .contains(&"builtin.destructive_change".into()));
+        assert!(event
+            .rule_ids
+            .contains(&"custom.synthetic-command-match".into()));
+        assert_eq!(
+            event.rule_ids,
+            decision
+                .hits
+                .iter()
+                .map(|hit| hit.rule_id.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(observation, original);
+        assert!(
+            event.command_summary.is_none(),
+            "new worker events must omit command summaries, including custom-only sensitive text"
+        );
+
+        let projected_ipc = serde_json::to_value(&event).unwrap();
+        assert_eq!(projected_ipc["commandSummary"], serde_json::Value::Null);
+        assert_eq!(
+            db.insert_current_tool_risk_events_batch(std::slice::from_ref(&event))
+                .unwrap(),
+            1
+        );
+        let stored_summary: Option<String> = db
+            .extension_connection()
+            .lock()
+            .unwrap()
+            .query_row("SELECT command_summary FROM tool_risk_events", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(stored_summary.is_none());
+        let page = db.get_tool_risk_events(1, 0).unwrap();
+        assert_eq!(page.len(), 1);
+        assert!(page[0].command_summary.is_none());
+        let notifications = db.get_tool_risk_events_after(0, 1, policy).unwrap();
+        assert_eq!(notifications, page);
+        for record in [&page[0], &notifications[0]] {
+            let ipc = serde_json::to_value(record).unwrap();
+            for (field, value) in projected_ipc.as_object().unwrap() {
+                assert_eq!(
+                    &ipc[field], value,
+                    "structured event field changed: {field}"
+                );
+            }
+            assert!(!ipc.to_string().contains("SYNTHETIC_ORG_MARKER"));
+        }
+        assert_eq!(observation, original);
+        set_tool_risk_runtime_for_test(ToolRiskRuntime::default());
+    }
+
+    #[test]
+    #[serial]
     fn disabled_runtime_projects_nothing() {
         set_tool_risk_runtime_for_test(ToolRiskRuntime::default());
         let o = obs("Bash", serde_json::json!({"command": "rm -rf /"}));
@@ -503,7 +603,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn risky_call_projects_sanitized_event() {
+    fn risky_call_projects_event_without_command_summary() {
         enable_runtime();
         let o = obs(
             "Bash",
@@ -515,29 +615,21 @@ mod tests {
         assert_eq!(ev.policy_version, 7);
         assert!(!ev.rule_ids.is_empty());
         assert_eq!(ev.operation_category.as_deref(), Some("shell_exec"));
-        // Ordinary command paths remain readable; sensitive values alone are hidden.
-        assert_eq!(
-            ev.command_summary.as_deref(),
-            Some("rm -rf /PRIVATE_TARGET/*")
-        );
+        assert!(ev.command_summary.is_none());
     }
 
     #[test]
     #[serial]
-    fn command_summary_hides_credentials_but_preserves_command_structure() {
+    fn command_summary_is_omitted_without_changing_credentials_in_input() {
         enable_runtime();
         let command = format!(
             "{}={} curl -H '{}: {} {}' https://api.x/public",
             "API_KEY", "TOKENVALUE", "Authorization", "Bearer", "OTHERSECRET"
         );
-        let expected = format!(
-            "{}={} curl -H '{}: {} {}' https://api.x/public",
-            "API_KEY", "<redacted>", "Authorization", "Bearer", "<redacted>"
-        );
         assert!(command.contains("TOKENVALUE"));
         let o = obs("Bash", serde_json::json!({"command": command}));
         let ev = project_event(&o).expect("in-scope event");
-        assert_eq!(ev.command_summary.as_deref(), Some(expected.as_str()));
+        assert!(ev.command_summary.is_none());
         let output = serde_json::to_string(&ev).unwrap();
         for secret in ["TOKENVALUE", "OTHERSECRET"] {
             assert!(!output.contains(secret));
@@ -547,7 +639,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn command_summary_uses_registered_shell_fields_only() {
+    fn command_summary_is_omitted_for_shell_and_non_shell_tools() {
         enable_runtime();
         let mut codex = obs(
             "exec_command",
@@ -555,10 +647,9 @@ mod tests {
         );
         codex.tool.client = Some("codex".into());
         codex.tool.definition_ref = Some("builtin:codex:tools:v1".into());
-        assert_eq!(
-            project_event(&codex).unwrap().command_summary.as_deref(),
-            Some("ls -la /workspace/project")
-        );
+        let event = project_event(&codex).unwrap();
+        assert!(event.command_summary.is_none());
+        assert_eq!(event.operation_category.as_deref(), Some("shell_exec"));
         codex.quality.tool_identity = ToolIdentityQuality::Unknown;
         if let Some(event) = project_event(&codex) {
             assert!(event.command_summary.is_none());
@@ -572,7 +663,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn projected_command_survives_database_and_ipc_with_privacy_values_hidden() {
+    fn projected_command_summary_stays_null_in_database_and_ipc() {
         let db = Database::memory().unwrap();
         db.save_tool_risk_settings(&crate::database::ToolRiskSettings {
             enabled: true,
@@ -590,41 +681,31 @@ mod tests {
             "{}={} curl https://example.com/public | cat",
             "API_KEY", "PIPELINE_PRIVATE_VALUE"
         );
-        let hidden_command = format!(
-            "{}={} curl https://example.com/public | cat",
-            "API_KEY", "<redacted>"
-        );
-        for (command, expected) in [
-            ("ls -la /workspace/project", "ls -la /workspace/project"),
-            (
-                "unknown-program --public-option=value /workspace/project | cat",
-                "unknown-program --public-option=value /workspace/project | cat",
-            ),
-            (private_command.as_str(), hidden_command.as_str()),
+        for command in [
+            "ls -la /workspace/project",
+            "unknown-program --public-option=value /workspace/project | cat",
+            private_command.as_str(),
         ] {
             let observation = obs("Bash", serde_json::json!({"command": command}));
             let event = project_event(&observation).expect("registered shell is in scope");
-            assert_eq!(event.command_summary.as_deref(), Some(expected));
+            assert!(event.command_summary.is_none());
             assert_eq!(
                 db.insert_current_tool_risk_events_batch(&[event]).unwrap(),
                 1
             );
             let page = db.get_tool_risk_events(1, 0).unwrap();
-            assert_eq!(page[0].command_summary.as_deref(), Some(expected));
+            assert!(page[0].command_summary.is_none());
             let ipc = serde_json::to_value(&page[0]).unwrap();
-            assert_eq!(ipc["commandSummary"], expected);
+            assert_eq!(ipc["commandSummary"], serde_json::Value::Null);
             assert!(!ipc.to_string().contains("PIPELINE_PRIVATE_VALUE"));
             let notifications = db
                 .get_tool_risk_events_after(page[0].id - 1, 1, policy)
                 .unwrap();
-            assert_eq!(notifications[0].command_summary.as_deref(), Some(expected));
+            assert!(notifications[0].command_summary.is_none());
             db.get_tool_risk_configuration().unwrap();
-            assert_eq!(
-                db.get_tool_risk_events(1, 0).unwrap()[0]
-                    .command_summary
-                    .as_deref(),
-                Some(expected)
-            );
+            assert!(db.get_tool_risk_events(1, 0).unwrap()[0]
+                .command_summary
+                .is_none());
             assert_eq!(
                 observation.input.value.as_ref().unwrap()["command"],
                 command
