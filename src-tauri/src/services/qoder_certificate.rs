@@ -6,7 +6,17 @@ use std::{
 };
 use tokio::process::Command;
 fn failure() -> String {
-    "Qoder local certificate setup or removal failed; approve the macOS authentication dialog and retry".into()
+    stage_failure("data", "failed")
+}
+fn stage_failure(stage: &str, status: &str) -> String {
+    format!("Qoder certificate {stage} failed: {status}")
+}
+fn command_failure(stage: &str, status: std::process::ExitStatus) -> String {
+    let status = status
+        .code()
+        .map(|code| format!("exit={code}"))
+        .unwrap_or_else(|| "terminated".into());
+    stage_failure(stage, &status)
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Certificate {
@@ -84,14 +94,19 @@ fn lifetime_seconds(test_value: Option<&str>, development: bool) -> i64 {
     }
 }
 fn openssl(directory: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let stage = if args.first() == Some(&"x509") {
+        "inspect"
+    } else {
+        "generate"
+    };
     let output = std::process::Command::new("/usr/bin/openssl")
         .current_dir(directory)
         .args(args)
         .stdin(Stdio::null())
         .output()
-        .map_err(|_| failure())?;
+        .map_err(|_| stage_failure(stage, "launch"))?;
     if !output.status.success() {
-        return Err(failure());
+        return Err(command_failure(stage, output.status));
     }
     Ok(output.stdout)
 }
@@ -267,6 +282,13 @@ fn create_at_with_lifetime(directory: PathBuf, lifetime: i64) -> Result<Certific
     result
 }
 async fn security(args: &[&std::ffi::OsStr]) -> Result<std::process::Output, String> {
+    let stage = match args.first().and_then(|arg| arg.to_str()) {
+        Some("verify-cert") => "verify_trust",
+        Some("add-trusted-cert") => "install_trust",
+        Some("remove-trusted-cert") => "remove_trust",
+        Some("delete-certificate" | "find-certificate") => "delete_certificate",
+        _ => "data",
+    };
     let child = Command::new("/usr/bin/security")
         .args(args)
         .stdin(Stdio::null())
@@ -274,14 +296,14 @@ async fn security(args: &[&std::ffi::OsStr]) -> Result<std::process::Output, Str
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|_| failure())?;
+        .map_err(|_| stage_failure(stage, "launch"))?;
     tokio::time::timeout(
         std::time::Duration::from_secs(180),
         child.wait_with_output(),
     )
     .await
-    .map_err(|_| failure())?
-    .map_err(|_| failure())
+    .map_err(|_| stage_failure(stage, "timeout"))?
+    .map_err(|_| stage_failure(stage, "failed"))
 }
 fn keychain() -> PathBuf {
     crate::config::get_home_dir().join("Library/Keychains/login.keychain-db")
@@ -337,7 +359,7 @@ pub(crate) async fn trust(directory: &Path, app: Option<&tauri::AppHandle>) -> R
     if result.status.success() {
         Ok(())
     } else {
-        Err(failure())
+        Err(command_failure("install_trust", result.status))
     }
 }
 pub(crate) async fn remove(
@@ -364,7 +386,7 @@ pub(crate) async fn remove(
         && !String::from_utf8_lossy(&result.stderr).contains("could not be found")
         && !String::from_utf8_lossy(&result.stderr).contains("No Trust Settings")
     {
-        return Err(failure());
+        return Err(command_failure("remove_trust", result.status));
     }
     let keychain = keychain();
     let result = security(&[
@@ -374,17 +396,76 @@ pub(crate) async fn remove(
         keychain.as_os_str(),
     ])
     .await?;
-    if !result.status.success()
-        && !String::from_utf8_lossy(&result.stderr).contains("could not be found")
-    {
-        return Err(failure());
+    if !result.status.success() {
+        // macOS also reports an absent certificate as "Unable to delete ...".
+        // Confirm absence instead of treating that ambiguous failure as success.
+        let listed = security(&[
+            OsStr::new("find-certificate"),
+            OsStr::new("-a"),
+            OsStr::new("-Z"),
+            keychain.as_os_str(),
+        ])
+        .await?;
+        if !certificate_absent(listed.status.success(), &listed.stdout, sha1) {
+            return Err(command_failure("delete_certificate", result.status));
+        }
     }
     std::fs::remove_dir_all(directory).map_err(|_| failure())
+}
+
+fn certificate_absent(listed: bool, output: &[u8], sha1: &str) -> bool {
+    if !listed {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(output) else {
+        return false;
+    };
+    if text.trim().is_empty() {
+        return true;
+    }
+    let hashes: Vec<_> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("SHA-1 hash: "))
+        .collect();
+    !hashes.is_empty()
+        && hashes.iter().all(|hash| {
+            hash.len() == 40
+                && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && !hash.eq_ignore_ascii_case(sha1)
+        })
 }
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+    #[test]
+    fn absent_certificate_clear_requires_successful_recognizable_keychain_listing() {
+        let sha1 = "A".repeat(40);
+        assert!(certificate_absent(true, b"", &sha1));
+        assert!(certificate_absent(
+            true,
+            format!("SHA-1 hash: {}\n", "B".repeat(40)).as_bytes(),
+            &sha1
+        ));
+        for (success, output) in [
+            (false, String::new()),
+            (true, format!("SHA-1 hash: {}\n", sha1.to_lowercase())),
+            (true, "unrecognized output".into()),
+            (true, "SHA-1 hash: incomplete\n".into()),
+        ] {
+            assert!(!certificate_absent(success, output.as_bytes(), &sha1));
+        }
+        assert!(!certificate_absent(true, &[0xff], &sha1));
+    }
+    #[test]
+    fn openssl_failures_identify_the_operation_without_echoing_arguments() {
+        let temp = tempfile::tempdir().expect("temporary certificate directory");
+        let error = openssl(temp.path(), &["x509", "-synthetic-private-argument"])
+            .expect_err("invalid fixture command");
+        assert!(error.starts_with("Qoder certificate inspect failed: exit="));
+        assert!(!error.contains("synthetic-private-argument"));
+        assert!(!error.contains(&temp.path().to_string_lossy().to_string()));
+    }
     #[test]
     fn one_minute_mode_is_development_only() {
         assert_eq!(lifetime_seconds(Some("60"), true), 60);

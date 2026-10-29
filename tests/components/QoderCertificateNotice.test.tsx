@@ -62,7 +62,10 @@ describe("Qoder certificate expiry notice", () => {
       screen.getByRole("button", { name: "qoder.certificate.renew" }),
     );
     await waitFor(() =>
-      expect(state.error).toHaveBeenCalledWith("qoder.certificate.renewFailed"),
+      expect(state.error).toHaveBeenCalledWith(
+        "qoder.certificate.renewFailed",
+        { description: undefined },
+      ),
     );
     expect(
       screen.getByRole("button", { name: "qoder.certificate.renew" }),

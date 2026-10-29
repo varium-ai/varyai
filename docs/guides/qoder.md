@@ -16,4 +16,8 @@ Valid certificate metadata and trust can be reused across temporary routing stop
 
 New local CA and server certificates are valid for 30 days. Existing certificates retain their original expiration date until they expire or the user explicitly rebuilds them. The one-minute certificate override remains available only in development builds for expiration testing.
 
+Certificate failures report a fixed operation stage and exit status, without exposing command output or certificate configuration. An approved macOS prompt does not establish that subsequent trust or keychain operations succeeded. During clearing, a failed keychain deletion is accepted only when a successful, recognizable certificate listing confirms that the matching certificate is already absent. An unreadable keychain or an unrecognized listing still fails and preserves recovery metadata.
+
+Explicit supplier switches replace VaryAI-owned custom provider groups, including reserved provider IDs left after deletion of the shared database. Official account credentials, plugins and user-created provider groups remain intact. The file change is staged and rolls back if committing the corresponding database update fails.
+
 See [takeover service](../../src-tauri/src/services/qoder_proxy.rs), [certificate handling](../../src-tauri/src/services/qoder_certificate.rs), and [native codec](../../src-tauri/src/proxy/qoder_codec.rs). Synthetic codec tests are not a claim that every vendor version, account, model, installed package or system trust configuration has been accepted.

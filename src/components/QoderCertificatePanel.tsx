@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { qoderCertificateErrorDetail } from "@/lib/qoderCertificateErrors";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 
@@ -39,8 +40,10 @@ export function QoderCertificatePanel() {
         t(`qoder.certificate.${action === "clear" ? "cleared" : "renewed"}`),
       );
       setAction(null);
-    } catch {
-      toast.error(t("qoder.certificate.operationFailed"));
+    } catch (error) {
+      toast.error(t("qoder.certificate.operationFailed"), {
+        description: qoderCertificateErrorDetail(error, t),
+      });
     } finally {
       setPending(false);
     }

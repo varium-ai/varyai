@@ -7,6 +7,7 @@ import {
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 import { GatewayKeysPanel } from "@/components/proxy/GatewayKeysPanel";
 import { gatewayApi } from "@/lib/api/gateway";
 import { APP_IDS } from "@/config/appConfig";
@@ -31,6 +32,7 @@ vi.mock("@/lib/api/gateway", () => ({
     usage: vi.fn(),
   },
 }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 const policy = {
   name: "Synthetic",
   models: ["allowed"],
@@ -157,7 +159,7 @@ it("starts with key management and opens creation explicitly", async () => {
   fireEvent.click(screen.getByRole("button", { name: "gatewayKeys.create" }));
   expect(await screen.findByLabelText("gatewayKeys.name")).toBeInTheDocument();
 });
-it("creates an exact allowlist and shows the secret only until dismissed", async () => {
+it("creates an exact allowlist without opening the secret dialog", async () => {
   mount();
   fireEvent.click(screen.getByRole("button", { name: "gatewayKeys.create" }));
   fireEvent.change(screen.getByLabelText("gatewayKeys.name"), {
@@ -179,8 +181,10 @@ it("creates an exact allowlist and shows the secret only until dismissed", async
       period: "daily",
     }),
   );
-  await screen.findByText("synthetic-secret");
-  fireEvent.click(screen.getByRole("button", { name: "gatewayKeys.dismiss" }));
+  await waitFor(() =>
+    expect(toast.success).toHaveBeenCalledWith("gatewayKeys.created"),
+  );
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(screen.queryByText("synthetic-secret")).not.toBeInTheDocument();
 });
 it("updates budgets without replacing a credential and revokes by ID", async () => {
@@ -499,3 +503,46 @@ it("starts the listener without rewriting every agent configuration", async () =
   );
   expect(proxyApi.setProxyTakeoverForApp).not.toHaveBeenCalled();
 });
+
+it.each([false, true])(
+  "reports secret copy success only after clipboard succeeds (failure: %s)",
+  async (failed) => {
+    const writeText = vi.fn();
+    if (failed)
+      writeText.mockRejectedValue(new Error("Synthetic clipboard failure"));
+    else writeText.mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    vi.mocked(gatewayApi.list).mockResolvedValue([
+      {
+        id: "fixture",
+        policy,
+        revoked: false,
+        usedTokens: 0,
+        resetsAt: null,
+        secretAvailable: true,
+      },
+    ]);
+    vi.mocked(gatewayApi.reveal).mockResolvedValue("synthetic-saved-secret");
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "gatewayKeys.reveal" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "common.copy" }),
+    );
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith("synthetic-saved-secret"),
+    );
+    await waitFor(() =>
+      expect(failed ? toast.error : toast.success).toHaveBeenCalledWith(
+        failed ? "gatewayKeys.failed" : "gatewayKeys.copied",
+      ),
+    );
+    if (failed) expect(toast.success).not.toHaveBeenCalled();
+    expect(dialog).toBeInTheDocument();
+  },
+);

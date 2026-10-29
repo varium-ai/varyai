@@ -3958,10 +3958,13 @@
     "noRules": "ルールがありません",
     "resetBuiltin": "既定に戻す",
     "sandboxTitle": "ルールサンドボックステスト",
-    "sandboxDescription": "ツールを実行せず、保存もせず、原文も返しません。固定列挙のみ返します。",
+    "sandboxDescription": "リアルタイム観測スイッチとは独立してルールを手動プレビューします。ツールの実行、リスク記録、入力原文の保存や表示は行いません。",
+    "sandboxObservationDisabled": "リアルタイムのツールリスク観測はオフです。以下は手動ルールテストであり、リアルタイム保護を有効にはしません。",
     "sandboxTool": "ツール名",
     "sandboxClient": "クライアント（任意）",
     "sandboxDefinitionRef": "信頼できるスキーマ参照（任意）",
+    "sandboxInvalidJson": "JSON の形式が正しくありません。括弧、引用符、カンマを確認してから再テストしてください。",
+    "sandboxOpenaiWriteHint": "OpenAI write_file は path フィールドを使用します。例：{\"path\":\"/etc/sudoers\",\"content\":\"test\"}。file_path は Claude と Gemini のフィールドです。認識できるフィールドがない場合は unchecked（未検査）となり、安全を意味しません。",
     "sandboxTrustHint": "ツール名から信頼性を推測しません。対応クライアントの組み込みツールをテストする場合のみ、既知のスキーマ builtin:claude:tools:v1、builtin:codex:tools:v1、builtin:gemini:tools:v1 または builtin:openai:tools:v1 を明示してください。MCP ツールは組み込みの識別情報を使用できません。",
     "fieldTarget": "セレクターの対象",
     "fieldToolRefs": "厳密なツール参照（JSON 配列）",
@@ -4302,7 +4305,7 @@
       "renew": "証明書を更新して保護を再開",
       "renewing": "証明書を更新しています…",
       "renewed": "証明書を更新しました。Qoder を完全に終了して再度開いてください。",
-      "renewFailed": "証明書の更新に失敗しました。macOS の認証を完了して再試行してください。",
+      "renewFailed": "証明書の更新に失敗しました。",
       "expiredTitle": "Qoder のローカル証明書の有効期限が切れました",
       "expiredDescription": "Qoder 公式アカウントの保護証明書の有効期限が切れました。ここから更新して保護を再開できます。VaryAI の再起動は不要ですが、macOS の認証が必要な場合があります。完了後、接続先と証明書の信頼を再読み込みするため Qoder を完全に終了して再度開いてください。サードパーティモデルの HTTP ルートはこの証明書に依存しません。",
       "title": "Qoder の保護を有効にする",
@@ -4320,7 +4323,18 @@
       "clearDescription": "Qoder の接管を無効にし、設定を復元してキーチェーンの信頼と証明書ファイルを削除します。macOS がシステムパスワードを求める場合があります。完了後は Qoder を完全に再起動してください。削除後は自動で再作成されません。「作成 / 再作成」を押した場合のみ再作成します。",
       "rebuildDescription": "証明書を置き換え、Qoder の接管を有効にします。古い信頼の削除と新しい信頼の追加で macOS の認証が必要になる場合があります。パスワードは macOS のみが処理します。完了後は Qoder を完全に再起動してください。",
       "cleared": "証明書を削除し Qoder の接管を無効にしました。Qoder を完全に再起動してください。",
-      "operationFailed": "証明書の操作が完了しませんでした。システム認証を確認して再試行してください。",
+      "operationFailed": "証明書の操作に失敗しました。",
+      "failureDetail": "失敗した処理: {{stage}}、状態: {{status}}。",
+      "failureStages": {
+        "codec": "Qoder バージョンの互換性確認",
+        "data": "証明書ファイルまたは形式の処理",
+        "generate": "証明書の生成",
+        "inspect": "証明書の検査",
+        "verify_trust": "証明書の信頼を確認",
+        "install_trust": "証明書の信頼を追加",
+        "remove_trust": "証明書の信頼を削除",
+        "delete_certificate": "キーチェーンの証明書を削除"
+      },
       "statusFailed": "証明書の状態を読み取れません。後で再試行してください。"
     }
   },
@@ -4451,6 +4465,8 @@
     "resultWarning": "リスク警告"
   },
   "gatewayKeys": {
+    "created": "キーを作成しました",
+    "copied": "キーをコピーしました",
     "nameExists": "同名のキーが存在します。別の名前を指定してください。",
     "sourceAgent": "リクエスト元",
     "upstreamModel": "転送先のモデル",

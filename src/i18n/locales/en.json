@@ -4032,10 +4032,13 @@
     "noRules": "No rules yet",
     "resetBuiltin": "Reset to default",
     "sandboxTitle": "Rule Sandbox Test",
-    "sandboxDescription": "Does not execute tools, persist, or echo raw input; returns fixed enums only.",
+    "sandboxDescription": "Manually preview rules independently of the live observation switch. No tools are executed, risk events recorded, or raw input saved or echoed.",
+    "sandboxObservationDisabled": "Live tool-risk observation is off. This is a manual rule preview and does not enable live protection.",
     "sandboxTool": "Tool name",
     "sandboxClient": "Client (optional)",
     "sandboxDefinitionRef": "Trusted schema reference (optional)",
+    "sandboxInvalidJson": "Invalid JSON. Check brackets, quotes and commas before testing.",
+    "sandboxOpenaiWriteHint": "OpenAI write_file uses the path field, for example {\"path\":\"/etc/sudoers\",\"content\":\"test\"}. The file_path field is used by Claude and Gemini. Missing recognized fields produces unchecked, which does not mean safe.",
     "sandboxTrustHint": "Trust is never inferred from a tool name. Explicitly enter a known schema reference, such as builtin:claude:tools:v1, builtin:codex:tools:v1, builtin:gemini:tools:v1 or builtin:openai:tools:v1, only for that client's built-in tools. MCP tools must not claim a built-in identity.",
     "fieldTarget": "Selector target",
     "fieldToolRefs": "Exact tool references (JSON array)",
@@ -4376,7 +4379,7 @@
       "renew": "Update certificate and restore routing",
       "renewing": "Updating certificate…",
       "renewed": "Certificate updated. Fully quit and reopen Qoder.",
-      "renewFailed": "Certificate update failed. Complete macOS authentication and retry.",
+      "renewFailed": "Certificate renewal failed.",
       "expiredTitle": "Qoder local certificate expired",
       "expiredDescription": "The certificate for Qoder official-account protection has expired. Update it here to restore routing without restarting VaryAI; macOS may require authentication. Then fully quit and reopen Qoder to reload its endpoint and certificate trust. Third-party HTTP model routing does not depend on this certificate.",
       "title": "Enable Qoder protection",
@@ -4394,7 +4397,18 @@
       "clearDescription": "Disables Qoder routing, restores client configuration, removes Keychain trust and deletes local certificate files. macOS may ask for your system password to remove trust. Fully restart Qoder afterwards. It will not be recreated automatically. Use Create / Rebuild Certificate to create it again.",
       "rebuildDescription": "Replaces the certificate and enables Qoder routing. macOS may ask for authentication to remove old trust and add new trust. Your password is handled only by macOS. Fully restart Qoder afterwards.",
       "cleared": "Certificate cleared and Qoder routing disabled. Fully restart Qoder.",
-      "operationFailed": "Certificate operation did not complete. Check system authentication and retry.",
+      "operationFailed": "Certificate operation failed.",
+      "failureDetail": "Failed stage: {{stage}}; status: {{status}}.",
+      "failureStages": {
+        "codec": "Qoder version compatibility check",
+        "data": "Certificate files or format",
+        "generate": "Generate certificate",
+        "inspect": "Inspect certificate",
+        "verify_trust": "Verify certificate trust",
+        "install_trust": "Install certificate trust",
+        "remove_trust": "Remove certificate trust",
+        "delete_certificate": "Delete keychain certificate"
+      },
       "statusFailed": "Cannot read certificate status. Try again later."
     }
   },
@@ -4525,6 +4539,8 @@
     "resultWarning": "Risk warning"
   },
   "gatewayKeys": {
+    "created": "Gateway key created",
+    "copied": "Gateway key copied",
     "nameExists": "A gateway key with this name already exists. Choose another name.",
     "sourceAgent": "Request source",
     "upstreamModel": "Forwarded model",

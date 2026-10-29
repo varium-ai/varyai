@@ -6,9 +6,14 @@ const net = require("node:net");
 const { PassThrough } = require("node:stream");
 const { createBridge } = require("./renderer.cjs");
 const SLOT = "__varyaiTraeNativeBridge";
+const REVISION = 2;
+const AUDIT_BINDING = "__varyaiTraeAuditV2";
 function safeModelError(message) {
   return typeof message === "string" &&
-    /^model_(add|update|remove)_failed(?::-?\d{1,16})?$/.test(message)
+    (/^model_(add|update|remove|restore)_failed(?::-?\d{1,16})?$/.test(
+      message,
+    ) ||
+      message === "model_recovery_unavailable")
     ? message
     : "TRAE native bridge unavailable";
 }
@@ -121,7 +126,9 @@ function nativeModelService(connection) {
 }
 function bootstrapSource() {
   return `(async()=>{
-    if(globalThis.${SLOT})return true;
+    const previous=globalThis.${SLOT};
+    if(previous?.revision===${REVISION}&&typeof previous.bridge?.replace==='function')return true;
+    await previous?.bridge?.disable();
     const solo=globalThis.__varyaiTraeSoloDI;
     let service,refresh;
     if(solo?.isInitialized()){
@@ -140,12 +147,12 @@ function bootstrapSource() {
     const pending=new Map(),createBridge=${createBridge.toString()};
     const bridge=createBridge(service,value=>new Promise((resolve,reject)=>{
       const id=crypto.randomUUID(),timer=setTimeout(()=>{pending.delete(id);reject(Error('audit_unavailable'));},5000);
-      pending.set(id,{resolve,reject,timer});globalThis.__varyaiTraeAudit(JSON.stringify({id,value}));
+      pending.set(id,{resolve,reject,timer});globalThis.${AUDIT_BINDING}(JSON.stringify({id,value}));
     }),refresh);
     // An installed IDE extension may still be present. This helper now owns the window's hook.
     const legacy=document.querySelector('varyai-trae-bridge-v1');
     if(legacy)await legacy.receive({op:'disable',request:'native-pipe-takeover'});
-    globalThis.${SLOT}={bridge,resolve(id,value,error){const task=pending.get(id);if(!task)return;clearTimeout(task.timer);pending.delete(id);error?task.reject(Error('audit_unavailable')):task.resolve(value);}};
+    globalThis.${SLOT}={revision:${REVISION},bridge,resolve(id,value,error){const task=pending.get(id);if(!task)return;clearTimeout(task.timer);pending.delete(id);error?task.reject(Error('audit_unavailable')):task.resolve(value);}};
     return true;
   })()`;
 }
@@ -290,7 +297,10 @@ async function run(endpoint, directory) {
   const appRoot = path.resolve(executable, "../../Resources/app");
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   fs.chmodSync(directory, 0o700);
-  const socketPath = path.join(directory, `bridge-agent-${process.pid}.sock`);
+  const socketPath = path.join(
+    directory,
+    `bridge-agent-v${REVISION}-${process.pid}.sock`,
+  );
   let config,
     pipe,
     scanning,
@@ -346,7 +356,7 @@ async function run(endpoint, directory) {
     }
     if (
       event.method !== "Runtime.bindingCalled" ||
-      event.params?.name !== "__varyaiTraeAudit" ||
+      event.params?.name !== AUDIT_BINDING ||
       !sessions.has(event.sessionId)
     )
       return;
@@ -392,7 +402,7 @@ async function run(endpoint, directory) {
               await pipe.call("Runtime.enable", {}, sessionId);
               await pipe.call(
                 "Runtime.addBinding",
-                { name: "__varyaiTraeAudit" },
+                { name: AUDIT_BINDING },
                 sessionId,
               );
             }
@@ -466,8 +476,22 @@ async function run(endpoint, directory) {
         ),
       );
       const ready = states.length > 0 && states.length === expected;
+      const modelReplacement =
+        ready &&
+        (
+          await Promise.all(
+            [...sessions.keys()].map((s) =>
+              evaluate(
+                s,
+                `typeof globalThis.${SLOT}?.bridge.replace === 'function'`,
+              ).catch(() => false),
+            ),
+          )
+        ).every(Boolean);
       return {
         ready,
+        revision: REVISION,
+        modelReplacement,
         enabled: !!config && ready && states.every(Boolean),
         scope: "ide-and-agent",
       };
@@ -477,6 +501,8 @@ async function run(endpoint, directory) {
     if (command.op === "list") return invoke(first, "list");
     if (command.op === "apply")
       return invoke(first, "apply", command.id, command.name, command.config);
+    if (command.op === "replace")
+      return invoke(first, "replace", command.id, command.name, command.config);
     if (command.op === "remove") {
       await invoke(first, "remove", command.id);
       return true;

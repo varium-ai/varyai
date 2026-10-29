@@ -90,10 +90,27 @@ pub(super) fn update(
     let old = old.ok_or_else(native::invalid)?;
     ensure_owned(state, &previous, &old)?;
     let replacement = merge_native(&old, &projected(state, &provider)?);
-    native::change_provider(&id, Some(&old), Some(&replacement), || {
+    let selected = current(state)? == provider.id;
+    let commit = || {
         state.db.save_provider(APP, &provider)?;
+        if selected {
+            for mut previous in state
+                .db
+                .get_all_providers(APP)?
+                .into_values()
+                .filter(|p| p.id != provider.id && p.category.as_deref() != Some("official"))
+            {
+                ProviderService::set_provider_live_config_managed(&mut previous, false);
+                state.db.save_provider(APP, &previous)?;
+            }
+        }
         Ok(true)
-    })
+    };
+    if selected {
+        native::replace_provider(&id, Some(&old), Some(&replacement), commit)
+    } else {
+        native::change_provider(&id, Some(&old), Some(&replacement), commit)
+    }
 }
 pub(super) fn remove(state: &AppState, id: &str, delete: bool) -> Result<(), AppError> {
     remove_with_lock(state, id, delete, false)
@@ -158,22 +175,33 @@ pub(super) fn enable_with_lock(
         .get_provider_by_id(id, APP)?
         .ok_or_else(native::invalid)?;
     ProviderService::validate_provider_settings(&AppType::Qoder, &provider)?;
-    if provider.category.as_deref() == Some("official") {
-        state.db.set_current_provider(APP, id)?;
-        return Ok(SwitchResult::default());
-    }
+    let official = provider.category.as_deref() == Some("official");
     let key = native::native_id(id);
     let old = native::providers()?.get(&key).cloned();
     if let Some(old) = &old {
         ensure_owned(state, &provider, old)?;
     }
-    let config = projected(state, &provider)?;
-    let config = old
-        .as_ref()
-        .map(|old| merge_native(old, &config))
-        .unwrap_or(config);
-    ProviderService::set_provider_live_config_managed(&mut provider, true);
-    native::change_provider(&key, old.as_ref(), Some(&config), || {
+    let config = if official {
+        None
+    } else {
+        let config = projected(state, &provider)?;
+        Some(
+            old.as_ref()
+                .map(|old| merge_native(old, &config))
+                .unwrap_or(config),
+        )
+    };
+    ProviderService::set_provider_live_config_managed(&mut provider, !official);
+    native::replace_provider(&key, old.as_ref(), config.as_ref(), || {
+        for mut previous in state
+            .db
+            .get_all_providers(APP)?
+            .into_values()
+            .filter(|p| p.id != id && p.category.as_deref() != Some("official"))
+        {
+            ProviderService::set_provider_live_config_managed(&mut previous, false);
+            state.db.save_provider(APP, &previous)?;
+        }
         state.db.save_provider(APP, &provider)?;
         state.db.set_current_provider(APP, id)?;
         Ok(SwitchResult::default())
@@ -256,7 +284,38 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     #[test]
-    fn qoder_saved_copies_stay_local_and_multiple_models_coexist_without_modifying_login() {
+    fn qoder_switch_replaces_orphaned_varyai_providers_and_official_clears_them() {
+        let dir = tempfile::tempdir().expect("dir");
+        crate::qoder_config::with_test_dir(dir.path(), || {
+            let state = AppState::new(Arc::new(Database::memory().expect("fresh database")));
+            let config = json!({"baseUrl":"https://api.example/v1","apiKey":"synthetic-key","type":"openai-compatible","protocol":"openai","model":"a","models":[{"model":"a"}]});
+            let orphan = native::native_id("old-installation");
+            std::fs::write(native::path(), json!({"providers":{orphan.clone():config.clone(),"manual":config.clone()},"enabledPlugins":{"keep":true}}).to_string()).expect("native");
+            list(&state).expect("official");
+            add(
+                &state,
+                Provider::with_id("new".into(), "New".into(), config.clone(), None),
+                false,
+            )
+            .expect("add");
+            enable(&state, "new").expect("switch");
+            let providers = native::providers().expect("providers");
+            assert!(!providers.contains_key(&orphan));
+            assert!(providers.contains_key("manual"));
+            assert!(providers.contains_key(&native::native_id("new")));
+            enable(&state, OFFICIAL).expect("official");
+            let providers = native::providers().expect("providers");
+            assert_eq!(providers.len(), 1);
+            assert_eq!(providers["manual"], config);
+            assert_eq!(
+                native::read_at(&native::path()).expect("read").0["enabledPlugins"],
+                json!({"keep":true})
+            );
+        });
+    }
+
+    #[test]
+    fn qoder_saved_copies_stay_local_and_switch_replaces_models_without_modifying_login() {
         let dir = tempfile::tempdir().expect("dir");
         crate::qoder_config::with_test_dir(dir.path(), || {
             let state = AppState::new(Arc::new(Database::memory().expect("db")));
@@ -282,7 +341,7 @@ mod tests {
                 original
             );
             enable(&state, &copy.id).expect("same model IDs under independent providers");
-            assert_eq!(crate::qoder_config::providers().expect("native").len(), 2);
+            assert_eq!(crate::qoder_config::providers().expect("native").len(), 1);
             enable(&state, "qoder-official").expect("official");
             remove(&state, &copy.id, true).expect("remove copy");
             assert_eq!(

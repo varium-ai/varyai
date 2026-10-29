@@ -203,8 +203,8 @@ export function GatewayKeysPanel({
         void run(async () => {
           if (editing) await gatewayApi.update(editing, policy);
           else {
-            const created = await gatewayApi.create(policy);
-            setSecret(created.secret);
+            await gatewayApi.create(policy);
+            toast.success(t("gatewayKeys.created"));
           }
           reset();
         });
@@ -437,7 +437,10 @@ export function GatewayKeysPanel({
                   size="sm"
                   variant="outline"
                   onClick={() =>
-                    void run(() => navigator.clipboard.writeText(secret))
+                    void run(async () => {
+                      await navigator.clipboard.writeText(secret);
+                      toast.success(t("gatewayKeys.copied"));
+                    })
                   }
                 >
                   {t("common.copy")}
