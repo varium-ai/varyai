@@ -37,7 +37,7 @@ The source is the user's open Chrome Bug Management view. Row numbers below refe
 
 ## Upgrade/delete/reopen reproduction
 
-CC Switch was updated from 4.0.10 to official 4.0.21 after signature and installer SHA-256 verification. Its real startup migrated shared storage from schema 20 to 23. Per the user's instruction, the database-compatibility implementation was withdrawn; that solution is being handled by another colleague on main. No schema-version change remains in this branch.
+CC Switch was updated from 4.0.10 to official 4.0.21 after signature and installer SHA-256 verification. Its real startup migrated shared storage from schema 20 to 23. Per the user's instruction, the database-compatibility implementation was withdrawn; that solution is being handled by another colleague on main. No schema-version change remained in this fix batch before the later main merge.
 
 The upgraded database was retained, and only the active shared database was moved out to reproduce the tester's reset. The independent extension database and native client configuration were preserved. Saved supplier configurations were recreated under new IDs in the disposable shared database. Kimi then reproduced the invalid-configuration error; the repaired backend subsequently switched successfully and replaced the stale aliases. Qoder routing and supplier selection succeeded locally. Clearing the newly created test certificate reproduced the keychain deletion error; the repaired backend cleared its metadata/files successfully after confirming the certificate was absent.
 
@@ -54,10 +54,16 @@ Original user data was restored after verification: 35 saved providers, original
 
 The protocol matrix exposed a repeatable converted-stream failure: an HTTP reset could discard already buffered frames. Converted Anthropic streams now emit a sanitized protocol error on that failure path; native passthrough and successful content are unchanged. The sixteen-edge matrix passed in the full run. No provider capability was disabled based on theoretical protocol assumptions.
 
-Installed-client inference, signing/installer acceptance, and tester-machine Qoder/TRAE behavior are not established by unit tests. No commit, push, tracker comment or status update was performed.
+Installed-client inference, signing/installer acceptance, and tester-machine Qoder/TRAE behavior are not established by unit tests. No commit or push was performed during native verification; tracker comments and statuses were unchanged.
 
 ## Native TRAE follow-up
 
 The first isolated test directory exceeded the macOS Unix socket path limit. Shortening that disposable directory allowed the helper to start. This was a local test-environment failure and does not establish the tester-machine root cause. The upgraded helper reported revision 2, model replacement available, audit enabled and IDE/agent scope. Native switching restored the original seven-model supplier after testing. The isolated data copy was retained, and the development app was then relaunched with the original 35-provider database at the user’s request.
 
 The restored original database also reconnected successfully: current helper revision 2, native model replacement available, audit enabled. A disabled legacy helper did not supersede the current connection.
+
+## Main integration
+
+After verification, the user authorized committing the fixes and merging the latest main. Commit `b309669e` contains this fix batch. Main commit `c7ac5156` was merged without conflicts and brings the separately reviewed CC Switch released-v23 compatibility and extension-v5 reconciliation implementation into this branch; it supersedes the earlier compatibility deferral above. The recovery helper was tested with temporary synthetic fixtures, not run against user data.
+
+Post-merge Rust verification passed: 4113 tests, 15 ignored, including 3,950 library tests. Cargo formatting, check and Clippy passed, along with all five Python recovery tests. The renderer was unchanged by the merge; its 2,585 tests, typecheck, build and formatting checks passed immediately before integration. Logs are retained in `/tmp/varyai-post-main-*.log`.
