@@ -1,4 +1,10 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import "@testing-library/jest-dom";
 import { createContext, useContext, type ComponentProps } from "react";
@@ -320,6 +326,21 @@ describe("SettingsPage Component", () => {
     fireEvent.click(screen.getByRole("tab", { name: "settings.tabAdvanced" }));
 
     expect(screen.getByTestId("local-proxy-settings")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "settings.saveDirectories" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("settings.advanced.configDir.title"));
+    const directory = within(
+      screen.getByRole("region", {
+        name: /settings\.advanced\.configDir\.title/,
+      }),
+    );
+    expect(
+      directory.getByText("settings.advancedSaveScope"),
+    ).toBeInTheDocument();
+    expect(
+      directory.getByRole("button", { name: "settings.saveDirectories" }),
+    ).toBeInTheDocument();
   });
 
   it("opens the requested settings tab", () => {
@@ -479,9 +500,12 @@ describe("SettingsPage Component", () => {
 
     renderSettingsPage({ onOpenChange });
 
-    // 保存按钮在 advanced tab 中
+    // Saving directory paths is scoped to the directory section.
     fireEvent.click(screen.getByText("settings.tabAdvanced"));
-    fireEvent.click(screen.getByRole("button", { name: /common\.save/ }));
+    fireEvent.click(screen.getByText("settings.advanced.configDir.title"));
+    fireEvent.click(
+      screen.getByRole("button", { name: "settings.saveDirectories" }),
+    );
 
     await waitFor(() => {
       expect(settingsMock.saveSettings).toHaveBeenCalledTimes(1);

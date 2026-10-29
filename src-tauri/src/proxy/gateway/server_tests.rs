@@ -112,7 +112,10 @@ async fn gateway_rejects_before_upstream_and_meters_independently(
         period: Period::Never,
     };
     let a = db.create_gateway_key(policy.clone())?;
-    let b = db.create_gateway_key(policy.clone())?;
+    let b = db.create_gateway_key(KeyPolicy {
+        name: "Other synthetic".into(),
+        ..policy.clone()
+    })?;
     let proxy = ProxyServer::new(
         ProxyConfig {
             listen_port: 0,

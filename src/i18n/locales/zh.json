@@ -1,5 +1,9 @@
 {
   "connectionPresets": {
+    "nameExists": "已存在同名预设，请使用其他名称。",
+    "list": "已保存的预设",
+    "listCount": "共 {{count}} 条预设",
+    "scrollHint": "向下滚动查看更多预设",
     "unsupportedFormat": "此客户端不支持该格式",
     "testModelHint": "填写此 Key 可用的模型，仅用于检测，不覆盖 Agent 的模型配置。",
     "testModel": "检测模型（可选）",
@@ -1343,7 +1347,9 @@
       "defaultCostMultiplierInvalid": "默认倍率格式不正确"
     },
     "saveFailedGeneric": "保存失败，请重试",
-    "workbuddyConfigDir": "WorkBuddy 配置目录"
+    "workbuddyConfigDir": "WorkBuddy 配置目录",
+    "saveDirectories": "保存配置目录",
+    "advancedSaveScope": "路由及其他独立设置即时生效，此按钮仅保存配置目录。"
   },
   "apps": {
     "doubaowork": "豆包工作",
@@ -2289,7 +2295,8 @@
     "input": "Input",
     "output": "Output",
     "cacheWrite": "创建",
-    "cacheWriteNotReported": "OpenAI 协议不区分缓存写入，仅上报缓存命中",
+    "cacheCreationNotReported": "未上报",
+    "cacheWriteNotReported": "当前统计未包含独立的缓存创建用量；部分协议不会上报该字段。",
     "cacheWritePartial": "部分协议（如 OpenAI）不上报缓存写入，数值可能偏低",
     "cacheRead": "命中",
     "baseCost": "基础",
@@ -4518,6 +4525,7 @@
     "resultWarning": "风险预警"
   },
   "gatewayKeys": {
+    "nameExists": "已存在同名密钥，请使用其他名称。",
     "sourceAgent": "请求来源",
     "upstreamModel": "实际转发模型",
     "requestModel": "客户端请求模型（白名单 ID）",

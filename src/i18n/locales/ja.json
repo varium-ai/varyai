@@ -1,5 +1,9 @@
 {
   "connectionPresets": {
+    "nameExists": "同名のプリセットが存在します。別の名前を指定してください。",
+    "list": "保存済みプリセット",
+    "listCount": "{{count}} 件のプリセット",
+    "scrollHint": "スクロールして他のプリセットを表示",
     "unsupportedFormat": "このクライアントでは利用できない形式",
     "testModelHint": "このキーで利用できるモデルを入力します。検出のみに使用し、エージェントのモデル設定は変更しません。",
     "testModel": "検出用モデル（任意）",
@@ -1269,7 +1273,9 @@
       "defaultCostMultiplierInvalid": "デフォルト倍率の形式が正しくありません"
     },
     "saveFailedGeneric": "保存に失敗しました。もう一度お試しください",
-    "workbuddyConfigDir": "WorkBuddy 設定ディレクトリ"
+    "workbuddyConfigDir": "WorkBuddy 設定ディレクトリ",
+    "saveDirectories": "設定ディレクトリを保存",
+    "advancedSaveScope": "ルーティングと個別の設定はすぐに適用されます。このボタンは設定ディレクトリを保存します。"
   },
   "apps": {
     "doubaowork": "Doubao Work",
@@ -2215,7 +2221,8 @@
     "input": "Input",
     "output": "Output",
     "cacheWrite": "作成",
-    "cacheWriteNotReported": "OpenAI プロトコルはキャッシュ作成を区別せず、キャッシュヒットのみ報告します",
+    "cacheCreationNotReported": "報告なし",
+    "cacheWriteNotReported": "個別のキャッシュ作成使用量は集計に含まれていません。この項目を報告しないプロトコルがあります。",
     "cacheWritePartial": "一部のプロトコル（OpenAIなど）はキャッシュ作成を報告しないため、値は不完全な可能性があります",
     "cacheRead": "ヒット",
     "baseCost": "基本",
@@ -4444,6 +4451,7 @@
     "resultWarning": "リスク警告"
   },
   "gatewayKeys": {
+    "nameExists": "同名のキーが存在します。別の名前を指定してください。",
     "sourceAgent": "リクエスト元",
     "upstreamModel": "転送先のモデル",
     "requestModel": "クライアントのリクエストモデル（許可リスト ID）",

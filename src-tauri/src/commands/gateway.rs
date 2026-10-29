@@ -66,7 +66,10 @@ pub async fn create_gateway_key(
             policy,
             &crate::config::get_app_config_dir().join("gateway-secrets"),
         )
-        .map_err(|_| "gatewayKeys.failed".to_string())
+        .map_err(|error| match error {
+            crate::AppError::Message(key) if key == "gatewayKeys.nameExists" => key,
+            _ => "gatewayKeys.failed".to_string(),
+        })
     })
     .await
     .map_err(|_| "gatewayKeys.failed".to_string())?
@@ -80,7 +83,10 @@ pub async fn update_gateway_key(
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         db.update_gateway_key(&id, policy)
-            .map_err(|_| "gatewayKeys.failed".to_string())
+            .map_err(|error| match error {
+                crate::AppError::Message(key) if key == "gatewayKeys.nameExists" => key,
+                _ => "gatewayKeys.failed".to_string(),
+            })
     })
     .await
     .map_err(|_| "gatewayKeys.failed".to_string())?

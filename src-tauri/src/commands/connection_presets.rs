@@ -20,7 +20,10 @@ pub fn save_connection_preset(
     state
         .db
         .save_connection_preset(&preset)
-        .map_err(|_| "connection_preset_save_failed".into())
+        .map_err(|error| match error {
+            crate::AppError::Message(key) if key == "connectionPresets.nameExists" => key,
+            _ => "connection_preset_save_failed".into(),
+        })
 }
 
 #[tauri::command]

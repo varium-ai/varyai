@@ -10,6 +10,10 @@ function createBridge(
   const sessions = new Map(),
     reported = new Set(),
     controllers = new Set();
+  const modelFailure = (operation, code) =>
+    Error(
+      `model_${operation}_failed${Number.isSafeInteger(code) ? `:${code}` : ""}`,
+    );
   const ownedName = async (id, model) => {
     const prefix = `VaryAI/${id}/`;
     if (prefix.length + model.length <= 64) return prefix + model;
@@ -76,13 +80,14 @@ function createBridge(
   }
   async function remove(id) {
     let owned = loadOwned(id);
+    await refreshModels();
     const models = await list();
     for (const m of models.filter((m) => m.id && isOwned(id, owned, m))) {
       const result = await service.updateCustomModel({
         action: "delete",
         id: m.id,
       });
-      if (result.code !== 0) throw Error("model_remove_failed");
+      if (result.code !== 0) throw modelFailure("remove", result.code);
       owned = owned.filter((row) => row.id !== m.id);
       saveOwned(id, owned);
     }
@@ -149,7 +154,7 @@ function createBridge(
             ...fields,
             display_name: legacyName,
           });
-          if (result.code !== 0) throw Error("model_apply_failed");
+          if (result.code !== 0) throw modelFailure("add", result.code);
           added.push(legacyName);
           await refreshModels();
           match = (await list()).find(
@@ -169,7 +174,7 @@ function createBridge(
           id: match.id,
           ...fields,
         });
-        if (result.code !== 0) throw Error("model_apply_failed");
+        if (result.code !== 0) throw modelFailure("update", result.code);
         wanted.add(match.id);
       }
       const all = await list();
@@ -180,7 +185,7 @@ function createBridge(
           action: "delete",
           id: old.id,
         });
-        if (result.code !== 0) throw Error("model_remove_failed");
+        if (result.code !== 0) throw modelFailure("remove", result.code);
       }
       saveOwned(
         id,

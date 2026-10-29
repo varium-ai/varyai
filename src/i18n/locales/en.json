@@ -1,5 +1,9 @@
 {
   "connectionPresets": {
+    "nameExists": "A preset with this name already exists. Choose another name.",
+    "list": "Saved presets",
+    "listCount": "{{count}} presets",
+    "scrollHint": "Scroll to see more presets",
     "unsupportedFormat": "Format unavailable for this client",
     "testModelHint": "Use a model available to this key. This does not replace the agent’s model settings.",
     "testModel": "Model for detection (optional)",
@@ -1343,7 +1347,9 @@
       "defaultCostMultiplierInvalid": "Invalid multiplier format"
     },
     "saveFailedGeneric": "Save failed, please try again",
-    "workbuddyConfigDir": "WorkBuddy configuration directory"
+    "workbuddyConfigDir": "WorkBuddy configuration directory",
+    "saveDirectories": "Save configuration directories",
+    "advancedSaveScope": "Routing and independent settings apply immediately. This button saves configuration directories."
   },
   "apps": {
     "doubaowork": "Doubao Work",
@@ -2289,7 +2295,8 @@
     "input": "Input",
     "output": "Output",
     "cacheWrite": "Creation",
-    "cacheWriteNotReported": "OpenAI protocol doesn't distinguish cache creation; only cache hits are reported",
+    "cacheCreationNotReported": "Not reported",
+    "cacheWriteNotReported": "Separate cache creation usage is not included in these statistics. Some protocols do not report this field.",
     "cacheWritePartial": "Some protocols (e.g. OpenAI) don't report cache creation; the value may be incomplete",
     "cacheRead": "Hit",
     "baseCost": "Base",
@@ -4518,6 +4525,7 @@
     "resultWarning": "Risk warning"
   },
   "gatewayKeys": {
+    "nameExists": "A gateway key with this name already exists. Choose another name.",
     "sourceAgent": "Request source",
     "upstreamModel": "Forwarded model",
     "requestModel": "Client request model (allowlist ID)",

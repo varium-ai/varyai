@@ -37,6 +37,53 @@ const fixture = {
 };
 
 describe("reusable connection presets", () => {
+  it("rejects duplicate preset names before saving and keeps the draft", async () => {
+    render(
+      <ConnectionPresetPicker
+        onApply={vi.fn()}
+        current={{ ...fixture, name: ` ${fixture.name.toUpperCase()} ` }}
+      />,
+    );
+    await screen.findByRole("option", { name: fixture.name });
+    fireEvent.click(
+      screen.getByRole("button", { name: "connectionPresets.manage" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "connectionPresets.save" }),
+    );
+    expect(
+      await screen.findByText("connectionPresets.nameExists"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "connectionPresets.save" })
+        .parentElement,
+    ).toContainElement(screen.getByRole("alert"));
+    expect(connectionPresetsApi.save).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("connectionPresets.name")).toHaveValue(
+      ` ${fixture.name.toUpperCase()} `,
+    );
+  });
+
+  it("exposes a named scrollable list and a visible hint for additional presets", async () => {
+    vi.mocked(connectionPresetsApi.list).mockResolvedValue(
+      Array.from({ length: 6 }, (_, i) => ({
+        ...fixture,
+        id: `fixture-${i}`,
+        name: `Fixture ${i + 1}`,
+      })),
+    );
+    render(<ConnectionPresetPicker onApply={vi.fn()} />);
+    await screen.findByRole("option", { name: "Fixture 6" });
+    fireEvent.click(
+      screen.getByRole("button", { name: "connectionPresets.manage" }),
+    );
+    const list = screen.getByRole("region", { name: "connectionPresets.list" });
+    expect(list).toHaveAttribute("tabindex", "0");
+    expect(within(list).getByText("Fixture 6")).toBeInTheDocument();
+    expect(
+      screen.getByText("connectionPresets.scrollHint"),
+    ).toBeInTheDocument();
+  });
   it("starts a visibly empty draft and focuses its name when adding a preset", async () => {
     render(<ConnectionPresetPicker onApply={vi.fn()} current={fixture} />);
     await screen.findByRole("option", { name: fixture.name });

@@ -480,6 +480,28 @@ export function SettingsPage({
                               onBrowseDirectory={browseDirectory}
                               onResetDirectory={resetDirectory}
                             />
+                            <div className="mt-4 flex flex-wrap items-center justify-end gap-3 border-t border-border/50 pt-4">
+                              <p className="mr-auto text-xs text-muted-foreground">
+                                {t("settings.advancedSaveScope")}
+                              </p>
+                              <Button
+                                onClick={handleSave}
+                                disabled={isSaving}
+                                className="shrink-0"
+                              >
+                                {isSaving ? (
+                                  <span className="inline-flex items-center gap-2">
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    {t("settings.saving")}
+                                  </span>
+                                ) : (
+                                  <>
+                                    <Save className="mr-2 h-4 w-4" />
+                                    {t("settings.saveDirectories")}
+                                  </>
+                                )}
+                              </Button>
+                            </div>
                           </AccordionContent>
                         </AccordionItem>
 
@@ -632,29 +654,6 @@ export function SettingsPage({
                 <AboutSection isPortable={isPortable} />
               </TabsContent>
             </div>
-
-            {activeTab === "advanced" && settings && (
-              <div
-                className="-mx-5 flex-shrink-0 border-t border-border-default pt-4 pb-4 sm:-mx-8"
-                style={{ backgroundColor: "hsl(var(--background))" }}
-              >
-                <div className="flex items-center justify-end gap-3 px-5 sm:px-8">
-                  <Button onClick={handleSave} disabled={isSaving}>
-                    {isSaving ? (
-                      <span className="inline-flex items-center gap-2">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        {t("settings.saving")}
-                      </span>
-                    ) : (
-                      <>
-                        <Save className="mr-2 h-4 w-4" />
-                        {t("common.save")}
-                      </>
-                    )}
-                  </Button>
-                </div>
-              </div>
-            )}
           </div>
         </Tabs>
       )}

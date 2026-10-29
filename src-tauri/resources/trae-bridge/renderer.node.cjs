@@ -42,6 +42,23 @@ function fixture() {
   };
   return { service, client, calls, models, proto };
 }
+test("native model failures retain only operation and numeric vendor code", async () => {
+  const f = fixture();
+  f.service.addCustomModel = async () => ({
+    code: 409,
+    message: "synthetic-private-detail",
+  });
+  const bridge = createBridge(f.service, async () => ({}));
+  await assert.rejects(
+    bridge.apply("fixture", "Fixture", {
+      protocol: "openai",
+      baseUrl: "https://fixture.example/v1",
+      apiKey: "synthetic-secret",
+      models: [{ model: "fixture-model" }],
+    }),
+    { message: "model_add_failed:409" },
+  );
+});
 test("redacts both native text carriers without changing credentials or protocol metadata", async () => {
   const f = fixture();
   const original = f.proto.convertReqToRustPayload;
@@ -122,6 +139,36 @@ test("model management returns no credential and removes only owned models", asy
   await b.remove("p1");
   assert.equal(f.models.length, 1);
   assert.equal(f.models[0].custom_model_id, "user");
+});
+
+test("withdrawal refreshes a stale model cache before removing owned models", async () => {
+  const f = fixture();
+  let cached = [];
+  f.service.getModelList = async () => ({ model_list: cached });
+  const bridge = createBridge(
+    f.service,
+    async () => ({}),
+    async () => {
+      cached = f.models.map((model) => ({ ...model }));
+    },
+  );
+  await bridge.apply("p1", "Fixture", {
+    baseUrl: "https://example.invalid/v1",
+    apiKey: "synthetic",
+    protocol: "openai",
+    models: [{ model: "shared" }],
+  });
+  f.models.push({
+    custom_model_id: "manual",
+    display_name: "Manual",
+    model_name: "other",
+  });
+  cached = [];
+  await bridge.remove("p1");
+  assert.deepEqual(
+    f.models.map((model) => model.custom_model_id),
+    ["manual"],
+  );
 });
 test("native model cache is refreshed before matching and after writes across official switches", async () => {
   const f = fixture();
@@ -507,5 +554,5 @@ test("native model edits refresh the desktop model selector", async () => {
   });
   assert.equal(refreshed, 3);
   await b.remove("test");
-  assert.equal(refreshed, 4);
+  assert.equal(refreshed, 5);
 });

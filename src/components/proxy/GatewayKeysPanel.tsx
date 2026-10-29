@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -70,7 +70,28 @@ export function GatewayKeysPanel({
   const [deleting, setDeleting] = useState<GatewayKey | null>(null);
   const [usageKey, setUsageKey] = useState("");
   const [connectKey, setConnectKey] = useState("");
+  const [nameError, setNameError] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const usageRef = useRef<HTMLSelectElement>(null);
   const [format, setFormat] = useState("anthropic");
+  useEffect(() => {
+    if (view === "keys" && formOpen) {
+      if (!editing) {
+        formRef.current?.scrollIntoView?.({
+          behavior: "smooth",
+          block: "start",
+        });
+      }
+      nameRef.current?.focus({ preventScroll: true });
+    } else if (view === "usage") {
+      usageRef.current?.scrollIntoView?.({
+        behavior: "smooth",
+        block: "start",
+      });
+      usageRef.current?.focus({ preventScroll: true });
+    }
+  }, [view, formOpen, editing, usageKey]);
   const selectedModels = [
     ...new Set(
       models
@@ -93,13 +114,18 @@ export function GatewayKeysPanel({
       await action();
       await client.invalidateQueries({ queryKey: ["gateway-keys"] });
       await client.invalidateQueries({ queryKey: ["gateway-usage"] });
-    } catch {
-      toast.error(t("gatewayKeys.failed"));
+    } catch (error) {
+      const duplicate = String(error).includes("gatewayKeys.nameExists");
+      if (duplicate) setNameError(true);
+      toast.error(
+        t(duplicate ? "gatewayKeys.nameExists" : "gatewayKeys.failed"),
+      );
     } finally {
       setPending(false);
     }
   }
   function reset() {
+    setNameError(false);
     setEditing(null);
     setName("");
     setModels("");
@@ -110,6 +136,7 @@ export function GatewayKeysPanel({
     setFormOpen(false);
   }
   function edit(key: GatewayKey) {
+    setNameError(false);
     setEditing(key.id);
     setName(key.policy.name);
     setModels(key.policy.models.join(", "));
@@ -142,6 +169,191 @@ export function GatewayKeysPanel({
             ...(format === "anthropic" ? { max_tokens: 64 } : {}),
             messages: [{ role: "user", content: "Hello" }],
           };
+  const keyForm = formOpen ? (
+    <form
+      ref={formRef}
+      className="scroll-mt-4 rounded-lg border p-3 space-y-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!valid || pending) return;
+        const unchangedName =
+          keys
+            .find((key) => key.id === editing)
+            ?.policy.name.trim()
+            .toLowerCase() === name.trim().toLowerCase();
+        if (
+          !unchangedName &&
+          keys.some(
+            (key) =>
+              key.id !== editing &&
+              key.policy.name.trim().toLowerCase() ===
+                name.trim().toLowerCase(),
+          )
+        ) {
+          setNameError(true);
+          return;
+        }
+        const policy: GatewayPolicy = {
+          name: name.trim(),
+          models: allModels ? [] : selectedModels,
+          allModels,
+          tokenLimit: limit === "" ? null : Number(limit),
+          period,
+        };
+        void run(async () => {
+          if (editing) await gatewayApi.update(editing, policy);
+          else {
+            const created = await gatewayApi.create(policy);
+            setSecret(created.secret);
+          }
+          reset();
+        });
+      }}
+    >
+      <h5 className="font-medium text-sm">
+        {t(editing ? "gatewayKeys.edit" : "gatewayKeys.create")}
+      </h5>
+      <div>
+        <Label htmlFor="gateway-name">{t("gatewayKeys.name")}</Label>
+        <Input
+          ref={nameRef}
+          id="gateway-name"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            setNameError(false);
+          }}
+          placeholder={t("gatewayKeys.nameExample")}
+          required
+          maxLength={120}
+          aria-invalid={nameError}
+          aria-describedby={nameError ? "gateway-name-error" : undefined}
+        />
+        {nameError && (
+          <p
+            id="gateway-name-error"
+            role="alert"
+            className="text-xs text-destructive"
+          >
+            {t("gatewayKeys.nameExists")}
+          </p>
+        )}
+      </div>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={allModels}
+          onChange={(e) => setAllModels(e.target.checked)}
+        />
+        {t("gatewayKeys.allModels")}
+      </label>
+      <p className="text-xs text-muted-foreground">
+        {t("gatewayKeys.modelsHint")}
+      </p>
+      {!allModels && (
+        <div className="space-y-2">
+          {catalogError && <p role="alert">{t("gatewayKeys.catalogFailed")}</p>}
+          <Input
+            aria-label={t("gatewayKeys.searchModels")}
+            placeholder={t("gatewayKeys.searchModels")}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <div className="max-h-48 overflow-y-auto rounded border p-2 space-y-2">
+            {(catalog?.models ?? [])
+              .filter((m) =>
+                `${m.model} ${m.provider} ${label(m.agent)}`
+                  .toLowerCase()
+                  .includes(search.toLowerCase()),
+              )
+              .map((m, i) => (
+                <label
+                  key={`${m.agent}:${m.provider}:${m.model}:${i}`}
+                  className="flex items-center gap-2 text-xs"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedModels.includes(m.model)}
+                    onChange={(e) =>
+                      setModels(
+                        (e.target.checked
+                          ? [...selectedModels, m.model]
+                          : selectedModels.filter((id) => id !== m.model)
+                        ).join(", "),
+                      )
+                    }
+                  />
+                  <span>
+                    {m.model}
+                    <span className="text-muted-foreground">
+                      {" "}
+                      · {label(m.agent)} / {m.provider}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            {!catalog?.models.length && (
+              <p className="text-xs text-muted-foreground">
+                {t("gatewayKeys.noModels")}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+      <div>
+        <Label htmlFor="gateway-models">{t("gatewayKeys.models")}</Label>
+        <Input
+          id="gateway-models"
+          value={models}
+          onChange={(e) => {
+            setModels(e.target.value);
+            setAllModels(false);
+          }}
+          placeholder={t("gatewayKeys.manualModels")}
+        />
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div>
+          <Label htmlFor="gateway-limit">{t("gatewayKeys.limit")}</Label>
+          <Input
+            id="gateway-limit"
+            inputMode="numeric"
+            value={limit}
+            onChange={(e) => setLimit(e.target.value)}
+            placeholder={t("gatewayKeys.unlimited")}
+          />
+        </div>
+        <div>
+          <Label htmlFor="gateway-period">{t("gatewayKeys.period")}</Label>
+          <select
+            id="gateway-period"
+            className="w-full h-9 rounded border bg-background px-2"
+            value={period}
+            onChange={(e) =>
+              setPeriod(e.target.value as GatewayPolicy["period"])
+            }
+          >
+            {(["never", "daily", "monthly"] as const).map((p) => (
+              <option key={p} value={p}>
+                {t(`gatewayKeys.${p}`)}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {t("gatewayKeys.boundaries")}
+      </p>
+      <div className="flex gap-2">
+        <Button type="submit" disabled={!valid || pending}>
+          {t(editing ? "common.save" : "common.add")}
+        </Button>
+        <Button type="button" variant="outline" onClick={reset}>
+          {t("common.cancel")}
+        </Button>
+      </div>
+    </form>
+  ) : null;
   return (
     <section className="rounded-xl border border-border p-4 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -205,168 +417,7 @@ export function GatewayKeysPanel({
               {t("gatewayKeys.create")}
             </Button>
           )}
-          {formOpen && (
-            <form
-              className="rounded-lg border p-3 space-y-3"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (!valid || pending) return;
-                const policy: GatewayPolicy = {
-                  name: name.trim(),
-                  models: allModels ? [] : selectedModels,
-                  allModels,
-                  tokenLimit: limit === "" ? null : Number(limit),
-                  period,
-                };
-                void run(async () => {
-                  if (editing) await gatewayApi.update(editing, policy);
-                  else {
-                    const created = await gatewayApi.create(policy);
-                    setSecret(created.secret);
-                  }
-                  reset();
-                });
-              }}
-            >
-              <h5 className="font-medium text-sm">
-                {t(editing ? "gatewayKeys.edit" : "gatewayKeys.create")}
-              </h5>
-              <div>
-                <Label htmlFor="gateway-name">{t("gatewayKeys.name")}</Label>
-                <Input
-                  id="gateway-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder={t("gatewayKeys.nameExample")}
-                  required
-                  maxLength={120}
-                />
-              </div>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={allModels}
-                  onChange={(e) => setAllModels(e.target.checked)}
-                />
-                {t("gatewayKeys.allModels")}
-              </label>
-              <p className="text-xs text-muted-foreground">
-                {t("gatewayKeys.modelsHint")}
-              </p>
-              {!allModels && (
-                <div className="space-y-2">
-                  {catalogError && (
-                    <p role="alert">{t("gatewayKeys.catalogFailed")}</p>
-                  )}
-                  <Input
-                    aria-label={t("gatewayKeys.searchModels")}
-                    placeholder={t("gatewayKeys.searchModels")}
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                  />
-                  <div className="max-h-48 overflow-y-auto rounded border p-2 space-y-2">
-                    {(catalog?.models ?? [])
-                      .filter((m) =>
-                        `${m.model} ${m.provider} ${label(m.agent)}`
-                          .toLowerCase()
-                          .includes(search.toLowerCase()),
-                      )
-                      .map((m, i) => (
-                        <label
-                          key={`${m.agent}:${m.provider}:${m.model}:${i}`}
-                          className="flex items-center gap-2 text-xs"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selectedModels.includes(m.model)}
-                            onChange={(e) =>
-                              setModels(
-                                (e.target.checked
-                                  ? [...selectedModels, m.model]
-                                  : selectedModels.filter(
-                                      (id) => id !== m.model,
-                                    )
-                                ).join(", "),
-                              )
-                            }
-                          />
-                          <span>
-                            {m.model}
-                            <span className="text-muted-foreground">
-                              {" "}
-                              · {label(m.agent)} / {m.provider}
-                            </span>
-                          </span>
-                        </label>
-                      ))}
-                    {!catalog?.models.length && (
-                      <p className="text-xs text-muted-foreground">
-                        {t("gatewayKeys.noModels")}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              )}
-              <div>
-                <Label htmlFor="gateway-models">
-                  {t("gatewayKeys.models")}
-                </Label>
-                <Input
-                  id="gateway-models"
-                  value={models}
-                  onChange={(e) => {
-                    setModels(e.target.value);
-                    setAllModels(false);
-                  }}
-                  placeholder={t("gatewayKeys.manualModels")}
-                />
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <Label htmlFor="gateway-limit">
-                    {t("gatewayKeys.limit")}
-                  </Label>
-                  <Input
-                    id="gateway-limit"
-                    inputMode="numeric"
-                    value={limit}
-                    onChange={(e) => setLimit(e.target.value)}
-                    placeholder={t("gatewayKeys.unlimited")}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="gateway-period">
-                    {t("gatewayKeys.period")}
-                  </Label>
-                  <select
-                    id="gateway-period"
-                    className="w-full h-9 rounded border bg-background px-2"
-                    value={period}
-                    onChange={(e) =>
-                      setPeriod(e.target.value as GatewayPolicy["period"])
-                    }
-                  >
-                    {(["never", "daily", "monthly"] as const).map((p) => (
-                      <option key={p} value={p}>
-                        {t(`gatewayKeys.${p}`)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {t("gatewayKeys.boundaries")}
-              </p>
-              <div className="flex gap-2">
-                <Button type="submit" disabled={!valid || pending}>
-                  {t(editing ? "common.save" : "common.add")}
-                </Button>
-                <Button type="button" variant="outline" onClick={reset}>
-                  {t("common.cancel")}
-                </Button>
-              </div>
-            </form>
-          )}
+          {!editing && keyForm}
           <Dialog
             open={Boolean(secret)}
             onOpenChange={(open) => {
@@ -411,10 +462,18 @@ export function GatewayKeysPanel({
               key.policy.tokenLimit !== null &&
               key.usedTokens >= key.policy.tokenLimit;
             return (
-              <article key={key.id} className="rounded-lg border p-3 space-y-2">
+              <article
+                key={key.id}
+                className="min-w-0 rounded-lg border p-3 space-y-2"
+              >
                 <div className="flex flex-wrap justify-between gap-2">
-                  <p className="font-medium text-sm">{key.policy.name}</p>
-                  <span className="text-xs">
+                  <p
+                    className="min-w-0 flex-1 truncate font-medium text-sm"
+                    title={key.policy.name}
+                  >
+                    {key.policy.name}
+                  </p>
+                  <span className="shrink-0 text-xs">
                     {t(
                       key.revoked
                         ? "gatewayKeys.revoked"
@@ -542,6 +601,7 @@ export function GatewayKeysPanel({
                     {t("gatewayKeys.deleteUnbindHint")}
                   </p>
                 )}
+                {editing === key.id && keyForm}
               </article>
             );
           })}
@@ -638,8 +698,9 @@ export function GatewayKeysPanel({
             {t("gatewayKeys.filterKey")}
           </Label>
           <select
+            ref={usageRef}
             id="gateway-usage-filter"
-            className="w-full h-9 rounded border bg-background px-2"
+            className="min-w-0 max-w-full w-full h-9 rounded border bg-background px-2 scroll-mt-4"
             value={usageKey}
             onChange={(e) => setUsageKey(e.target.value)}
           >
