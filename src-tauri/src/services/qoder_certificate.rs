@@ -63,17 +63,26 @@ pub(crate) fn inspect(directory: &Path) -> Result<Certificate, String> {
         expires_at,
     })
 }
+pub(crate) fn has_legacy_serial(certificate: &Certificate) -> Result<bool, String> {
+    let output = openssl(
+        &certificate.directory,
+        &["x509", "-in", "ca.pem", "-noout", "-serial"],
+    )?;
+    let text = std::str::from_utf8(&output).map_err(|_| failure())?;
+    let serial = text.trim().strip_prefix("serial=").ok_or_else(failure)?;
+    if serial.is_empty() || !serial.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(failure());
+    }
+    Ok(serial.trim_start_matches('0').eq_ignore_ascii_case("1000"))
+}
 pub(crate) async fn trusted(certificate: &Certificate) -> Result<bool, String> {
     use std::ffi::OsStr;
     let cert = certificate.directory.join("localhost.pem");
-    let ca = certificate.directory.join("ca.pem");
     let keychain = keychain();
-    Ok(security(&[
+    let verified = security(&[
         OsStr::new("verify-cert"),
         OsStr::new("-c"),
         cert.as_os_str(),
-        OsStr::new("-c"),
-        ca.as_os_str(),
         OsStr::new("-p"),
         OsStr::new("ssl"),
         OsStr::new("-L"),
@@ -84,7 +93,20 @@ pub(crate) async fn trusted(certificate: &Certificate) -> Result<bool, String> {
     ])
     .await?
     .status
-    .success())
+    .success();
+    if !verified {
+        return Ok(false);
+    }
+    // Qoder loads its own runtime CA store. Supplying a root to verify-cert can
+    // succeed even when that root is missing from the keychain/runtime store.
+    crate::proxy::qoder_codec::call(serde_json::json!({
+        "operation": "trust", "ca": certificate.pem,
+    }))
+    .await
+    .map_err(|_| stage_failure("verify_trust", "failed"))?
+    .get("trusted")
+    .and_then(serde_json::Value::as_bool)
+    .ok_or_else(|| stage_failure("verify_trust", "failed"))
 }
 fn lifetime_seconds(test_value: Option<&str>, development: bool) -> i64 {
     if development && test_value == Some("60") {
@@ -175,7 +197,11 @@ fn create_at_with_lifetime(directory: PathBuf, lifetime: i64) -> Result<Certific
         )?;
         // `x509 -days` cannot express a minute. Use explicit notAfter for both certificates.
         atomic_write_private(&directory.join("index"), b"").map_err(|_| failure())?;
-        atomic_write_private(&directory.join("serial"), b"1000\n").map_err(|_| failure())?;
+        // Keychain identity includes issuer and serial; fixed serials collide
+        // with earlier roots even when their public keys and fingerprints differ.
+        let serial = format!("{}\n", uuid::Uuid::new_v4().simple());
+        atomic_write_private(&directory.join("serial"), serial.as_bytes())
+            .map_err(|_| failure())?;
         let signing = "[ca]\ndefault_ca=local\n[local]\ndatabase=index\nserial=serial\nnew_certs_dir=.\ncertificate=ca.pem\nprivate_key=ca-key.pem\ndefault_md=sha256\npolicy=subject\nunique_subject=no\n[subject]\ncommonName=supplied\n[ca_ext]\nbasicConstraints=critical,CA:true,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\nnameConstraints=critical,permitted;DNS:localhost,permitted;IP:127.0.0.1/255.255.255.255\n[leaf_ext]\nbasicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost\n";
         atomic_write_private(&directory.join("signing.cnf"), signing.as_bytes())
             .map_err(|_| failure())?;
@@ -438,6 +464,47 @@ fn certificate_absent(listed: bool, output: &[u8], sha1: &str) -> bool {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+    #[test]
+    fn renewed_root_certificates_have_distinct_keychain_identities() {
+        let temp = tempfile::tempdir().expect("directory");
+        let first = create_at(temp.path().join("first")).expect("first certificate");
+        let second = create_at(temp.path().join("second")).expect("second certificate");
+        let identity = |certificate: &Certificate| {
+            openssl(
+                &certificate.directory,
+                &["x509", "-in", "ca.pem", "-noout", "-issuer", "-serial"],
+            )
+            .expect("public certificate identity")
+        };
+        assert_ne!(identity(&first), identity(&second));
+        assert!(!has_legacy_serial(&first).expect("first serial"));
+        assert!(!has_legacy_serial(&second).expect("second serial"));
+        // A synthetic legacy certificate with the old issuer/serial must be
+        // renewed even if its dates have not yet expired.
+        openssl(
+            &first.directory,
+            &[
+                "req",
+                "-new",
+                "-x509",
+                "-key",
+                "localhost-key.pem",
+                "-set_serial",
+                "4096",
+                "-subj",
+                "/CN=Synthetic Legacy CA",
+                "-out",
+                "legacy.pem",
+            ],
+        )
+        .expect("legacy fixture");
+        std::fs::rename(
+            first.directory.join("legacy.pem"),
+            first.directory.join("ca.pem"),
+        )
+        .expect("legacy certificate");
+        assert!(has_legacy_serial(&first).expect("legacy serial"));
+    }
     #[test]
     fn absent_certificate_clear_requires_successful_recognizable_keychain_listing() {
         let sha1 = "A".repeat(40);

@@ -19,3 +19,5 @@ Observation is a bounded side channel. It must not pause or rewrite ordinary str
 The implementation is under [protocol observation](../../src-tauri/src/proxy/tool_observation) and [tool-risk services](../../src-tauri/src/services/tool_risk). Read their regression tests before extending an adapter or transfer rule.
 
 The current worker uses static rules. No local-model reviewer is connected to the runtime. Persisted rule fields reserved by older configurations remain readable for compatibility.
+
+Shell command list editors expose all five match scopes directly in the scope menu: prefix, program, exact, keyword and regular expression. Keyword and regular-expression validation and explicit scope confirmation remain required; there is no separate advanced-mode visibility switch.
