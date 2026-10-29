@@ -448,7 +448,7 @@ mod tests {
             assert_eq!(date, certificate.expires_at);
         }
     }
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn qoder_certificate_and_tls_listener_validate_without_installing_system_trust() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp = tempfile::tempdir().expect("dir");
@@ -510,10 +510,32 @@ mod tests {
             .await
             .expect("verified local TLS");
         assert_eq!(response.text().await.expect("body"), "official-upstream-ok");
+        let mut pending_handshakes = Vec::new();
+        for _ in 0..16 {
+            let connection = tokio::net::TcpStream::connect(local)
+                .await
+                .expect("pending TLS handshake")
+                .into_std()
+                .expect("client socket");
+            connection.set_nonblocking(false).expect("blocking read");
+            connection
+                .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+                .expect("read timeout");
+            pending_handshakes.push(connection);
+        }
         server.stop().await;
         let _listener = tokio::net::TcpListener::bind(local)
             .await
             .expect("port released");
+        // Do not let this runtime finish detached connection tasks after stop returns.
+        for mut connection in pending_handshakes {
+            use std::io::Read;
+            match connection.read(&mut [0]) {
+                Ok(0) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                result => panic!("TLS connection remained open after stop: {result:?}"),
+            }
+        }
         upstream.abort();
     }
 }
