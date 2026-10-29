@@ -1,5 +1,9 @@
 {
   "connectionPresets": {
+    "nameExists": "已存在同名預設，請使用其他名稱。",
+    "list": "已儲存的預設",
+    "listCount": "共 {{count}} 條預設",
+    "scrollHint": "向下捲動查看更多預設",
     "unsupportedFormat": "此用戶端不支援此格式",
     "testModelHint": "填寫此 Key 可用的模型，僅用於偵測，不覆蓋 Agent 的模型設定。",
     "testModel": "偵測模型（選填）",
@@ -1270,7 +1274,9 @@
       "defaultCostMultiplierInvalid": "預設倍率格式不正確"
     },
     "saveFailedGeneric": "儲存失敗，請重試",
-    "workbuddyConfigDir": "WorkBuddy 設定目錄"
+    "workbuddyConfigDir": "WorkBuddy 設定目錄",
+    "saveDirectories": "儲存設定目錄",
+    "advancedSaveScope": "路由及其他獨立設定即時生效，此按鈕僅儲存設定目錄。"
   },
   "apps": {
     "doubaowork": "豆包工作",
@@ -2216,7 +2222,8 @@
     "input": "Input",
     "output": "Output",
     "cacheWrite": "建立",
-    "cacheWriteNotReported": "OpenAI 協定不區分快取建立，僅上報快取命中",
+    "cacheCreationNotReported": "未回報",
+    "cacheWriteNotReported": "目前統計未包含獨立的快取建立用量；部分協定不會回報此欄位。",
     "cacheWritePartial": "部分協定（如 OpenAI）不上報快取建立，數值可能偏低",
     "cacheRead": "命中",
     "baseCost": "基礎",
@@ -4445,6 +4452,7 @@
     "resultWarning": "風險預警"
   },
   "gatewayKeys": {
+    "nameExists": "已存在同名金鑰，請使用其他名稱。",
     "sourceAgent": "請求來源",
     "upstreamModel": "實際轉發模型",
     "requestModel": "用戶端請求模型（白名單 ID）",

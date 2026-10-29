@@ -124,6 +124,22 @@ export function ConnectionPresetPicker({
       setError("invalid");
       return;
     }
+    const unchangedName =
+      presets
+        .find((preset) => preset.id === draft.id)
+        ?.name.trim()
+        .toLowerCase() === draft.name.trim().toLowerCase();
+    if (
+      !unchangedName &&
+      presets.some(
+        (preset) =>
+          preset.id !== draft.id &&
+          preset.name.trim().toLowerCase() === draft.name.trim().toLowerCase(),
+      )
+    ) {
+      setError("nameExists");
+      return;
+    }
     setPending(true);
     setError("");
     try {
@@ -141,8 +157,12 @@ export function ConnectionPresetPicker({
       startNew();
       setSuccess("saveSuccess");
       toast.success(t("connectionPresets.saveSuccess"), { closeButton: true });
-    } catch {
-      setError("saveFailed");
+    } catch (error) {
+      setError(
+        String(error).includes("connectionPresets.nameExists")
+          ? "nameExists"
+          : "saveFailed",
+      );
     } finally {
       setPending(false);
     }
@@ -256,9 +276,22 @@ export function ConnectionPresetPicker({
             <DialogDescription>{t("connectionPresets.hint")}</DialogDescription>
           </DialogHeader>
           <div className="min-h-0 space-y-4 overflow-y-auto px-6 py-4">
-            <div className="max-h-48 overflow-auto">
+            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+              <span>
+                {t("connectionPresets.listCount", { count: presets.length })}
+              </span>
+              {presets.length > 4 && (
+                <span>{t("connectionPresets.scrollHint")}</span>
+              )}
+            </div>
+            <div
+              role="region"
+              aria-label={t("connectionPresets.list")}
+              tabIndex={0}
+              className="max-h-72 overflow-auto rounded-md border"
+            >
               <table className="w-full text-left text-sm">
-                <thead>
+                <thead className="sticky top-0 z-10 bg-background">
                   <tr>
                     <th className="p-2 font-medium">
                       {t("connectionPresets.name")}
@@ -445,13 +478,16 @@ export function ConnectionPresetPicker({
                 />
               )}
             </div>
+          </div>
+          <DialogFooter className="flex-row items-center">
             {error && (
-              <p role="alert" className="text-sm text-destructive">
+              <p
+                role="alert"
+                className="mr-auto min-w-0 flex-1 text-sm text-destructive"
+              >
                 {t(`connectionPresets.${error}`)}
               </p>
             )}
-          </div>
-          <DialogFooter>
             {success && (
               <p
                 role="status"

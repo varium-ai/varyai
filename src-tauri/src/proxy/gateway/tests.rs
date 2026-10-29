@@ -1,8 +1,72 @@
 use super::*;
 
+#[test]
+fn raised_gateway_budget_applies_immediately_without_resetting_usage(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db = Database::memory()?;
+    let policy = policy();
+    let created = db.create_gateway_key(policy.clone())?;
+    let now = Utc::now().timestamp();
+    let grant = db.authorize_gateway_key(&created.secret, "allowed", now)?;
+    db.record_gateway_usage(&grant, 100)?;
+    assert!(matches!(
+        db.authorize_gateway_key(&created.secret, "allowed", now),
+        Err(GatewayError::Exhausted(_))
+    ));
+    db.update_gateway_key(
+        &created.key.id,
+        KeyPolicy {
+            token_limit: Some(200),
+            ..policy
+        },
+    )?;
+    let next = db.authorize_gateway_key(&created.secret, "allowed", now)?;
+    assert_eq!(next.id, grant.id);
+    assert_eq!(db.list_gateway_keys()?[0].used_tokens, 100);
+    Ok(())
+}
+
+#[test]
+fn gateway_keys_reject_duplicate_names_and_allow_budget_updates(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db = Database::memory()?;
+    let first_policy = policy();
+    let first = db.create_gateway_key(first_policy.clone())?;
+    let mut duplicate = first_policy.clone();
+    duplicate.name = format!(" {} ", first_policy.name.to_uppercase());
+    assert!(
+        matches!(db.create_gateway_key(duplicate), Err(AppError::Message(key)) if key == "gatewayKeys.nameExists")
+    );
+    let mut updated = first_policy.clone();
+    updated.token_limit = Some(500);
+    db.update_gateway_key(&first.key.id, updated)?;
+    let second = db.create_gateway_key(KeyPolicy {
+        name: "Other fixture".into(),
+        ..first_policy.clone()
+    })?;
+    assert!(db.update_gateway_key(&second.key.id, first_policy).is_err());
+    assert_eq!(db.list_gateway_keys()?.len(), 2);
+    let legacy_policy = first.key.policy.clone();
+    db.extension_connection()
+        .lock()
+        .map_err(|_| "database lock")?
+        .execute(
+            "UPDATE gateway_keys SET policy=?1 WHERE id=?2",
+            rusqlite::params![serde_json::to_string(&legacy_policy)?, second.key.id],
+        )?;
+    db.update_gateway_key(
+        &second.key.id,
+        KeyPolicy {
+            token_limit: Some(900),
+            ..legacy_policy
+        },
+    )?;
+    Ok(())
+}
+
 fn policy() -> KeyPolicy {
     KeyPolicy {
-        name: "Synthetic project".into(),
+        name: format!("Synthetic project {}", uuid::Uuid::new_v4()),
         models: vec!["allowed".into()],
         all_models: false,
         token_limit: Some(100),

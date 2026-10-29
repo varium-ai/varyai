@@ -76,12 +76,40 @@ impl Database {
         }
         let json = serde_json::to_string(&preset)
             .map_err(|_| AppError::Message("Could not encode connection preset".into()))?;
-        let conn = lock_conn!(self.conn);
-        conn.execute(
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn.transaction()?;
+        let saved: Vec<(String, String)> = {
+            let mut stmt = tx.prepare("SELECT key, value FROM settings WHERE key GLOB ?1")?;
+            let rows = stmt.query_map([format!("{KEY_PREFIX}*")], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let names = saved
+            .into_iter()
+            .map(|(key, value)| {
+                serde_json::from_str::<ConnectionPreset>(&value)
+                    .map(|p| (key, p.name.trim().to_lowercase()))
+                    .map_err(|_| AppError::Database("Invalid connection preset data".into()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let name = preset.name.to_lowercase();
+        let unchanged = names
+            .iter()
+            .any(|(stored_key, stored_name)| stored_key == &key && stored_name == &name);
+        if !unchanged
+            && names
+                .iter()
+                .any(|(stored_key, stored_name)| stored_key != &key && stored_name == &name)
+        {
+            return Err(AppError::Message("connectionPresets.nameExists".into()));
+        }
+        tx.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
             params![key, json],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -93,6 +121,33 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_presets_reject_duplicate_names_and_allow_unchanged_updates() {
+        let db = Database::memory().expect("db");
+        let mut first = fixture();
+        db.save_connection_preset(&first).expect("first");
+        let mut second = fixture();
+        second.name = format!(" {} ", first.name.to_uppercase());
+        assert!(
+            matches!(db.save_connection_preset(&second), Err(AppError::Message(key)) if key == "connectionPresets.nameExists")
+        );
+        first.api_key = "synthetic-updated".into();
+        db.save_connection_preset(&first).expect("same-name update");
+        second.name = "Other fixture".into();
+        db.save_connection_preset(&second).expect("distinct name");
+        second.name = first.name.clone();
+        assert!(db.save_connection_preset(&second).is_err());
+        assert_eq!(db.list_connection_presets().expect("list").len(), 2);
+        db.set_setting(
+            &preset_key(&second.id).expect("key"),
+            &serde_json::to_string(&second).expect("legacy fixture"),
+        )
+        .expect("legacy duplicate");
+        second.api_key = "synthetic-legacy-updated".into();
+        db.save_connection_preset(&second)
+            .expect("legacy same-name update");
+    }
 
     fn fixture() -> ConnectionPreset {
         ConnectionPreset {
@@ -108,7 +163,8 @@ mod tests {
     fn saves_updates_and_deletes_independent_named_connections() {
         let db = Database::memory().expect("memory database");
         let mut first = fixture();
-        let second = fixture();
+        let mut second = fixture();
+        second.name = "Second fixture relay".into();
         db.save_connection_preset(&first).expect("save first");
         db.save_connection_preset(&second).expect("save second");
         first.name = "Updated name".into();
@@ -171,6 +227,7 @@ mod tests {
             "gemini_native",
         ] {
             let mut preset = fixture();
+            preset.name = format!("Fixture {format}");
             preset.api_format = Some(format.into());
             db.save_connection_preset(&preset).expect("save format");
             let rows = db.list_connection_presets().expect("list formats");

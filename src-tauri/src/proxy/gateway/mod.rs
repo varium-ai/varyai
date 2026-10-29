@@ -64,7 +64,8 @@ pub struct KeyPolicy {
 impl KeyPolicy {
     fn validate(&self) -> Result<(), AppError> {
         if self.name.trim().is_empty()
-            || self.name.len() > 120
+            || self.name.chars().count() > 120
+            || self.name.chars().any(char::is_control)
             || (!self.all_models && self.models.is_empty())
             || self.models.len() > 200
             || self
@@ -134,6 +135,39 @@ fn digest(secret: &str) -> String {
     format!("{:x}", Sha256::digest(secret.as_bytes()))
 }
 
+fn validate_key_name(
+    conn: &rusqlite::Connection,
+    id: Option<&str>,
+    name: &str,
+) -> Result<(), AppError> {
+    let mut stmt = conn.prepare("SELECT id, policy FROM gateway_keys")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let names = rows
+        .map(|row| {
+            let (key, value) = row?;
+            serde_json::from_str::<KeyPolicy>(&value)
+                .map(|p| (key, p.name.trim().to_lowercase()))
+                .map_err(|_| AppError::Config("Invalid gateway key policy".into()))
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    let name = name.to_lowercase();
+    if names
+        .iter()
+        .any(|(key, stored)| Some(key.as_str()) == id && stored == &name)
+    {
+        return Ok(());
+    }
+    if names
+        .iter()
+        .any(|(key, stored)| Some(key.as_str()) != id && stored == &name)
+    {
+        return Err(AppError::Message("gatewayKeys.nameExists".into()));
+    }
+    Ok(())
+}
+
 impl Database {
     pub fn create_gateway_key(&self, policy: KeyPolicy) -> Result<CreatedKey, AppError> {
         self.create_gateway_key_inner(policy, None)
@@ -149,9 +183,10 @@ impl Database {
 
     fn create_gateway_key_inner(
         &self,
-        policy: KeyPolicy,
+        mut policy: KeyPolicy,
         directory: Option<&std::path::Path>,
     ) -> Result<CreatedKey, AppError> {
+        policy.name = policy.name.trim().to_owned();
         policy.validate()?;
         let mut random = [0u8; 32];
         getrandom::getrandom(&mut random)
@@ -166,6 +201,7 @@ impl Database {
         let id = uuid::Uuid::new_v4().to_string();
         let mut conn = crate::database::lock_conn!(self.extension_connection());
         let tx = conn.transaction()?;
+        validate_key_name(&tx, None, &policy.name)?;
         tx.execute(
             "INSERT INTO gateway_keys (id, secret_hash, policy, revoked) VALUES (?1,?2,?3,0)",
             rusqlite::params![
@@ -231,16 +267,20 @@ impl Database {
         }
         Ok(Some(secret))
     }
-    pub fn update_gateway_key(&self, id: &str, policy: KeyPolicy) -> Result<(), AppError> {
+    pub fn update_gateway_key(&self, id: &str, mut policy: KeyPolicy) -> Result<(), AppError> {
+        policy.name = policy.name.trim().to_owned();
         policy.validate()?;
-        let conn = crate::database::lock_conn!(self.extension_connection());
-        if conn.execute(
+        let mut conn = crate::database::lock_conn!(self.extension_connection());
+        let tx = conn.transaction()?;
+        validate_key_name(&tx, Some(id), &policy.name)?;
+        if tx.execute(
             "UPDATE gateway_keys SET policy=?2 WHERE id=?1",
             rusqlite::params![id, crate::database::to_json_string(&policy)?],
         )? == 0
         {
             return Err(AppError::Config("Gateway key not found".into()));
         }
+        tx.commit()?;
         Ok(())
     }
     pub fn revoke_gateway_key(&self, id: &str) -> Result<(), AppError> {

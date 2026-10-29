@@ -187,6 +187,7 @@ export function UsageHero({
 
   const cacheWriteState = getCacheWriteAvailability(
     appType ? [appType] : allApps.map((a) => a.appType),
+    summary?.totalCacheCreationTokens,
   );
 
   const input = summary?.totalInputTokens ?? 0;
@@ -200,14 +201,13 @@ export function UsageHero({
 
   const cacheWriteDisplay = {
     value:
-      cacheWriteState === "na" ? "N/A" : formatTokensShort(cacheWrite, lang),
+      cacheWriteState === "na"
+        ? t("usage.cacheCreationNotReported")
+        : formatTokensShort(cacheWrite, lang),
     muted: cacheWriteState === "na",
     tooltip:
       cacheWriteState === "na"
-        ? t(
-            "usage.cacheWriteNotReported",
-            "OpenAI 协议不区分缓存写入，仅上报缓存命中",
-          )
+        ? t("usage.cacheWriteNotReported")
         : cacheWriteState === "partial"
           ? t(
               "usage.cacheWritePartial",

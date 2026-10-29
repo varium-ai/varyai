@@ -113,7 +113,7 @@ fn native_models(state: &AppState) -> Result<Vec<Value>, AppError> {
 
 pub(super) fn add(
     state: &AppState,
-    provider: Provider,
+    mut provider: Provider,
     add_to_live: bool,
 ) -> Result<bool, AppError> {
     let _guard = futures::executor::block_on(state.proxy_service.lock_switch_for_app(APP));
@@ -127,11 +127,17 @@ pub(super) fn add(
         state.db.save_provider(APP, &provider)?;
         return Ok(true);
     }
-    check_unique(state, &provider)?;
+    let incoming = models(&provider)?;
+    let saved = state.db.get_all_providers(APP)?;
     if native_models(state)?.iter().any(|native| {
-        models(&provider)
-            .map(|models| models.iter().any(|model| model["id"] == native["id"]))
-            .unwrap_or(false)
+        incoming.iter().any(|model| model["id"] == native["id"])
+            && !saved
+                .values()
+                .filter(|saved| {
+                    saved.category.as_deref() != Some("official")
+                        && ProviderService::provider_live_config_managed(saved) != Some(false)
+                })
+                .any(|saved| models(saved).is_ok_and(|models| models.contains(native)))
     }) {
         return Err(AppError::localized(
             "workbuddy.duplicate_model",
@@ -139,15 +145,15 @@ pub(super) fn add(
             "This model ID already exists in WorkBuddy; import it before editing",
         ));
     }
+    ProviderService::set_provider_live_config_managed(&mut provider, false);
+    state.db.save_provider(APP, &provider)?;
     if add_to_live {
-        crate::workbuddy_config::change_models(&[], &live_models(state, &provider)?, || {
-            state.db.save_provider(APP, &provider)?;
-            Ok(true)
-        })
-    } else {
-        state.db.save_provider(APP, &provider)?;
-        Ok(true)
+        if let Err(error) = enable_model(state, &provider.id) {
+            state.db.delete_provider(APP, &provider.id)?;
+            return Err(error);
+        }
     }
+    Ok(true)
 }
 
 pub(super) fn update(
@@ -501,6 +507,45 @@ mod tests {
             }),
             None,
         )
+    }
+
+    #[test]
+    fn workbuddy_adds_another_supplier_with_owned_overlapping_models() {
+        for add_to_live in [false, true] {
+            let dir = tempfile::tempdir().expect("dir");
+            with_test_dir(dir.path(), || {
+                let state = AppState::new(Arc::new(Database::memory().expect("db")));
+                let original = provider("original", "shared-model");
+                add(&state, original.clone(), true).expect("original");
+                enable(&state, &original.id).expect("select original");
+                let before = read_models().expect("before");
+                let mut other = provider("other", "shared-model");
+                other.settings_config["url"] = json!("https://other.example/v1/chat/completions");
+                other.settings_config["apiKey"] = json!("synthetic-other");
+                add(&state, other.clone(), add_to_live).expect("save overlapping supplier");
+                if !add_to_live {
+                    assert_eq!(read_models().expect("detached"), before);
+                }
+                enable(&state, &other.id).expect("select other");
+                assert_eq!(
+                    read_models().expect("other models"),
+                    models(&other).expect("expected")
+                );
+                enable(&state, &original.id).expect("switch back");
+                assert_eq!(
+                    read_models().expect("original restored"),
+                    models(&original).expect("expected")
+                );
+                assert_eq!(
+                    state
+                        .db
+                        .get_all_providers(APP)
+                        .expect("saved suppliers")
+                        .len(),
+                    2
+                );
+            });
+        }
     }
 
     #[test]
@@ -910,7 +955,8 @@ mod tests {
                 provider("other", "other-model"),
                 false
             )
-            .is_err());
+            .is_ok());
+            assert_eq!(std::fs::read_to_string(&path).expect("read"), original);
         });
     }
 }

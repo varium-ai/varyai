@@ -37,6 +37,72 @@ const policy = {
   tokenLimit: 100,
   period: "daily" as const,
 };
+
+it("edits keys in their own cards and focuses the selected usage filter", async () => {
+  vi.mocked(gatewayApi.list).mockResolvedValue([
+    { id: "first", policy, revoked: false, usedTokens: 0, resetsAt: null },
+    {
+      id: "second",
+      policy: { ...policy, name: "Second fixture" },
+      revoked: false,
+      usedTokens: 0,
+      resetsAt: null,
+    },
+  ]);
+  mount();
+  const second = (await screen.findByText("Second fixture")).closest(
+    "article",
+  )!;
+  const first = screen.getByText(policy.name).closest("article")!;
+  fireEvent.click(
+    within(second).getByRole("button", { name: "gatewayKeys.edit" }),
+  );
+  await waitFor(() =>
+    expect(screen.getByLabelText("gatewayKeys.name")).toHaveFocus(),
+  );
+  expect(within(second).getByLabelText("gatewayKeys.name")).toHaveValue(
+    "Second fixture",
+  );
+  expect(
+    within(first).queryByLabelText("gatewayKeys.name"),
+  ).not.toBeInTheDocument();
+  fireEvent.click(
+    within(first).getByRole("button", { name: "gatewayKeys.edit" }),
+  );
+  expect(within(first).getByLabelText("gatewayKeys.name")).toHaveValue(
+    policy.name,
+  );
+  expect(
+    within(second).queryByLabelText("gatewayKeys.name"),
+  ).not.toBeInTheDocument();
+  fireEvent.click(within(first).getByRole("button", { name: "common.cancel" }));
+  expect(screen.queryByLabelText("gatewayKeys.name")).not.toBeInTheDocument();
+  fireEvent.click(
+    within(second).getByRole("button", { name: "gatewayKeys.viewUsage" }),
+  );
+  await waitFor(() =>
+    expect(screen.getByLabelText("gatewayKeys.filterKey")).toHaveFocus(),
+  );
+  expect(screen.getByLabelText("gatewayKeys.filterKey")).toHaveValue("second");
+});
+
+it("rejects a duplicate key name without submitting and preserves the draft", async () => {
+  vi.mocked(gatewayApi.list).mockResolvedValue([
+    { id: "first", policy, revoked: false, usedTokens: 0, resetsAt: null },
+  ]);
+  mount();
+  await screen.findByText(policy.name);
+  fireEvent.click(screen.getByRole("button", { name: "gatewayKeys.create" }));
+  fireEvent.change(screen.getByLabelText("gatewayKeys.name"), {
+    target: { value: ` ${policy.name.toUpperCase()} ` },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "common.add" }));
+  expect(await screen.findByText("gatewayKeys.nameExists")).toBeInTheDocument();
+  expect(gatewayApi.create).not.toHaveBeenCalled();
+  expect(screen.getByLabelText("gatewayKeys.name")).toHaveValue(
+    ` ${policy.name.toUpperCase()} `,
+  );
+});
 function mount(
   props: Partial<React.ComponentProps<typeof GatewayKeysPanel>> = {},
 ) {

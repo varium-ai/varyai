@@ -48,10 +48,25 @@ fn request_socket(path: &std::path::Path, command: &Value) -> Result<Value, AppE
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
     if value.get("error").is_some() {
         if matches!(command["op"].as_str(), Some("apply" | "remove")) {
+            let detail = value["error"].as_str().and_then(|message| {
+                let (operation, code) = message.split_once(':')?;
+                let (zh, en) = match operation {
+                    "model_add_failed" => ("新增模型", "adding a model"),
+                    "model_update_failed" => ("更新模型", "updating a model"),
+                    "model_remove_failed" => ("清理旧模型", "removing an old model"),
+                    _ => return None,
+                };
+                let code = code.parse::<i64>().ok()?;
+                Some((
+                    format!("（{zh}，错误码 {code}）"),
+                    format!(" ({en}, code {code})"),
+                ))
+            });
+            let (zh_detail, en_detail) = detail.unwrap_or_default();
             return Err(AppError::localized(
                 "agents.trae_model_configuration",
-                "TRAE 模型配置失败，请在 TRAE CN 中检查自定义模型设置后重试",
-                "TRAE model configuration failed. Check custom model settings in TRAE CN and retry",
+                format!("TRAE 模型配置失败{zh_detail}，请在 TRAE CN 中检查自定义模型设置后重试"),
+                format!("TRAE model configuration failed{en_detail}. Check custom model settings in TRAE CN and retry"),
             ));
         }
         return Err(unavailable());
@@ -521,14 +536,14 @@ mod tests {
         let listener = UnixListener::bind(&path).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let server = std::thread::spawn(move || {
-            for _ in 0..3 {
+            for index in 0..3 {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut line = String::new();
                 BufReader::new(&stream).read_line(&mut line).unwrap();
                 writeln!(
                     stream,
                     "{}",
-                    json!({"error":"synthetic-private-native-detail"})
+                    json!({"error":if index == 0 {"model_add_failed:409"} else {"synthetic-private-native-detail"}})
                 )
                 .unwrap();
             }
@@ -540,6 +555,9 @@ mod tests {
             assert!(error.contains("TRAE model configuration failed"), "{error}");
             assert!(!error.contains("synthetic-private-native-detail"));
             assert!(!error.contains("not connected"));
+            if op == "apply" {
+                assert!(error.contains("adding a model, code 409"), "{error}");
+            }
         }
         let error = request_socket(&path, &json!({"op":"health"}))
             .unwrap_err()

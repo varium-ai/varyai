@@ -233,7 +233,7 @@ describe("SettingsPage integration", () => {
       "settings.browsePlaceholderApp",
     );
     fireEvent.change(appInput, { target: { value: "/custom/app" } });
-    fireEvent.click(screen.getByText("common.save"));
+    fireEvent.click(screen.getByText("settings.saveDirectories"));
 
     await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
     await screen.findByText("settings.restartRequired");
