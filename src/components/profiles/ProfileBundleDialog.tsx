@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { APP_IDS } from "@/config/appConfig";
 
 export function ProfileBundleDialog({
   profile,
@@ -44,6 +45,30 @@ export function ProfileBundleDialog({
   const [busy, setBusy] = useState(false);
   const describeError = (value: unknown) => {
     const message = value instanceof Error ? value.message : String(value);
+    if (message.startsWith("profiles.bundle.agentError:")) {
+      const match = message.match(
+        /^profiles\.bundle\.agentError:([a-z-]+):(profiles\.bundle\.[a-zA-Z]+)$/,
+      );
+      const reasons = [
+        "noProvider",
+        "missingResource",
+        "invalidConfig",
+        "readFailed",
+        "nativeModelMissing",
+        "operationFailed",
+      ].map((key) => `profiles.bundle.${key}`);
+      if (
+        match &&
+        (APP_IDS as readonly string[]).includes(match[1]) &&
+        reasons.includes(match[2])
+      ) {
+        return t("profiles.bundle.agentPreviewFailed", {
+          app: t(`apps.${match[1]}`),
+          reason: t(match[2]),
+        });
+      }
+      return t("profiles.bundle.operationFailed");
+    }
     const key = message.match(/profiles\.bundle\.[a-zA-Z]+/)?.[0];
     return t(key ?? "profiles.bundle.operationFailed");
   };
@@ -74,6 +99,11 @@ export function ProfileBundleDialog({
       );
       onChanged();
       if (!result.success) {
+        if (result.warnings.includes("profiles.bundle.noApplicableAgents")) {
+          setError(t("profiles.bundle.noApplicableAgents"));
+          setPreview(undefined);
+          return;
+        }
         const reasons = [
           "providerApplyFailed",
           "nativeSelectionFailed",
@@ -102,7 +132,10 @@ export function ProfileBundleDialog({
       const restartHints = preview.changes.map((change) =>
         restartHint(change.app),
       );
-      if (result.warnings.length) {
+      const skippedHints = (result.skipped ?? []).map(({ app }) =>
+        t("profiles.bundle.providerMissingSkipped", { app: t(`apps.${app}`) }),
+      );
+      if (result.warnings.length || skippedHints.length) {
         toast.warning(message, {
           description: [
             ...[...new Set(result.warnings)].map((warning) =>
@@ -112,6 +145,7 @@ export function ProfileBundleDialog({
                   : "profiles.bundle.applyWarning",
               ),
             ),
+            ...skippedHints,
             ...restartHints,
           ].join("\n"),
           duration: 8000,
@@ -197,6 +231,21 @@ export function ProfileBundleDialog({
               )}
             </div>
           ))}
+          {preview?.skipped?.map(({ app }) => (
+            <div
+              key={app}
+              className="rounded-md border border-amber-500/30 p-3 text-sm text-amber-600 dark:text-amber-400"
+            >
+              {t("profiles.bundle.providerMissingSkipped", {
+                app: t(`apps.${app}`),
+              })}
+            </div>
+          ))}
+          {preview?.changes.length === 0 && !!preview.skipped?.length && (
+            <p className="text-sm text-muted-foreground">
+              {t("profiles.bundle.noApplicableAgents")}
+            </p>
+          )}
           {error && (
             <p role="alert" className="text-sm text-destructive">
               {error}
@@ -207,11 +256,12 @@ export function ProfileBundleDialog({
           <Button variant="outline" onClick={onClose} disabled={busy}>
             {t("common.close")}
           </Button>
-          {preview && (
-            <Button onClick={apply} disabled={busy}>
-              {t(busy ? "profiles.bundle.applying" : "profiles.bundle.apply")}
-            </Button>
-          )}
+          {preview &&
+            (preview.changes.length > 0 || !preview.skipped?.length) && (
+              <Button onClick={apply} disabled={busy}>
+                {t(busy ? "profiles.bundle.applying" : "profiles.bundle.apply")}
+              </Button>
+            )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

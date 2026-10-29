@@ -85,6 +85,13 @@ pub struct ProfileChange {
 pub struct ProfilePreview {
     pub revision: String,
     pub changes: Vec<ProfileChange>,
+    pub skipped: Vec<ProfileSkip>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProfileSkip {
+    pub app: String,
+    pub reason: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -94,6 +101,7 @@ pub struct ProfileApplyResult {
     pub undo_id: Option<String>,
     pub warnings: Vec<String>,
     pub failure: Option<ProfileApplyFailure>,
+    pub skipped: Vec<ProfileSkip>,
     #[serde(skip)]
     pub scopes: Vec<AppType>,
 }
@@ -178,6 +186,30 @@ fn error(key: &str) -> AppError {
     AppError::Message(format!("profiles.bundle.{key}"))
 }
 
+fn agent_error(app: &AppType, cause: AppError) -> AppError {
+    if matches!(&cause, AppError::Message(message) if message.starts_with("profiles.bundle.agentError:"))
+    {
+        return cause;
+    }
+    let reason = match &cause {
+        AppError::Message(message) => [
+            "noProvider",
+            "missingResource",
+            "invalidConfig",
+            "readFailed",
+            "nativeModelMissing",
+        ]
+        .into_iter()
+        .find(|key| message == &format!("profiles.bundle.{key}"))
+        .unwrap_or("operationFailed"),
+        _ => "operationFailed",
+    };
+    AppError::Message(format!(
+        "profiles.bundle.agentError:{}:profiles.bundle.{reason}",
+        app.as_str()
+    ))
+}
+
 fn initialize_providers(
     state: &AppState,
     apps: impl IntoIterator<Item = AppType>,
@@ -194,7 +226,7 @@ fn initialize_providers(
         ) {
             // The UI lists seed official entries. Do that before the undo snapshot,
             // so its first read does not look like an external configuration edit.
-            ProviderService::list(state, app)?;
+            ProviderService::list(state, app.clone()).map_err(|e| agent_error(&app, e))?;
         }
     }
     Ok(())
@@ -636,8 +668,36 @@ fn snapshots(state: &AppState, bundle: &ProfileBundle) -> Result<Vec<AppSnapshot
     bundle
         .selections
         .iter()
-        .map(|s| AppSnapshot::capture(state, s.app.clone()))
+        .map(|s| AppSnapshot::capture(state, s.app.clone()).map_err(|e| agent_error(&s.app, e)))
         .collect()
+}
+
+/// A missing supplier is an uncaptured slot, never permission to choose another.
+/// Preview and apply resolve the same slots before reading or writing client files.
+fn resolve_bundle(
+    state: &AppState,
+    bundle: ProfileBundle,
+) -> Result<(ProfileBundle, Vec<ProfileSkip>), AppError> {
+    let mut selections = Vec::new();
+    let mut skipped = Vec::new();
+    for selection in bundle.selections {
+        let providers = state.db.get_all_providers(selection.app.as_str())?;
+        if !providers.contains_key(&selection.provider_id)
+            || selection.providers.as_ref().is_some_and(|saved| {
+                saved
+                    .iter()
+                    .any(|provider| !providers.contains_key(&provider.id))
+            })
+        {
+            skipped.push(ProfileSkip {
+                app: selection.app.as_str().into(),
+                reason: "profiles.bundle.providerMissingSkipped",
+            });
+        } else {
+            selections.push(selection);
+        }
+    }
+    Ok((ProfileBundle { selections }, skipped))
 }
 
 fn revision(profile: &Profile, snapshots: &[AppSnapshot]) -> Result<String, AppError> {
@@ -916,6 +976,7 @@ impl ProfileBundleService {
     pub fn preview(state: &AppState, id: &str) -> Result<ProfilePreview, AppError> {
         let _operation = state.profile_bundles.lock_operation();
         let (profile, bundle) = load(state, id)?;
+        let (bundle, skipped) = resolve_bundle(state, bundle)?;
         initialize_providers(state, bundle.selections.iter().map(|s| s.app.clone()))?;
         let _locks = lock_apps(state, &bundle);
         let before = snapshots(state, &bundle)?;
@@ -925,10 +986,13 @@ impl ProfileBundleService {
                 .providers
                 .iter()
                 .find(|p| p.id == selection.provider_id)
-                .ok_or_else(|| error("noProvider"))?;
-            with_models(&snapshot.app, target, &selection.models)?;
+                .ok_or_else(|| agent_error(&snapshot.app, error("noProvider")))?;
+            with_models(&snapshot.app, target, &selection.models)
+                .map_err(|e| agent_error(&snapshot.app, e))?;
             if let Some(library) = &selection.library {
-                library.validate(state, &snapshot.app)?;
+                library
+                    .validate(state, &snapshot.app)
+                    .map_err(|e| agent_error(&snapshot.app, e))?;
             }
             if let Some(providers) = &selection.providers {
                 for saved in providers {
@@ -936,8 +1000,9 @@ impl ProfileBundleService {
                         .providers
                         .iter()
                         .find(|p| p.id == saved.id)
-                        .ok_or_else(|| error("missingResource"))?;
-                    with_models(&snapshot.app, provider, &saved.models)?;
+                        .ok_or_else(|| agent_error(&snapshot.app, error("missingResource")))?;
+                    with_models(&snapshot.app, provider, &saved.models)
+                        .map_err(|e| agent_error(&snapshot.app, e))?;
                 }
             }
             let current = if captures_current_supplier(&snapshot.app) {
@@ -950,7 +1015,8 @@ impl ProfileBundleService {
             };
             let enabled_now =
                 if selection.providers.is_some() && !captures_current_supplier(&snapshot.app) {
-                    let ids = native::enabled(state, &snapshot.app)?;
+                    let ids = native::enabled(state, &snapshot.app)
+                        .map_err(|e| agent_error(&snapshot.app, e))?;
                     snapshot
                         .providers
                         .iter()
@@ -1004,24 +1070,25 @@ impl ProfileBundleService {
                     .library
                     .as_ref()
                     .map(|l| l.preview(state, &snapshot.app))
-                    .transpose()?,
+                    .transpose()
+                    .map_err(|e| agent_error(&snapshot.app, e))?,
                 current_library: Some(
-                    library::LibrarySelection::capture(state, &snapshot.app)?
-                        .preview(state, &snapshot.app)?,
+                    library::LibrarySelection::capture(state, &snapshot.app)
+                        .and_then(|library| library.preview(state, &snapshot.app))
+                        .map_err(|e| agent_error(&snapshot.app, e))?,
                 ),
                 current_models: {
                     let mut values = Vec::new();
                     for provider in enabled_now {
-                        values.extend(native::model_labels(&current_models(
-                            state,
-                            &snapshot.app,
-                            provider,
-                        )?));
+                        values.extend(native::model_labels(
+                            &current_models(state, &snapshot.app, provider)
+                                .map_err(|e| agent_error(&snapshot.app, e))?,
+                        ));
                     }
-                    values.extend(native::model_labels(&native::selection(
-                        state,
-                        &snapshot.app,
-                    )?));
+                    values.extend(native::model_labels(
+                        &native::selection(state, &snapshot.app)
+                            .map_err(|e| agent_error(&snapshot.app, e))?,
+                    ));
                     values.sort();
                     values.dedup();
                     values
@@ -1048,6 +1115,7 @@ impl ProfileBundleService {
         Ok(ProfilePreview {
             revision: revision(&profile, &before)?,
             changes,
+            skipped,
         })
     }
 
@@ -1073,6 +1141,7 @@ impl ProfileBundleService {
         let started = std::time::Instant::now();
         let _operation = state.profile_bundles.lock_operation();
         let (profile, bundle) = load(state, id)?;
+        let (bundle, skipped) = resolve_bundle(state, bundle)?;
         initialize_providers(state, bundle.selections.iter().map(|s| s.app.clone()))?;
         let _locks = lock_apps(state, &bundle);
         let before = snapshots(state, &bundle)?;
@@ -1084,6 +1153,16 @@ impl ProfileBundleService {
         if fingerprint_revision(&profile, &fingerprints)? != expected {
             return Err(error("conflict"));
         }
+        if bundle.selections.is_empty() {
+            return Ok(ProfileApplyResult {
+                success: false,
+                undo_id: None,
+                warnings: vec!["profiles.bundle.noApplicableAgents".into()],
+                failure: None,
+                skipped,
+                scopes: Vec::new(),
+            });
+        }
         // Validate every target before the first write.
         let targets = bundle
             .selections
@@ -1094,8 +1173,9 @@ impl ProfileBundleService {
                     .providers
                     .iter()
                     .find(|p| p.id == s.provider_id)
-                    .ok_or_else(|| error("noProvider"))?;
+                    .ok_or_else(|| agent_error(&snapshot.app, error("noProvider")))?;
                 with_models(&snapshot.app, provider, &s.models)
+                    .map_err(|e| agent_error(&snapshot.app, e))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut undo_slot = state.profile_bundles.lock_undo();
@@ -1231,6 +1311,7 @@ impl ProfileBundleService {
                                 _ => failure_reason,
                             },
                         }),
+                        skipped,
                         scopes: bundle.selections.iter().map(|s| s.app.clone()).collect(),
                     })
                 };
@@ -1247,6 +1328,7 @@ impl ProfileBundleService {
                     undo_id: None,
                     warnings: vec!["profiles.bundle.applyRolledBack".into()],
                     failure: None,
+                    skipped,
                     scopes: bundle.selections.iter().map(|s| s.app.clone()).collect(),
                 });
             }
@@ -1302,6 +1384,7 @@ impl ProfileBundleService {
             undo_id: Some(undo_id),
             warnings,
             failure: None,
+            skipped,
             scopes,
         })
     }

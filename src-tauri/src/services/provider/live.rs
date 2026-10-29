@@ -850,6 +850,16 @@ fn apply_codex_official_auth(
         .map(|id| id.trim().to_string())
         .filter(|id| !id.is_empty())
     else {
+        if provider.id == "codex-official" {
+            // The fixed card follows native login, including rotation and logout.
+            // Apply only config.toml so a concurrent native refresh is never overwritten.
+            let settings = provider
+                .settings_config
+                .as_object_mut()
+                .ok_or_else(|| AppError::Config("Codex 供应商配置必须是 JSON 对象".to_string()))?;
+            settings.insert("auth".to_string(), serde_json::json!({}));
+            return Ok(());
+        }
         // Native Codex may rotate a refresh token while this card is inactive.
         // Never replace a newer login for the same user/workspace with its saved snapshot.
         if let (Some(saved), Ok(live)) = (

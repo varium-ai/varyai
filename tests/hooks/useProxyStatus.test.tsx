@@ -1,4 +1,4 @@
-import { proxyKeys } from "@/lib/query/proxy";
+import { proxyKeys, useSetProxyTakeoverForApp } from "@/lib/query/proxy";
 import type { ReactNode } from "react";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -105,6 +105,39 @@ describe("useProxyStatus", () => {
     expect(proxyKeys.takeoverStatus).toEqual(["proxyTakeoverStatus"]);
     expect(proxyKeys.globalConfig).toEqual(["globalProxyConfig"]);
   });
+
+  it.each(["trae", "doubaowork"])(
+    "returns and caches the saved waiting state for %s before polling",
+    async (appType) => {
+      const status = { [appType]: false, [`${appType}_waiting`]: true };
+      invokeMock.mockImplementation((command: string) =>
+        Promise.resolve(
+          command === "get_proxy_takeover_status" ? status : null,
+        ),
+      );
+      const { wrapper, queryClient } = createWrapper();
+      const { result, unmount } = renderHook(useSetProxyTakeoverForApp, {
+        wrapper,
+      });
+      try {
+        await act(async () => {
+          expect(
+            await result.current.mutateAsync({ appType, enabled: true }),
+          ).toEqual(status);
+        });
+        expect(invokeMock).toHaveBeenCalledWith("set_proxy_takeover_for_app", {
+          appType,
+          enabled: true,
+        });
+        expect(queryClient.getQueryData(proxyKeys.takeoverStatus)).toEqual(
+          status,
+        );
+      } finally {
+        unmount();
+        queryClient.clear();
+      }
+    },
+  );
 
   it("detects an external takeover reset while the proxy keeps running", async () => {
     let takenOver = true;

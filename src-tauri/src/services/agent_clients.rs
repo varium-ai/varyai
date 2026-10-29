@@ -322,6 +322,27 @@ impl Document {
             && (selection["baseUrl"].is_null() || model["baseUrl"] == selection["baseUrl"])
     }
 
+    pub fn qwen_provider_conflicts(&self, id: &str, target: &Value) -> bool {
+        let env = format!("VARYAI_{}_API_KEY", id.replace('-', "_"));
+        self.value["modelProviders"]
+            .as_object()
+            .is_some_and(|groups| {
+                groups.iter().any(|(protocol, entries)| {
+                    entries.as_array().is_some_and(|entries| {
+                        entries.iter().any(|model| {
+                            model["envKey"] == env
+                                && model["baseUrl"] == target["baseUrl"]
+                                && Some(self.qwen_model_protocol(protocol, model))
+                                    == target["protocol"].as_str()
+                                && target["models"].as_array().is_some_and(|models| {
+                                    models.iter().any(|wanted| wanted["model"] == model["id"])
+                                })
+                        })
+                    })
+                })
+            })
+    }
+
     pub fn apply(
         &mut self,
         app: &str,

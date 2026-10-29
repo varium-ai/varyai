@@ -128,6 +128,11 @@ export function SecurityEventsPanel({
   };
   const queryFilter = { ...filter, ...timeFilter };
   const pageSize = filter.view === "tool_calls" ? 50 : 20;
+  const toolCallsCount = useSecurityEvents(
+    { view: "tool_calls", ...timeFilter },
+    1,
+    1,
+  );
   const { eventsResult, isLoading, isError, refetch, clearEvents, isClearing } =
     useSecurityEvents(queryFilter, page, pageSize);
   const summary = useSecurityEventsSummary({
@@ -158,6 +163,7 @@ export function SecurityEventsPanel({
       const results = await Promise.allSettled([
         refetch(),
         summary.refetch(),
+        toolCallsCount.refetch(),
         ...(manual
           ? [new Promise<void>((resolve) => setTimeout(resolve, 300))]
           : []),
@@ -214,6 +220,11 @@ export function SecurityEventsPanel({
         : value.toLocaleString(i18n.language);
   const summaryCount = (value?: number) =>
     count(value, summary.isLoading, summary.isError);
+  const totalRecordCount =
+    summary.data?.dlpCount !== undefined &&
+    toolCallsCount.eventsResult?.total !== undefined
+      ? summary.data.dlpCount + toolCallsCount.eventsResult.total
+      : undefined;
   const dlpVisible =
     filter.view === "security_events" && filter.eventType !== "tool_risk";
   const all = (label: string): Option => ({ value: "all", label: t(label) });
@@ -330,7 +341,11 @@ export function SecurityEventsPanel({
         <div className="mt-2 flex flex-wrap gap-4">
           <span data-testid="security-events-summary-total">
             {t("securityEvents.totalRecords")}:{" "}
-            {summaryCount(summary.data?.total)}
+            {count(
+              totalRecordCount,
+              summary.isLoading || toolCallsCount.isLoading,
+              summary.isError || toolCallsCount.isError,
+            )}
           </span>
           <span data-testid="security-events-summary-dlp">
             {t("securityEvents.dlpCount")}:{" "}
@@ -338,7 +353,11 @@ export function SecurityEventsPanel({
           </span>
           <span data-testid="security-events-summary-tool-risk">
             {t("securityEvents.toolRiskCount")}:{" "}
-            {summaryCount(summary.data?.toolRiskCount)}
+            {count(
+              toolCallsCount.eventsResult?.total,
+              toolCallsCount.isLoading,
+              toolCallsCount.isError,
+            )}
           </span>
         </div>
       </div>
@@ -779,7 +798,7 @@ export function SecurityEventsPanel({
           </div>
         )}
       </div>
-      {(isError || summary.isError) && (
+      {(isError || summary.isError || toolCallsCount.isError) && (
         <Button variant="outline" disabled={tableLoading} onClick={refresh}>
           {t("securityEvents.retry")}
         </Button>

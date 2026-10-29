@@ -20,6 +20,10 @@ import { SecurityEventsPanel } from "./SecurityEventsPanel";
 const state = vi.hoisted(() => ({
   items: [] as SecurityEvent[],
   total: 57,
+  toolCallsTotal: 57,
+  toolSummaryError: false,
+  countQuery: vi.fn(),
+  countRefetch: vi.fn(),
   loading: false,
   error: false,
   summaryError: false,
@@ -41,6 +45,22 @@ vi.mock("@/hooks/useSecurityEvents", () => ({
     page: number,
     pageSize: number,
   ) => {
+    if (pageSize === 1 && filter.view === "tool_calls") {
+      state.countQuery(filter, page, pageSize);
+      return {
+        eventsResult: {
+          items: [],
+          total: state.toolCallsTotal,
+          page,
+          pageSize,
+        },
+        isLoading: state.loading,
+        isError: state.toolSummaryError,
+        refetch: state.countRefetch,
+        clearEvents: state.clear,
+        isClearing: false,
+      };
+    }
     state.query(filter, page, pageSize);
     return {
       eventsResult: { items: state.items, total: state.total, page, pageSize },
@@ -175,8 +195,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.refetch.mockReset();
   state.summaryRefetch.mockReset();
+  state.countQuery.mockReset();
+  state.countRefetch.mockReset();
   state.items = [dlp, tool];
   state.total = 57;
+  state.toolCallsTotal = 57;
+  state.toolSummaryError = false;
   state.loading = false;
   state.error = false;
   state.summaryError = false;
@@ -216,15 +240,63 @@ describe("unified security event list", () => {
     });
     expect(
       screen.getByTestId("security-events-summary-total"),
-    ).toHaveTextContent("101");
+    ).toHaveTextContent("137");
     expect(screen.getByTestId("security-events-summary-dlp")).toHaveTextContent(
       "80",
     );
     expect(
       screen.getByTestId("security-events-summary-tool-risk"),
-    ).toHaveTextContent("21");
+    ).toHaveTextContent("57");
     expect(screen.queryByText("securityStats.sensitiveTypesSample")).toBeNull();
   });
+  it("counts all tool records separately from warnings, independent of visible page filters", () => {
+    render(<Harness />);
+    choose("security.allRisks", "security.levelHighShort");
+    expect(
+      screen.getByTestId("security-events-summary-tool-risk"),
+    ).toHaveTextContent("57");
+    expect(
+      screen.getByTestId("security-events-summary-total"),
+    ).toHaveTextContent("137");
+    expect(state.countQuery).toHaveBeenCalledWith(
+      {
+        view: "tool_calls",
+        startTimestamp: expect.any(Number),
+        endTimestamp: undefined,
+      },
+      1,
+      1,
+    );
+    expect(
+      state.summary.mock.calls.every(
+        ([filter]) => filter.view === "security_events",
+      ),
+    ).toBe(true);
+    expect(
+      screen.getByText("securityStats.warnings").parentElement,
+    ).toHaveTextContent("51");
+  });
+
+  it("shows unknown totals when the all-tool count fails without hiding valid warning counts", () => {
+    state.toolSummaryError = true;
+    render(<Harness />);
+    expect(
+      screen.getByTestId("security-events-summary-tool-risk"),
+    ).toHaveTextContent("—");
+    expect(
+      screen.getByTestId("security-events-summary-total"),
+    ).toHaveTextContent("—");
+    expect(screen.getByTestId("security-events-summary-dlp")).toHaveTextContent(
+      "80",
+    );
+    expect(
+      screen.getByText("securityStats.warnings").parentElement,
+    ).toHaveTextContent("51");
+    expect(
+      screen.getByRole("button", { name: "securityEvents.retry" }),
+    ).toBeInTheDocument();
+  });
+
   it("switches views keeping public filters, clearing source-specific ones, and never requests the standalone tool query", () => {
     render(<Harness />);
     choose("securityEvents.source", "securityEvents.dlp");

@@ -5,6 +5,12 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { APP_IDS, APP_ICON_MAP } from "@/config/appConfig";
 import { providersApi } from "@/lib/api/providers";
@@ -361,9 +367,17 @@ export function GatewayKeysPanel({
               </div>
             </form>
           )}
-          {secret && (
-            <div className="rounded-lg border p-3 space-y-2" role="status">
-              <p className="text-xs">{t("gatewayKeys.savedSecret")}</p>
+          <Dialog
+            open={Boolean(secret)}
+            onOpenChange={(open) => {
+              if (!open) setSecret("");
+            }}
+          >
+            <DialogContent className="p-6 gap-3">
+              <DialogTitle>{t("gatewayKeys.reveal")}</DialogTitle>
+              <DialogDescription>
+                {t("gatewayKeys.savedSecret")}
+              </DialogDescription>
               <code className="block break-all select-all text-xs">
                 {secret}
               </code>
@@ -385,8 +399,8 @@ export function GatewayKeysPanel({
                   {t("gatewayKeys.dismiss")}
                 </Button>
               </div>
-            </div>
-          )}
+            </DialogContent>
+          </Dialog>
           {!keys.length && !isError && (
             <p className="rounded border border-dashed p-4 text-sm text-muted-foreground">
               {t("gatewayKeys.empty")}
@@ -463,10 +477,10 @@ export function GatewayKeysPanel({
                           disabled={pending}
                           onClick={() =>
                             void run(async () => {
-                              setSecret("");
                               const value = await gatewayApi.reveal(key.id);
-                              if (value) setSecret(value);
-                              else toast.error(t("gatewayKeys.legacySecret"));
+                              setSecret(value ?? "");
+                              if (!value)
+                                toast.error(t("gatewayKeys.legacySecret"));
                             })
                           }
                         >

@@ -779,17 +779,13 @@ impl Database {
         match (expected_revision, current) {
             (None, None) if entry.revision == 1 => {
                 if entries.len() >= MAX_COMMAND_LISTS {
-                    return Err(AppError::Database("工具风险命令名单超过数量上限".into()));
+                    return Err(AppError::Database("tool_risk_command_list_limit".into()));
                 }
             }
             (Some(expected), Some(current))
                 if current.revision == expected
                     && expected.checked_add(1) == Some(entry.revision) => {}
-            _ => {
-                return Err(AppError::Database(
-                    "名单版本冲突或不存在，请刷新后重试".into(),
-                ))
-            }
+            _ => return Err(AppError::Database("tool_risk_command_list_conflict".into())),
         }
         if entries.iter().any(|current| {
             current.id != entry.id
@@ -797,7 +793,9 @@ impl Database {
                 && current.match_kind == entry.match_kind
                 && current.pattern == entry.pattern
         }) {
-            return Err(AppError::Database("同一名单中存在重复命令模式".into()));
+            return Err(AppError::Database(
+                "tool_risk_command_list_duplicate".into(),
+            ));
         }
         let affected = tx.execute(
             "INSERT OR REPLACE INTO tool_risk_command_lists (id, definition, updated_at) VALUES (?1, ?2, ?3)",

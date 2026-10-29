@@ -66,9 +66,15 @@ TRAE's displayed product version is distinct from its editor/build version. Doub
 
 TRAE CN does not need to be open to select or edit a provider. Vary AI saves the selection locally and shows that client delivery is pending; keep Vary AI running and connect TRAE to apply it automatically. Switching to Official while offline also queues withdrawal of previously managed models. A successful local selection does not mean the closed client has already received it. Connection setup and auditing retain their existing consent requirements.
 
+In Settings → Advanced → Local routing, a selected TRAE CN or Doubao Work switch can be waiting for its client connection. The waiting hint means enablement was saved, but traffic is not yet protected. Open the client and follow the displayed connection instructions; deselecting the switch cancels the pending request. Waiting enablement does not show an active-routing success notification.
+
+Gateway key budget exhaustion is a permanent policy rejection until the budget resets or its policy is changed. Vary AI returns HTTP 402 with `gateway_budget_exhausted`, `insufficient_quota` and `x-should-retry: false`, so clients do not spend minutes retrying it as temporary rate limiting. Check the key's usage and reset time in Local routing → Gateway keys. Ordinary upstream rate-limit responses retain their original handling.
+
 For Gemini, save the selected provider again after changing its model, then restart the CLI. Active proxy takeover now refreshes both the model environment and native model selection while retaining the local routing address. Custom models are registered in the dynamic `/model` registry supported by current Gemini CLI versions. A CLI `--model` argument or an inherited `GEMINI_MODEL` can still override the saved default.
 
-Qwen distinguishes models by their effective API protocol, model ID and endpoint, as described in its [model-provider documentation](https://qwenlm.github.io/qwen-code-docs/en/users/configuration/model-providers/). Chat Completions and Responses can use the same model ID, and another endpoint can expose the same ID. The exact same protocol, ID and endpoint remain ambiguous in the native client. Vary AI retains the selected endpoint through takeover and recovery, and keeps model routes stable when the native list is reordered.
+In the Gemini provider editor, **Default model** controls the startup selection. The separate **Selectable models** section contains menu entries, with distinct display-name and request-model column headers. **Fetch model list** only loads candidates. **One-click setup** imports all fetched models into the saved model list, skipping duplicate and empty IDs. Existing model metadata and the configured default remain intact; an empty default uses the first imported model. Save the provider and restart Gemini CLI, then open `/model`, select **Manual** and press Enter to see the imported models. The list uses Gemini's native `modelConfigs.modelDefinitions` with dynamic model configuration enabled. Changing the endpoint, API key or protocol clears fetched candidates so a later import cannot reuse another connection's model list.
+
+Qwen distinguishes models by their effective API protocol, model ID and endpoint, as described in its [model-provider documentation](https://qwenlm.github.io/qwen-code-docs/en/users/configuration/model-providers/). Chat Completions and Responses can use the same model ID, and another endpoint can expose the same ID. Switching between saved Vary AI suppliers with the same protocol, ID and endpoint replaces the conflicting supplier's entire managed model group and credential environment entry before inserting the target. Both saved suppliers remain available for subsequent switches. Unrelated model groups, manual entries and MCP settings remain intact. Conflicting manual models or externally changed credentials and endpoints still require resolution. Vary AI retains the selected endpoint through takeover and recovery, and keeps model routes stable when the native list is reordered.
 
 An OpenAI-only upstream key can work with an Anthropic-native client when the selected upstream format enables protocol conversion. That success alone does not mean the key supports Anthropic. To diagnose a mismatch, record the selected upstream format and a sanitized error; never include the key or full client configuration.
 
@@ -85,7 +91,35 @@ Local proxy configuration can refer to `http://127.0.0.1:15721` or its `/v1` end
 
 ### Codex Official login asks to sign in again after switching
 
-Codex can rotate its refresh token while an Official provider card still has an older login snapshot. When switching back, Vary AI now retains a newer native login for the same user and workspace instead of restoring the older token. A different user's or workspace's login is not substituted. A token already invalidated by the server still requires signing in again through Codex; this change cannot restore it.
+Codex can rotate its refresh token while an Official provider card still has an older login snapshot. The fixed OpenAI Official card follows the current native login when no managed account is bound: switching only updates `config.toml` and leaves `auth.json` untouched, including imported token bundles without timestamps and a native logout. An explicitly bound managed account still supplies that account's credentials. Separately saved official account cards retain their account-switching behavior, with newer native tokens adopted only for the same user and workspace. A token already invalidated by the server requires valid login material again; this change cannot restore it.
+
+### A configuration scheme references a removed supplier
+
+Scheme switching changes only Agents captured in the scheme whose saved supplier references still exist. An Agent added after the scheme was saved keeps its current supplier, model and files. If a saved primary supplier or enabled supplier has been removed, the entire Agent entry is treated as uncaptured: the preview names the Agent, keeps its current configuration and lets the remaining entries switch. No replacement supplier is guessed and the saved scheme is not rewritten. Update its snapshot explicitly to adopt current selections.
+
+Rollback and undo cover only Agents actually applied. If no entries remain applicable, the scheme does not report success or replace the current scheme or undo record. Other preparation failures name the Agent and a fixed, localized reason without exposing configuration or credentials.
+
+### Shell command list cannot be saved
+
+The editor distinguishes an existing match type and pattern (including disabled entries), a stale or deleted entry, and the 256-entry limit. Edit the existing item for a duplicate, reopen the latest item after a concurrent edit, or remove an unused item at the limit. Failed saves keep the draft. Other storage failures retain a generic message so database internals and command contents are not exposed. A successful regex preview validates the pattern; it does not establish that a later database write will succeed.
+
+A successful save closes the editor and shows a success toast. If the entry was persisted but runtime application or audit recording failed, the existing warning appears instead of a success toast.
+
+### No tool risk records after a Claude Desktop request
+
+Enable tool risk collection and confirm the request passes through Vary AI. A text answer containing a command does not create a Shell event: the model must return a supported tool call. For Claude Code, ask it to call Bash with `pwd`, then refresh the tool risk records. A low-risk command can still produce a record.
+
+Find low-risk calls under Security Center → Security Events → All Tool Calls. They do not increase the risk-warning total. For a Shell list pattern such as `^kubectl\s+delete\s+`, select Regex rather than Command Prefix; regex syntax in a prefix entry is treated as literal command words. Validate the regex, confirm its scope and save. The rule sandbox can verify a match without executing the command or creating a historical record.
+
+The time-range summary counts sensitive-data records plus all saved tool-call records, including low-risk calls. Its tool-call total is independent of page filters and pagination. The warning card continues to count warnings only. A failed tool-count query displays an unavailable count and supports retry instead of substituting zero or an old warning count.
+
+Claude Desktop uses a separate client identity. Builds missing its tool-schema registration discard otherwise supported calls. The registration fix recognizes its declared built-in Bash, Read, Write, Edit and WebFetch schemas while retaining a distinct Claude Desktop source. MCP tools and unknown schemas remain unsupported by these built-in adapters. Model-response records indicate a proposed operation, not proof of execution. Load the updated backend before testing the fix; the command-list editor can validate and save a pattern even when historical preview has no records.
+
+Claude Code and Desktop providers using OpenAI Chat, Responses or Gemini conversion require observation before response conversion. This path binds native upstream calls to matching validated definitions from both the client request and the actual outbound request. Converted output is not promoted to trusted native evidence. A successful request or visible tool execution alone does not establish that an older backend recorded it.
+
+### A Claude provider incorrectly shows no configured credential
+
+Claude providers can authenticate with `env.ANTHROPIC_AUTH_TOKEN` as well as `env.ANTHROPIC_API_KEY`. The home card checks both fields and displays only the credential status. Older cards omitted the auth-token field and could report missing credentials even while proxy requests authenticated successfully.
 
 ### Qoder or WorkBuddy reports missing provider fields
 

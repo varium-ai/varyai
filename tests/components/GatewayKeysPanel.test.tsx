@@ -187,6 +187,40 @@ it("explains that legacy hash-only credentials cannot be recovered", async () =>
   ).not.toBeInTheDocument();
 });
 
+it("keeps the revealed key panel mounted while showing the same key again", async () => {
+  vi.mocked(gatewayApi.list).mockResolvedValue([
+    {
+      id: "fixture",
+      policy,
+      revoked: false,
+      usedTokens: 42,
+      resetsAt: null,
+      secretAvailable: true,
+    },
+  ]);
+  vi.mocked(gatewayApi.reveal).mockResolvedValue("synthetic-saved-secret");
+  mount();
+  const reveal = await screen.findByRole("button", {
+    name: "gatewayKeys.reveal",
+  });
+  fireEvent.click(reveal);
+  const shown = await screen.findByText("synthetic-saved-secret");
+  expect(screen.getByRole("dialog")).toContainElement(shown);
+  let finish!: (value: string) => void;
+  vi.mocked(gatewayApi.reveal).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  await waitFor(() => expect(reveal).toBeEnabled());
+  fireEvent.click(reveal);
+  expect(shown).toBeInTheDocument();
+  finish("synthetic-saved-secret");
+  await waitFor(() => expect(reveal).toBeEnabled());
+  expect(screen.getByText("synthetic-saved-secret")).toBe(shown);
+});
+
 it("requires confirmation to delete a revoked key and refreshes the list", async () => {
   vi.mocked(gatewayApi.list).mockResolvedValue([
     {

@@ -398,7 +398,9 @@ mod tests {
     #[tokio::test]
     async fn oversized_and_truncated_responses_cannot_verify() {
         let mock = Router::new().fallback(post(|req: axum::extract::Request| async move {
-            if req.uri().path().ends_with("/chat/completions") {
+            let chat = req.uri().path().ends_with("/chat/completions");
+            axum::body::to_bytes(req.into_body(), 4096).await.unwrap();
+            if chat {
                 (
                     [("content-type", "text/event-stream")],
                     format!(

@@ -160,6 +160,200 @@ describe("cross-agent profile preview", () => {
     expect(profilesApi.applyBundle).not.toHaveBeenCalled();
   });
 
+  it("identifies the agent and safe reason when preparing a preview fails", async () => {
+    vi.mocked(profilesApi.previewBundle).mockRejectedValue(
+      new Error(
+        "profiles.bundle.agentError:gemini:profiles.bundle.invalidConfig",
+      ),
+    );
+    render(
+      <ProfileBundleDialog
+        profile={{ id: "work", name: "Work" }}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Gemini 无法准备方案");
+    expect(alert).toHaveTextContent("模型或方案配置无效");
+    expect(alert).not.toHaveTextContent("已恢复");
+    expect(profilesApi.applyBundle).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "profiles.bundle.agentError:unknown-app:profiles.bundle.invalidConfig",
+    "profiles.bundle.agentError:gemini:profiles.bundle.syntheticPrivateKey",
+  ])("does not render invalid agent-error details: %s", async (message) => {
+    vi.mocked(profilesApi.previewBundle).mockRejectedValue(new Error(message));
+    render(
+      <ProfileBundleDialog
+        profile={{ id: "work", name: "Work" }}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "操作失败，请检查配置并重试",
+    );
+    expect(screen.getByRole("alert")).not.toHaveTextContent(
+      "syntheticPrivateKey",
+    );
+    expect(screen.getByRole("alert")).not.toHaveTextContent("unknown-app");
+  });
+
+  it("identifies missing-provider agents while applying the remaining agents", async () => {
+    const skipped = [
+      { app: "claude", reason: "profiles.bundle.providerMissingSkipped" },
+      {
+        app: "claude-desktop",
+        reason: "profiles.bundle.providerMissingSkipped",
+      },
+    ];
+    const onClose = vi.fn();
+    vi.mocked(profilesApi.previewBundle).mockResolvedValue({
+      revision: "missing-provider",
+      changes: [
+        {
+          app: "codex",
+          currentProvider: "Before",
+          targetProvider: "After",
+          models: ["fixture"],
+        },
+      ],
+      skipped,
+    });
+    vi.mocked(profilesApi.applyBundle).mockResolvedValue({
+      success: true,
+      undoId: "partial-undo",
+      warnings: [],
+      skipped,
+    });
+    render(
+      <ProfileBundleDialog
+        profile={{ id: "work", name: "Work" }}
+        onClose={onClose}
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByText(
+        "Claude：方案保存的供应商已不存在，按空项处理，保留当前供应商和模型。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Claude Desktop：方案保存的供应商已不存在，按空项处理，保留当前供应商和模型。",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("After")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "应用方案" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(toast.warning).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        description: expect.stringContaining(
+          "Claude Desktop：方案保存的供应商已不存在",
+        ),
+      }),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("keeps current configuration and disables apply when no saved providers remain", async () => {
+    vi.mocked(profilesApi.previewBundle).mockResolvedValue({
+      revision: "all-missing",
+      changes: [],
+      skipped: [
+        { app: "gemini", reason: "profiles.bundle.providerMissingSkipped" },
+      ],
+    });
+    render(
+      <ProfileBundleDialog
+        profile={{ id: "old", name: "Old" }}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByText(
+        "Gemini：方案保存的供应商已不存在，按空项处理，保留当前供应商和模型。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "此方案当前没有可切换的项目，所有 Agent 均保留当前配置。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "应用方案" }),
+    ).not.toBeInTheDocument();
+    expect(profilesApi.applyBundle).not.toHaveBeenCalled();
+  });
+
+  it.each(Object.entries(zh.apps))(
+    "identifies a skipped %s entry without applying it",
+    async (app, label) => {
+      vi.mocked(profilesApi.previewBundle).mockResolvedValue({
+        revision: "missing-provider",
+        changes: [],
+        skipped: [{ app, reason: "profiles.bundle.providerMissingSkipped" }],
+      });
+      render(
+        <ProfileBundleDialog
+          profile={{ id: "old", name: "Old" }}
+          onClose={vi.fn()}
+          onChanged={vi.fn()}
+        />,
+      );
+      expect(
+        await screen.findByText(
+          `${label}：方案保存的供应商已不存在，按空项处理，保留当前供应商和模型。`,
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "应用方案" }),
+      ).not.toBeInTheDocument();
+      expect(profilesApi.applyBundle).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reports an all-skipped apply without claiming rollback or success", async () => {
+    const onClose = vi.fn();
+    vi.mocked(profilesApi.previewBundle).mockResolvedValue({
+      revision: "before-removal",
+      changes: [
+        {
+          app: "gemini",
+          currentProvider: "Before",
+          targetProvider: "After",
+          models: ["fixture"],
+        },
+      ],
+    });
+    vi.mocked(profilesApi.applyBundle).mockResolvedValue({
+      success: false,
+      undoId: null,
+      warnings: ["profiles.bundle.noApplicableAgents"],
+      skipped: [
+        { app: "gemini", reason: "profiles.bundle.providerMissingSkipped" },
+      ],
+    });
+    render(
+      <ProfileBundleDialog
+        profile={{ id: "old", name: "Old" }}
+        onClose={onClose}
+        onChanged={vi.fn()}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "应用方案" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "此方案当前没有可切换的项目，所有 Agent 均保留当前配置。",
+    );
+    expect(screen.getByRole("alert")).not.toHaveTextContent("已恢复");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
   it("allows a pending client to apply local settings and explains the separate sync", async () => {
     const onClose = vi.fn();
     vi.mocked(profilesApi.previewBundle).mockResolvedValue({

@@ -406,13 +406,6 @@ export const useSwitchProviderMutation = (appId: AppId) => {
           }),
           duration: 6000,
           closeButton: true,
-          action: {
-            label: t("common.copy", { defaultValue: "复制" }),
-            onClick: (event) => {
-              event.preventDefault();
-              navigator.clipboard?.writeText(detail).catch(() => undefined);
-            },
-          },
         },
       );
     },
