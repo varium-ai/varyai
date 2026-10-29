@@ -108,9 +108,6 @@ function CommandListEditor({
           riskCategory: "remote_code_execution",
         },
   );
-  const [advanced, setAdvanced] = useState(
-    entry ? advancedKinds.includes(entry.matchKind) : false,
-  );
   const [confirmed, setConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<CommandPatternPreview[] | null>(null);
@@ -258,26 +255,13 @@ function CommandListEditor({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {[...simpleKinds, ...(advanced ? advancedKinds : [])].map(
-                (kind) => (
-                  <SelectItem key={kind} value={kind}>
-                    {t(key(`kind.${kind}`))}
-                  </SelectItem>
-                ),
-              )}
+              {[...simpleKinds, ...advancedKinds].map((kind) => (
+                <SelectItem key={kind} value={kind}>
+                  {t(key(`kind.${kind}`))}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              setAdvanced(!advanced);
-              if (advanced && advancedKinds.includes(draft.matchKind))
-                patch({ matchKind: "prefix" });
-            }}
-          >
-            {t(key("advanced"))}
-          </Button>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor={`${id}-pattern`}>{t(key("pattern"))}</Label>

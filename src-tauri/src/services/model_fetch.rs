@@ -338,6 +338,38 @@ pub fn build_models_url_candidates(
     let mut candidates: Vec<String> = Vec::new();
 
     if is_full_url {
+        let mut parsed =
+            url::Url::parse(trimmed).map_err(|_| "Invalid models endpoint".to_string())?;
+        let prefix = [
+            "/chat/completions",
+            "/responses",
+            "/messages",
+            "/completions",
+        ]
+        .iter()
+        .find_map(|suffix| parsed.path().strip_suffix(suffix))
+        .map(str::to_string);
+        if let Some(prefix) = prefix {
+            let query = parsed.query().map(str::to_string);
+            parsed.set_path(&prefix);
+            parsed.set_query(None);
+            parsed.set_fragment(None);
+            let mut candidates = build_models_url_candidates(parsed.as_str(), false, None)?;
+            if !ends_with_version_segment(&prefix) {
+                parsed.set_path(&format!("{prefix}/models"));
+                let direct = parsed.to_string();
+                if !candidates.contains(&direct) {
+                    candidates.push(direct);
+                }
+            }
+            for candidate in &mut candidates {
+                let mut endpoint = url::Url::parse(candidate)
+                    .map_err(|_| "Invalid models endpoint".to_string())?;
+                endpoint.set_query(query.as_deref());
+                *candidate = endpoint.into();
+            }
+            return Ok(candidates);
+        }
         if let Some(idx) = trimmed.find("/v1/") {
             candidates.push(format!("{}/v1/models", &trimmed[..idx]));
         } else if let Some(idx) = trimmed.rfind('/') {
@@ -420,6 +452,50 @@ fn ends_with_version_segment(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn full_inference_endpoint_discovers_models_under_the_same_version_prefix() {
+        use axum::{routing::get, Json, Router};
+        let app = Router::new().route(
+            "/proxy/api/v4/models",
+            get(|headers: HeaderMap| async move {
+                assert_eq!(headers[AUTHORIZATION], "Bearer synthetic-key");
+                Json(serde_json::json!({"data":[{"id":"synthetic-model"}]}))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!(
+            "http://{}/proxy/api/v4/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let result = fetch_models(&endpoint, "synthetic-key", true, None, None, None, None).await;
+        server.abort();
+        assert_eq!(result.unwrap()[0].id, "synthetic-model");
+    }
+
+    #[test]
+    fn full_model_endpoint_candidates_keep_prefix_query_and_supported_suffixes() {
+        for suffix in ["chat/completions", "responses", "messages", "completions"] {
+            let endpoint = format!("https://fixture.example/proxy/v4/{suffix}?region=synthetic");
+            assert_eq!(
+                build_models_url_candidates(&endpoint, true, None).unwrap()[0],
+                "https://fixture.example/proxy/v4/models?region=synthetic"
+            );
+        }
+        assert_eq!(
+            build_models_url_candidates(
+                "https://fixture.example/proxy/chat/completions",
+                true,
+                None
+            )
+            .unwrap(),
+            vec![
+                "https://fixture.example/proxy/v1/models",
+                "https://fixture.example/proxy/models"
+            ]
+        );
+    }
 
     #[test]
     fn gemini_catalog_reads_resource_names() {

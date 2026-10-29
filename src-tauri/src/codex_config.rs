@@ -2315,12 +2315,27 @@ fn codex_model_catalog_from_settings(
         }
         CodexCatalogToolProfile::ProxyChat => load_codex_model_catalog_template()?,
     };
-    Ok(Some(codex_model_catalog_from_specs(
-        &specs,
-        &template,
-        profile,
-        default_context_window,
-    )))
+    let mut catalog =
+        codex_model_catalog_from_specs(&specs, &template, profile, default_context_window);
+    let default_model = config_text.parse::<toml::Value>().ok().and_then(|doc| {
+        let profile_model = doc
+            .get("profile")
+            .and_then(|value| value.as_str())
+            .and_then(|name| doc.get("profiles")?.get(name)?.get("model"))
+            .and_then(|value| value.as_str());
+        profile_model
+            .or_else(|| doc.get("model").and_then(|value| value.as_str()))
+            .map(|model| model.trim().to_string())
+    });
+    if let Some(entry) = catalog["models"].as_array_mut().and_then(|entries| {
+        entries
+            .iter_mut()
+            .find(|entry| entry["slug"].as_str() == default_model.as_deref())
+    }) {
+        // Desktop metadata generation falls back to the catalog default, independently of chat selection.
+        entry["priority"] = json!(999);
+    }
+    Ok(Some(catalog))
 }
 
 fn set_codex_model_catalog_json_field(
@@ -6764,6 +6779,69 @@ base_url = "https://production.api/v1"
             catalog["models"][0]["supports_image_detail_original"],
             false
         );
+    }
+
+    #[test]
+    fn codex_catalog_default_tracks_configured_model_without_reordering_models() {
+        let settings = json!({"modelCatalog":{"models":[
+            {"model":"synthetic-qwen","reasoningLevels":["low","high"]},
+            {"model":"synthetic-glm","reasoningLevels":["low","high"]}
+        ]}});
+        for profile in [
+            CodexCatalogToolProfile::ProxyChat,
+            CodexCatalogToolProfile::NativeResponses,
+            CodexCatalogToolProfile::Anthropic,
+        ] {
+            let catalog = codex_model_catalog_from_settings(
+                &settings,
+                "model = \"synthetic-glm\"\n",
+                profile,
+            )
+            .unwrap()
+            .unwrap();
+            let entries = catalog["models"].as_array().unwrap();
+            assert_eq!(entries[0]["slug"], "synthetic-qwen");
+            assert_eq!(entries[1]["slug"], "synthetic-glm");
+            let default = entries
+                .iter()
+                .min_by_key(|entry| entry["priority"].as_u64().unwrap())
+                .unwrap();
+            assert_eq!(default["slug"], "synthetic-glm");
+            assert_eq!(
+                entries[0]["supported_reasoning_levels"],
+                entries[1]["supported_reasoning_levels"]
+            );
+        }
+    }
+
+    #[test]
+    fn codex_catalog_respects_the_active_profile_default_and_unknown_defaults() {
+        let settings = json!({"modelCatalog":{"models":[
+            {"model":"synthetic-first"}, {"model":"synthetic-profile"}
+        ]}});
+        let config = "model = \"synthetic-first\"\nprofile = \"work\"\n[profiles.work]\nmodel = \"synthetic-profile\"\n";
+        let catalog = codex_model_catalog_from_settings(
+            &settings,
+            config,
+            CodexCatalogToolProfile::NativeResponses,
+        )
+        .unwrap()
+        .unwrap();
+        let entries = catalog["models"].as_array().unwrap();
+        assert!(
+            entries[1]["priority"].as_u64().unwrap() < entries[0]["priority"].as_u64().unwrap()
+        );
+        for config in ["", "model = \"synthetic-unlisted\"\n"] {
+            let catalog = codex_model_catalog_from_settings(
+                &settings,
+                config,
+                CodexCatalogToolProfile::NativeResponses,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(catalog["models"][0]["priority"], 1000);
+            assert_eq!(catalog["models"][1]["priority"], 1001);
+        }
     }
 
     #[test]
