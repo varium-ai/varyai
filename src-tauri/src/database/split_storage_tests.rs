@@ -1,5 +1,5 @@
 //! File-backed tests exercise the same two-file storage used at startup.
-use super::{lock_conn, Database};
+use super::{lock_conn, Database, SHARED_SCHEMA_VERSION};
 use crate::error::AppError;
 use rusqlite::Connection;
 
@@ -33,7 +33,7 @@ fn existing_users_are_split_without_losing_data_and_can_reopen() -> Result<(), A
         assert_eq!(db.get_tool_risk_settings()?.policy_version, 9);
         {
             let core = lock_conn!(db.conn);
-            assert_eq!(Database::get_user_version(&core)?, 20);
+            assert_eq!(Database::get_user_version(&core)?, SHARED_SCHEMA_VERSION);
             assert!(!Database::table_exists(&core, "security_audit_logs")?);
             assert!(!Database::table_exists(&core, "tool_risk_settings")?);
             assert!(Database::has_column(&core, "mcp_servers", "enabled_mcode")?);
@@ -84,7 +84,10 @@ fn official_shared_database_keeps_its_version_and_has_no_extension_tables() -> R
         policy_version: 0,
     })?;
     let official = Connection::open(&path)?;
-    assert_eq!(Database::get_user_version(&official)?, 20);
+    assert_eq!(
+        Database::get_user_version(&official)?,
+        SHARED_SCHEMA_VERSION
+    );
     assert!(!Database::table_exists(&official, "security_settings")?);
     assert!(!Database::table_exists(&official, "tool_risk_settings")?);
     assert!(Database::has_column(&official, "skills", "enabled_mcode")?);
@@ -187,7 +190,7 @@ fn portable_sql_export_and_import_include_both_files() -> Result<(), AppError> {
     assert!(!target.get_security_settings()?.enabled);
     assert!(target.get_tool_risk_settings()?.enabled);
     let shared = lock_conn!(target.conn);
-    assert_eq!(Database::get_user_version(&shared)?, 20);
+    assert_eq!(Database::get_user_version(&shared)?, SHARED_SCHEMA_VERSION);
     assert!(!Database::table_exists(&shared, "security_settings")?);
     Ok(())
 }
@@ -238,7 +241,7 @@ fn official_v19_and_v20_flags_survive_native_schema_upgrade() -> Result<(), AppE
         drop(conn);
         let db = Database::init_at(&path)?;
         let shared = lock_conn!(db.conn);
-        assert_eq!(Database::get_user_version(&shared)?, 20);
+        assert_eq!(Database::get_user_version(&shared)?, SHARED_SCHEMA_VERSION);
         let flags: (bool, bool) = shared.query_row(
             "SELECT enabled_mcode, enabled_pi FROM mcp_servers WHERE id='kept'",
             [],
@@ -281,7 +284,7 @@ fn split_sync_preserves_local_tool_policy_and_sequences() -> Result<(), AppError
     );
     drop(ext);
     let shared = lock_conn!(local.conn);
-    assert_eq!(Database::get_user_version(&shared)?, 20);
+    assert_eq!(Database::get_user_version(&shared)?, SHARED_SCHEMA_VERSION);
     assert!(!Database::table_exists(&shared, "tool_risk_events")?);
     Ok(())
 }
@@ -349,7 +352,7 @@ fn binary_backup_restores_both_schemas() -> Result<(), AppError> {
     );
     drop(ext);
     let shared = lock_conn!(db.conn);
-    assert_eq!(Database::get_user_version(&shared)?, 20);
+    assert_eq!(Database::get_user_version(&shared)?, SHARED_SCHEMA_VERSION);
     assert!(!Database::table_exists(&shared, "security_audit_logs")?);
     Ok(())
 }
@@ -417,7 +420,7 @@ fn startup_preflight_reports_the_file_and_its_own_supported_version() -> Result<
         Database::stored_user_version_exceeds_supported(&path)?.expect("future shared");
     assert_eq!(unsupported.path, path);
     assert_eq!(unsupported.version, 25);
-    assert_eq!(unsupported.supported_version, 20);
+    assert_eq!(unsupported.supported_version, SHARED_SCHEMA_VERSION);
     Ok(())
 }
 
@@ -441,7 +444,7 @@ fn failed_replacement_rolls_back_after_schema_changes_and_can_retry() -> Result<
         let core = lock_conn!(db.conn);
         let extension = lock_conn!(db.extension_connection());
         assert!(Database::replace_split_storage(&core, &staging_path).is_err());
-        assert_eq!(Database::get_user_version(&core)?, 20);
+        assert_eq!(Database::get_user_version(&core)?, SHARED_SCHEMA_VERSION);
         assert_eq!(
             core.query_row("SELECT COUNT(*) FROM providers WHERE id='kept'", [], |r| {
                 r.get::<_, i64>(0)
@@ -461,7 +464,7 @@ fn failed_replacement_rolls_back_after_schema_changes_and_can_retry() -> Result<
     let core = lock_conn!(db.conn);
     let _extension = lock_conn!(db.extension_connection());
     Database::replace_split_storage(&core, &staging_path)?;
-    assert_eq!(Database::get_user_version(&core)?, 20);
+    assert_eq!(Database::get_user_version(&core)?, SHARED_SCHEMA_VERSION);
     Ok(())
 }
 
