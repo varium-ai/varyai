@@ -21,12 +21,54 @@ const COPILOT_UNIT_PREMIUM: &str = "requests";
 
 /// 获取所有供应商
 #[tauri::command]
-pub fn get_providers(
+pub async fn get_providers(
     state: State<'_, AppState>,
     app: String,
 ) -> Result<IndexMap<String, Provider>, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    ProviderService::list(state.inner(), app_type).map_err(|e| e.to_string())
+    list_providers(state.inner().clone(), app_type).await
+}
+
+async fn list_providers(
+    state: AppState,
+    app_type: AppType,
+) -> Result<IndexMap<String, Provider>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ProviderService::list(&state, app_type).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "Provider list task failed".to_string())?
+}
+
+#[cfg(test)]
+mod provider_list_dispatch_tests {
+    use super::*;
+    use std::{sync::Arc, time::Duration};
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn provider_list_yields_while_certificate_routing_holds_the_switch_lock() {
+        let state = AppState::new(Arc::new(
+            crate::database::Database::memory().expect("database"),
+        ));
+        let guard = state.proxy_service.lock_switch_for_app("qoder").await;
+        let (release, wait) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _ = wait.recv_timeout(Duration::from_secs(2));
+            drop(guard);
+        });
+        let mut listing = std::pin::pin!(list_providers(state, AppType::Qoder));
+        let pending = tokio::time::timeout(Duration::from_millis(50), &mut listing).await;
+        let _ = release.send(());
+        holder.join().expect("release routing lock");
+        assert!(
+            pending.is_err(),
+            "listing must yield instead of blocking its caller"
+        );
+        assert!(tokio::time::timeout(Duration::from_secs(1), listing)
+            .await
+            .expect("provider list resumes")
+            .is_ok());
+    }
 }
 
 #[tauri::command]

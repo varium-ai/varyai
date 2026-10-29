@@ -14,7 +14,11 @@ For the supported macOS path, explicit takeover can require local certificate tr
 
 Valid certificate metadata and trust can be reused across temporary routing stops and normal restarts. Clearing a certificate first stops takeover and restores configuration, then removes the corresponding trust and local files. A manual-clear state must not silently regenerate trust. The application does not read or store the system authentication password.
 
-New local CA and server certificates are valid for 30 days. Existing certificates retain their original expiration date until they expire or the user explicitly rebuilds them. The one-minute certificate override remains available only in development builds for expiration testing.
+New local CA and server certificates are valid for 30 days. Each generation uses a random serial so that macOS Keychain does not confuse a renewed root with an earlier root that has the same issuer name. Legacy roots with the fixed `1000` serial are renewed during the next explicit routing enable, using the normal trust-authorization flow. Other valid certificates retain their original expiration date until they expire or the user explicitly rebuilds them. The one-minute certificate override remains available only in development builds for expiration testing.
+
+Takeover verifies the server certificate against the installed keychain without supplying the local root as an extra chain input, then confirms that the exact root is available in the supported Qoder runtime's system CA store. Both checks must pass after trust installation before endpoint takeover is applied. A successful authorization dialog or trust command alone does not establish usable runtime trust. Restart Qoder completely after installing or replacing trust because an existing daemon can cache its certificate store.
+
+Provider-list reads run on a background worker. They can wait for the routing switch lock without blocking the application main thread needed to present certificate authorization dialogs.
 
 Certificate failures report a fixed operation stage and exit status, without exposing command output or certificate configuration. An approved macOS prompt does not establish that subsequent trust or keychain operations succeeded. During clearing, a failed keychain deletion is accepted only when a successful, recognizable certificate listing confirms that the matching certificate is already absent. An unreadable keychain or an unrecognized listing still fails and preserves recovery metadata.
 
