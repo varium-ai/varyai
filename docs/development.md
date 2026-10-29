@@ -44,6 +44,12 @@ Provider tests that read Hermes configuration must isolate `HERMES_HOME` and
 values afterward. Hermes uses `LOCALAPPDATA` on Windows, so changing `HOME` alone
 can leave providers from earlier tests visible to later tests.
 
+The Qoder TLS listener owns its accepted connection tasks and cancels and joins
+them during shutdown. Its certificate test keeps both an immediate same-address
+rebind assertion and pending TLS handshakes to verify that stopping the listener
+releases active sockets. The test uses an isolated certificate and never installs
+system trust.
+
 ## Toolchain dependency review
 
 The Windows-to-WSL2 CI contract keeps the distribution running with a detached Linux process while Windows accesses its UNC filesystem. Preparation, contract execution, and cleanup have separate timeouts. Preparation logs distinguish Linux directory setup from Windows UNC access so a stalled runner can be diagnosed without waiting for the whole job timeout. Both the PR workflow and the manual WSL2 workflow use the same lifecycle.
