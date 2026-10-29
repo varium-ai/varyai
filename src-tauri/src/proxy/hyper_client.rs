@@ -261,10 +261,12 @@ pub async fn send_request(
     method: http::Method,
     headers: http::HeaderMap,
     original_extensions: http::Extensions,
-    body: Vec<u8>,
+    body: impl Into<Bytes>,
     timeout: std::time::Duration,
     proxy_url: Option<&str>,
 ) -> Result<ProxyResponse, ProxyError> {
+    // Preserve the body's allocation owner through raw/fallback sends and clones.
+    let body = body.into();
     // Extract our own OriginalHeaderCases if available
     let original_cases = original_extensions.get::<OriginalHeaderCases>().cloned();
     let has_cases = original_cases
@@ -309,7 +311,7 @@ pub async fn send_request(
     let mut req = http::Request::builder()
         .method(method)
         .uri(&uri)
-        .body(http_body_util::Full::new(Bytes::from(body)))
+        .body(http_body_util::Full::new(body))
         .map_err(|e| ProxyError::ForwardFailed(format!("Failed to build request: {e}")))?;
 
     *req.headers_mut() = headers;
@@ -432,6 +434,10 @@ async fn send_raw_request(
             .await
             .map_err(|e| ProxyError::ForwardFailed(format!("Write failed: {e}")))?;
         tls_stream
+            .write_all(body)
+            .await
+            .map_err(|e| ProxyError::ForwardFailed(format!("Write failed: {e}")))?;
+        tls_stream
             .flush()
             .await
             .map_err(|e| ProxyError::ForwardFailed(format!("Flush failed: {e}")))?;
@@ -442,6 +448,10 @@ async fn send_raw_request(
         let mut stream = stream;
         stream
             .write_all(&raw)
+            .await
+            .map_err(|e| ProxyError::ForwardFailed(format!("Write failed: {e}")))?;
+        stream
+            .write_all(body)
             .await
             .map_err(|e| ProxyError::ForwardFailed(format!("Write failed: {e}")))?;
         stream
@@ -593,7 +603,7 @@ fn global_tls_connector() -> &'static tokio_rustls::TlsConnector {
     })
 }
 
-/// Build raw HTTP/1.1 request bytes with original header casing.
+/// Build raw HTTP/1.1 headers with original casing, without copying the body.
 fn build_raw_request(
     method: &http::Method,
     path_and_query: &str,
@@ -601,7 +611,7 @@ fn build_raw_request(
     original_cases: &OriginalHeaderCases,
     body: &[u8],
 ) -> Vec<u8> {
-    let mut raw = Vec::with_capacity(4096 + body.len());
+    let mut raw = Vec::with_capacity(4096);
 
     // Request line
     raw.extend_from_slice(method.as_str().as_bytes());
@@ -666,9 +676,8 @@ fn build_raw_request(
         raw.extend_from_slice(b"\r\n");
     }
 
-    // End of headers + body
+    // Keep the body in its original owner; write it after these header bytes.
     raw.extend_from_slice(b"\r\n");
-    raw.extend_from_slice(body);
 
     raw
 }
@@ -771,6 +780,162 @@ impl<S: Unpin> tokio::io::AsyncWrite for WriteFilter<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_request_header_framing_does_not_copy_payload() {
+        let body = b"synthetic-private-wire-payload";
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-synthetic", http::HeaderValue::from_static("first"));
+        headers.append("x-synthetic", http::HeaderValue::from_static("second"));
+        let cases = OriginalHeaderCases {
+            cases: vec![
+                ("x-synthetic".into(), b"X-Synthetic".to_vec()),
+                ("x-synthetic".into(), b"x-SYNTHETIC".to_vec()),
+            ],
+        };
+        let framed = build_raw_request(&http::Method::POST, "/synthetic", &headers, &cases, body);
+        let expected = format!("POST /synthetic HTTP/1.1\r\nX-Synthetic: first\r\nx-SYNTHETIC: second\r\nContent-Length: {}\r\n\r\n", body.len());
+        assert_eq!(
+            framed,
+            expected.as_bytes(),
+            "raw framing must retain only headers; the original payload is written separately"
+        );
+    }
+
+    async fn assert_raw_loopback_body_owner(cancel: bool) {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        struct OwnedFixture {
+            body: Vec<u8>,
+            dropped: Arc<AtomicBool>,
+        }
+        impl AsRef<[u8]> for OwnedFixture {
+            fn as_ref(&self) -> &[u8] {
+                &self.body
+            }
+        }
+        impl Drop for OwnedFixture {
+            fn drop(&mut self) {
+                self.dropped.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("synthetic listener");
+        let address = listener.local_addr().expect("synthetic address");
+        let body = b"{\"synthetic\":\"wire\\nquoted\\\"\"}";
+        let expected = format!("POST /synthetic?fixture=1 HTTP/1.1\r\nHost: {address}\r\nX-Synthetic: first\r\nx-SYNTHETIC: second\r\nContent-Length: {}\r\n\r\n", body.len());
+        let expected = [expected.as_bytes(), body].concat();
+        let expected_len = expected.len();
+        let (captured_tx, captured_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("synthetic accept");
+            let mut captured = vec![0; expected_len];
+            socket
+                .read_exact(&mut captured)
+                .await
+                .expect("synthetic request");
+            let mut extra = [0; 1];
+            if let Ok(Ok(count)) = tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                socket.read(&mut extra),
+            )
+            .await
+            {
+                captured.extend_from_slice(&extra[..count]);
+            }
+            captured_tx.send(captured).expect("synthetic capture");
+            let _ = release_rx.await;
+            if !cancel {
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    )
+                    .await
+                    .expect("synthetic response");
+            }
+        });
+        let dropped = Arc::new(AtomicBool::new(false));
+        let owned_body = Bytes::from_owner(OwnedFixture {
+            body: body.to_vec(),
+            dropped: dropped.clone(),
+        });
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::HOST,
+            address.to_string().parse().expect("synthetic host"),
+        );
+        headers.insert("x-synthetic", http::HeaderValue::from_static("first"));
+        headers.append("x-synthetic", http::HeaderValue::from_static("second"));
+        let mut extensions = http::Extensions::new();
+        extensions.insert(OriginalHeaderCases {
+            cases: vec![
+                ("host".into(), b"Host".to_vec()),
+                ("x-synthetic".into(), b"X-Synthetic".to_vec()),
+                ("x-synthetic".into(), b"x-SYNTHETIC".to_vec()),
+            ],
+        });
+        let send = tokio::spawn(send_request(
+            format!("http://{address}/synthetic?fixture=1")
+                .parse()
+                .expect("synthetic URI"),
+            "synthetic-loopback",
+            http::Method::POST,
+            headers,
+            extensions,
+            owned_body,
+            std::time::Duration::from_secs(5),
+            None,
+        ));
+        let captured = tokio::time::timeout(std::time::Duration::from_secs(3), captured_rx)
+            .await
+            .expect("bounded synthetic capture")
+            .expect("captured bytes");
+        assert_eq!(
+            captured, expected,
+            "raw transport must send the exact body once and preserve repeated header case/order"
+        );
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "pending raw send must retain its original allocation owner"
+        );
+        if cancel {
+            send.abort();
+            assert!(matches!(send.await, Err(error) if error.is_cancelled()));
+            let _ = release_tx.send(());
+        } else {
+            release_tx.send(()).expect("release synthetic response");
+            let response = send.await.expect("send task").expect("raw response");
+            assert_eq!(
+                response
+                    .bytes_with_limit(2)
+                    .await
+                    .expect("synthetic response body"),
+                Bytes::from_static(b"{}")
+            );
+        }
+        server.await.expect("synthetic server task");
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "finished or cancelled raw send must release its owner"
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_loopback_preserves_exact_body_header_order_and_owner() {
+        assert_raw_loopback_body_owner(false).await;
+    }
+
+    #[tokio::test]
+    async fn raw_loopback_cancellation_releases_body_owner() {
+        assert_raw_loopback_body_owner(true).await;
+    }
 
     fn buffered_with_content_type(content_type: Option<&str>) -> ProxyResponse {
         let mut headers = http::HeaderMap::new();

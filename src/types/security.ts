@@ -1,5 +1,10 @@
 export type RiskLevel = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
-export type AuditAction = "block" | "audit" | "redact" | "allow";
+export type AuditAction =
+  | "block"
+  | "audit"
+  | "redact"
+  | "redact_restore"
+  | "allow";
 export type RuleType = "keyword" | "regex";
 
 export interface SecurityAuditSettings {

@@ -48,6 +48,23 @@ impl Default for SecurityRuntimeConfig {
 }
 
 impl SecurityRuntimeConfig {
+    /// Whether the captured policy enables any permitted restoration rule.
+    pub fn restoration_enabled(&self) -> bool {
+        self.enabled
+            && (self
+                .custom_rules
+                .iter()
+                .any(|rule| rule.enabled && rule.action == AuditAction::RedactRestore)
+                || self.builtin_action_overrides.iter().any(|(id, action)| {
+                    *action == AuditAction::RedactRestore
+                        && id != "catalog:generic-sk-key-notice"
+                        && (matches!(id.as_str(), "chinese_id_card" | "chinese_phone_number")
+                            || super::builtin_rules::BUILTIN_RULES
+                                .iter()
+                                .any(|rule| rule.id == id))
+                }))
+    }
+
     pub(crate) fn risk_epoch(&self, id: &str) -> u64 {
         self.rule_versions
             .get(id)
@@ -194,6 +211,7 @@ fn load_runtime(
                 "block" => AuditAction::Block,
                 "audit" => AuditAction::Audit,
                 "redact" => AuditAction::Redact,
+                "redact_restore" => AuditAction::RedactRestore,
                 "allow" => AuditAction::Allow,
                 _ => return None,
             };
@@ -255,6 +273,7 @@ fn load_runtime(
             let action = match rule.action.to_ascii_lowercase().as_str() {
                 "audit" => AuditAction::Audit,
                 "redact" => AuditAction::Redact,
+                "redact_restore" => AuditAction::RedactRestore,
                 "allow" => AuditAction::Allow,
                 _ => AuditAction::Block,
             };
@@ -306,5 +325,188 @@ mod version_tests {
         let mut overflow = recreated.clone();
         overflow.config_revision = u64::MAX;
         assert!(!next(&overflow, RiskLevel::Low).aggregation_enabled);
+    }
+}
+
+#[cfg(test)]
+mod redact_restore_tests {
+    use super::super::{request_detection::detect_spans, request_plan::EffectiveAction};
+    use super::*;
+
+    #[test]
+    fn redact_restore_runtime_preserves_action_and_policy_generation(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = Database::memory()?;
+        let gate = DlpPolicyGate::new();
+        reload_with_gate(&db, &gate)?;
+        let before = gate.admit()?;
+        let mut rule = crate::database::CustomSecurityRule {
+            id: "synthetic-restore-rule".into(),
+            name: "Synthetic rule".into(),
+            rule_type: "keyword".into(),
+            pattern: "synthetic-policy-marker".into(),
+            risk_level: "HIGH".into(),
+            action: "redact_restore".into(),
+            enabled: true,
+            description: None,
+            updated_at: 1,
+        };
+        update_with_gate(&db, &gate, |db| db.save_custom_security_rule(&rule))?;
+        let captured = gate.admit()?;
+        assert_eq!(
+            captured.runtime.custom_rules[0].action.as_str(),
+            "redact_restore"
+        );
+        assert!(captured.restoration_policy_revision > before.restoration_policy_revision);
+        let spans = detect_spans("synthetic-policy-marker", false, &captured.runtime)?;
+        assert_eq!(spans.as_slice()[0].action, EffectiveAction::Restore);
+        let findings = super::super::engine::SecurityAuditEngine::inspect_text_with_runtime(
+            "synthetic-policy-marker",
+            "input",
+            &captured.runtime,
+        );
+        assert_eq!(findings[0].action.as_str(), "redact_restore");
+        rule.name = "Renamed presentation".into();
+        rule.description = Some("Presentation only".into());
+        rule.risk_level = "LOW".into();
+        update_with_gate(&db, &gate, |db| db.save_custom_security_rule(&rule))?;
+        assert_eq!(
+            gate.admit()?.restoration_policy_revision,
+            captured.restoration_policy_revision
+        );
+        rule.enabled = false;
+        update_with_gate(&db, &gate, |db| db.save_custom_security_rule(&rule))?;
+        assert!(gate.admit()?.restoration_policy_revision > captured.restoration_policy_revision);
+        assert!(captured.runtime.custom_rules[0].enabled);
+        Ok(())
+    }
+
+    #[test]
+    fn redact_restore_invalid_stored_action_keeps_publication_closed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = Database::memory()?;
+        let gate = DlpPolicyGate::new();
+        reload_with_gate(&db, &gate)?;
+        db.extension_connection().lock().map_err(|_| "fixture lock")?.execute_batch(
+            "INSERT INTO security_settings (key, value) VALUES ('builtin_action:chinese_phone_number', 'redactrestore')"
+        )?;
+        assert!(reload_with_gate(&db, &gate).is_err());
+        assert!(gate.admit().is_err());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod restore_activation_tests {
+    use super::*;
+
+    #[test]
+    fn restoration_activation_uses_only_enabled_permitted_rules() -> Result<(), serde_json::Error> {
+        let restore: AuditAction = serde_json::from_str("\"redact_restore\"")?;
+        let mut runtime = SecurityRuntimeConfig::default();
+        assert!(!runtime.restoration_enabled());
+        runtime
+            .builtin_action_overrides
+            .insert("catalog:generic-sk-key-notice".into(), restore);
+        runtime
+            .builtin_action_overrides
+            .insert("unknown-rule".into(), restore);
+        assert!(!runtime.restoration_enabled());
+        runtime
+            .builtin_action_overrides
+            .insert("chinese_phone_number".into(), restore);
+        assert!(runtime.restoration_enabled());
+        runtime.enabled = false;
+        assert!(!runtime.restoration_enabled());
+        runtime.enabled = true;
+        runtime.builtin_action_overrides.clear();
+        runtime.custom_rules.push(CompiledCustomRule {
+            id: "synthetic-restore".into(),
+            name: "Synthetic rule".into(),
+            rule_type: "keyword".into(),
+            pattern: "synthetic-marker".into(),
+            regex: None,
+            risk_level: RiskLevel::High,
+            action: restore,
+            enabled: false,
+        });
+        assert!(!runtime.restoration_enabled());
+        runtime.custom_rules[0].enabled = true;
+        assert!(runtime.restoration_enabled());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod restore_import_tests {
+    use super::*;
+    use crate::database::CustomSecurityRule;
+    use crate::services::sync_protocol::security_publication_test_support::Fixture;
+
+    #[test]
+    #[serial_test::serial]
+    fn restore_import_round_trips_and_misspellings_keep_admission_closed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = Fixture::new()?;
+        let target = fixture.target()?;
+        let source = Database::memory()?;
+        source.save_custom_security_rule(&CustomSecurityRule {
+            id: "synthetic-import-restore".into(),
+            name: "Synthetic restore rule".into(),
+            rule_type: "keyword".into(),
+            pattern: "synthetic-import-marker".into(),
+            risk_level: "HIGH".into(),
+            action: "redact_restore".into(),
+            enabled: true,
+            description: None,
+            updated_at: 1,
+        })?;
+        source
+            .update_builtin_security_rule_action("chinese_phone_number", Some("redact_restore"))?;
+        let exported = source.export_sql_string()?;
+        let gate = DlpPolicyGate::new();
+        update_with_gate(&target, &gate, |db| db.import_sql_string(&exported))?;
+        assert_eq!(
+            target.get_custom_security_rules()?[0].action,
+            "redact_restore"
+        );
+        assert_eq!(
+            target.get_builtin_security_rule_actions()?["chinese_phone_number"],
+            "redact_restore"
+        );
+        let admitted = gate.admit()?;
+        assert!(admitted.runtime.restoration_enabled());
+        assert_eq!(
+            admitted.runtime.custom_rules[0].action,
+            AuditAction::RedactRestore
+        );
+        assert_eq!(
+            admitted.runtime.builtin_action_overrides["chinese_phone_number"],
+            AuditAction::RedactRestore
+        );
+
+        for invalid in ["redactrestore", "redact-restore", "restore"] {
+            for builtin in [false, true] {
+                update_with_gate(&target, &gate, |db| db.import_sql_string(&exported))?;
+                let mutation = if builtin {
+                    format!("UPDATE security_settings SET value = '{invalid}' WHERE key = 'builtin_action:chinese_phone_number';")
+                } else {
+                    format!("UPDATE security_custom_rules SET action = '{invalid}' WHERE id = 'synthetic-import-restore';")
+                };
+                let malformed = format!("{exported}\n{mutation}");
+                let result =
+                    update_with_gate(&target, &gate, |db| db.import_sql_string(&malformed));
+                assert_eq!(
+                    result.err().map(|error| error.to_string()).as_deref(),
+                    Some("dlp_unavailable")
+                );
+                assert!(gate.admit().is_err());
+                assert_eq!(
+                    admitted.runtime.custom_rules[0].action,
+                    AuditAction::RedactRestore
+                );
+            }
+        }
+        Ok(())
     }
 }

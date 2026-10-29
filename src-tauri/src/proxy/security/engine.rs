@@ -318,7 +318,10 @@ fn builtin_action(rule: &BuiltinRule, runtime: &SecurityRuntimeConfig) -> AuditA
         .unwrap_or(rule.default_action);
 
     if rule.id == "catalog:generic-sk-key-notice"
-        && matches!(action, AuditAction::Block | AuditAction::Redact)
+        && matches!(
+            action,
+            AuditAction::Block | AuditAction::Redact | AuditAction::RedactRestore
+        )
     {
         return rule.default_action;
     }
@@ -460,6 +463,15 @@ impl SecurityAuditEngine {
         runtime: &SecurityRuntimeConfig,
     ) -> SecurityInspectionResult {
         let mut result = Self::inspect_request_with_runtime(body, runtime);
+        if result
+            .findings
+            .iter()
+            .any(|finding| finding.action == AuditAction::RedactRestore)
+        {
+            result.blocked = true;
+            result.block_reason = Some("dlp_unsupported_route".into());
+            return result;
+        }
         if result.blocked
             || !result
                 .findings
@@ -722,5 +734,68 @@ fn builtin_fingerprint(
         super::identity::fingerprint(text.get(mat.start()..mat.end() + end + marker.len())?)
     } else {
         super::identity::fingerprint(mat.as_str())
+    }
+}
+
+#[cfg(test)]
+mod redact_restore_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_redaction_cannot_forward_or_degrade_a_restore_match() -> Result<(), serde_json::Error>
+    {
+        let mut runtime = SecurityRuntimeConfig::default();
+        runtime.builtin_action_overrides.insert(
+            "chinese_phone_number".into(),
+            serde_json::from_str("\"redact_restore\"")?,
+        );
+        let mut body = serde_json::json!({"input":"synthetic contact 13800138000"});
+        let original = body.clone();
+        let result = SecurityAuditEngine::inspect_and_redact_with_runtime(&mut body, &runtime);
+        assert!(result.blocked);
+        assert_eq!(body, original);
+        assert_eq!(result.findings[0].action.as_str(), "redact_restore");
+        assert_eq!(
+            result.block_reason.as_deref(),
+            Some("dlp_unsupported_route")
+        );
+        Ok(())
+    }
+    #[test]
+    fn restore_match_prevents_partial_irreversible_redaction() {
+        let mut runtime = SecurityRuntimeConfig::default();
+        runtime
+            .custom_rules
+            .push(super::super::runtime::CompiledCustomRule {
+                id: "synthetic-restore-rule".into(),
+                name: "Synthetic rule".into(),
+                rule_type: "keyword".into(),
+                pattern: "synthetic-restore-marker".into(),
+                regex: None,
+                risk_level: RiskLevel::High,
+                action: AuditAction::RedactRestore,
+                enabled: true,
+            });
+        let mut body =
+            serde_json::json!({"input":"synthetic-restore-marker 13800138000", "temperature":0.25});
+        let original = body.clone();
+        let result = SecurityAuditEngine::inspect_and_redact_with_runtime(&mut body, &runtime);
+        assert!(result.blocked);
+        assert_eq!(body, original);
+        assert!(result
+            .findings
+            .iter()
+            .any(|finding| finding.action == AuditAction::Redact));
+        assert!(result
+            .findings
+            .iter()
+            .any(|finding| finding.action == AuditAction::RedactRestore));
+        assert_eq!(
+            result.block_reason.as_deref(),
+            Some("dlp_unsupported_route")
+        );
+
+        body["input"] = serde_json::json!("ordinary synthetic text");
+        assert!(!SecurityAuditEngine::inspect_and_redact_with_runtime(&mut body, &runtime).blocked);
     }
 }

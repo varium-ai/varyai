@@ -280,7 +280,10 @@ fn completed_context_isolates_attempts_and_denies_cross_boundary_or_replaced_sna
     // Fork two independent attempt leases from base_a.
     let mut attempt_failed = base_a.fork_attempt()?;
     let attempt_ok = base_a.fork_attempt()?;
-    assert_eq!(attempt_failed.resolve(&token_base)?, "synthetic-base-secret");
+    assert_eq!(
+        attempt_failed.resolve(&token_base)?,
+        "synthetic-base-secret"
+    );
     assert_eq!(attempt_ok.resolve(&token_base)?, "synthetic-base-secret");
 
     // Failed attempt adds a secret that never completes; it must not contaminate base_a, attempt_ok, or later resumes!
@@ -293,8 +296,14 @@ fn completed_context_isolates_attempts_and_denies_cross_boundary_or_replaced_sna
         budget.clone(),
         |tokens| Ok(tokens[0].as_str().to_owned()),
     )?;
-    assert_eq!(base_a.resolve(&token_uncompleted).err(), Some(TokenError::ContextUnavailable));
-    assert_eq!(attempt_ok.resolve(&token_uncompleted).err(), Some(TokenError::ContextUnavailable));
+    assert_eq!(
+        base_a.resolve(&token_uncompleted).err(),
+        Some(TokenError::ContextUnavailable)
+    );
+    assert_eq!(
+        attempt_ok.resolve(&token_uncompleted).err(),
+        Some(TokenError::ContextUnavailable)
+    );
     drop(attempt_failed);
 
     // Publish completed context on attempt_ok with a specific provider, call snapshot, reasoning, and opaque item.
@@ -379,7 +388,14 @@ fn completed_context_isolates_attempts_and_denies_cross_boundary_or_replaced_sna
         None,
     )?;
     if attempt_ok
-        .publish_completed_context(&binding_no_principal, &witness, "resp_no_principal", &[], &[], &[])
+        .publish_completed_context(
+            &binding_no_principal,
+            &witness,
+            "resp_no_principal",
+            &[],
+            &[],
+            &[],
+        )
         .is_ok()
     {
         violations.push("missing-principal-published");
@@ -580,4 +596,238 @@ fn completed_context_zero_visible_output_retains_lineage_and_unique_call_fallbac
         "ambiguous call_id without previous_response_id must be rejected"
     );
     Ok(())
+}
+
+#[test]
+fn reversible_closure_req2_lineage_keeps_exact_send_and_refuses_identity_changes(
+) -> Result<(), TokenError> {
+    use super::completed_context::CompletionWitness;
+    use crate::proxy::providers::CodexAdapter;
+    let store = DlpTokenStore::new();
+    let mut first = store.admit("codex", Some("synthetic-route-session"), 1)?;
+    let token = first.prepare_with_budget(
+        &[TokenFragment {
+            raw: "synthetic-route-secret",
+            whole_span_categories: &[TokenCategory::Custom],
+        }],
+        &[],
+        PayloadBudget::with_limit(1024 * 1024),
+        |tokens| Ok(tokens[0].as_str().to_owned()),
+    )?;
+    let base = "https://synthetic.invalid/prefix";
+    let source_url = "https://synthetic.invalid/prefix/responses?a=1&b=2";
+    let source_route = CodexAdapter::resolve_dlp_operation_descriptor(
+        base,
+        "/responses?a=1&b=2",
+        "openai_responses",
+        source_url,
+        false,
+    )
+    .ok_or(TokenError::ContextUnavailable)?;
+    let source = first.bind_actual_operation_attempt(
+        "synthetic-provider",
+        "openai_responses",
+        source_url,
+        Some("synthetic-auth"),
+        Some(&source_route),
+    )?;
+    first.publish_completed_context(
+        &source,
+        &CompletionWitness::from_verified_completion(true)?,
+        "resp_synthetic_route",
+        &[&token],
+        &[],
+        &["synthetic-route-opaque"],
+    )?;
+    let target_url = "https://synthetic.invalid/prefix/responses/compact?a=1&b=2";
+    let target_route = CodexAdapter::resolve_dlp_operation_descriptor(
+        base,
+        "/responses/compact?a=1&b=2",
+        "openai_responses",
+        target_url,
+        false,
+    )
+    .ok_or(TokenError::ContextUnavailable)?;
+    let mut resumed = store.admit("codex", Some("synthetic-route-session"), 1)?;
+    let target = resumed.bind_actual_operation_attempt(
+        "synthetic-provider",
+        "openai_responses",
+        target_url,
+        Some("synthetic-auth"),
+        Some(&target_route),
+    )?;
+    assert!(
+        source.provider_fingerprint != target.provider_fingerprint,
+        "cross-operation lineage must not replace the exact actual-send fingerprint"
+    );
+    resumed.resume_completed_context(
+        &target,
+        Some("resp_synthetic_route"),
+        &[],
+        &["synthetic-route-opaque"],
+    )?;
+    assert_eq!(resumed.resolve(&token)?, "synthetic-route-secret");
+    for (provider, protocol, auth, session, revision, prefix, endpoint, url, full) in [
+        (
+            "synthetic-other",
+            "openai_responses",
+            "synthetic-auth",
+            "synthetic-route-session",
+            1,
+            base,
+            "/responses/compact?a=1&b=2",
+            target_url,
+            false,
+        ),
+        (
+            "synthetic-provider",
+            "openai_chat",
+            "synthetic-auth",
+            "synthetic-route-session",
+            1,
+            base,
+            "/responses/compact?a=1&b=2",
+            "https://synthetic.invalid/prefix/chat/completions?a=1&b=2",
+            false,
+        ),
+        (
+            "synthetic-provider",
+            "openai_responses",
+            "synthetic-other-auth",
+            "synthetic-route-session",
+            1,
+            base,
+            "/responses/compact?a=1&b=2",
+            target_url,
+            false,
+        ),
+        (
+            "synthetic-provider",
+            "openai_responses",
+            "synthetic-auth",
+            "synthetic-other-session",
+            1,
+            base,
+            "/responses/compact?a=1&b=2",
+            target_url,
+            false,
+        ),
+        (
+            "synthetic-provider",
+            "openai_responses",
+            "synthetic-auth",
+            "synthetic-route-session",
+            1,
+            base,
+            "/responses/compact?b=2&a=1",
+            "https://synthetic.invalid/prefix/responses/compact?b=2&a=1",
+            false,
+        ),
+        (
+            "synthetic-provider",
+            "openai_responses",
+            "synthetic-auth",
+            "synthetic-route-session",
+            1,
+            "https://synthetic.invalid/other",
+            "/responses/compact?a=1&b=2",
+            "https://synthetic.invalid/other/responses/compact?a=1&b=2",
+            false,
+        ),
+        (
+            "synthetic-provider",
+            "openai_responses",
+            "synthetic-auth",
+            "synthetic-route-session",
+            1,
+            base,
+            "/responses/compact?a=1&b=2",
+            target_url,
+            true,
+        ),
+        (
+            "synthetic-provider",
+            "openai_responses",
+            "synthetic-auth",
+            "synthetic-route-session",
+            2,
+            base,
+            "/responses/compact?a=1&b=2",
+            target_url,
+            false,
+        ),
+    ] {
+        let mut request = store.admit("codex", Some(session), revision)?;
+        let descriptor =
+            CodexAdapter::resolve_dlp_operation_descriptor(prefix, endpoint, protocol, url, full);
+        let binding = request.bind_actual_operation_attempt(
+            provider,
+            protocol,
+            url,
+            Some(auth),
+            descriptor.as_ref(),
+        )?;
+        assert_eq!(
+            request
+                .resume_completed_context(&binding, Some("resp_synthetic_route"), &[], &[])
+                .err(),
+            Some(TokenError::ContextUnavailable),
+            "changed identity must not authorize cursor lineage"
+        );
+        assert_eq!(
+            request.resume_completed_tokens(&binding, &[&token]).err(),
+            Some(TokenError::ContextUnavailable),
+            "changed identity must not authorize token lineage"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn reversible_closure_req2_ambiguous_routes_issue_no_descriptor() {
+    use crate::proxy::providers::CodexAdapter;
+    for (base, endpoint, target, full) in [
+        (
+            "https://synthetic.invalid/v1/responses",
+            "/responses/compact",
+            "https://synthetic.invalid/v1/responses/compact",
+            false,
+        ),
+        (
+            "https://synthetic.invalid/custom",
+            "/responses/compact",
+            "https://synthetic.invalid/custom",
+            true,
+        ),
+        (
+            "https://synthetic.invalid?route=1",
+            "/responses/compact",
+            "https://synthetic.invalid/responses/compact?route=1",
+            false,
+        ),
+        (
+            "https://synthetic.invalid",
+            "/arbitrary/compact",
+            "https://synthetic.invalid/arbitrary/compact",
+            false,
+        ),
+        (
+            "https://synthetic.invalid",
+            "/responses/compact",
+            "https://other.invalid/v1/responses/compact",
+            false,
+        ),
+    ] {
+        assert!(
+            CodexAdapter::resolve_dlp_operation_descriptor(
+                base,
+                endpoint,
+                "openai_responses",
+                target,
+                full
+            )
+            .is_none(),
+            "ambiguous or mismatched routes must stay exact-send-only"
+        );
+    }
 }

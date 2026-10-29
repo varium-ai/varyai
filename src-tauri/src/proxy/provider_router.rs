@@ -69,52 +69,51 @@ impl ProviderRouter {
             }
         };
 
-        if auto_failover_enabled
-            && current_provider
-                .as_ref()
-                .is_some_and(|provider| !provider_supports_failover(app_type, provider))
-        {
-            // A selected Codex Official account is an explicit account choice.
-            // Keep it as a single route even if an old failover setting remains
-            // enabled; retrying would reuse its inbound token for another card.
-            total_providers = 1;
-            result.push(current_provider.expect("checked above"));
-        } else if auto_failover_enabled {
-            // 故障转移开启：仅按队列顺序依次尝试（P1 → P2 → ...）
-            let all_providers = self.db.get_all_providers(app_type)?;
-
-            // 使用 DAO 返回的排序结果，确保和前端展示一致
-            let ordered_ids: Vec<String> = self
-                .db
-                .get_failover_queue(app_type)?
-                .into_iter()
-                .map(|item| item.provider_id)
-                .collect();
-
-            for provider_id in ordered_ids {
-                let Some(provider) = all_providers.get(&provider_id).cloned() else {
-                    continue;
-                };
-                if !provider_supports_failover(app_type, &provider) {
-                    continue;
-                }
-                total_providers += 1;
-
-                let circuit_key = format!("{app_type}:{}", provider.id);
-                let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
-
-                if breaker.is_available().await {
-                    result.push(provider);
-                } else {
-                    circuit_open_count += 1;
-                }
-            }
-        } else {
-            // 故障转移关闭：仅使用当前供应商，跳过熔断器检查
-            if let Some(current) = current_provider {
+        match (auto_failover_enabled, current_provider) {
+            (true, Some(current)) if !provider_supports_failover(app_type, &current) => {
+                // A selected Codex Official account is an explicit account choice.
+                // Keep it as a single route even if an old failover setting remains
+                // enabled; retrying would reuse its inbound token for another card.
                 total_providers = 1;
                 result.push(current);
             }
+            (true, _) => {
+                // Enabled failover follows the configured queue order only.
+                let all_providers = self.db.get_all_providers(app_type)?;
+
+                // Use the DAO ordering to match the provider order shown in the UI.
+                let ordered_ids: Vec<String> = self
+                    .db
+                    .get_failover_queue(app_type)?
+                    .into_iter()
+                    .map(|item| item.provider_id)
+                    .collect();
+
+                for provider_id in ordered_ids {
+                    let Some(provider) = all_providers.get(&provider_id).cloned() else {
+                        continue;
+                    };
+                    if !provider_supports_failover(app_type, &provider) {
+                        continue;
+                    }
+                    total_providers += 1;
+
+                    let circuit_key = format!("{app_type}:{}", provider.id);
+                    let breaker = self.get_or_create_circuit_breaker(&circuit_key).await;
+
+                    if breaker.is_available().await {
+                        result.push(provider);
+                    } else {
+                        circuit_open_count += 1;
+                    }
+                }
+            }
+            (false, Some(current)) => {
+                // Disabled failover uses only the current provider without a breaker check.
+                total_providers = 1;
+                result.push(current);
+            }
+            (false, None) => {}
         }
 
         if result.is_empty() {

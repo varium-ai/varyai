@@ -1938,3 +1938,208 @@ fn keyword_loaded_snapshot_preparation_rechecks_residuals_under_original_budget(
     }
     Ok(())
 }
+
+#[test]
+fn reversible_closure_req3_classifier_requires_original_complete_unique_ordered_history(
+) -> Result<(), TokenError> {
+    use super::request_preparation::is_fresh_readable_history;
+    let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
+    let source = json!({"input":[
+        {"type":"function_call","call_id":"synthetic_call","name":"synthetic_lookup","arguments":"{\"value\":\"synthetic\"}"},
+        {"type":"function_call_output","call_id":"synthetic_call","output":"synthetic result"}]});
+    assert!(is_fresh_readable_history(&source, &budget)?);
+    assert_eq!(
+        budget.used(),
+        0,
+        "classifier retains no authority or payload after classification"
+    );
+    for mutation in 0..8 {
+        let mut body = source.clone();
+        match mutation {
+            0 => body["input"]
+                .as_array_mut()
+                .expect("synthetic input")
+                .swap(0, 1),
+            1 => {
+                body["input"]
+                    .as_array_mut()
+                    .expect("synthetic input")
+                    .push(source["input"][0].clone());
+            }
+            2 => {
+                body["input"]
+                    .as_array_mut()
+                    .expect("synthetic input")
+                    .push(source["input"][1].clone());
+            }
+            3 => body["input"][1]["type"] = json!("custom_tool_call_output"),
+            4 => body["input"][0]["arguments"] = json!("{\"x\":1,\"x\":2}"),
+            5 => body["input"][0]["name"] = Value::Null,
+            6 => {
+                body["input"]
+                    .as_array_mut()
+                    .expect("synthetic input")
+                    .remove(1);
+            }
+            _ => body["input"][0]["reasoning_content"] = json!(42),
+        }
+        assert!(
+            is_fresh_readable_history(&body, &budget).is_err(),
+            "malformed reconstruction must not become fresh input"
+        );
+        assert_eq!(budget.used(), 0);
+    }
+    for key in ["encrypted_content", "encrypted_reasoning"] {
+        let mut body = source.clone();
+        body["input"][0][key] = json!("synthetic opaque");
+        assert!(!is_fresh_readable_history(&body, &budget)?);
+    }
+    let mut stale = source.clone();
+    stale["previous_response_id"] = json!("resp_expired");
+    assert!(!is_fresh_readable_history(&stale, &budget)?);
+    Ok(())
+}
+
+#[test]
+fn reversible_closure_req3_classifier_validates_every_readable_part() -> Result<(), TokenError> {
+    use super::request_preparation::is_fresh_readable_history;
+    let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
+    let source = json!({"input":[
+        {"type":"message","role":"assistant","content":[{"type":"output_text","text":"synthetic","annotations":[]},
+            {"type":"refusal","refusal":"synthetic refusal"}]},
+        {"type":"reasoning","summary":[{"type":"summary_text","text":"synthetic summary"}],
+            "content":[{"type":"reasoning_text","text":"synthetic reasoning"}]},
+        {"type":"function_call","call_id":"synthetic_shape_call","name":"synthetic_lookup","arguments":"{}"},
+        {"type":"function_call_output","call_id":"synthetic_shape_call","output":[{"type":"input_text","text":"synthetic result"}]}]});
+    assert!(is_fresh_readable_history(&source, &budget)?);
+    for mutation in 0..12 {
+        let mut body = source.clone();
+        match mutation {
+            0 => body["input"][0]["content"] = json!([null]),
+            1 => body["input"][0]["content"] = json!([{"type":"input_text","text":42}]),
+            2 => {
+                body["input"][0]["content"] =
+                    json!([{"type":"synthetic_unknown","text":"synthetic"}])
+            }
+            3 => body["input"][0]["content"] = json!([{"type":"refusal","refusal":false}]),
+            4 => body["input"][1]["summary"] = json!([{"type":"summary_text","text":42}]),
+            5 => body["input"][1]["content"] = json!([{"type":"reasoning_text","text":false}]),
+            6 => body["input"][1]["summary"] = json!({"type":"summary_text","text":"synthetic"}),
+            7 => body["input"][1]["content"] = Value::Null,
+            8 => body["input"][1]["content"] = json!([{"type":"summary_text","text":"synthetic"}]),
+            9 => body["input"][3]["output"] = json!([null]),
+            10 => body["input"][3]["output"] = json!([{"type":"input_text"}]),
+            _ => {
+                body["input"][3]["output"] =
+                    json!([{"type":"input_image","image_url":"synthetic-inert"}])
+            }
+        }
+        assert!(is_fresh_readable_history(&body, &budget).is_err(),
+            "every present readable part must have a supported kind and string payload; case={mutation}");
+        assert_eq!(budget.used(), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn reversible_closure_req3_classifier_key_references_are_not_fresh() -> Result<(), TokenError> {
+    use super::request_preparation::is_fresh_readable_history;
+    let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
+    let source = json!({"input":[
+        {"type":"function_call","call_id":"synthetic_key_call","name":"synthetic_lookup","arguments":"{}"},
+        {"type":"function_call_output","call_id":"synthetic_key_call","output":"synthetic result"}]});
+    let store = DlpTokenStore::new();
+    let mut lease = store.admit("codex", Some("synthetic-key-classifier"), 1)?;
+    let reference = lease.prepare_with_budget(
+        &[TokenFragment {
+            raw: "synthetic-reference-only",
+            whole_span_categories: &[TokenCategory::Custom],
+        }],
+        &[],
+        budget.clone(),
+        |tokens| Ok(tokens[0].as_str().to_owned()),
+    )?;
+    for nested in [false, true] {
+        let mut body = source.clone();
+        body["metadata"] = if nested {
+            json!({"synthetic":[{reference.clone():"synthetic"}]})
+        } else {
+            json!({reference.clone():"synthetic"})
+        };
+        assert!(
+            !is_fresh_readable_history(&body, &budget)?,
+            "reference keys must retain strict resume provenance"
+        );
+        assert_eq!(budget.used(), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn reversible_closure_req3_classifier_decodes_argument_dependencies() -> Result<(), TokenError> {
+    use super::request_preparation::is_fresh_readable_history;
+    let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
+    let store = DlpTokenStore::new();
+    let mut lease = store.admit("codex", Some("synthetic-decoded-classifier"), 1)?;
+    let reference = lease.prepare_with_budget(
+        &[TokenFragment {
+            raw: "synthetic-reference-only",
+            whole_span_categories: &[TokenCategory::Custom],
+        }],
+        &[],
+        budget.clone(),
+        |tokens| Ok(tokens[0].as_str().to_owned()),
+    )?;
+    let source = json!({"input":[
+        {"type":"function_call","call_id":"synthetic_decode_call","name":"synthetic_lookup","arguments":"{}"},
+        {"type":"function_call_output","call_id":"synthetic_decode_call","output":"synthetic result"}]});
+    for arguments in [
+        format!("{{\"\\u0076{}\":\"synthetic\"}}", &reference[1..]),
+        format!(
+            "{{\"nested\":[{{\"\\u0076{}\":\"synthetic\"}}]}}",
+            &reference[1..]
+        ),
+        format!("{{\"value\":\"\\u0076{}\"}}", &reference[1..]),
+    ] {
+        let mut body = source.clone();
+        body["input"][0]["arguments"] = json!(arguments);
+        assert!(
+            !is_fresh_readable_history(&body, &budget)?,
+            "decoded references retain strict resume provenance"
+        );
+        assert_eq!(budget.used(), 0);
+    }
+    let mut ordinary = source;
+    ordinary["input"][0]["arguments"] =
+        json!("{\"synthetic-sensitive-looking-key-13800138000\":\"synthetic\"}");
+    assert!(
+        is_fresh_readable_history(&ordinary, &budget)?,
+        "dependency classification does not scan sensitive keys"
+    );
+    assert_eq!(budget.used(), 0);
+    Ok(())
+}
+
+#[test]
+fn reversible_closure_req3_classifier_distinguishes_absent_from_invalid_message_type(
+) -> Result<(), TokenError> {
+    use super::request_preparation::is_fresh_readable_history;
+    let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
+    let source = json!({"input":[{"role":"user","content":"synthetic"},
+        {"type":"function_call","call_id":"synthetic_type_call","name":"synthetic_lookup","arguments":"{}"},
+        {"type":"function_call_output","call_id":"synthetic_type_call","output":"synthetic result"}]});
+    assert!(is_fresh_readable_history(&source, &budget)?);
+    let mut explicit = source.clone();
+    explicit["input"][0]["type"] = json!("message");
+    assert!(is_fresh_readable_history(&explicit, &budget)?);
+    for kind in [Value::Null, json!(42), json!(true), json!([]), json!({})] {
+        let mut invalid = source.clone();
+        invalid["input"][0]["type"] = kind;
+        assert!(
+            is_fresh_readable_history(&invalid, &budget).is_err(),
+            "present malformed type cannot mean absence"
+        );
+        assert_eq!(budget.used(), 0);
+    }
+    Ok(())
+}

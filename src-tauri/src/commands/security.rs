@@ -231,14 +231,14 @@ fn update_custom_security_rule_action_db(
 fn validate_rule_action_update(action: &str) -> Result<(), String> {
     if matches!(
         action.to_ascii_lowercase().as_str(),
-        "block" | "redact" | "audit" | "allow"
+        "block" | "redact" | "redact_restore" | "audit" | "allow"
     ) {
         Ok(())
     } else {
-        Err(
-            crate::error::AppError::Database("无效的处理动作，仅支持 redact、audit、allow".into())
-                .to_string(),
+        Err(crate::error::AppError::Database(
+            "无效的处理动作，仅支持 redact、redact_restore、audit、allow".into(),
         )
+        .to_string())
     }
 }
 
@@ -278,8 +278,10 @@ fn save_custom_security_rule_db(db: &Database, mut rule: CustomSecurityRule) -> 
     rule.risk_level = normalized_risk;
 
     let normalized_action = rule.action.to_ascii_lowercase();
-    if !["block", "audit", "redact", "allow"].contains(&normalized_action.as_str()) {
-        return Err("无效的处理动作，仅支持 block、audit、redact 或 allow".to_string());
+    if !["block", "audit", "redact", "redact_restore", "allow"]
+        .contains(&normalized_action.as_str())
+    {
+        return Err("无效的处理动作，仅支持 redact、redact_restore、audit 或 allow".to_string());
     }
     rule.action = normalized_action;
 
@@ -774,7 +776,7 @@ mod rule_write_tests {
                     value.pattern = "[".into();
                 }
                 "risk" => value.risk_level = "unsupported".into(),
-                "action" => value.action = "redact_restore".into(),
+                "action" => value.action = "redactrestore".into(),
                 _ => unreachable!(),
             }
             invalid.push(value);
@@ -786,11 +788,11 @@ mod rule_write_tests {
             ("synthetic-unknown", Some("audit")),
             (BUILTIN_ID, Some("redact")),
             (BUILTIN_ID, Some("block")),
-            ("chinese_phone_number", Some("redact_restore")),
+            ("chinese_phone_number", Some("redactrestore")),
         ] {
             assert!(update_builtin_security_rule_action_db(&db, id, action).is_err());
         }
-        for action in ["unsupported", "redact_restore"] {
+        for action in ["unsupported", "redactrestore"] {
             assert!(update_custom_security_rule_action_db(&db, CUSTOM_ID, action).is_err());
         }
         assert_eq!(db.get_custom_security_rules().unwrap(), vec![rule()]);
@@ -897,6 +899,62 @@ mod regex_diagnostic_tests {
             assert_eq!(error, "无效的正则表达式");
         }
         assert!(db.get_custom_security_rules()?.is_empty());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod redact_restore_tests {
+    use super::*;
+
+    #[test]
+    #[serial_test::serial]
+    fn redact_restore_commands_save_and_publish_exact_action() -> Result<(), String> {
+        let previous = (*crate::proxy::security::get_security_runtime()).clone();
+        struct Restore(crate::proxy::security::SecurityRuntimeConfig);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _restore = Restore(previous);
+        let db = Database::memory().map_err(|e| e.to_string())?;
+        let rule = CustomSecurityRule {
+            id: "synthetic-public-restore".into(),
+            name: "Synthetic rule".into(),
+            rule_type: "keyword".into(),
+            pattern: "synthetic-policy-marker".into(),
+            risk_level: "HIGH".into(),
+            action: "redact_restore".into(),
+            enabled: true,
+            description: None,
+            updated_at: 1,
+        };
+        save_custom_security_rule_db(&db, rule)?;
+        update_custom_security_rule_action_db(&db, "synthetic-public-restore", "redact_restore")?;
+        update_builtin_security_rule_action_db(
+            &db,
+            "chinese_phone_number",
+            Some("redact_restore"),
+        )?;
+        let runtime = crate::proxy::security::get_security_runtime();
+        assert_eq!(runtime.custom_rules[0].action.as_str(), "redact_restore");
+        assert_eq!(
+            runtime.builtin_action_overrides["chinese_phone_number"].as_str(),
+            "redact_restore"
+        );
+        assert!(update_builtin_security_rule_action_db(
+            &db,
+            "catalog:generic-sk-key-notice",
+            Some("redact_restore")
+        )
+        .is_err());
+        assert!(update_custom_security_rule_action_db(
+            &db,
+            "synthetic-public-restore",
+            "redactrestore"
+        )
+        .is_err());
         Ok(())
     }
 }

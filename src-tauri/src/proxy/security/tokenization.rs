@@ -303,6 +303,8 @@ impl MappingIndex {
     }
 }
 
+type ContextTable = StoreVec<super::completed_context::ContextEntry>;
+
 struct Namespace {
     identity: Option<[u8; 32]>,
     policy_revision: u64,
@@ -312,7 +314,7 @@ struct Namespace {
     active_leases: usize,
     last_used: Instant,
     mappings: MappingIndex,
-    contexts: Option<StoreVec<super::completed_context::ContextEntry>>,
+    contexts: Option<ContextTable>,
     context_entries: usize,
     committed: Charge,
     reserved: Charge,
@@ -470,7 +472,7 @@ impl DlpTokenStore {
         self.inner.as_ref().map_err(|error| *error)?.get()
     }
 
-    fn allocation_ledger(&self) -> Result<StoreAllocationLedger, TokenError> {
+    pub(super) fn allocation_ledger(&self) -> Result<StoreAllocationLedger, TokenError> {
         Ok(self.inner()?.allocation.clone())
     }
 
@@ -1454,6 +1456,10 @@ impl DlpRequestLease {
     }
 
     /// Visit only this lease's pinned dependencies; never lock the store here.
+    pub(super) fn is_empty(&self) -> bool {
+        self.authorized.len() == 0
+    }
+
     pub(super) fn visit_authorized_tokens<'a>(
         &'a self,
         mut visitor: impl FnMut(&'a str) -> Result<(), TokenError>,
@@ -1587,6 +1593,23 @@ impl DlpRequestLease {
         target_url: &str,
         auth_principal: Option<&str>,
     ) -> Result<super::completed_context::ActualAttemptBinding, TokenError> {
+        self.bind_actual_operation_attempt_extracted(
+            provider_id,
+            protocol,
+            target_url,
+            auth_principal,
+            None,
+        )
+    }
+
+    pub(super) fn bind_actual_operation_attempt_extracted(
+        &self,
+        provider_id: &str,
+        protocol: &str,
+        target_url: &str,
+        auth_principal: Option<&str>,
+        operation: Option<&crate::proxy::forwarder::DlpOperationDescriptor<'_>>,
+    ) -> Result<super::completed_context::ActualAttemptBinding, TokenError> {
         use super::completed_context::valid_external_id;
         if !valid_external_id(provider_id)
             || !valid_external_id(protocol)
@@ -1622,6 +1645,18 @@ impl DlpRequestLease {
             policy_revision,
             provider_fingerprint,
             reusable_principal: has_identity && valid_principal.is_some(),
+            operation_lineage: match (operation, valid_principal) {
+                (Some(descriptor), Some(principal)) if has_identity => {
+                    Some(super::completed_context::OperationLineage::issue(
+                        key,
+                        provider_id,
+                        protocol,
+                        principal,
+                        descriptor,
+                    )?)
+                }
+                _ => None,
+            },
         })
     }
 
@@ -1664,7 +1699,8 @@ impl DlpRequestLease {
         let mut call_entries = if calls.is_empty() {
             None
         } else {
-            let mut vec = StoreVec::with_capacity(calls.len(), ledger.clone(), MAX_CALLS_PER_CONTEXT)?;
+            let mut vec =
+                StoreVec::with_capacity(calls.len(), ledger.clone(), MAX_CALLS_PER_CONTEXT)?;
             for spec in calls {
                 if !valid_external_id(spec.call_id)
                     || !valid_external_id(spec.name)
@@ -1729,7 +1765,12 @@ impl DlpRequestLease {
             .checked_add(opaque_count)
             .ok_or(TokenError::CapacityExceeded)?;
         let metadata_bytes = CONTEXT_ENTRY_METADATA
-            .checked_add(calls.len().checked_mul(CALL_ENTRY_METADATA).ok_or(TokenError::CapacityExceeded)?)
+            .checked_add(
+                calls
+                    .len()
+                    .checked_mul(CALL_ENTRY_METADATA)
+                    .ok_or(TokenError::CapacityExceeded)?,
+            )
             .and_then(|n| n.checked_add(opaque_count.checked_mul(OPAQUE_ENTRY_METADATA)?))
             .and_then(|n| n.checked_add(self.authorized.len().checked_mul(AUTHORITY_METADATA)?))
             .ok_or(TokenError::CapacityExceeded)?;
@@ -1738,169 +1779,165 @@ impl DlpRequestLease {
             ..Default::default()
         };
 
-        for _ in 0..MAX_COMMIT_ATTEMPTS {
-            let (version, existing_record, context_len) = {
-                let state = self.store.lock()?;
-                let ns = state
-                    .namespaces
-                    .get(&self.namespace)
-                    .ok_or(TokenError::ContextUnavailable)?;
-                if ns.identity.is_none()
-                    || ns.generation != self.generation
-                    || ns.policy_revision != binding.policy_revision
-                {
-                    return Err(TokenError::ContextUnavailable);
-                }
-                let slice = ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice);
-                let found = slice
-                    .iter()
-                    .find_map(|entry| {
-                        entry
-                            .get()
-                            .ok()
-                            .filter(|r| r.response_digest == response_digest)
-                            .map(|_| entry.clone())
-                    });
-                if found.is_none() {
-                    if ns
-                        .context_entries
-                        .checked_add(entry_delta)
-                        .is_none_or(|n| n > MAX_CONTEXT_ENTRIES_PER_NAMESPACE)
-                        || state
-                            .context_entries
-                            .checked_add(entry_delta)
-                            .is_none_or(|n| n > MAX_GLOBAL_CONTEXT_ENTRIES)
-                    {
-                        return Err(TokenError::CapacityExceeded);
-                    }
-                }
-                (ns.version, found, slice.len())
-            };
-
-            if let Some(existing) = existing_record {
-                let rec = existing.get()?;
-                let calls_slice = call_entries.as_ref().map_or(&[][..], StoreVec::as_slice);
-                let opaques_slice = opaque_entries.as_ref().map_or(&[][..], StoreVec::as_slice);
-                let same_deps = rec.deps_slice().len() == self.authorized.len()
-                    && rec
-                        .deps_slice()
-                        .iter()
-                        .zip(self.authorized.as_slice())
-                        .all(|((d1, _), (d2, _))| d1 == d2);
-                if rec.provider_fingerprint == binding.provider_fingerprint
-                    && rec.policy_revision == binding.policy_revision
-                    && rec.calls_slice() == calls_slice
-                    && rec.opaques_slice() == opaques_slice
-                    && same_deps
-                {
-                    return Ok(CompletedContextHandle {
-                        store_id: binding.store_id,
-                        namespace: self.namespace,
-                        generation: self.generation,
-                        policy_revision: binding.policy_revision,
-                        provider_fingerprint: binding.provider_fingerprint,
-                        response_digest,
-                    });
-                }
-                return Err(TokenError::ContextUnavailable);
-            }
-
-            let mut reservation = self.store.reserve(Some(self.namespace), charge)?;
-            let deps_copy = if self.authorized.len() == 0 {
-                None
-            } else {
-                let mut d = StoreVec::with_capacity(
-                    self.authorized.len(),
-                    ledger.clone(),
-                    limits.entries_per_namespace,
-                )?;
-                for (digest, mapping) in self.authorized.as_slice() {
-                    d.push_without_growth((*digest, mapping.clone()))?;
-                }
-                Some(d)
-            };
-            let record = SharedAllocation::new(
-                CompletedContextRecord {
-                    response_digest,
-                    provider_fingerprint: binding.provider_fingerprint,
-                    policy_revision: binding.policy_revision,
-                    dependencies: deps_copy,
-                    calls: call_entries.take(),
-                    opaques: opaque_entries.take(),
-                    context_entries: entry_delta,
-                    metadata_bytes,
-                },
-                ledger.clone(),
-            )?;
-
-            let mut staged = StoreVec::with_capacity(
-                context_len + 1,
-                ledger.clone(),
-                MAX_CONTEXT_ENTRIES_PER_NAMESPACE,
-            )?;
-            {
-                let state = self.store.lock()?;
-                let ns = state
-                    .namespaces
-                    .get(&self.namespace)
-                    .ok_or(TokenError::ContextUnavailable)?;
-                if ns.version != version {
-                    drop(state);
-                    return Err(TokenError::Unavailable);
-                }
-                for existing in ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice) {
-                    staged.push_without_growth(existing.clone())?;
-                }
-            }
-            staged.push_without_growth(record)?;
-
-            let next_version = version.checked_add(1).ok_or(TokenError::Unavailable)?;
-            let mut state = self.store.lock()?;
-            let state_reserved = state.reserved.subtract(charge)?;
-            let state_committed = state.committed.add(charge)?;
-            let next_global_entries = state
-                .context_entries
-                .checked_add(entry_delta)
-                .filter(|&n| n <= MAX_GLOBAL_CONTEXT_ENTRIES)
-                .ok_or(TokenError::CapacityExceeded)?;
+        let (version, existing_record, context_len) = {
+            let state = self.store.lock()?;
             let ns = state
                 .namespaces
-                .get_mut(&self.namespace)
+                .get(&self.namespace)
+                .ok_or(TokenError::ContextUnavailable)?;
+            if ns.identity.is_none()
+                || ns.generation != self.generation
+                || ns.policy_revision != binding.policy_revision
+            {
+                return Err(TokenError::ContextUnavailable);
+            }
+            let slice = ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice);
+            let found = slice.iter().find_map(|entry| {
+                entry
+                    .get()
+                    .ok()
+                    .filter(|r| r.response_digest == response_digest)
+                    .map(|_| entry.clone())
+            });
+            if found.is_none()
+                && (ns
+                    .context_entries
+                    .checked_add(entry_delta)
+                    .is_none_or(|n| n > MAX_CONTEXT_ENTRIES_PER_NAMESPACE)
+                    || state
+                        .context_entries
+                        .checked_add(entry_delta)
+                        .is_none_or(|n| n > MAX_GLOBAL_CONTEXT_ENTRIES))
+            {
+                return Err(TokenError::CapacityExceeded);
+            }
+            (ns.version, found, slice.len())
+        };
+
+        if let Some(existing) = existing_record {
+            let rec = existing.get()?;
+            let calls_slice = call_entries.as_ref().map_or(&[][..], StoreVec::as_slice);
+            let opaques_slice = opaque_entries.as_ref().map_or(&[][..], StoreVec::as_slice);
+            let same_deps = rec.deps_slice().len() == self.authorized.len()
+                && rec
+                    .deps_slice()
+                    .iter()
+                    .zip(self.authorized.as_slice())
+                    .all(|((d1, _), (d2, _))| d1 == d2);
+            if rec.provider_fingerprint == binding.provider_fingerprint
+                && rec.operation_lineage == binding.operation_lineage
+                && rec.policy_revision == binding.policy_revision
+                && rec.calls_slice() == calls_slice
+                && rec.opaques_slice() == opaques_slice
+                && same_deps
+            {
+                return Ok(CompletedContextHandle {
+                    store_id: binding.store_id,
+                    namespace: self.namespace,
+                    generation: self.generation,
+                    policy_revision: binding.policy_revision,
+                    provider_fingerprint: binding.provider_fingerprint,
+                    response_digest,
+                });
+            }
+            return Err(TokenError::ContextUnavailable);
+        }
+
+        let mut reservation = self.store.reserve(Some(self.namespace), charge)?;
+        let deps_copy = if self.authorized.len() == 0 {
+            None
+        } else {
+            let mut d = StoreVec::with_capacity(
+                self.authorized.len(),
+                ledger.clone(),
+                limits.entries_per_namespace,
+            )?;
+            for (digest, mapping) in self.authorized.as_slice() {
+                d.push_without_growth((*digest, mapping.clone()))?;
+            }
+            Some(d)
+        };
+        let record = SharedAllocation::new(
+            CompletedContextRecord {
+                response_digest,
+                provider_fingerprint: binding.provider_fingerprint,
+                operation_lineage: binding.operation_lineage,
+                policy_revision: binding.policy_revision,
+                dependencies: deps_copy,
+                calls: call_entries.take(),
+                opaques: opaque_entries.take(),
+                context_entries: entry_delta,
+                metadata_bytes,
+            },
+            ledger.clone(),
+        )?;
+
+        let mut staged = StoreVec::with_capacity(
+            context_len + 1,
+            ledger.clone(),
+            MAX_CONTEXT_ENTRIES_PER_NAMESPACE,
+        )?;
+        {
+            let state = self.store.lock()?;
+            let ns = state
+                .namespaces
+                .get(&self.namespace)
                 .ok_or(TokenError::ContextUnavailable)?;
             if ns.version != version {
                 drop(state);
                 return Err(TokenError::Unavailable);
             }
-            let next_ns_entries = ns
-                .context_entries
-                .checked_add(entry_delta)
-                .filter(|&n| n <= MAX_CONTEXT_ENTRIES_PER_NAMESPACE)
-                .ok_or(TokenError::CapacityExceeded)?;
-            let ns_committed = ns.committed.add(charge)?;
-            let ns_reserved = ns.reserved.subtract(charge)?;
-            let mut old_contexts = Some(staged);
-            std::mem::swap(&mut ns.contexts, &mut old_contexts);
-            ns.version = next_version;
-            ns.context_entries = next_ns_entries;
-            ns.committed = ns_committed;
-            ns.reserved = ns_reserved;
-            ns.last_used = Instant::now();
-            state.context_entries = next_global_entries;
-            state.reserved = state_reserved;
-            state.committed = state_committed;
-            reservation.active = false;
-            drop(state);
-            drop(old_contexts);
-            return Ok(CompletedContextHandle {
-                store_id: binding.store_id,
-                namespace: self.namespace,
-                generation: self.generation,
-                policy_revision: binding.policy_revision,
-                provider_fingerprint: binding.provider_fingerprint,
-                response_digest,
-            });
+            for existing in ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice) {
+                staged.push_without_growth(existing.clone())?;
+            }
         }
-        Err(TokenError::Unavailable)
+        staged.push_without_growth(record)?;
+
+        let next_version = version.checked_add(1).ok_or(TokenError::Unavailable)?;
+        let mut state = self.store.lock()?;
+        let state_reserved = state.reserved.subtract(charge)?;
+        let state_committed = state.committed.add(charge)?;
+        let next_global_entries = state
+            .context_entries
+            .checked_add(entry_delta)
+            .filter(|&n| n <= MAX_GLOBAL_CONTEXT_ENTRIES)
+            .ok_or(TokenError::CapacityExceeded)?;
+        let ns = state
+            .namespaces
+            .get_mut(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        if ns.version != version {
+            drop(state);
+            return Err(TokenError::Unavailable);
+        }
+        let next_ns_entries = ns
+            .context_entries
+            .checked_add(entry_delta)
+            .filter(|&n| n <= MAX_CONTEXT_ENTRIES_PER_NAMESPACE)
+            .ok_or(TokenError::CapacityExceeded)?;
+        let ns_committed = ns.committed.add(charge)?;
+        let ns_reserved = ns.reserved.subtract(charge)?;
+        let mut old_contexts = Some(staged);
+        std::mem::swap(&mut ns.contexts, &mut old_contexts);
+        ns.version = next_version;
+        ns.context_entries = next_ns_entries;
+        ns.committed = ns_committed;
+        ns.reserved = ns_reserved;
+        ns.last_used = Instant::now();
+        state.context_entries = next_global_entries;
+        state.reserved = state_reserved;
+        state.committed = state_committed;
+        reservation.active = false;
+        drop(state);
+        drop(old_contexts);
+        Ok(CompletedContextHandle {
+            store_id: binding.store_id,
+            namespace: self.namespace,
+            generation: self.generation,
+            policy_revision: binding.policy_revision,
+            provider_fingerprint: binding.provider_fingerprint,
+            response_digest,
+        })
     }
 
     pub(super) fn resume_completed_context_extracted(
@@ -1917,7 +1954,6 @@ impl DlpRequestLease {
         if binding.store_id != self.store_id()?
             || binding.namespace != self.namespace
             || binding.generation != self.generation
-            || !binding.reusable_principal
         {
             return Err(TokenError::ContextUnavailable);
         }
@@ -1926,6 +1962,9 @@ impl DlpRequestLease {
             && required_opaques.is_empty()
         {
             return Ok(());
+        }
+        if !binding.reusable_principal {
+            return Err(TokenError::ContextUnavailable);
         }
         let limits = &self.store.inner()?.limits;
         if required_calls.len() > MAX_CALLS_PER_CONTEXT
@@ -2030,7 +2069,7 @@ impl DlpRequestLease {
                 .position(|entry| {
                     entry.get().is_ok_and(|rec| {
                         rec.response_digest == target
-                            && rec.provider_fingerprint == binding.provider_fingerprint
+                            && rec.authorizes_attempt(binding)
                             && rec.policy_revision == binding.policy_revision
                     })
                 })
@@ -2055,7 +2094,7 @@ impl DlpRequestLease {
                 let mut found_idx = None;
                 for (idx, entry) in snapshot.as_slice().iter().enumerate() {
                     let rec = entry.get()?;
-                    if rec.provider_fingerprint != binding.provider_fingerprint
+                    if !rec.authorizes_attempt(binding)
                         || rec.policy_revision != binding.policy_revision
                     {
                         continue;
@@ -2084,7 +2123,7 @@ impl DlpRequestLease {
                 let mut found_idx = None;
                 for (idx, entry) in snapshot.as_slice().iter().enumerate() {
                     let rec = entry.get()?;
-                    if rec.provider_fingerprint != binding.provider_fingerprint
+                    if !rec.authorizes_attempt(binding)
                         || rec.policy_revision != binding.policy_revision
                     {
                         continue;
@@ -2173,6 +2212,223 @@ impl DlpRequestLease {
             .ok_or(TokenError::CapacityExceeded)?;
         drop(state);
         drop(old_authorized);
+        Ok(())
+    }
+
+    pub(super) fn resume_completed_tokens_extracted(
+        &mut self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        referenced_tokens: &[&str],
+    ) -> Result<(), TokenError> {
+        use super::completed_context::MAX_CONTEXT_ENTRIES_PER_NAMESPACE;
+        if referenced_tokens.is_empty() {
+            return Ok(());
+        }
+        if referenced_tokens.iter().all(|t| self.resolve(t).is_ok()) {
+            return Ok(());
+        }
+        if binding.store_id != self.store_id()?
+            || binding.namespace != self.namespace
+            || binding.generation != self.generation
+            || !binding.reusable_principal
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        let limits = &self.store.inner()?.limits;
+        let ledger = self.store.allocation_ledger()?;
+        let snapshot = {
+            let state = self.store.lock()?;
+            let ns = state
+                .namespaces
+                .get(&self.namespace)
+                .ok_or(TokenError::ContextUnavailable)?;
+            if ns.identity.is_none()
+                || ns.generation != self.generation
+                || ns.policy_revision != binding.policy_revision
+            {
+                return Err(TokenError::ContextUnavailable);
+            }
+            let slice = ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice);
+            if slice.is_empty() {
+                return Err(TokenError::ContextUnavailable);
+            }
+            let mut copied = StoreVec::with_capacity(
+                slice.len(),
+                ledger.clone(),
+                MAX_CONTEXT_ENTRIES_PER_NAMESPACE,
+            )?;
+            for entry in slice {
+                copied.push_without_growth(entry.clone())?;
+            }
+            copied
+        };
+        let mut matched_indices = StoreVec::with_capacity(
+            snapshot.len(),
+            ledger.clone(),
+            MAX_CONTEXT_ENTRIES_PER_NAMESPACE,
+        )?;
+        for &tok in referenced_tokens {
+            if self.resolve(tok).is_ok() {
+                continue;
+            }
+            let mut found_idx = None;
+            for (idx, entry) in snapshot.as_slice().iter().enumerate() {
+                let rec = entry.get()?;
+                if !rec.authorizes_attempt(binding)
+                    || rec.policy_revision != binding.policy_revision
+                {
+                    continue;
+                }
+                let mut contains = false;
+                for (_, mapping) in rec.deps_slice() {
+                    if mapping.get()?.token()? == tok {
+                        contains = true;
+                        break;
+                    }
+                }
+                if contains {
+                    found_idx = Some(idx);
+                    break;
+                }
+            }
+            let idx = found_idx.ok_or(TokenError::ContextUnavailable)?;
+            if !matched_indices.as_slice().contains(&idx) {
+                matched_indices.push_without_growth(idx)?;
+            }
+        }
+        let mut total_candidates = self.authorized.len();
+        for &idx in matched_indices.as_slice() {
+            total_candidates = total_candidates
+                .checked_add(snapshot.as_slice()[idx].get()?.deps_slice().len())
+                .ok_or(TokenError::CapacityExceeded)?;
+        }
+        let mut combined = StoreVec::with_capacity(
+            total_candidates.min(limits.entries_per_namespace),
+            ledger.clone(),
+            limits.entries_per_namespace,
+        )?;
+        for (digest, mapping) in self.authorized.as_slice() {
+            combined.push_without_growth((*digest, mapping.clone()))?;
+        }
+        let mut added = 0usize;
+        for &idx in matched_indices.as_slice() {
+            for (digest, mapping) in snapshot.as_slice()[idx].get()?.deps_slice() {
+                if !combined.as_slice().iter().any(|(d, _)| d == digest) {
+                    if combined.len() >= limits.entries_per_namespace {
+                        return Err(TokenError::CapacityExceeded);
+                    }
+                    combined.push_without_growth((*digest, mapping.clone()))?;
+                    added += 1;
+                }
+            }
+        }
+        if added == 0 {
+            return Ok(());
+        }
+        combined.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let staged = if combined.len() == combined.capacity() {
+            combined
+        } else {
+            let mut exact =
+                StoreVec::with_capacity(combined.len(), ledger, limits.entries_per_namespace)?;
+            for (digest, mapping) in combined.as_slice() {
+                exact.push_without_growth((*digest, mapping.clone()))?;
+            }
+            drop(combined);
+            exact
+        };
+        let extra_metadata = added
+            .checked_mul(AUTHORITY_METADATA)
+            .ok_or(TokenError::CapacityExceeded)?;
+        let charge = Charge {
+            metadata_bytes: extra_metadata,
+            ..Default::default()
+        };
+        let mut state = self.store.lock()?;
+        self.store.check_global(&state, charge)?;
+        let committed = state.committed.add(charge)?;
+        let ns = state
+            .namespaces
+            .get_mut(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        if ns.generation != self.generation {
+            return Err(TokenError::ContextUnavailable);
+        }
+        ns.last_used = Instant::now();
+        state.committed = committed;
+        let mut old_authorized = MappingIndex {
+            entries: Some(staged),
+        };
+        std::mem::swap(&mut self.authorized, &mut old_authorized);
+        self.metadata_bytes = self
+            .metadata_bytes
+            .checked_add(extra_metadata)
+            .ok_or(TokenError::CapacityExceeded)?;
+        drop(state);
+        drop(old_authorized);
+        Ok(())
+    }
+
+    pub(super) fn verify_output_call_ids_extracted(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        previous_response_id: Option<&str>,
+        orphan_output_call_ids: &[&str],
+    ) -> Result<(), TokenError> {
+        use super::completed_context::{call_id_digest, response_id_digest, valid_external_id};
+        if orphan_output_call_ids.is_empty() {
+            return Ok(());
+        }
+        let prev_id = previous_response_id
+            .filter(|id| valid_external_id(id))
+            .ok_or(TokenError::ContextUnavailable)?;
+        if binding.store_id != self.store_id()?
+            || binding.namespace != self.namespace
+            || binding.generation != self.generation
+            || !binding.reusable_principal
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        let key = self.store.identity_key()?;
+        let prev_digest = response_id_digest(key, prev_id)?;
+        let mut call_digests = StoreVec::with_capacity(
+            orphan_output_call_ids.len(),
+            self.store.allocation_ledger()?,
+            super::completed_context::MAX_CALLS_PER_CONTEXT,
+        )?;
+        for &cid in orphan_output_call_ids {
+            if !valid_external_id(cid) {
+                return Err(TokenError::ContextUnavailable);
+            }
+            call_digests.push_without_growth(call_id_digest(key, cid)?)?;
+        }
+        let state = self.store.lock()?;
+        let ns = state
+            .namespaces
+            .get(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        if ns.identity.is_none()
+            || ns.generation != self.generation
+            || ns.policy_revision != binding.policy_revision
+        {
+            return Err(TokenError::ContextUnavailable);
+        }
+        let slice = ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice);
+        let rec = slice
+            .iter()
+            .find_map(|entry| {
+                let r = entry.get().ok()?;
+                (r.response_digest == prev_digest
+                    && r.authorizes_attempt(binding)
+                    && r.policy_revision == binding.policy_revision)
+                    .then_some(r)
+            })
+            .ok_or(TokenError::ContextUnavailable)?;
+        for cd in call_digests.as_slice() {
+            if rec.find_call(cd).is_none() {
+                return Err(TokenError::ContextUnavailable);
+            }
+        }
         Ok(())
     }
 }

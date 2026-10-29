@@ -95,6 +95,14 @@ impl CompletionTransport {
         }
     }
 
+    /// The caller has fully read an original JSON HTTP entity, not an SSE stream.
+    pub(crate) fn observe_fully_read_json(&mut self) {
+        if self.reached_end {
+            self.invalid = true;
+        }
+        self.reached_end = true;
+    }
+
     pub(crate) fn permits_completion(&self) -> bool {
         self.reached_end && !self.aborted && !self.invalid
     }
@@ -141,9 +149,20 @@ impl<'a> NativeCompletionEvent<'a> {
     pub(crate) fn permits_completion(&self) -> bool {
         self.event_name == "response.completed"
             && self.data.get("type").and_then(Value::as_str) == Some("response.completed")
-            && self.data.pointer("/response/status").and_then(Value::as_str) == Some("completed")
-            && self.data.get("error").is_none()
-            && self.data.pointer("/response/error").is_none()
+            && self
+                .data
+                .pointer("/response/status")
+                .and_then(Value::as_str)
+                == Some("completed")
+            && self.data.get("error").is_none_or(Value::is_null)
+            && self
+                .data
+                .pointer("/response/error")
+                .is_none_or(Value::is_null)
+            && self
+                .data
+                .pointer("/response/incomplete_details")
+                .is_none_or(Value::is_null)
     }
 }
 
@@ -161,6 +180,7 @@ pub(crate) struct SseCompletion {
     started: bool,
     terminal: bool,
     invalid: bool,
+    unsupported_carrier: bool,
     allowed_reason: bool,
     chat_done: bool,
     selected_choice: Option<u64>,
@@ -183,6 +203,7 @@ impl SseCompletion {
             started: false,
             terminal: false,
             invalid: false,
+            unsupported_carrier: false,
             allowed_reason: false,
             chat_done: false,
             selected_choice: None,
@@ -206,6 +227,10 @@ impl SseCompletion {
         Self::new(SseProtocol::Anthropic)
     }
 
+    pub(super) fn has_unsupported_carrier(&self) -> bool {
+        self.unsupported_carrier
+    }
+
     pub(crate) fn legacy_completed(&self) -> bool {
         self.legacy_completed
     }
@@ -214,10 +239,16 @@ impl SseCompletion {
         self.legacy_completed = true;
     }
 
-    pub(super) fn observe(&mut self, fact: &CompletionObservation<'_>, budget: &super::payload_budget::PayloadBudget) {
+    pub(super) fn observe(
+        &mut self,
+        fact: &CompletionObservation<'_>,
+        budget: &super::payload_budget::PayloadBudget,
+    ) {
         match (self.protocol, fact) {
             (_, CompletionObservation::RawFrame(raw)) => {
-                if self.raw_frame(raw, budget).is_err() { self.invalid = true; }
+                if self.raw_frame(raw, budget).is_err() {
+                    self.invalid = true;
+                }
             }
             (SseProtocol::Chat, CompletionObservation::ChatChunk(data)) => {
                 self.consume_raw(data);
@@ -228,29 +259,54 @@ impl SseCompletion {
                 self.pending_done = false;
                 self.chat_done = true;
             }
-            (SseProtocol::Anthropic, CompletionObservation::AnthropicEvent { event_name, data }) => {
-                self.invalid |= self.pending_event_name.take().as_ref().map(|name| name.as_str()) != *event_name;
+            (
+                SseProtocol::Anthropic,
+                CompletionObservation::AnthropicEvent { event_name, data },
+            ) => {
+                self.invalid |= self
+                    .pending_event_name
+                    .take()
+                    .as_ref()
+                    .map(|name| name.as_str())
+                    != *event_name;
                 self.consume_raw(data);
                 self.anthropic_event(*event_name, data, budget);
             }
-            (_, CompletionObservation::InvalidJson | CompletionObservation::InvalidUtf8 | CompletionObservation::IoFailure
-                | CompletionObservation::RawJson(_) | CompletionObservation::AnthropicJson(_)
-                | CompletionObservation::NativeEvent { .. } | CompletionObservation::BufferedBodyEnd { .. })
+            (
+                _,
+                CompletionObservation::InvalidJson
+                | CompletionObservation::InvalidUtf8
+                | CompletionObservation::IoFailure
+                | CompletionObservation::RawJson(_)
+                | CompletionObservation::AnthropicJson(_)
+                | CompletionObservation::NativeEvent { .. }
+                | CompletionObservation::BufferedBodyEnd { .. },
+            )
             | (SseProtocol::Chat, CompletionObservation::AnthropicEvent { .. })
-            | (SseProtocol::Anthropic, CompletionObservation::ChatChunk(_) | CompletionObservation::ChatDone) => self.invalid = true,
+            | (
+                SseProtocol::Anthropic,
+                CompletionObservation::ChatChunk(_) | CompletionObservation::ChatDone,
+            ) => self.invalid = true,
             (_, CompletionObservation::EntityEnd { .. }) => {}
         }
     }
 
     fn consume_raw(&mut self, data: &Value) {
         // Pair the exact ordered snapshot, including floating-point signed zero.
-        self.invalid |= self.pending_raw.take().is_none_or(|raw| {
-            !super::request_carriers::same_snapshot(raw.as_value(), data)
-        });
+        self.invalid |= self
+            .pending_raw
+            .take()
+            .is_none_or(|raw| !super::request_carriers::same_snapshot(raw.as_value(), data));
     }
 
-    fn raw_frame(&mut self, raw: &str, budget: &super::payload_budget::PayloadBudget) -> Result<(), super::tokenization::TokenError> {
-        use super::{payload_buffer::PayloadBuffer, payload_json::PayloadJson, tokenization::TokenError};
+    fn raw_frame(
+        &mut self,
+        raw: &str,
+        budget: &super::payload_budget::PayloadBudget,
+    ) -> Result<(), super::tokenization::TokenError> {
+        use super::{
+            payload_buffer::PayloadBuffer, payload_json::PayloadJson, tokenization::TokenError,
+        };
         if raw.len() > 1024 * 1024 || self.pending_raw.is_some() || self.pending_done {
             return Err(TokenError::RedactionFailed);
         }
@@ -258,13 +314,18 @@ impl SseCompletion {
         let mut data_bytes = 0usize;
         let mut data_count = 0usize;
         for line in raw.lines() {
-            if line.is_empty() || line.starts_with(':') { continue; }
+            if line.is_empty() || line.starts_with(':') {
+                continue;
+            }
             let (name, value) = line.split_once(':').unwrap_or((line, ""));
             let value = value.strip_prefix(' ').unwrap_or(value);
             match name {
                 "event" if event_name.is_none() => event_name = Some(value),
                 "data" => {
-                    data_bytes = data_bytes.checked_add(value.len()).and_then(|n| n.checked_add(usize::from(data_count != 0))).ok_or(TokenError::CapacityExceeded)?;
+                    data_bytes = data_bytes
+                        .checked_add(value.len())
+                        .and_then(|n| n.checked_add(usize::from(data_count != 0)))
+                        .ok_or(TokenError::CapacityExceeded)?;
                     data_count += 1;
                 }
                 "id" | "retry" => {}
@@ -272,37 +333,65 @@ impl SseCompletion {
             }
         }
         if data_count == 0 {
-            return if event_name.is_none() { Ok(()) } else { Err(TokenError::RedactionFailed) };
+            return if event_name.is_none() {
+                Ok(())
+            } else {
+                Err(TokenError::RedactionFailed)
+            };
         }
-        if matches!(self.protocol, SseProtocol::Chat) && event_name.is_some_and(|name| !matches!(name, "" | "message")) {
+        if matches!(self.protocol, SseProtocol::Chat)
+            && event_name.is_some_and(|name| !matches!(name, "" | "message"))
+        {
             return Err(TokenError::RedactionFailed);
         }
         let mut data = PayloadBuffer::with_capacity(data_bytes, budget.clone(), 1024 * 1024)?;
         let mut first = true;
         for line in raw.lines() {
-            if let Some(value) = line.strip_prefix("data:").or_else(|| (line == "data").then_some("")) {
-                if !first { data.append(b"\n")?; }
+            if let Some(value) = line
+                .strip_prefix("data:")
+                .or_else(|| (line == "data").then_some(""))
+            {
+                if !first {
+                    data.append(b"\n")?;
+                }
                 first = false;
                 data.append(value.strip_prefix(' ').unwrap_or(value).as_bytes())?;
             }
         }
-        let encoded = std::str::from_utf8(data.as_slice()).map_err(|_| TokenError::RedactionFailed)?;
+        let encoded =
+            std::str::from_utf8(data.as_slice()).map_err(|_| TokenError::RedactionFailed)?;
         if encoded.trim() == "[DONE]" {
-            if !matches!(self.protocol, SseProtocol::Chat) { return Err(TokenError::RedactionFailed); }
+            if !matches!(self.protocol, SseProtocol::Chat) {
+                return Err(TokenError::RedactionFailed);
+            }
             self.pending_done = true;
         } else {
-            self.pending_raw = Some(PayloadJson::try_from_str(encoded, budget.clone(), budget.limit())?);
+            self.pending_raw = Some(PayloadJson::try_from_str(
+                encoded,
+                budget.clone(),
+                budget.limit(),
+            )?);
             if matches!(self.protocol, SseProtocol::Anthropic) {
-                self.pending_event_name = event_name.map(|name| {
-                    super::payload_text::PayloadText::try_from_str(name, budget.clone(), 1024 * 1024)
-                }).transpose()?;
+                self.pending_event_name = event_name
+                    .map(|name| {
+                        super::payload_text::PayloadText::try_from_str(
+                            name,
+                            budget.clone(),
+                            1024 * 1024,
+                        )
+                    })
+                    .transpose()?;
             }
         }
         Ok(())
     }
 
     fn chat_chunk(&mut self, data: &Value, budget: &super::payload_budget::PayloadBudget) {
-        let Some(id) = data.get("id").and_then(Value::as_str).filter(|id| valid_external_id(id)) else {
+        let Some(id) = data
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| valid_external_id(id))
+        else {
             self.invalid = true;
             return;
         };
@@ -334,15 +423,21 @@ impl SseCompletion {
             self.invalid = true;
             return;
         };
-        if self.selected_choice.is_some_and(|selected| selected != index) {
+        if self
+            .selected_choice
+            .is_some_and(|selected| selected != index)
+        {
             self.invalid = true;
         }
         let Some(delta) = choice.get("delta").and_then(Value::as_object) else {
             self.invalid = true;
             return;
         };
-        self.invalid |= delta.get("content").is_some_and(|v| !v.is_null() && !v.is_string())
-            || delta.get("role").is_some_and(|v| v.as_str() != Some("assistant"))
+        self.unsupported_carrier |= !super::completion_json::chat_carriers_supported(delta, true);
+        self.invalid |= self.unsupported_carrier
+            || delta
+                .get("role")
+                .is_some_and(|v| v.as_str() != Some("assistant"))
             || delta.get("tool_calls").is_some_and(|v| !v.is_array());
         self.invalid |= delta.contains_key("function_call");
         if let Some(tools) = delta.get("tool_calls") {
@@ -358,26 +453,65 @@ impl SseCompletion {
         }
         self.selected_choice = Some(index);
         self.started = true;
-        if let Some(reason) = choice.get("finish_reason").filter(|reason| !reason.is_null()) {
+        if let Some(reason) = choice
+            .get("finish_reason")
+            .filter(|reason| !reason.is_null())
+        {
             self.allowed_reason = ChatCompletionReason::new(reason.as_str()).permits_completion();
             let tool_reason = matches!(reason.as_str(), Some("tool_calls" | "function_call"));
-            self.invalid |= !self.allowed_reason || match &self.chat_tools {
-                Some(tools) => tools.finish(tool_reason, budget).is_err(),
-                None => tool_reason,
-            };
+            self.invalid |= !self.allowed_reason
+                || match &self.chat_tools {
+                    Some(tools) => tools.finish(tool_reason, budget).is_err(),
+                    None => tool_reason,
+                };
             self.terminal = true;
         }
     }
 
-    fn anthropic_event(&mut self, event_name: Option<&str>, data: &Value, budget: &super::payload_budget::PayloadBudget) {
+    fn anthropic_event(
+        &mut self,
+        event_name: Option<&str>,
+        data: &Value,
+        budget: &super::payload_budget::PayloadBudget,
+    ) {
         let Some(kind) = data.get("type").and_then(Value::as_str) else {
             self.invalid = true;
             return;
         };
+        // Inspect original carriers before lifecycle checks or converter normalization.
+        let supported = match kind {
+            "message_start" => data
+                .pointer("/message/content")
+                .and_then(Value::as_array)
+                .is_none_or(|blocks| {
+                    blocks
+                        .iter()
+                        .all(super::completion_json::anthropic_block_carrier_supported)
+                }),
+            "content_block_start" => data
+                .get("content_block")
+                .is_none_or(super::completion_json::anthropic_block_carrier_supported),
+            "content_block_delta" => data
+                .get("delta")
+                .is_none_or(super::completion_json::anthropic_delta_carrier_supported),
+            "message_delta" => data.get("delta").is_none_or(|delta| {
+                super::completion_json::anthropic_carrier_keys_supported(
+                    delta,
+                    &["stop_reason", "stop_sequence"],
+                )
+            }),
+            _ => true,
+        };
+        if !supported {
+            self.unsupported_carrier = true;
+            self.invalid = true;
+        }
         if event_name.is_some_and(|name| name != kind) || kind == "error" {
             self.invalid = true;
         }
-        if kind == "ping" { return; }
+        if kind == "ping" {
+            return;
+        }
         if self.terminal {
             self.invalid = true;
             return;
@@ -385,9 +519,15 @@ impl SseCompletion {
         if kind == "message_start" {
             let valid_message = data.get("message").is_some_and(|message| {
                 message.is_object()
-                    && message.get("id").and_then(Value::as_str).is_some_and(valid_external_id)
+                    && message
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(valid_external_id)
                     && message.get("role").and_then(Value::as_str) == Some("assistant")
-                    && message.get("content").and_then(Value::as_array).is_some_and(Vec::is_empty)
+                    && message
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(Vec::is_empty)
             });
             self.invalid |= self.started || !valid_message;
             self.started = true;
@@ -397,12 +537,40 @@ impl SseCompletion {
         match kind {
             "content_block_start" => {
                 let index = data.get("index").and_then(Value::as_u64);
-                self.invalid |= self.allowed_reason || self.open_block.is_some() || index != Some(self.next_block) || self.next_block >= 4096;
-                self.block_kind = match data.pointer("/content_block/type").and_then(Value::as_str) {
-                    Some("text") if data.pointer("/content_block/text").is_some_and(Value::is_string) => 1,
-                    Some("thinking") if data.pointer("/content_block/thinking").is_some_and(Value::is_string) => 2,
-                    Some("tool_use") if data.pointer("/content_block/input").is_some_and(Value::is_object) => 3,
-                    Some("redacted_thinking") if data.pointer("/content_block/data").is_some_and(Value::is_string) => 4,
+                self.invalid |= self.allowed_reason
+                    || self.open_block.is_some()
+                    || index != Some(self.next_block)
+                    || self.next_block >= 4096;
+                self.block_kind = match data.pointer("/content_block/type").and_then(Value::as_str)
+                {
+                    Some("text")
+                        if data
+                            .pointer("/content_block/text")
+                            .is_some_and(Value::is_string) =>
+                    {
+                        1
+                    }
+                    Some("thinking")
+                        if data
+                            .pointer("/content_block/thinking")
+                            .is_some_and(Value::is_string) =>
+                    {
+                        2
+                    }
+                    Some("tool_use")
+                        if data
+                            .pointer("/content_block/input")
+                            .is_some_and(Value::is_object) =>
+                    {
+                        3
+                    }
+                    Some("redacted_thinking")
+                        if data
+                            .pointer("/content_block/data")
+                            .is_some_and(Value::is_string) =>
+                    {
+                        4
+                    }
                     _ => 0,
                 };
                 self.invalid |= self.block_kind == 0;
@@ -414,40 +582,62 @@ impl SseCompletion {
                         }
                     }
                     if let Some(tools) = &mut self.anthropic_tools {
-                        self.invalid |= data.get("content_block").is_none_or(|block| tools.start(block, budget).is_err());
+                        self.invalid |= data
+                            .get("content_block")
+                            .is_none_or(|block| tools.start(block, budget).is_err());
                     }
                 }
                 self.open_block = index;
             }
             "content_block_delta" => {
-                self.invalid |= self.allowed_reason || self.open_block.is_none() || data.get("index").and_then(Value::as_u64) != self.open_block;
+                self.invalid |= self.allowed_reason
+                    || self.open_block.is_none()
+                    || data.get("index").and_then(Value::as_u64) != self.open_block;
                 let delta_kind = data.pointer("/delta/type").and_then(Value::as_str);
                 self.invalid |= !match (self.block_kind, delta_kind) {
-                    (1, Some("text_delta")) => data.pointer("/delta/text").is_some_and(Value::is_string),
-                    (2, Some("thinking_delta")) => data.pointer("/delta/thinking").is_some_and(Value::is_string),
-                    (2, Some("signature_delta")) => data.pointer("/delta/signature").is_some_and(Value::is_string),
-                    (3, Some("input_json_delta")) => self.anthropic_tools.as_mut().is_some_and(|tools| tools.delta(data).is_ok()),
+                    (1, Some("text_delta")) => {
+                        data.pointer("/delta/text").is_some_and(Value::is_string)
+                    }
+                    (2, Some("thinking_delta")) => data
+                        .pointer("/delta/thinking")
+                        .is_some_and(Value::is_string),
+                    (2, Some("signature_delta")) => data
+                        .pointer("/delta/signature")
+                        .is_some_and(Value::is_string),
+                    (3, Some("input_json_delta")) => self
+                        .anthropic_tools
+                        .as_mut()
+                        .is_some_and(|tools| tools.delta(data).is_ok()),
                     _ => false,
                 };
             }
             "content_block_stop" => {
                 if self.block_kind == 3 {
-                    self.invalid |= self.anthropic_tools.as_mut().is_none_or(|tools| tools.close(budget).is_err());
+                    self.invalid |= self
+                        .anthropic_tools
+                        .as_mut()
+                        .is_none_or(|tools| tools.close(budget).is_err());
                 }
-                self.invalid |= self.open_block.is_none() || data.get("index").and_then(Value::as_u64) != self.open_block;
+                self.invalid |= self.open_block.is_none()
+                    || data.get("index").and_then(Value::as_u64) != self.open_block;
                 self.open_block = None;
                 self.next_block = self.next_block.saturating_add(1);
             }
             "message_delta" => {
                 self.invalid |= self.open_block.is_some();
-                if let Some(reason) = data.pointer("/delta/stop_reason").filter(|reason| !reason.is_null()) {
+                if let Some(reason) = data
+                    .pointer("/delta/stop_reason")
+                    .filter(|reason| !reason.is_null())
+                {
                     self.invalid |= self.allowed_reason;
-                    self.allowed_reason = AnthropicCompletionReason::new(reason.as_str()).permits_completion();
+                    self.allowed_reason =
+                        AnthropicCompletionReason::new(reason.as_str()).permits_completion();
                     let tool_reason = reason.as_str() == Some("tool_use");
-                    self.invalid |= !self.allowed_reason || match &self.anthropic_tools {
-                        Some(tools) => !tools.finish(tool_reason),
-                        None => tool_reason,
-                    };
+                    self.invalid |= !self.allowed_reason
+                        || match &self.anthropic_tools {
+                            Some(tools) => !tools.finish(tool_reason),
+                            None => tool_reason,
+                        };
                 }
             }
             "message_stop" => {
@@ -459,13 +649,15 @@ impl SseCompletion {
     }
 
     pub(crate) fn permits_completion(&self) -> bool {
-        self.started && self.terminal && self.allowed_reason && !self.invalid
-            && self.pending_raw.is_none() && !self.pending_done
+        self.started
+            && self.terminal
+            && self.allowed_reason
+            && !self.invalid
+            && self.pending_raw.is_none()
+            && !self.pending_done
     }
 }
 
 fn valid_external_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 256
-        && !id.chars().any(|c| c.is_whitespace() || c.is_control())
+    !id.is_empty() && id.len() <= 256 && !id.chars().any(|c| c.is_whitespace() || c.is_control())
 }

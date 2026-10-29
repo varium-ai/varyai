@@ -202,25 +202,21 @@ pub fn normalize_deepseek_thinking_disabled_strip_effort(
         return false;
     }
 
+    let Some(body) = body.as_object_mut() else {
+        return false;
+    };
     let mut changed = false;
 
-    // Remove output_config.effort (Anthropic format)
-    if let Some(oc) = body
-        .get_mut("output_config")
-        .and_then(|v| v.as_object_mut())
-    {
+    // Remove output_config.effort while retaining unrelated output settings.
+    if let Some(oc) = body.get_mut("output_config").and_then(Value::as_object_mut) {
         changed |= oc.remove("effort").is_some();
-        // Clean up empty output_config
         if oc.is_empty() {
-            body.as_object_mut().unwrap().remove("output_config");
+            body.remove("output_config");
         }
     }
 
-    // Remove reasoning_effort (OpenAI format, may be present in passthrough)
-    if body.get("reasoning_effort").is_some() {
-        body.as_object_mut().unwrap().remove("reasoning_effort");
-        changed = true;
-    }
+    // Remove the OpenAI spelling when present in a passthrough request.
+    changed |= body.remove("reasoning_effort").is_some();
 
     changed
 }
@@ -2515,6 +2511,31 @@ mod tests {
                 "ANTHROPIC_API_KEY": "test-key"
             }
         }))
+    }
+
+    #[test]
+    fn test_deepseek_effort_normalization_preserves_non_object_values() {
+        for mut body in [Value::Null, json!([]), json!("synthetic"), json!(42)] {
+            let original = body.clone();
+            assert!(!normalize_deepseek_thinking_disabled_strip_effort(
+                &mut body,
+                &deepseek_official_provider()
+            ));
+            assert_eq!(body, original);
+        }
+        for output_config in [Value::Null, json!([]), json!("synthetic"), json!(42)] {
+            let mut body = json!({
+                "thinking": {"type": "disabled"},
+                "output_config": output_config,
+                "reasoning_effort": "high"
+            });
+            assert!(normalize_deepseek_thinking_disabled_strip_effort(
+                &mut body,
+                &deepseek_official_provider()
+            ));
+            assert_eq!(body["output_config"], output_config);
+            assert!(body.get("reasoning_effort").is_none());
+        }
     }
 
     #[test]

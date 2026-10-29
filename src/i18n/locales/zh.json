@@ -54,6 +54,13 @@
     "categoryCustom": "自定义规则",
     "ruleActionBlock": "拦截",
     "ruleActionAlert": "提醒",
+    "ruleActionRedactRestore": "隐藏并本地还原",
+    "dialogActionRedactRestore": "隐藏并本地还原（仅 Codex HTTP）",
+    "resultRedactRestore": "已替换为本地还原引用",
+    "redactRestoreScope": "逐规则手动启用：仅支持 Codex HTTP Responses 和 /responses/compact 的 JSON、SSE。已检查但不支持的路由命中此动作时将拒绝请求，不会静默改为普通脱敏。映射仅保存在本机，重启后丢失。",
+    "redactRestoreRisk": "模型只能看到引用，无法计算、截取原文或满足固定格式约束。还原后的 Shell、SQL、补丁或内嵌 JSON 仍可能无效或不安全；请勿自动执行输出，保留工具审批和沙箱。此功能不会向上游工具提供原文，也不保证任务正确或零泄漏。",
+    "notifyRedactRestoreTitle": "敏感信息已替换为本地引用",
+    "notifyRedactRestoreBody": "{{app}} 请求命中“{{rule}}”，发送前已替换为本地引用；这不代表响应已成功还原。",
     "ruleActionRedact": "自动隐藏后发送",
     "ruleActionAllow": "不处理",
     "builtinRules": {

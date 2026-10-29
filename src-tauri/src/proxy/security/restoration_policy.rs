@@ -52,8 +52,10 @@ impl RestorationPolicy {
                     .copied()
                     .unwrap_or(rule.default_action);
                 let effective = if rule.id == "catalog:generic-sk-key-notice"
-                    && matches!(configured, AuditAction::Block | AuditAction::Redact)
-                {
+                    && matches!(
+                        configured,
+                        AuditAction::Block | AuditAction::Redact | AuditAction::RedactRestore
+                    ) {
                     rule.default_action
                 } else {
                     configured

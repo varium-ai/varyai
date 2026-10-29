@@ -113,6 +113,58 @@ impl ModelMapping {
     }
 }
 
+/// Resolve the legacy mapping without copying configuration or model strings.
+/// Unicode lowercase expansion is streamed; ASCII keywords need no contextual
+/// non-ASCII casing state and must not allocate a lowercase scratch string.
+pub(crate) fn borrowed_mapped_model<'a>(original: &'a str, provider: &'a Provider) -> &'a str {
+    fn contains_lowercase(text: &str, keyword: &str) -> bool {
+        let mut lower = text.chars().flat_map(char::to_lowercase);
+        while let Some(first) = lower.next() {
+            if first == char::from(keyword.as_bytes()[0])
+                && lower
+                    .clone()
+                    .zip(keyword.bytes().skip(1))
+                    .take_while(|(a, b)| *a == char::from(*b))
+                    .count()
+                    == keyword.len() - 1
+            {
+                return true;
+            }
+        }
+        false
+    }
+    let env = provider.settings_config.get("env");
+    let configured = |key: &str| {
+        env.and_then(|env| env.get(key))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+    };
+    if contains_lowercase(original, "fable") {
+        if let Some(model) = configured("ANTHROPIC_DEFAULT_FABLE_MODEL")
+            .or_else(|| configured("ANTHROPIC_DEFAULT_OPUS_MODEL"))
+        {
+            return model;
+        }
+    }
+    for (keyword, key) in [
+        ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
+        ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
+        ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
+    ] {
+        if contains_lowercase(original, keyword) {
+            if let Some(model) = configured(key) {
+                return model;
+            }
+        }
+    }
+    if configured("CLAUDE_CODE_SUBAGENT_MODEL").is_some_and(|model| {
+        strip_one_m_suffix_for_upstream(original) == strip_one_m_suffix_for_upstream(model)
+    }) {
+        return original;
+    }
+    configured("ANTHROPIC_MODEL").unwrap_or(original)
+}
+
 /// 对请求体应用模型映射
 ///
 /// 返回 (映射后的请求体, 原始模型名, 映射后模型名)
@@ -424,5 +476,55 @@ mod tests {
         let body = json!({"model": "deepseek-v4-pro"});
         let result = strip_one_m_suffix_for_upstream_from_body(body);
         assert_eq!(result["model"], "deepseek-v4-pro");
+    }
+    #[test]
+    fn borrowed_mapping_matches_legacy_and_borrows_the_selected_allocation() {
+        let originals = [
+            "claude-FABLE-haiku-opus-sonnet[1M]",
+            "HAIKU",
+            "SONNET",
+            "OPUS",
+            "FABLE",
+            "fable-haiku",
+            "İSONNET",
+            "ΣSONNETΣ",
+            "ſonnet",
+            "ＳONNET",
+            "soNNeTİ",
+            "gpt-subagent [1m]  ",
+            "unknown",
+            "",
+            "sonne",
+            "fabl",
+            "haik",
+            "opu",
+        ];
+        let configurations = [
+            json!({}),
+            create_provider_with_mapping().settings_config,
+            json!({"env":{"ANTHROPIC_MODEL":"default","ANTHROPIC_DEFAULT_OPUS_MODEL":"opus"}}),
+            json!({"env":{"ANTHROPIC_MODEL":"default","CLAUDE_CODE_SUBAGENT_MODEL":"gpt-subagent"}}),
+            json!({"env":{"ANTHROPIC_MODEL":"","ANTHROPIC_DEFAULT_HAIKU_MODEL":17,"ANTHROPIC_DEFAULT_FABLE_MODEL":""}}),
+            json!({"env":{"ANTHROPIC_MODEL":"default","ANTHROPIC_DEFAULT_HAIKU_MODEL":"haiku"}}),
+        ];
+        for config in configurations {
+            let mut provider = create_provider_without_mapping();
+            provider.settings_config = config;
+            let legacy = ModelMapping::from_provider(&provider);
+            for original in originals {
+                let resolved = borrowed_mapped_model(original, &provider);
+                assert_eq!(resolved, legacy.map_model(original));
+                assert!(
+                    std::ptr::eq(resolved, original)
+                        || provider.settings_config["env"]
+                            .as_object()
+                            .is_some_and(|env| env
+                                .values()
+                                .filter_map(Value::as_str)
+                                .any(|value| std::ptr::eq(value, resolved))),
+                    "resolver must borrow, not allocate model/configuration strings"
+                );
+            }
+        }
     }
 }

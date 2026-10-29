@@ -77,6 +77,20 @@ function event() {
 }
 
 describe("SecuritySystemNotifier", () => {
+  it("notifies tokenization without claiming response restoration", async () => {
+    batchMock
+      .mockResolvedValueOnce([record(1, { actionTaken: "redact_restore" })])
+      .mockResolvedValue([]);
+    setup();
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1));
+    expect(sendMock.mock.calls[0][0].title).toBe(
+      "Sensitive Information Tokenized",
+    );
+    expect(sendMock.mock.calls[0][0].body).toContain(
+      "response restoration is not confirmed",
+    );
+  });
+
   beforeEach(() => {
     vi.spyOn(Date, "now").mockReturnValue(123456);
     listenMock.mockReset();

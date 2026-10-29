@@ -77,10 +77,16 @@ pub enum ProxyError {
     #[allow(dead_code)]
     #[error("内部错误: {0}")]
     Internal(String),
+
+    #[error("DLP forwarding error: {}", .0.code())]
+    DlpForward(super::security::http_restoration::DlpForwardError),
 }
 
 impl IntoResponse for ProxyError {
     fn into_response(self) -> Response {
+        if let ProxyError::DlpForward(err) = self {
+            return err.into_codex_response();
+        }
         let (status, body) = match &self {
             ProxyError::UpstreamError {
                 status: upstream_status,
@@ -162,7 +168,7 @@ impl IntoResponse for ProxyError {
                     ProxyError::ResponseBodyTooLarge(_) => {
                         (StatusCode::BAD_GATEWAY, self.to_string())
                     }
-                    ProxyError::UpstreamError { .. } => unreachable!(),
+                    ProxyError::UpstreamError { .. } | ProxyError::DlpForward(_) => unreachable!(),
                 };
 
                 let error_body = json!({

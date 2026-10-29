@@ -28,6 +28,13 @@ const copyByAction: Record<
     defaultTitle: "Sensitive Information Hidden",
     defaultBody: "{{app}} request detected “{{rule}}”. Hidden before sending.",
   },
+  redact_restore: {
+    titleKey: "security.notifyRedactRestoreTitle",
+    bodyKey: "security.notifyRedactRestoreBody",
+    defaultTitle: "Sensitive Information Tokenized",
+    defaultBody:
+      "{{app}} request detected “{{rule}}”. Replaced with local references before sending; response restoration is not confirmed.",
+  },
   audit: {
     titleKey: "security.notifyAuditTitle",
     bodyKey: "security.notifyAuditBody",

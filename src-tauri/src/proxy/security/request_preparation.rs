@@ -21,6 +21,202 @@ use super::{
 const MAX_ITEMS: usize = 4096;
 const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
 
+/// Classify immutable client input before any tokenization or cache contribution.
+/// This is inspection provenance, never completed-context or execution authority.
+pub(super) fn is_fresh_readable_history(
+    body: &Value,
+    budget: &PayloadBudget,
+) -> Result<bool, TokenError> {
+    use super::completed_context::valid_external_id;
+    fn prior_dependency(value: &Value, depth: usize) -> Result<bool, TokenError> {
+        if depth > 128 {
+            return Err(TokenError::CapacityExceeded);
+        }
+        match value {
+            Value::String(text) => {
+                let mut found = false;
+                visit_token_references(text, |_| {
+                    found = true;
+                    Ok(())
+                })?;
+                Ok(found)
+            }
+            Value::Array(items) => {
+                for item in items {
+                    if prior_dependency(item, depth + 1)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            Value::Object(fields) => {
+                for (key, value) in fields {
+                    // Identity references in keys are dependencies, not writable text.
+                    let mut key_reference = false;
+                    visit_token_references(key, |_| {
+                        key_reference = true;
+                        Ok(())
+                    })?;
+                    if key_reference {
+                        return Ok(true);
+                    }
+                    if matches!(key.as_str(), "encrypted_content" | "encrypted_reasoning")
+                        && !value.is_null()
+                    {
+                        return Ok(true);
+                    }
+                    if prior_dependency(value, depth + 1)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            _ => Ok(false),
+        }
+    }
+    fn readable_parts(
+        value: &Value,
+        kinds: &[&str],
+        allow_refusal: bool,
+    ) -> Result<(), TokenError> {
+        let parts = value.as_array().ok_or(TokenError::ContextUnavailable)?;
+        if parts.len() > MAX_ITEMS {
+            return Err(TokenError::CapacityExceeded);
+        }
+        for part in parts {
+            let kind = part
+                .get("type")
+                .and_then(Value::as_str)
+                .ok_or(TokenError::ContextUnavailable)?;
+            let field = if kinds.contains(&kind) {
+                "text"
+            } else if allow_refusal && kind == "refusal" {
+                "refusal"
+            } else {
+                return Err(TokenError::ContextUnavailable);
+            };
+            if !part.get(field).is_some_and(Value::is_string) {
+                return Err(TokenError::ContextUnavailable);
+            }
+        }
+        Ok(())
+    }
+    fn readable_text(value: &Value) -> Result<(), TokenError> {
+        if value.is_string() {
+            return Ok(());
+        }
+        readable_parts(value, &["text", "input_text", "output_text"], true)
+    }
+    if body
+        .get("previous_response_id")
+        .is_some_and(|v| !v.is_null())
+        || prior_dependency(body, 0)?
+    {
+        return Ok(false);
+    }
+    let Some(items) = body.get("input").and_then(Value::as_array) else {
+        return Ok(false);
+    };
+    if items.len() > MAX_ITEMS {
+        return Err(TokenError::CapacityExceeded);
+    }
+    let mut calls = PayloadVec::new(budget.clone())?;
+    let mut outputs = PayloadVec::new(budget.clone())?;
+    let has_calls = items.iter().any(|item| {
+        matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call" | "custom_tool_call")
+        )
+    });
+    if !has_calls {
+        return Ok(false);
+    }
+    for item in items {
+        let kind = match item.get("type") {
+            None => None,
+            Some(Value::String(kind)) => Some(kind.as_str()),
+            Some(_) => return Err(TokenError::ContextUnavailable),
+        };
+        match kind {
+            Some("function_call" | "custom_tool_call") => {
+                let id = item
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .filter(|s| valid_external_id(s))
+                    .ok_or(TokenError::ContextUnavailable)?;
+                if calls.as_slice().iter().any(|(known, _)| *known == id) {
+                    return Err(TokenError::ContextUnavailable);
+                }
+                if !item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(valid_external_id)
+                {
+                    return Err(TokenError::ContextUnavailable);
+                }
+                let payload = item
+                    .get(if kind == Some("function_call") {
+                        "arguments"
+                    } else {
+                        "input"
+                    })
+                    .and_then(Value::as_str)
+                    .ok_or(TokenError::ContextUnavailable)?;
+                if kind == Some("function_call") {
+                    let parsed =
+                        PayloadJson::try_from_str(payload, budget.clone(), budget.limit())?;
+                    if prior_dependency(parsed.as_value(), 0)? {
+                        return Ok(false);
+                    }
+                }
+                if item
+                    .get("reasoning_content")
+                    .is_some_and(|v| !v.is_null() && !v.is_string())
+                {
+                    return Err(TokenError::ContextUnavailable);
+                }
+                calls.push((id, kind == Some("custom_tool_call")))?;
+            }
+            Some("function_call_output" | "custom_tool_call_output") => {
+                let id = item
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .ok_or(TokenError::ContextUnavailable)?;
+                let custom = kind == Some("custom_tool_call_output");
+                if !calls.as_slice().contains(&(id, custom)) || outputs.as_slice().contains(&id) {
+                    return Err(TokenError::ContextUnavailable);
+                }
+                readable_text(item.get("output").ok_or(TokenError::ContextUnavailable)?)?;
+                outputs.push(id)?;
+            }
+            Some("reasoning") => {
+                if item.get("summary").is_none() && item.get("content").is_none() {
+                    return Err(TokenError::ContextUnavailable);
+                }
+                if let Some(summary) = item.get("summary") {
+                    readable_parts(summary, &["summary_text", "reasoning_text"], false)?;
+                }
+                if let Some(content) = item.get("content") {
+                    readable_parts(content, &["reasoning_text"], false)?;
+                }
+            }
+            Some("message") | None
+                if matches!(
+                    item.get("role").and_then(Value::as_str),
+                    Some("user" | "assistant" | "system" | "developer")
+                ) =>
+            {
+                readable_text(item.get("content").ok_or(TokenError::ContextUnavailable)?)?;
+            }
+            _ => return Err(TokenError::ContextUnavailable),
+        }
+    }
+    if calls.as_slice().len() != outputs.as_slice().len() {
+        return Err(TokenError::ContextUnavailable);
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 std::thread_local! {
     // Observe copy attempts without recording text or changing allocation behavior.
@@ -280,7 +476,10 @@ impl Write for PayloadWriter {
     }
 }
 
-fn encode_candidate(body: &Value, budget: PayloadBudget) -> Result<PayloadBuffer, TokenError> {
+pub(super) fn encode_candidate(
+    body: &Value,
+    budget: PayloadBudget,
+) -> Result<PayloadBuffer, TokenError> {
     let mut size = SizeWriter(0);
     serde_json::to_writer(&mut size, body).map_err(|_| TokenError::CapacityExceeded)?;
     let mut writer = PayloadWriter {

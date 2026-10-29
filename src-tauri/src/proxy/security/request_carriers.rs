@@ -62,6 +62,7 @@ pub(super) struct CodexRequestCarriers {
     text_bytes: usize,
     argument_bytes: usize,
     budget: Budget,
+    purpose: CollectionPurpose,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -160,6 +161,12 @@ enum Mode {
     Arguments,
 }
 
+#[derive(Clone, Copy)]
+enum CollectionPurpose {
+    Forwarding,
+    RefusalAudit,
+}
+
 impl CodexRequestCarriers {
     pub(super) fn from_body(body: &Value) -> Result<Self, TokenError> {
         Self::from_body_with_budget(body, PayloadBudget::default())
@@ -168,6 +175,24 @@ impl CodexRequestCarriers {
     pub(super) fn from_body_with_budget(
         body: &Value,
         shared_budget: PayloadBudget,
+    ) -> Result<Self, TokenError> {
+        Self::collect_body(body, shared_budget, CollectionPurpose::Forwarding)
+    }
+
+    /// Best-effort observations for an already refused request, never authorization.
+    /// Malformed encoded arguments are omitted; other carrier semantics and limits
+    /// remain unchanged. Audit-only plans cannot produce forwarding candidates.
+    pub(super) fn from_body_for_refusal_audit(
+        body: &Value,
+        shared_budget: PayloadBudget,
+    ) -> Result<Self, TokenError> {
+        Self::collect_body(body, shared_budget, CollectionPurpose::RefusalAudit)
+    }
+
+    fn collect_body(
+        body: &Value,
+        shared_budget: PayloadBudget,
+        purpose: CollectionPurpose,
     ) -> Result<Self, TokenError> {
         if !body.is_object() {
             return Err(TokenError::RedactionFailed);
@@ -183,6 +208,7 @@ impl CodexRequestCarriers {
             text_bytes: 0,
             argument_bytes: 0,
             budget,
+            purpose,
         };
         for root in ["instructions", "input", "prompt"] {
             if let Some(value) = body.get(root) {
@@ -219,6 +245,9 @@ impl CodexRequestCarriers {
         body: &Value,
         mut rewriter: impl FnMut(CarrierLeaf<'_>) -> Result<Option<&'a str>, TokenError>,
     ) -> Result<PayloadJson, TokenError> {
+        if matches!(self.purpose, CollectionPurpose::RefusalAudit) {
+            return Err(TokenError::RedactionFailed);
+        }
         Budget::default().value(body, 0)?;
         if !same_snapshot(body, self.original.as_value()) {
             return Err(TokenError::RedactionFailed);
@@ -555,11 +584,21 @@ impl CodexRequestCarriers {
         add_limited(&mut self.argument_bytes, encoded.len(), MAX_ARGUMENT_BYTES)?;
         // Bound bytes, nesting and allocations before invoking the JSON parser.
         preflight_json(encoded, &mut self.budget)?;
-        let decoded = PayloadJson::try_from_str(
+        let decoded = match PayloadJson::try_from_str(
             encoded,
             self.shared_budget.clone(),
             self.shared_budget.limit(),
-        )?;
+        ) {
+            Ok(decoded) => decoded,
+            Err(TokenError::RedactionFailed)
+                if matches!(self.purpose, CollectionPurpose::RefusalAudit) =>
+            {
+                // No document or leaf has been added yet. Keep the original and
+                // preflight charges, and let the caller pop the unchanged path.
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         let mut validation = Budget::default();
         validation.value(decoded.as_value(), 0)?;
         let index = self.documents.len();
@@ -877,5 +916,215 @@ pub(super) fn same_snapshot(left: &Value, right: &Value) -> bool {
             }
         }
         _ => left == right,
+    }
+}
+
+#[cfg(test)]
+mod refusal_audit_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn leaf_values(
+        carriers: &CodexRequestCarriers,
+    ) -> Result<Vec<(usize, String, bool, bool)>, TokenError> {
+        let mut values = Vec::new();
+        carriers.visit(|leaf| {
+            values.push((
+                leaf.id,
+                leaf.text.to_owned(),
+                leaf.writable,
+                leaf.is_password_field,
+            ));
+            Ok(())
+        })?;
+        Ok(values)
+    }
+
+    #[test]
+    fn refusal_audit_malformed_arguments_preserve_all_valid_sibling_semantics(
+    ) -> Result<(), TokenError> {
+        for malformed in [
+            r#"{"partial":"discarded","password":"unclosed"#,
+            r#"{"duplicate":"left","duplicate":"right"}"#,
+            r#"["complete",]"#,
+            "not-json",
+        ] {
+            for position in [0, 3, 6] {
+                let budget = PayloadBudget::with_limit(1024 * 1024);
+                let mut body = json!({
+                    "instructions": "synthetic-instruction",
+                    "input": [
+                        {"role":"user", "content":[
+                            {"type":"input_text", "text":"before-message"},
+                            {"type":"input_image", "image_url":"excluded-media", "caption":"excluded-caption"}
+                        ]},
+                        {"type":"function_call", "arguments":{
+                            "password":"structured-password",
+                            "nested":{"password":"nested-password"},
+                            "file_data":"ordinary-argument"
+                        }},
+                        {"type":"function_call", "arguments":r#"{"password":"encoded-password","signature":"ordinary-signature","values":["encoded-value"],"password_context":{"nested":"not-direct-password"}}"#},
+                        {"type":"function_call_output", "output":"function-output", "signature":"excluded-opaque"},
+                        {"type":"reasoning", "summary":[{"type":"summary_text", "text":"visible-summary"}], "encrypted_content":"excluded-ciphertext"},
+                        {"future":"read-only-sibling"}
+                    ],
+                    "prompt": ["synthetic-prompt"]
+                });
+                body["input"]
+                    .as_array_mut()
+                    .ok_or(TokenError::Unavailable)?
+                    .insert(position, json!({"type":"function_call", "arguments":null}));
+                let expected = CodexRequestCarriers::from_body_with_budget(&body, budget.clone())?;
+                let expected_values = leaf_values(&expected)?;
+                let expected_documents = expected.documents.len();
+                drop(expected);
+                assert_eq!(budget.used(), 0);
+
+                body["input"][position]["arguments"] = Value::String(malformed.to_owned());
+                assert_eq!(
+                    CodexRequestCarriers::from_body_with_budget(&body, budget.clone()).err(),
+                    Some(TokenError::RedactionFailed)
+                );
+                assert_eq!(budget.used(), 0);
+                let audit =
+                    CodexRequestCarriers::from_body_for_refusal_audit(&body, budget.clone())?;
+                let actual = leaf_values(&audit)?;
+                assert_eq!(actual, expected_values);
+                assert_eq!(audit.documents.len(), expected_documents);
+                assert!(same_snapshot(audit.original.as_value(), &body));
+                for password in ["structured-password", "nested-password", "encoded-password"] {
+                    assert!(actual.iter().any(|(_, text, writable, is_password)| {
+                        text == password && *writable && *is_password
+                    }));
+                }
+                assert!(actual.iter().any(|(_, text, writable, password)| {
+                    text == "not-direct-password" && *writable && !password
+                }));
+                assert!(actual
+                    .iter()
+                    .any(|(_, text, writable, _)| { text == "read-only-sibling" && !writable }));
+                assert!(!actual
+                    .iter()
+                    .any(|(_, text, _, _)| text.starts_with("excluded-")));
+                assert!(budget.used() > 0);
+                drop(audit);
+                assert_eq!(budget.used(), 0);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn refusal_audit_skipped_arguments_keep_original_and_preflight_charges(
+    ) -> Result<(), TokenError> {
+        let malformed = r#"{"partial":"discarded""#;
+        let body = json!({"input":[
+            {"type":"function_call", "arguments":malformed},
+            {"role":"user", "content":"synthetic-sibling"}
+        ]});
+        let budget = PayloadBudget::with_limit(1024 * 1024);
+        let mut original = Budget::default();
+        original.value(&body, 0)?;
+        let audit = CodexRequestCarriers::from_body_for_refusal_audit(&body, budget.clone())?;
+        assert_eq!(audit.argument_bytes, malformed.len());
+        assert!(audit.budget.bytes >= original.bytes + malformed.len());
+        assert!(same_snapshot(audit.original.as_value(), &body));
+        assert!(leaf_values(&audit)?
+            .iter()
+            .any(|(_, text, _, _)| text == "synthetic-sibling"));
+        drop(audit);
+        assert_eq!(budget.used(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn refusal_audit_never_skips_capacity_errors() {
+        for encoded in ["x".repeat(MAX_STRING_BYTES + 1), "[".repeat(MAX_DEPTH + 1)] {
+            let budget = PayloadBudget::with_limit(16 * 1024 * 1024);
+            let body = json!({"input":[
+                {"type":"function_call", "arguments":encoded},
+                {"role":"user", "content":"synthetic-sibling"}
+            ]});
+            assert_eq!(
+                CodexRequestCarriers::from_body_for_refusal_audit(&body, budget.clone()).err(),
+                Some(TokenError::CapacityExceeded)
+            );
+            assert_eq!(budget.used(), 0);
+        }
+        let budget = PayloadBudget::with_limit(0);
+        assert_eq!(
+            CodexRequestCarriers::from_body_for_refusal_audit(
+                &json!({"input":"synthetic"}),
+                budget.clone(),
+            )
+            .err(),
+            Some(TokenError::CapacityExceeded)
+        );
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn refusal_audit_never_skips_parser_unavailable() {
+        use super::super::payload_json::test_support::{self, Action, Phase};
+        for (phase, fail_at) in [
+            (Phase::BeforeParse, 1),
+            (Phase::BeforeParse, 2),
+            (Phase::AfterParse, 1),
+        ] {
+            let budget = PayloadBudget::with_limit(1024 * 1024);
+            let hits = std::rc::Rc::new(std::cell::Cell::new(0));
+            let observed = std::rc::Rc::clone(&hits);
+            let _hook = test_support::install(move |event| {
+                if event.phase == phase {
+                    observed.set(observed.get() + 1);
+                    if observed.get() == fail_at {
+                        return Action::Fail;
+                    }
+                }
+                Action::Continue
+            });
+            let body = json!({"instructions":"synthetic-before", "input":[
+                {"type":"function_call", "arguments":r#"{"partial":"discarded""#},
+                {"type":"function_call", "arguments":r#"{"valid":"synthetic-sibling"}"#}
+            ]});
+            assert_eq!(
+                CodexRequestCarriers::from_body_for_refusal_audit(&body, budget.clone()).err(),
+                Some(TokenError::Unavailable)
+            );
+            assert_eq!(hits.get(), fail_at);
+            assert_eq!(budget.used(), 0);
+        }
+    }
+
+    #[test]
+    fn refusal_audit_carriers_cannot_create_forwarding_candidates() -> Result<(), TokenError> {
+        for body in [
+            json!({"input":"synthetic-valid"}),
+            json!({"input":[
+                {"type":"function_call", "arguments":"not-json"},
+                {"role":"user", "content":"synthetic-sibling"}
+            ]}),
+        ] {
+            let budget = PayloadBudget::with_limit(1024 * 1024);
+            let audit = CodexRequestCarriers::from_body_for_refusal_audit(&body, budget.clone())?;
+            let mut calls = 0;
+            assert_eq!(
+                audit
+                    .rewrite_candidate(&body, |_| {
+                        calls += 1;
+                        Ok(None)
+                    })
+                    .err(),
+                Some(TokenError::RedactionFailed)
+            );
+            assert_eq!(calls, 0);
+            assert_eq!(
+                audit.visit(|_| Err(TokenError::TokenCollision)),
+                Err(TokenError::TokenCollision)
+            );
+            drop(audit);
+            assert_eq!(budget.used(), 0);
+        }
+        Ok(())
     }
 }

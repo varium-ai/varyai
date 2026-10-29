@@ -355,6 +355,44 @@ pub async fn process_response(
     }
 }
 
+/// Isolate legacy decoding/conversion errors while a restoration lease is active.
+pub(super) fn isolate_codex_dlp_response_error(error: ProxyError, leased: bool) -> ProxyError {
+    if leased {
+        ProxyError::DlpForward(super::security::http_restoration::DlpForwardError::RestoreFailed)
+    } else {
+        error
+    }
+}
+
+/// Restore only at the final Codex client exit, after tokenized observations.
+pub(crate) async fn process_codex_response(
+    response: ProxyResponse,
+    ctx: &RequestContext,
+    state: &ProxyState,
+    parser_config: &UsageParserConfig,
+    connection_guard: Option<ActiveConnectionGuard>,
+    dlp_attempt: Option<super::security::http_restoration::DlpPreparedAttempt>,
+) -> Result<Response, ProxyError> {
+    let leased = dlp_attempt
+        .as_ref()
+        .is_some_and(|attempt| attempt.has_active_tokens());
+    let response = process_response(response, ctx, state, parser_config, connection_guard)
+        .await
+        .map_err(|error| isolate_codex_dlp_response_error(error, leased))?;
+    Ok(match dlp_attempt {
+        Some(attempt) => {
+            attempt
+                .restore_client_http_response(
+                    response,
+                    super::security::response_restoration::ArgumentNormalizationMode::Exact,
+                    None,
+                )
+                .await
+        }
+        None => response,
+    })
+}
+
 // ============================================================================
 // SSE 使用量收集器
 // ============================================================================
@@ -897,6 +935,27 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
+    #[test]
+    fn codex_response_error_isolation_preserves_unleased_behavior() {
+        let ordinary = isolate_codex_dlp_response_error(
+            ProxyError::TransformError("synthetic conversion failure".into()),
+            false,
+        );
+        assert!(
+            matches!(ordinary, ProxyError::TransformError(message) if message == "synthetic conversion failure")
+        );
+        let leased = isolate_codex_dlp_response_error(
+            ProxyError::TransformError("synthetic conversion failure".into()),
+            true,
+        );
+        assert!(matches!(
+            leased,
+            ProxyError::DlpForward(
+                super::super::security::http_restoration::DlpForwardError::RestoreFailed
+            )
+        ));
+    }
+
     #[tokio::test]
     #[serial_test::serial]
     async fn no_response_reservation_until_first_client_chunk() {
@@ -1110,6 +1169,8 @@ mod tests {
 
     fn build_state(db: Arc<Database>) -> ProxyState {
         ProxyState {
+            restoration_gateway:
+                super::super::security::http_restoration::RestorationGateway::new_default(),
             pi_runtime: Arc::default(),
             db: db.clone(),
             config: Arc::new(RwLock::new(ProxyConfig::default())),

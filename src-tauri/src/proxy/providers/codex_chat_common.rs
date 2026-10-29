@@ -189,13 +189,13 @@ pub(crate) fn response_function_call_item_with_namespace(
     item
 }
 
-pub(crate) fn response_item_call_id(item: &Value) -> Option<String> {
+/// Borrow the same trimmed ID without duplicating request/cache metadata.
+pub(crate) fn response_item_call_id(item: &Value) -> Option<&str> {
     item.get("call_id")
         .or_else(|| item.get("id"))
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
 }
 
 pub(crate) fn is_empty_value(value: &Value) -> bool {

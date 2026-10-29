@@ -8,12 +8,14 @@
 mod aggregation;
 pub mod audit_logger;
 pub mod builtin_rules;
+pub(crate) mod chat_enrichment;
+mod completed_context;
 pub(crate) mod completion_evidence;
 pub(crate) mod completion_json;
-mod completed_context;
 mod completion_tools;
 pub mod engine;
 pub mod extractor;
+pub(crate) mod http_restoration;
 mod identity;
 mod payload_budget;
 mod payload_buffer;
@@ -27,10 +29,15 @@ mod request_plan;
 mod request_preparation;
 mod request_transaction;
 pub mod response;
+pub(crate) mod response_restoration;
+mod restoration_audit;
 mod restoration_policy;
 pub mod runtime;
 mod token_store_owners;
 mod tokenization;
+mod upstream_guard;
+#[allow(unused_imports)]
+pub(crate) use upstream_guard::UpstreamPayloadOwner;
 pub mod types;
 
 #[allow(unused_imports)]
@@ -49,6 +56,8 @@ pub use types::*;
 
 #[cfg(test)]
 mod aggregation_tests;
+#[cfg(test)]
+mod restoration_audit_tests;
 #[cfg(test)]
 mod reversible_buffer_tests;
 #[cfg(test)]
@@ -71,6 +80,8 @@ mod reversible_plan_tests;
 mod reversible_policy_tests;
 #[cfg(test)]
 mod reversible_preparation_tests;
+#[cfg(test)]
+mod reversible_response_tests;
 #[cfg(test)]
 mod reversible_runtime_tests;
 #[cfg(test)]
@@ -207,7 +218,7 @@ pub fn inspect_and_intercept(
         || inspection
             .findings
             .iter()
-            .any(|f| f.action == AuditAction::Redact);
+            .any(|f| matches!(f.action, AuditAction::Redact | AuditAction::RedactRestore));
 
     // Enqueue audit events asynchronously.
     for finding in &inspection.findings {
@@ -303,3 +314,6 @@ pub(crate) fn audit_session_id(
         None
     }
 }
+
+#[cfg(test)]
+mod reversible_integration_tests;

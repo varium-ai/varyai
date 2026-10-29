@@ -372,9 +372,10 @@ fn strip_media_from_tool_value_at_depth(
                 return 1;
             }
 
-            value
-                .as_object_mut()
-                .expect("object match arm must remain an object")
+            let Value::Object(object) = value else {
+                return 0;
+            };
+            object
                 .get_mut("content")
                 .map(|content| {
                     strip_media_from_tool_value_at_depth(
@@ -623,6 +624,23 @@ fn looks_like_base64_payload(value: &str) -> bool {
 mod tests {
     use super::*;
     use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    #[test]
+    fn tool_media_production_has_no_panic_extractors() {
+        let source = include_str!("tool_media.rs");
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests {")
+            .map(|(production, _)| production)
+            .expect("test module boundary is required");
+        assert!(
+            !production.contains(".unwrap("),
+            "production unwrap is forbidden"
+        );
+        assert!(
+            !production.contains(".expect("),
+            "production expect is forbidden"
+        );
+    }
 
     fn large_image_data_url() -> String {
         format!(

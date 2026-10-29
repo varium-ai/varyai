@@ -4,6 +4,11 @@ import { getSecurityNotificationCopy } from "./securityNotificationCopy";
 describe("security notification copy", () => {
   it.each([
     [
+      "redact_restore",
+      "Sensitive Information Tokenized",
+      "Claude request detected “GitHub Access Token (HIGH)”. Replaced with local references before sending; response restoration is not confirmed.",
+    ],
+    [
       "block",
       "Request Blocked",
       "Claude request detected “GitHub Access Token (HIGH)”. Request not sent.",

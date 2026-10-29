@@ -180,7 +180,7 @@ impl From<rusqlite::Error> for SecurityEventError {
 }
 
 const MAX_JS_INTEGER: i64 = 9_007_199_254_740_991;
-const DLP_RESULT: &str = "CASE action_taken WHEN 'redact' THEN 'redacted' WHEN 'block' THEN 'blocked' WHEN 'audit' THEN 'warning' WHEN 'allow' THEN 'allowed' ELSE 'unknown' END";
+const DLP_RESULT: &str = "CASE action_taken WHEN 'redact' THEN 'redacted' WHEN 'redact_restore' THEN 'redacted' WHEN 'block' THEN 'blocked' WHEN 'audit' THEN 'warning' WHEN 'allow' THEN 'allowed' ELSE 'unknown' END";
 const TOOL_RESULT: &str = "CASE verdict WHEN 'risky' THEN 'warning' WHEN 'unchecked' THEN 'unchecked' WHEN 'uncertain' THEN 'uncertain' WHEN 'low_risk' THEN 'low_risk' ELSE 'unknown' END";
 const TOOL_LEVEL: &str = "CASE WHEN verdict = 'risky' THEN CASE severity WHEN 'high' THEN 'HIGH' WHEN 'medium' THEN 'MEDIUM' END END";
 const DLP_COLUMNS: &str = "id, timestamp, request_id, app_type, provider_id, rule_id, rule_name, rule_category, risk_level, action_taken, matched_snippet_masked, location, datetime(created_at, 'localtime'), trigger_count, COALESCE(last_seen_at, timestamp), session_id";
@@ -342,10 +342,10 @@ impl Queries {
         // Aggregate each table before UNION: never hydrate events or summaries to count.
         format!("SELECT SUM(total),SUM(dlp_count),SUM(tool_count),SUM(redacted),SUM(warnings),SUM(blocked),SUM(other) FROM (
             SELECT COUNT(*) total,COUNT(*) dlp_count,0 tool_count,
-                COALESCE(SUM(action_taken='redact'),0) redacted,
+                COALESCE(SUM(action_taken IN ('redact','redact_restore')),0) redacted,
                 COALESCE(SUM(action_taken='audit'),0) warnings,
                 COALESCE(SUM(action_taken='block'),0) blocked,
-                COALESCE(SUM(action_taken NOT IN ('redact','audit','block')),0) other
+                COALESCE(SUM(action_taken NOT IN ('redact','redact_restore','audit','block')),0) other
             FROM security_audit_logs WHERE {} UNION ALL
             SELECT COUNT(*),0,COUNT(*),0,COUNT(*),0,0 FROM tool_risk_events WHERE {})", self.dlp.predicate, self.tool.predicate)
     }
@@ -503,7 +503,7 @@ fn read_dlp(row: &Row<'_>) -> rusqlite::Result<AuditLogRecord> {
 }
 fn dlp_projection(record: AuditLogRecord) -> SecurityEvent {
     let result = match record.action_taken.as_str() {
-        "redact" => SecurityEventResult::Redacted,
+        "redact" | "redact_restore" => SecurityEventResult::Redacted,
         "block" => SecurityEventResult::Blocked,
         "audit" => SecurityEventResult::Warning,
         "allow" => SecurityEventResult::Allowed,

@@ -37,6 +37,20 @@ use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::RwLock;
 
+/// Forwarder-issued routing facts, separate from exact actual-send authority.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DlpResponsesOperation {
+    Responses,
+    Compact,
+}
+
+pub(crate) struct DlpOperationDescriptor<'a> {
+    pub(super) base_prefix: &'a str,
+    pub(super) query: &'a str,
+    pub(super) route_mode: &'a str,
+    pub(super) operation: DlpResponsesOperation,
+}
+
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 
 fn codex_bearer_access_token(headers: &http::HeaderMap) -> Option<&str> {
@@ -110,6 +124,7 @@ pub struct ForwardResult {
     /// 活跃连接 RAII guard：随响应一起流转到 response_processor / handle_claude_transform，
     /// 最终被 move 进流式 body future（或非流式响应作用域），覆盖整个响应生命周期。
     pub(crate) connection_guard: Option<ActiveConnectionGuard>,
+    pub(crate) dlp_attempt: Option<super::security::http_restoration::DlpPreparedAttempt>,
 }
 
 pub struct ForwardError {
@@ -188,6 +203,7 @@ pub struct RequestForwarder {
     /// `max_attempts = max_retries + 1`，所以 max_retries=0 表示仅尝试一家、
     /// max_retries=3（默认）表示最多 4 家。loop 同时受 providers.len() 自然限制。
     max_attempts: usize,
+    dlp_request: Option<Box<super::security::http_restoration::DlpHttpRequest>>,
 }
 
 impl RequestForwarder {
@@ -278,7 +294,16 @@ impl RequestForwarder {
                 streaming_first_byte_timeout,
             ),
             max_attempts,
+            dlp_request: None,
         }
+    }
+
+    pub(crate) fn with_dlp_request(
+        mut self,
+        dlp_request: Option<Box<super::security::http_restoration::DlpHttpRequest>>,
+    ) -> Self {
+        self.dlp_request = dlp_request;
+        self
     }
 
     async fn record_success_result(
@@ -499,9 +524,44 @@ impl RequestForwarder {
 
             // PRE-SEND 优化器：每个 provider 独立决定是否优化
             // clone body 以避免 Bedrock 优化字段泄漏到非 Bedrock provider（failover 场景）
+            // Declare the owner before every moved form of the source tree.
+            // Reverse local drop order keeps its charge through send/error/cancel.
+            let _source_payload_owner;
+            let source_body = if let Some(request) = self.dlp_request.as_ref() {
+                let (source, owner) = match request.clone_source_body() {
+                    Ok(source) => source,
+                    Err(error) => {
+                        self.router
+                            .release_permit_neutral(
+                                &provider.id,
+                                app_type_str,
+                                used_half_open_permit,
+                            )
+                            .await;
+                        let error = ProxyError::DlpForward(error);
+                        let mut status = self.status.write().await;
+                        status.failed_requests += 1;
+                        status.last_error = Some(error.to_string());
+                        if status.total_requests > 0 {
+                            status.success_rate = status.success_requests as f32
+                                / status.total_requests as f32
+                                * 100.0;
+                        }
+                        return Err(ForwardError {
+                            error,
+                            provider: None,
+                        });
+                    }
+                };
+                _source_payload_owner = Some(owner);
+                source
+            } else {
+                _source_payload_owner = None;
+                body.clone()
+            };
             let mut provider_body =
                 if self.optimizer_config.enabled && is_bedrock_provider(provider) {
-                    let mut b = body.clone();
+                    let mut b = source_body;
                     if self.optimizer_config.thinking_optimizer {
                         super::thinking_optimizer::optimize(&mut b, &self.optimizer_config);
                     }
@@ -510,7 +570,7 @@ impl RequestForwarder {
                     }
                     b
                 } else {
-                    body.clone()
+                    source_body
                 };
 
             attempted_providers += 1;
@@ -540,7 +600,7 @@ impl RequestForwarder {
                 )
                 .await
             {
-                Ok((response, claude_api_format, outbound_model)) => {
+                Ok((response, claude_api_format, outbound_model, dlp_attempt)) => {
                     // 成功：普通闭合熔断状态异步记录，避免阻塞流式首包返回；
                     // HalfOpen 探测仍同步等待，保证 permit 与熔断状态及时释放。
                     self.record_success_result(&provider.id, app_type_str, used_half_open_permit)
@@ -590,6 +650,7 @@ impl RequestForwarder {
                         claude_api_format,
                         outbound_model,
                         connection_guard: None,
+                        dlp_attempt,
                     });
                 }
                 Err(e) => {
@@ -639,7 +700,7 @@ impl RequestForwarder {
                                 )
                                 .await
                             {
-                                Ok((response, claude_api_format, outbound_model)) => {
+                                Ok((response, claude_api_format, outbound_model, dlp_attempt)) => {
                                     log::info!(
                                         "[{app_type_str}] [Media] Unsupported-image retry succeeded"
                                     );
@@ -693,6 +754,7 @@ impl RequestForwarder {
                                         claude_api_format,
                                         outbound_model,
                                         connection_guard: None,
+                                        dlp_attempt,
                                     });
                                 }
                                 Err(retry_err) => {
@@ -785,7 +847,12 @@ impl RequestForwarder {
                                     )
                                     .await
                                 {
-                                    Ok((response, claude_api_format, outbound_model)) => {
+                                    Ok((
+                                        response,
+                                        claude_api_format,
+                                        outbound_model,
+                                        dlp_attempt,
+                                    )) => {
                                         log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
                                         self.record_success_result(
                                             &provider.id,
@@ -842,6 +909,7 @@ impl RequestForwarder {
                                             claude_api_format,
                                             outbound_model,
                                             connection_guard: None,
+                                            dlp_attempt,
                                         });
                                     }
                                     Err(retry_err) => {
@@ -951,7 +1019,7 @@ impl RequestForwarder {
                                 )
                                 .await
                             {
-                                Ok((response, claude_api_format, outbound_model)) => {
+                                Ok((response, claude_api_format, outbound_model, dlp_attempt)) => {
                                     log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
                                     self.record_success_result(
                                         &provider.id,
@@ -1002,6 +1070,7 @@ impl RequestForwarder {
                                         claude_api_format,
                                         outbound_model,
                                         connection_guard: None,
+                                        dlp_attempt,
                                     });
                                 }
                                 Err(retry_err) => {
@@ -1107,9 +1176,14 @@ impl RequestForwarder {
                                         * 100.0;
                                 }
                             }
+                            let failed_provider = if matches!(&e, ProxyError::DlpForward(_)) {
+                                None
+                            } else {
+                                Some(provider.clone())
+                            };
                             return Err(ForwardError {
                                 error: e,
-                                provider: Some(provider.clone()),
+                                provider: failed_provider,
                             });
                         }
                     }
@@ -1172,7 +1246,15 @@ impl RequestForwarder {
         headers: &axum::http::HeaderMap,
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
-    ) -> Result<(ProxyResponse, Option<String>, Option<String>), ProxyError> {
+    ) -> Result<
+        (
+            ProxyResponse,
+            Option<String>,
+            Option<String>,
+            Option<super::security::http_restoration::DlpPreparedAttempt>,
+        ),
+        ProxyError,
+    > {
         // 使用适配器提取 base_url
         let mut base_url = adapter.extract_base_url(provider)?;
 
@@ -1247,10 +1329,25 @@ impl RequestForwarder {
         // 应用模型映射（独立于格式转换）
         // Claude Desktop proxy 模式必须先把 Desktop 可见的 claude-* route
         // 映射成真实上游模型名，并且未知 route 要直接报错，不能使用默认模型兜底。
-        let mapped_body = if matches!(app_type, AppType::ClaudeDesktop) {
+        // Declare before all moved forms of the independent mapping tree.
+        let _mapping_payload_owner;
+        let guarded_model_mapping =
+            self.dlp_request.is_some() && !matches!(app_type, AppType::ClaudeDesktop);
+        let mapped_body = if guarded_model_mapping {
+            let request = self.dlp_request.as_ref().ok_or(ProxyError::DlpForward(
+                super::security::http_restoration::DlpForwardError::Unavailable,
+            ))?;
+            let (mapped, owner) = request
+                .build_mapped_body(body, provider, !is_copilot && !codex_responses_to_anthropic)
+                .map_err(ProxyError::DlpForward)?;
+            _mapping_payload_owner = Some(owner);
+            mapped
+        } else if matches!(app_type, AppType::ClaudeDesktop) {
+            _mapping_payload_owner = None;
             crate::claude_desktop_config::map_proxy_request_model(body.clone(), provider)
                 .map_err(|e| ProxyError::InvalidRequest(e.to_string()))?
         } else {
+            _mapping_payload_owner = None;
             let (mapped_body, _original_model, _mapped_model) =
                 super::model_mapper::apply_model_mapping(body.clone(), provider);
             mapped_body
@@ -1280,7 +1377,7 @@ impl RequestForwarder {
             // variants pass through unchanged.
             mapped_body =
                 super::model_mapper::strip_one_m_suffix_for_upstream_from_body(mapped_body);
-        } else if !codex_responses_to_anthropic {
+        } else if !codex_responses_to_anthropic && !guarded_model_mapping {
             // Skip on the Codex→Anthropic path: stripping [1m] here would break both the
             // model-catalog match (apply_codex_upstream_model) and the transform's own
             // strip+`context-1m` beta detection. The marker is stripped later, on the
@@ -1527,202 +1624,6 @@ impl RequestForwarder {
 
         // Codex→Anthropic: when the model name carries the [1m] marker, strip the
         // suffix and add the context-1m beta header.
-        let mut codex_anthropic_one_m = false;
-
-        // 转换请求体（如果需要）
-        let mut request_body = if codex_responses_to_chat {
-            let mut mapped_body = mapped_body;
-            let explicit_prompt_cache_key = mapped_body
-                .get("prompt_cache_key")
-                .and_then(|value| value.as_str())
-                .map(ToString::to_string);
-            let restored = self
-                .codex_chat_history
-                .enrich_request(&mut mapped_body)
-                .await;
-            if restored > 0 {
-                log::debug!(
-                    "[Codex] Restored or enriched {restored} cached function call item(s) for Chat upstream"
-                );
-            }
-            super::providers::apply_codex_chat_upstream_model(provider, &mut mapped_body);
-            let reasoning_config =
-                super::providers::resolve_codex_chat_reasoning_config(provider, &mapped_body);
-            let mut chat_body = super::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning(
-                mapped_body,
-                reasoning_config.as_ref(),
-            )?;
-            super::providers::inject_codex_chat_prompt_cache_key(
-                provider,
-                &mut chat_body,
-                explicit_prompt_cache_key.as_deref(),
-                self.session_client_provided
-                    .then_some(self.session_id.as_str()),
-            );
-            chat_body
-        } else if codex_responses_to_anthropic {
-            let mut mapped_body = mapped_body;
-            super::providers::apply_codex_upstream_model(provider, &mut mapped_body);
-            // Per-provider output ceiling override. Codex does not forward its
-            // `model_max_output_tokens` in the request body, so honor the value
-            // configured on the provider here — it takes precedence over any
-            // request-supplied `max_output_tokens` and over the default below.
-            // Injecting it into the body (rather than overriding after transform)
-            // lets the thinking-budget clamp size its headroom against the real
-            // ceiling too. Kept per-provider to avoid a global large default that
-            // would 400 on low-output-ceiling gateways.
-            if let Some(max_out) = provider
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.max_output_tokens)
-                .filter(|v| *v > 0)
-            {
-                mapped_body["max_output_tokens"] = Value::from(max_out);
-            }
-            // Anthropic requires max_tokens; fall back to this default only when the
-            // Codex request omits max_output_tokens (rare — Codex normally sends it).
-            // Kept conservative so a low-output-ceiling model or relay does not hard-400
-            // on the fallback (a too-high default 400s and is non-retryable); 8192 is
-            // accepted by every current Claude model and virtually all gateways. The
-            // transform clamps any thinking budget below this value.
-            const DEFAULT_CODEX_ANTHROPIC_MAX_TOKENS: u64 = 8192;
-            let mut anthropic_body =
-                super::providers::transform_codex_anthropic::responses_request_to_anthropic(
-                    mapped_body,
-                    DEFAULT_CODEX_ANTHROPIC_MAX_TOKENS,
-                )?;
-            // Handle the 1M-context marker [1m]: strip the model-name suffix (the
-            // gateway doesn't recognize it) and set the flag so the beta header is
-            // added. apply_codex_upstream_model may have just written back a model
-            // name carrying [1m] from the provider config, so strip it once more on
-            // the final body here.
-            if let Some(model) = anthropic_body.get("model").and_then(|v| v.as_str()) {
-                let stripped = super::model_mapper::strip_one_m_suffix_for_upstream(model);
-                if stripped != model {
-                    codex_anthropic_one_m = true;
-                    anthropic_body["model"] = Value::String(stripped.to_string());
-                }
-            }
-            if codex_impersonate_claude_code {
-                prepend_claude_code_system_prompt(&mut anthropic_body);
-            }
-            // Enable Anthropic prompt caching (no beta header required). Reuse the
-            // configured TTL rather than silently forcing 5m on this conversion path.
-            // otherwise system/tools/history are re-sent at full price every round,
-            // inflating cost and first-token latency. The injector handles the
-            // string→array `system` conversion and the new-breakpoint budget.
-            super::cache_injector::inject(
-                &mut anthropic_body,
-                &codex_anthropic_cache_config(&self.optimizer_config),
-            );
-            anthropic_body
-        } else if needs_transform {
-            if adapter.name() == "Claude" {
-                let api_format = resolved_claude_api_format
-                    .as_deref()
-                    .unwrap_or_else(|| super::providers::get_claude_api_format(provider));
-                super::providers::transform_claude_request_for_api_format(
-                    mapped_body,
-                    provider,
-                    api_format,
-                    self.session_client_provided
-                        .then_some(self.session_id.as_str()),
-                    Some(self.gemini_shadow.as_ref()),
-                )?
-            } else {
-                adapter.transform_request(mapped_body, provider)?
-            }
-        } else {
-            mapped_body
-        };
-
-        // Native Responses passthrough to a strict third-party gateway (xAI).
-        // One gate so rebase conflicts stay here plus the isolate file, not
-        // scattered across sanitizers. Flatten namespaces first; then apply
-        // xAI request rewrites (schema, agent_message, unknown models).
-        if matches!(app_type, AppType::Codex | AppType::GrokBuild)
-            && !codex_responses_to_chat
-            && !codex_responses_to_anthropic
-            && super::providers::provider_needs_responses_namespace_flatten(provider)
-        {
-            if super::providers::transform_codex_responses_namespace::flatten_request_namespaces(
-                &mut request_body,
-            )? {
-                log::debug!(
-                    "[Codex] Flattened namespace tools for native Responses upstream (provider={})",
-                    provider.id
-                );
-            }
-            super::providers::transform_codex_responses_xai_sanitize::apply_xai_native_responses_request_compat(
-                &mut request_body,
-                &provider.id,
-                super::providers::codex_provider_upstream_model(provider).as_deref(),
-                &provider.settings_config,
-            );
-        }
-
-        // Moonshot / Kimi Chat Completions reject `$ref` nodes that carry sibling
-        // keywords, which Codex Desktop's built-in tool schemas do (#6867). Move
-        // each such `$ref` into `allOf` for that upstream only; every other
-        // provider keeps byte-identical tool schemas (prompt-cache prefix intact).
-        if codex_responses_to_chat
-            && super::providers::transform_codex_chat_moonshot_schema::upstream_requires_ref_sibling_all_of(
-                &base_url,
-            )
-        {
-            let rewritten =
-                super::providers::transform_codex_chat_moonshot_schema::wrap_ref_siblings_in_chat_tools(
-                    &mut request_body,
-                );
-            if rewritten > 0 {
-                log::debug!(
-                    "[Codex] Moved `$ref` siblings into allOf for {rewritten} tool schema(s) (Moonshot upstream, provider={})",
-                    provider.id
-                );
-            }
-        }
-
-        if matches!(app_type, AppType::Codex | AppType::GrokBuild) {
-            self.apply_media_prevention(&mut request_body, provider);
-        }
-
-        // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
-        // 默认使用空白名单，过滤所有 _ 前缀字段
-        let mut filtered_body = prepare_upstream_request_body(request_body);
-        if !is_copilot {
-            if let Some(overrides) = provider
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.local_proxy_request_overrides.as_ref())
-            {
-                if apply_local_proxy_body_overrides(&mut filtered_body, overrides) {
-                    filtered_body = prepare_upstream_request_body(filtered_body);
-                }
-            }
-        }
-        // 出站 body 定稿后刷新真值（覆盖 Codex chat 上游模型覆写、转换层模型改写）
-        if let Some(m) = filtered_body
-            .get("model")
-            .and_then(|m| m.as_str())
-            .filter(|m| !m.is_empty())
-        {
-            outbound_model = Some(m.to_string());
-        }
-        log_prompt_cache_trace(
-            app_type,
-            provider,
-            &effective_endpoint,
-            resolved_claude_api_format.as_deref(),
-            &filtered_body,
-            self.session_client_provided,
-        );
-        let request_is_streaming =
-            is_streaming_request(&effective_endpoint, &filtered_body, headers);
-        let force_identity_encoding = needs_transform
-            || codex_responses_to_chat
-            || codex_responses_to_anthropic
-            || request_is_streaming;
-
         // Codex OAuth 需要注入的 ChatGPT-Account-Id（在动态 token 获取期间填充）
         let mut codex_oauth_account_id: Option<String> = None;
         let mut should_send_codex_oauth_session_headers = false;
@@ -1897,6 +1798,376 @@ impl RequestForwarder {
         } else {
             Vec::new()
         };
+
+        let mut codex_anthropic_one_m = false;
+
+        // Declare guards before their request payload so reverse local drop order
+        // releases JSON before its independent-copy reservations on every exit.
+        let _transform_input_owner;
+        let mut _prompt_cache_owner = None;
+        let mut _outbound_tail_owner = None;
+        let mut _enrichment_payload_owners = None;
+        let mut mapped_body = mapped_body;
+        if codex_responses_to_chat {
+            // A non-restoring request can still reference a guarded cache entry.
+            // Always retain owners and propagate refusal instead of using the
+            // count-only legacy API, which cannot transfer payload ownership.
+            let (restored, owners) = self
+                .codex_chat_history
+                .enrich_request_with_provenance(
+                    &mut mapped_body,
+                    self.dlp_request
+                        .as_ref()
+                        .and_then(|request| request.chat_enrichment_budget()),
+                    self.dlp_request
+                        .as_ref()
+                        .map(|request| request.chat_history_provenance())
+                        .transpose()
+                        .map_err(ProxyError::DlpForward)?
+                        .unwrap_or(
+                            super::security::chat_enrichment::ChatHistoryProvenance::StrictResume,
+                        ),
+                )
+                .await
+                .map_err(ProxyError::DlpForward)?;
+            _enrichment_payload_owners = owners;
+            if self.dlp_request.is_none() {
+                super::security::http_restoration::validate_unleased_enriched_body(&mapped_body)
+                    .map_err(ProxyError::DlpForward)?;
+            }
+            if restored > 0 {
+                log::debug!(
+                    "[Codex] Restored or enriched {restored} cached function call item(s) for Chat upstream"
+                );
+            }
+        }
+
+        // Retain only this independent candidate's allocation through validation/send/cancel.
+        let mut _namespace_owner = None;
+        let mut transform_to_filtered_body = |codex_body: Value| -> Result<Value, ProxyError> {
+            #[cfg(test)]
+            super::security::http_restoration::transform_input_test_support::input(&codex_body);
+            let mut request_body = if codex_responses_to_chat {
+                let mut mapped_body = codex_body;
+                let explicit_prompt_cache_key = if self.dlp_request.is_some() {
+                    // Move the SAME allocation out of the prepared input. Its owner
+                    // outlives this callback; no converter-output authority is implied.
+                    match mapped_body
+                        .as_object_mut()
+                        .and_then(|body| body.remove("prompt_cache_key"))
+                    {
+                        Some(Value::String(key)) => Some(key),
+                        _ => None,
+                    }
+                } else {
+                    mapped_body
+                        .get("prompt_cache_key")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                };
+                #[cfg(test)]
+                super::security::http_restoration::transform_input_test_support::moved_prompt_key(
+                    explicit_prompt_cache_key.as_deref(),
+                );
+                super::providers::apply_codex_chat_upstream_model(provider, &mut mapped_body);
+                let reasoning_config =
+                    super::providers::resolve_codex_chat_reasoning_config(provider, &mapped_body);
+                let mut chat_body = super::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning(
+                    mapped_body,
+                    reasoning_config.as_ref(),
+                )?;
+                let session = self
+                    .session_client_provided
+                    .then_some(self.session_id.as_str());
+                if let Some(request) = self.dlp_request.as_ref() {
+                    if let Some(key) = super::providers::CodexAdapter::prompt_cache_key(
+                        provider,
+                        explicit_prompt_cache_key.as_deref(),
+                        session,
+                    ) {
+                        let (body, owner) = request
+                            .build_prompt_cache_body(&chat_body, key)
+                            .map_err(ProxyError::DlpForward)?;
+                        _prompt_cache_owner = Some(owner);
+                        chat_body = body;
+                    }
+                } else {
+                    super::providers::inject_codex_chat_prompt_cache_key(
+                        provider,
+                        &mut chat_body,
+                        explicit_prompt_cache_key.as_deref(),
+                        session,
+                    );
+                }
+                chat_body
+            } else if codex_responses_to_anthropic {
+                let mut mapped_body = codex_body;
+                super::providers::apply_codex_upstream_model(provider, &mut mapped_body);
+                if let Some(max_out) = provider
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.max_output_tokens)
+                    .filter(|v| *v > 0)
+                {
+                    mapped_body["max_output_tokens"] = Value::from(max_out);
+                }
+                const DEFAULT_CODEX_ANTHROPIC_MAX_TOKENS: u64 = 8192;
+                let mut anthropic_body =
+                    super::providers::transform_codex_anthropic::responses_request_to_anthropic(
+                        mapped_body,
+                        DEFAULT_CODEX_ANTHROPIC_MAX_TOKENS,
+                    )?;
+                if let Some(model) = anthropic_body.get("model").and_then(|v| v.as_str()) {
+                    let stripped = super::model_mapper::strip_one_m_suffix_for_upstream(model);
+                    if stripped != model {
+                        codex_anthropic_one_m = true;
+                        anthropic_body["model"] = Value::String(stripped.to_string());
+                    }
+                }
+                if codex_impersonate_claude_code {
+                    prepend_claude_code_system_prompt(&mut anthropic_body);
+                }
+                super::cache_injector::inject(
+                    &mut anthropic_body,
+                    &codex_anthropic_cache_config(&self.optimizer_config),
+                );
+                anthropic_body
+            } else if needs_transform {
+                if adapter.name() == "Claude" {
+                    let api_format = resolved_claude_api_format
+                        .as_deref()
+                        .unwrap_or_else(|| super::providers::get_claude_api_format(provider));
+                    super::providers::transform_claude_request_for_api_format(
+                        codex_body,
+                        provider,
+                        api_format,
+                        self.session_client_provided
+                            .then_some(self.session_id.as_str()),
+                        Some(self.gemini_shadow.as_ref()),
+                    )?
+                } else {
+                    adapter.transform_request(codex_body, provider)?
+                }
+            } else {
+                codex_body
+            };
+
+            if matches!(app_type, AppType::Codex | AppType::GrokBuild)
+                && !codex_responses_to_chat
+                && !codex_responses_to_anthropic
+                && super::providers::provider_needs_responses_namespace_flatten(provider)
+            {
+                let flattened = if let Some(request) = self.dlp_request.as_ref() {
+                    if let Some((body, owner)) = request
+                        .build_namespace_body(&request_body)
+                        .map_err(ProxyError::DlpForward)?
+                    {
+                        _namespace_owner = Some(owner);
+                        request_body = body;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    super::providers::transform_codex_responses_namespace::flatten_request_namespaces(&mut request_body)?
+                };
+                if flattened {
+                    log::debug!(
+                        "[Codex] Flattened namespace tools for native Responses upstream (provider={})",
+                        provider.id
+                    );
+                }
+                super::providers::transform_codex_responses_xai_sanitize::apply_xai_native_responses_request_compat(
+                    &mut request_body,
+                    &provider.id,
+                    super::providers::codex_provider_upstream_model(provider).as_deref(),
+                    &provider.settings_config,
+                );
+            }
+
+            if codex_responses_to_chat
+                && super::providers::transform_codex_chat_moonshot_schema::upstream_requires_ref_sibling_all_of(
+                    &base_url,
+                )
+            {
+                let rewritten =
+                    super::providers::transform_codex_chat_moonshot_schema::wrap_ref_siblings_in_chat_tools(
+                        &mut request_body,
+                    );
+                if rewritten > 0 {
+                    log::debug!(
+                        "[Codex] Moved `$ref` siblings into allOf for {rewritten} tool schema(s) (Moonshot upstream, provider={})",
+                        provider.id
+                    );
+                }
+            }
+
+            if matches!(app_type, AppType::Codex | AppType::GrokBuild) {
+                self.apply_media_prevention(&mut request_body, provider);
+            }
+
+            if let Some(request) = self.dlp_request.as_ref() {
+                let patch = (!is_copilot)
+                    .then(|| {
+                        provider
+                            .meta
+                            .as_ref()
+                            .and_then(|meta| meta.local_proxy_request_overrides.as_ref())
+                            .and_then(|overrides| overrides.body.as_ref())
+                    })
+                    .flatten();
+                let (body, owner) = request
+                    .build_outbound_tail(&request_body, patch)
+                    .map_err(ProxyError::DlpForward)?;
+                _outbound_tail_owner = Some(owner);
+                return Ok(body);
+            }
+
+            let mut filtered_body = prepare_upstream_request_body(request_body);
+            if !is_copilot {
+                if let Some(overrides) = provider
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.local_proxy_request_overrides.as_ref())
+                {
+                    if apply_local_proxy_body_overrides(&mut filtered_body, overrides) {
+                        filtered_body = prepare_upstream_request_body(filtered_body);
+                    }
+                }
+            }
+            Ok(filtered_body)
+        };
+
+        let protocol = if codex_responses_to_chat {
+            "openai_chat"
+        } else if codex_responses_to_anthropic {
+            "anthropic"
+        } else {
+            "openai_responses"
+        };
+        // Bind the attempt to resolved credentials, never an editable account label.
+        let mut principal_headers = http::HeaderMap::new();
+        for (name, value) in &auth_headers {
+            if matches!(
+                name.as_str(),
+                "authorization" | "x-api-key" | "x-goog-api-key"
+            ) {
+                principal_headers.insert(name.clone(), value.clone());
+            }
+        }
+        if codex_official_auth_passthrough {
+            // Mirror the actual ordered authentication replacement below: a non-Authorization
+            // credential encountered first injects derived headers before incoming Bearer values.
+            for name in ["authorization", "x-api-key", "x-goog-api-key"] {
+                principal_headers.remove(name);
+            }
+            let mut saw_auth = false;
+            for (name, value) in headers {
+                if name == http::header::AUTHORIZATION {
+                    saw_auth = true;
+                    principal_headers.append(name.clone(), value.clone());
+                } else if matches!(name.as_str(), "x-api-key" | "x-goog-api-key") && !saw_auth {
+                    saw_auth = true;
+                    for (name, value) in &auth_headers {
+                        if matches!(
+                            name.as_str(),
+                            "authorization" | "x-api-key" | "x-goog-api-key"
+                        ) {
+                            principal_headers.append(name.clone(), value.clone());
+                        }
+                    }
+                }
+            }
+            if !saw_auth {
+                for (name, value) in &auth_headers {
+                    if matches!(
+                        name.as_str(),
+                        "authorization" | "x-api-key" | "x-goog-api-key"
+                    ) {
+                        principal_headers.append(name.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        // This header is otherwise forwarded verbatim, except on Anthropic conversion.
+        // Bind all actual values; a managed account replaces them at the send boundary.
+        if !codex_responses_to_anthropic {
+            for value in headers.get_all("chatgpt-account-id") {
+                principal_headers.append("chatgpt-account-id", value.clone());
+            }
+        }
+        if let Some(account) = codex_oauth_account_id.as_deref() {
+            if let Ok(value) = http::HeaderValue::from_str(account) {
+                principal_headers.insert("chatgpt-account-id", value);
+            }
+        }
+        let auth_principal = if principal_headers.is_empty() {
+            None
+        } else {
+            use sha2::{Digest, Sha256};
+            let mut digest = Sha256::new();
+            for name in [
+                "authorization",
+                "x-api-key",
+                "x-goog-api-key",
+                "chatgpt-account-id",
+            ] {
+                for value in principal_headers.get_all(name) {
+                    digest.update((name.len() as u64).to_be_bytes());
+                    digest.update(name.as_bytes());
+                    digest.update((value.as_bytes().len() as u64).to_be_bytes());
+                    digest.update(value.as_bytes());
+                }
+            }
+            Some(format!("{:x}", digest.finalize()))
+        };
+        let (filtered_body, mut dlp_attempt) = if let Some(ref dlp_req) = self.dlp_request {
+            let operation = super::providers::CodexAdapter::resolve_dlp_operation_descriptor(
+                &base_url,
+                endpoint,
+                protocol,
+                &url,
+                is_full_url,
+            );
+            let (attempt, input_owner) = dlp_req.prepare_owned_attempt_with_operation_for_proxy(
+                operation.as_ref(),
+                &provider.id,
+                protocol,
+                &url,
+                auth_principal.as_deref(),
+                &mut mapped_body,
+                &mut transform_to_filtered_body,
+            )?;
+            _transform_input_owner = Some(input_owner);
+            (mapped_body, Some(attempt))
+        } else {
+            _transform_input_owner = None;
+            (transform_to_filtered_body(mapped_body)?, None)
+        };
+        #[cfg(test)]
+        super::security::http_restoration::transform_input_test_support::pause().await;
+        // 出站 body 定稿后刷新真值（覆盖 Codex chat 上游模型覆写、转换层模型改写）
+        if let Some(m) = filtered_body
+            .get("model")
+            .and_then(|m| m.as_str())
+            .filter(|m| !m.is_empty())
+        {
+            outbound_model = Some(m.to_string());
+        }
+        log_prompt_cache_trace(
+            app_type,
+            provider,
+            &effective_endpoint,
+            resolved_claude_api_format.as_deref(),
+            &filtered_body,
+            self.session_client_provided,
+        );
+        let request_is_streaming =
+            is_streaming_request(&effective_endpoint, &filtered_body, headers);
+        let force_identity_encoding = needs_transform
+            || codex_responses_to_chat
+            || codex_responses_to_anthropic
+            || request_is_streaming;
 
         let codex_oauth_session_headers =
             if should_send_codex_oauth_session_headers && self.session_client_provided {
@@ -2265,11 +2536,26 @@ impl RequestForwarder {
         // 序列化请求体。GET/HEAD 是 idempotent/safe 方法，按 HTTP 语义不应携带 body；
         // 强行附带 JSON body 会让某些上游（如 Google Gemini 的 models.list）拒绝请求。
         let body_bytes = if matches!(method, &http::Method::GET | &http::Method::HEAD) {
-            Vec::new()
+            bytes::Bytes::new()
         } else {
-            serde_json::to_vec(&filtered_body).map_err(|e| {
-                ProxyError::Internal(format!("Failed to serialize request body: {e}"))
-            })?
+            let encoded = dlp_attempt
+                .as_ref()
+                .map(|attempt| attempt.encode_outbound_body(&filtered_body))
+                .transpose()
+                .map_err(ProxyError::DlpForward)?
+                .flatten();
+            if let Some(encoded) = encoded {
+                encoded
+            } else if let Some(owner) = _enrichment_payload_owners.as_ref() {
+                owner
+                    .encode_outbound_body(&filtered_body)
+                    .map_err(ProxyError::DlpForward)?
+            } else {
+                // Legacy traffic without restoration ownership keeps its old serializer.
+                bytes::Bytes::from(serde_json::to_vec(&filtered_body).map_err(|e| {
+                    ProxyError::Internal(format!("Failed to serialize request body: {e}"))
+                })?)
+            }
         };
 
         // 确保 content-type 存在
@@ -2364,6 +2650,9 @@ impl RequestForwarder {
             for (key, value) in &ordered_headers {
                 request = request.header(key, value);
             }
+            if let Some(attempt) = dlp_attempt.as_ref() {
+                attempt.record_permitted_attempt(&provider.id, None);
+            }
             let send = request.body(body_bytes).send();
             let send_result = if request_is_streaming {
                 let header_timeout = if self.streaming_first_byte_timeout.is_zero() {
@@ -2390,6 +2679,9 @@ impl RequestForwarder {
             let uri: http::Uri = url.parse().map_err(|e| {
                 ProxyError::ForwardFailed(format!("Invalid upstream URL ({target_for_log}): {e}"))
             })?;
+            if let Some(attempt) = dlp_attempt.as_ref() {
+                attempt.record_permitted_attempt(&provider.id, None);
+            }
             super::hyper_client::send_request(
                 uri,
                 &target_for_log,
@@ -2403,38 +2695,83 @@ impl RequestForwarder {
             .await?
         };
 
+        // Admit leased responses before any decoder, retry validation, or converter reads them.
+        // A leased error body is untrusted and may echo references or private metadata.
+        // Refuse it before any legacy body parser, retry diagnostic, or client error builder.
+        let has_restoration_lease = dlp_attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.has_restoration_lease());
+        if has_restoration_lease && !response.status().is_success() {
+            return Err(ProxyError::DlpForward(
+                super::security::http_restoration::DlpForwardError::RestoreFailed,
+            ));
+        }
+
+        // Eager JSON admission retains the configured body deadline; SSE stays lazy so
+        // existing first-byte/idle timeout and cancellation handling remain authoritative.
+        let response = if let Some(attempt) = dlp_attempt.as_mut() {
+            match tokio::time::timeout(timeout, attempt.guard_upstream_response(response)).await {
+                Ok(result) => result.map_err(ProxyError::DlpForward)?,
+                Err(_) => {
+                    return Err(ProxyError::DlpForward(
+                        super::security::http_restoration::DlpForwardError::RestoreFailed,
+                    ));
+                }
+            }
+        } else {
+            response
+        };
+
         // 检查响应状态
         let status = response.status();
 
         if status.is_success() {
+            // Legacy semantic validation may include upstream diagnostics in its errors.
+            // A restoration lease must never expose or retry those diagnostic errors.
+            let safe_validation_error = |error| {
+                if has_restoration_lease {
+                    ProxyError::DlpForward(
+                        super::security::http_restoration::DlpForwardError::RestoreFailed,
+                    )
+                } else {
+                    error
+                }
+            };
             let mut response = self
                 .prepare_success_response_for_failover(response, request_is_streaming)
-                .await?;
+                .await
+                .map_err(safe_validation_error)?;
             // Streaming requests normally return SSE. If a compatible gateway
             // explicitly returns JSON instead, buffer and validate it inside the retry
-            // loop as well so a 2xx Anthropic error envelope can still fail over. Do
-            // not buffer unknown content types: some gateways omit the SSE header.
+            // loop as well so a 2xx Anthropic error envelope can still fail over for
+            // ordinary traffic. Leased failures are fixed and nonretryable.
             if codex_responses_to_anthropic && (!request_is_streaming || response.is_json()) {
                 response = self
                     .validate_codex_anthropic_success_response(response)
-                    .await?;
+                    .await
+                    .map_err(safe_validation_error)?;
             } else if matches!(
                 resolved_claude_api_format.as_deref(),
                 Some("openai_responses")
             ) {
                 if !request_is_streaming || response.is_json() {
-                    // Claude→Responses gateways can also return a semantic failure in an
-                    // HTTP 2xx Response object. Validate buffered/JSON bodies inside the
-                    // retry loop so an early failure can still select another provider.
-                    response = self.validate_responses_success_response(response).await?;
+                    response = self
+                        .validate_responses_success_response(response)
+                        .await
+                        .map_err(safe_validation_error)?;
                 } else {
-                    // Delay committing the downstream stream until the upstream emits
-                    // either productive output or a valid non-failure terminal event.
-                    // A response.failed/error before output remains failover-safe.
-                    response = self.validate_responses_stream_start(response).await?;
+                    response = self
+                        .validate_responses_stream_start(response)
+                        .await
+                        .map_err(safe_validation_error)?;
                 }
             }
-            Ok((response, resolved_claude_api_format, outbound_model))
+            Ok((
+                response,
+                resolved_claude_api_format,
+                outbound_model,
+                dlp_attempt,
+            ))
         } else {
             let status_code = status.as_u16();
             // 错误响应同样可能被上游压缩（content-encoding）。reqwest 未启用任何
@@ -3839,6 +4176,51 @@ fn value_for_log(value: &Value) -> String {
 }
 
 #[cfg(test)]
+pub(super) fn legacy_outbound_tail_for_test(source: Value, patch: Option<&Value>) -> Value {
+    let mut body = prepare_upstream_request_body(source);
+    if let Some(patch) = patch.filter(|patch| patch.is_object()) {
+        if merge_json_override(&mut body, patch) {
+            body = prepare_upstream_request_body(body);
+        }
+    }
+    body
+}
+
+#[cfg(test)]
+impl RequestForwarder {
+    /// Exercise the unchanged send boundary with an explicitly injected local test adapter.
+    pub(crate) async fn forward_with_adapter_for_test(
+        &self,
+        provider: &Provider,
+        endpoint: &str,
+        body: &Value,
+        headers: &http::HeaderMap,
+        adapter: &dyn ProviderAdapter,
+    ) -> Result<ForwardResult, ProxyError> {
+        let (response, claude_api_format, outbound_model, dlp_attempt) = self
+            .forward(
+                &AppType::Codex,
+                &http::Method::POST,
+                provider,
+                endpoint,
+                body,
+                headers,
+                &Extensions::new(),
+                adapter,
+            )
+            .await?;
+        Ok(ForwardResult {
+            response,
+            provider: provider.clone(),
+            claude_api_format,
+            outbound_model,
+            connection_guard: None,
+            dlp_attempt,
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::database::Database;
@@ -3878,6 +4260,7 @@ mod tests {
         let db = Arc::new(Database::memory().expect("memory db"));
 
         RequestForwarder {
+            dlp_request: None,
             router: Arc::new(ProviderRouter::new(db.clone())),
             status: Arc::new(RwLock::new(ProxyStatus::default())),
             current_providers: Arc::new(RwLock::new(HashMap::new())),

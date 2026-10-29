@@ -7,6 +7,32 @@ use serde_json::Value;
 
 const ARGUMENT_LIMIT: usize = 1024 * 1024;
 
+/// Close original tool carriers before conversion can discard unknown siblings.
+/// Argument JSON is a supported payload, not a carrier-key allowlist.
+pub(super) fn chat_tool_carriers_supported(value: &Value, _streaming: bool) -> bool {
+    // Shape/type errors belong to the existing strict tool validator, not unsupported carriers.
+    let Some(tools) = value.as_array() else {
+        return true;
+    };
+    tools.iter().all(|tool| {
+        let Some(object) = tool.as_object() else {
+            return true;
+        };
+        object.iter().all(|(key, value)| match key.as_str() {
+            "id" | "type" | "function" => true,
+            "index" => value.is_u64(),
+            _ => value.is_null(),
+        }) && object
+            .get("function")
+            .and_then(Value::as_object)
+            .is_none_or(|function| {
+                function.iter().all(|(key, value)| {
+                    matches!(key.as_str(), "name" | "arguments") || value.is_null()
+                })
+            })
+    })
+}
+
 struct ChatTool {
     id: Option<PayloadText>,
     name: Option<PayloadText>,
@@ -21,28 +47,50 @@ pub(super) struct ChatTools {
 
 impl ChatTools {
     pub(super) fn new(budget: PayloadBudget) -> Result<Self, TokenError> {
-        Ok(Self { tools: PayloadVec::new(budget)? })
+        Ok(Self {
+            tools: PayloadVec::new(budget)?,
+        })
     }
 
-    pub(super) fn observe(&mut self, value: &Value, budget: &PayloadBudget) -> Result<(), TokenError> {
+    pub(super) fn observe(
+        &mut self,
+        value: &Value,
+        budget: &PayloadBudget,
+    ) -> Result<(), TokenError> {
         let tools = value.as_array().ok_or(TokenError::RedactionFailed)?;
         for delta in tools {
-            let index = delta.get("index").and_then(Value::as_u64)
-                .filter(|index| *index < 128).ok_or(TokenError::RedactionFailed)? as usize;
-            if index > self.tools.len() { return Err(TokenError::RedactionFailed); }
+            let index = delta
+                .get("index")
+                .and_then(Value::as_u64)
+                .filter(|index| *index < 128)
+                .ok_or(TokenError::RedactionFailed)? as usize;
+            if index > self.tools.len() {
+                return Err(TokenError::RedactionFailed);
+            }
             if index == self.tools.len() {
                 self.tools.push(ChatTool {
-                    id: None, name: None, function_type: false, arguments_seen: false,
+                    id: None,
+                    name: None,
+                    function_type: false,
+                    arguments_seen: false,
                     arguments: PayloadBuffer::new(budget.clone(), ARGUMENT_LIMIT)?,
                 })?;
             }
-            let tool = self.tools.get_mut(index).ok_or(TokenError::RedactionFailed)?;
+            let tool = self
+                .tools
+                .get_mut(index)
+                .ok_or(TokenError::RedactionFailed)?;
             if let Some(kind) = delta.get("type") {
-                if kind.as_str() != Some("function") { return Err(TokenError::RedactionFailed); }
+                if kind.as_str() != Some("function") {
+                    return Err(TokenError::RedactionFailed);
+                }
                 tool.function_type = true;
             }
             set_identity(&mut tool.id, delta.get("id"), budget)?;
-            let function = delta.get("function").and_then(Value::as_object).ok_or(TokenError::RedactionFailed)?;
+            let function = delta
+                .get("function")
+                .and_then(Value::as_object)
+                .ok_or(TokenError::RedactionFailed)?;
             set_identity(&mut tool.name, function.get("name"), budget)?;
             if let Some(arguments) = function.get("arguments") {
                 let arguments = arguments.as_str().ok_or(TokenError::RedactionFailed)?;
@@ -53,29 +101,62 @@ impl ChatTools {
         Ok(())
     }
 
-    pub(super) fn finish(&self, tool_reason: bool, budget: &PayloadBudget) -> Result<(), TokenError> {
-        if tool_reason != (self.tools.len() != 0) { return Err(TokenError::RedactionFailed); }
+    pub(super) fn finish(
+        &self,
+        tool_reason: bool,
+        budget: &PayloadBudget,
+    ) -> Result<(), TokenError> {
+        if tool_reason != (self.tools.len() != 0) {
+            return Err(TokenError::RedactionFailed);
+        }
         for (index, tool) in self.tools.as_slice().iter().enumerate() {
             let id = tool.id.as_ref().ok_or(TokenError::RedactionFailed)?;
-            if !tool.function_type || tool.name.is_none() || !tool.arguments_seen
-                || self.tools.as_slice()[..index].iter().any(|prior| prior.id.as_ref().is_some_and(|prior| prior.as_str() == id.as_str())) {
+            if !tool.function_type
+                || tool.name.is_none()
+                || !tool.arguments_seen
+                || self.tools.as_slice()[..index].iter().any(|prior| {
+                    prior
+                        .id
+                        .as_ref()
+                        .is_some_and(|prior| prior.as_str() == id.as_str())
+                })
+            {
                 return Err(TokenError::RedactionFailed);
             }
-            let arguments = std::str::from_utf8(tool.arguments.as_slice()).map_err(|_| TokenError::RedactionFailed)?;
-            if arguments.trim().is_empty() { return Err(TokenError::RedactionFailed); }
+            let arguments = std::str::from_utf8(tool.arguments.as_slice())
+                .map_err(|_| TokenError::RedactionFailed)?;
+            if arguments.trim().is_empty() {
+                return Err(TokenError::RedactionFailed);
+            }
             let parsed = PayloadJson::try_from_str(arguments, budget.clone(), budget.limit())?;
-            if !parsed.as_value().is_object() { return Err(TokenError::RedactionFailed); }
+            if !parsed.as_value().is_object() {
+                return Err(TokenError::RedactionFailed);
+            }
         }
         Ok(())
     }
 }
 
-fn set_identity(target: &mut Option<PayloadText>, value: Option<&Value>, budget: &PayloadBudget) -> Result<(), TokenError> {
+fn set_identity(
+    target: &mut Option<PayloadText>,
+    value: Option<&Value>,
+    budget: &PayloadBudget,
+) -> Result<(), TokenError> {
     if let Some(value) = value {
-        let value = value.as_str().filter(|value| !value.is_empty() && value.len() <= 256
-            && !value.chars().any(|ch| ch.is_whitespace() || ch.is_control())).ok_or(TokenError::RedactionFailed)?;
+        let value = value
+            .as_str()
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= 256
+                    && !value
+                        .chars()
+                        .any(|ch| ch.is_whitespace() || ch.is_control())
+            })
+            .ok_or(TokenError::RedactionFailed)?;
         if let Some(prior) = target {
-            if prior.as_str() != value { return Err(TokenError::RedactionFailed); }
+            if prior.as_str() != value {
+                return Err(TokenError::RedactionFailed);
+            }
         } else {
             *target = Some(PayloadText::try_from_str(value, budget.clone(), 256)?);
         }
@@ -98,23 +179,47 @@ pub(super) struct AnthropicTools {
 
 impl AnthropicTools {
     pub(super) fn new(budget: PayloadBudget) -> Result<Self, TokenError> {
-        Ok(Self { completed_ids: PayloadVec::new(budget)?, current: None })
+        Ok(Self {
+            completed_ids: PayloadVec::new(budget)?,
+            current: None,
+        })
     }
 
-    pub(super) fn start(&mut self, block: &Value, budget: &PayloadBudget) -> Result<(), TokenError> {
-        if self.current.is_some() || self.completed_ids.len() >= 128 { return Err(TokenError::RedactionFailed); }
+    pub(super) fn start(
+        &mut self,
+        block: &Value,
+        budget: &PayloadBudget,
+    ) -> Result<(), TokenError> {
+        if self.current.is_some() || self.completed_ids.len() >= 128 {
+            return Err(TokenError::RedactionFailed);
+        }
         let mut id = None;
         let mut name = None;
         set_identity(&mut id, block.get("id"), budget)?;
         set_identity(&mut name, block.get("name"), budget)?;
         let id = id.ok_or(TokenError::RedactionFailed)?;
         let name = name.ok_or(TokenError::RedactionFailed)?;
-        if self.completed_ids.as_slice().iter().any(|prior| prior.as_str() == id.as_str()) { return Err(TokenError::RedactionFailed); }
-        let input = block.get("input").and_then(Value::as_object).ok_or(TokenError::RedactionFailed)?;
+        if self
+            .completed_ids
+            .as_slice()
+            .iter()
+            .any(|prior| prior.as_str() == id.as_str())
+        {
+            return Err(TokenError::RedactionFailed);
+        }
+        let input = block
+            .get("input")
+            .and_then(Value::as_object)
+            .ok_or(TokenError::RedactionFailed)?;
         let read_tool = name.as_str() == "Read";
-        if read_tool && input.get("pages").and_then(Value::as_str) == Some("") { return Err(TokenError::RedactionFailed); }
+        if read_tool && input.get("pages").and_then(Value::as_str) == Some("") {
+            return Err(TokenError::RedactionFailed);
+        }
         self.current = Some(AnthropicTool {
-            id, read_tool, start_input_nonempty: !input.is_empty(), delta_seen: false,
+            id,
+            read_tool,
+            start_input_nonempty: !input.is_empty(),
+            delta_seen: false,
             arguments: PayloadBuffer::new(budget.clone(), ARGUMENT_LIMIT)?,
         });
         Ok(())
@@ -122,8 +227,13 @@ impl AnthropicTools {
 
     pub(super) fn delta(&mut self, data: &Value) -> Result<(), TokenError> {
         let tool = self.current.as_mut().ok_or(TokenError::RedactionFailed)?;
-        if tool.start_input_nonempty { return Err(TokenError::RedactionFailed); }
-        let text = data.pointer("/delta/partial_json").and_then(Value::as_str).ok_or(TokenError::RedactionFailed)?;
+        if tool.start_input_nonempty {
+            return Err(TokenError::RedactionFailed);
+        }
+        let text = data
+            .pointer("/delta/partial_json")
+            .and_then(Value::as_str)
+            .ok_or(TokenError::RedactionFailed)?;
         tool.delta_seen = true;
         tool.arguments.append(text.as_bytes())
     }
@@ -131,10 +241,16 @@ impl AnthropicTools {
     pub(super) fn close(&mut self, budget: &PayloadBudget) -> Result<(), TokenError> {
         let tool = self.current.take().ok_or(TokenError::RedactionFailed)?;
         if tool.delta_seen {
-            let encoded = std::str::from_utf8(tool.arguments.as_slice()).map_err(|_| TokenError::RedactionFailed)?;
-            if encoded.trim().is_empty() { return Err(TokenError::RedactionFailed); }
+            let encoded = std::str::from_utf8(tool.arguments.as_slice())
+                .map_err(|_| TokenError::RedactionFailed)?;
+            if encoded.trim().is_empty() {
+                return Err(TokenError::RedactionFailed);
+            }
             let parsed = PayloadJson::try_from_str(encoded, budget.clone(), budget.limit())?;
-            if !parsed.as_value().is_object() || (tool.read_tool && parsed.as_value().get("pages").and_then(Value::as_str) == Some("")) {
+            if !parsed.as_value().is_object()
+                || (tool.read_tool
+                    && parsed.as_value().get("pages").and_then(Value::as_str) == Some(""))
+            {
                 return Err(TokenError::RedactionFailed);
             }
         }

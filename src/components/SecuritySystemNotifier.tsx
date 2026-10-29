@@ -131,7 +131,8 @@ export function SecuritySystemNotifier() {
               const rule = `${getBuiltinRuleName(translate.current, record.ruleId, record.ruleName)} (${record.riskLevel})`;
               const { title, body } = getSecurityNotificationCopy(
                 record.actionTaken === "block" ||
-                  record.actionTaken === "redact"
+                  record.actionTaken === "redact" ||
+                  record.actionTaken === "redact_restore"
                   ? record.actionTaken
                   : "audit",
                 getAppLabel(record.appType),

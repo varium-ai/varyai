@@ -33,12 +33,94 @@ use serde_json::{json, Value};
 use super::transform_codex_chat::flatten_namespace_tool_name;
 use crate::proxy::error::ProxyError;
 
+/// Request-only flat name. Construction never allocates a full name or hex string.
+#[derive(Clone, Copy)]
+pub(crate) struct StackToolName {
+    bytes: [u8; 64],
+    len: usize,
+}
+impl StackToolName {
+    pub(crate) fn new(namespace: &str, name: &str) -> Option<Self> {
+        use sha2::{Digest, Sha256};
+        let length = namespace.len().checked_add(2)?.checked_add(name.len())?;
+        let mut output = Self {
+            bytes: [0; 64],
+            len: 0,
+        };
+        let limit = if length <= 64 { 64 } else { 46 };
+        for ch in namespace.chars().chain("__".chars()).chain(name.chars()) {
+            let mut encoded = [0; 4];
+            let text = ch.encode_utf8(&mut encoded);
+            if output.len + text.len() > limit {
+                break;
+            }
+            output.bytes[output.len..output.len + text.len()].copy_from_slice(text.as_bytes());
+            output.len += text.len();
+        }
+        if length > 64 {
+            let mut digest = Sha256::new();
+            digest.update(namespace.as_bytes());
+            digest.update(b"__");
+            digest.update(name.as_bytes());
+            let digest = digest.finalize();
+            output.bytes[output.len..output.len + 2].copy_from_slice(b"__");
+            output.len += 2;
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            for byte in &digest[..8] {
+                output.bytes[output.len] = HEX[(byte >> 4) as usize];
+                output.bytes[output.len + 1] = HEX[(byte & 15) as usize];
+                output.len += 2;
+            }
+        }
+        Some(output)
+    }
+    pub(crate) fn as_str(&self) -> &str {
+        // Only complete UTF-8 characters and ASCII suffix bytes are written above.
+        std::str::from_utf8(&self.bytes[..self.len]).unwrap_or_default()
+    }
+}
+
 /// Reverse map entry: a flattened tool name resolves back to its original
 /// namespace and bare child name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NamespacedName {
     pub namespace: String,
     pub name: String,
+}
+
+/// Name lookup only: it conveys no DLP completion or token-restoration authority.
+pub(crate) trait NamespaceLookup {
+    fn lookup(&self, flat: &str) -> Option<(&str, &str)>;
+    fn is_empty(&self) -> bool;
+}
+impl NamespaceLookup for HashMap<String, NamespacedName> {
+    fn lookup(&self, flat: &str) -> Option<(&str, &str)> {
+        self.get(flat)
+            .map(|entry| (entry.namespace.as_str(), entry.name.as_str()))
+    }
+    fn is_empty(&self) -> bool {
+        HashMap::is_empty(self)
+    }
+}
+
+/// Legacy names or an independently charged table; neither grants token authority.
+pub(crate) enum ResponseNamespaceTable {
+    Legacy(HashMap<String, NamespacedName>),
+    Charged(crate::proxy::security::http_restoration::DlpResponseNamespaceTable),
+}
+impl NamespaceLookup for ResponseNamespaceTable {
+    fn lookup(&self, flat: &str) -> Option<(&str, &str)> {
+        match self {
+            Self::Legacy(table) => table.lookup(flat),
+            Self::Charged(table) => table.lookup(flat),
+        }
+    }
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Legacy(table) => table.is_empty(),
+            Self::Charged(table) => table.is_empty(),
+        }
+    }
 }
 
 /// Build the flat-name → `{namespace, name}` restore map from a Codex Responses
@@ -223,7 +305,7 @@ pub(crate) fn flatten_request_namespaces(body: &mut Value) -> Result<bool, Proxy
 /// changed.
 pub(crate) fn restore_response_namespaces(
     value: &mut Value,
-    map: &HashMap<String, NamespacedName>,
+    map: &(impl NamespaceLookup + ?Sized),
 ) -> bool {
     if map.is_empty() {
         return false;
@@ -235,7 +317,7 @@ pub(crate) fn restore_response_namespaces(
 /// `.done` carrying a `function_call`). Returns whether anything changed.
 pub(crate) fn restore_sse_event_namespaces(
     event: &mut Value,
-    map: &HashMap<String, NamespacedName>,
+    map: &(impl NamespaceLookup + ?Sized),
 ) -> bool {
     if map.is_empty() {
         return false;
@@ -304,7 +386,7 @@ fn rewrite_namespace_qualified_call(
     }
 }
 
-fn restore_value(value: &mut Value, map: &HashMap<String, NamespacedName>) -> bool {
+fn restore_value(value: &mut Value, map: &(impl NamespaceLookup + ?Sized)) -> bool {
     let mut changed = false;
     match value {
         Value::Array(items) => {
@@ -315,9 +397,11 @@ fn restore_value(value: &mut Value, map: &HashMap<String, NamespacedName>) -> bo
         Value::Object(obj) => {
             if obj.get("type").and_then(Value::as_str) == Some("function_call") {
                 if let Some(flat) = obj.get("name").and_then(Value::as_str) {
-                    if let Some(entry) = map.get(flat) {
-                        obj.insert("name".to_string(), json!(entry.name));
-                        obj.insert("namespace".to_string(), json!(entry.namespace));
+                    if let Some((namespace, name)) = map.lookup(flat) {
+                        let name = json!(name);
+                        let namespace = json!(namespace);
+                        obj.insert("name".to_string(), name);
+                        obj.insert("namespace".to_string(), namespace);
                         changed = true;
                     }
                 }

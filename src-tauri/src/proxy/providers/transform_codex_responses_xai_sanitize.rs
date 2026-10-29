@@ -28,13 +28,15 @@
 //! later lands equivalent sanitization, delete this layer rather than
 //! dual-pathing.
 
-use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::HashSet;
 
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 use serde_json::{json, Map, Number, Value};
 
-use super::transform_codex_responses_namespace::{restore_sse_event_namespaces, NamespacedName};
+use super::transform_codex_responses_namespace::{restore_sse_event_namespaces, NamespaceLookup};
 use crate::proxy::sse::{append_utf8_safe, strip_sse_field, take_sse_block};
 
 /// Codex plugin-private fields removed recursively at any nesting depth.
@@ -985,7 +987,7 @@ fn whole_float_to_json_int(number: &Number) -> Option<Number> {
 /// not complete JSON pass through unchanged.
 pub(crate) fn create_xai_native_responses_sse_stream<E>(
     stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static,
-    restore_map: HashMap<String, NamespacedName>,
+    restore_map: impl NamespaceLookup + Send + 'static,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send
 where
     E: std::error::Error + Send + 'static,
@@ -1026,7 +1028,7 @@ where
 
 fn rewrite_xai_native_sse_block(
     block: &str,
-    restore_map: &HashMap<String, NamespacedName>,
+    restore_map: &(impl NamespaceLookup + ?Sized),
 ) -> Bytes {
     let mut event_name: Option<&str> = None;
     let mut data_parts: Vec<&str> = Vec::new();

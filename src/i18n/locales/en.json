@@ -54,6 +54,13 @@
     "categoryCustom": "Custom rule",
     "ruleActionBlock": "Block",
     "ruleActionAlert": "Alert",
+    "ruleActionRedactRestore": "Hide & restore locally",
+    "dialogActionRedactRestore": "Hide & restore locally (Codex HTTP only)",
+    "resultRedactRestore": "Tokenized for local restoration",
+    "redactRestoreScope": "Opt-in per rule: Codex HTTP Responses and /responses/compact only, including JSON and SSE. A matching rule on an unsupported inspected route rejects the request; it never silently falls back to ordinary redaction. Tokens are mapped only on this device and mappings are lost on restart.",
+    "redactRestoreRisk": "The model sees references, not plaintext: calculations, slicing and fixed-format schemas are unsupported. Restored shell, SQL, patches or embedded JSON may still be invalid or unsafe. Do not auto-execute output; retain tool approval and sandboxing. This does not supply plaintext to upstream tools or guarantee task correctness or zero leakage.",
+    "notifyRedactRestoreTitle": "Sensitive Information Tokenized",
+    "notifyRedactRestoreBody": "{{app}} request detected “{{rule}}”. Replaced with local references before sending; response restoration is not confirmed.",
     "ruleActionRedact": "Hide and Send",
     "ruleActionAllow": "Do not process",
     "builtinRules": {

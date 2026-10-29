@@ -118,12 +118,14 @@ export function SecurityCenterPage({
     if (action === "block") return t("security.resultBlocked");
     if (action === "audit") return t("security.resultAlert");
     if (action === "redact") return t("security.resultRedacted");
+    if (action === "redact_restore") return t("security.resultRedactRestore");
     return t("security.actionAllow");
   };
   const getActionClass = (action: AuditAction) => {
     if (action === "block") return "text-rose-600 dark:text-rose-400";
     if (action === "audit") return "text-amber-600 dark:text-amber-400";
-    if (action === "redact") return "text-blue-600 dark:text-blue-400";
+    if (action === "redact" || action === "redact_restore")
+      return "text-blue-600 dark:text-blue-400";
     return "text-emerald-600 dark:text-emerald-400";
   };
 
@@ -248,6 +250,7 @@ export function SecurityCenterPage({
   );
   const defaultActionOptions: Array<{ value: AuditAction; label: string }> = [
     { value: "redact", label: t("security.ruleActionRedact") },
+    { value: "redact_restore", label: t("security.ruleActionRedactRestore") },
     { value: "audit", label: t("security.ruleActionAlert") },
     { value: "allow", label: t("security.ruleActionAllow") },
   ];
@@ -340,6 +343,10 @@ export function SecurityCenterPage({
           role="tabpanel"
           aria-label={t("security.tabRules")}
         >
+          <div className="rounded-xl border border-border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
+            <p>{t("security.redactRestoreScope")}</p>
+            <p>{t("security.redactRestoreRisk")}</p>
+          </div>
           <div className="space-y-2.5 pt-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -402,7 +409,8 @@ export function SecurityCenterPage({
                             const selectedClass =
                               option.value === "audit"
                                 ? "bg-amber-600 text-white shadow-sm hover:bg-amber-700"
-                                : option.value === "redact"
+                                : option.value === "redact" ||
+                                    option.value === "redact_restore"
                                   ? "bg-blue-600 text-white shadow-sm hover:bg-blue-700"
                                   : "bg-emerald-600 text-white shadow-sm hover:bg-emerald-700";
                             return (
@@ -701,6 +709,9 @@ export function SecurityCenterPage({
                   <SelectItem value="redact">
                     {t("security.dialogActionRedact")}
                   </SelectItem>
+                  <SelectItem value="redact_restore">
+                    {t("security.dialogActionRedactRestore")}
+                  </SelectItem>
                   <SelectItem value="audit">
                     {t("security.dialogActionAudit")}
                   </SelectItem>
@@ -709,6 +720,12 @@ export function SecurityCenterPage({
                   </SelectItem>
                 </SelectContent>
               </Select>
+              {editingRule.action === "redact_restore" && (
+                <div className="text-xs leading-5 text-muted-foreground">
+                  <p>{t("security.redactRestoreScope")}</p>
+                  <p>{t("security.redactRestoreRisk")}</p>
+                </div>
+              )}
             </div>
             <div className="space-y-1.5">
               <label

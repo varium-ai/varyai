@@ -61,6 +61,7 @@ export function securityEventResultLabel(
       : toolVerdictLabel(t, event.record.verdict);
   const keys: Record<string, string> = {
     redact: "security.resultRedacted",
+    redact_restore: "security.resultRedactRestore",
     block: "security.resultBlocked",
     audit: "security.resultAlert",
     allow: "security.actionAllow",
@@ -79,7 +80,11 @@ export function securityEventOutboundLabel(
     return t("securityEvents.toolObservation");
   if (event.record.actionTaken === "block")
     return t("security.outboundBlocked");
-  if (["audit", "redact", "allow"].includes(event.record.actionTaken))
+  if (
+    ["audit", "redact", "redact_restore", "allow"].includes(
+      event.record.actionTaken,
+    )
+  )
     return t("security.outboundSent");
   return t("securityEvents.unknown");
 }

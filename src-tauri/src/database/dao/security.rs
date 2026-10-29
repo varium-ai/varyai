@@ -99,7 +99,7 @@ pub struct CustomSecurityRule {
     pub rule_type: String, // "keyword" | "regex"
     pub pattern: String,
     pub risk_level: String, // "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
-    pub action: String,     // "redact" | "audit" | "allow"; legacy "block" becomes "redact"
+    pub action: String, // "redact" | "redact_restore" | "audit" | "allow"; legacy "block" becomes "redact"
     pub enabled: bool,
     pub description: Option<String>,
     pub updated_at: i64,
@@ -125,6 +125,17 @@ fn normalize_security_rule_action(action: &str) -> String {
         "redact".to_string()
     } else {
         action
+    }
+}
+
+fn validate_security_rule_action(action: &str) -> Result<(), AppError> {
+    if matches!(
+        normalize_security_rule_action(action).as_str(),
+        "audit" | "redact" | "redact_restore" | "allow"
+    ) {
+        Ok(())
+    } else {
+        Err(AppError::Database("Invalid security rule action".into()))
     }
 }
 
@@ -389,10 +400,14 @@ impl Database {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| AppError::Database(e.to_string()))?;
 
+        for rule in &rules {
+            validate_security_rule_action(&rule.action)?;
+        }
         Ok(rules)
     }
 
     pub fn save_custom_security_rule(&self, rule: &CustomSecurityRule) -> Result<(), AppError> {
+        validate_security_rule_action(&rule.action)?;
         let conn = lock_conn!(self.extension_connection());
         conn.execute(
             "INSERT OR REPLACE INTO security_custom_rules (
@@ -444,11 +459,7 @@ impl Database {
         action: &str,
     ) -> Result<bool, AppError> {
         let action = normalize_security_rule_action(action);
-        if !matches!(action.as_str(), "audit" | "redact" | "allow") {
-            return Err(AppError::Database(
-                "无效的处理动作，仅支持 redact、audit、allow".to_string(),
-            ));
-        }
+        validate_security_rule_action(&action)?;
 
         let conn = lock_conn!(self.extension_connection());
         let now = chrono::Utc::now().timestamp_millis();
@@ -573,8 +584,11 @@ impl Database {
             let (key, action) = row.map_err(|e| AppError::Database(e.to_string()))?;
             let action = normalize_security_rule_action(&action);
             if let Some(id) = key.strip_prefix("builtin_action:") {
-                if is_builtin_security_rule_id(id) && is_valid_builtin_action(id, &action) {
-                    actions.insert(id.to_owned(), action);
+                if is_builtin_security_rule_id(id) {
+                    validate_security_rule_action(&action)?;
+                    if is_valid_builtin_action(id, &action) {
+                        actions.insert(id.to_owned(), action);
+                    }
                 }
             }
         }
@@ -595,7 +609,7 @@ impl Database {
                 let message = if id == "catalog:generic-sk-key-notice" {
                     "通用 sk- 提醒规则仅支持 audit 或 allow 动作"
                 } else {
-                    "无效的处理动作，仅支持 redact、audit、allow"
+                    "无效的处理动作，仅支持 redact、redact_restore、audit、allow"
                 };
                 return Err(AppError::Database(message.to_string()));
             }
@@ -623,7 +637,7 @@ fn is_builtin_security_rule_id(id: &str) -> bool {
 }
 
 fn is_valid_builtin_action(id: &str, action: &str) -> bool {
-    matches!(action, "audit" | "redact" | "allow")
+    matches!(action, "audit" | "redact" | "redact_restore" | "allow")
         && (id != "catalog:generic-sk-key-notice" || matches!(action, "audit" | "allow"))
 }
 
@@ -875,4 +889,53 @@ fn apply_audit_writes(
         receipts.push(receipt);
     }
     Ok(receipts)
+}
+
+#[cfg(test)]
+mod redact_restore_tests {
+    use super::*;
+
+    #[test]
+    fn redact_restore_round_trips_and_invalid_actions_are_rejected() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        db.update_builtin_security_rule_action("chinese_phone_number", Some("redact_restore"))?;
+        assert_eq!(
+            db.get_builtin_security_rule_actions()?
+                .get("chinese_phone_number")
+                .map(String::as_str),
+            Some("redact_restore")
+        );
+        let mut rule = CustomSecurityRule {
+            id: "synthetic-restore-rule".into(),
+            name: "Synthetic rule".into(),
+            rule_type: "keyword".into(),
+            pattern: "synthetic-policy-marker".into(),
+            risk_level: "HIGH".into(),
+            action: "redact_restore".into(),
+            enabled: true,
+            description: None,
+            updated_at: 1,
+        };
+        db.save_custom_security_rule(&rule)?;
+        assert_eq!(db.get_custom_security_rules()?[0].action, "redact_restore");
+        assert!(db.update_custom_security_rule_action(&rule.id, "redact_restore")?);
+        for invalid in ["redactrestore", "redact-restore", "restore"] {
+            rule.action = invalid.into();
+            assert!(db.save_custom_security_rule(&rule).is_err());
+            assert!(db
+                .update_custom_security_rule_action(&rule.id, invalid)
+                .is_err());
+            assert!(db
+                .update_builtin_security_rule_action("chinese_phone_number", Some(invalid))
+                .is_err());
+        }
+        assert!(db
+            .update_builtin_security_rule_action(
+                "catalog:generic-sk-key-notice",
+                Some("redact_restore")
+            )
+            .is_err());
+        assert_eq!(db.get_custom_security_rules()?[0].action, "redact_restore");
+        Ok(())
+    }
 }

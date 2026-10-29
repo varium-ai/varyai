@@ -50,6 +50,8 @@ pub struct ProxyState {
     pub app_handle: Option<tauri::AppHandle>,
     /// 故障转移切换管理器
     pub failover_manager: Arc<FailoverSwitchManager>,
+    /// 可逆 DLP 恢复网关
+    pub(crate) restoration_gateway: super::security::http_restoration::RestorationGateway,
 }
 
 /// 代理HTTP服务器
@@ -85,6 +87,8 @@ impl ProxyServer {
             codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
             app_handle,
             failover_manager,
+            restoration_gateway: super::security::http_restoration::RestorationGateway::new_default(
+            ),
         };
 
         Self {
@@ -100,6 +104,15 @@ impl ProxyServer {
         runtime: Arc<crate::services::pi_routing::Runtime>,
     ) -> Self {
         self.state.pi_runtime = runtime;
+        self
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn with_restoration_gateway(
+        mut self,
+        gateway: super::security::http_restoration::RestorationGateway,
+    ) -> Self {
+        self.state.restoration_gateway = gateway;
         self
     }
 
@@ -304,7 +317,7 @@ impl ProxyServer {
         );
     }
 
-    fn build_router(&self) -> Router {
+    pub(crate) fn build_router(&self) -> Router {
         Router::new()
             // 健康检查
             .route("/health", get(handlers::health_check))

@@ -54,11 +54,7 @@ impl NativeSseCompletion {
         self.legacy_completed = true;
     }
 
-    pub(super) fn observe(
-        &mut self,
-        fact: &CompletionObservation<'_>,
-        budget: &PayloadBudget,
-    ) {
+    pub(super) fn observe(&mut self, fact: &CompletionObservation<'_>, budget: &PayloadBudget) {
         match fact {
             CompletionObservation::RawFrame(raw) => {
                 if self.raw_frame(raw, budget).is_err() {
@@ -193,7 +189,7 @@ impl NativeSseCompletion {
         }
         if event_name == "response.failed"
             || event_name == "error"
-            || data.get("error").is_some()
+            || data.get("error").is_some_and(|v| !v.is_null())
         {
             return Err(TokenError::RedactionFailed);
         }
@@ -201,8 +197,7 @@ impl NativeSseCompletion {
             let item = data.get("item").ok_or(TokenError::RedactionFailed)?;
             validate_native_output_item(item, budget)?;
         } else if event_name == "response.completed" {
-            if self.completed
-                || !NativeCompletionEvent::new(event_name, data).permits_completion()
+            if self.completed || !NativeCompletionEvent::new(event_name, data).permits_completion()
             {
                 return Err(TokenError::RedactionFailed);
             }
@@ -233,6 +228,7 @@ pub(crate) struct JsonCompletion {
     protocol: JsonCompletionProtocol,
     seen: bool,
     permitted: bool,
+    unsupported_carrier: bool,
 }
 
 impl JsonCompletion {
@@ -241,7 +237,12 @@ impl JsonCompletion {
             protocol,
             seen: false,
             permitted: false,
+            unsupported_carrier: false,
         }
+    }
+
+    pub(super) fn has_unsupported_carrier(&self) -> bool {
+        self.unsupported_carrier
     }
 
     pub(super) fn observe_raw_json(&mut self, raw: &str, budget: &PayloadBudget) {
@@ -260,10 +261,11 @@ impl JsonCompletion {
                 validate_native_response_object(value, budget).is_ok()
             }
             JsonCompletionProtocol::ChatCompletions => {
-                validate_chat_json_response(value, budget).is_ok()
+                validate_chat_json_response(value, budget, &mut self.unsupported_carrier).is_ok()
             }
             JsonCompletionProtocol::AnthropicMessages => {
-                validate_anthropic_json_response(value, budget).is_ok()
+                validate_anthropic_json_response(value, budget, &mut self.unsupported_carrier)
+                    .is_ok()
             }
             JsonCompletionProtocol::ResponsesCompact => {
                 validate_compact_json_response(value).is_ok()
@@ -277,9 +279,7 @@ impl JsonCompletion {
 }
 
 fn valid_external_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 256
-        && !id.chars().any(|c| c.is_whitespace() || c.is_control())
+    !id.is_empty() && id.len() <= 256 && !id.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 fn validate_native_response_object(
@@ -294,7 +294,7 @@ fn validate_native_response_object(
         .ok_or(TokenError::RedactionFailed)?;
     let _ = id;
     if obj.get("status").and_then(Value::as_str) != Some("completed")
-        || obj.get("error").is_some()
+        || obj.get("error").is_some_and(|v| !v.is_null())
         || obj.get("incomplete_details").is_some_and(|v| !v.is_null())
     {
         return Err(TokenError::RedactionFailed);
@@ -415,7 +415,62 @@ fn validate_native_output_item(item: &Value, budget: &PayloadBudget) -> Result<(
     Ok(())
 }
 
-fn validate_chat_json_response(body: &Value, budget: &PayloadBudget) -> Result<(), TokenError> {
+/// Match readable Chat carriers to the JSON/SSE converters before they can drop data.
+/// Reasoning variants remain converter-defined; tool validation is separate.
+pub(super) fn chat_carriers_supported(
+    message: &serde_json::Map<String, Value>,
+    streaming: bool,
+) -> bool {
+    if message.iter().any(|(key, value)| {
+        !value.is_null()
+            && !matches!(
+                key.as_str(),
+                "role"
+                    | "content"
+                    | "refusal"
+                    | "reasoning_content"
+                    | "reasoning"
+                    | "reasoning_details"
+                    | "tool_calls"
+            )
+    }) {
+        return false;
+    }
+    if message
+        .get("refusal")
+        .is_some_and(|value| !value.is_null() && (streaming || !value.is_string()))
+        || message.get("tool_calls").is_some_and(|value| {
+            !value.is_null()
+                && !super::completion_tools::chat_tool_carriers_supported(value, streaming)
+        })
+    {
+        return false;
+    }
+    match message.get("content") {
+        None | Some(Value::Null | Value::String(_)) => true,
+        Some(Value::Array(parts)) if !streaming => parts.iter().all(|part| {
+            let Some(object) = part.as_object() else {
+                return false;
+            };
+            let field = match object.get("type").and_then(Value::as_str) {
+                Some("text" | "output_text") => "text",
+                Some("refusal") => "refusal",
+                _ => return false,
+            };
+            object.get(field).is_some_and(Value::is_string)
+                && object
+                    .iter()
+                    .all(|(key, value)| value.is_null() || key == "type" || key == field)
+        }),
+        _ => false,
+    }
+}
+
+fn validate_chat_json_response(
+    body: &Value,
+    budget: &PayloadBudget,
+    unsupported_carrier: &mut bool,
+) -> Result<(), TokenError> {
     let obj = body.as_object().ok_or(TokenError::RedactionFailed)?;
     if obj.get("error").is_some()
         || !obj
@@ -447,6 +502,10 @@ fn validate_chat_json_response(body: &Value, budget: &PayloadBudget) -> Result<(
         .is_some_and(|r| r != "assistant")
         || message.contains_key("function_call")
     {
+        return Err(TokenError::RedactionFailed);
+    }
+    if !chat_carriers_supported(message, false) {
+        *unsupported_carrier = true;
         return Err(TokenError::RedactionFailed);
     }
     let tool_reason = matches!(reason, Some("tool_calls" | "function_call"));
@@ -497,9 +556,42 @@ fn validate_chat_json_response(body: &Value, budget: &PayloadBudget) -> Result<(
     Ok(())
 }
 
+// Only carrier keys are closed-world; tool inputs and opaque values stay untouched.
+pub(super) fn anthropic_carrier_keys_supported(carrier: &Value, keys: &[&str]) -> bool {
+    carrier
+        .as_object()
+        .is_none_or(|object| object.keys().all(|key| keys.contains(&key.as_str())))
+}
+
+pub(super) fn anthropic_block_carrier_supported(block: &Value) -> bool {
+    let keys: &[&str] = match block.get("type").and_then(Value::as_str) {
+        Some("text") => &["type", "text"],
+        Some("thinking") => &["type", "thinking", "signature"],
+        Some("redacted_thinking") => &["type", "data"],
+        Some("tool_use") => &["type", "id", "name", "input"],
+        Some(_) => return false,
+        // Missing or malformed known fields remain ordinary completion failures.
+        None => return true,
+    };
+    anthropic_carrier_keys_supported(block, keys)
+}
+
+pub(super) fn anthropic_delta_carrier_supported(delta: &Value) -> bool {
+    let keys: &[&str] = match delta.get("type").and_then(Value::as_str) {
+        Some("text_delta") => &["type", "text"],
+        Some("thinking_delta") => &["type", "thinking"],
+        Some("signature_delta") => &["type", "signature"],
+        Some("input_json_delta") => &["type", "partial_json"],
+        Some(_) => return false,
+        None => return true,
+    };
+    anthropic_carrier_keys_supported(delta, keys)
+}
+
 fn validate_anthropic_json_response(
     body: &Value,
     _budget: &PayloadBudget,
+    unsupported_carrier: &mut bool,
 ) -> Result<(), TokenError> {
     let obj = body.as_object().ok_or(TokenError::RedactionFailed)?;
     if obj.get("type").and_then(Value::as_str) == Some("error")
@@ -520,6 +612,13 @@ fn validate_anthropic_json_response(
         .get("content")
         .and_then(Value::as_array)
         .ok_or(TokenError::RedactionFailed)?;
+    if blocks
+        .iter()
+        .any(|block| !anthropic_block_carrier_supported(block))
+    {
+        *unsupported_carrier = true;
+        return Err(TokenError::RedactionFailed);
+    }
     let mut tool_count = 0usize;
     for (idx, block) in blocks.iter().enumerate() {
         match block.get("type").and_then(Value::as_str) {
@@ -697,7 +796,8 @@ pub(super) fn permits_chat_argument_normalization(
     let Ok(orig_json) = PayloadJson::try_from_str(raw, budget.clone(), budget.limit()) else {
         return Ok(false);
     };
-    let Ok(norm_json) = PayloadJson::try_from_str(normalized, budget.clone(), budget.limit()) else {
+    let Ok(norm_json) = PayloadJson::try_from_str(normalized, budget.clone(), budget.limit())
+    else {
         return Ok(false);
     };
     if !orig_json.as_value().is_object() || !norm_json.as_value().is_object() {
@@ -768,7 +868,8 @@ pub(super) fn permits_xai_argument_normalization(
     let Ok(orig_json) = PayloadJson::try_from_str(original, budget.clone(), budget.limit()) else {
         return Ok(false);
     };
-    let Ok(norm_json) = PayloadJson::try_from_str(normalized, budget.clone(), budget.limit()) else {
+    let Ok(norm_json) = PayloadJson::try_from_str(normalized, budget.clone(), budget.limit())
+    else {
         return Ok(false);
     };
     if !orig_json.as_value().is_object() || !norm_json.as_value().is_object() {

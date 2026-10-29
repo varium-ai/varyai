@@ -1111,7 +1111,7 @@ fn completed_context_ownership_enforces_1024_and_16384_ceilings_and_releases_out
     )?;
 
     // 1. 129 calls in a single completed context must fail CapacityExceeded.
-    let too_many_calls: Vec< String > = (0..129).map(|i| format!("call_excess_{i}")).collect();
+    let too_many_calls: Vec<String> = (0..129).map(|i| format!("call_excess_{i}")).collect();
     let call_specs: Vec<CompletedCallSpec<'_>> = too_many_calls
         .iter()
         .map(|id| CompletedCallSpec {
