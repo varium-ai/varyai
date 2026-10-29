@@ -71,6 +71,27 @@ beforeEach(() => {
 });
 
 describe("useAddProviderMutation", () => {
+  it.each(["workbuddy", "qoder", "trae", "kimi", "qwen", "zcode"] as const)(
+    "saves a %s supplier without changing the active client configuration",
+    async (appId) => {
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useAddProviderMutation(appId), {
+        wrapper,
+      });
+      await act(async () =>
+        result.current.mutateAsync({
+          name: "Saved supplier",
+          settingsConfig: { models: [{ id: "synthetic-model" }] },
+        }),
+      );
+      expect(apiMocks.add).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "Saved supplier" }),
+        appId,
+        false,
+      );
+    },
+  );
+
   it("duplicates Claude Desktop official providers with a fresh id", async () => {
     const { wrapper } = createWrapper();
     const { result } = renderHook(

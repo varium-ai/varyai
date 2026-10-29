@@ -3959,10 +3959,13 @@
     "noRules": "暫無規則",
     "resetBuiltin": "恢復預設",
     "sandboxTitle": "規則沙箱測試",
-    "sandboxDescription": "不執行工具、不落盤、不回顯原文，僅回傳固定列舉結論。",
+    "sandboxDescription": "手動預覽規則，不受即時觀測總開關影響；不執行工具、不產生風險記錄、不儲存或顯示原文。",
+    "sandboxObservationDisabled": "即時工具風險觀測已關閉。以下僅為手動規則測試，不代表即時防護已開啟。",
     "sandboxTool": "工具名",
     "sandboxClient": "用戶端（選填）",
     "sandboxDefinitionRef": "可信 schema 引用（選填）",
+    "sandboxInvalidJson": "JSON 格式不合法，請檢查括號、引號和逗號後再測試。",
+    "sandboxOpenaiWriteHint": "OpenAI write_file 使用 path 欄位，例如 {\"path\":\"/etc/sudoers\",\"content\":\"test\"}；file_path 是 Claude、Gemini 的欄位。缺少可辨識欄位會顯示 unchecked（未檢查），不代表安全。",
     "sandboxTrustHint": "不會依工具名推斷可信身分。僅測試對應用戶端的內建工具時，明確填寫已知 schema：builtin:claude:tools:v1、builtin:codex:tools:v1、builtin:gemini:tools:v1 或 builtin:openai:tools:v1。MCP 工具不得冒充內建身分。",
     "fieldTarget": "選擇器目標",
     "fieldToolRefs": "精確工具引用（JSON 陣列）",
@@ -4303,7 +4306,7 @@
       "renew": "更新憑證並恢復接管",
       "renewing": "正在更新憑證…",
       "renewed": "憑證已更新，請完全結束並重新開啟 Qoder。",
-      "renewFailed": "憑證更新失敗，請完成 macOS 系統認證後重試。",
+      "renewFailed": "憑證更新失敗。",
       "expiredTitle": "Qoder 本機憑證已過期",
       "expiredDescription": "Qoder 官方帳號的安全接管憑證已過期。可直接在此更新憑證並恢復接管，無需重新啟動 VaryAI；macOS 可能要求系統認證。完成後請完全結束並重新開啟 Qoder，以重新讀取介面位址和憑證信任。第三方模型的 HTTP 路由不依賴此憑證。",
       "title": "啟用 Qoder 安全接管",
@@ -4321,7 +4324,18 @@
       "clearDescription": "將關閉 Qoder 接管、恢復客戶端設定，移除鑰匙圈信任並刪除本機憑證檔案。macOS 可能要求系統密碼以確認移除信任。完成後請完全重新啟動 Qoder；清除後不會自動產生憑證，只有點擊「建立 / 重建憑證」才會重新建立。",
       "rebuildDescription": "將替換現有憑證並啟用 Qoder 接管。macOS 可能先後要求驗證以移除舊信任及新增信任；密碼只交給系統。完成後請完全重新啟動 Qoder。",
       "cleared": "憑證已清除，Qoder 接管已關閉，請完全重新啟動 Qoder。",
-      "operationFailed": "憑證操作未完成，請檢查系統驗證並重試。",
+      "operationFailed": "憑證操作失敗。",
+      "failureDetail": "失敗階段：{{stage}}；狀態：{{status}}。",
+      "failureStages": {
+        "codec": "Qoder 版本相容性檢查",
+        "data": "憑證檔案或格式處理",
+        "generate": "產生憑證",
+        "inspect": "檢查憑證",
+        "verify_trust": "驗證憑證信任",
+        "install_trust": "安裝憑證信任",
+        "remove_trust": "移除憑證信任",
+        "delete_certificate": "刪除鑰匙圈憑證"
+      },
       "statusFailed": "無法讀取憑證狀態，請稍後重試。"
     }
   },
@@ -4452,6 +4466,8 @@
     "resultWarning": "風險預警"
   },
   "gatewayKeys": {
+    "created": "密鑰建立成功",
+    "copied": "密鑰已複製",
     "nameExists": "已存在同名金鑰，請使用其他名稱。",
     "sourceAgent": "請求來源",
     "upstreamModel": "實際轉發模型",

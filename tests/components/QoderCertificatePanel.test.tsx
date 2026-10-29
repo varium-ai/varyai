@@ -87,6 +87,42 @@ describe("Qoder certificate management", () => {
       expect(state.invoke).toHaveBeenCalledWith("rebuild_qoder_certificate"),
     );
   });
+  it.each([
+    "Qoder certificate install_trust failed: exit=1",
+    "synthetic-private-detail",
+    "Qoder CN codec is unavailable or this client version is unsupported; the request was not forwarded",
+    "Qoder certificate private-stage failed: exit=1",
+    "Qoder certificate install_trust failed: exit=1 synthetic-private-detail",
+  ])(
+    "shows only recognized certificate operation diagnostics: %s",
+    async (message) => {
+      state.invoke.mockRejectedValueOnce(new Error(message));
+      render(<QoderCertificatePanel />);
+      fireEvent.click(
+        screen.getByRole("button", { name: "qoder.certificate.manageTitle" }),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "qoder.certificate.rebuild" }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "common.confirm" }));
+      await waitFor(() =>
+        expect(state.error).toHaveBeenCalledWith(
+          "qoder.certificate.operationFailed",
+          {
+            description:
+              message === "Qoder certificate install_trust failed: exit=1" ||
+              message ===
+                "Qoder CN codec is unavailable or this client version is unsupported; the request was not forwarded"
+                ? "qoder.certificate.failureDetail"
+                : undefined,
+          },
+        ),
+      );
+      expect(JSON.stringify(state.error.mock.calls)).not.toContain(
+        "synthetic-private-detail",
+      );
+    },
+  );
   it("does not offer clearing an absent certificate", () => {
     state.data.expires_at = null;
     render(<QoderCertificatePanel />);

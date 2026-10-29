@@ -12,6 +12,14 @@ Select the target client before adding or editing a provider. Provider credentia
 
 See [Codex model catalogs](codex-model-catalog.md) for import behavior. Do not use an internal gateway address or a usable key in a shared example.
 
+## Replace managed model catalogs
+
+Selecting a supplier in Kimi, Qwen, ZCode, Qoder or WorkBuddy replaces the models managed by VaryAI with the target supplier's complete saved catalog. Selecting the official entry withdraws those managed models. File adapters stage validation and replacement before writing; native login state, MCP configuration and unrelated providers remain intact. Recognizable ownership markers also cover models left after deletion of the shared database. Unmarked historical native configurations cannot be distinguished from user-created configurations and remain protected.
+
+TRAE performs replacement through its native model API. The bridge checks recovery data before deleting owned models and attempts restoration on failure. Recovery credentials remain in the operation's memory; ownership storage contains only identifiers. The connection checks its helper revision and refreshes an older resident helper before replacing models. Repeated checks reuse the current helper. Existing random debug endpoints remain reusable after local connection metadata is removed.
+
+Claude Desktop and Grok Build already replace their generated model configuration as complete snapshots. Doubao Work exposes only its native official login and has no custom provider catalog to replace. OpenCode, OpenClaw, Hermes and Pi retain their multiple-provider mode.
+
 ## Reuse a named connection
 
 Every agent's provider form includes **Connection preset**. Open **Manage presets** to show a separate dialog above the provider form, enter a name, the supplier's API base URL and an API key, choose its upstream format, and save. The preset table shows the saved upstream format. Leave the format unspecified to preserve each agent's current choice, including for existing presets. Closing the dialog or pressing Escape returns to the provider form with its unsaved values intact. Use the API endpoint supplied for client configuration, not the supplier's website homepage. Presets can be edited or deleted from the same dialog; keys are masked in the editor.
@@ -68,7 +76,7 @@ The current local proxy covers Claude Code, Codex, Gemini CLI and Grok Build. Ot
 
 ## Verify and recover
 
-TRAE CN displays managed models as **Model name · Provider name**. An explicit model display name takes precedence; otherwise the last segment of the supplier model ID is used. Labels fit TRAE's 64-character limit, with a short number distinguishing duplicate labels. Supplier request model IDs remain unchanged. Older UUID and hash labels are updated in place when the provider is applied or saved again. Ownership is stored separately in TRAE's local browser storage as native model IDs and request model IDs, without credentials; switching and removal do not depend on readable labels. Clearing that storage removes those ownership records, so remove managed models before clearing it. After a TRAE bridge update, fully quit and reopen TRAE CN to load the new helper. A native model configuration failure is reported separately from a missing local connection.
+TRAE CN displays managed models as **Model name · Provider name**. An explicit model display name takes precedence; otherwise the last segment of the supplier model ID is used. Labels fit TRAE's 64-character limit, with a short number distinguishing duplicate labels. Supplier request model IDs remain unchanged. Older UUID and hash labels are replaced when the provider is applied or saved again. Ownership is stored separately in TRAE's local browser storage as native model IDs and request model IDs, without credentials; switching and removal do not depend on readable labels. Clearing that storage removes those ownership records, so remove managed models before clearing it. The current helper is refreshed automatically when an older bridge is connected. The initial debug setting still requires one complete TRAE CN restart. A native model configuration failure is reported separately from a missing local connection.
 
 - Confirm the client, active provider, routing state, selected format and exact model ID.
 - Make a short synthetic request and review its status. A successful model-list fetch is not a completed inference request.

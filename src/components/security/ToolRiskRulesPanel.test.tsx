@@ -22,6 +22,7 @@ const resetBuiltinRule = vi.fn().mockResolvedValue(undefined);
 const deleteRule = vi.fn().mockResolvedValue(undefined);
 const testSandbox = vi.fn().mockResolvedValue(undefined);
 let items: ToolRiskRuleItem[];
+let observationEnabled = true;
 let events: ToolRiskEventRecord[] = [];
 
 const customItem: ToolRiskRuleItem = {
@@ -74,7 +75,7 @@ vi.mock("@/hooks/useToolRisk", () => ({
     isDeleting: false,
   }),
   useToolRiskSettings: () => ({
-    settings: { enabled: true, policyVersion: 1 },
+    settings: { enabled: observationEnabled, policyVersion: 1 },
     isLoading: false,
     updateSettings: vi.fn(),
     isUpdating: false,
@@ -320,6 +321,71 @@ describe("ToolRiskRulesPanel sandbox trust", () => {
   beforeEach(() => {
     testSandbox.mockClear();
     items = [];
+    observationEnabled = true;
+  });
+
+  it("rejects malformed JSON without silently testing it as plain text", async () => {
+    render(<ToolRiskRulesPanel />);
+    fireEvent.change(screen.getByPlaceholderText('{"command": "ls"}'), {
+      target: { value: '{"command":"ls"}}' },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "toolRisk.sandboxRun" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "toolRisk.sandboxInvalidJson",
+    );
+    expect(testSandbox).not.toHaveBeenCalled();
+  });
+
+  it("preserves plain-text patch inputs", async () => {
+    render(<ToolRiskRulesPanel />);
+    const patch =
+      "*** Begin Patch\n*** Add File: synthetic.txt\n+test\n*** End Patch";
+    fireEvent.change(screen.getByPlaceholderText("toolRisk.sandboxTool"), {
+      target: { value: "apply_patch" },
+    });
+    fireEvent.change(screen.getByPlaceholderText('{"command": "ls"}'), {
+      target: { value: patch },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "toolRisk.sandboxRun" }),
+    );
+    await waitFor(() =>
+      expect(testSandbox).toHaveBeenCalledWith({
+        toolName: "apply_patch",
+        input: patch,
+      }),
+    );
+  });
+
+  it("explains the OpenAI write_file path field without inferring trust", () => {
+    render(<ToolRiskRulesPanel />);
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "toolRisk.sandboxClient" }),
+      {
+        target: { value: "openai" },
+      },
+    );
+    fireEvent.change(screen.getByPlaceholderText("toolRisk.sandboxTool"), {
+      target: { value: "write_file" },
+    });
+    expect(screen.getByText("toolRisk.sandboxOpenaiWriteHint")).toBeVisible();
+    expect(
+      screen.getByRole("textbox", { name: "toolRisk.sandboxDefinitionRef" }),
+    ).toHaveValue("");
+  });
+
+  it("identifies manual previews when live observation is disabled", async () => {
+    observationEnabled = false;
+    render(<ToolRiskRulesPanel />);
+    expect(
+      screen.getByText("toolRisk.sandboxObservationDisabled"),
+    ).toBeVisible();
+    fireEvent.click(
+      screen.getByRole("button", { name: "toolRisk.sandboxRun" }),
+    );
+    await waitFor(() => expect(testSandbox).toHaveBeenCalled());
   });
 
   it("does not infer trusted client or schema from a builtin-looking tool name", async () => {

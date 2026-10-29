@@ -4919,6 +4919,8 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let models = Arc::new(Mutex::new(vec!["trae-a".to_string()]));
         let reject = Arc::new(AtomicBool::new(false));
+        let replacement_capability = Arc::new(AtomicBool::new(true));
+        let native_capability = replacement_capability.clone();
         let run = Arc::new(AtomicBool::new(true));
         let (native_models, reject_target, running) = (models.clone(), reject.clone(), run.clone());
         let worker = std::thread::spawn(move || {
@@ -4938,13 +4940,19 @@ mod tests {
                 let request: serde_json::Value = serde_json::from_str(&line).unwrap();
                 let mut models = native_models.lock().unwrap();
                 let response = match request["op"].as_str().unwrap() {
-                    "health" => json!({"result":{"ready":true,"enabled":false}}),
+                    "health" => {
+                        json!({"result":{"ready":true,"enabled":false,"revision":2,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
+                    }
                     "list" => json!({"result":[]}),
                     "remove" => {
                         models.retain(|id| id != request["id"].as_str().unwrap());
                         json!({"result":true})
                     }
-                    "apply" => {
+                    "replace" if request["config"].is_null() => {
+                        models.clear();
+                        json!({"result":true})
+                    }
+                    "apply" | "replace" => {
                         let id = request["id"].as_str().unwrap();
                         if (id == "trae-a" && reject_target.load(Ordering::Relaxed))
                             || models.iter().any(|existing| existing != id)
@@ -4990,6 +4998,16 @@ mod tests {
         state.proxy_service.refresh_trae_takeover().await;
         assert!(models.lock().unwrap().is_empty());
         assert!(!db
+            .get_bool_flag(super::super::trae_bridge::selection::PENDING_KEY)
+            .unwrap());
+        // An older bridge must be rejected before withdrawing inactive models.
+        models.lock().unwrap().push("trae-a".into());
+        replacement_capability.store(false, Ordering::Relaxed);
+        db.set_setting(super::super::trae_bridge::selection::PENDING_KEY, "true")
+            .unwrap();
+        state.proxy_service.refresh_trae_takeover().await;
+        assert_eq!(*models.lock().unwrap(), ["trae-a"]);
+        assert!(db
             .get_bool_flag(super::super::trae_bridge::selection::PENDING_KEY)
             .unwrap());
         assert!(!short_home.path().join(".trae-cn/argv.json").exists());

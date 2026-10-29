@@ -209,9 +209,125 @@ function createBridge(
       throw error;
     }
   }
+  async function replace(id, name, config) {
+    if (
+      config !== null &&
+      (!/^[\w-]+$/.test(id) ||
+        !["openai", "openai-responses", "anthropic"].includes(
+          config.protocol,
+        ) ||
+        typeof config.baseUrl !== "string" ||
+        !config.baseUrl.trim() ||
+        typeof config.apiKey !== "string" ||
+        !config.apiKey.trim() ||
+        !Array.isArray(config.models) ||
+        !config.models.length ||
+        config.models.some(
+          (model) => typeof model.model !== "string" || !model.model.trim(),
+        ))
+    )
+      throw Error("invalid_provider");
+    const ownership = new Map();
+    for (let index = 0; index < storage.length; index++) {
+      const key = storage.key(index);
+      if (key?.startsWith("varyai.trae.models.")) {
+        const owner = key.slice("varyai.trae.models.".length);
+        ownership.set(owner, loadOwned(owner));
+      }
+    }
+    await refreshModels();
+    const result = await service.getModelList();
+    if (!Array.isArray(result.model_list))
+      throw Error("model_list_unavailable");
+    const snapshots = [];
+    for (const model of result.model_list) {
+      let owner = [...ownership].find(([, rows]) =>
+        rows.some((row) => row.id === model.custom_model_id),
+      )?.[0];
+      owner ??= /^VaryAI\/([\w-]+)\//.exec(model.display_name || "")?.[1];
+      if (!owner || !model.custom_model_id) continue;
+      const wire = model.name || model.model_name;
+      // Recovery credentials stay in this call's memory, never in ownership storage or IPC results.
+      if (
+        typeof model.ak !== "string" ||
+        !model.ak ||
+        /^[*•]+$/.test(model.ak) ||
+        typeof wire !== "string" ||
+        !wire ||
+        typeof model.base_url !== "string"
+      ) {
+        throw Error("model_recovery_unavailable");
+      }
+      snapshots.push({
+        owner,
+        id: model.custom_model_id,
+        fields: {
+          provider: model.provider,
+          model_name: wire,
+          display_name: model.display_name,
+          ak: model.ak,
+          base_url: model.base_url,
+          is_custom: true,
+          auth_type: model.auth_type ?? 0,
+          custom_model_type: model.custom_model_type || "chat_model",
+        },
+      });
+      if (!ownership.has(owner)) ownership.set(owner, []);
+    }
+    try {
+      for (const model of snapshots) {
+        const deleted = await service.updateCustomModel({
+          action: "delete",
+          id: model.id,
+        });
+        if (deleted.code !== 0) throw modelFailure("remove", deleted.code);
+      }
+      for (const owner of ownership.keys()) saveOwned(owner, []);
+      await refreshModels();
+      return config === null ? [] : await apply(id, name, config);
+    } catch (error) {
+      let restored = true;
+      await refreshModels();
+      const remaining = await list();
+      for (const model of snapshots) {
+        if (remaining.some((row) => row.id === model.id)) continue;
+        try {
+          const marker = await ownedName(model.owner, model.fields.model_name);
+          const added = await service.addCustomModel({
+            ...model.fields,
+            display_name: marker,
+          });
+          if (added.code !== 0) throw modelFailure("restore", added.code);
+          await refreshModels();
+          const found = (await list()).find(
+            (row) => row.displayName === marker,
+          );
+          if (!found?.id) throw Error("model_restore_failed");
+          const rows = ownership
+            .get(model.owner)
+            .filter((row) => row.id !== model.id);
+          rows.push({ id: found.id, model: model.fields.model_name });
+          ownership.set(model.owner, rows);
+          saveOwned(model.owner, rows);
+          const updated = await service.updateCustomModel({
+            action: "update",
+            id: found.id,
+            ...model.fields,
+          });
+          if (updated.code !== 0) throw modelFailure("restore", updated.code);
+        } catch {
+          restored = false;
+        }
+      }
+      await refreshModels();
+      if (!restored) throw Error("model_restore_failed");
+      throw error;
+    }
+  }
   const bridge = {
     list,
     apply,
+    replace,
     remove,
     get enabled() {
       return Boolean(undo);
@@ -417,7 +533,7 @@ customElements.define(tag,class extends HTMLElement{
    switch(message.op){case'health':result={ready:true,enabled:bridge.enabled};break;
     case'enable':await bridge.enable();result=true;break;case'disable':bridge.disable();result=true;break;
     case'list':result=await bridge.list();break;case'apply':result=await bridge.apply(message.id,message.name,message.config);break;
-    case'remove':await bridge.remove(message.id);result=true;break;default:throw Error('unsupported_operation')}
+    case'replace':result=await bridge.replace(message.id,message.name,message.config);break;case'remove':await bridge.remove(message.id);result=true;break;default:throw Error('unsupported_operation')}
    this.send({reply:message.request,result});
   }catch{this.send({reply:message.request,error:'TRAE native bridge unavailable'})}
  }

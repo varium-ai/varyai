@@ -711,7 +711,8 @@ fn test_chinese_id_card_checksum() {
         ]
     });
 
-    let res = SecurityAuditEngine::inspect_request(&body);
+    let res =
+        SecurityAuditEngine::inspect_request_with_runtime(&body, &SecurityRuntimeConfig::default());
 
     assert!(!res.blocked);
 

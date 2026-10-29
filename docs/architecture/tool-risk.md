@@ -2,6 +2,10 @@
 
 The current implementation observes supported tool-call payloads, normalizes the known tool semantics, evaluates applicable enabled rules and records sanitized results. It provides warnings and records, not execution authorization or a sandbox.
 
+## Manual rule preview
+
+The rule preview evaluates synthetic or user-entered tool arguments without executing a tool or recording a live observation. It remains available when live tool observation is disabled. Its results do not indicate that live protection is enabled; the panel explicitly identifies the disabled live-observation state. Malformed object, array or quoted JSON input is rejected before evaluation instead of being reinterpreted as plain text. Free-form inputs remain available. OpenAI `write_file` requires `path`; Claude and Gemini use `file_path`. An `unchecked` result indicates missing applicable evidence or rules, not a safety decision.
+
 ## Evidence boundaries
 
 A model response describes a proposed call. It does not prove that a client selected or executed it, that permissions were granted, or that a later hook did not change the arguments. Provider-side execution must not be represented as local pre-execution evidence.

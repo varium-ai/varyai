@@ -47,13 +47,21 @@ fn request_socket(path: &std::path::Path, command: &Value) -> Result<Value, AppE
         .map_err(|_| unavailable())?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
     if value.get("error").is_some() {
-        if matches!(command["op"].as_str(), Some("apply" | "remove")) {
+        if matches!(command["op"].as_str(), Some("apply" | "replace" | "remove")) {
+            if value["error"] == "model_recovery_unavailable" {
+                return Err(AppError::localized(
+                    "agents.trae_recovery_unavailable",
+                    "TRAE 未提供旧模型的恢复凭证，已保留原配置。请先在 TRAE CN 中备份并清理旧的 VaryAI 模型，再重新切换",
+                    "TRAE did not provide recovery credentials for the old models. The original configuration was preserved. Back up and remove the old VaryAI models in TRAE CN, then switch again",
+                ));
+            }
             let detail = value["error"].as_str().and_then(|message| {
                 let (operation, code) = message.split_once(':')?;
                 let (zh, en) = match operation {
                     "model_add_failed" => ("新增模型", "adding a model"),
                     "model_update_failed" => ("更新模型", "updating a model"),
                     "model_remove_failed" => ("清理旧模型", "removing an old model"),
+                    "model_restore_failed" => ("恢复旧模型", "restoring old models"),
                     _ => return None,
                 };
                 let code = code.parse::<i64>().ok()?;
@@ -81,7 +89,7 @@ fn socket_paths(directory: &std::path::Path, include_legacy: bool) -> Vec<PathBu
     let Ok(entries) = std::fs::read_dir(directory) else {
         return Vec::new();
     };
-    entries
+    let mut paths: Vec<_> = entries
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name();
@@ -91,7 +99,20 @@ fn socket_paths(directory: &std::path::Path, include_legacy: bool) -> Vec<PathBu
                     || (include_legacy && name.starts_with("bridge-"))))
             .then(|| entry.path())
         })
-        .collect()
+        .collect();
+    // Once installed, use the current helper instead of an older resident process.
+    if !include_legacy
+        && paths.iter().any(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("bridge-agent-v2-"))
+        })
+    {
+        paths.retain(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("bridge-agent-v2-"))
+        });
+    }
+    paths
 }
 fn request(command: &Value, all: bool) -> Result<Value, AppError> {
     let mut result = None;
@@ -246,12 +267,19 @@ fn prepare_connection(directory: &std::path::Path, argv: &std::path::Path) -> Re
     let mut value: Value =
         json5::from_str(original.as_deref().unwrap_or("{}")).map_err(|_| unavailable())?;
     let object = value.as_object_mut().ok_or_else(unavailable)?;
+    let random_port = matches!(object.get("remote-debugging-port"), Some(Value::String(port)) if port == "0")
+        || object.get("remote-debugging-port") == Some(&json!(0));
     if backup.exists() {
-        return if object.get("remote-debugging-port") == Some(&json!("0")) {
+        return if random_port {
             Ok(())
         } else {
             Err(unavailable())
         };
+    }
+    // Reuse an existing random endpoint without claiming ownership of its launch setting.
+    // This also permits reconnecting after local recovery metadata was removed.
+    if random_port {
+        return Ok(());
     }
     // Never replace a user's own debugger configuration.
     if object.contains_key("remote-debugging-port") {
@@ -298,11 +326,15 @@ fn argv_path() -> Result<PathBuf, AppError> {
 }
 fn ensure_ready() -> Result<(), AppError> {
     if let Ok(health) = request(&json!({"op":"health"}), false) {
-        return if health["ready"] == true {
-            Ok(())
-        } else {
-            Err(unavailable())
-        };
+        if health["revision"] == 2 {
+            return if health["ready"] == true && health["modelReplacement"] == true {
+                Ok(())
+            } else {
+                Err(unavailable())
+            };
+        }
+        // Release the prior VaryAI hook before injecting the current helper.
+        let _ = request(&json!({"op":"disable"}), true);
     }
     #[cfg(target_os = "macos")]
     {
@@ -349,7 +381,9 @@ fn ensure_ready() -> Result<(), AppError> {
             std::thread::sleep(Duration::from_millis(200));
             if request(&json!({"op":"health"}), false)
                 .ok()
-                .is_some_and(|v| v["ready"] == true)
+                .is_some_and(|v| {
+                    v["ready"] == true && v["revision"] == 2 && v["modelReplacement"] == true
+                })
             {
                 return Ok(());
             }
@@ -390,6 +424,31 @@ pub(crate) fn apply_connected(provider: &Provider) -> Result<(), AppError> {
     )?;
     Ok(())
 }
+pub(crate) fn replace_connected(provider: &Provider) -> Result<(), AppError> {
+    model_replacement_ready()?;
+    let config = if provider.category.as_deref() == Some("official") {
+        Value::Null
+    } else {
+        super::agent_clients::validate(&provider.settings_config)?;
+        provider.settings_config.clone()
+    };
+    request(
+        &json!({"op":"replace","id":provider.id,"name":provider.name,"config":config}),
+        false,
+    )?;
+    Ok(())
+}
+pub(crate) fn model_replacement_ready() -> Result<(), AppError> {
+    let mut health = request(&json!({"op":"health"}), false)?;
+    if health["ready"] != true {
+        return Err(unavailable());
+    }
+    if health["revision"] != 2 {
+        ensure_ready()?;
+        health = request(&json!({"op":"health"}), false)?;
+    }
+    require_model_replacement(&health)
+}
 /// Return false when delivery must wait for a connected client.
 pub(crate) fn switch_provider(target: &Provider, previous: &[Provider]) -> Result<bool, AppError> {
     if target.category.as_deref() != Some("official") {
@@ -398,11 +457,34 @@ pub(crate) fn switch_provider(target: &Provider, previous: &[Provider]) -> Resul
     for provider in previous {
         super::agent_clients::validate(&provider.settings_config)?;
     }
-    if !request(&json!({"op":"health"}), false).is_ok_and(|health| health["ready"] == true) {
+    let health = request(&json!({"op":"health"}), false);
+    if !health.as_ref().is_ok_and(|health| health["ready"] == true) {
         return Ok(false);
     }
-    replace_with(target, previous, apply_connected, remove)?;
+    model_replacement_ready()?;
+    replace_with(
+        target,
+        previous,
+        |provider| {
+            if provider.id == target.id {
+                replace_connected(provider)
+            } else {
+                apply_connected(provider)
+            }
+        },
+        remove,
+    )?;
     Ok(true)
+}
+fn require_model_replacement(health: &Value) -> Result<(), AppError> {
+    if health["modelReplacement"] == true {
+        return Ok(());
+    }
+    Err(AppError::localized(
+        "agents.trae_bridge_update",
+        "TRAE 仍在使用旧版连接脚本，请完全退出 TRAE CN（⌘Q）并重新打开后再切换，现有模型未修改",
+        "TRAE is using an older connection script. Quit TRAE CN completely and reopen it before switching; existing models were not changed",
+    ))
 }
 fn replace_with(
     target: &Provider,
@@ -417,9 +499,7 @@ fn replace_with(
             withdrawn.push(provider);
             remove(&provider.id)?;
         }
-        if target.category.as_deref() != Some("official") {
-            apply(target)?;
-        }
+        apply(target)?;
         Ok(())
     })();
     if let Err(error) = operation {
@@ -459,6 +539,9 @@ mod tests {
             ("user".to_string(), vec!["user-model"]),
         ]));
         let mut apply = |provider: &Provider| {
+            if provider.category.as_deref() == Some("official") {
+                return Ok(());
+            }
             let mut models = models.borrow_mut();
             if models.values().any(|names| names.contains(&"shared")) {
                 return Err(AppError::Message("synthetic duplicate model".into()));
@@ -492,6 +575,33 @@ mod tests {
         replace_with(&old, &[], &mut apply, &mut remove).unwrap();
         assert_eq!(models.borrow()["user"], vec!["user-model"]);
     }
+    #[test]
+    fn current_helper_is_preferred_but_shutdown_can_reach_all_owned_helpers() {
+        let dir = tempfile::tempdir().expect("dir");
+        for name in [
+            "bridge-agent-123.sock",
+            "bridge-legacy.sock",
+            "unrelated.sock",
+        ] {
+            std::fs::write(dir.path().join(name), "").expect("fixture");
+        }
+        assert_eq!(socket_paths(dir.path(), false).len(), 1);
+        let current = dir.path().join("bridge-agent-v2-456.sock");
+        std::fs::write(&current, "").expect("current helper");
+        assert_eq!(socket_paths(dir.path(), false), vec![current]);
+        assert_eq!(socket_paths(dir.path(), true).len(), 3);
+    }
+
+    #[test]
+    fn outdated_bridge_is_rejected_with_restart_instructions() {
+        let error = require_model_replacement(&json!({"ready":true}))
+            .expect_err("old bridge")
+            .to_string();
+        assert!(error.contains("older connection script"));
+        assert!(error.contains("existing models were not changed"));
+        assert!(require_model_replacement(&json!({"ready":true,"modelReplacement":true})).is_ok());
+    }
+
     #[test]
     fn failed_direct_switch_restores_previous_models_including_partial_removals() {
         use std::cell::RefCell;
@@ -597,6 +707,44 @@ mod tests {
             std::fs::read_to_string(argv).unwrap(),
             r#"{"remote-debugging-port":"9999"}"#
         );
+    }
+    #[test]
+    fn existing_random_debug_port_can_connect_without_claiming_launch_settings() {
+        for port in [json!("0"), json!(0)] {
+            let dir = tempfile::tempdir().unwrap();
+            let argv = dir.path().join("argv.json");
+            let original = serde_json::to_string(
+                &json!({"remote-debugging-port":port,"force-color-profile":"srgb"}),
+            )
+            .unwrap();
+            std::fs::write(&argv, &original).unwrap();
+            prepare_connection(dir.path(), &argv).expect("reuse existing random endpoint");
+            assert!(!dir.path().join("launch-backup.json").exists());
+            restore_connection(dir.path(), &argv).expect("do not withdraw an unowned setting");
+            assert_eq!(std::fs::read_to_string(&argv).unwrap(), original);
+        }
+    }
+    #[test]
+    fn numeric_random_port_remains_connectable_after_native_settings_reformat() {
+        let dir = tempfile::tempdir().unwrap();
+        let argv = dir.path().join("argv.json");
+        prepare_connection(dir.path(), &argv).unwrap();
+        let reformatted = r#"{"remote-debugging-port":0,"force-color-profile":"srgb"}"#;
+        std::fs::write(&argv, reformatted).unwrap();
+        prepare_connection(dir.path(), &argv).expect("reuse equivalent numeric setting");
+        restore_connection(dir.path(), &argv).expect("retain externally changed setting");
+        assert_eq!(std::fs::read_to_string(&argv).unwrap(), reformatted);
+    }
+    #[test]
+    fn missing_launch_backup_does_not_permanently_block_reconnection() {
+        let dir = tempfile::tempdir().unwrap();
+        let argv = dir.path().join("argv.json");
+        prepare_connection(dir.path(), &argv).unwrap();
+        let applied = std::fs::read_to_string(&argv).unwrap();
+        std::fs::remove_file(dir.path().join("launch-backup.json")).unwrap();
+        prepare_connection(dir.path(), &argv).expect("reconnect after lost local metadata");
+        assert_eq!(std::fs::read_to_string(&argv).unwrap(), applied);
+        assert!(!dir.path().join("launch-backup.json").exists());
     }
     #[test]
     fn legacy_ide_socket_does_not_claim_agent_protection() {

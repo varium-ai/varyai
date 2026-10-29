@@ -70,7 +70,7 @@ pub(super) fn update(
             )?;
             let delivered =
                 !pending && crate::services::trae_bridge::switch_provider(&projected, &[])?;
-            state.db.save_provider(app, &provider)?;
+            trae_selection::select(&state.db, &provider)?;
             state.db.set_setting(
                 trae_selection::PENDING_KEY,
                 if delivered { "false" } else { "true" },
@@ -84,38 +84,8 @@ pub(super) fn update(
         return Ok(true);
     }
     if managed && old.category.as_deref() != Some("official") {
-        let backup = futures::executor::block_on(state.db.get_live_backup(app))?
-            .map(|saved| serde_json::from_str::<native::Backup>(&saved.original_config))
-            .transpose()
-            .map_err(|_| AppError::InvalidInput("Invalid route backup".into()))?;
-        let origin = backup
-            .as_ref()
-            .and_then(|backup| backup.routes.first())
-            .and_then(|route| route.local.split("/agents/").next())
-            .map(str::to_owned);
-        futures::executor::block_on(native::restore(&state.db, app))?;
-        let operation = (|| {
-            let path = native::config_path(app)?;
-            let mut doc = native::Document::read(app, &path)?;
-            // Validate ownership without removing client-added options from the live document.
-            let mut ownership = native::Document::parse(app, &doc.encode()?)?;
-            ownership.remove(app, &old.id, &old.settings_config)?;
-            let selection = doc.selection(app);
-            let selected_other = !doc.selection_owned(app, Some(&old.id));
-            doc.apply(app, &provider.id, &provider.name, &provider.settings_config)?;
-            if selected_other || doc.selection_available(app, &selection) {
-                doc.set_selection(app, &selection)?;
-            }
-            doc.write(&path)
-        })();
-        if let Some(origin) = origin {
-            if let Err(error) = futures::executor::block_on(native::enable(&state.db, app, &origin))
-            {
-                state.db.set_setting(&native::enabled_key(app), "false")?;
-                return Err(error);
-            }
-        }
-        operation?;
+        apply_native_provider(state, app, provider, true)?;
+        return Ok(true);
     }
     state.db.save_provider(app, &provider)?;
     Ok(true)
@@ -136,7 +106,7 @@ pub(super) fn enable_with_lock(
             state.proxy_service.lock_switch_for_app(app),
         ))
     };
-    let mut provider = state
+    let provider = state
         .db
         .get_provider_by_id(id, app)?
         .ok_or_else(|| AppError::InvalidInput("Provider not found".into()))?;
@@ -191,145 +161,164 @@ pub(super) fn enable_with_lock(
             },
         });
     }
-    if provider.category.as_deref() == Some("official") {
-        if native::supported(app) {
-            let path = native::config_path(app)?;
-            let mut doc = native::Document::read(app, &path)?;
-            let mut withdrawn = Vec::new();
-            let mut backup = if app == "zcode" {
-                futures::executor::block_on(state.db.get_live_backup(app))?
-                    .map(|saved| serde_json::from_str::<native::Backup>(&saved.original_config))
-                    .transpose()
-                    .map_err(|_| AppError::InvalidInput("Invalid route backup".into()))?
-            } else {
-                None
-            };
-            if app == "zcode" {
-                for provider in state.db.get_all_providers(app)?.into_values().filter(|p| {
-                    p.category.as_deref() != Some("official")
-                        && ProviderService::provider_live_config_managed(p) == Some(true)
-                }) {
-                    let mut expected = provider.settings_config.clone();
-                    if let Some(route) = backup
-                        .as_ref()
-                        .and_then(|b| b.routes.iter().find(|r| r.provider_id == provider.id))
-                    {
-                        expected["baseUrl"] = json!(route.local);
-                    }
-                    doc.remove(app, &provider.id, &expected)?;
-                    withdrawn.push(provider);
-                }
-            }
-            let mut changed = !withdrawn.is_empty();
-            if doc.selection_owned(app, None) {
-                let saved = state
-                    .db
-                    .get_setting(&format!("{app}_official_model_selection"))?;
-                if saved.is_some() || app == "zcode" {
-                    let selection = saved
-                        .map(|saved| serde_json::from_str(&saved))
-                        .transpose()
-                        .map_err(|_| {
-                            AppError::InvalidInput("Invalid model selection backup".into())
-                        })?
-                        .unwrap_or(serde_json::Value::Null);
-                    doc.set_selection(app, &selection)?;
-                    changed = true;
-                }
-            }
-            if changed {
-                doc.write(&path)?;
-            }
-            if !withdrawn.is_empty() {
-                if let Some(backup) = backup.as_mut() {
-                    backup
-                        .routes
-                        .retain(|route| !withdrawn.iter().any(|p| p.id == route.provider_id));
-                    // Preserve active route IDs while model removal shifts array positions.
-                    if let Some(rules) =
-                        doc.value["config"]["providerConfigRules"]["providerRules"].as_array()
-                    {
-                        for (index, rule) in rules.iter().enumerate() {
-                            for route in &mut backup.routes {
-                                if rule.pointer("/config/api/baseUrl") == Some(&json!(route.local))
-                                {
-                                    route.pointer = format!("/config/providerConfigRules/providerRules/{index}/config/api/baseUrl");
-                                }
-                            }
-                        }
-                    }
-                    if backup.routes.is_empty() {
-                        futures::executor::block_on(state.db.delete_live_backup(app))?;
-                        state.db.set_setting(&native::enabled_key(app), "false")?;
-                    } else {
-                        let encoded = serde_json::to_string(backup).map_err(|_| {
-                            AppError::InvalidInput("Cannot encode route backup".into())
-                        })?;
-                        futures::executor::block_on(state.db.save_live_backup(app, &encoded))?;
-                    }
-                }
-                for mut provider in withdrawn {
-                    ProviderService::set_provider_live_config_managed(&mut provider, false);
-                    state.db.save_provider(app, &provider)?;
-                }
-            }
+    apply_native_provider(state, app, provider, false)
+}
+
+fn apply_native_provider(
+    state: &AppState,
+    app: &str,
+    mut provider: Provider,
+    preserve_selection: bool,
+) -> Result<SwitchResult, AppError> {
+    let target_id = provider.id.clone();
+    let id = target_id.as_str();
+    let official = provider.category.as_deref() == Some("official");
+    let was_enabled = state.db.get_bool_flag(&native::enabled_key(app))?;
+    let backup = futures::executor::block_on(state.db.get_live_backup(app))?
+        .map(|saved| serde_json::from_str::<native::Backup>(&saved.original_config))
+        .transpose()
+        .map_err(|_| AppError::InvalidInput("Invalid route backup".into()))?;
+    let origin = backup.as_ref().and_then(|backup| {
+        backup.routes.first().map(|route| {
+            route
+                .local
+                .split("/agents/")
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        })
+    });
+    let path = native::config_path(app)?;
+    let mut doc = native::Document::read(app, &path)?;
+    // Stage restoration, selection and routing without withdrawing the active route on failure.
+    if let Some(backup) = &backup {
+        if backup.path != path {
+            return Err(AppError::InvalidInput(
+                "Agent configuration directory changed while routing was active".into(),
+            ));
         }
+        doc.restore(&backup.routes)?;
+    }
+    let selection = doc.selection(app);
+    let selected_owned = doc.selection_owned(app, None);
+    let official_selection = (!selected_owned).then(|| doc.selection(app));
+    let mut withdrawn = Vec::new();
+    let mut ownership = native::Document::parse(app, &doc.encode()?)?;
+    for previous in state.db.get_all_providers(app)?.into_values().filter(|p| {
+        p.category.as_deref() != Some("official")
+            && ProviderService::provider_live_config_managed(p) == Some(true)
+    }) {
+        ownership.remove(app, &previous.id, &previous.settings_config)?;
+        if previous.id != id {
+            withdrawn.push(previous);
+        }
+    }
+    let before_clear = doc.value.clone();
+    doc.clear_managed_models(app)?;
+    if official && !selected_owned && doc.value == before_clear {
+        for mut previous in withdrawn {
+            ProviderService::set_provider_live_config_managed(&mut previous, false);
+            state.db.save_provider(app, &previous)?;
+        }
+        ProviderService::set_provider_live_config_managed(&mut provider, false);
+        state.db.save_provider(app, &provider)?;
         state.db.set_current_provider(app, id)?;
         return Ok(SwitchResult::default());
     }
-    let was_enabled = state.db.get_bool_flag(&native::enabled_key(app))?;
-    let backup = futures::executor::block_on(state.db.get_live_backup(app))?;
-    let origin = backup
-        .as_ref()
-        .and_then(|b| serde_json::from_str::<native::Backup>(&b.original_config).ok())
-        .and_then(|b| {
-            b.routes.first().map(|r| {
-                r.local
-                    .split("/agents/")
-                    .next()
-                    .unwrap_or_default()
-                    .to_string()
-            })
-        });
-    futures::executor::block_on(native::restore(&state.db, app))?;
-    let path = native::config_path(app)?;
-    let mut doc = native::Document::read(app, &path)?;
-    if !doc.selection_owned(app, None) {
-        state.db.set_setting(
-            &format!("{app}_official_model_selection"),
-            &doc.selection(app).to_string(),
-        )?;
-    }
-    let mut withdrawn = Vec::new();
-    if app == "qwen" {
-        for previous in state
-            .db
-            .get_all_providers(app)?
-            .into_values()
-            .filter(|p| p.id != id && p.category.as_deref() != Some("official"))
-        {
-            if doc.qwen_provider_conflicts(&previous.id, &provider.settings_config) {
-                // Stage the complete owned group removal before inserting overlapping IDs.
-                // Ownership checks preserve native edits; nothing is written on failure.
-                doc.remove(app, &previous.id, &previous.settings_config)?;
-                withdrawn.push(previous);
-            }
+    if official {
+        if selected_owned {
+            let saved = state
+                .db
+                .get_setting(&format!("{app}_official_model_selection"))?
+                .map(|value| serde_json::from_str(&value))
+                .transpose()
+                .map_err(|_| AppError::InvalidInput("Invalid model selection backup".into()))?
+                .unwrap_or_else(|| {
+                    if app == "kimi" {
+                        doc.value["models"]
+                            .as_object()
+                            .and_then(|models| {
+                                models
+                                    .iter()
+                                    .find(|(_, model)| {
+                                        model["provider"].as_str().is_some_and(|provider| {
+                                            doc.value["providers"][provider]["type"] == "kimi"
+                                        })
+                                    })
+                                    .map(|(id, _)| json!(id))
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        serde_json::Value::Null
+                    }
+                });
+            doc.set_selection(app, &saved)?;
+        }
+    } else {
+        doc.apply(app, id, &provider.name, &provider.settings_config)?;
+        if preserve_selection && doc.selection_available(app, &selection) {
+            doc.set_selection(app, &selection)?;
         }
     }
-    doc.apply(app, id, &provider.name, &provider.settings_config)?;
+    let next_backup = if let Some(origin) = origin.filter(|_| was_enabled) {
+        let added = if app == "zcode" && !official {
+            doc.prepare_zcode_official(&native::zcode_builtin()?)?
+        } else {
+            Vec::new()
+        };
+        let mut routes = match doc.route(app, &origin) {
+            Ok(routes) => routes,
+            Err(AppError::Localized { key, .. }) if official && key == "agents.no_models" => {
+                Vec::new()
+            }
+            Err(error) => return Err(error),
+        };
+        for route in &mut routes {
+            if let Some(rule) = route
+                .pointer
+                .strip_suffix("/config/api/baseUrl")
+                .and_then(|path| doc.value.pointer(path))
+            {
+                route.created_provider = added
+                    .iter()
+                    .find(|created| created["providerId"] == rule["providerId"])
+                    .cloned();
+            }
+        }
+        if routes.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::to_string(&native::Backup {
+                    path: path.clone(),
+                    routes,
+                })
+                .map_err(|_| AppError::InvalidInput("Cannot encode route backup".into()))?,
+            )
+        }
+    } else {
+        None
+    };
     doc.write(&path)?;
+    if let Some(next_backup) = next_backup {
+        futures::executor::block_on(state.db.save_live_backup(app, &next_backup))?;
+    } else if backup.is_some() {
+        futures::executor::block_on(state.db.delete_live_backup(app))?;
+        state.db.set_setting(&native::enabled_key(app), "false")?;
+    }
+    if let Some(selection) = official_selection.filter(|_| !official) {
+        state.db.set_setting(
+            &format!("{app}_official_model_selection"),
+            &selection.to_string(),
+        )?;
+    }
     for mut previous in withdrawn {
         ProviderService::set_provider_live_config_managed(&mut previous, false);
         state.db.save_provider(app, &previous)?;
     }
-    ProviderService::set_provider_live_config_managed(&mut provider, true);
+    ProviderService::set_provider_live_config_managed(&mut provider, !official);
     state.db.save_provider(app, &provider)?;
     state.db.set_current_provider(app, id)?;
-    if was_enabled {
-        if let Some(origin) = origin {
-            futures::executor::block_on(native::enable(&state.db, app, &origin))?;
-        }
-    }
     Ok(SwitchResult::default())
 }
 pub(super) fn remove(state: &AppState, app: &str, id: &str, delete: bool) -> Result<(), AppError> {
@@ -446,6 +435,79 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn rejected_kimi_switch_keeps_existing_routes_and_selection() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "default_model='native'\n[providers.native]\ntype='kimi'\nbase_url='https://native.example/v1'\n[models.native]\nprovider='native'\nmodel='native'\n").expect("config");
+        native::with_test_config(&path, || {
+            let state = AppState::new(Arc::new(crate::database::Database::memory().expect("db")));
+            list(&state, "kimi").expect("official");
+            let config = json!({"baseUrl":"https://models.example/v1","apiKey":"synthetic-key","protocol":"openai","models":[{"model":"alpha"}]});
+            for (id, name) in [("first", "Company"), ("conflict", "native")] {
+                add(
+                    &state,
+                    "kimi",
+                    Provider::with_id(id.into(), name.into(), config.clone(), None),
+                )
+                .expect("add");
+            }
+            enable(&state, "kimi", "first").expect("first");
+            futures::executor::block_on(native::enable(&state.db, "kimi", "http://127.0.0.1:1"))
+                .expect("route");
+            let before = std::fs::read(&path).expect("before");
+            let backup = futures::executor::block_on(state.db.get_live_backup("kimi"))
+                .expect("backup")
+                .expect("active")
+                .original_config;
+            assert!(enable(&state, "kimi", "conflict").is_err());
+            assert_eq!(
+                std::fs::read(&path).expect("after"),
+                before,
+                "a rejected switch must leave the active route intact"
+            );
+            assert_eq!(
+                futures::executor::block_on(state.db.get_live_backup("kimi"))
+                    .expect("backup")
+                    .expect("still active")
+                    .original_config,
+                backup
+            );
+            assert_eq!(current(&state, "kimi").expect("current"), "first");
+        });
+    }
+
+    #[test]
+    fn kimi_switches_between_saved_suppliers_with_the_same_name() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("config.toml");
+        native::with_test_config(&path, || {
+            let state = AppState::new(Arc::new(crate::database::Database::memory().expect("db")));
+            let config = json!({"baseUrl":"https://models.example/v1","apiKey":"synthetic-key","protocol":"openai","models":[{"model":"alpha"}]});
+            for id in ["first", "second"] {
+                add(
+                    &state,
+                    "kimi",
+                    Provider::with_id(id.into(), "Company".into(), config.clone(), None),
+                )
+                .expect("add");
+            }
+            enable(&state, "kimi", "first").expect("first");
+            futures::executor::block_on(native::enable(&state.db, "kimi", "http://127.0.0.1:1"))
+                .expect("route");
+            for id in ["second", "first", "second"] {
+                enable(&state, "kimi", id).expect("switch same-name supplier");
+                let doc = native::Document::read("kimi", &path).expect("doc");
+                assert!(doc.selection_owned("kimi", Some(id)));
+                assert_eq!(doc.value["models"].as_object().expect("models").len(), 1);
+                assert!(doc.value["providers"]["Company"]["base_url"]
+                    .as_str()
+                    .expect("route")
+                    .starts_with("http://127.0.0.1:1/agents/kimi/"));
+            }
+        });
+    }
+
+    #[test]
     fn zcode_official_switch_withdraws_applied_models_and_preserves_saved_configs() {
         for routed in [false, true] {
             let dir = tempfile::tempdir().expect("dir");
@@ -490,8 +552,13 @@ mod tests {
                         .set_setting(&native::enabled_key("zcode"), "true")
                         .expect("enabled");
                 }
-                let native_rule =
-                    doc.value["config"]["providerConfigRules"]["providerRules"][3].clone();
+                let native_rule = doc.value["config"]["providerConfigRules"]["providerRules"]
+                    .as_array()
+                    .expect("rules")
+                    .iter()
+                    .find(|rule| rule["providerId"] == "user-custom")
+                    .expect("native rule")
+                    .clone();
                 doc.write(&path).expect("write");
 
                 enable(&state, "zcode", "zcode-official").expect("switch official");
@@ -587,8 +654,12 @@ mod tests {
                 enable(&state, "zcode", id).expect("apply");
             }
             let mut doc = native::Document::read("zcode", &path).expect("read");
-            doc.value["config"]["providerConfigRules"]["providerRules"][1]["config"]["access"]
-                ["apiKey"] = json!("synthetic-user-edit");
+            doc.value["config"]["providerConfigRules"]["providerRules"]
+                .as_array_mut()
+                .expect("rules")
+                .iter_mut()
+                .find(|rule| rule["providerId"] == "varyai-edited")
+                .expect("edited rule")["config"]["access"]["apiKey"] = json!("synthetic-user-edit");
             doc.write(&path).expect("external edit");
             let before = std::fs::read(&path).expect("before");
             assert!(enable(&state, "zcode", "zcode-official").is_err());
@@ -679,6 +750,45 @@ mod tests {
             assert_eq!(doc.value["providers"]["Test"]["api_key"], "synthetic-new");
             assert_eq!(doc.value["default_model"], "native");
         });
+    }
+
+    #[test]
+    fn switch_replaces_orphaned_managed_models_after_database_reset() {
+        for app in ["kimi", "qwen", "zcode"] {
+            let dir = tempfile::tempdir().expect("dir");
+            let path = dir.path().join(if app == "kimi" {
+                "config.toml"
+            } else {
+                "settings.json"
+            });
+            let config = json!({"baseUrl":"https://models.example/v1","apiKey":"synthetic-old","protocol":"openai","models":[{"model":"alpha"},{"model":"obsolete"}]});
+            let mut doc =
+                native::Document::parse(app, if app == "kimi" { "" } else { "{}" }).expect("empty");
+            doc.apply(app, "lost", "Supplier", &config)
+                .expect("old installation");
+            doc.value["mcpServers"] = json!({"manual":{"command":"synthetic"}});
+            std::fs::write(&path, doc.encode().expect("encode")).expect("native");
+            native::with_test_config(&path, || {
+                let state = AppState::new(Arc::new(
+                    crate::database::Database::memory().expect("fresh database"),
+                ));
+                let mut target = config.clone();
+                target["apiKey"] = json!("synthetic-new");
+                target["models"] = json!([{"model":"alpha"}]);
+                add(
+                    &state,
+                    app,
+                    Provider::with_id("new".into(), "Supplier".into(), target, None),
+                )
+                .expect("new supplier");
+                enable(&state, app, "new").expect("replace orphaned models");
+                let doc = native::Document::read(app, &path).expect("read");
+                assert!(!doc.encode().expect("encode").contains("obsolete"));
+                assert_eq!(doc.value["mcpServers"]["manual"]["command"], "synthetic");
+                assert!(doc.selection_owned(app, Some("new")));
+                assert_eq!(current(&state, app).expect("current"), "new");
+            });
+        }
     }
 
     #[test]
@@ -789,7 +899,7 @@ mod tests {
                         assert!(!entries.iter().any(|m| m["envKey"] == previous_env));
                         assert!(entries
                             .iter()
-                            .any(|m| m["envKey"] == "VARYAI_other_API_KEY"));
+                            .all(|m| m["envKey"] != "VARYAI_other_API_KEY"));
                         assert!(entries.iter().any(|m| m["envKey"] == "USER_KEY"));
                         assert_eq!(doc.value["mcpServers"]["fixture"]["command"], "synthetic");
                         assert_eq!(
@@ -801,7 +911,7 @@ mod tests {
                             Some(id)
                         );
                         for (provider_id, managed) in
-                            [(id, true), (previous, false), ("other", true)]
+                            [(id, true), (previous, false), ("other", false)]
                         {
                             assert_eq!(
                                 ProviderService::provider_live_config_managed(

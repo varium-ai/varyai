@@ -4032,10 +4032,13 @@
     "noRules": "暂无规则",
     "resetBuiltin": "恢复默认",
     "sandboxTitle": "规则沙箱测试",
-    "sandboxDescription": "不执行工具、不落盘、不回显原文，仅返回固定枚举结论。",
+    "sandboxDescription": "手动预览规则，不受实时观测总开关影响；不执行工具、不产生风险记录、不保存或回显原文。",
+    "sandboxObservationDisabled": "实时工具风险观测已关闭。以下仅为手动规则测试，不代表实时防护已开启。",
     "sandboxTool": "工具名",
     "sandboxClient": "客户端（可选）",
     "sandboxDefinitionRef": "可信 schema 引用（可选）",
+    "sandboxInvalidJson": "JSON 格式不合法，请检查括号、引号和逗号后再测试。",
+    "sandboxOpenaiWriteHint": "OpenAI write_file 使用 path 字段，例如 {\"path\":\"/etc/sudoers\",\"content\":\"test\"}；file_path 是 Claude、Gemini 的字段。缺少可识别字段会显示 unchecked（未检查），不代表安全。",
     "sandboxTrustHint": "不会根据工具名推断可信身份。仅测试对应客户端的内置工具时，显式填写已知 schema：builtin:claude:tools:v1、builtin:codex:tools:v1、builtin:gemini:tools:v1 或 builtin:openai:tools:v1。MCP 工具不得冒充内置身份。",
     "fieldTarget": "选择器目标",
     "fieldToolRefs": "精确工具引用（JSON 数组）",
@@ -4376,7 +4379,7 @@
       "renew": "更新证书并恢复接管",
       "renewing": "正在更新证书…",
       "renewed": "证书已更新，请完全退出并重新打开 Qoder。",
-      "renewFailed": "证书更新失败，请完成 macOS 系统认证后重试。",
+      "renewFailed": "证书更新失败。",
       "expiredTitle": "Qoder 本机证书已过期",
       "expiredDescription": "Qoder 官方账号的安全接管证书已过期。可直接在此更新证书并恢复接管，无需重启 VaryAI；macOS 可能要求系统认证。完成后请完全退出并重新打开 Qoder，以重新读取接口地址和证书信任。第三方模型的 HTTP 路由不依赖此证书。",
       "title": "启用 Qoder 安全接管",
@@ -4394,7 +4397,18 @@
       "clearDescription": "将关闭 Qoder 接管、恢复客户端配置，移除本机证书的钥匙串信任并删除证书文件。macOS 可能要求系统密码以确认移除信任。完成后请完全重启 Qoder；清除后不会自动生成证书，只有点击“创建 / 重建证书”才会重新创建。",
       "rebuildDescription": "将替换现有证书并启用 Qoder 接管。macOS 可能先后要求认证以移除旧信任、添加新信任；密码只交给系统。完成后请完全重启 Qoder。",
       "cleared": "证书已清除，Qoder 接管已关闭，请完全重启 Qoder。",
-      "operationFailed": "证书操作未完成，请检查系统认证并重试。",
+      "operationFailed": "证书操作失败。",
+      "failureDetail": "失败阶段：{{stage}}；状态：{{status}}。",
+      "failureStages": {
+        "codec": "Qoder 版本兼容性检查",
+        "data": "证书文件或格式处理",
+        "generate": "生成证书",
+        "inspect": "检查证书",
+        "verify_trust": "校验证书信任",
+        "install_trust": "安装证书信任",
+        "remove_trust": "移除证书信任",
+        "delete_certificate": "删除钥匙串证书"
+      },
       "statusFailed": "无法读取证书状态，请稍后重试。"
     }
   },
@@ -4525,6 +4539,8 @@
     "resultWarning": "风险预警"
   },
   "gatewayKeys": {
+    "created": "密钥创建成功",
+    "copied": "密钥已复制",
     "nameExists": "已存在同名密钥，请使用其他名称。",
     "sourceAgent": "请求来源",
     "upstreamModel": "实际转发模型",

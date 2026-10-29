@@ -582,7 +582,13 @@ async fn handle_claude_transform(
             axum::http::HeaderValue::from_static("no-cache"),
         );
 
-        let body = axum::body::Body::from_stream(logged_stream);
+        // An HTTP reset can discard buffered frames; preserve converted-stream failures as protocol errors.
+        let client_stream = logged_stream.map(|chunk| {
+            Ok::<_, std::io::Error>(chunk.unwrap_or_else(|_| {
+                Bytes::from_static(b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"upstream_error\",\"message\":\"Invalid or incomplete upstream protocol stream\"}}\n\n")
+            }))
+        });
+        let body = axum::body::Body::from_stream(client_stream);
         return Ok((headers, body).into_response());
     }
 
