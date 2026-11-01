@@ -903,7 +903,7 @@ fn identity_entropy_failure_is_sticky_and_admission_leaves_no_state() -> Result<
 #[test]
 fn identity_namespace_source_guard_excludes_original_identity_fields_and_copies() {
     // A structural guard, not a process-memory or zeroization assertion.
-    let source = include_str!("tokenization.rs");
+    let source = include_str!("../tokenization.rs");
     let namespace = source
         .split_once("struct Namespace {")
         .unwrap()

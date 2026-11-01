@@ -453,7 +453,7 @@ fn builtin_trigger_source_guard_forbids_old_lowercase_allocations() -> Result<()
     let runtime = SecurityRuntimeConfig::default();
     assert!(!detect_spans("AWS AKIAIOSFODNN7EXAMPLE", false, &runtime)?.is_empty());
     // This is a scoped source regression guard, not runtime allocator evidence.
-    let source = include_str!("request_detection.rs");
+    let source = include_str!("../request_detection.rs");
     let builtin = source
         .split_once("if matcher.is_match(")
         .unwrap()
@@ -494,7 +494,7 @@ fn private_key_marker_source_guard_forbids_old_replacement_allocation() -> Resul
         .ok_or(TokenError::Unavailable)?;
     assert_eq!(span.range.end, text.len() - 5);
     // Deliberately limited to the known marker construction and helper body.
-    let source = include_str!("request_detection.rs");
+    let source = include_str!("../request_detection.rs");
     let builtin = source
         .split_once("if matcher.is_match(")
         .unwrap()

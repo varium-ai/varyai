@@ -66,44 +66,64 @@ pub use engine::SecurityAuditEngine;
 pub use types::*;
 
 #[cfg(test)]
+#[path = "tests/aggregation_tests.rs"]
 mod aggregation_tests;
 #[cfg(test)]
+#[path = "tests/history_provenance_tests.rs"]
 mod history_provenance_tests;
 #[cfg(test)]
+#[path = "tests/restoration_audit_tests.rs"]
 mod restoration_audit_tests;
 #[cfg(test)]
+#[path = "tests/reversible_buffer_tests.rs"]
 mod reversible_buffer_tests;
 #[cfg(test)]
+#[path = "tests/reversible_carrier_tests.rs"]
 mod reversible_carrier_tests;
 #[cfg(test)]
+#[path = "tests/reversible_completion_tests.rs"]
 mod reversible_completion_tests;
 #[cfg(test)]
+#[path = "tests/reversible_context_tests.rs"]
 mod reversible_context_tests;
 #[cfg(test)]
+#[path = "tests/reversible_detection_tests.rs"]
 mod reversible_detection_tests;
 #[cfg(test)]
+#[path = "tests/reversible_json_tests.rs"]
 mod reversible_json_tests;
 #[cfg(test)]
+#[path = "tests/reversible_metadata_tests.rs"]
 mod reversible_metadata_tests;
 #[cfg(test)]
+#[path = "tests/reversible_payload_tests.rs"]
 mod reversible_payload_tests;
 #[cfg(test)]
+#[path = "tests/reversible_plan_tests.rs"]
 mod reversible_plan_tests;
 #[cfg(test)]
+#[path = "tests/reversible_policy_tests.rs"]
 mod reversible_policy_tests;
 #[cfg(test)]
+#[path = "tests/reversible_preparation_tests.rs"]
 mod reversible_preparation_tests;
 #[cfg(test)]
+#[path = "tests/reversible_response_tests.rs"]
 mod reversible_response_tests;
 #[cfg(test)]
+#[path = "tests/reversible_runtime_tests.rs"]
 mod reversible_runtime_tests;
 #[cfg(test)]
+#[path = "tests/reversible_store_owner_tests.rs"]
 mod reversible_store_owner_tests;
 #[cfg(test)]
+#[path = "tests/reversible_tests.rs"]
 mod reversible_tests;
 #[cfg(test)]
+#[path = "tests/reversible_text_tests.rs"]
 mod reversible_text_tests;
 #[cfg(test)]
+#[path = "tests/reversible_transaction_tests.rs"]
 mod reversible_transaction_tests;
 #[cfg(test)]
 mod tests;
@@ -335,4 +355,5 @@ pub(crate) fn audit_session_id(
 }
 
 #[cfg(test)]
+#[path = "tests/reversible_integration_tests.rs"]
 mod reversible_integration_tests;

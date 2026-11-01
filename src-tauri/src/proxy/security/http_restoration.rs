@@ -3334,11 +3334,11 @@ where
 }
 
 #[cfg(test)]
-#[path = "json_restoration_tests.rs"]
+#[path = "tests/json_restoration_tests.rs"]
 mod json_restoration_tests;
 
 #[cfg(test)]
-#[path = "final_validation_tests.rs"]
+#[path = "tests/final_validation_tests.rs"]
 mod final_validation_tests;
 
 #[cfg(test)]
