@@ -1,13 +1,14 @@
 //! Private logical-field transaction; callers supply detector spans and final validation.
 //! No HTTP authorization or public action is enabled by this module.
 use super::{
+    history_provenance::HistoryLeafPolicy,
     payload_budget::PayloadBudget,
     payload_metadata::PayloadVec,
     payload_text::PayloadText,
     request_plan::{
         plan_request_with_budget, EffectiveAction, PlanError, PlanField, PlannedField, PlannedSpan,
     },
-    tokenization::{visit_token_references, DlpRequestLease, TokenError, TokenFragment},
+    tokenization::{DlpRequestLease, TokenError, TokenFragment},
 };
 
 const MAX_ITEMS: usize = 4096;
@@ -44,8 +45,22 @@ pub(super) fn prepare_fields_with_budget<T>(
     fields: &[PlanField<'_>],
     historical_tokens: &[&str],
     budget: PayloadBudget,
+    validate: impl FnMut(&[PayloadText], &[&str]) -> Result<T, TokenError>,
+) -> Result<PreparedFields<T>, PlanError> {
+    prepare_fields_with_history(lease, fields, historical_tokens, budget, &[], validate)
+}
+
+pub(super) fn prepare_fields_with_history<T>(
+    lease: &mut DlpRequestLease,
+    fields: &[PlanField<'_>],
+    historical_tokens: &[&str],
+    budget: PayloadBudget,
+    policies: &[HistoryLeafPolicy],
     mut validate: impl FnMut(&[PayloadText], &[&str]) -> Result<T, TokenError>,
 ) -> Result<PreparedFields<T>, PlanError> {
+    if !policies.is_empty() && policies.len() != fields.len() {
+        return Err(TokenError::RedactionFailed.into());
+    }
     if fields.len() > MAX_ITEMS || historical_tokens.len() > MAX_ITEMS {
         return Err(TokenError::CapacityExceeded.into());
     }
@@ -66,8 +81,11 @@ pub(super) fn prepare_fields_with_budget<T>(
     }
     let mut literals = PayloadVec::new(budget.clone())?;
     let mut reference_count = 0usize;
-    for field in fields {
-        visit_token_references(field.text, |range| {
+    for (index, field) in fields.iter().enumerate() {
+        let policy = policies
+            .get(index)
+            .map_or(HistoryLeafPolicy::Strict, |policy| *policy);
+        policy.visit_references(field.text, |range| {
             reference_count = bounded_sum(reference_count, 1, MAX_ITEMS)?;
             let token = &field.text[range];
             if lease.resolve(token).is_ok() {
@@ -128,8 +146,11 @@ pub(super) fn prepare_fields_with_budget<T>(
                 if proof.len() > MAX_ITEMS {
                     return Err(TokenError::CapacityExceeded);
                 }
-                for text in candidate.as_slice() {
-                    visit_token_references(text.as_str(), |range| {
+                for (index, text) in candidate.as_slice().iter().enumerate() {
+                    let policy = policies
+                        .get(index)
+                        .map_or(HistoryLeafPolicy::Strict, |policy| *policy);
+                    policy.visit_references(text.as_str(), |range| {
                         if proof
                             .as_slice()
                             .binary_search(&&text.as_str()[range])

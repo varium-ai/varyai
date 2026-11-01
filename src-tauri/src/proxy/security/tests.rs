@@ -743,6 +743,11 @@ fn test_large_payload_fast_passthrough() {
         ]
     });
 
+    // Measure steady-state payload inspection, not process-wide lazy regex compilation.
+    let warmup = SecurityAuditEngine::inspect_request(&json!({"messages":[{
+        "role":"user", "content":"synthetic warmup"
+    }]}));
+    assert!(!warmup.blocked && warmup.findings.is_empty());
     let start = std::time::Instant::now();
     let res = SecurityAuditEngine::inspect_request(&body);
     let elapsed = start.elapsed();

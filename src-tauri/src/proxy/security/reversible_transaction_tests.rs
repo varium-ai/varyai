@@ -7,6 +7,8 @@ use super::{
     tokenization::{DlpTokenStore, TokenCategory::*, TokenError, TokenFragment},
 };
 
+const PHONE_REFERENCE_LEN: usize = 32 + "cn_phone".len();
+
 fn prepare_fields<T>(
     lease: &mut DlpRequestLease,
     fields: &[PlanField<'_>],
@@ -42,9 +44,9 @@ fn logical_transaction_prepares_exact_references_and_returns_validated_candidate
         matches: &matches,
     }];
     let prepared = prepare_fields(&mut lease, &fields, &[], |candidate, proof| {
-        assert_eq!(
-            candidate[0].as_str(),
-            "prevary_ph_413ff0a68f6f0d574cb5_aipost"
+        assert!(
+            candidate[0].as_str() == "prerredact-cn_phone-413ff0a68f6f0d574cb5-aipost",
+            "transaction must substitute the approved reference exactly"
         );
         assert_eq!(proof.len(), 1);
         Ok(42usize)
@@ -52,9 +54,9 @@ fn logical_transaction_prepares_exact_references_and_returns_validated_candidate
     assert_eq!(prepared.validated, 42);
     assert_eq!(prepared.reversible_occurrences, 1);
     assert_eq!(prepared.irreversible_occurrences, 0);
-    assert_eq!(
-        lease.resolve("vary_ph_413ff0a68f6f0d574cb5_ai")?,
-        "13800138000"
+    assert!(
+        lease.resolve("rredact-cn_phone-413ff0a68f6f0d574cb5-ai")? == "13800138000",
+        "transaction reference must resolve under its original authority"
     );
     assert_eq!(fields[0].text, "pre13800138000post");
     Ok(())
@@ -178,7 +180,7 @@ fn literal_collision_rejects_atomically_before_any_candidate_commit() -> Result<
                 matches: &matches,
             },
             PlanField {
-                text: "vary_ph_413ff0a68f6f0d574cb5_ai",
+                text: "rredact-cn_phone-413ff0a68f6f0d574cb5-ai",
                 writable: true,
                 matches: &[],
             },
@@ -198,7 +200,12 @@ fn literal_collision_rejects_atomically_before_any_candidate_commit() -> Result<
 fn malformed_and_unknown_exact_tokens_fail_without_issuing_a_mapping() -> Result<(), PlanError> {
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
-    for text in ["vary_ph_broken", "vary_ph_00000000000000000000_ai"] {
+    for text in [
+        "rredact-cn_phone-broken",
+        "rredact-cn_phone-00000000000000000000-ai",
+        "vary_ph_broken",
+        "vary_ph_00000000000000000000_ai",
+    ] {
         let result = prepare_fields(
             &mut lease,
             &[PlanField {
@@ -330,7 +337,7 @@ fn final_validation_runs_without_store_lock_and_retries_with_committed_category(
         },
     )?;
     assert_eq!(attempts, 2);
-    assert!(prepared.validated.starts_with("vary_pk_"));
+    assert!(prepared.validated.starts_with("rredact-private_key-"));
     assert_eq!(prepared.fields.as_slice()[0].as_str(), prepared.validated);
     assert_eq!(lease.resolve(&prepared.validated)?, "13800138000");
     assert_eq!(store.stats()?.entries, 1);
@@ -371,7 +378,7 @@ fn candidate_growth_limits_fail_before_validation_and_commit() -> Result<(), Pla
 fn total_candidate_growth_is_bounded_across_individually_valid_fields() -> Result<(), PlanError> {
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
-    let text = "x".repeat(1024 * 1024 - 30);
+    let text = "x".repeat(1024 * 1024 - (32 + "cn_phone".len() - 1));
     let matches = [restore(0..1)];
     let mut fields: Vec<_> = (0..4)
         .map(|_| PlanField {
@@ -501,12 +508,15 @@ fn transaction_owner_retains_candidate_charge_until_drop() -> Result<(), PlanErr
         &[],
         budget.clone(),
         |_, _| {
-            assert!(budget.used() >= 31 + 4 * std::mem::size_of::<PayloadText>());
+            assert!(budget.used() >= PHONE_REFERENCE_LEN + 4 * std::mem::size_of::<PayloadText>());
             assert_eq!(store.stats()?.entries, 0);
             Ok(())
         },
     )?;
-    assert_eq!(budget.used(), 31 + 4 * std::mem::size_of::<PayloadText>());
+    assert_eq!(
+        budget.used(),
+        PHONE_REFERENCE_LEN + 4 * std::mem::size_of::<PayloadText>()
+    );
     drop(prepared);
     assert_eq!(budget.used(), 0);
     Ok(())
@@ -599,12 +609,12 @@ fn transaction_owner_failure_and_unwind_release_candidate_before_commit() -> Res
 fn transaction_owner_exact_peak_and_difference_one_are_independent() -> Result<(), PlanError> {
     use super::request_plan::{PlannedField, PlannedSpan};
     use std::mem::size_of;
-    let retained = 31 + 4 * size_of::<PayloadText>();
+    let retained = PHONE_REFERENCE_LEN + 4 * size_of::<PayloadText>();
     let live_plan = 4 * size_of::<PlannedField>() + 4 * size_of::<PlannedSpan>();
     let scratch = 4 * size_of::<[u8; 10]>()
         + 4 * size_of::<Option<super::token_store_owners::SharedAllocation<()>>>()
         + 8 * size_of::<usize>()
-        + 31
+        + PHONE_REFERENCE_LEN
         + 4 * size_of::<PayloadText>();
     let peak =
         live_plan + 4 * size_of::<TokenFragment<'_>>() + retained + 4 * size_of::<&str>() + scratch;
@@ -686,11 +696,11 @@ fn transaction_owner_history_reference_containers_remain_charged_during_validati
 fn transaction_store_scratch_is_live_under_original_request_budget() -> Result<(), PlanError> {
     use super::request_plan::{PlannedField, PlannedSpan};
     use std::mem::size_of;
-    let retained = 31 + 4 * size_of::<PayloadText>();
+    let retained = PHONE_REFERENCE_LEN + 4 * size_of::<PayloadText>();
     let scratch = 4 * size_of::<[u8; 10]>()
         + 4 * size_of::<Option<super::token_store_owners::SharedAllocation<()>>>()
         + 8 * size_of::<usize>()
-        + 31
+        + PHONE_REFERENCE_LEN
         + 4 * size_of::<PayloadText>();
     let peak = 4 * size_of::<PlannedField>()
         + 4 * size_of::<PlannedSpan>()

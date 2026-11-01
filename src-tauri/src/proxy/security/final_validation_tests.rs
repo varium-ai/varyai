@@ -5,7 +5,10 @@ use crate::proxy::security::{runtime::CompiledCustomRule, AuditAction, RiskLevel
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn request(source: &Value) -> Result<DlpHttpRequest, TokenError> {
-    let store = DlpTokenStore::new();
+    request_in_store(source, &DlpTokenStore::new())
+}
+
+fn request_in_store(source: &Value, store: &DlpTokenStore) -> Result<DlpHttpRequest, TokenError> {
     let budget = PayloadBudget::with_limit(16 * 1024 * 1024);
     let mut runtime = SecurityRuntimeConfig::default();
     runtime.custom_rules.push(CompiledCustomRule {
@@ -183,7 +186,7 @@ fn assert_final_refusal_audit(protocol: &str, outbound: Value) -> TestResult {
         "audit must not expose matched plaintext"
     );
     assert!(
-        !encoded.contains("vary_"),
+        !encoded.contains("rredact-"),
         "audit must not expose token references"
     );
     Ok(())
@@ -402,7 +405,7 @@ fn final_validation_valid_tokens_survive_protocol_conversion_without_plaintext()
             "conversion cannot reintroduce plaintext"
         );
         assert!(
-            encoded.contains("vary_"),
+            encoded.contains("rredact-"),
             "conversion must retain the authorized reference"
         );
     }
@@ -476,4 +479,2248 @@ fn final_validation_exhausted_budget_is_propagated_without_publication() -> Test
     assert_eq!(source, json!({"input":"safe"}));
     drop(held);
     Ok(())
+}
+
+fn final_binding_check(
+    attempt: &DlpPreparedAttempt,
+    provider: &str,
+    protocol: &str,
+    target: &str,
+    principal: Option<&str>,
+) -> Result<(), DlpForwardError> {
+    attempt.validate_final_send_binding(provider, protocol, target, principal)
+}
+
+#[test]
+fn final_send_binding_preserves_exact_actual_attempt() -> TestResult {
+    let mut source = json!({"input":"private-a"});
+    let request = request(&source)?;
+    let attempt = request.prepare_attempt_for_proxy(
+        "final-fixture-provider",
+        "openai_responses",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-account"),
+        &mut source,
+        |prepared| Ok(prepared.clone()),
+    )?;
+    assert!(
+        final_binding_check(
+            &attempt,
+            "final-fixture-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"),
+        )
+        .is_ok(),
+        "an unchanged final binding must remain permitted"
+    );
+    Ok(())
+}
+
+#[test]
+fn final_send_binding_rejects_changed_actual_attempt() -> TestResult {
+    let mut source = json!({"input":"private-a"});
+    let request = request(&source)?;
+    let attempt = request.prepare_attempt_for_proxy(
+        "final-fixture-provider",
+        "openai_responses",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-account"),
+        &mut source,
+        |prepared| Ok(prepared.clone()),
+    )?;
+    for (provider, protocol, target, principal) in [
+        (
+            "changed-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"),
+        ),
+        (
+            "final-fixture-provider",
+            "openai_chat",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"),
+        ),
+        (
+            "final-fixture-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses/compact",
+            Some("synthetic-account"),
+        ),
+        (
+            "final-fixture-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("changed-account"),
+        ),
+        (
+            "final-fixture-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            None,
+        ),
+    ] {
+        assert!(
+            matches!(
+                final_binding_check(&attempt, provider, protocol, target, principal),
+                Err(DlpForwardError::ContextUnavailable)
+            ),
+            "a changed final binding must fail before transport"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn reasoning_tool_publication_preserves_literal_leaf_and_required_context() -> TestResult {
+    use http_body_util::BodyExt;
+    for literal in [
+        format!("rredact-custom-{}-ai", "a".repeat(20)),
+        "rredact-custom-".to_owned(),
+    ] {
+        let mut source = json!({"input":"private-a"});
+        let request = request(&source)?;
+        let attempt = request.prepare_attempt_for_proxy(
+            "final-fixture-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"),
+            &mut source,
+            |prepared| Ok(prepared.clone()),
+        )?;
+        let raw = json!({"id":"resp_reasoning_publish","object":"response","status":"completed","output":[{
+            "id":"fc_reasoning_publish","type":"function_call","status":"completed",
+            "call_id":"call_reasoning_publish","name":"synthetic_tool","arguments":"{}",
+            "reasoning_content":literal
+        }]});
+        let response = attempt
+            .restore_client_http_response(
+                Response::builder()
+                    .header("content-type", "application/json")
+                    .body(Body::from(raw.to_string()))?,
+                ArgumentNormalizationMode::Exact,
+                None,
+            )
+            .await;
+        assert!(
+            response.status() == StatusCode::OK,
+            "literal tool reasoning must survive mandatory context publication"
+        );
+        let bytes = response.into_body().collect().await?.to_bytes();
+        let delivered: Value = serde_json::from_slice(&bytes)?;
+        assert!(
+            delivered["output"][0]["reasoning_content"].as_str() == Some(literal.as_str()),
+            "tool reasoning must remain byte-identical after publication"
+        );
+        let mut continuation = request.base_lease.fork_attempt()?;
+        let binding = continuation.bind_actual_attempt(
+            "final-fixture-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"),
+        )?;
+        assert!(
+            continuation
+                .resume_completed_context(&binding, Some("resp_reasoning_publish"), &[], &[])
+                .is_ok(),
+            "successful delivery must retain mandatory continuation context"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn reasoning_empty_lease_keeps_native_completion_validation() -> TestResult {
+    let mut source = json!({"input":"safe"});
+    let request = request(&source)?;
+    let attempt = request.prepare_attempt_for_proxy(
+        "final-fixture-provider",
+        "openai_responses",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-account"),
+        &mut source,
+        |prepared| Ok(prepared.clone()),
+    )?;
+    let raw = json!({"id":"resp_reasoning_empty","object":"response","status":"incomplete","output":[{
+        "id":"rs_reasoning_empty","type":"reasoning","summary":[{"type":"summary_text","text":"synthetic reasoning"}]
+    }]});
+    let response = attempt
+        .restore_client_http_response(
+            Response::builder()
+                .header("content-type", "application/json")
+                .body(Body::from(raw.to_string()))?,
+            ArgumentNormalizationMode::Exact,
+            None,
+        )
+        .await;
+    assert!(
+        response.status() == StatusCode::BAD_GATEWAY,
+        "empty token authority must not skip native completion validation"
+    );
+    Ok(())
+}
+#[test]
+fn reasoning_empty_lease_requires_converted_original_sse_evidence() -> TestResult {
+    for protocol in ["openai_chat", "anthropic"] {
+        let mut source = json!({"input":"synthetic safe input"});
+        let request = request(&source)?;
+        let outbound = json!({"model":"synthetic-model","messages":[{
+            "role":"user","content":"synthetic safe input"
+        }]});
+        let attempt = prepare(&request, protocol, &outbound, &mut source)?;
+        assert!(
+            !attempt.has_active_tokens(),
+            "synthetic lease must be empty"
+        );
+        assert!(
+            attempt.upstream_sse_evidence_tracker().is_some(),
+            "converted completion evidence must not depend on token occupancy"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn reasoning_empty_lease_requires_xai_original_sse_evidence() -> TestResult {
+    let mut source = json!({"input":"synthetic safe input"});
+    let request = request(&source)?;
+    let outbound = source.clone();
+    let attempt = prepare(&request, "openai_responses", &outbound, &mut source)?;
+    assert!(
+        !attempt.has_active_tokens(),
+        "synthetic lease must be empty"
+    );
+    assert!(
+        attempt.xai_original_sse_evidence_tracker().is_some(),
+        "original rewrite evidence must not depend on token occupancy"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn reasoning_delivered_history_json_requires_final_success() -> TestResult {
+    use crate::proxy::security::history_provenance::DlpHistoryLeafField;
+    use http_body_util::BodyExt;
+    for active_tokens in [false, true] {
+        for reasoning in [false, true] {
+            let mut source = json!({"input":if active_tokens { "private-a" } else { "safe" }});
+            let request = request(&source)?;
+            let attempt = request.prepare_attempt_for_proxy(
+                "final-fixture-provider",
+                "openai_responses",
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-account"),
+                &mut source,
+                |prepared| Ok(prepared.clone()),
+            )?;
+            let binding = attempt.binding.clone();
+            let literal = "synthetic literal rredact-custom-";
+            let item = if reasoning {
+                json!({"id":"synthetic-delivered-reasoning","type":"reasoning",
+                    "summary":[{"type":"summary_text","text":literal}]})
+            } else {
+                json!({"id":"synthetic-delivered-message","type":"message","role":"assistant",
+                    "status":"completed","content":[{"type":"output_text","text":literal,"annotations":[]}]})
+            };
+            let raw = json!({"id":"synthetic-delivered-response","object":"response",
+                "status":"completed","output":[item]});
+            let replay = json!({"input":raw["output"]});
+            assert!(
+                request
+                    .base_lease
+                    .history_projection(&binding, &replay)
+                    .is_none(),
+                "unpublished response must not issue delivered history authority"
+            );
+            let response = attempt
+                .restore_client_http_response(
+                    Response::builder()
+                        .header("content-type", "application/json")
+                        .body(Body::from(raw.to_string()))?,
+                    ArgumentNormalizationMode::Exact,
+                    None,
+                )
+                .await;
+            assert!(
+                response.status() == StatusCode::OK,
+                "validated literal response must remain deliverable"
+            );
+            let bytes = response.into_body().collect().await?.to_bytes();
+            let delivered: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| "synthetic delivered response must be valid JSON")?;
+            let replay = json!({"input":delivered["output"]});
+            let projection = request
+                .base_lease
+                .history_projection(&binding, &replay)
+                .ok_or("successful final delivery must publish optional history proof")?;
+            let field = if reasoning {
+                DlpHistoryLeafField::ReasoningSummary
+            } else {
+                DlpHistoryLeafField::OutputText
+            };
+            assert!(
+                projection.source_for_responses_leaf(0, field, 0).is_some(),
+                "actual delivered typed text must retain exact history provenance"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn reasoning_delivered_history_json_failed_completion_never_publishes() -> TestResult {
+    for active_tokens in [false, true] {
+        let mut source = json!({"input":if active_tokens { "private-a" } else { "safe" }});
+        let request = request(&source)?;
+        let attempt = request.prepare_attempt_for_proxy(
+            "final-fixture-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"),
+            &mut source,
+            |prepared| Ok(prepared.clone()),
+        )?;
+        let binding = attempt.binding.clone();
+        let raw = json!({"id":"synthetic-failed-history","object":"response","status":"incomplete",
+            "output":[{"id":"synthetic-failed-reasoning","type":"reasoning",
+                "summary":[{"type":"summary_text","text":"synthetic failed reasoning"}]}]});
+        let replay = json!({"input":raw["output"]});
+        let response = attempt
+            .restore_client_http_response(
+                Response::builder()
+                    .header("content-type", "application/json")
+                    .body(Body::from(raw.to_string()))?,
+                ArgumentNormalizationMode::Exact,
+                None,
+            )
+            .await;
+        assert!(
+            response.status() == StatusCode::BAD_GATEWAY,
+            "failed completion must preserve failure semantics"
+        );
+        assert!(
+            request
+                .base_lease
+                .history_projection(&binding, &replay)
+                .is_none(),
+            "failed completion must never publish optional history proof"
+        );
+    }
+    Ok(())
+}
+
+fn synthetic_history_sse_response() -> Value {
+    json!({"id":"synthetic_sse_history", "object":"response", "status":"completed", "output":[
+        {"id":"synthetic_sse_reasoning", "type":"reasoning",
+         "summary":[{"type":"summary_text","text":"Synthetic 思考 rredact-custom-"}],
+         "content":[{"type":"reasoning_text","text":"Synthetic second 思考 rredact-custom-"}]},
+        {"id":"synthetic_sse_message", "type":"message", "role":"assistant", "status":"completed",
+         "content":[{"type":"output_text","text":"Synthetic output rredact-custom-","annotations":[]}]}
+    ]})
+}
+
+fn synthetic_history_sse_frame(event: &str, data: &Value) -> Bytes {
+    Bytes::from(format!("event: {event}\ndata: {data}\n\n"))
+}
+
+#[tokio::test]
+async fn reasoning_delivered_history_sse_requires_terminal_release() -> TestResult {
+    use crate::proxy::security::history_provenance::DlpHistoryLeafField as Field;
+    use http_body_util::BodyExt;
+    for active_tokens in [false, true] {
+        let mut source = json!({"input":if active_tokens {"private-a"} else {"safe"}});
+        let request = request(&source)?;
+        let attempt = request.prepare_attempt_for_proxy(
+            "final-fixture-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"),
+            &mut source,
+            |prepared| Ok(prepared.clone()),
+        )?;
+        let binding = attempt.binding.clone();
+        let response = synthetic_history_sse_response();
+        let replay = json!({"input":response["output"]});
+        let terminal = synthetic_history_sse_frame(
+            "response.completed",
+            &json!({"type":"response.completed","response":response}),
+        );
+        let chunks: Vec<_> = terminal
+            .chunks(7)
+            .map(|chunk| Ok::<_, std::io::Error>(Bytes::copy_from_slice(chunk)))
+            .collect();
+        let restored = attempt
+            .restore_client_http_response(
+                Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from_stream(futures::stream::iter(chunks)))?,
+                ArgumentNormalizationMode::Exact,
+                None,
+            )
+            .await;
+        assert!(
+            restored.status() == StatusCode::OK,
+            "synthetic SSE wrapper must be accepted"
+        );
+        assert!(
+            request
+                .base_lease
+                .history_projection(&binding, &replay)
+                .is_none(),
+            "unpolled SSE must not publish proof"
+        );
+        let bytes = restored
+            .into_body()
+            .collect()
+            .await
+            .map_err(|_| "synthetic SSE body collection failed")?
+            .to_bytes();
+        let text = std::str::from_utf8(&bytes).map_err(|_| "synthetic SSE must remain UTF-8")?;
+        assert!(
+            text.contains("event: response.completed") && !text.contains("event: response.failed"),
+            "valid SSE must release the completion barrier"
+        );
+        let projection = request
+            .base_lease
+            .history_projection(&binding, &replay)
+            .ok_or("released terminal SSE must publish optional history")?;
+        for (index, field) in [
+            (0, Field::ReasoningSummary),
+            (0, Field::ReasoningContent),
+            (1, Field::OutputText),
+        ] {
+            assert!(
+                projection
+                    .source_for_responses_leaf(index, field, 0)
+                    .is_some(),
+                "delivered supported SSE leaves must carry exact proof"
+            );
+        }
+    }
+    Ok(())
+}
+
+// Shared optional-ledger equality requires --test-threads=1.
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_delivered_history_sse_final_yield_requires_wrapper_resume() -> TestResult {
+    use crate::proxy::security::history_provenance::DlpHistoryLeafField as Field;
+    use http_body_util::BodyExt;
+
+    for active_tokens in [false, true] {
+        for finish_release in [false, true] {
+            let store = DlpTokenStore::new();
+            let (global_before, control_before, pinned_response_before) = {
+                let warm = store.admit("codex", Some("synthetic-sse-ledger-warmup"), 1)?;
+                let binding = warm.bind_actual_attempt(
+                    "final-fixture-provider",
+                    "openai_responses",
+                    "https://synthetic.invalid/v1/responses",
+                    Some("synthetic-account"),
+                )?;
+                let response = synthetic_history_sse_response();
+                let replay = json!({"input":response["output"]});
+                let pending = warm
+                    .capture_delivered_history(&binding, &response)
+                    .ok_or("synthetic SSE ledger warmup unavailable")?;
+                assert!(
+                    warm.history_projection(&binding, &replay).is_none(),
+                    "pending warmup capture must not authorize undelivered history"
+                );
+                drop(pending);
+                let control = store
+                    .history_metadata_bytes_for_test()
+                    .ok_or("synthetic SSE accounting unavailable")?;
+                let pending = warm
+                    .capture_delivered_history(&binding, &response)
+                    .ok_or("synthetic SSE pinned warmup unavailable")?;
+                assert!(
+                    store.history_metadata_bytes_for_test() == Some(control + 256 * 1024),
+                    "pending capture must retain the complete response charge"
+                );
+                drop(warm);
+                store.expire_idle_at(
+                    std::time::Instant::now() + std::time::Duration::from_secs(7200),
+                )?;
+                assert!(
+                    store.stats()?.namespaces == 0,
+                    "pending capture must not keep a namespace live"
+                );
+                let pinned_response = store
+                    .history_metadata_bytes_for_test()
+                    .ok_or("synthetic SSE pinned accounting unavailable")?;
+                drop(pending);
+                let global = store
+                    .history_metadata_bytes_for_test()
+                    .ok_or("synthetic SSE accounting unavailable")?;
+                assert!(
+                    control > global,
+                    "warmup must establish controller-only charge"
+                );
+                assert!(
+                    pinned_response > global + 256 * 1024,
+                    "a pending owner must pin the response and namespace controller charge"
+                );
+                (global, control, pinned_response)
+            };
+            let mut source = json!({"input":if active_tokens {"private-a"} else {"safe"}});
+            let request = request_in_store(&source, &store)?;
+            let budget = request.budget.clone();
+            let attempt = request.prepare_attempt_for_proxy(
+                "final-fixture-provider",
+                "openai_responses",
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-account"),
+                &mut source,
+                |prepared| Ok(prepared.clone()),
+            )?;
+            assert!(
+                attempt.has_restoration_lease() == active_tokens,
+                "wrapper fixture must cover the requested token-authority branch"
+            );
+            let binding = attempt.binding.clone();
+            let response = synthetic_history_sse_response();
+            let replay = json!({"input":response["output"]});
+            assert!(
+                request
+                    .base_lease
+                    .history_projection(&binding, &replay)
+                    .is_none(),
+                "undelivered SSE fixture must start without history proof"
+            );
+            let terminal = synthetic_history_sse_frame(
+                "response.completed",
+                &json!({"type":"response.completed","response":response}),
+            );
+            let restored = attempt
+                .restore_client_http_response(
+                    Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from_stream(futures::stream::iter([Ok::<
+                            _,
+                            std::io::Error,
+                        >(
+                            terminal
+                        )])))?,
+                    ArgumentNormalizationMode::Exact,
+                    None,
+                )
+                .await;
+            assert!(
+                restored.status() == StatusCode::OK,
+                "synthetic terminal wrapper must be accepted"
+            );
+            let mut body = restored.into_body();
+            let mut terminal_yielded = false;
+            for _ in 0..16 {
+                let frame = body
+                    .frame()
+                    .await
+                    .ok_or("synthetic terminal yield missing")?
+                    .map_err(|_| "synthetic terminal yield failed")?;
+                let data = frame.data_ref().ok_or("synthetic SSE data frame missing")?;
+                let text = std::str::from_utf8(data)
+                    .map_err(|_| "synthetic terminal yield must be UTF-8")?;
+                assert!(
+                    !text.contains("event: response.failed"),
+                    "valid synthetic wrapper must not yield failure"
+                );
+                assert!(
+                    request
+                        .base_lease
+                        .history_projection(&binding, &replay)
+                        .is_none(),
+                    "no yielded frame may publish proof before the wrapper resumes"
+                );
+                if text.contains("event: response.completed") {
+                    terminal_yielded = true;
+                    break;
+                }
+            }
+            assert!(terminal_yielded, "synthetic final frame must be reached");
+            assert!(
+                store.history_metadata_bytes_for_test() == Some(control_before + 256 * 1024),
+                "the final yield must retain the complete response proof charge without publication"
+            );
+            if finish_release {
+                assert!(
+                    body.frame().await.is_none(),
+                    "resuming past the terminal yield must finish the wrapper"
+                );
+                let projection = request
+                    .base_lease
+                    .history_projection(&binding, &replay)
+                    .ok_or("resumed terminal release must publish proof")?;
+                for (index, field) in [
+                    (0, Field::ReasoningSummary),
+                    (0, Field::ReasoningContent),
+                    (1, Field::OutputText),
+                ] {
+                    assert!(
+                        projection
+                            .source_for_responses_leaf(index, field, 0)
+                            .is_some(),
+                        "fully released wrapper must prove each supported delivered leaf"
+                    );
+                }
+                drop(body);
+                drop(request);
+                assert!(
+                    budget.used() == 0,
+                    "completed wrapper must release transient owners"
+                );
+                store.expire_idle_at(
+                    std::time::Instant::now() + std::time::Duration::from_secs(7200),
+                )?;
+                assert!(
+                    store.stats()?.namespaces == 0,
+                    "projection ownership must not keep an expired namespace live"
+                );
+                assert!(
+                    store.history_metadata_bytes_for_test() == Some(pinned_response_before + 2048),
+                    "expiry must retain the response, controller and exact projection permit charge"
+                );
+                drop(projection);
+                assert!(
+                    store.history_metadata_bytes_for_test() == Some(global_before),
+                    "the last projection owner must release proof and controller charge"
+                );
+            } else {
+                // Cancellation here is after the final yield, not before EOF/finalize.
+                drop(body);
+                assert!(
+                    request
+                        .base_lease
+                        .history_projection(&binding, &replay)
+                        .is_none(),
+                    "cancellation at the final yield must discard the pending proof"
+                );
+                assert!(
+                    store.history_metadata_bytes_for_test() == Some(control_before),
+                    "cancelling the final yield must release every pending proof owner"
+                );
+                drop(request);
+                assert!(
+                    budget.used() == 0,
+                    "cancelled wrapper must release transient owners"
+                );
+                store.expire_idle_at(
+                    std::time::Instant::now() + std::time::Duration::from_secs(7200),
+                )?;
+                assert!(
+                    store.stats()?.namespaces == 0,
+                    "cancelled wrapper must not retain an active lease"
+                );
+                assert!(
+                    store.history_metadata_bytes_for_test() == Some(global_before),
+                    "namespace expiry must release the remaining optional controller charge"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+// Shared optional-ledger equality requires --test-threads=1.
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_delivered_history_sse_abort_or_failure_never_publishes() -> TestResult {
+    use http_body_util::BodyExt;
+    for active_tokens in [false, true] {
+        for mode in 0..6 {
+            let store = DlpTokenStore::new();
+            let global_before = {
+                let warm = store.admit("codex", Some("synthetic-sse-failure-warmup"), 1)?;
+                let binding = warm.bind_actual_attempt(
+                    "final-fixture-provider",
+                    "openai_responses",
+                    "https://synthetic.invalid/v1/responses",
+                    Some("synthetic-account"),
+                )?;
+                let pending = warm
+                    .capture_delivered_history(&binding, &synthetic_history_sse_response())
+                    .ok_or("synthetic SSE failure global warmup unavailable")?;
+                drop(pending);
+                drop(warm);
+                store.expire_idle_at(
+                    std::time::Instant::now() + std::time::Duration::from_secs(7200),
+                )?;
+                assert!(
+                    store.stats()?.namespaces == 0,
+                    "global warmup must release its namespace"
+                );
+                store
+                    .history_metadata_bytes_for_test()
+                    .ok_or("synthetic SSE failure global accounting unavailable")?
+            };
+            let mut source = json!({"input":if active_tokens {"private-a"} else {"safe"}});
+            let request = request_in_store(&source, &store)?;
+            let budget = request.budget.clone();
+            let attempt = request.prepare_attempt_for_proxy(
+                "final-fixture-provider",
+                "openai_responses",
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-account"),
+                &mut source,
+                |prepared| Ok(prepared.clone()),
+            )?;
+            assert!(
+                attempt.has_restoration_lease() == active_tokens,
+                "failure fixture must cover the requested token-authority branch"
+            );
+            let binding = attempt.binding.clone();
+            let response = synthetic_history_sse_response();
+            let replay = json!({"input":response["output"]});
+            let pending = request
+                .base_lease
+                .capture_delivered_history(&binding, &response)
+                .ok_or("synthetic SSE failure accounting warmup unavailable")?;
+            drop(pending);
+            let history_before = store
+                .history_metadata_bytes_for_test()
+                .ok_or("synthetic SSE failure accounting unavailable")?;
+            assert!(
+                request
+                    .base_lease
+                    .history_projection(&binding, &replay)
+                    .is_none(),
+                "discarded warmup capture must not authorize undelivered SSE history"
+            );
+            let terminal = synthetic_history_sse_frame(
+                "response.completed",
+                &json!({"type":"response.completed","response":response}),
+            );
+            let mut chunks = Vec::new();
+            if mode == 3 {
+                let mut changed = response["output"][0].clone();
+                changed["summary"][0]["text"] = json!("Synthetic mismatched thought");
+                chunks.push(Ok(synthetic_history_sse_frame(
+                    "response.output_item.done",
+                    &json!({"type":"response.output_item.done","output_index":0,"item":changed}),
+                )));
+            }
+            if mode == 5 {
+                // A clean EOF without the original completion cannot publish history.
+                chunks.push(Ok(synthetic_history_sse_frame(
+                    "response.output_item.done",
+                    &json!({"type":"response.output_item.done", "output_index":0,
+                        "item":response["output"][0]}),
+                )));
+            } else {
+                chunks.push(Ok(terminal));
+            }
+            if mode == 1 {
+                chunks.push(Err(std::io::Error::other("Synthetic read failure")));
+            } else if mode == 2 {
+                chunks.push(Ok(Bytes::from_static(b"event: unfinished")));
+            }
+            let upstream = futures::stream::iter(chunks);
+            let body = if mode == 0 {
+                Body::from_stream(upstream.chain(futures::stream::pending()))
+            } else {
+                Body::from_stream(upstream)
+            };
+            let restored = attempt
+                .restore_client_http_response(
+                    Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(body)?,
+                    ArgumentNormalizationMode::Exact,
+                    None,
+                )
+                .await;
+            let mut body = restored.into_body();
+            if mode == 0 {
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_millis(15), body.frame())
+                        .await
+                        .is_err(),
+                    "terminal barrier must wait for clean EOF"
+                );
+                drop(body);
+            } else if mode == 4 {
+                let mut terminal_yielded = false;
+                for _ in 0..16 {
+                    let frame = body
+                        .frame()
+                        .await
+                        .ok_or("synthetic terminal frame must exist")?
+                        .map_err(|_| "synthetic terminal frame failed")?;
+                    let data = frame
+                        .data_ref()
+                        .ok_or("synthetic terminal frame must be data")?;
+                    let text = std::str::from_utf8(data)
+                        .map_err(|_| "synthetic terminal frame must be UTF-8")?;
+                    assert!(
+                        !text.contains("event: response.failed"),
+                        "terminal cancellation must reach successful local emission"
+                    );
+                    assert!(
+                        request
+                            .base_lease
+                            .history_projection(&binding, &replay)
+                            .is_none(),
+                        "terminal yield alone must not publish optional proof"
+                    );
+                    if text.contains("event: response.completed") {
+                        terminal_yielded = true;
+                        break;
+                    }
+                }
+                assert!(
+                    terminal_yielded,
+                    "cancellation must occur after the terminal yield"
+                );
+                assert!(
+                    store.history_metadata_bytes_for_test() == Some(history_before + 256 * 1024),
+                    "terminal cancellation must discard a fully charged pending response"
+                );
+                drop(body);
+            } else {
+                let bytes = body
+                    .collect()
+                    .await
+                    .map_err(|_| "synthetic failure framing failed")?
+                    .to_bytes();
+                let text = std::str::from_utf8(&bytes)
+                    .map_err(|_| "synthetic failure framing must be UTF-8")?;
+                assert!(
+                    text.contains("event: response.failed")
+                        && !text.contains("event: response.completed"),
+                    "failed SSE must withhold terminal completion"
+                );
+            }
+            assert!(
+                request
+                    .base_lease
+                    .history_projection(&binding, &replay)
+                    .is_none(),
+                "cancelled or failed SSE must not publish optional proof"
+            );
+            assert!(
+                store.history_metadata_bytes_for_test() == Some(history_before),
+                "cancelled or failed SSE must release every transient proof owner"
+            );
+            drop(request);
+            assert!(
+                budget.used() == 0,
+                "cancelled or failed SSE must release every transient payload owner"
+            );
+            store
+                .expire_idle_at(std::time::Instant::now() + std::time::Duration::from_secs(7200))?;
+            assert!(
+                store.stats()?.namespaces == 0,
+                "cancelled or failed SSE must not retain an active lease"
+            );
+            assert!(
+                store.history_metadata_bytes_for_test() == Some(global_before),
+                "namespace expiry must release the entire failure fixture controller charge"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_history_admission_candidate_preserves_mandatory_budget() -> TestResult {
+    use super::super::{payload_json::test_support as json_probe, runtime};
+    use http_body_util::BodyExt;
+    use std::{cell::Cell, rc::Rc};
+
+    let original = (*runtime::get_security_runtime()).clone();
+    struct Reset(SecurityRuntimeConfig);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _reset = Reset(original);
+    let mut policy = SecurityRuntimeConfig::default();
+    policy.custom_rules.push(CompiledCustomRule {
+        id: "synthetic-candidate-policy".into(),
+        name: "Synthetic candidate policy".into(),
+        rule_type: "regex".into(),
+        pattern: "synthetic-protected".into(),
+        regex: regex::Regex::new("synthetic-protected").ok(),
+        risk_level: RiskLevel::High,
+        action: AuditAction::RedactRestore,
+        enabled: true,
+    });
+    runtime::set_security_runtime_for_test(policy);
+    let revision = admit_security_runtime()?.restoration_policy_revision;
+    let delivered = json!({"output":[{"id":"synthetic-budget-reasoning","type":"reasoning",
+        "summary":[{"type":"summary_text","text":"s".repeat(64 * 1024)}]}]});
+    let mut source = json!({"input":delivered["output"]});
+    let measurement = PayloadBudget::with_limit(4 * 1024 * 1024);
+    let measured = PayloadJson::try_from_value(&source, measurement.clone(), measurement.limit())?;
+    let (measured_value, measured_owner) = measured.into_parts();
+    let source_bytes = measured_owner.bytes();
+    drop(measured_value);
+    drop(measured_owner);
+    assert_eq!(measurement.used(), 0);
+
+    // Mandatory admission keeps the source while the audit carrier owns its copy.
+    // A third concurrent tree belongs only to optional candidate discovery.
+    let budget = PayloadBudget::with_limit(2 * source_bytes + 32 * 1024);
+    let store = DlpTokenStore::new();
+    let issuer =
+        store.admit_published_policy("codex", Some("synthetic-candidate-budget"), revision)?;
+    let binding = issuer.bind_actual_attempt(
+        "synthetic-budget-provider",
+        "openai_responses",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-budget-account"),
+    )?;
+    let pending = issuer
+        .capture_delivered_history(&binding, &delivered)
+        .ok_or("synthetic budget capture unavailable")?;
+    assert!(issuer.publish_delivered_history(&binding, pending));
+    let history_baseline = store.history_bytes_for_test()?;
+    let gateway = RestorationGateway::with_test_store_and_rules(store.clone(), &[], budget.clone());
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "session-id",
+        HeaderValue::from_static("synthetic-candidate-budget"),
+    );
+    let builds = Rc::new(Cell::new(0usize));
+    let observed = Rc::clone(&builds);
+    let probe = json_probe::install(move |observation| {
+        if observation.phase == json_probe::Phase::BeforeBuild {
+            observed.set(observed.get() + 1);
+        }
+        json_probe::Action::Continue
+    });
+    let admission = admit_http_request(
+        &gateway,
+        &AppType::Codex,
+        true,
+        false,
+        &mut source,
+        &headers,
+    )?;
+    drop(probe);
+    let admission = match admission {
+        RestorationAdmission::Intercepted(response) => {
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .map_err(|_| "synthetic refusal collection failed")?
+                .to_bytes();
+            let refusal: Value =
+                serde_json::from_slice(&bytes).map_err(|_| "synthetic refusal decoding failed")?;
+            let category = match refusal.pointer("/error/code").and_then(Value::as_str) {
+                Some("dlp_capacity_exceeded") => "capacity",
+                Some("dlp_context_unavailable") => "context",
+                Some("dlp_redaction_failed") => "redaction",
+                _ => "other",
+            };
+            panic!(
+                "candidate admission refused: category={category}, builds={}",
+                builds.get()
+            );
+        }
+        admission => admission,
+    };
+    assert!(
+        matches!(&admission, RestorationAdmission::Admitted(_)),
+        "candidate discovery must preserve mandatory admission"
+    );
+    assert_eq!(
+        builds.get(),
+        3,
+        "only refusal audit, retained source, and initial audit may build mandatory trees"
+    );
+    drop(admission);
+    assert_eq!(
+        budget.used(),
+        0,
+        "admission owners must release all mandatory charges"
+    );
+    assert_eq!(
+        store.history_bytes_for_test()?,
+        history_baseline,
+        "candidate pins and permits must release their optional charges"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResult {
+    use super::super::runtime;
+    use http_body_util::BodyExt;
+    let original = (*runtime::get_security_runtime()).clone();
+    struct Reset(SecurityRuntimeConfig);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _reset = Reset(original);
+    let mut policy = SecurityRuntimeConfig::default();
+    policy.custom_rules.push(CompiledCustomRule {
+        id: "synthetic-history-policy".into(),
+        name: "Synthetic history policy".into(),
+        rule_type: "regex".into(),
+        pattern: "synthetic-protected".into(),
+        regex: regex::Regex::new("synthetic-protected").ok(),
+        risk_level: RiskLevel::High,
+        action: AuditAction::RedactRestore,
+        enabled: true,
+    });
+    runtime::set_security_runtime_for_test(policy);
+    let gateway = RestorationGateway::with_rules(&[], 32 * 1024 * 1024);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "session-id",
+        HeaderValue::from_static("synthetic-history-roundtrip"),
+    );
+    for reasoning in [true, false] {
+        let mut source = json!({"input":"synthetic safe prompt"});
+        let admitted = match admit_http_request(
+            &gateway,
+            &AppType::Codex,
+            true,
+            false,
+            &mut source,
+            &headers,
+        )? {
+            RestorationAdmission::Admitted(request) => request,
+            _ => panic!("synthetic initial request must be admitted"),
+        };
+        let attempt = admitted.prepare_attempt_for_proxy(
+            "synthetic-history-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-history-principal"),
+            &mut source,
+            |body| Ok(body.clone()),
+        )?;
+        let literal_reference = format!("rredact-custom-{}-ai", "a".repeat(20));
+        let item = if reasoning {
+            json!({"id":"synthetic-history-reasoning", "type":"reasoning", "summary":[
+                {"type":"summary_text", "text":"synthetic rredact-custom- literal"}
+            ], "content":[{"type":"reasoning_text", "text":format!("synthetic reasoning {literal_reference} boundary")} ]})
+        } else {
+            json!({"id":"synthetic-history-message", "type":"message", "role":"assistant", "status":"completed",
+                "content":[{"type":"output_text", "text":"synthetic rredact-custom- literal", "annotations":[]}]})
+        };
+        let raw = json!({"id":"synthetic-history-response", "object":"response", "status":"completed", "output":[item]});
+        let response = attempt
+            .restore_client_http_response(
+                Response::builder()
+                    .header("content-type", "application/json")
+                    .body(Body::from(raw.to_string()))?,
+                ArgumentNormalizationMode::Exact,
+                None,
+            )
+            .await;
+        assert!(
+            response.status() == StatusCode::OK,
+            "synthetic response delivery must succeed"
+        );
+        let bytes = response.into_body().collect().await?.to_bytes();
+        let delivered: Value =
+            serde_json::from_slice(&bytes).map_err(|_| "synthetic delivery must encode JSON")?;
+        let mut replay = json!({"input":delivered["output"]});
+        let request = match admit_http_request(
+            &gateway,
+            &AppType::Codex,
+            true,
+            false,
+            &mut replay,
+            &headers,
+        )? {
+            RestorationAdmission::Admitted(request) => request,
+            _ => panic!("exact delivered history must pass candidate admission"),
+        };
+        let result = request.prepare_attempt_for_proxy(
+            "synthetic-history-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-history-principal"),
+            &mut replay,
+            |body| Ok(body.clone()),
+        );
+        assert!(
+            result.is_ok(),
+            "exact delivered history must pass native final inspection"
+        );
+        let attempt = result.map_err(|_| "synthetic exact history preparation must succeed")?;
+        assert!(
+            attempt.validate_final_send_history(&replay).is_ok(),
+            "exact final tree must retain proof"
+        );
+        let mut changed = replay.clone();
+        let pointer = if reasoning {
+            "/input/0/summary/0/text"
+        } else {
+            "/input/0/content/0/text"
+        };
+        *changed
+            .pointer_mut(pointer)
+            .ok_or("synthetic history path missing")? = json!("changed rredact-custom-");
+        assert!(
+            attempt.validate_final_send_history(&changed).is_err(),
+            "late text mutation must lose proof"
+        );
+        for (provider, target, principal) in [
+            (
+                "synthetic-other-provider",
+                "https://synthetic.invalid/v1/responses",
+                "synthetic-history-principal",
+            ),
+            (
+                "synthetic-history-provider",
+                "https://synthetic.invalid/v1/responses?other=1",
+                "synthetic-history-principal",
+            ),
+            (
+                "synthetic-history-provider",
+                "https://synthetic.invalid/v1/responses",
+                "synthetic-other-principal",
+            ),
+        ] {
+            let mut candidate = json!({"input":delivered["output"]});
+            let request = match admit_http_request(
+                &gateway,
+                &AppType::Codex,
+                true,
+                false,
+                &mut candidate,
+                &headers,
+            )? {
+                RestorationAdmission::Admitted(request) => request,
+                _ => panic!("private candidate must defer actual-binding decision"),
+            };
+            assert!(
+                request
+                    .prepare_attempt_for_proxy(
+                        provider,
+                        "openai_responses",
+                        target,
+                        Some(principal),
+                        &mut candidate,
+                        |body| Ok(body.clone())
+                    )
+                    .is_err(),
+                "different actual authority must refuse history"
+            );
+        }
+        for mutation in 0..5 {
+            let mut candidate = json!({"input":delivered["output"]});
+            match mutation {
+                0 => {
+                    *candidate
+                        .pointer_mut(pointer)
+                        .ok_or("synthetic history path missing")? = json!("changed rredact-custom-")
+                }
+                1 => {
+                    candidate["input"][0]["metadata"] = json!({"synthetic":"rredact-custom-"});
+                }
+                2 => {
+                    candidate["input"].as_array_mut().ok_or("synthetic input missing")?.push(json!({
+                    "type":"function_call", "call_id":"synthetic-strict-call", "name":"synthetic", "arguments":"{\"value\":\"rredact-custom-\"}"}));
+                }
+                3 => {
+                    candidate["input"][0]
+                        .as_object_mut()
+                        .ok_or("synthetic item missing")?
+                        .insert("rredact-custom-".into(), json!("safe"));
+                }
+                _ => {
+                    candidate["input"]
+                        .as_array_mut()
+                        .ok_or("synthetic input missing")?
+                        .push(json!({"role":"user", "content":"rredact-custom-"}));
+                }
+            }
+            let admitted = admit_http_request(
+                &gateway,
+                &AppType::Codex,
+                true,
+                false,
+                &mut candidate,
+                &headers,
+            );
+            let refused = match admitted {
+                Ok(RestorationAdmission::Admitted(request)) => request
+                    .prepare_attempt_for_proxy(
+                        "synthetic-history-provider",
+                        "openai_responses",
+                        "https://synthetic.invalid/v1/responses",
+                        Some("synthetic-history-principal"),
+                        &mut candidate,
+                        |body| Ok(body.clone()),
+                    )
+                    .is_err(),
+                _ => true,
+            };
+            assert!(
+                refused,
+                "changed item, keys, arguments and unproven siblings must remain strict"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_history_http_output_session_isolation() -> TestResult {
+    check_history_http_isolation(false, HistoryIsolationBoundary::Session).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_history_http_reasoning_session_isolation() -> TestResult {
+    check_history_http_isolation(true, HistoryIsolationBoundary::Session).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_history_http_output_policy_admission_isolation() -> TestResult {
+    check_history_http_isolation(false, HistoryIsolationBoundary::PolicyAdmission).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_history_http_reasoning_policy_admission_isolation() -> TestResult {
+    check_history_http_isolation(true, HistoryIsolationBoundary::PolicyAdmission).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_history_http_output_prepared_policy_revocation() -> TestResult {
+    check_history_http_isolation(false, HistoryIsolationBoundary::PreparedPolicy).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_history_http_reasoning_prepared_policy_revocation() -> TestResult {
+    check_history_http_isolation(true, HistoryIsolationBoundary::PreparedPolicy).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_history_http_output_prepared_policy_gate_closed() -> TestResult {
+    check_history_http_isolation(false, HistoryIsolationBoundary::PreparedPolicyGateClosed).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_history_http_reasoning_prepared_policy_gate_closed() -> TestResult {
+    check_history_http_isolation(true, HistoryIsolationBoundary::PreparedPolicyGateClosed).await
+}
+
+enum HistoryIsolationBoundary {
+    Session,
+    PolicyAdmission,
+    PreparedPolicy,
+    PreparedPolicyGateClosed,
+}
+
+async fn check_history_http_isolation(
+    reasoning: bool,
+    boundary: HistoryIsolationBoundary,
+) -> TestResult {
+    use super::super::runtime;
+    use http_body_util::BodyExt;
+
+    struct Reset(SecurityRuntimeConfig);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _reset = Reset((*runtime::get_security_runtime()).clone());
+    let mut policy = SecurityRuntimeConfig::default();
+    policy.custom_rules.push(CompiledCustomRule {
+        id: "synthetic-isolation-rule".into(),
+        name: "Synthetic isolation policy".into(),
+        rule_type: "regex".into(),
+        pattern: "synthetic-isolation-protected".into(),
+        regex: Some(regex::Regex::new("synthetic-isolation-protected")?),
+        risk_level: RiskLevel::High,
+        action: AuditAction::RedactRestore,
+        enabled: true,
+    });
+    runtime::set_security_runtime_for_test(policy.clone());
+    let revision = admit_security_runtime()?.restoration_policy_revision;
+    let gateway = RestorationGateway::with_rules(&[], 32 * 1024 * 1024);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "session-id",
+        HeaderValue::from_static("synthetic-history-isolation"),
+    );
+    let mut source = json!({"input": "synthetic safe prompt"});
+    let admitted = match admit_http_request(
+        &gateway,
+        &AppType::Codex,
+        true,
+        false,
+        &mut source,
+        &headers,
+    )? {
+        RestorationAdmission::Admitted(request) => request,
+        _ => return Err("synthetic initial isolation request must be admitted".into()),
+    };
+    let attempt = admitted.prepare_attempt_for_proxy(
+        "synthetic-isolation-provider",
+        "openai_responses",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-isolation-principal"),
+        &mut source,
+        |body| Ok(body.clone()),
+    )?;
+    let item = if reasoning {
+        json!({"id": "synthetic-isolation-reasoning", "type": "reasoning", "summary": [
+            {"type": "summary_text", "text": "synthetic reasoning rredact-custom-"}
+        ]})
+    } else {
+        json!({"id": "synthetic-isolation-output", "type": "message", "role": "assistant",
+        "status": "completed", "content": [
+            {"type": "output_text", "text": "synthetic output rredact-custom-", "annotations": []}
+        ]})
+    };
+    let raw = json!({"id": "synthetic-isolation-response", "object": "response",
+        "status": "completed", "output": [item]});
+    let response = attempt
+        .restore_client_http_response(
+            Response::builder()
+                .header("content-type", "application/json")
+                .body(Body::from(raw.to_string()))?,
+            ArgumentNormalizationMode::Exact,
+            None,
+        )
+        .await;
+    assert!(
+        response.status() == StatusCode::OK,
+        "synthetic isolation delivery must succeed"
+    );
+    let bytes = response.into_body().collect().await?.to_bytes();
+    let delivered: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "synthetic isolation delivery must encode JSON")?;
+    let mut replay = json!({"input": delivered["output"]});
+    let replay_request = match admit_http_request(
+        &gateway,
+        &AppType::Codex,
+        true,
+        false,
+        &mut replay,
+        &headers,
+    )? {
+        RestorationAdmission::Admitted(request) => request,
+        _ => return Err("same-session synthetic history must be admitted".into()),
+    };
+    let ready = replay_request.prepare_attempt_for_proxy(
+        "synthetic-isolation-provider",
+        "openai_responses",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-isolation-principal"),
+        &mut replay,
+        |body| Ok(body.clone()),
+    )?;
+    let target = super::super::history_provenance::DlpHistoryTarget::ResponsesLeaf {
+        input_index: 0,
+        field: if reasoning {
+            super::super::history_provenance::DlpHistoryLeafField::ReasoningSummary
+        } else {
+            super::super::history_provenance::DlpHistoryLeafField::OutputText
+        },
+        part_index: 0,
+    };
+    assert!(
+        ready.history_mapping.as_ref().is_some_and(|mapping| {
+            mapping.validates_target(&ready.lease, &ready.binding, &replay, target)
+        }),
+        "synthetic isolation fixture must carry a live exact delivered-leaf mapping"
+    );
+    assert!(
+        ready.validate_final_send_history(&replay).is_ok(),
+        "same-policy exact history must pass the final proof check"
+    );
+    assert!(
+        ready.encode_outbound_body(&replay).is_ok(),
+        "same-policy exact history must pass outbound encoding"
+    );
+
+    if matches!(boundary, HistoryIsolationBoundary::Session) {
+        let mut other_session = HeaderMap::new();
+        other_session.insert(
+            "session-id",
+            HeaderValue::from_static("synthetic-other-history-session"),
+        );
+        let no_session = HeaderMap::new();
+        for candidate_headers in [&other_session, &no_session] {
+            let mut candidate = json!({"input": delivered["output"]});
+            let admission = admit_http_request(
+                &gateway,
+                &AppType::Codex,
+                true,
+                false,
+                &mut candidate,
+                candidate_headers,
+            )?;
+            assert_history_context_refusal(admission).await?;
+        }
+        return Ok(());
+    }
+
+    if matches!(boundary, HistoryIsolationBoundary::PreparedPolicyGateClosed) {
+        let db = crate::database::Database::memory()?;
+        let mut during_update = None;
+        let failed_update = runtime::update_security_runtime(&db, |_| {
+            // Do not assert while the policy writer is held: unwinding must not
+            // make the runtime reset wait on the same writer lock.
+            during_update = Some((
+                matches!(admit_security_runtime(), Err(TokenError::Unavailable)),
+                matches!(
+                    ready.validate_final_send_history(&replay),
+                    Err(DlpForwardError::ContextUnavailable)
+                ),
+                matches!(
+                    ready.encode_outbound_body(&replay),
+                    Err(DlpForwardError::ContextUnavailable)
+                ),
+            ));
+            Err::<(), _>(crate::error::AppError::Message(
+                "synthetic history policy save failure".into(),
+            ))
+        });
+        let after_failed_update = (
+            matches!(admit_security_runtime(), Err(TokenError::Unavailable)),
+            matches!(
+                ready.validate_final_send_history(&replay),
+                Err(DlpForwardError::ContextUnavailable)
+            ),
+            matches!(
+                ready.encode_outbound_body(&replay),
+                Err(DlpForwardError::ContextUnavailable)
+            ),
+        );
+        assert!(failed_update.is_err(), "synthetic policy update must fail");
+        let (during_closed, during_proof_refused, during_encoding_refused) =
+            during_update.ok_or("synthetic update must observe the closed policy gate")?;
+        let (after_closed, after_proof_refused, after_encoding_refused) = after_failed_update;
+        assert!(
+            during_closed && after_closed,
+            "policy admission must remain closed during and after an uncertain save"
+        );
+
+        // No policy is published by the failed update. Republishing the exact
+        // policy must preserve its revision, independently of proof eligibility.
+        runtime::set_security_runtime_for_test(policy);
+        assert!(
+            admit_security_runtime()?.restoration_policy_revision == revision,
+            "synthetic gate closure must not depend on a changed policy revision"
+        );
+        assert!(
+            during_proof_refused
+                && during_encoding_refused
+                && after_proof_refused
+                && after_encoding_refused,
+            "closed policy gate must revoke prepared history at proof and encoding boundaries"
+        );
+        return Ok(());
+    }
+
+    let mut changed_policy = policy;
+    changed_policy.custom_rules[0].pattern = "synthetic-changed-isolation-protected".into();
+    changed_policy.custom_rules[0].regex =
+        Some(regex::Regex::new("synthetic-changed-isolation-protected")?);
+    runtime::set_security_runtime_for_test(changed_policy);
+    assert!(
+        admit_security_runtime()?.restoration_policy_revision > revision,
+        "synthetic policy change must advance restoration authority"
+    );
+    if matches!(boundary, HistoryIsolationBoundary::PolicyAdmission) {
+        let mut candidate = json!({"input": delivered["output"]});
+        let admission = admit_http_request(
+            &gateway,
+            &AppType::Codex,
+            true,
+            false,
+            &mut candidate,
+            &headers,
+        )?;
+        assert_history_context_refusal(admission).await?;
+    } else {
+        // Revoke proof eligibility, not the request's captured detection matcher.
+        let proof_revoked = matches!(
+            ready.validate_final_send_history(&replay),
+            Err(DlpForwardError::ContextUnavailable)
+        );
+        let encoding_refused = matches!(
+            ready.encode_outbound_body(&replay),
+            Err(DlpForwardError::ContextUnavailable)
+        );
+        assert!(
+            proof_revoked && encoding_refused,
+            "policy invalidation must revoke prepared history at proof and encoding boundaries"
+        );
+    }
+    Ok(())
+}
+
+async fn assert_history_context_refusal(admission: RestorationAdmission) -> TestResult {
+    let response = match admission {
+        RestorationAdmission::Intercepted(response) => response,
+        _ => return Err("unproven synthetic history must be intercepted at admission".into()),
+    };
+    assert_history_context_refusal_response(response).await
+}
+
+async fn assert_history_context_refusal_response(response: Response) -> TestResult {
+    assert!(
+        response.status() == StatusCode::BAD_REQUEST,
+        "history isolation must produce the fixed client refusal status"
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .map_err(|_| "synthetic isolation refusal body must fit the fixed collection bound")?;
+    let payload: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "synthetic isolation refusal must encode JSON")?;
+    let expected = json!({"error": {
+        "message": DlpForwardError::ContextUnavailable.message(),
+        "type": "invalid_request_error",
+        "code": "dlp_context_unavailable",
+        "param": null
+    }});
+    assert!(
+        payload == expected,
+        "history isolation must return the exact fixed client refusal envelope without extra fields"
+    );
+    Ok(())
+}
+
+#[test]
+fn reasoning_history_roundtrip_chat_conversion_keeps_private_source_chain() -> TestResult {
+    let delivered = json!({"output":[
+        {"id":"synthetic-chat-reasoning", "type":"reasoning", "summary":[
+            {"type":"summary_text", "text":"synthetic thinking rredact-custom-"}]},
+        {"id":"synthetic-chat-output", "type":"message", "role":"assistant", "content":[
+            {"type":"output_text", "text":"synthetic output rredact-custom-", "annotations":[]}]}
+    ]});
+    let mut body = json!({"input":delivered["output"]});
+    let request = request(&body)?;
+    let issuer = request.base_lease.fork_attempt()?;
+    let binding = issuer.bind_actual_attempt(
+        "final-fixture-provider",
+        "openai_chat",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-account"),
+    )?;
+    let pending = issuer
+        .capture_delivered_history(&binding, &delivered)
+        .ok_or("synthetic Chat proof capture must succeed")?;
+    assert!(
+        issuer.publish_delivered_history(&binding, pending),
+        "synthetic Chat proof must publish"
+    );
+    let result = request.prepare_owned_attempt_with_history_for_proxy(None, "final-fixture-provider", "openai_chat",
+        "https://synthetic.invalid/v1/responses", Some("synthetic-account"), &mut body,
+        |body, context| {
+            let projection = context.projection(&body);
+            crate::proxy::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning_and_history(&body, None, projection.as_ref())
+        });
+    assert!(
+        result.is_ok(),
+        "exact delivered typed history must survive the actual Chat conversion chain"
+    );
+    Ok(())
+}
+
+fn change_synthetic_chat_target(body: &mut Value, mode: usize) {
+    match mode {
+        0 => {
+            body["messages"][0]["tool_calls"] = json!([{"id":"synthetic-other-call","type":"function",
+            "function":{"name":"synthetic_other_tool","arguments":"{}"}}])
+        }
+        1 => body["messages"][0]["id"] = json!("synthetic-other-item"),
+        2 => body["messages"][0]["name"] = json!("synthetic_other_owner"),
+        _ => body["messages"][0]["metadata"] = json!({"synthetic_owner":"other"}),
+    }
+}
+
+fn assert_chat_target_identity_boundary(late: bool) -> TestResult {
+    let delivered = json!({"output":[
+        {"id":"synthetic-target-reasoning","type":"reasoning","summary":[
+            {"type":"summary_text","text":"private-a rredact-custom-"}]},
+        {"id":"synthetic-target-output","type":"message","role":"assistant","content":[
+            {"type":"output_text","text":"synthetic unchanged output","annotations":[]}]}
+    ]});
+    let source = json!({"input":delivered["output"]});
+    let request = request(&source)?;
+    let issuer = request.base_lease.fork_attempt()?;
+    let binding = issuer.bind_actual_attempt(
+        "final-fixture-provider",
+        "openai_chat",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-account"),
+    )?;
+    let pending = issuer
+        .capture_delivered_history(&binding, &delivered)
+        .ok_or("synthetic target capture unavailable")?;
+    assert!(issuer.publish_delivered_history(&binding, pending));
+    for mode in 0..4 {
+        let mut body = source.clone();
+        let result = request.prepare_owned_attempt_with_history_for_proxy(None,
+            "final-fixture-provider", "openai_chat", "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"), &mut body, |body, context| {
+                let projection = context.projection(&body);
+                let (mut converted, mapping) = crate::proxy::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning_and_history(
+                    &body, None, projection.as_ref())?;
+                if !late { change_synthetic_chat_target(&mut converted, mode); }
+                Ok((converted, mapping))
+            });
+        if late {
+            let (attempt, _owner) =
+                result.map_err(|_| "synthetic unchanged target must prepare")?;
+            assert!(attempt.validate_final_send_history(&body).is_ok());
+            change_synthetic_chat_target(&mut body, mode);
+            assert!(
+                attempt.validate_final_send_history(&body).is_err(),
+                "unchanged text cannot authorize a different final typed target"
+            );
+        } else {
+            assert!(
+                result.is_err(),
+                "post-conversion target reassignment must not inherit delivered reasoning proof"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn reasoning_history_chat_target_identity_rejects_post_conversion_override() -> TestResult {
+    assert_chat_target_identity_boundary(false)
+}
+
+#[test]
+fn reasoning_history_chat_target_identity_rejects_late_send_reassignment() -> TestResult {
+    assert_chat_target_identity_boundary(true)
+}
+
+mod history_client_diagnostics {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    static FORBIDDEN: AtomicBool = AtomicBool::new(false);
+    static CONTROL: AtomicBool = AtomicBool::new(false);
+    static CHECKPOINTS: AtomicUsize = AtomicUsize::new(0);
+    struct Logger;
+    impl log::Log for Logger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.target().contains("::proxy::security")
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if !self.enabled(record.metadata()) {
+                return;
+            }
+            let exact =
+                super::super::super::reversible_integration_tests::history_client_diagnostic_exact;
+            if record.target() == "cc_switch_lib::proxy::security::synthetic_history_client_control"
+                && exact(*record.args(), "synthetic history client observer control")
+            {
+                CONTROL.store(true, Ordering::SeqCst);
+            } else if record.target() == "cc_switch_lib::proxy::security::restore_diagnostics"
+                && exact(*record.args(), "[DLP] context failure code=dlp_context_unavailable checkpoint=final_validation")
+            {
+                CHECKPOINTS.fetch_add(1, Ordering::SeqCst);
+            } else {
+                FORBIDDEN.store(true, Ordering::SeqCst);
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOGGER: Logger = Logger;
+    pub(super) async fn parent(
+        child: &str,
+        test: &str,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        super::super::super::reversible_integration_tests::history_client_diagnostic_parent(
+            child, test,
+        )
+        .await
+    }
+    pub(super) fn install() -> super::TestResult {
+        log::set_logger(&LOGGER).map_err(|_| "synthetic history client logger unavailable")?;
+        log::set_max_level(log::LevelFilter::Trace);
+        log::warn!(target: "cc_switch_lib::proxy::security::synthetic_history_client_control",
+            "synthetic history client observer control");
+        assert!(
+            CONTROL.load(Ordering::SeqCst),
+            "synthetic history client logger must receive its control"
+        );
+        Ok(())
+    }
+    pub(super) fn finish(expected: usize) -> ! {
+        if FORBIDDEN.load(Ordering::SeqCst)
+            || CHECKPOINTS.load(Ordering::SeqCst) != expected
+            || !CONTROL.load(Ordering::SeqCst)
+        {
+            std::process::exit(86);
+        }
+        std::process::exit(87);
+    }
+}
+
+fn history_client_refusal_chat_fixture(
+) -> Result<(DlpHttpRequest, Value), Box<dyn std::error::Error>> {
+    let delivered = json!({"output":[
+        {"id":"synthetic-refusal-reasoning", "type":"reasoning", "summary":[
+            {"type":"summary_text", "text":"synthetic reasoning rredact-custom-"}]},
+        {"id":"synthetic-refusal-output", "type":"message", "role":"assistant", "content":[
+            {"type":"output_text", "text":"synthetic output rredact-custom-", "annotations":[]}]}
+    ]});
+    let source = json!({"input":delivered["output"]});
+    let request = request(&source)?;
+    let issuer = request.base_lease.fork_attempt()?;
+    let binding = issuer.bind_actual_attempt(
+        "final-fixture-provider",
+        "openai_chat",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-account"),
+    )?;
+    let pending = issuer
+        .capture_delivered_history(&binding, &delivered)
+        .ok_or("synthetic client refusal fixture must capture delivered history")?;
+    assert!(
+        issuer.publish_delivered_history(&binding, pending),
+        "synthetic client refusal fixture must publish delivered history"
+    );
+    Ok((request, source))
+}
+
+#[tokio::test]
+async fn reasoning_history_chat_prepare_failures_return_fixed_client_refusal() -> TestResult {
+    const CHILD: &str = "VARYAI_SYNTHETIC_HISTORY_PREPARE_CLIENT_DIAGNOSTIC";
+    const TEST: &str = "proxy::security::http_restoration::final_validation_tests::reasoning_history_chat_prepare_failures_return_fixed_client_refusal";
+    if history_client_diagnostics::parent(CHILD, TEST).await? {
+        return Ok(());
+    }
+    history_client_diagnostics::install()?;
+    use super::super::history_provenance::DlpHistoryTarget;
+
+    let (request, source) = history_client_refusal_chat_fixture()?;
+    for mode in 0..8 {
+        let mut body = source.clone();
+        let result = request.prepare_owned_attempt_with_history_for_proxy(
+            None,
+            "final-fixture-provider",
+            "openai_chat",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"),
+            &mut body,
+            |body, context| {
+                let projection = context.projection(&body);
+                let (mut converted, mut mapping) = crate::proxy::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning_and_history(
+                    &body, None, projection.as_ref())?;
+                match mode {
+                    0 => {}
+                    1 => {
+                        assert!(mapping.is_some(), "synthetic wrong-mapping fixture needs proof");
+                        if let Some(mapping) = mapping.as_mut() {
+                            mapping.remap_chat_targets(|index| index.checked_add(1));
+                        }
+                    }
+                    2 => converted["messages"][0]["reasoning_content"] =
+                        json!("synthetic changed reasoning rredact-custom-"),
+                    3 => converted["messages"][0]["content"] =
+                        json!("synthetic changed output rredact-custom-"),
+                    _ => change_synthetic_chat_target(&mut converted, mode - 4),
+                }
+                Ok((converted, mapping))
+            },
+        );
+        if mode == 0 {
+            let (attempt, _owner) = result
+                .map_err(|_| "synthetic exact history must prepare before refusal mutations")?;
+            for target in [
+                DlpHistoryTarget::ChatReasoning { message_index: 0 },
+                DlpHistoryTarget::ChatContent { message_index: 0 },
+            ] {
+                assert!(
+                    attempt.history_mapping.as_ref().is_some_and(|mapping| {
+                        mapping.validates_target(&attempt.lease, &attempt.binding, &body, target)
+                    }),
+                    "synthetic refusal fixture must prove both reasoning and ordinary output"
+                );
+            }
+            assert!(
+                attempt.validate_final_send_history(&body).is_ok(),
+                "synthetic exact history must pass the real final-send check"
+            );
+            continue;
+        }
+        let error = match result {
+            Err(crate::proxy::error::ProxyError::DlpForward(error)) => error,
+            _ => {
+                return Err("synthetic history preparation must produce a real DLP refusal".into())
+            }
+        };
+        assert_history_context_refusal_response(error.into_codex_response()).await?;
+    }
+    drop(request);
+    drop(source);
+    history_client_diagnostics::finish(7)
+}
+
+#[tokio::test]
+async fn reasoning_history_chat_late_reassignments_return_fixed_client_refusal() -> TestResult {
+    const CHILD: &str = "VARYAI_SYNTHETIC_HISTORY_LATE_CLIENT_DIAGNOSTIC";
+    const TEST: &str = "proxy::security::http_restoration::final_validation_tests::reasoning_history_chat_late_reassignments_return_fixed_client_refusal";
+    if history_client_diagnostics::parent(CHILD, TEST).await? {
+        return Ok(());
+    }
+    history_client_diagnostics::install()?;
+    let (request, mut body) = history_client_refusal_chat_fixture()?;
+    let (attempt, _owner) = request
+        .prepare_owned_attempt_with_history_for_proxy(
+            None,
+            "final-fixture-provider",
+            "openai_chat",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"),
+            &mut body,
+            |body, context| {
+                let projection = context.projection(&body);
+                crate::proxy::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning_and_history(
+                    &body, None, projection.as_ref())
+            },
+        )
+        .map_err(|_| "synthetic unchanged history must prepare before late reassignment")?;
+    assert!(
+        attempt.validate_final_send_history(&body).is_ok(),
+        "synthetic unchanged history must pass before late reassignment"
+    );
+    for mode in 0..6 {
+        let mut changed = body.clone();
+        match mode {
+            0 => {
+                changed["messages"][0]["reasoning_content"] =
+                    json!("synthetic safe changed reasoning")
+            }
+            1 => changed["messages"][0]["content"] = json!("synthetic safe changed output"),
+            _ => change_synthetic_chat_target(&mut changed, mode - 2),
+        }
+        for result in [
+            attempt.validate_final_send_history(&changed),
+            attempt.encode_outbound_body(&changed).map(|_| ()),
+        ] {
+            let error = match result {
+                Err(error) => error,
+                Ok(()) => {
+                    return Err(
+                        "synthetic late reassignment must produce a real DLP refusal".into(),
+                    )
+                }
+            };
+            assert_history_context_refusal_response(error.into_app_response(&AppType::Codex))
+                .await?;
+        }
+    }
+    drop(attempt);
+    drop(_owner);
+    drop(request);
+    drop(body);
+    history_client_diagnostics::finish(0)
+}
+
+#[test]
+fn reasoning_history_refusal_audit_uses_bound_eligible_leaves() -> TestResult {
+    let delivered = json!({"output":[{"id":"synthetic-audit-reasoning", "type":"reasoning",
+        "summary":[{"type":"summary_text","text":"private-a"}]}]});
+    let source = json!({"input":delivered["output"]});
+    let request = request(&source)?;
+    let issuer = request.base_lease.fork_attempt()?;
+    let binding = issuer.bind_actual_attempt(
+        "final-fixture-provider",
+        "openai_responses",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-account"),
+    )?;
+    let pending = issuer
+        .capture_delivered_history(&binding, &delivered)
+        .ok_or("synthetic audit capture unavailable")?;
+    assert!(
+        issuer.publish_delivered_history(&binding, pending),
+        "synthetic audit publication failed"
+    );
+    let observe = request.audit_observer_for_test();
+    let mut enriched = source;
+    enriched["input"]
+        .as_array_mut()
+        .ok_or("synthetic audit input missing")?
+        .push(json!({"role":"user","content":"rredact-custom-"}));
+    assert!(
+        request
+            .prepare_attempt_for_proxy(
+                "final-fixture-provider",
+                "openai_responses",
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-account"),
+                &mut enriched,
+                |body| Ok(body.clone())
+            )
+            .is_err(),
+        "unproven malformed sibling must refuse"
+    );
+    assert!(
+        observe().is_empty(),
+        "refusal audit must not detect proven reasoning"
+    );
+    Ok(())
+}
+
+#[test]
+fn reasoning_history_chat_mapping_overrides_strict_fallback_and_optional_miss() -> TestResult {
+    let delivered = json!({"output":[
+        {"id":"synthetic-matrix-reasoning", "type":"reasoning", "summary":[
+            {"type":"summary_text", "text":"private-a rredact-custom-"}]},
+        {"id":"synthetic-matrix-output", "type":"message", "role":"assistant", "content":[
+            {"type":"output_text", "text":"synthetic output rredact-custom-", "annotations":[]}]}
+    ]});
+    let source = json!({"model":"synthetic-original", "prompt_cache_key":"synthetic-cache", "input":delivered["output"]});
+    let request = request(&source)?;
+    let issuer = request.base_lease.fork_attempt()?;
+    let binding = issuer.bind_actual_attempt(
+        "final-fixture-provider",
+        "openai_chat",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-account"),
+    )?;
+    let pending = issuer
+        .capture_delivered_history(&binding, &delivered)
+        .ok_or("synthetic matrix capture unavailable")?;
+    assert!(
+        issuer.publish_delivered_history(&binding, pending),
+        "synthetic matrix publication failed"
+    );
+    for mode in 0..9 {
+        let mut body = source.clone();
+        let result = request.prepare_owned_attempt_with_history_for_proxy(None,
+            "final-fixture-provider", "openai_chat", "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"), &mut body, |mut body, context| {
+                body["model"] = json!("synthetic-upstream");
+                body.as_object_mut().ok_or(crate::proxy::error::ProxyError::DlpForward(DlpForwardError::RedactionFailed))?
+                    .remove("prompt_cache_key");
+                let projection = context.projection(&body);
+                let fault = (mode == 7).then(|| super::super::history_allocation_test_support::fail_metadata_after(0));
+                let (mut converted, mapping) = crate::proxy::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning_and_history(
+                    &body, None, if mode == 8 { None } else { projection.as_ref() })?;
+                drop(fault);
+                match mode {
+                    1 => converted["messages"][0]["reasoning_content"] = json!("changed rredact-custom-"),
+                    2 => converted["messages"][0]["content"] = json!("changed rredact-custom-"),
+                    3 => converted["messages"].as_array_mut().ok_or(crate::proxy::error::ProxyError::DlpForward(DlpForwardError::RedactionFailed))?
+                        .push(json!({"role":"user","content":"rredact-custom-"})),
+                    4 => converted["messages"][0]["tool_calls"] = json!([{"id":"synthetic-call","type":"function",
+                        "function":{"name":"synthetic", "arguments":"{\"value\":\"rredact-custom-\"}"}}]),
+                    5 => converted["messages"][0]["name"] = json!("rredact-custom-"),
+                    6 => { converted["messages"][0].as_object_mut().ok_or(crate::proxy::error::ProxyError::DlpForward(DlpForwardError::RedactionFailed))?
+                        .insert("rredact-custom-".into(), json!("safe")); },
+                    _ => {},
+                }
+                Ok((converted, mapping))
+            });
+        if mode == 0 {
+            let (attempt, _owner) =
+                result.map_err(|_| "synthetic exact Chat matrix must prepare")?;
+            assert!(
+                attempt.validate_final_send_history(&body).is_ok(),
+                "exact Chat mapping must remain bound"
+            );
+            for pointer in ["/messages/0/content", "/messages/0/reasoning_content"] {
+                let mut late = body.clone();
+                *late
+                    .pointer_mut(pointer)
+                    .ok_or("synthetic Chat mapped path missing")? = json!("safe changed");
+                assert!(
+                    attempt.validate_final_send_history(&late).is_err(),
+                    "late safe text change must invalidate source mapping"
+                );
+                assert!(
+                    attempt.encode_outbound_body(&late).is_err(),
+                    "encoding must not accept a stale history mapping"
+                );
+            }
+        } else {
+            assert!(
+                result.is_err(),
+                "changed, unproven or optional-miss leaves must stay strict"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn reasoning_history_output_complete_references_keep_request_local_authority() -> TestResult {
+    use super::super::tokenization::{TokenCategory, TokenFragment};
+    for authorized in [true, false] {
+        let mut request = request(&json!({"input":"safe"}))?;
+        let mut issuer = request.base_lease.fork_attempt()?;
+        let token = issuer.prepare(
+            &[TokenFragment {
+                raw: "synthetic-complete-reference-source",
+                whole_span_categories: &[TokenCategory::Custom],
+            }],
+            &[],
+            |tokens| tokens.first().cloned().ok_or(TokenError::RedactionFailed),
+        )?;
+        if authorized {
+            request.base_lease.prepare(
+                &[TokenFragment {
+                    raw: "synthetic-complete-reference-source",
+                    whole_span_categories: &[TokenCategory::Custom],
+                }],
+                &[],
+                |_| Ok(()),
+            )?;
+        }
+        let binding = issuer.bind_actual_attempt(
+            "final-fixture-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"),
+        )?;
+        let delivered = json!({"output":[{"id":"synthetic-complete-output", "type":"message", "role":"assistant",
+            "content":[{"type":"output_text", "text":format!("synthetic malformed rredact-custom- and complete {token}"), "annotations":[]}]}]});
+        let pending = issuer
+            .capture_delivered_history(&binding, &delivered)
+            .ok_or("synthetic complete output capture unavailable")?;
+        assert!(
+            issuer.publish_delivered_history(&binding, pending),
+            "synthetic complete output publication failed"
+        );
+        let mut body = json!({"input":delivered["output"]});
+        request.source_body =
+            PayloadJson::try_from_value(&body, request.budget.clone(), request.budget.limit())?;
+        let result = request.prepare_attempt_for_proxy(
+            "final-fixture-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"),
+            &mut body,
+            |body| Ok(body.clone()),
+        );
+        assert!(
+            result.is_ok() == authorized,
+            "delivered output must not grant authority to complete references"
+        );
+    }
+    Ok(())
+}
+
+fn synthetic_restored_history_response(text: &str) -> Value {
+    json!({"id":"synthetic-restored-history","object":"response","status":"completed","output":[{
+        "id":"synthetic-restored-message","type":"message","role":"assistant","status":"completed",
+        "content":[
+            {"type":"output_text","text":format!("Synthetic first {text}"),"annotations":[]},
+            {"type":"output_text","text":format!("Synthetic second {text}"),"annotations":[]}
+        ]
+    }]})
+}
+
+fn assert_restored_history_matches_delivered_not_raw(
+    request: &DlpHttpRequest,
+    binding: &crate::proxy::security::completed_context::ActualAttemptBinding,
+    raw: &Value,
+    delivered: &Value,
+) -> TestResult {
+    use crate::proxy::security::history_provenance::DlpHistoryLeafField as Field;
+
+    let expected = synthetic_restored_history_response("private-a");
+    assert!(
+        delivered["output"] == expected["output"] && delivered["output"] != raw["output"],
+        "final delivery must contain the complete restored typed item"
+    );
+    let replay = json!({"input":delivered["output"]});
+    let projection = request
+        .base_lease
+        .history_projection(binding, &replay)
+        .ok_or("restored delivered item must acquire exact history proof")?;
+    for part in 0..2 {
+        assert!(
+            projection
+                .source_for_responses_leaf(0, Field::OutputText, part)
+                .is_some(),
+            "each restored output leaf must belong to the complete delivered item"
+        );
+    }
+    let raw_replay = json!({"input":raw["output"]});
+    assert!(
+        request
+            .base_lease
+            .history_projection(binding, &raw_replay)
+            .is_none(),
+        "raw tokenized output must not substitute for delivered history"
+    );
+    for change in 0..5 {
+        let mut changed = replay.clone();
+        match change {
+            0 => changed["input"][0]["id"] = json!("synthetic-other-message"),
+            1 => changed["input"][0]["role"] = json!("user"),
+            2 => changed["input"][0]["status"] = json!("incomplete"),
+            3 => changed["input"][0]["content"][1]["type"] = json!("input_text"),
+            _ => changed["input"][0]["content"][1]["annotations"] = json!([{"synthetic":true}]),
+        }
+        assert!(
+            request
+                .base_lease
+                .history_projection(binding, &changed)
+                .is_none(),
+            "matching text alone must not authorize a changed typed item"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn history_provenance_json_restored_output_matches_delivered_not_raw() -> TestResult {
+    use http_body_util::BodyExt;
+
+    let mut source = json!({"input":"private-a"});
+    let request = request(&source)?;
+    let attempt = request
+        .prepare_attempt_for_proxy(
+            "final-fixture-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"),
+            &mut source,
+            |prepared| Ok(prepared.clone()),
+        )
+        .map_err(|_| "synthetic restored JSON preparation failed")?;
+    assert!(
+        attempt.has_active_tokens(),
+        "restoration fixture needs active authority"
+    );
+    let binding = attempt.binding.clone();
+    let reference = source["input"]
+        .as_str()
+        .ok_or("synthetic restored JSON reference unavailable")?;
+    let raw = synthetic_restored_history_response(reference);
+    let raw_replay = json!({"input":raw["output"]});
+    assert!(
+        request
+            .base_lease
+            .history_projection(&binding, &raw_replay)
+            .is_none(),
+        "unpublished raw output must not carry proof"
+    );
+    let response = attempt
+        .restore_client_http_response(
+            Response::builder()
+                .header("content-type", "application/json")
+                .body(Body::from(raw.to_string()))
+                .map_err(|_| "synthetic restored JSON response construction failed")?,
+            ArgumentNormalizationMode::Exact,
+            None,
+        )
+        .await;
+    assert!(
+        response.status() == StatusCode::OK,
+        "restored JSON must remain deliverable"
+    );
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|_| "synthetic restored JSON collection failed")?
+        .to_bytes();
+    let delivered: Value =
+        serde_json::from_slice(&bytes).map_err(|_| "synthetic restored JSON decoding failed")?;
+    assert_restored_history_matches_delivered_not_raw(&request, &binding, &raw, &delivered)
+}
+
+#[tokio::test]
+async fn history_provenance_sse_restored_output_matches_delivered_not_raw() -> TestResult {
+    use http_body_util::BodyExt;
+
+    let mut source = json!({"input":"private-a"});
+    let request = request(&source)?;
+    let attempt = request
+        .prepare_attempt_for_proxy(
+            "final-fixture-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-account"),
+            &mut source,
+            |prepared| Ok(prepared.clone()),
+        )
+        .map_err(|_| "synthetic restored SSE preparation failed")?;
+    assert!(
+        attempt.has_active_tokens(),
+        "restoration fixture needs active authority"
+    );
+    let binding = attempt.binding.clone();
+    let reference = source["input"]
+        .as_str()
+        .ok_or("synthetic restored SSE reference unavailable")?;
+    let raw = synthetic_restored_history_response(reference);
+    let terminal = synthetic_history_sse_frame(
+        "response.completed",
+        &json!({"type":"response.completed","response":raw}),
+    );
+    let chunks: Vec<_> = terminal
+        .chunks(7)
+        .map(|chunk| Ok::<_, std::io::Error>(Bytes::copy_from_slice(chunk)))
+        .collect();
+    let response = attempt
+        .restore_client_http_response(
+            Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Body::from_stream(futures::stream::iter(chunks)))
+                .map_err(|_| "synthetic restored SSE response construction failed")?,
+            ArgumentNormalizationMode::Exact,
+            None,
+        )
+        .await;
+    assert!(
+        response.status() == StatusCode::OK,
+        "restored SSE wrapper must be accepted"
+    );
+    for candidate in [&raw, &synthetic_restored_history_response("private-a")] {
+        assert!(
+            request
+                .base_lease
+                .history_projection(&binding, &json!({"input":candidate["output"]}))
+                .is_none(),
+            "unpolled SSE must not publish either raw or delivered proof"
+        );
+    }
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|_| "synthetic restored SSE collection failed")?
+        .to_bytes();
+    let text =
+        std::str::from_utf8(&bytes).map_err(|_| "synthetic restored SSE must remain UTF-8")?;
+    let mut delivered = None;
+    for data in text.lines().filter_map(|line| line.strip_prefix("data:")) {
+        if data.trim() == "[DONE]" {
+            continue;
+        }
+        let event: Value = serde_json::from_str(data)
+            .map_err(|_| "synthetic restored SSE event decoding failed")?;
+        assert!(
+            event["type"] != "response.failed",
+            "restored SSE must not release a failure event"
+        );
+        if event["type"] == "response.completed" {
+            assert!(
+                delivered.is_none(),
+                "restored SSE needs exactly one terminal response"
+            );
+            delivered = event.get("response").cloned();
+        }
+    }
+    let delivered = delivered.ok_or("restored SSE terminal response unavailable")?;
+    assert_restored_history_matches_delivered_not_raw(&request, &binding, &raw, &delivered)
 }

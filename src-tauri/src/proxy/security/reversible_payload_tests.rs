@@ -93,6 +93,7 @@ fn default_handles_share_the_exact_global_64_mib_ceiling() -> Result<(), TokenEr
         assert_eq!(store.stats()?.entries, 0);
         assert_eq!(first.used(), first.limit());
         drop(blocked);
+        let reference_bytes = 32 + "cn_phone".len();
         let prepared = super::request_preparation::prepare_codex_request(
             &mut lease,
             &body,
@@ -101,12 +102,13 @@ fn default_handles_share_the_exact_global_64_mib_ceiling() -> Result<(), TokenEr
             &[],
             |_, bytes, proof| {
                 let (step, leaf, _) = super::request_carriers::metadata_sizes();
-                let carriers = 2 * (2 * 128 + 512 + 5 + 4 * step + 5 + 4 * leaf) + 11 + 31;
+                let carriers =
+                    2 * (2 * 128 + 512 + 5 + 4 * step + 5 + 4 * leaf) + 11 + reference_bytes;
                 let owners = 4 * super::request_preparation::logical_field_size()
                     + 4 * std::mem::size_of::<super::request_plan::PlanField<'_>>()
                     + 4 * std::mem::size_of::<super::request_plan::PlannedField>()
                     + 4 * std::mem::size_of::<super::payload_text::PayloadText>()
-                    + 31
+                    + reference_bytes
                     + 4 * std::mem::size_of::<super::request_plan::SpanMatch>()
                     + 4 * std::mem::size_of::<super::request_plan::PlannedSpan>()
                     + 4 * std::mem::size_of::<super::tokenization::TokenFragment<'_>>()
@@ -116,13 +118,13 @@ fn default_handles_share_the_exact_global_64_mib_ceiling() -> Result<(), TokenEr
                         Option<super::token_store_owners::SharedAllocation<()>>,
                     >()
                     + 8 * std::mem::size_of::<usize>()
-                    + 31
+                    + reference_bytes
                     + 4 * std::mem::size_of::<super::payload_text::PayloadText>();
                 assert_eq!(proof.len(), 1);
                 assert_eq!(store.stats()?.entries, 0);
                 assert_eq!(
                     first.used(),
-                    bytes.len() + carriers + owners + scratch + 2 * 128 + 512 + 5 + 31
+                    bytes.len() + carriers + owners + scratch + 2 * 128 + 512 + 5 + reference_bytes
                 );
                 Ok(())
             },
@@ -130,7 +132,7 @@ fn default_handles_share_the_exact_global_64_mib_ceiling() -> Result<(), TokenEr
         .map_err(|_| TokenError::Unavailable)?;
         assert_eq!(
             first.used(),
-            prepared.encoded.capacity() + 2 * 128 + 512 + 5 + 31
+            prepared.encoded.capacity() + 2 * 128 + 512 + 5 + reference_bytes
         );
         assert_eq!(store.stats()?.entries, 1);
         drop(prepared);

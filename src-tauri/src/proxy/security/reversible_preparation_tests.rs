@@ -1,6 +1,8 @@
 //! Synthetic end-to-end tests of private request preparation, without networking.
 use serde_json::{json, Value};
 
+const PHONE_REFERENCE_LEN: usize = 32 + "cn_phone".len();
+
 use super::{
     payload_budget::PayloadBudget,
     payload_buffer::test_support::{self, Action, Phase},
@@ -63,10 +65,10 @@ fn preparation_connects_detectors_carriers_transaction_and_exact_serialization(
             Ok(42usize)
         },
     )?;
-    assert!(prepared.body.as_value()["instructions"] == "vary_ph_413ff0a68f6f0d574cb5_ai");
+    assert!(prepared.body.as_value()["instructions"] == "rredact-cn_phone-413ff0a68f6f0d574cb5-ai");
     assert!(
         prepared.body.as_value()["input"][0]["arguments"]
-            == r#"{ "value": "vary_ph_413ff0a68f6f0d574cb5_ai", "number": 18446744073709551617 }"#
+            == r#"{ "value": "rredact-cn_phone-413ff0a68f6f0d574cb5-ai", "number": 18446744073709551617 }"#
     );
     assert_eq!(
         (
@@ -177,7 +179,7 @@ fn preparation_exempts_only_proven_token_spans_during_residual_inspection() -> R
     let mut runtime = SecurityRuntimeConfig::default();
     runtime.custom_rules.push(rule(
         "synthetic-token-syntax",
-        "vary_[a-z_0-9]+",
+        "rredact-[a-z_0-9-]+",
         AuditAction::Redact,
     ));
     let prepared = prepare_codex_request(
@@ -190,13 +192,13 @@ fn preparation_exempts_only_proven_token_spans_during_residual_inspection() -> R
     )?;
     assert!(prepared.body.as_value()["input"]
         .as_str()
-        .is_some_and(|s| s.starts_with("vary_ph_")));
+        .is_some_and(|s| s.starts_with("rredact-cn_phone-")));
     assert_eq!(store.stats()?.entries, 1);
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
     runtime.custom_rules.push(rule(
         "synthetic-crossing",
-        "prefix-vary_[a-z_0-9]+",
+        "prefix-rredact-[a-z_0-9-]+",
         AuditAction::Redact,
     ));
     let rejected = prepare_codex_request(
@@ -552,7 +554,7 @@ fn review_preparation_validates_history_authority_before_owned_copy() -> Result<
 
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
-    let invalid = "vary_cu_00000000000000000000_ai";
+    let invalid = "rredact-custom-00000000000000000000-ai";
     COPY_ATTEMPT_MAX_BYTES.with(|largest| largest.set(0));
     let result = prepare_codex_request(
         &mut lease,
@@ -575,7 +577,7 @@ fn review_preparation_validates_history_authority_before_owned_copy() -> Result<
 fn serialization_budget_denies_before_validation_or_mapping_commit() -> Result<(), PlanError> {
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
-    let expected_len = br#"{"input":"vary_ph_00000000000000000000_ai"}"#.len();
+    let expected_len = br#"{"input":"rredact-cn_phone-00000000000000000000-ai"}"#.len();
     for limit in [0, expected_len - 1] {
         let budget = PayloadBudget::with_limit(limit);
         let mut validated = false;
@@ -606,10 +608,10 @@ fn serialization_budget_denies_before_validation_or_mapping_commit() -> Result<(
 // Initial and residual carrier snapshots coexist through final validation.
 fn phone_carrier_copies() -> usize {
     let (step, leaf, _) = super::request_carriers::metadata_sizes();
-    2 * (2 * 128 + 512 + 5 + 4 * step + 5 + 4 * leaf) + 11 + 31
+    2 * (2 * 128 + 512 + 5 + 4 * step + 5 + 4 * leaf) + 11 + PHONE_REFERENCE_LEN
 }
 fn phone_candidate_charge() -> usize {
-    2 * 128 + 512 + 5 + 31
+    2 * 128 + 512 + 5 + PHONE_REFERENCE_LEN
 }
 // Real capacities coexist with both carrier snapshots until validation returns.
 fn one_field_owner_charge(text_bytes: usize, protected: bool) -> usize {
@@ -637,9 +639,9 @@ fn phone_owner_charge() -> usize {
     let scratch = 4 * std::mem::size_of::<[u8; 10]>()
         + 4 * std::mem::size_of::<Option<super::token_store_owners::SharedAllocation<()>>>()
         + 8 * std::mem::size_of::<usize>()
-        + 31
+        + PHONE_REFERENCE_LEN
         + 4 * std::mem::size_of::<super::payload_text::PayloadText>();
-    one_field_owner_charge(31, true) + scratch
+    one_field_owner_charge(PHONE_REFERENCE_LEN, true) + scratch
 }
 
 fn phone_preparation_peak() -> usize {
@@ -668,7 +670,7 @@ fn serialization_budget_is_held_before_allocation_validation_and_until_owner_dro
 ) -> Result<(), PlanError> {
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
-    let expected_len = br#"{"input":"vary_ph_00000000000000000000_ai"}"#.len();
+    let expected_len = br#"{"input":"rredact-cn_phone-00000000000000000000-ai"}"#.len();
     let budget = PayloadBudget::with_limit(phone_preparation_peak());
     let allocations = std::rc::Rc::new(std::cell::Cell::new(0));
     let observed = std::rc::Rc::clone(&allocations);
@@ -817,7 +819,7 @@ fn serialization_budget_is_shared_by_distinct_preparations() -> Result<(), PlanE
     let store = DlpTokenStore::new();
     let mut first_lease = store.admit("codex", None, 1)?;
     let mut second_lease = store.admit("codex", None, 1)?;
-    let expected_len = br#"{"input":"vary_ph_00000000000000000000_ai"}"#.len();
+    let expected_len = br#"{"input":"rredact-cn_phone-00000000000000000000-ai"}"#.len();
     let budget = PayloadBudget::with_limit(
         expected_len + phone_candidate_charge() + phone_preparation_peak() - 1,
     );
@@ -922,7 +924,7 @@ fn serialization_budget_discards_conflicted_attempt_before_retrying() -> Result<
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", Some("synthetic-retry"), 1)?;
     let mut concurrent = store.admit("codex", Some("synthetic-retry"), 1)?;
-    let expected_len = br#"{"input":"vary_ph_00000000000000000000_ai"}"#.len();
+    let expected_len = br#"{"input":"rredact-cn_phone-00000000000000000000-ai"}"#.len();
     let budget = PayloadBudget::with_limit(phone_preparation_peak());
     let mut validations = 0;
     let prepared = prepare_codex_request_with_budget(
@@ -1086,7 +1088,7 @@ fn preparation_carrier_copies_share_budget_before_validation_and_mapping_commit(
     let body = json!({"input":"13800138000"});
     let initial_charge = test_json_copy_charge(&body);
     let initial_retained = super::reversible_carrier_tests::carrier_profile(&body)?.retained;
-    let residual = test_json_copy_charge(&json!({"input":"x".repeat(31)}));
+    let residual = test_json_copy_charge(&json!({"input":"x".repeat(PHONE_REFERENCE_LEN)}));
     let budget =
         PayloadBudget::with_limit(initial_retained + 2 * residual + phone_owner_charge() - 1);
     let builds = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -1177,7 +1179,7 @@ struct DecodedPreparationFixture {
 
 fn decoded_preparation_fixture() -> Result<DecodedPreparationFixture, TokenError> {
     let initial = r#"{"value":"13800138000"}"#;
-    let replacement = format!(r#"{{"value":"{}"}}"#, "x".repeat(31));
+    let replacement = format!(r#"{{"value":"{}"}}"#, "x".repeat(PHONE_REFERENCE_LEN));
     let body = json!({"input":[{"type":"function_call", "arguments":initial}]});
     let candidate = json!({"input":[{"type":"function_call", "arguments":replacement}]});
     let initial_profile = super::reversible_carrier_tests::carrier_profile(&body)?;
@@ -1317,7 +1319,7 @@ fn preparation_candidate_owner_retains_tree_plus_encoded_until_separate_drops(
         budget.clone(),
         |_, _, _| Ok(()),
     )?;
-    const FINAL: usize = 2 * 128 + 512 + 5 + 31;
+    const FINAL: usize = 2 * 128 + 512 + 5 + PHONE_REFERENCE_LEN;
     assert_eq!(budget.used(), FINAL + prepared.encoded.len());
     let DlpPreparedRequest { body, encoded, .. } = prepared;
     drop(encoded);
@@ -1346,7 +1348,7 @@ fn preparation_candidate_owner_is_charged_at_validation_without_plaintext_recopi
             assert_eq!(
                 budget.used(),
                 phone_carrier_copies()
-                    + (2 * 128 + 512 + 5 + 31)
+                    + (2 * 128 + 512 + 5 + PHONE_REFERENCE_LEN)
                     + encoded.len()
                     + phone_owner_charge()
             );
@@ -1441,7 +1443,7 @@ fn preparation_owner_candidate_uses_request_budget() -> Result<(), PlanError> {
     let seen = std::rc::Rc::new(std::cell::Cell::new(false));
     let observed = seen.clone();
     let hook = text_support::install(move |event| {
-        if event.phase == TextPhase::BeforeAllocation && event.bytes == 31 {
+        if event.phase == TextPhase::BeforeAllocation && event.bytes == PHONE_REFERENCE_LEN {
             assert_eq!(event.used, shared.used());
             observed.set(true);
         }
@@ -1480,7 +1482,7 @@ fn preparation_owner_history_snapshot_is_charged_and_failure_atomic() -> Result<
     )?;
     let budget = PayloadBudget::with_limit(1 << 20);
     let hook = text_support::install(|event| {
-        if event.phase == TextPhase::BeforeCopy && event.bytes == 31 {
+        if event.phase == TextPhase::BeforeCopy && event.bytes == (32 + "custom".len()) {
             return TextAction::Fail;
         }
         TextAction::Continue
@@ -1536,7 +1538,7 @@ fn preparation_owner_repeated_history_has_one_charged_snapshot_and_exact_input_l
     let observed = copies.clone();
     let shared = budget.clone();
     let hook = text_support::install(move |event| {
-        if event.phase == TextPhase::BeforeCopy && event.bytes == 31 {
+        if event.phase == TextPhase::BeforeCopy && event.bytes == (32 + "custom".len()) {
             observed.set(observed.get() + 1);
             assert_eq!(shared.used(), event.used);
         }
@@ -1556,7 +1558,7 @@ fn preparation_owner_repeated_history_has_one_charged_snapshot_and_exact_input_l
                 budget.used(),
                 3 * 128
                     + 4 * std::mem::size_of::<PayloadText>()
-                    + 31
+                    + (32 + "custom".len())
                     + 12 * std::mem::size_of::<&str>()
                     + 2
             );
@@ -1860,7 +1862,7 @@ fn keyword_loaded_snapshot_preparation_rechecks_residuals_under_original_budget(
     let db = crate::database::Database::memory()?;
     for (id, pattern, action) in [
         ("synthetic-keyword-restore", "K.Σ", "redact"),
-        ("synthetic-keyword-observer", "vary", "audit"),
+        ("synthetic-keyword-observer", "rredact", "audit"),
     ] {
         db.save_custom_security_rule(&crate::database::CustomSecurityRule {
             id: id.into(),
@@ -1910,7 +1912,7 @@ fn keyword_loaded_snapshot_preparation_rechecks_residuals_under_original_budget(
                 assert_eq!(proof.len(), 1);
                 assert!(candidate["input"]
                     .as_str()
-                    .is_some_and(|text| text.starts_with("尾 vary_cu_")));
+                    .is_some_and(|text| text.starts_with("尾 rredact-custom-")));
                 assert_eq!(store.stats()?.entries, 0);
                 Ok(())
             },
@@ -2012,6 +2014,25 @@ fn reversible_closure_req3_classifier_validates_every_readable_part() -> Result<
         {"type":"function_call","call_id":"synthetic_shape_call","name":"synthetic_lookup","arguments":"{}"},
         {"type":"function_call_output","call_id":"synthetic_shape_call","output":[{"type":"input_text","text":"synthetic result"}]}]});
     assert!(is_fresh_readable_history(&source, &budget)?);
+    for (null_key, retained_key) in [("content", "summary"), ("summary", "content")] {
+        let mut nullable = source.clone();
+        nullable["input"][1][null_key] = Value::Null;
+        nullable["input"][1]["encrypted_content"] = Value::Null;
+        assert!(
+            nullable["input"][1].get(retained_key).is_some_and(Value::is_array)
+                && is_fresh_readable_history(&nullable, &budget)?,
+            "Codex reasoning items with null optional {null_key} and valid {retained_key} are fresh readable history"
+        );
+        assert_eq!(budget.used(), 0);
+    }
+    let mut both_null = source.clone();
+    both_null["input"][1]["summary"] = Value::Null;
+    both_null["input"][1]["content"] = Value::Null;
+    assert!(
+        is_fresh_readable_history(&both_null, &budget).is_err(),
+        "reasoning item with both summary and content null must be rejected"
+    );
+    assert_eq!(budget.used(), 0);
     for mutation in 0..12 {
         let mut body = source.clone();
         match mutation {
@@ -2025,7 +2046,7 @@ fn reversible_closure_req3_classifier_validates_every_readable_part() -> Result<
             4 => body["input"][1]["summary"] = json!([{"type":"summary_text","text":42}]),
             5 => body["input"][1]["content"] = json!([{"type":"reasoning_text","text":false}]),
             6 => body["input"][1]["summary"] = json!({"type":"summary_text","text":"synthetic"}),
-            7 => body["input"][1]["content"] = Value::Null,
+            7 => body["input"][1]["content"] = json!({"type":"reasoning_text","text":"synthetic"}),
             8 => body["input"][1]["content"] = json!([{"type":"summary_text","text":"synthetic"}]),
             9 => body["input"][3]["output"] = json!([null]),
             10 => body["input"][3]["output"] = json!([{"type":"input_text"}]),
@@ -2094,12 +2115,12 @@ fn reversible_closure_req3_classifier_decodes_argument_dependencies() -> Result<
         {"type":"function_call","call_id":"synthetic_decode_call","name":"synthetic_lookup","arguments":"{}"},
         {"type":"function_call_output","call_id":"synthetic_decode_call","output":"synthetic result"}]});
     for arguments in [
-        format!("{{\"\\u0076{}\":\"synthetic\"}}", &reference[1..]),
+        format!("{{\"\\u0072{}\":\"synthetic\"}}", &reference[1..]),
         format!(
-            "{{\"nested\":[{{\"\\u0076{}\":\"synthetic\"}}]}}",
+            "{{\"nested\":[{{\"\\u0072{}\":\"synthetic\"}}]}}",
             &reference[1..]
         ),
-        format!("{{\"value\":\"\\u0076{}\"}}", &reference[1..]),
+        format!("{{\"value\":\"\\u0072{}\"}}", &reference[1..]),
     ] {
         let mut body = source.clone();
         body["input"][0]["arguments"] = json!(arguments);
@@ -2141,5 +2162,164 @@ fn reversible_closure_req3_classifier_distinguishes_absent_from_invalid_message_
         );
         assert_eq!(budget.used(), 0);
     }
+    Ok(())
+}
+
+fn image_history_source() -> Value {
+    json!({"input":[
+        {"type":"message","role":"user","content":[
+            {"type":"input_text","text":"Synthetic image question"},
+            {"type":"input_image","image_url":"data:image/png;base64,synthetic-opaque-not-decoded","detail":"auto"}]},
+        {"type":"function_call","call_id":"synthetic_image_call","name":"synthetic_lookup","arguments":"{}"},
+        {"type":"function_call_output","call_id":"synthetic_image_call","output":"Synthetic result"}]})
+}
+
+#[test]
+fn image_history_classifier_accepts_only_supported_user_images() -> Result<(), TokenError> {
+    use super::request_preparation::is_fresh_readable_history;
+    let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
+    for image in [
+        json!({"type":"input_image","image_url":"data:image/png;base64,synthetic-opaque-not-decoded","detail":"auto"}),
+        json!({"type":"input_image","image_url":"https://synthetic.invalid/image.png"}),
+        json!({"type":"input_image","image_url":{"url":"https://synthetic.invalid/image.png","detail":"low"}}),
+    ] {
+        let mut source = image_history_source();
+        source["input"][0]["content"][1] = image;
+        let before = json!({"input":[source["input"][0].clone()]});
+        assert!(
+            matches!(is_fresh_readable_history(&before, &budget), Ok(false)),
+            "image-only input must not claim completed history"
+        );
+        assert!(
+            matches!(is_fresh_readable_history(&source, &budget), Ok(true)),
+            "supported user image must not invalidate paired readable history"
+        );
+        source["input"]
+            .as_array_mut()
+            .ok_or(TokenError::ContextUnavailable)?
+            .push(json!({"role":"user","content":"Synthetic continue"}));
+        assert!(
+            matches!(is_fresh_readable_history(&source, &budget), Ok(true)),
+            "supported user image must not invalidate continued readable history"
+        );
+        assert!(
+            budget.used() == 0,
+            "image classification must release its budget"
+        );
+    }
+    let mut multiple = image_history_source();
+    multiple["input"].as_array_mut().ok_or(TokenError::ContextUnavailable)?
+        .extend([
+            json!({"type":"custom_tool_call","call_id":"synthetic_second_image_call","name":"synthetic_lookup","input":"Synthetic second input"}),
+            json!({"type":"custom_tool_call_output","call_id":"synthetic_second_image_call","output":"Synthetic second result"}),
+        ]);
+    assert!(
+        matches!(is_fresh_readable_history(&multiple, &budget), Ok(true)),
+        "user image history must preserve multiple distinct tool pairs"
+    );
+    let mut implicit = multiple.clone();
+    implicit["input"][0]
+        .as_object_mut()
+        .ok_or(TokenError::ContextUnavailable)?
+        .remove("type");
+    assert!(
+        matches!(is_fresh_readable_history(&implicit, &budget), Ok(true)),
+        "implicit user messages must retain the same bounded image support"
+    );
+    Ok(())
+}
+
+#[test]
+fn image_history_classifier_keeps_strict_carriers_and_shapes() -> Result<(), TokenError> {
+    use super::request_preparation::is_fresh_readable_history;
+    let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
+    let source = image_history_source();
+    let image = source["input"][0]["content"][1].clone();
+    let mut negatives = Vec::new();
+    for invalid in [
+        json!({"type":"input_image"}),
+        json!({"type":"input_image","image_url":null}),
+        json!({"type":"input_image","image_url":42}),
+        json!({"type":"input_image","image_url":""}),
+        json!({"type":"input_image","image_url":{"url":false}}),
+        json!({"type":"input_image","image_url":{"url":"synthetic","text":"hidden text"}}),
+        json!({"type":"input_image","image_url":"synthetic","text":"hidden text"}),
+        json!({"type":"input_image","image_url":"synthetic","detail":42}),
+        json!({"type":"input_image","image_url":"synthetic","detail":"synthetic-unknown"}),
+        json!({"type":"input_file","file_data":"synthetic"}),
+        json!({"type":"input_audio","input_audio":"synthetic"}),
+        json!({"type":"input_video","video_url":"synthetic"}),
+        json!({"type":"synthetic_unknown","image_url":"synthetic"}),
+    ] {
+        let mut body = source.clone();
+        body["input"][0]["content"][1] = invalid;
+        negatives.push(body);
+    }
+    for role in ["assistant", "system", "developer", "tool"] {
+        let mut body = source.clone();
+        body["input"][0]["role"] = json!(role);
+        negatives.push(body);
+    }
+    let mut output = source.clone();
+    output["input"][2]["output"] = json!([image.clone()]);
+    negatives.push(output);
+    for field in ["summary", "content"] {
+        let mut body = source.clone();
+        body["input"]
+            .as_array_mut()
+            .ok_or(TokenError::ContextUnavailable)?
+            .push(json!({"type":"reasoning",field:[image.clone()]}));
+        negatives.push(body);
+    }
+    let mut refusal = source.clone();
+    refusal["input"][0]["content"][0] = json!({"type":"refusal","refusal":[image]});
+    negatives.push(refusal);
+    let mut missing = source.clone();
+    missing["input"]
+        .as_array_mut()
+        .ok_or(TokenError::ContextUnavailable)?
+        .pop();
+    negatives.push(missing);
+    let mut reversed = source.clone();
+    reversed["input"]
+        .as_array_mut()
+        .ok_or(TokenError::ContextUnavailable)?
+        .swap(1, 2);
+    negatives.push(reversed);
+    for index in [1, 2] {
+        let mut duplicate = source.clone();
+        duplicate["input"]
+            .as_array_mut()
+            .ok_or(TokenError::ContextUnavailable)?
+            .push(source["input"][index].clone());
+        negatives.push(duplicate);
+    }
+    for body in negatives {
+        assert!(
+            is_fresh_readable_history(&body, &budget).is_err(),
+            "image exception must not admit unsupported shapes or strict carriers"
+        );
+        assert!(
+            budget.used() == 0,
+            "rejected image history must release its budget"
+        );
+    }
+    for key in [
+        "encrypted_content",
+        "encrypted_reasoning",
+        "previous_response_id",
+    ] {
+        let mut body = source.clone();
+        body[key] = json!("synthetic-prior-dependency");
+        assert!(
+            matches!(is_fresh_readable_history(&body, &budget), Ok(false)),
+            "images must not grant prior context authority"
+        );
+    }
+    let exhausted = PayloadBudget::with_limit(0);
+    assert!(
+        is_fresh_readable_history(&source, &exhausted).is_err(),
+        "image history must retain classification budget limits"
+    );
     Ok(())
 }

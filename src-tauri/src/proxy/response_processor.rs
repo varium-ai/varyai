@@ -366,7 +366,17 @@ pub async fn process_response(
 /// Isolate legacy decoding/conversion errors while a restoration lease is active.
 pub(super) fn isolate_codex_dlp_response_error(error: ProxyError, leased: bool) -> ProxyError {
     if leased {
-        ProxyError::DlpForward(super::security::http_restoration::DlpForwardError::RestoreFailed)
+        match error {
+            ProxyError::DlpForward(
+                error @ (super::security::http_restoration::DlpForwardError::RestoreFailedAt(_)
+                | super::security::http_restoration::DlpForwardError::UpstreamStatus(_)),
+            ) => ProxyError::DlpForward(error),
+            _ => ProxyError::DlpForward(
+                super::security::http_restoration::DlpForwardError::RestoreFailedAt(
+                    super::security::restore_diagnostics::RestoreStage::ResponseProcessing,
+                ),
+            ),
+        }
     } else {
         error
     }
@@ -959,7 +969,9 @@ mod tests {
         assert!(matches!(
             leased,
             ProxyError::DlpForward(
-                super::super::security::http_restoration::DlpForwardError::RestoreFailed
+                super::super::security::http_restoration::DlpForwardError::RestoreFailedAt(
+                    super::super::security::restore_diagnostics::RestoreStage::ResponseProcessing
+                )
             )
         ));
     }

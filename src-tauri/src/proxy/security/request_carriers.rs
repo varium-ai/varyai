@@ -3,6 +3,10 @@
 //! Original/decoded JSON, paths and leaf/document metadata own shared reservations.
 //! Rewrites return immutable guarded candidates and borrow frozen replacement text.
 use super::{
+    history_provenance::{
+        history_target_for_path, DlpHistoryProjection, DlpHistoryTarget, HistoryLeafPolicy,
+        HistoryPathStep,
+    },
     payload_budget::PayloadBudget,
     payload_buffer::PayloadBuffer,
     payload_json::{JsonStringReplacement, PayloadJson},
@@ -29,6 +33,7 @@ pub(super) struct CarrierLeaf<'a> {
     pub text: &'a str,
     pub writable: bool,
     pub is_password_field: bool,
+    pub policy: HistoryLeafPolicy,
 }
 
 enum Step {
@@ -238,6 +243,55 @@ impl CodexRequestCarriers {
         Ok(())
     }
 
+    pub(super) fn visit_with_history<'a>(
+        &'a self,
+        projection: Option<&DlpHistoryProjection<'_>>,
+        mut visitor: impl FnMut(CarrierLeaf<'a>) -> Result<(), TokenError>,
+    ) -> Result<(), TokenError> {
+        self.visit_with_policy(
+            |target| {
+                projection.map_or(HistoryLeafPolicy::Strict, |p| {
+                    p.policy_for_target(self.original.as_value(), target)
+                })
+            },
+            &mut visitor,
+        )
+    }
+
+    pub(super) fn visit_with_policy<'a>(
+        &'a self,
+        mut policy: impl FnMut(DlpHistoryTarget) -> HistoryLeafPolicy,
+        mut visitor: impl FnMut(CarrierLeaf<'a>) -> Result<(), TokenError>,
+    ) -> Result<(), TokenError> {
+        self.visit_with_path_policy(
+            |path| history_target_for_path(path).map_or(HistoryLeafPolicy::Strict, &mut policy),
+            &mut visitor,
+        )
+    }
+
+    pub(super) fn visit_with_path_policy<'a>(
+        &'a self,
+        mut policy: impl FnMut(&[HistoryPathStep<'_>]) -> HistoryLeafPolicy,
+        mut visitor: impl FnMut(CarrierLeaf<'a>) -> Result<(), TokenError>,
+    ) -> Result<(), TokenError> {
+        for (id, leaf) in self.leaves.as_slice().iter().enumerate() {
+            let mut view = self.view(id, leaf)?;
+            // Decoded argument documents never inherit an outer history policy.
+            if leaf.document.is_none() && leaf.path.len() < 129 {
+                let mut path = [HistoryPathStep::Field(""); 129];
+                for (index, step) in leaf.path.as_slice().iter().enumerate() {
+                    path[index] = match step {
+                        Step::Field(key) => HistoryPathStep::Field(key.as_str()),
+                        Step::Index(index) => HistoryPathStep::Index(*index),
+                    };
+                }
+                view.policy = policy(&path[..leaf.path.len()]);
+            }
+            visitor(view)?;
+        }
+        Ok(())
+    }
+
     /// Freeze each borrowed callback result once, then build one guarded candidate.
     /// A stale source or any failure leaves both the source and plan unchanged.
     pub(super) fn rewrite_candidate<'a>(
@@ -407,6 +461,7 @@ impl CodexRequestCarriers {
                 .ok_or(TokenError::RedactionFailed)?,
             writable: leaf.writable,
             is_password_field: leaf.password,
+            policy: HistoryLeafPolicy::Strict,
         })
     }
 

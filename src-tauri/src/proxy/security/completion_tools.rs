@@ -80,7 +80,7 @@ impl ChatTools {
                 .tools
                 .get_mut(index)
                 .ok_or(TokenError::RedactionFailed)?;
-            if let Some(kind) = delta.get("type") {
+            if let Some(kind) = delta.get("type").filter(|v| !v.is_null()) {
                 if kind.as_str() != Some("function") {
                     return Err(TokenError::RedactionFailed);
                 }
@@ -92,7 +92,7 @@ impl ChatTools {
                 .and_then(Value::as_object)
                 .ok_or(TokenError::RedactionFailed)?;
             set_identity(&mut tool.name, function.get("name"), budget)?;
-            if let Some(arguments) = function.get("arguments") {
+            if let Some(arguments) = function.get("arguments").filter(|v| !v.is_null()) {
                 let arguments = arguments.as_str().ok_or(TokenError::RedactionFailed)?;
                 tool.arguments_seen = true;
                 tool.arguments.append(arguments.as_bytes())?;
@@ -142,7 +142,7 @@ fn set_identity(
     value: Option<&Value>,
     budget: &PayloadBudget,
 ) -> Result<(), TokenError> {
-    if let Some(value) = value {
+    if let Some(value) = value.filter(|v| !v.is_null()) {
         let value = value
             .as_str()
             .filter(|value| {

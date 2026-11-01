@@ -24,9 +24,9 @@ const MAX_RAW_CHUNK_BYTES: usize = 1024 * 1024;
 const MAX_CUMULATIVE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ENCODING_LAYERS: usize = 8;
 const WORKSPACE_BASE_BYTES: usize = 64 * 1024;
-// Four conservative <=1024n JSON-tree/buffer allowances. This does not prove
-// arbitrary legacy conversion/cache amplification fits in four simultaneous copies.
-const WORKSPACE_BYTES_PER_INPUT: usize = 4096;
+// Four conservative input-sized buffer allowances so an 8 MiB response fits
+// comfortably inside the 64 MiB default budget while bounding amplification.
+const WORKSPACE_BYTES_PER_INPUT: usize = 4;
 
 struct ProcessingWorkspace {
     input_bytes: usize,
@@ -477,7 +477,7 @@ mod tests {
             }
             Action::Continue
         });
-        let source = serde_json::json!({"synthetic": ["vary_cu_00000000000000000000_ai"]});
+        let source = serde_json::json!({"synthetic": ["rredact-custom-00000000000000000000-ai"]});
         let (first, first_owner) = owner
             .try_clone_json(&source)
             .map_err(|error| io::Error::other(error.code()))?;
@@ -492,8 +492,11 @@ mod tests {
         assert!(shared.ptr_eq(&first_owner));
         assert_eq!(used(), workspace_charge + 2 * one_copy_charge);
         assert!(allocations.get() > 0);
-        assert_eq!(first, source);
-        assert_eq!(second, source);
+        assert!(first == source, "upstream JSON copy must remain byte exact");
+        assert!(
+            second == source,
+            "independent upstream JSON copy must remain byte exact"
+        );
         drop(owner);
         drop(first);
         drop(first_owner);
@@ -522,7 +525,7 @@ mod tests {
             }
             Action::Continue
         });
-        let source = serde_json::json!({"synthetic": "vary_cu_00000000000000000000_ai"});
+        let source = serde_json::json!({"synthetic": "rredact-custom-00000000000000000000-ai"});
         assert!(matches!(
             owner.try_clone_json(&source),
             Err(DlpForwardError::CapacityExceeded)
@@ -675,6 +678,157 @@ mod tests {
             budget.used() > initial,
             "cumulative workspace must not disappear with yielded chunks"
         );
+        drop(guarded.owner);
+        assert_eq!(budget.used(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn upstream_workspace_exact_capacity_boundary() -> TestResult {
+        // Default 64 MiB budget must admit a full 8 MiB response workspace.
+        let default_limit = 64 * 1024 * 1024;
+        assert_eq!(PayloadBudget::default().limit(), default_limit);
+        let default_budget = PayloadBudget::with_limit(default_limit);
+        let max_owner = UpstreamPayloadOwner::new(&default_budget)
+            .map_err(|error| io::Error::other(error.code()))?;
+        max_owner
+            .cover_input(MAX_CUMULATIVE_BYTES)
+            .map_err(|error| io::Error::other(error.code()))?;
+        assert_eq!(
+            default_budget.used(),
+            WORKSPACE_BASE_BYTES + 4 * MAX_CUMULATIVE_BYTES
+        );
+        assert_eq!(
+            max_owner.cover_input(MAX_CUMULATIVE_BYTES + 1),
+            Err(DlpForwardError::CapacityExceeded)
+        );
+        drop(max_owner);
+        assert_eq!(default_budget.used(), 0);
+
+        // Characterize the exact reservation ceiling for a bounded budget.
+        let limit = WORKSPACE_BASE_BYTES + 4 * 16_368;
+        let budget = PayloadBudget::with_limit(limit);
+        let owner =
+            UpstreamPayloadOwner::new(&budget).map_err(|error| io::Error::other(error.code()))?;
+        assert_eq!(budget.used(), 64 * 1024);
+
+        owner
+            .cover_input(16_368)
+            .map_err(|error| io::Error::other(error.code()))?;
+        assert_eq!(budget.used(), limit);
+        for input_bytes in [16_368, 1, 0] {
+            owner
+                .cover_input(input_bytes)
+                .map_err(|error| io::Error::other(error.code()))?;
+            assert_eq!(budget.used(), limit);
+        }
+
+        assert_eq!(
+            owner.cover_input(16_369),
+            Err(DlpForwardError::CapacityExceeded)
+        );
+        assert_eq!(budget.used(), limit);
+        {
+            let workspace = owner
+                .workspace
+                .lock()
+                .map_err(|_| io::Error::other("synthetic workspace lock failed"))?;
+            assert_eq!(workspace.input_bytes, 16_368);
+            assert_eq!(workspace.reservation.bytes(), limit);
+        }
+
+        let retained = owner.clone();
+        drop(owner);
+        assert_eq!(budget.used(), limit);
+        drop(retained);
+        assert_eq!(budget.used(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn upstream_workspace_sse_cumulative_capacity_boundary() -> TestResult {
+        // Complete SSE comments exercise transport admission without completion semantics.
+        let mut comment = vec![b'x'; 1024];
+        comment[0] = b':';
+        comment[1022] = b'\n';
+        comment[1023] = b'\n';
+        let expected = Bytes::from(comment);
+
+        // Default 64 MiB budget must comfortably stream past the old 16 KiB boundary.
+        let chunk = expected.clone();
+        let default_response = ProxyResponse::streamed(
+            StatusCode::OK,
+            headers("text/event-stream", None),
+            stream::iter((0..64).map(move |_| Ok(chunk.clone()))),
+        );
+        let default_budget = PayloadBudget::default();
+        let default_guarded = admitted(default_response, &default_budget).await?;
+        let mut default_source = Box::pin(default_guarded.response.bytes_stream());
+        for _ in 0..64 {
+            let bytes = default_source
+                .next()
+                .await
+                .ok_or_else(|| io::Error::other("missing 64 KiB SSE chunk"))??;
+            assert_eq!(bytes, expected);
+        }
+        assert!(default_source.next().await.is_none());
+        drop(default_source);
+        drop(default_guarded.owner);
+        assert_eq!(default_budget.used(), 0);
+
+        let chunk = expected.clone();
+        let mut chunks = (0..17).map(move |_| chunk.clone());
+        let polls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&polls);
+        let response = ProxyResponse::streamed(
+            StatusCode::OK,
+            headers("text/event-stream", None),
+            stream::poll_fn(move |_| {
+                observed.fetch_add(1, Ordering::Relaxed);
+                std::task::Poll::Ready(chunks.next().map(Ok))
+            }),
+        );
+        let budget = PayloadBudget::with_limit(64 * 1024 + 4 * 15 * 1024 + 2 * 1024);
+        let guarded = admitted(response, &budget).await?;
+        assert_eq!(polls.load(Ordering::Relaxed), 0);
+        assert_eq!(budget.used(), 64 * 1024);
+        let mut source = Box::pin(guarded.response.bytes_stream());
+        for delivered in 1..=15 {
+            let bytes = source
+                .next()
+                .await
+                .ok_or_else(|| io::Error::other("missing synthetic SSE chunk"))??;
+            assert_eq!(bytes, expected);
+            drop(bytes);
+            assert_eq!(polls.load(Ordering::Relaxed), delivered);
+            assert_eq!(budget.used(), 64 * 1024 + 4 * delivered * 1024);
+        }
+
+        // The raw size checks permit the next chunk; cumulative workspace growth does not.
+        assert_eq!(next_input_size(15 * 1024, 1024), Ok(16 * 1024));
+        let error = source
+            .next()
+            .await
+            .ok_or_else(|| io::Error::other("missing synthetic capacity failure"))?
+            .err()
+            .ok_or_else(|| io::Error::other("unexpected synthetic SSE delivery"))?;
+        assert_eq!(error.to_string(), "dlp_capacity_exceeded");
+        assert_eq!(polls.load(Ordering::Relaxed), 16);
+        let retained_charge = 64 * 1024 + 4 * 15 * 1024;
+        assert_eq!(budget.used(), retained_charge);
+        {
+            let workspace = guarded
+                .owner
+                .workspace
+                .lock()
+                .map_err(|_| io::Error::other("synthetic workspace lock failed"))?;
+            assert_eq!(workspace.input_bytes, 15 * 1024);
+            assert_eq!(workspace.reservation.bytes(), retained_charge);
+        }
+        assert!(source.next().await.is_none());
+        assert_eq!(polls.load(Ordering::Relaxed), 16);
+        drop(source);
+        assert_eq!(budget.used(), retained_charge);
         drop(guarded.owner);
         assert_eq!(budget.used(), 0);
         Ok(())

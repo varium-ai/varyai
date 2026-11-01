@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use serde_json::Value;
 
 use super::{
+    history_provenance::{visit_request_references, DlpHistoryProjection, HistoryLeafPolicy},
     payload_budget::PayloadBudget,
     payload_buffer::PayloadBuffer,
     payload_json::PayloadJson,
@@ -13,9 +14,9 @@ use super::{
     request_carriers::CodexRequestCarriers,
     request_detection::detect_spans_with_budget,
     request_plan::{EffectiveAction, PlanError, PlanField, SpanMatch},
-    request_transaction::prepare_fields_with_budget,
+    request_transaction::prepare_fields_with_history,
     runtime::SecurityRuntimeConfig,
-    tokenization::{visit_token_references, DlpRequestLease, TokenError},
+    tokenization::{DlpRequestLease, TokenError},
 };
 
 const MAX_ITEMS: usize = 4096;
@@ -27,23 +28,23 @@ pub(super) fn is_fresh_readable_history(
     body: &Value,
     budget: &PayloadBudget,
 ) -> Result<bool, TokenError> {
+    is_fresh_readable_history_with_history(body, budget, None)
+}
+
+pub(super) fn is_fresh_readable_history_with_history(
+    body: &Value,
+    budget: &PayloadBudget,
+    projection: Option<&DlpHistoryProjection<'_>>,
+) -> Result<bool, TokenError> {
     use super::completed_context::valid_external_id;
-    fn prior_dependency(value: &Value, depth: usize) -> Result<bool, TokenError> {
+    fn encrypted_dependency(value: &Value, depth: usize) -> Result<bool, TokenError> {
         if depth > 128 {
             return Err(TokenError::CapacityExceeded);
         }
         match value {
-            Value::String(text) => {
-                let mut found = false;
-                visit_token_references(text, |_| {
-                    found = true;
-                    Ok(())
-                })?;
-                Ok(found)
-            }
             Value::Array(items) => {
                 for item in items {
-                    if prior_dependency(item, depth + 1)? {
+                    if encrypted_dependency(item, depth + 1)? {
                         return Ok(true);
                     }
                 }
@@ -51,21 +52,12 @@ pub(super) fn is_fresh_readable_history(
             }
             Value::Object(fields) => {
                 for (key, value) in fields {
-                    // Identity references in keys are dependencies, not writable text.
-                    let mut key_reference = false;
-                    visit_token_references(key, |_| {
-                        key_reference = true;
-                        Ok(())
-                    })?;
-                    if key_reference {
-                        return Ok(true);
-                    }
                     if matches!(key.as_str(), "encrypted_content" | "encrypted_reasoning")
                         && !value.is_null()
                     {
                         return Ok(true);
                     }
-                    if prior_dependency(value, depth + 1)? {
+                    if encrypted_dependency(value, depth + 1)? {
                         return Ok(true);
                     }
                 }
@@ -74,10 +66,53 @@ pub(super) fn is_fresh_readable_history(
             _ => Ok(false),
         }
     }
+    fn prior_dependency(
+        value: &Value,
+        projection: Option<&DlpHistoryProjection<'_>>,
+    ) -> Result<bool, TokenError> {
+        let mut found = false;
+        visit_request_references(value, projection, |_| {
+            found = true;
+            Ok(())
+        })?;
+        let encrypted = encrypted_dependency(value, 0)?;
+        Ok(found || encrypted)
+    }
+    fn opaque_input_image(part: &Value) -> bool {
+        fn valid_detail(value: Option<&Value>) -> bool {
+            value.is_none()
+                || matches!(value.and_then(Value::as_str), Some("auto" | "low" | "high"))
+        }
+        let Some(fields) = part.as_object() else {
+            return false;
+        };
+        if fields
+            .keys()
+            .any(|key| !matches!(key.as_str(), "type" | "image_url" | "detail"))
+            || !valid_detail(part.get("detail"))
+        {
+            return false;
+        }
+        match part.get("image_url") {
+            Some(Value::String(url)) => !url.is_empty(),
+            Some(Value::Object(image)) => {
+                image
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "url" | "detail"))
+                    && image
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .is_some_and(|url| !url.is_empty())
+                    && valid_detail(image.get("detail"))
+            }
+            _ => false,
+        }
+    }
     fn readable_parts(
         value: &Value,
         kinds: &[&str],
         allow_refusal: bool,
+        allow_image: bool,
     ) -> Result<(), TokenError> {
         let parts = value.as_array().ok_or(TokenError::ContextUnavailable)?;
         if parts.len() > MAX_ITEMS {
@@ -88,6 +123,10 @@ pub(super) fn is_fresh_readable_history(
                 .get("type")
                 .and_then(Value::as_str)
                 .ok_or(TokenError::ContextUnavailable)?;
+            // Only user-message image envelopes are opaque; dependencies were checked above.
+            if allow_image && kind == "input_image" && opaque_input_image(part) {
+                continue;
+            }
             let field = if kinds.contains(&kind) {
                 "text"
             } else if allow_refusal && kind == "refusal" {
@@ -101,16 +140,21 @@ pub(super) fn is_fresh_readable_history(
         }
         Ok(())
     }
-    fn readable_text(value: &Value) -> Result<(), TokenError> {
+    fn readable_text(value: &Value, allow_image: bool) -> Result<(), TokenError> {
         if value.is_string() {
             return Ok(());
         }
-        readable_parts(value, &["text", "input_text", "output_text"], true)
+        readable_parts(
+            value,
+            &["text", "input_text", "output_text"],
+            true,
+            allow_image,
+        )
     }
     if body
         .get("previous_response_id")
         .is_some_and(|v| !v.is_null())
-        || prior_dependency(body, 0)?
+        || prior_dependency(body, projection)?
     {
         return Ok(false);
     }
@@ -165,7 +209,7 @@ pub(super) fn is_fresh_readable_history(
                 if kind == Some("function_call") {
                     let parsed =
                         PayloadJson::try_from_str(payload, budget.clone(), budget.limit())?;
-                    if prior_dependency(parsed.as_value(), 0)? {
+                    if prior_dependency(parsed.as_value(), None)? {
                         return Ok(false);
                     }
                 }
@@ -186,18 +230,23 @@ pub(super) fn is_fresh_readable_history(
                 if !calls.as_slice().contains(&(id, custom)) || outputs.as_slice().contains(&id) {
                     return Err(TokenError::ContextUnavailable);
                 }
-                readable_text(item.get("output").ok_or(TokenError::ContextUnavailable)?)?;
+                readable_text(
+                    item.get("output").ok_or(TokenError::ContextUnavailable)?,
+                    false,
+                )?;
                 outputs.push(id)?;
             }
             Some("reasoning") => {
-                if item.get("summary").is_none() && item.get("content").is_none() {
+                let summary = item.get("summary").filter(|v| !v.is_null());
+                let content = item.get("content").filter(|v| !v.is_null());
+                if summary.is_none() && content.is_none() {
                     return Err(TokenError::ContextUnavailable);
                 }
-                if let Some(summary) = item.get("summary") {
-                    readable_parts(summary, &["summary_text", "reasoning_text"], false)?;
+                if let Some(summary) = summary {
+                    readable_parts(summary, &["summary_text", "reasoning_text"], false, false)?;
                 }
-                if let Some(content) = item.get("content") {
-                    readable_parts(content, &["reasoning_text"], false)?;
+                if let Some(content) = content {
+                    readable_parts(content, &["reasoning_text"], false, false)?;
                 }
             }
             Some("message") | None
@@ -206,7 +255,10 @@ pub(super) fn is_fresh_readable_history(
                     Some("user" | "assistant" | "system" | "developer")
                 ) =>
             {
-                readable_text(item.get("content").ok_or(TokenError::ContextUnavailable)?)?;
+                readable_text(
+                    item.get("content").ok_or(TokenError::ContextUnavailable)?,
+                    item.get("role").and_then(Value::as_str) == Some("user"),
+                )?;
             }
             _ => return Err(TokenError::ContextUnavailable),
         }
@@ -214,7 +266,8 @@ pub(super) fn is_fresh_readable_history(
     if calls.as_slice().len() != outputs.as_slice().len() {
         return Err(TokenError::ContextUnavailable);
     }
-    Ok(true)
+    // Delivered history proof grants inspection exceptions, never independent execution authority.
+    Ok(projection.is_none())
 }
 
 #[cfg(test)]
@@ -235,6 +288,7 @@ pub(super) struct DlpPreparedRequest<T> {
 struct LogicalField<'a> {
     text: &'a str,
     writable: bool,
+    policy: HistoryLeafPolicy,
     matches: PayloadVec<SpanMatch>,
 }
 
@@ -267,6 +321,29 @@ pub(super) fn prepare_codex_request_with_budget<T>(
     restore_rule_ids: &[&str],
     historical_tokens: &[&str],
     budget: PayloadBudget,
+    validate: impl FnMut(&Value, &[u8], &[&str]) -> Result<T, TokenError>,
+) -> Result<DlpPreparedRequest<T>, PlanError> {
+    prepare_codex_request_with_history(
+        lease,
+        body,
+        runtime,
+        restore_rule_ids,
+        historical_tokens,
+        budget,
+        None,
+        validate,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_codex_request_with_history<T>(
+    lease: &mut DlpRequestLease,
+    body: &Value,
+    runtime: &SecurityRuntimeConfig,
+    restore_rule_ids: &[&str],
+    historical_tokens: &[&str],
+    budget: PayloadBudget,
+    projection: Option<&DlpHistoryProjection<'_>>,
     mut validate: impl FnMut(&Value, &[u8], &[&str]) -> Result<T, TokenError>,
 ) -> Result<DlpPreparedRequest<T>, PlanError> {
     if restore_rule_ids.len() > MAX_ITEMS || historical_tokens.len() > MAX_ITEMS {
@@ -276,10 +353,19 @@ pub(super) fn prepare_codex_request_with_budget<T>(
     let mut logical = PayloadVec::new(budget.clone())?;
     let mut match_count = 0usize;
     let mut protective_block = false;
-    carriers.visit(|leaf| {
-        let mut references = PayloadVec::new(budget.clone())?;
-        visit_token_references(leaf.text, |range| references.push(range))?;
+    carriers.visit_with_history(projection, |leaf| {
         let mut matches = PayloadVec::new(budget.clone())?;
+        if leaf.policy == HistoryLeafPolicy::DeliveredReasoning {
+            return logical.push(LogicalField {
+                text: leaf.text,
+                writable: leaf.writable,
+                policy: leaf.policy,
+                matches,
+            });
+        }
+        let mut references = PayloadVec::new(budget.clone())?;
+        leaf.policy
+            .visit_references(leaf.text, |range| references.push(range))?;
         for found in
             detect_spans_with_budget(leaf.text, leaf.is_password_field, runtime, budget.clone())?
                 .as_slice()
@@ -314,6 +400,7 @@ pub(super) fn prepare_codex_request_with_budget<T>(
         logical.push(LogicalField {
             text: leaf.text,
             writable: leaf.writable,
+            policy: leaf.policy,
             matches,
         })?;
         Ok(())
@@ -347,18 +434,23 @@ pub(super) fn prepare_codex_request_with_budget<T>(
         history.push(token.as_str())?;
     }
     let mut fields = PayloadVec::new(budget.clone())?;
+    let mut policies = PayloadVec::new(budget.clone())?;
     for field in logical.as_slice() {
+        if projection.is_some() {
+            policies.push(field.policy)?;
+        }
         fields.push(PlanField {
             text: field.text,
             writable: field.writable,
             matches: field.matches.as_slice(),
         })?;
     }
-    let prepared = prepare_fields_with_budget(
+    let prepared = prepare_fields_with_history(
         lease,
         fields.as_slice(),
         history.as_slice(),
         budget.clone(),
+        policies.as_slice(),
         |texts, proof| {
             let candidate = carriers.rewrite_candidate(body, |leaf| {
                 let text = texts.get(leaf.id).ok_or(TokenError::RedactionFailed)?;
@@ -366,9 +458,12 @@ pub(super) fn prepare_codex_request_with_budget<T>(
             })?;
             let final_carriers =
                 CodexRequestCarriers::from_body_with_budget(candidate.as_value(), budget.clone())?;
-            final_carriers.visit(|leaf| {
+            final_carriers.visit_with_history(projection, |leaf| {
+                if leaf.policy == HistoryLeafPolicy::DeliveredReasoning {
+                    return Ok(());
+                }
                 let mut references = PayloadVec::new(budget.clone())?;
-                visit_token_references(leaf.text, |range| {
+                leaf.policy.visit_references(leaf.text, |range| {
                     if !proof.contains(&&leaf.text[range.clone()]) {
                         return Err(TokenError::ContextUnavailable);
                     }
@@ -428,7 +523,7 @@ fn selected_action(id: &str, action: EffectiveAction, selected: &[&str]) -> Effe
 fn copy_text(text: &str, budget: PayloadBudget) -> Result<PayloadText, TokenError> {
     #[cfg(test)]
     COPY_ATTEMPT_MAX_BYTES.with(|largest| largest.set(largest.get().max(text.len())));
-    PayloadText::try_from_str(text, budget, 31)
+    PayloadText::try_from_str(text, budget, super::token_format::MAX_REFERENCE_BYTES)
 }
 
 struct SizeWriter(usize);

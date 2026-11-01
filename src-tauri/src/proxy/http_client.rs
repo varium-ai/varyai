@@ -209,7 +209,7 @@ pub fn is_proxy_enabled() -> bool {
     get_current_proxy_url().is_some()
 }
 
-/// Detection must not forward credentials to a redirected endpoint.
+/// Detection and bound forwarding must not inherit authority across redirects.
 pub(crate) fn get_without_redirects() -> Result<Client, String> {
     build_client_with_redirects(
         get_current_proxy_url().as_deref(),
@@ -238,8 +238,15 @@ fn build_client_with_redirects(
         .no_deflate()
         .no_zstd();
 
-    // 有代理地址则使用代理，否则跟随系统代理
-    if let Some(url) = proxy_url {
+    #[cfg(test)]
+    let isolated_loopback = super::forwarder::final_send_binding_test_support::is_active();
+    #[cfg(not(test))]
+    let isolated_loopback = false;
+
+    // Preserve redirect policy while tests bypass real and system proxy configuration.
+    if isolated_loopback {
+        builder = builder.no_proxy();
+    } else if let Some(url) = proxy_url {
         // 先验证 URL 格式和 scheme
         let parsed = url::Url::parse(url)
             .map_err(|e| format!("Invalid proxy URL '{}': {}", mask_url(url), e))?;

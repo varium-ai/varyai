@@ -3034,7 +3034,7 @@ async fn closure_anthropic_witness_sequence(mode: &str) -> Result<(), Box<dyn st
     let token = body["input"]
         .as_str()
         .ok_or("missing synthetic witness carrier")?;
-    assert!(token.contains("vary_ph_") && !token.contains("13800138000"));
+    assert!(token.contains("rredact-cn_phone-") && !token.contains("13800138000"));
     let original = json!({"id":"msg_witness","type":"message","role":"assistant","model":"synthetic-model",
         "content":[{"type":"tool_use","id":"call_witness","name":"synthetic_lookup","input":{"phone":token}}],
         "stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}});
@@ -3128,7 +3128,7 @@ async fn closure_anthropic_witness_sequence(mode: &str) -> Result<(), Box<dyn st
         !success
     );
     assert_eq!(text.contains("13800138000"), success);
-    assert!(!text.contains("vary_ph_"));
+    assert!(!text.contains("rredact-cn_phone-"));
     Ok(())
 }
 
@@ -3261,7 +3261,7 @@ fn reversible_closure_resp3_json_known_shapes_and_closed_carriers() {
             json!(false),
             json!({}),
             json!([]),
-            json!({"nested":["vary_ph_0123456789abcdef0123_ai"]}),
+            json!({"nested":["rredact-cn_phone-0123456789abcdef0123-ai"]}),
         ] {
             let mut changed = tool.clone();
             if function_level {
@@ -3394,4 +3394,2286 @@ fn reversible_closure_resp3_sse_known_shapes_and_index_controls() {
         );
     }
     assert_eq!(budget.used(), 0);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reversible_completion_chat_sse_and_json_permit_null_optional_delta_and_tool_fields() {
+    use super::{
+        completion_json::{JsonCompletion, JsonCompletionProtocol},
+        payload_budget::PayloadBudget,
+    };
+    use serde_json::json;
+
+    let sse_stream = [
+        json!({
+            "id": "chatcmpl_null_delta_fixture",
+            "object": "chat.completion.chunk",
+            "created": 1793280778,
+            "model": "synthetic-model",
+            "choices": [{
+                "index": 0,
+                "delta": {"reasoning_content": null, "role": "assistant", "content": ""},
+                "logprobs": null,
+                "finish_reason": null
+            }]
+        }),
+        json!({
+            "id": "chatcmpl_null_delta_fixture",
+            "object": "chat.completion.chunk",
+            "created": 1793280778,
+            "model": "synthetic-model",
+            "choices": [{
+                "index": 0,
+                "delta": {"role": null, "content": "\n\n", "reasoning_content": null, "tool_calls": null, "function_call": null},
+                "logprobs": null,
+                "finish_reason": null
+            }],
+            "usage": null,
+            "error": null
+        }),
+        json!({
+            "id": "chatcmpl_null_delta_fixture",
+            "object": "chat.completion.chunk",
+            "created": 1793280778,
+            "model": "synthetic-model",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "role": null,
+                    "content": null,
+                    "reasoning_content": null,
+                    "tool_calls": [{
+                        "id": "call_null_delta_1",
+                        "index": 0,
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": ""}
+                    }]
+                },
+                "logprobs": null,
+                "finish_reason": null
+            }],
+            "usage": null
+        }),
+        json!({
+            "id": "chatcmpl_null_delta_fixture",
+            "object": "chat.completion.chunk",
+            "created": 1793280778,
+            "model": "synthetic-model",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "role": null,
+                    "content": null,
+                    "reasoning_content": null,
+                    "tool_calls": [{
+                        "id": null,
+                        "index": 0,
+                        "type": "function",
+                        "function": {"name": null, "arguments": "{"}
+                    }]
+                },
+                "logprobs": null,
+                "finish_reason": null
+            }],
+            "usage": null
+        }),
+        json!({
+            "id": "chatcmpl_null_delta_fixture",
+            "object": "chat.completion.chunk",
+            "created": 1793280778,
+            "model": "synthetic-model",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "role": null,
+                    "content": null,
+                    "reasoning_content": null,
+                    "tool_calls": [{
+                        "id": null,
+                        "index": 0,
+                        "type": null,
+                        "function": {"name": null, "arguments": "\"city\": \"Tokyo\"}"}
+                    }]
+                },
+                "logprobs": null,
+                "finish_reason": null
+            }],
+            "usage": null
+        }),
+        json!({
+            "id": "chatcmpl_null_delta_fixture",
+            "object": "chat.completion.chunk",
+            "created": 1793280778,
+            "model": "synthetic-model",
+            "choices": [{
+                "index": 0,
+                "delta": {"role": null, "content": "\n", "reasoning_content": null, "tool_calls": null},
+                "logprobs": null,
+                "finish_reason": null
+            }],
+            "usage": null
+        }),
+        json!({
+            "id": "chatcmpl_null_delta_fixture",
+            "object": "chat.completion.chunk",
+            "created": 1793280778,
+            "model": "synthetic-model",
+            "choices": [{
+                "index": 0,
+                "delta": {"reasoning_content": null},
+                "logprobs": null,
+                "finish_reason": "tool_calls"
+            }]
+        }),
+        json!({
+            "id": "chatcmpl_null_delta_fixture",
+            "object": "chat.completion.chunk",
+            "created": 1793280778,
+            "model": "synthetic-model",
+            "choices": [],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        }),
+    ]
+    .iter()
+    .map(|chunk| format!("data: {chunk}\n\n"))
+    .collect::<String>()
+        + "data: [DONE]\n\n";
+
+    assert!(
+        strict_sse_candidate(false, sse_stream.clone()).await,
+        "Chat SSE stream with null optional delta and tool fields must permit completion"
+    );
+
+    // End-to-end verification through `create_responses_sse_stream_from_chat_observed`
+    // and `restore_client_http_response` with active reversible DLP tokens.
+    {
+        use super::{
+            http_restoration::{admit_http_request, RestorationAdmission, RestorationGateway},
+            response_restoration::ArgumentNormalizationMode,
+        };
+        use crate::proxy::providers::{
+            streaming_codex_chat::create_responses_sse_stream_from_chat_observed,
+            transform_codex_chat::CodexToolContext,
+        };
+        use axum::body::Body;
+        use http_body_util::BodyExt;
+
+        let original_runtime = (*super::runtime::get_security_runtime()).clone();
+        struct Reset(super::runtime::SecurityRuntimeConfig);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                super::runtime::set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _reset = Reset(original_runtime);
+        super::runtime::set_security_runtime_for_test(Default::default());
+
+        let gateway =
+            RestorationGateway::with_test_rules(&["chinese_phone_number"], 64 * 1024 * 1024);
+        let mut req_body =
+            json!({"model": "synthetic-model", "input": "13800138000", "stream": true});
+        let admitted = match admit_http_request(
+            &gateway,
+            &crate::app_config::AppType::Codex,
+            true,
+            false,
+            &mut req_body,
+            &http::HeaderMap::new(),
+        )
+        .unwrap()
+        {
+            RestorationAdmission::Admitted(req) => req,
+            _ => panic!("expected admitted request"),
+        };
+        let placeholder = req_body["input"].as_str().unwrap().to_string();
+        let (attempt, _owner) = admitted
+            .prepare_owned_attempt_for_proxy(
+                "synthetic-chat-witness",
+                "openai_chat",
+                "http://127.0.0.1:1/v1/chat/completions",
+                Some("synthetic-principal"),
+                &mut req_body,
+                crate::proxy::providers::transform_codex_chat::responses_to_chat_completions,
+            )
+            .unwrap();
+        let tokenized_sse = sse_stream.replace("Tokyo", &placeholder);
+        let tracker = attempt.upstream_sse_evidence_tracker().unwrap();
+        let tracker_for_stream = std::sync::Arc::clone(&tracker);
+        let upstream =
+            futures::stream::iter([Ok::<_, std::io::Error>(bytes::Bytes::from(tokenized_sse))]);
+        let converted = create_responses_sse_stream_from_chat_observed(
+            upstream,
+            CodexToolContext::default(),
+            move |fact| {
+                if let Ok(mut guard) = tracker_for_stream.lock() {
+                    guard.observe(&fact);
+                }
+            },
+        );
+        let response = http::Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::from_stream(converted))
+            .unwrap();
+        let restored = attempt
+            .restore_client_http_response(
+                response,
+                ArgumentNormalizationMode::ChatCanonical,
+                Some(tracker),
+            )
+            .await;
+        let bytes = restored.into_body().collect().await.unwrap().to_bytes();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            text.contains("event: response.completed") && text.contains("13800138000"),
+            "expected completed response with restored phone number, got: {text}"
+        );
+        assert!(
+            !text.contains("response.failed") && !text.contains("rredact-cn_phone-"),
+            "unexpected restoration failure or unredacted token in: {text}"
+        );
+    }
+
+    let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
+    let json_body = json!({
+        "id": "chatcmpl_null_json_fixture",
+        "error": null,
+        "choices": [{
+            "index": 0,
+            "finish_reason": "stop",
+            "message": {
+                "role": null,
+                "content": "synthetic ok",
+                "reasoning_content": null,
+                "tool_calls": null,
+                "function_call": null
+            }
+        }]
+    });
+    let mut completion = JsonCompletion::new(JsonCompletionProtocol::ChatCompletions);
+    completion.observe_raw_json(&json_body.to_string(), &budget);
+    assert!(
+        completion.permits_completion() && !completion.has_unsupported_carrier(),
+        "Chat JSON response with null optional fields must permit completion"
+    );
+    assert_eq!(budget.used(), 0);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reversible_empty_tool_calls_restore_reasoning_and_authorize_tool_followup() {
+    use super::{
+        http_restoration::{admit_http_request, RestorationAdmission, RestorationGateway},
+        response_restoration::ArgumentNormalizationMode,
+    };
+    use crate::proxy::providers::{
+        streaming_codex_chat::create_responses_sse_stream_from_chat_observed,
+        transform_codex_chat::{responses_to_chat_completions, CodexToolContext},
+    };
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use serde_json::{json, Value};
+
+    let original = (*super::runtime::get_security_runtime()).clone();
+    struct Reset(super::runtime::SecurityRuntimeConfig);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            super::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _reset = Reset(original);
+    super::runtime::set_security_runtime_for_test(Default::default());
+
+    // The negative control must not release tools or authorize a continuation at EOF.
+    for tool in [false, true] {
+        for done in [true, false] {
+            let gateway =
+                RestorationGateway::with_test_rules(&["chinese_phone_number"], 64 * 1024 * 1024);
+            let mut headers = http::HeaderMap::new();
+            headers.insert(
+                "session-id",
+                http::HeaderValue::from_static("synthetic-empty-tools"),
+            );
+            let mut body = json!({"model":"synthetic-model","input":"13800138000","stream":true});
+            let admitted = match admit_http_request(
+                &gateway,
+                &crate::app_config::AppType::Codex,
+                true,
+                false,
+                &mut body,
+                &headers,
+            )
+            .expect("synthetic admission")
+            {
+                RestorationAdmission::Admitted(request) => request,
+                _ => panic!("synthetic request must be admitted"),
+            };
+            let token = body["input"].as_str().expect("synthetic token").to_owned();
+            assert!(
+                token.starts_with("rredact-cn_phone-"),
+                "request must be tokenized"
+            );
+            let (attempt, _owner) = admitted
+                .prepare_owned_attempt_for_proxy(
+                    "synthetic-empty-tools",
+                    "openai_chat",
+                    "http://127.0.0.1:1/v1/chat/completions",
+                    Some("synthetic-principal"),
+                    &mut body,
+                    responses_to_chat_completions,
+                )
+                .expect("synthetic preparation");
+            let outbound = attempt
+                .encode_outbound_body(&body)
+                .expect("synthetic encoding")
+                .expect("charged outbound body");
+            let outbound = std::str::from_utf8(&outbound).expect("synthetic UTF-8");
+            assert!(
+                !outbound.contains("13800138000") && outbound.contains(&token),
+                "final encoded Chat payload must contain only the authorized placeholder"
+            );
+
+            let chunk = |delta: Value, reason: Value| {
+                json!({
+                    "id":"chatcmpl_empty_tools", "model":"synthetic-model",
+                    "choices":[{"index":0,"delta":delta,"finish_reason":reason}]
+                })
+            };
+            // Split an authorized token across reasoning deltas with empty tool arrays.
+            let split = 13;
+            let mut chunks = vec![
+                chunk(
+                    json!({"reasoning_content":format!("Need {}", &token[..split]),"tool_calls":[]}),
+                    Value::Null,
+                ),
+                chunk(
+                    json!({"reasoning_content":format!("{} context.", &token[split..]),"tool_calls":[]}),
+                    Value::Null,
+                ),
+            ];
+            if tool {
+                chunks.push(chunk(
+                    json!({"tool_calls":[{"index":0,"id":"call_empty_tools","type":"function",
+                    "function":{"name":"synthetic_lookup","arguments":null}}]}),
+                    Value::Null,
+                ));
+                chunks.push(chunk(json!({"tool_calls":[{"index":0,"function":{"arguments":json!({"phone":token}).to_string()}}]}), Value::Null));
+                chunks.push(chunk(json!({}), json!("tool_calls")));
+            } else {
+                chunks.push(chunk(
+                    json!({"content":format!("Dial {token}"),"tool_calls":[]}),
+                    json!("stop"),
+                ));
+            }
+            if !done {
+                chunks.last_mut().expect("synthetic terminal chunk")["choices"][0]
+                    ["finish_reason"] = Value::Null;
+            }
+            let mut wire = chunks
+                .iter()
+                .map(|chunk| format!("data: {chunk}\n\n"))
+                .collect::<String>();
+            if done {
+                wire.push_str("data: [DONE]\n\n");
+            }
+            assert_eq!(
+                strict_sse_candidate(false, wire.clone()).await,
+                done,
+                "original-protocol completion evidence must remain strict"
+            );
+            let tracker = attempt
+                .upstream_sse_evidence_tracker()
+                .expect("synthetic evidence");
+            let observer = tracker.clone();
+            let converted = create_responses_sse_stream_from_chat_observed(
+                stream::iter([Ok::<_, std::io::Error>(Bytes::from(wire))]),
+                CodexToolContext::default(),
+                move |fact| {
+                    observer
+                        .lock()
+                        .expect("synthetic evidence lock")
+                        .observe(&fact)
+                },
+            );
+            let response = http::Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Body::from_stream(converted))
+                .expect("synthetic response");
+            let restored = attempt
+                .restore_client_http_response(
+                    response,
+                    ArgumentNormalizationMode::ChatCanonical,
+                    Some(tracker),
+                )
+                .await;
+            let bytes = restored
+                .into_body()
+                .collect()
+                .await
+                .expect("synthetic body")
+                .to_bytes();
+            let text = std::str::from_utf8(&bytes).expect("synthetic UTF-8");
+            let events = text
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .map(|data| serde_json::from_str::<Value>(data).expect("synthetic event"))
+                .collect::<Vec<_>>();
+            let completed = events
+                .iter()
+                .find(|event| event["type"] == "response.completed");
+            assert_eq!(
+                completed.is_some(),
+                done,
+                "completion mismatch: tool={tool} done={done}"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .any(|event| event["type"] == "response.failed"),
+                !done,
+                "failure mismatch: tool={tool} done={done}"
+            );
+            if let Some(completed) = completed {
+                assert!(
+                    completed["response"]["output"][0]["summary"][0]["text"]
+                        == format!("Need {token} context."),
+                    "reasoning must retain its original reference without inverse restoration"
+                );
+                let output = &completed["response"]["output"][1];
+                if tool {
+                    assert_eq!(output["type"], "function_call");
+                    let arguments: Value = serde_json::from_str(
+                        output["arguments"].as_str().expect("synthetic arguments"),
+                    )
+                    .expect("synthetic argument object");
+                    assert_eq!(arguments["phone"], "13800138000");
+                } else {
+                    assert_eq!(output["content"][0]["text"], "Dial 13800138000");
+                }
+            }
+            if tool {
+                if !done {
+                    assert!(
+                        !events
+                            .iter()
+                            .any(|event| event.pointer("/item/type").and_then(Value::as_str)
+                                == Some("function_call")),
+                        "incomplete evidence must retain the tool barrier"
+                    );
+                }
+                let mut followup = json!({"model":"synthetic-model","stream":false,
+                    "previous_response_id":"resp_chatcmpl_empty_tools",
+                    "input":[{"type":"function_call_output","call_id":"call_empty_tools","output":"13800138000"}]});
+                let continuation = match admit_http_request(
+                    &gateway,
+                    &crate::app_config::AppType::Codex,
+                    true,
+                    false,
+                    &mut followup,
+                    &headers,
+                )
+                .expect("synthetic continuation admission")
+                {
+                    RestorationAdmission::Admitted(request) => Some(request),
+                    RestorationAdmission::Intercepted(_) => None,
+                    RestorationAdmission::Passthrough => {
+                        panic!("continuation must retain reversible protection")
+                    }
+                };
+                let resumed = continuation.map(|request| {
+                    request.prepare_owned_attempt_for_proxy(
+                        "synthetic-empty-tools",
+                        "openai_chat",
+                        "http://127.0.0.1:1/v1/chat/completions",
+                        Some("synthetic-principal"),
+                        &mut followup,
+                        responses_to_chat_completions,
+                    )
+                });
+                assert_eq!(
+                    resumed.as_ref().is_some_and(Result::is_ok),
+                    done,
+                    "only verified completion may authorize the tool continuation"
+                );
+                if let Some(Ok((attempt, _owner))) = resumed {
+                    let bytes = attempt
+                        .encode_outbound_body(&followup)
+                        .expect("synthetic followup encoding")
+                        .expect("protected continuation");
+                    let wire = std::str::from_utf8(&bytes).expect("synthetic UTF-8");
+                    assert!(
+                        !wire.contains("13800138000") && wire.contains("rredact-cn_phone-"),
+                        "tool output must be re-tokenized in the actual outbound Chat payload"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn reversible_restore_diagnostic_stages_are_fixed_and_keep_tool_barrier() {
+    use super::{
+        http_restoration::wrap_sse_stream_with_restoration,
+        payload_budget::PayloadBudget,
+        response_restoration::{ArgumentNormalizationMode, SseRestorationState},
+    };
+    use bytes::Bytes;
+    use futures::StreamExt;
+    use serde_json::json;
+
+    let private_marker = "synthetic-private-diagnostic-marker";
+    let event = |kind: &str, fields: serde_json::Value| {
+        let mut data = fields;
+        data["type"] = json!(kind);
+        format!("event: {kind}\ndata: {data}\n\n")
+    };
+    let tool = event(
+        "response.function_call_arguments.delta",
+        json!({
+            "output_index": 0, "delta": private_marker
+        }),
+    );
+    let cases = vec![
+        ("sse_read", vec![Err(std::io::Error::other(private_marker))]),
+        ("sse_frame", vec![Ok(Bytes::from_static(b"data: \xff\n\n"))]),
+        ("sse_eof", vec![Ok(Bytes::from("data: unfinished"))]),
+        (
+            "sse_event",
+            vec![Ok(Bytes::from(event(
+                "response.created",
+                json!({"error": private_marker}),
+            )))],
+        ),
+        (
+            "sse_snapshot",
+            vec![Ok(Bytes::from(format!(
+                "{}{}",
+                event(
+                    "response.output_text.delta",
+                    json!({"delta": "synthetic-a"})
+                ),
+                event("response.output_text.done", json!({"text": "synthetic-b"}))
+            )))],
+        ),
+        (
+            "token_restore",
+            vec![Ok(Bytes::from(event(
+                "response.output_text.delta",
+                json!({
+                    "delta": "rredact-custom-00000000000000000000-ai"
+                }),
+            )))],
+        ),
+        ("completion_evidence", vec![Ok(Bytes::from(tool))]),
+    ];
+    for (stage, chunks) in cases {
+        let (lease, _) = chat_carrier_fixture();
+        let binding = lease
+            .bind_actual_attempt(
+                "synthetic-provider",
+                "openai_responses",
+                "http://127.0.0.1:1/v1/responses",
+                None,
+            )
+            .unwrap();
+        let restorer = SseRestorationState::new(
+            lease,
+            binding,
+            PayloadBudget::with_limit(4 * 1024 * 1024),
+            ArgumentNormalizationMode::Exact,
+        )
+        .unwrap();
+        let mut stream = wrap_sse_stream_with_restoration(futures::stream::iter(chunks), restorer);
+        let mut output = String::new();
+        while let Some(chunk) = stream.next().await {
+            output.push_str(std::str::from_utf8(&chunk.unwrap()).unwrap());
+        }
+        assert!(
+            output.contains(&format!("[stage={stage}]"))
+                || output.contains(&format!("[stage={stage} reason=")),
+            "missing fixed stage: {stage}"
+        );
+        assert!(output.contains("dlp_restore_failed"));
+        assert!(output.contains("event: response.failed"));
+        assert!(!output.contains(private_marker));
+        assert!(!output.contains("rredact-custom-00000000000000000000-ai"));
+        assert!(!output.contains("event: response.function_call_arguments.delta"));
+        assert!(!output.contains("event: response.function_call_arguments.done"));
+        assert!(!output.contains("event: response.completed"));
+    }
+}
+
+#[test]
+fn reversible_restore_diagnostic_http_keeps_error_contract() {
+    use super::http_restoration::DlpForwardError;
+    use crate::proxy::{error::ProxyError, response_processor::isolate_codex_dlp_response_error};
+    let error = isolate_codex_dlp_response_error(
+        ProxyError::Internal("synthetic-private-diagnostic-marker".into()),
+        true,
+    );
+    let ProxyError::DlpForward(error) = error else {
+        panic!("expected isolated DLP error")
+    };
+    assert_eq!(error.status_code(), axum::http::StatusCode::BAD_GATEWAY);
+    assert_eq!(error.error_type(), "server_error");
+    assert_eq!(error.code(), "dlp_restore_failed");
+    assert_eq!(
+        error.message(),
+        "Reversible DLP response restoration failed. [stage=response_processing]"
+    );
+    assert_eq!(
+        DlpForwardError::RestoreFailed.message(),
+        "Reversible DLP response restoration failed. [stage=unknown]"
+    );
+}
+
+fn assert_fixed_restore_client_error(error: &serde_json::Value, expected: &str) {
+    assert!(
+        error
+            == &serde_json::json!({
+                "message": expected,
+                "code": "dlp_restore_failed",
+                "type": "server_error",
+                "param": null,
+            }),
+        "client restoration error must match the complete fixed envelope"
+    );
+}
+
+#[test]
+fn history_provenance_client_error_assertion_failure_is_content_free() {
+    use serde_json::json;
+    let expected = "synthetic fixed client restoration message";
+    let valid = json!({"message":expected,"code":"dlp_restore_failed",
+        "type":"server_error","param":null});
+    assert_fixed_restore_client_error(&valid, expected);
+    for field in ["message", "code", "type", "param", "synthetic_extra"] {
+        let mut invalid = valid.clone();
+        invalid[field] = json!("synthetic assertion payload must stay private");
+        let panic = std::panic::catch_unwind(|| {
+            assert_fixed_restore_client_error(&invalid, expected);
+        });
+        let payload = panic
+            .err()
+            .expect("mutated envelope must fail its assertion");
+        let fixed = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
+        assert!(
+            fixed == Some("client restoration error must match the complete fixed envelope"),
+            "failed envelope assertions must expose only their fixed failure category"
+        );
+    }
+}
+
+#[tokio::test]
+async fn reversible_restore_diagnostic_reasons_are_fixed_and_survive_http_sse() {
+    use super::{
+        http_restoration::build_codex_restore_error_response_at,
+        payload_budget::PayloadBudget,
+        payload_metadata::PayloadVec,
+        response_restoration::{
+            failed_sse_frame_at, restore_json_arguments_string, restore_text_with_lease,
+            split_safe_prefix_and_tail, RestoreError,
+        },
+        restore_diagnostics::RestoreStage,
+    };
+    use axum::body::to_bytes;
+    use serde_json::{json, Value};
+
+    let (lease, token) = chat_carrier_fixture();
+    let private_marker = "synthetic-private-reason-marker";
+    let budget = PayloadBudget::with_limit(8 * 1024 * 1024);
+    let mut references = PayloadVec::new(budget.clone()).unwrap();
+    let mut occurrences = 0;
+    let mut cases = Vec::new();
+    cases.push((
+        "token_format",
+        split_safe_prefix_and_tail("rredact-custom-invalid").unwrap_err(),
+    ));
+    for (text, reason) in [
+        ("rredact-custom-invalid".to_string(), "token_format"),
+        (
+            "rredact-custom-00000000000000000000-ai".to_string(),
+            "token_context",
+        ),
+        (token.repeat(4097), "restore_capacity"),
+    ] {
+        let err =
+            restore_text_with_lease(&text, &lease, &budget, &mut references, &mut occurrences)
+                .err()
+                .unwrap();
+        cases.push((reason, err));
+    }
+    let tiny = PayloadBudget::with_limit(1);
+    let mut tiny_references = PayloadVec::new(tiny.clone()).unwrap();
+    let err = restore_text_with_lease(
+        private_marker,
+        &lease,
+        &tiny,
+        &mut tiny_references,
+        &mut occurrences,
+    )
+    .err()
+    .unwrap();
+    cases.push(("restore_capacity", err));
+    for (args, reason) in [
+        (" ".to_string(), "arguments_empty"),
+        (" ".repeat(1024 * 1024 + 1) + "{}", "arguments_size"),
+        (format!("{{\"{private_marker}\":"), "arguments_json"),
+        ("{\"x\":1,\"x\":2}".to_string(), "arguments_json"),
+        ("[]".to_string(), "arguments_shape"),
+        ("[".repeat(100) + &"]".repeat(100), "restore_capacity"),
+    ] {
+        let err = restore_json_arguments_string(
+            &args,
+            &lease,
+            &budget,
+            &mut references,
+            &mut occurrences,
+        )
+        .err()
+        .unwrap();
+        cases.push((reason, err));
+    }
+    // Fault injection uses existing allocation hooks; no live payloads or providers.
+    {
+        use super::payload_json::test_support::{self, Action, Phase};
+        let _hook = test_support::install(|event| {
+            if event.phase == Phase::BeforeBuild {
+                Action::Fail
+            } else {
+                Action::Continue
+            }
+        });
+        let err =
+            restore_json_arguments_string("{}", &lease, &budget, &mut references, &mut occurrences)
+                .err()
+                .unwrap();
+        cases.push(("arguments_rebuild", err));
+    }
+    {
+        use super::payload_buffer::test_support::{self, Action, Phase};
+        let _hook = test_support::install(|event| {
+            if event.phase == Phase::BeforeAllocation {
+                Action::FailAllocation
+            } else {
+                Action::Continue
+            }
+        });
+        let err =
+            restore_json_arguments_string("{}", &lease, &budget, &mut references, &mut occurrences)
+                .err()
+                .unwrap();
+        cases.push(("arguments_serialize", err));
+    }
+    {
+        use super::payload_text::test_support::{self, Action, Phase};
+        let _hook = test_support::install(|event| {
+            if event.phase == Phase::BeforeCopy {
+                Action::Fail
+            } else {
+                Action::Continue
+            }
+        });
+        let err =
+            restore_json_arguments_string("{}", &lease, &budget, &mut references, &mut occurrences)
+                .err()
+                .unwrap();
+        cases.push(("restore_capacity", err));
+    }
+    cases.push(("unknown", RestoreError::RestoreFailed));
+    for (reason, err) in cases {
+        let response = build_codex_restore_error_response_at(err, RestoreStage::TokenRestore);
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+        let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
+        let http: Value = serde_json::from_slice(&bytes).unwrap();
+        let frame = failed_sse_frame_at(err, RestoreStage::TokenRestore);
+        let sse_text = std::str::from_utf8(&frame).unwrap();
+        let sse: Value = serde_json::from_str(
+            sse_text
+                .strip_prefix("event: response.failed\ndata: ")
+                .unwrap()
+                .trim(),
+        )
+        .unwrap();
+        let expected = format!(
+            "Reversible DLP response restoration failed. [stage=token_restore reason={reason}]"
+        );
+        for error in [&http["error"], &sse["response"]["error"]] {
+            assert_fixed_restore_client_error(error, &expected);
+        }
+        let http_text = std::str::from_utf8(&bytes).unwrap();
+        for text in [http_text, sse_text] {
+            assert!(!text.contains(private_marker));
+            assert!(!text.contains(&token));
+        }
+        assert!(
+            sse["response"]["status"] == "failed",
+            "client restoration failure must retain its fixed terminal status"
+        );
+    }
+    // Authorized references in object keys remain unsupported, not a restore failure.
+    let args = json!({token: private_marker}).to_string();
+    let err =
+        restore_json_arguments_string(&args, &lease, &budget, &mut references, &mut occurrences)
+            .err()
+            .unwrap();
+    assert_eq!(err, RestoreError::RestoreUnsupported);
+    let frame = failed_sse_frame_at(err, RestoreStage::TokenRestore);
+    let text = std::str::from_utf8(&frame).unwrap();
+    assert!(text.contains("dlp_restore_unsupported"));
+    assert!(!text.contains("reason="));
+}
+
+#[test]
+fn reversible_restore_diagnostic_reason_stays_sticky_behind_tool_barrier() {
+    use super::{
+        payload_budget::PayloadBudget,
+        response_restoration::{
+            failed_sse_frame_at, ArgumentNormalizationMode, SseRestorationState,
+        },
+    };
+    use serde_json::json;
+    let (lease, _) = chat_carrier_fixture();
+    let binding = lease
+        .bind_actual_attempt(
+            "synthetic-provider",
+            "openai_responses",
+            "http://127.0.0.1:1/v1/responses",
+            None,
+        )
+        .unwrap();
+    let mut state = SseRestorationState::new(
+        lease,
+        binding,
+        PayloadBudget::with_limit(4 * 1024 * 1024),
+        ArgumentNormalizationMode::Exact,
+    )
+    .unwrap();
+    let event = |kind: &str, fields: serde_json::Value| {
+        let mut data = fields;
+        data["type"] = json!(kind);
+        format!("event: {kind}\ndata: {data}\n\n")
+    };
+    assert!(state
+        .process_sse_block(&event(
+            "response.function_call_arguments.delta",
+            json!({"output_index": 0, "delta": "{}"}),
+        ))
+        .unwrap()
+        .is_empty());
+    assert!(state.process_sse_block(&event(
+        "response.completed", json!({"response": {
+            "id": "synthetic-failed", "status": "completed", "output": [{
+                "id": "synthetic-tool", "type": "function_call", "call_id": "synthetic-call",
+                "name": "synthetic_tool", "arguments": "{}", "status": "completed"
+            }, {
+                "id": "synthetic-message", "type": "message", "role": "assistant",
+                "status": "completed", "content": [{"type": "refusal", "refusal": "rredact-custom-invalid"}]
+            }]
+        }}),
+    )).unwrap().is_empty());
+    let failure = state.finalize_and_flush(true).unwrap_err();
+    let stage = state.failure_stage();
+    assert_eq!(state.finalize_and_flush(true).unwrap_err(), failure);
+    assert_eq!(state.process_sse_block(&event(
+        "response.completed", json!({"response": {"id": "synthetic-failed", "status": "completed", "output": []}}),
+    )).unwrap_err(), failure);
+    assert_eq!(state.failure_stage(), stage);
+    let frame = failed_sse_frame_at(failure, stage);
+    let text = std::str::from_utf8(&frame).unwrap();
+    assert!(text.contains("[stage=token_restore reason=token_format]"));
+    assert!(!text.contains("event: response.function_call_arguments"));
+    assert!(!text.contains("event: response.completed"));
+}
+
+#[cfg(test)]
+mod text_fallback_stream_tests {
+    use super::super::{
+        payload_budget::PayloadBudget,
+        response_restoration::{TextProjectionStream, TEXT_PROJECTION_NOTICE},
+        tokenization::{DlpTokenStore, TokenCategory, TokenFragment},
+    };
+    use serde_json::{json, Value};
+
+    fn events(text: &str) -> Vec<Value> {
+        let part = json!({"type":"output_text", "text":text, "annotations":[]});
+        let item = json!({"id":"msg_projection", "type":"message", "role":"assistant", "status":"completed", "content":[part.clone()]});
+        vec![
+            json!({"type":"response.output_text.delta", "output_index":0, "content_index":0, "item_id":"msg_projection", "delta":text}),
+            json!({"type":"response.output_text.done", "output_index":0, "content_index":0, "item_id":"msg_projection", "text":text}),
+            json!({"type":"response.content_part.done", "output_index":0, "content_index":0, "item_id":"msg_projection", "part":part}),
+            json!({"type":"response.output_item.done", "output_index":0, "item":item.clone()}),
+            json!({"type":"response.completed", "response":{"id":"resp_projection", "object":"response", "status":"completed", "output":[item]}}),
+        ]
+    }
+
+    fn fixture() -> (DlpTokenStore, TextProjectionStream, PayloadBudget) {
+        let store = DlpTokenStore::new();
+        let budget = PayloadBudget::with_limit(32 * 1024 * 1024);
+        let mut lease = store
+            .admit("codex", Some("projection-stream"), 1)
+            .expect("fixture lease");
+        lease
+            .prepare_with_budget(
+                &[TokenFragment {
+                    raw: "synthetic-stream-value",
+                    whole_span_categories: &[TokenCategory::Custom],
+                }],
+                &[],
+                budget.clone(),
+                |_| Ok(()),
+            )
+            .expect("fixture preparation");
+        let stream = TextProjectionStream::new(lease, budget.clone()).expect("stream init");
+        (store, stream, budget)
+    }
+
+    fn push(stream: &mut TextProjectionStream, value: &Value) -> bool {
+        let raw = format!(
+            "event: {}\ndata: {value}\n\n",
+            value["type"].as_str().expect("fixture event")
+        );
+        stream.push_frame(&raw).is_ok()
+    }
+
+    #[test]
+    fn text_fallback_sse_buffers_until_eof_and_replays_consistently() {
+        let (_store, mut stream, budget) = fixture();
+        for event in events("rredact-custom-damaged") {
+            assert!(push(&mut stream, &event));
+        }
+        let frames = stream.finish(true).expect("eligible stream");
+        assert_eq!(frames.len(), 5);
+        for frame in frames.as_slice() {
+            let raw = std::str::from_utf8(frame).expect("fixture utf8");
+            assert!(raw.contains(TEXT_PROJECTION_NOTICE));
+            assert!(!raw.contains("rredact-custom-"));
+        }
+        assert!(stream.finish(true).is_err());
+        drop(frames);
+        drop(stream);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn text_fallback_sse_hard_failure_after_format_never_flushes() {
+        for variant in 0..9 {
+            let (_store, mut stream, budget) = fixture();
+            let mut input = events("rredact-custom-damaged");
+            match variant {
+                0 => {
+                    input[1]["text"] = json!("different");
+                }
+                1 => {
+                    input[2]["item_id"] = json!("other");
+                }
+                2 => {
+                    input[3]["item"]["content"][0]["text"] = json!("different");
+                }
+                3 => {
+                    input.pop();
+                }
+                4 => {
+                    input.push(input[4].clone());
+                }
+                5 => {
+                    input[4]["response"]["output"]
+                        .as_array_mut()
+                        .expect("fixture output")
+                        .push(json!({"type":"function_call"}));
+                }
+                6 => {
+                    input[0]["metadata"] = json!("rredact-custom-damaged");
+                }
+                7 => {
+                    input[4]["response"]["status"] = json!("incomplete");
+                }
+                _ => {}
+            }
+            let accepted = input.iter().all(|event| push(&mut stream, event));
+            assert!(
+                !accepted || stream.finish(variant != 8).is_err(),
+                "hard failure must refuse"
+            );
+            drop(stream);
+            assert_eq!(budget.used(), 0);
+        }
+    }
+
+    #[test]
+    fn text_fallback_sse_cross_delta_and_unknown_reference_refuse() {
+        let (store, mut stream, _budget) = fixture();
+        let mut other = store
+            .admit("codex", Some("different-fixture"), 1)
+            .expect("other lease");
+        other
+            .prepare_with_budget(
+                &[TokenFragment {
+                    raw: "other-synthetic-value",
+                    whole_span_categories: &[TokenCategory::Custom],
+                }],
+                &[],
+                PayloadBudget::with_limit(4096),
+                |_| Ok(()),
+            )
+            .expect("other prepare");
+        let reference = other
+            .authorized_tokens()
+            .expect("other authority")
+            .as_slice()[0]
+            .to_owned();
+        let text = format!("rredact-custom-damaged {reference}");
+        let mut input = events(&text);
+        input[0]["delta"] = json!(&text[..20]);
+        let mut second = input[0].clone();
+        second["delta"] = json!(&text[20..]);
+        input.insert(1, second);
+        let accepted = input.iter().all(|event| push(&mut stream, event));
+        assert!(!accepted || stream.finish(true).is_err());
+    }
+
+    #[test]
+    fn text_fallback_budget_cancel_frame_and_event_limits() {
+        let (_store, mut stream, budget) = fixture();
+        assert!(push(&mut stream, &events("rredact-custom-damaged")[0]));
+        assert!(budget.used() > 0);
+        drop(stream);
+        assert_eq!(budget.used(), 0);
+        let (_store, mut stream, budget) = fixture();
+        assert!(stream.push_frame(&"x".repeat(1024 * 1024 + 1)).is_err());
+        drop(stream);
+        assert_eq!(budget.used(), 0);
+        let (_store, mut stream, _budget) = fixture();
+        for _ in 0..4096 {
+            assert!(stream.push_frame(": heartbeat\n\n").is_ok());
+        }
+        assert!(stream.push_frame(": heartbeat\n\n").is_err());
+    }
+    #[test]
+    fn text_fallback_sse_preserves_undamaged_delta_sequence() {
+        let (_store, mut stream, _budget) = fixture();
+        let mut input = events("first second");
+        input[0]["delta"] = json!("first ");
+        let mut second = input[0].clone();
+        second["delta"] = json!("second");
+        input.insert(1, second);
+        input.last_mut().expect("fixture terminal")["response"]["output"][0]["content"]
+            .as_array_mut()
+            .expect("fixture content")
+            .push(json!({"type":"output_text","text":"rredact-custom-damaged"}));
+        // The item snapshot must make the same original content claim as the terminal.
+        let final_item = input.last().expect("terminal")["response"]["output"][0].clone();
+        input[4]["item"] = final_item;
+        for event in input {
+            assert!(push(&mut stream, &event));
+        }
+        let frames = stream.finish(true).expect("projection");
+        let first = std::str::from_utf8(&frames.as_slice()[0]).expect("utf8");
+        let second = std::str::from_utf8(&frames.as_slice()[1]).expect("utf8");
+        assert!(first.contains("\"delta\":\"first \""));
+        assert!(second.contains("\"delta\":\"second\""));
+    }
+
+    #[test]
+    fn text_fallback_sse_unexpected_carrier_cannot_hide_unauthorized() {
+        let (store, mut stream, _budget) = fixture();
+        let mut other = store
+            .admit("codex", Some("unexpected-carrier"), 1)
+            .expect("other lease");
+        other
+            .prepare_with_budget(
+                &[TokenFragment {
+                    raw: "unexpected-synthetic-value",
+                    whole_span_categories: &[TokenCategory::Custom],
+                }],
+                &[],
+                PayloadBudget::with_limit(4096),
+                |_| Ok(()),
+            )
+            .expect("other prepare");
+        let reference = other.authorized_tokens().expect("authority").as_slice()[0].to_owned();
+        let mut input = events("ordinary text");
+        input[0]["part"] = json!({"type":"output_text","text":reference});
+        input.last_mut().expect("terminal")["response"]["output"][0]["content"]
+            .as_array_mut()
+            .expect("content")
+            .push(json!({"type":"output_text","text":"rredact-custom-damaged"}));
+        let final_item = input.last().expect("terminal")["response"]["output"][0].clone();
+        input[3]["item"] = final_item;
+        let accepted = input.iter().all(|event| push(&mut stream, event));
+        assert!(!accepted || stream.finish(true).is_err());
+    }
+    #[test]
+    fn text_fallback_sse_created_carrier_and_response_identity_refuse() {
+        let invalid = [
+            json!({"id":"other", "object":"response", "status":"in_progress", "output":[]}),
+            json!({"id":"resp_projection", "object":"response", "status":"in_progress", "output":[{"type":"function_call"}]}),
+            json!({"id":"resp_projection", "object":"response", "status":"in_progress", "output":[{"type":"reasoning"}]}),
+            json!({"id":"resp_projection", "object":"response", "status":"in_progress", "output":[{"type":"message", "content":[{"type":"refusal"}]}]}),
+            json!({"id":"resp_projection", "object":"response", "status":"in_progress", "output":[{"type":"compaction"}]}),
+            json!({"id":"resp_projection", "object":"response", "status":"in_progress", "output":[{"type":"encrypted"}]}),
+            json!({"id":"resp_projection", "object":"response", "status":"in_progress", "output":[{"type":"unknown"}]}),
+            json!({"id":"resp_projection", "object":"other", "status":"in_progress", "output":[]}),
+            json!({"id":"resp_projection", "object":"response", "status":"completed", "output":[]}),
+            json!({"id":"resp_projection", "object":"response", "status":"in_progress"}),
+        ];
+        for kind in ["response.created", "response.in_progress"] {
+            for response in &invalid {
+                let (_store, mut stream, budget) = fixture();
+                let prefix = json!({"type":kind, "response":response});
+                let accepted = push(&mut stream, &prefix)
+                    && events("rredact-custom-damaged")
+                        .iter()
+                        .all(|event| push(&mut stream, event));
+                assert!(
+                    !accepted || stream.finish(true).is_err(),
+                    "invalid lifecycle must refuse"
+                );
+                drop(stream);
+                assert_eq!(budget.used(), 0);
+            }
+        }
+        let (_store, mut stream, _budget) = fixture();
+        for kind in ["response.created", "response.in_progress"] {
+            assert!(push(
+                &mut stream,
+                &json!({"type":kind, "response":{"id":"resp_projection", "object":"response", "status":"in_progress", "output":[]}})
+            ));
+        }
+        for event in events("rredact-custom-damaged") {
+            assert!(push(&mut stream, &event));
+        }
+        assert!(stream.finish(true).is_ok());
+    }
+
+    #[test]
+    fn text_fallback_sse_invalid_explicit_index_refuses() {
+        for event_index in [0, 1] {
+            for key in ["output_index", "content_index"] {
+                for invalid in [json!("0"), json!(-1), json!(0.5), Value::Null] {
+                    let (_store, mut stream, _budget) = fixture();
+                    let mut input = events("rredact-custom-damaged");
+                    input[event_index][key] = invalid;
+                    let accepted = input.iter().all(|event| push(&mut stream, event));
+                    assert!(
+                        !accepted || stream.finish(true).is_err(),
+                        "explicit invalid index must refuse"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn text_fallback_sse_preserves_authorized_cross_delta_restoration() {
+        let store = DlpTokenStore::new();
+        let budget = PayloadBudget::with_limit(32 * 1024 * 1024);
+        let mut lease = store
+            .admit("codex", Some("projection-split"), 1)
+            .expect("lease");
+        lease
+            .prepare_with_budget(
+                &[TokenFragment {
+                    raw: "synthetic-restored-text",
+                    whole_span_categories: &[TokenCategory::Custom],
+                }],
+                &[],
+                budget.clone(),
+                |_| Ok(()),
+            )
+            .expect("prepare");
+        let reference = lease.authorized_tokens().expect("authority").as_slice()[0].to_owned();
+        let mut stream = TextProjectionStream::new(lease, budget).expect("stream");
+        let text = format!("first {reference} last");
+        let mut input = events(&text);
+        input[0]["delta"] = json!(&text[..18]);
+        let mut second = input[0].clone();
+        second["delta"] = json!(&text[18..]);
+        input.insert(1, second);
+        input.last_mut().expect("terminal")["response"]["output"][0]["content"]
+            .as_array_mut()
+            .expect("content")
+            .push(json!({"type":"output_text","text":"rredact-custom-damaged"}));
+        let final_item = input.last().expect("terminal")["response"]["output"][0].clone();
+        input[4]["item"] = final_item;
+        for event in input {
+            assert!(push(&mut stream, &event));
+        }
+        let frames = stream.finish(true).expect("projection");
+        let deltas: Vec<String> = frames.as_slice()[..2]
+            .iter()
+            .map(|frame| {
+                let raw = std::str::from_utf8(frame).expect("utf8");
+                let data = raw
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data");
+                serde_json::from_str::<Value>(data).expect("json")["delta"]
+                    .as_str()
+                    .expect("text")
+                    .to_owned()
+            })
+            .collect();
+        assert!(deltas[0] == "first ");
+        assert!(deltas[1] == "synthetic-restored-text last");
+    }
+    #[test]
+    fn text_fallback_sse_every_reference_split_restores_authorized_text() {
+        fn prepared() -> (DlpTokenStore, TextProjectionStream, PayloadBudget, String) {
+            let store = DlpTokenStore::new();
+            let budget = PayloadBudget::with_limit(32 * 1024 * 1024);
+            let mut lease = store
+                .admit("codex", Some("projection-every-split"), 1)
+                .expect("fixture lease");
+            lease
+                .prepare_with_budget(
+                    &[TokenFragment {
+                        raw: "synthetic-every-split-value",
+                        whole_span_categories: &[TokenCategory::Custom],
+                    }],
+                    &[],
+                    budget.clone(),
+                    |_| Ok(()),
+                )
+                .expect("fixture preparation");
+            let reference = lease
+                .authorized_tokens()
+                .expect("fixture authority")
+                .as_slice()[0]
+                .to_owned();
+            let stream = TextProjectionStream::new(lease, budget.clone()).expect("fixture stream");
+            (store, stream, budget, reference)
+        }
+
+        let reference_len = {
+            let (_, _, _, reference) = prepared();
+            assert!(reference.is_ascii());
+            reference.len()
+        };
+        let mut checked = 0;
+        for split in 0..=reference_len {
+            let (_store, mut stream, budget, reference) = prepared();
+            assert_eq!(reference.len(), reference_len);
+            let mut input = events(&reference);
+            input[0]["delta"] = json!(&reference[..split]);
+            let mut second = input[0].clone();
+            second["delta"] = json!(&reference[split..]);
+            input.insert(1, second);
+            input.last_mut().expect("fixture terminal")["response"]["output"][0]["content"]
+                .as_array_mut()
+                .expect("fixture content")
+                .push(json!({"type":"output_text","text":"rredact-custom-damaged"}));
+            input[4]["item"] =
+                input.last().expect("fixture terminal")["response"]["output"][0].clone();
+            assert!(input.iter().all(|event| push(&mut stream, event)));
+            let frames = stream.finish(true).expect("eligible split projection");
+            let mut restored = String::new();
+            for (index, frame) in frames.as_slice().iter().enumerate() {
+                let raw = std::str::from_utf8(frame).expect("fixture utf8");
+                assert!(!raw.contains(&reference));
+                let data = raw
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("fixture data");
+                let value: Value = serde_json::from_str(data).expect("fixture json");
+                if index < 2 {
+                    restored.push_str(value["delta"].as_str().expect("projected delta"));
+                } else if index == 2 {
+                    assert!(value["text"] == "synthetic-every-split-value");
+                } else if index == 3 {
+                    assert!(value["part"]["text"] == "synthetic-every-split-value");
+                } else {
+                    let item = if index == 4 {
+                        &value["item"]
+                    } else {
+                        &value["response"]["output"][0]
+                    };
+                    assert!(item["content"][0]["text"] == "synthetic-every-split-value");
+                    assert!(item["content"][1]["text"] == TEXT_PROJECTION_NOTICE);
+                }
+            }
+            assert!(restored == "synthetic-every-split-value");
+            assert_eq!(frames.len(), 6);
+            drop(frames);
+            drop(stream);
+            assert_eq!(budget.used(), 0);
+            checked += 1;
+        }
+        assert_eq!(checked, reference_len + 1);
+        assert!(checked > 2);
+    }
+
+    #[test]
+    fn text_fallback_sse_every_reference_split_rejects_unauthorized_before_or_after_damage() {
+        let other_store = DlpTokenStore::new();
+        let mut other = other_store
+            .admit("codex", Some("unrelated-split-fixture"), 1)
+            .expect("fixture lease");
+        other
+            .prepare_with_budget(
+                &[TokenFragment {
+                    raw: "synthetic-unrelated-split-value",
+                    whole_span_categories: &[TokenCategory::Custom],
+                }],
+                &[],
+                PayloadBudget::with_limit(4096),
+                |_| Ok(()),
+            )
+            .expect("fixture preparation");
+        let reference = other
+            .authorized_tokens()
+            .expect("fixture authority")
+            .as_slice()[0]
+            .to_owned();
+        assert!(reference.is_ascii());
+        let mut checked = 0;
+        for damage_first in [false, true] {
+            let prefix = if damage_first {
+                "rredact-custom-damaged "
+            } else {
+                ""
+            };
+            let suffix = if damage_first {
+                ""
+            } else {
+                " rredact-custom-damaged"
+            };
+            let text = format!("{prefix}{reference}{suffix}");
+            for split in 0..=reference.len() {
+                let (_store, mut stream, budget) = fixture();
+                let boundary = prefix.len() + split;
+                let mut input = events(&text);
+                input[0]["delta"] = json!(&text[..boundary]);
+                let mut second = input[0].clone();
+                second["delta"] = json!(&text[boundary..]);
+                input.insert(1, second);
+                let accepted = input.iter().all(|event| push(&mut stream, event));
+                assert!(
+                    !accepted || stream.finish(true).is_err(),
+                    "unauthorized split must refuse"
+                );
+                drop(stream);
+                assert_eq!(budget.used(), 0);
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 2 * (reference.len() + 1));
+        assert!(checked > 4);
+    }
+
+    #[test]
+    fn text_fallback_budget_exact_frame_round_track_and_over_limits() {
+        let (_store, mut stream, budget) = fixture();
+        let mut heartbeat = String::with_capacity(1024 * 1024);
+        heartbeat.push(':');
+        heartbeat.push_str(&"x".repeat(1024 * 1024 - 3));
+        heartbeat.push_str("\n\n");
+        assert_eq!(heartbeat.len(), 1024 * 1024);
+        for _ in 0..8 {
+            assert!(stream.push_frame(&heartbeat).is_ok());
+        }
+        assert!(stream.push_frame(":\n\n").is_err());
+        drop(stream);
+        assert_eq!(budget.used(), 0);
+
+        let (_store, mut stream, budget) = fixture();
+        let delta = json!({"type":"response.output_text.delta", "output_index":0,"content_index":0,"item_id":"msg_projection","delta":"x".repeat(128 * 1024)});
+        for _ in 0..8 {
+            assert!(push(&mut stream, &delta));
+        }
+        let extra = json!({"type":"response.output_text.delta", "output_index":0,"content_index":0,"item_id":"msg_projection","delta":"x"});
+        assert!(!push(&mut stream, &extra));
+        drop(stream);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn text_fallback_budget_final_buffer_allocation_failure_never_replays() {
+        use super::super::payload_buffer::test_support::{self, Action, Phase};
+        use std::{cell::Cell, rc::Rc};
+        let (_store, mut stream, budget) = fixture();
+        for event in events("rredact-custom-damaged") {
+            assert!(push(&mut stream, &event));
+        }
+        let count = Rc::new(Cell::new(0));
+        let observed = count.clone();
+        let hook = test_support::install(move |event| {
+            if event.phase == Phase::BeforeAllocation {
+                observed.set(observed.get() + 1);
+            }
+            Action::Continue
+        });
+        let frames = stream.finish(true).expect("baseline preparation");
+        drop(hook);
+        let allocations = count.get();
+        assert!(allocations > 5);
+        drop(frames);
+        drop(stream);
+        assert_eq!(budget.used(), 0);
+        for fail_at in 0..allocations {
+            let (_store, mut stream, budget) = fixture();
+            for event in events("rredact-custom-damaged") {
+                assert!(push(&mut stream, &event));
+            }
+            let mut seen = 0;
+            let hook = test_support::install(move |event| {
+                if event.phase == Phase::BeforeAllocation {
+                    let index = seen;
+                    seen += 1;
+                    if index == fail_at {
+                        return Action::FailAllocation;
+                    }
+                }
+                Action::Continue
+            });
+            assert!(
+                stream.finish(true).is_err(),
+                "allocation failure cannot produce replay"
+            );
+            assert!(
+                stream.finish(true).is_err(),
+                "failed terminal remains closed"
+            );
+            drop(hook);
+            drop(stream);
+            assert_eq!(budget.used(), 0);
+        }
+    }
+    #[test]
+    fn text_fallback_native_object_sse_refuses_wrong_or_missing() {
+        for object in [Some(json!("other")), Some(Value::Null), None] {
+            let (_store, mut stream, _budget) = fixture();
+            let mut input = events("rredact-custom-damaged");
+            let terminal = input.last_mut().expect("terminal")["response"]
+                .as_object_mut()
+                .expect("response");
+            if let Some(value) = object {
+                terminal.insert("object".to_owned(), value);
+            } else {
+                terminal.remove("object");
+            }
+            let accepted = input.iter().all(|event| push(&mut stream, event));
+            assert!(
+                !accepted || stream.finish(true).is_err(),
+                "non-native object cannot project"
+            );
+        }
+    }
+    #[test]
+    fn text_fallback_review_duplicate_and_late_part_item_completion_refuse() {
+        for variant in 0..4 {
+            let (_store, mut stream, _budget) = fixture();
+            let mut input = events("rredact-custom-damaged");
+            match variant {
+                0 => input.insert(3, input[2].clone()),
+                1 => input.insert(4, input[3].clone()),
+                2 => {
+                    input.remove(1);
+                    let part = input.remove(1);
+                    input.insert(0, part);
+                }
+                _ => {
+                    input.remove(1);
+                    let item = input.remove(2);
+                    input.insert(0, item);
+                }
+            }
+            let accepted = input.iter().all(|event| push(&mut stream, event));
+            assert!(
+                !accepted || stream.finish(true).is_err(),
+                "completed carrier cannot repeat or receive late content"
+            );
+        }
+    }
+
+    #[test]
+    fn text_fallback_review_transient_kind_copy_is_reserved_before_parse() {
+        use super::super::payload_buffer::test_support::{self, Action, Phase};
+        use std::{cell::Cell, rc::Rc};
+        let (_store, mut stream, budget) = fixture();
+        let raw = format!("data: {}\n\n", json!({"type":"x".repeat(16 * 1024)}));
+        let baseline = budget.used();
+        let seen = Rc::new(Cell::new(false));
+        let observed = seen.clone();
+        let reserve = raw.len();
+        let hook = test_support::install(move |event| {
+            if event.phase == Phase::BeforeAllocation && !observed.replace(true) {
+                assert!(
+                    event.used >= baseline + reserve + event.requested,
+                    "inherited temporary kind copy requires a prior charge"
+                );
+            }
+            Action::Continue
+        });
+        assert!(stream.push_frame(&raw).is_err());
+        drop(hook);
+        assert!(seen.get());
+        drop(stream);
+        assert_eq!(budget.used(), baseline);
+    }
+}
+
+#[cfg(test)]
+mod token_format_diagnostic_sink_tests {
+    use super::super::{
+        payload_budget::PayloadBudget,
+        response_restoration::{ArgumentNormalizationMode, RestoreError, SseRestorationState},
+        restore_diagnostics::{RestoreReason, RestoreStage},
+    };
+    use serde_json::{json, Value};
+    use std::sync::Mutex;
+
+    static RECORDS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    struct Logger;
+    impl log::Log for Logger {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if record.target().ends_with("token_format_diagnostics") {
+                RECORDS.lock().unwrap().push(record.args().to_string());
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOGGER: Logger = Logger;
+
+    fn state() -> (SseRestorationState, String, PayloadBudget) {
+        let (lease, token) = super::chat_carrier_fixture();
+        let binding = lease
+            .bind_actual_attempt(
+                "SYNTHETIC_PRIVATE_PROVIDER",
+                "openai_responses",
+                "http://127.0.0.1:1/v1/responses",
+                None,
+            )
+            .unwrap();
+        let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
+        let state = SseRestorationState::new(
+            lease,
+            binding,
+            budget.clone(),
+            ArgumentNormalizationMode::Exact,
+        )
+        .unwrap();
+        (state, token, budget)
+    }
+    fn event(kind: &str, mut data: Value) -> String {
+        data["type"] = json!(kind);
+        format!("event: {kind}\ndata: {data}\n\n")
+    }
+    fn message(text: &str) -> Value {
+        json!({"id":"SYNTHETIC_PRIVATE_MESSAGE", "type":"message", "role":"assistant", "status":"completed", "content":[{"type":"refusal", "refusal":text}]})
+    }
+    fn completed(items: Value) -> String {
+        event(
+            "response.completed",
+            json!({"response":{"id":"SYNTHETIC_PRIVATE_RESPONSE", "status":"completed", "output":items}}),
+        )
+    }
+    fn count() -> usize {
+        RECORDS.lock().unwrap().len()
+    }
+    fn format_error(result: Result<Vec<bytes::Bytes>, RestoreError>) {
+        assert!(
+            matches!(
+                result,
+                Err(RestoreError::FailedBecause(RestoreReason::TokenFormat))
+            ),
+            "strict carrier must reject malformed token syntax"
+        );
+    }
+
+    #[test]
+    fn token_format_diagnostic_sink_is_bounded_once_and_observational(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        const CHILD: &str = "VARYAI_SYNTHETIC_TOKEN_FORMAT_DIAGNOSTIC_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", "proxy::security::reversible_completion_tests::token_format_diagnostic_sink_tests::token_format_diagnostic_sink_is_bounded_once_and_observational", "--nocapture"])
+                .env(CHILD, "1").output()?;
+            assert!(output.status.success(), "isolated token-format diagnostic assertions failed; synthetic fixture output suppressed");
+            let report = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                report.contains("running 1 test") && report.contains("1 passed; 0 failed"),
+                "isolated diagnostic test must execute exactly one test"
+            );
+            return Ok(());
+        }
+        log::set_logger(&LOGGER).map_err(|_| "isolated diagnostic logger unavailable")?;
+        log::set_max_level(log::LevelFilter::Warn);
+        let malformed = [
+            "rredact-custom-` SYNTHETIC_PRIVATE_BODY",
+            "rredact-custom-0000000000000000000G-ai SYNTHETIC_PRIVATE_BODY",
+            "rredact-custom-00000000000000000000-ax SYNTHETIC_PRIVATE_BODY",
+        ];
+        for bad in malformed {
+            for kind in ["response.refusal.delta"] {
+                let (mut state, _, budget) = state();
+                let before = count();
+                format_error(state.process_sse_block(&event(kind, json!({"delta":bad}))));
+                assert_eq!(state.failure_stage(), RestoreStage::TokenRestore);
+                assert_eq!(
+                    count(),
+                    before + 1,
+                    "first format failure must emit one structural log"
+                );
+                format_error(
+                    state
+                        .process_sse_block(&event(kind, json!({"delta":"SYNTHETIC_PRIVATE_LATE"}))),
+                );
+                format_error(state.finalize_and_flush(true));
+                assert_eq!(
+                    count(),
+                    before + 1,
+                    "sticky errors must not duplicate the diagnostic"
+                );
+                drop(state);
+                assert_eq!(budget.used(), 0);
+            }
+        }
+        // Ordinary output-text nonmatches are preserved without a format diagnostic.
+        for bad in malformed {
+            let (mut state, _, budget) = state();
+            let before = count();
+            state
+                .process_sse_block(&event("response.output_text.delta", json!({"delta":bad})))
+                .map_err(|_| "ordinary nonmatch delta rejected")?;
+            state
+                .process_sse_block(&event("response.output_text.done", json!({"text":bad})))
+                .map_err(|_| "ordinary nonmatch snapshot rejected")?;
+            assert_eq!(
+                count(),
+                before,
+                "ordinary nonmatches must not emit format diagnostics"
+            );
+            drop(state);
+            assert_eq!(budget.used(), 0);
+        }
+        // Supported reasoning is not a token-format diagnostic source.
+        for bad in malformed {
+            let (mut state, _, budget) = state();
+            let before = count();
+            assert!(
+                state
+                    .process_sse_block(&event(
+                        "response.reasoning_summary_text.delta",
+                        json!({"delta":bad})
+                    ))
+                    .is_ok(),
+                "reasoning delta must be unprocessed"
+            );
+            assert!(
+                state
+                    .process_sse_block(&event(
+                        "response.reasoning_summary_text.done",
+                        json!({"text":bad})
+                    ))
+                    .is_ok(),
+                "reasoning done must be unprocessed"
+            );
+            assert!(
+                count() == before,
+                "reasoning must emit no format diagnostic"
+            );
+            drop(state);
+            assert!(budget.used() == 0, "reasoning buffers must release budget");
+        }
+        // A valid boundary-spanning reference still restores; no diagnostic is emitted.
+        for split in 0..=(32 + "custom".len()) {
+            let (mut state, token, budget) = state();
+            let before = count();
+            for delta in [&token[..split], &token[split..]] {
+                state
+                    .process_sse_block(&event("response.output_text.delta", json!({"delta":delta})))
+                    .unwrap();
+            }
+            assert_eq!(state.restored_occurrences(), 1);
+            assert_eq!(count(), before);
+            drop(state);
+            assert_eq!(budget.used(), 0);
+        }
+        let (mut crossing, _, _) = state();
+        crossing
+            .process_sse_block(&event(
+                "response.refusal.delta",
+                json!({"delta":"rredact-custom-"}),
+            ))
+            .unwrap();
+        let before = count();
+        format_error(
+            crossing.process_sse_block(&event("response.refusal.delta", json!({"delta":"`"}))),
+        );
+        assert_eq!(count(), before + 1);
+        // Done and final snapshots observe the actual failing restore branch.
+        for kind in ["response.refusal.done"] {
+            let (mut state, _, _) = state();
+            let before = count();
+            let field = if kind == "response.refusal.done" {
+                "refusal"
+            } else {
+                "text"
+            };
+            let mut data = json!({});
+            data[field] = json!(malformed[0]);
+            format_error(state.process_sse_block(&event(kind, data)));
+            assert_eq!(count(), before + 1);
+        }
+        for barrier in [false, true] {
+            let (mut state, _, budget) = state();
+            if barrier {
+                assert!(state
+                    .process_sse_block(&event(
+                        "response.function_call_arguments.delta",
+                        json!({"output_index":0,"delta":"{}"})
+                    ))
+                    .unwrap()
+                    .is_empty());
+            }
+            let mut items = vec![];
+            if barrier {
+                items.push(json!({"id":"SYNTHETIC_PRIVATE_TOOL", "type":"function_call", "call_id":"SYNTHETIC_PRIVATE_CALL", "name":"non_executing_fixture", "arguments":"{}", "status":"completed"}));
+            }
+            items.push(message(malformed[0]));
+            let before = count();
+            assert!(state
+                .process_sse_block(&completed(json!(items)))
+                .unwrap()
+                .is_empty());
+            assert_eq!(
+                count(),
+                before,
+                "buffered events must not emit speculative failures"
+            );
+            format_error(state.finalize_and_flush(true));
+            assert_eq!(count(), before + 1);
+            format_error(state.finalize_and_flush(true));
+            assert_eq!(count(), before + 1);
+            drop(state);
+            assert_eq!(budget.used(), 0);
+        }
+        // Snapshot precedence, unfinished tails, capacity and cancellation retain their original errors.
+        let (mut mismatch, _, _) = state();
+        mismatch
+            .process_sse_block(&event(
+                "response.output_text.delta",
+                json!({"delta":"safe"}),
+            ))
+            .unwrap();
+        let before = count();
+        assert_eq!(
+            mismatch
+                .process_sse_block(&event(
+                    "response.output_text.done",
+                    json!({"text":malformed[0]})
+                ))
+                .unwrap_err(),
+            RestoreError::RestoreFailed
+        );
+        assert_eq!(mismatch.failure_stage(), RestoreStage::SseSnapshot);
+        let (mut unfinished, _, _) = state();
+        unfinished
+            .process_sse_block(&event(
+                "response.refusal.delta",
+                json!({"delta":"rredact-custom-"}),
+            ))
+            .unwrap();
+        assert_eq!(
+            unfinished
+                .process_sse_block(&event(
+                    "response.refusal.done",
+                    json!({"refusal":"rredact-custom-"})
+                ))
+                .unwrap_err(),
+            RestoreError::RestoreFailed
+        );
+        let (mut cancelled, _, _) = state();
+        assert_eq!(
+            cancelled.finalize_and_flush(false).unwrap_err(),
+            RestoreError::RestoreFailed
+        );
+        let (mut capacity, _, _) = state();
+        assert_eq!(
+            capacity
+                .process_sse_block(&" ".repeat(1024 * 1024 + 1))
+                .unwrap_err(),
+            RestoreError::RestoreFailed
+        );
+        assert_eq!(
+            count(),
+            before,
+            "non-format failures must not emit a structural format log"
+        );
+        // Event whitelisting and each observable carrier/site are checked at the real sink.
+        let (mut unknown, _, _) = state();
+        unknown
+            .process_sse_block(&event("SYNTHETIC_PRIVATE_EVENT", json!({})))
+            .unwrap();
+        format_error(unknown.process_sse_block(&event(
+            "response.refusal.delta",
+            json!({"delta":malformed[0]}),
+        )));
+        assert!(RECORDS
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .contains("event=other"));
+        for (kind, data, carrier) in [
+            (
+                "response.output_item.added",
+                json!({"output_index":0,"item":message(malformed[0])}),
+                "refusal",
+            ),
+            (
+                "response.content_part.added",
+                json!({"part":{"type":"refusal","refusal":malformed[0]}}),
+                "refusal",
+            ),
+            (
+                "response.content_part.added",
+                json!({"part":{"type":"summary_text","text":malformed[0]}}),
+                "reasoning",
+            ),
+            (
+                "response.content_part.done",
+                json!({"part":{"type":"refusal","refusal":malformed[0]}}),
+                "refusal",
+            ),
+        ] {
+            let (mut state, _, _) = state();
+            let before = count();
+            format_error(state.process_sse_block(&event(kind, data)));
+            assert_eq!(count(), before + 1);
+            let records = RECORDS.lock().unwrap();
+            let record = records.last().unwrap();
+            assert!(record.contains("site=snapshot_restore"));
+            assert!(
+                record.contains(&format!("carrier={carrier}")),
+                "snapshot carrier must reflect its supported field"
+            );
+        }
+        for custom in [false, true] {
+            let (mut state, _, _) = state();
+            let item = if custom {
+                json!({"id":"SYNTHETIC_PRIVATE_TOOL", "type":"custom_tool_call", "call_id":"SYNTHETIC_PRIVATE_CALL", "name":"non_executing_fixture", "input":malformed[0], "status":"completed"})
+            } else {
+                json!({"id":"SYNTHETIC_PRIVATE_TOOL", "type":"function_call", "call_id":"SYNTHETIC_PRIVATE_CALL", "name":"non_executing_fixture", "arguments":json!({"value":malformed[0]}).to_string(), "status":"completed"})
+            };
+            state.process_sse_block(&completed(json!([item]))).unwrap();
+            let before = count();
+            format_error(state.finalize_and_flush(true));
+            assert_eq!(count(), before + 1);
+            assert!(RECORDS
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .contains("site=final_tool_restore"));
+        }
+        let records = RECORDS.lock().unwrap();
+        assert!(!records.is_empty());
+        for record in records.iter() {
+            assert!(
+                record.len() <= 2048,
+                "diagnostic rendering must have a fixed upper bound"
+            );
+            assert!(
+                ![
+                    "SYNTHETIC_PRIVATE",
+                    "vary_",
+                    "rredact-",
+                    "synthetic-restoration-value",
+                    "synthetic-carrier-session",
+                    "non_executing_fixture",
+                    "http://",
+                    "00000000000000000000"
+                ]
+                .iter()
+                .any(|sentinel| record.contains(sentinel)),
+                "diagnostic must contain no input-derived text"
+            );
+        }
+        Ok(())
+    }
+}
+
+mod output_text_exact_stream_tests {
+    use super::super::{
+        payload_budget::PayloadBudget,
+        response_restoration::{ArgumentNormalizationMode, SseRestorationState},
+        tokenization::{DlpTokenStore, TokenCategory, TokenFragment},
+    };
+    use bytes::Bytes;
+    use serde_json::{json, Value};
+
+    fn frame(value: &Value) -> String {
+        format!(
+            "event: {}\ndata: {value}\n\n",
+            value["type"].as_str().expect("synthetic event")
+        )
+    }
+
+    fn run(text: &str, splits: &[usize], terminal: u8) -> Result<Vec<Bytes>, ()> {
+        let store = DlpTokenStore::new();
+        let budget = PayloadBudget::with_limit(16 * 1024 * 1024);
+        let mut lease = store
+            .admit("codex", Some("synthetic-exact-stream"), 1)
+            .map_err(|_| ())?;
+        lease
+            .prepare_with_budget(
+                &[TokenFragment {
+                    raw: "synthetic-original",
+                    whole_span_categories: &[TokenCategory::Custom],
+                }],
+                &[],
+                budget.clone(),
+                |_| Ok(()),
+            )
+            .map_err(|_| ())?;
+        let binding = lease
+            .bind_actual_attempt(
+                "synthetic",
+                "openai_responses",
+                "http://127.0.0.1:1/responses",
+                None,
+            )
+            .map_err(|_| ())?;
+        let mut state =
+            SseRestorationState::new(lease, binding, budget, ArgumentNormalizationMode::Exact)
+                .map_err(|_| ())?;
+        let mut frames = Vec::new();
+        let mut start = 0;
+        for end in splits.iter().copied().chain(std::iter::once(text.len())) {
+            frames.extend(state.process_sse_block(&frame(&json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"item_id":"synthetic-message","delta":&text[start..end]}))).map_err(|_| ())?);
+            start = end;
+        }
+        let part = json!({"type":"output_text","text":text,"annotations":[]});
+        let item = json!({"id":"synthetic-message","type":"message","role":"assistant","status":"completed","content":[part]});
+        if terminal == 0 {
+            frames.extend(state.process_sse_block(&frame(&json!({"type":"response.output_text.done","output_index":0,"content_index":0,"item_id":"synthetic-message","text":text}))).map_err(|_| ())?);
+        }
+        if terminal <= 1 {
+            frames.extend(state.process_sse_block(&frame(&json!({"type":"response.content_part.done","output_index":0,"content_index":0,"item_id":"synthetic-message","part":part}))).map_err(|_| ())?);
+        }
+        if terminal <= 2 {
+            frames.extend(
+                state
+                    .process_sse_block(&frame(
+                        &json!({"type":"response.output_item.done","output_index":0,"item":item}),
+                    ))
+                    .map_err(|_| ())?,
+            );
+        }
+        frames.extend(state.process_sse_block(&frame(&json!({"type":"response.completed","response":{"id":"synthetic-response","object":"response","status":"completed","output":[item]}}))).map_err(|_| ())?);
+        frames.extend(state.finalize_and_flush(true).map_err(|_| ())?);
+        Ok(frames)
+    }
+
+    fn text_deltas(frames: &[Bytes]) -> String {
+        let mut text = String::new();
+        for frame in frames {
+            let raw = std::str::from_utf8(frame).expect("synthetic UTF-8");
+            let data = raw
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("synthetic data");
+            let value: Value = serde_json::from_str(data).expect("synthetic JSON");
+            if value["type"] == "response.output_text.delta" {
+                text.push_str(value["delta"].as_str().expect("synthetic delta"));
+            }
+        }
+        text
+    }
+
+    #[test]
+    fn output_text_exact_sse_all_utf8_splits_preserve_nonmatches_and_snapshots() {
+        let header = ["rredact", "-custom-"].concat();
+        for text in [
+            format!("前🔒`{header}` **explanation** 尾"),
+            format!("{header}oops {header}** invalid"),
+            format!("{header}{}", "0".repeat(20)),
+        ] {
+            let boundaries = (0..=text.len())
+                .filter(|offset| text.is_char_boundary(*offset))
+                .collect::<Vec<_>>();
+            let frames = run(&text, &boundaries, 0).expect("synthetic multi-delta stream");
+            assert!(
+                text_deltas(&frames) == text,
+                "many UTF-8 deltas must preserve all nonmatching text"
+            );
+            for split in (0..=text.len()).filter(|offset| text.is_char_boundary(*offset)) {
+                let frames = run(&text, &[split], 0);
+                assert!(
+                    frames.is_ok(),
+                    "nonmatching output text must survive every delta split and snapshot"
+                );
+                assert!(
+                    text_deltas(&frames.expect("synthetic frames")) == text,
+                    "delta text must be delivered exactly once"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn output_text_exact_sse_incomplete_tail_released_at_each_valid_terminal() {
+        let header = ["rredact", "-custom-"].concat();
+        for terminal in 0..4 {
+            for length in 1..(32 + "custom".len()) {
+                let reference = format!("{header}{}-ai", "0".repeat(20));
+                let text = format!("prefix {}", &reference[..length]);
+                let frames = run(&text, &[text.len()], terminal);
+                assert!(
+                    frames.is_ok(),
+                    "incomplete field-end candidates remain ordinary text"
+                );
+                assert!(
+                    text_deltas(&frames.expect("synthetic frames")) == text,
+                    "terminal flush must not lose or duplicate text"
+                );
+            }
+        }
+    }
+    #[test]
+    fn output_text_exact_sse_complete_reference_across_tool_barrier_all_splits() {
+        for split in 1..(32 + "custom".len()) {
+            for terminal_done in [false, true] {
+                for authorized in [false, true] {
+                    let (lease, reference) = super::chat_carrier_fixture();
+                    let binding = lease
+                        .bind_actual_attempt(
+                            "synthetic",
+                            "openai_responses",
+                            "http://127.0.0.1:1/responses",
+                            None,
+                        )
+                        .expect("synthetic binding");
+                    let mut observer = lease.fork_attempt().expect("synthetic observer");
+                    let mut candidate = reference.clone();
+                    if !authorized {
+                        let replacement = if &candidate[15..16] == "0" { "1" } else { "0" };
+                        candidate.replace_range(15..16, replacement);
+                    }
+                    let budget = PayloadBudget::with_limit(8 * 1024 * 1024);
+                    let mut state = SseRestorationState::new(
+                        lease,
+                        binding.clone(),
+                        budget.clone(),
+                        ArgumentNormalizationMode::Exact,
+                    )
+                    .expect("synthetic state");
+                    let released = state.process_sse_block(&frame(&json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":format!("前🔒{reference} ")}))).expect("synthetic released prefix");
+                    let mut delivered = text_deltas(&released);
+                    assert!(
+                        delivered == "前🔒synthetic-restoration-value ",
+                        "the already released prefix must be restored normally"
+                    );
+                    assert!(state.process_sse_block(&frame(&json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":&candidate[..split]}))).expect("synthetic prefix").is_empty());
+                    let tool = json!({"id":"synthetic-tool","type":"function_call","call_id":"synthetic-call","name":"non_executing_fixture","arguments":"{}","status":"completed"});
+                    assert!(state.process_sse_block(&frame(&json!({"type":"response.output_item.added","output_index":1,"item":tool}))).expect("synthetic tool").is_empty());
+                    assert!(state.process_sse_block(&frame(&json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":&candidate[split..]}))).expect("synthetic suffix").is_empty());
+                    let text = format!("前🔒{reference} {candidate}");
+                    if terminal_done {
+                        assert!(state.process_sse_block(&frame(&json!({"type":"response.output_text.done","output_index":0,"content_index":0,"text":text}))).expect("synthetic done").is_empty());
+                    }
+                    let item = json!({"id":"synthetic-message","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":text}]});
+                    assert!(state.process_sse_block(&frame(&json!({"type":"response.completed","response":{"id":"synthetic-response","status":"completed","output":[item,tool]}}))).expect("synthetic completion").is_empty());
+                    let frames = state.finalize_and_flush(true);
+                    if authorized {
+                        assert!(
+                            frames.is_ok(),
+                            "authorized references spanning the tool barrier must restore"
+                        );
+                        let frames = frames.expect("synthetic released frames");
+                        delivered.push_str(&text_deltas(&frames));
+                        assert!(delivered == "前🔒synthetic-restoration-value synthetic-restoration-value", "barrier replay must restore once without duplicating an already released prefix");
+                        assert!(
+                            frames
+                                .iter()
+                                .any(|frame| std::str::from_utf8(frame)
+                                    .is_ok_and(|text| text
+                                        .starts_with("event: response.output_item.added"))),
+                            "validated inert tool is released only at final commit"
+                        );
+                    } else {
+                        assert!(matches!(frames, Err(super::super::response_restoration::RestoreError::FailedBecause(super::super::restore_diagnostics::RestoreReason::TokenContext))), "foreign references spanning the barrier retain context refusal");
+                        assert!(
+                            observer
+                                .resume_completed_context(
+                                    &binding,
+                                    Some("synthetic-response"),
+                                    &[],
+                                    &[]
+                                )
+                                .is_err(),
+                            "failed barrier commit must not publish cursor authority"
+                        );
+                    }
+                    drop(released);
+                    drop(state);
+                    assert_eq!(budget.used(), 0);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn reversible_http_upstream_error_status_contract_survives_isolation_and_protocols() {
+    use super::http_restoration::DlpForwardError;
+    use crate::{
+        app_config::AppType,
+        proxy::{
+            error::ProxyError,
+            error_mapper::{get_error_message, map_proxy_error_to_status},
+            response_processor::isolate_codex_dlp_response_error,
+        },
+    };
+    use axum::body::to_bytes;
+    for status in [400, 401, 403, 404, 413, 422, 429, 500, 502, 503, 504] {
+        let error = DlpForwardError::UpstreamStatus(http::StatusCode::from_u16(status).unwrap());
+        for leased in [false, true] {
+            let isolated = isolate_codex_dlp_response_error(ProxyError::DlpForward(error), leased);
+            assert!(
+                matches!(isolated, ProxyError::DlpForward(actual) if actual == error),
+                "safe status-only upstream errors must survive leased error isolation"
+            );
+            assert_eq!(map_proxy_error_to_status(&isolated), status);
+            assert_eq!(
+                get_error_message(&isolated),
+                "Upstream request failed: upstream_error"
+            );
+        }
+        let unsafe_error = isolate_codex_dlp_response_error(
+            ProxyError::UpstreamError {
+                status,
+                body: Some("synthetic-private-upstream-body".into()),
+            },
+            true,
+        );
+        assert!(
+            matches!(
+                unsafe_error,
+                ProxyError::DlpForward(DlpForwardError::RestoreFailedAt(
+                    super::restore_diagnostics::RestoreStage::ResponseProcessing
+                ))
+            ),
+            "legacy body-bearing upstream errors must not enter the safe status-only allowlist"
+        );
+        assert!(!get_error_message(&unsafe_error).contains("synthetic-private-upstream-body"));
+        for app_type in [
+            AppType::Codex,
+            AppType::Claude,
+            AppType::ClaudeDesktop,
+            AppType::Gemini,
+        ] {
+            let response = error.into_app_response(&app_type);
+            assert_eq!(response.status().as_u16(), status);
+            let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(!std::str::from_utf8(&bytes)
+                .unwrap()
+                .contains("dlp_restore_failed"));
+            match app_type {
+                AppType::Claude | AppType::ClaudeDesktop => {
+                    assert_eq!(body["type"], "error");
+                    assert_eq!(body["error"]["code"], "upstream_error");
+                }
+                AppType::Gemini => {
+                    assert_eq!(body["error"]["code"], status);
+                    assert_eq!(body["error"]["message"], "upstream_error");
+                }
+                _ => {
+                    assert_eq!(body["error"]["code"], "upstream_error");
+                    assert_eq!(body["error"]["type"], "upstream_error");
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn reasoning_pair_chat_rejects_ignored_reasoning_containers_before_conversion() {
+    use crate::proxy::providers::transform_codex_chat::chat_completion_to_response;
+    use serde_json::json;
+    let marker = "rredact-custom-00000000000000000000-ai";
+    let cases = [
+        json!({"reasoning_content":{"text":marker}}),
+        json!({"reasoning":{"text":"synthetic-safe","future_text":marker}}),
+        json!({"reasoning":{"text":"synthetic-safe","metadata":{"text":marker}}}),
+        json!({"reasoning":{"text":"synthetic-safe","type":marker}}),
+        json!({"reasoning":{"content":"synthetic-safe","text":marker}}),
+        json!({"reasoning":[{"text":marker}]}),
+        json!({"reasoning":{"text":7}}),
+        json!({"reasoning_details":[{"text":"synthetic-safe","signature":marker}]}),
+        json!({"reasoning_details":{"parts":[{"text":"synthetic-safe","future_text":marker}]}}),
+        json!({"reasoning_details":{"text":"synthetic-safe","parts":[{"text":marker}]}}),
+        json!({"reasoning_details":[marker]}),
+        json!({"reasoning_details":{"parts":{ "text":marker }}}),
+        json!({"reasoning_content":"synthetic-safe","reasoning":{"text":marker}}),
+        json!({"reasoning":"synthetic-safe","reasoning_details":{"text":marker}}),
+    ];
+    for mut message in cases {
+        message["content"] = json!("synthetic answer");
+        let body = chat_carrier_json(message.clone());
+        let converted = chat_completion_to_response(body.clone()).expect("synthetic conversion");
+        assert!(
+            !converted.to_string().contains(marker),
+            "synthetic fixture must exercise ignored reasoning data"
+        );
+        assert!(
+            !chat_carrier_json_permitted(&body),
+            "ignored reasoning containers must not authorize JSON completion"
+        );
+        assert!(
+            !strict_sse_candidate(false, chat_carrier_sse(message, false)).await,
+            "ignored reasoning containers must not authorize SSE completion"
+        );
+    }
+}
+
+#[test]
+fn reasoning_pair_native_json_validates_content_part_types() {
+    use super::{
+        completion_json::{JsonCompletion, JsonCompletionProtocol},
+        payload_budget::PayloadBudget,
+    };
+    use serde_json::json;
+    let budget = PayloadBudget::with_limit(1024 * 1024);
+    for (content, expected) in [
+        (
+            json!([{"type":"reasoning_text","text":"rredact-custom-"}]),
+            true,
+        ),
+        (
+            json!([{"type":"summary_text","text":"synthetic-safe"}]),
+            false,
+        ),
+        (
+            json!([{"type":"future_text","text":"synthetic-safe"}]),
+            false,
+        ),
+        (json!([{"type":"reasoning_text","text":7}]), false),
+        (json!([{"type":"reasoning_text","text":null}]), false),
+        (json!([{"type":"reasoning_text"}]), false),
+        (
+            json!({"type":"reasoning_text","text":"synthetic-safe"}),
+            false,
+        ),
+    ] {
+        let response = json!({"id":"synthetic-pair-response","status":"completed","output":[{
+            "id":"synthetic-pair-reasoning","type":"reasoning","content":content
+        }]});
+        let mut completion = JsonCompletion::new(JsonCompletionProtocol::NativeResponses);
+        completion.observe_raw_json(&response.to_string(), &budget);
+        assert!(
+            completion.permits_completion() == expected,
+            "native JSON completion must validate the exact reasoning content shape"
+        );
+    }
 }

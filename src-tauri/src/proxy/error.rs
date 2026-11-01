@@ -78,7 +78,7 @@ pub enum ProxyError {
     #[error("内部错误: {0}")]
     Internal(String),
 
-    #[error("DLP forwarding error: {}", .0.code())]
+    #[error("{}: {}", .0.failure_class(), .0.code())]
     DlpForward(super::security::http_restoration::DlpForwardError),
 }
 

@@ -413,6 +413,12 @@ pub struct ClaudeDesktopModelRoute {
 pub struct CodexChatReasoningConfig {
     #[serde(rename = "supportsThinking", skip_serializing_if = "Option::is_none")]
     pub supports_thinking: Option<bool>,
+    /// Explicit compatibility for upstreams that require reasoning on tool history.
+    #[serde(
+        rename = "requiresToolReasoningPlaceholder",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub requires_tool_reasoning_placeholder: Option<bool>,
     #[serde(rename = "supportsEffort", skip_serializing_if = "Option::is_none")]
     pub supports_effort: Option<bool>,
     #[serde(rename = "thinkingParam", skip_serializing_if = "Option::is_none")]
@@ -421,9 +427,8 @@ pub struct CodexChatReasoningConfig {
     pub effort_param: Option<String>,
     #[serde(rename = "effortValueMode", skip_serializing_if = "Option::is_none")]
     pub effort_value_mode: Option<String>,
-    /// 声明性字段：标注上游 reasoning 的回传位置（reasoning_content / reasoning /
-    /// reasoning_details / think_tags）。当前响应侧 `extract_reasoning_field_text`
-    /// 靠穷举字段提取、并不读取本字段；保留作文档说明与未来按格式分发（如 think_tags）的预留。
+    /// Declares upstream reasoning output. Only exact `thinking_tags` enables
+    /// leading <thinking> compatibility; legacy <think> parsing stays unchanged.
     #[serde(rename = "outputFormat", skip_serializing_if = "Option::is_none")]
     pub output_format: Option<String>,
     /// 运行时字段（不持久化、不进 meta）：当前请求模型在平台侧声明的合法 effort

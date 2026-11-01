@@ -187,7 +187,7 @@ fn restoration_audit_refusal_records_only_actual_nonallow_findings_and_masks_con
         ("audit", "visible-marker", AuditAction::Audit),
         ("allowed", "allowed-marker", AuditAction::Allow),
     ]);
-    runtime.custom_rules[0].name = "private-a vary_cu_00000000000000000000_ai".into();
+    runtime.custom_rules[0].name = "private-a rredact-custom-00000000000000000000-ai".into();
     let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
     let pending = PendingRequestAudit::capture_refusal(
         &json!({"input": "private-a visible-marker allowed-marker"}),
@@ -201,7 +201,7 @@ fn restoration_audit_refusal_records_only_actual_nonallow_findings_and_masks_con
     assert!(events.iter().all(|event| event.log.action_taken == "block"));
     let logs = serde_json::to_string(&events.iter().map(|event| &event.log).collect::<Vec<_>>())?;
     assert!(!logs.contains("private-a"));
-    assert!(!logs.contains("vary_cu_"));
+    assert!(!logs.contains("rredact-custom-"));
     assert!(!logs.contains("visible-marker"));
     let no_finding =
         PendingRequestAudit::capture_refusal(&json!({"input": "harmless"}), &runtime, budget)?;
@@ -275,7 +275,7 @@ fn restoration_audit_http_pretokenized_and_history_wait_for_actual_attempt() -> 
     };
     assert!(body["input"]
         .as_str()
-        .is_some_and(|text| text.contains("vary_cu_")));
+        .is_some_and(|text| text.contains("rredact-custom-")));
     let _source_owner;
     let mut enriched = {
         let (value, owner) = request

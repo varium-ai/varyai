@@ -698,6 +698,7 @@ fn infer_codex_chat_reasoning_config(
     if haystack.contains("deepseek") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(true),
             thinking_param: Some("thinking".to_string()),
             effort_param: Some("reasoning_effort".to_string()),
@@ -717,6 +718,7 @@ fn infer_codex_chat_reasoning_config(
     if haystack.contains("stepfun") || haystack.contains("step-3.5-flash-2603") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(model.contains("2603") || model.contains("step-3.7-flash")),
             thinking_param: Some("none".to_string()),
             effort_param: Some("reasoning_effort".to_string()),
@@ -736,6 +738,7 @@ fn infer_codex_chat_reasoning_config(
     if haystack.contains("kimi") || haystack.contains("moonshot") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("thinking".to_string()),
             effort_param: Some("none".to_string()),
@@ -748,6 +751,7 @@ fn infer_codex_chat_reasoning_config(
     if haystack.contains("glm") || haystack.contains("zhipu") || haystack.contains("z.ai") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("thinking".to_string()),
             effort_param: Some("none".to_string()),
@@ -760,6 +764,7 @@ fn infer_codex_chat_reasoning_config(
     if haystack.contains("qwen") || haystack.contains("dashscope") || haystack.contains("bailian") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("enable_thinking".to_string()),
             effort_param: Some("none".to_string()),
@@ -772,6 +777,7 @@ fn infer_codex_chat_reasoning_config(
     if haystack.contains("minimax") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("reasoning_split".to_string()),
             effort_param: Some("none".to_string()),
@@ -784,6 +790,7 @@ fn infer_codex_chat_reasoning_config(
     if haystack.contains("mimo") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("thinking".to_string()),
             effort_param: Some("none".to_string()),
@@ -814,6 +821,7 @@ fn infer_aggregator_platform_config(
     if platform.contains("openrouter") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(false),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(true),
             thinking_param: Some("none".to_string()),
             effort_param: Some("reasoning.effort".to_string()),
@@ -829,6 +837,7 @@ fn infer_aggregator_platform_config(
     if platform.contains("siliconflow") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("enable_thinking".to_string()),
             effort_param: Some("none".to_string()),
@@ -846,6 +855,7 @@ fn infer_aggregator_platform_config(
     if platform.contains("modelscope") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("enable_thinking".to_string()),
             effort_param: Some("none".to_string()),
@@ -865,6 +875,7 @@ fn infer_aggregator_platform_config(
     if platform.contains("opencode.ai") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(true),
             thinking_param: Some("none".to_string()),
             effort_param: Some("reasoning_effort".to_string()),
@@ -2084,6 +2095,7 @@ wire_api = "chat"
         provider.meta = Some(crate::provider::ProviderMeta {
             codex_chat_reasoning: Some(CodexChatReasoningConfig {
                 supports_thinking: Some(false),
+                requires_tool_reasoning_placeholder: None,
                 supports_effort: Some(false),
                 thinking_param: Some("none".to_string()),
                 effort_param: Some("none".to_string()),
@@ -2287,6 +2299,7 @@ wire_api = "chat"
         provider.meta = Some(crate::provider::ProviderMeta {
             codex_chat_reasoning: Some(CodexChatReasoningConfig {
                 supports_thinking: Some(true),
+                requires_tool_reasoning_placeholder: None,
                 supports_effort: Some(true),
                 thinking_param: Some("none".to_string()),
                 effort_param: Some("reasoning_effort".to_string()),

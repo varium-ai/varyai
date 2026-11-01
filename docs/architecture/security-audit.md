@@ -10,6 +10,12 @@ The DLP engine inspects supported outbound text extracted from requests handled 
 4. When redaction is required, update only selected text values in a copy and inspect the result again. Return a protocol-shaped error if safe redaction cannot be established.
 5. Queue audit work for bounded asynchronous persistence rather than writing to SQLite in the forwarding hot path.
 
+## Prepared-request target boundary
+
+A prepared DLP attempt is bound to its final upstream target and sending authority, even when it has no active token mappings. The reqwest path disables automatic redirects for these attempts. Both reqwest and Hyper reject upstream 3xx responses with a fixed status-only DLP error before parsing the response body; neither follows `Location` with the original request body or inherited history permission. Configure the final upstream endpoint directly. Requests without a prepared DLP attempt retain the existing redirect behavior.
+
+This boundary does not establish complete implementation acceptance. See the [history provenance execution specification](../design/security-dlp-history-provenance-spec.md) for the full contract and required verification.
+
 ## Current actions
 
 The base credential/PII rules, including private-key material, default to redaction; private RFC1918 IPs default to audit-only. Optional catalog rules default to allow. The persistence boundary normalizes saved/imported `block` settings to `redact`; historical audit events retain their original action. The engine still has protective error paths when redaction fails. The generic `sk-` notice has its own restricted actions.
@@ -25,6 +31,8 @@ Filtering and clearing share validated predicates. Clearing event rows does not 
 ## Privacy and persistence
 
 Client errors and notifications must not contain matched sensitive plaintext. Stored audit summaries are masked; masking is not a proof of complete anonymity. Event aggregation and asynchronous notifications do not establish that every attempted event was persisted or displayed.
+
+The Chat-to-Responses streaming converter's dropped-tool warning records only structural facts (index, empty-ID status, argument byte count, finish-reason presence and tool count). It does not log upstream model names, finish-reason strings or tool arguments. Final response rejection cannot undo an earlier diagnostic disclosure, so this restriction applies before completion validation and with or without active restoration mappings.
 
 The detector itself executes locally. That statement does not describe the whole application's network behavior: see the [statistics and update review](../data-and-network.md). No performance benchmark is asserted here.
 

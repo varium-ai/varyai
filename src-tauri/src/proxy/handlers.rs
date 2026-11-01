@@ -27,7 +27,7 @@ use super::{
             create_responses_sse_stream_from_anthropic_observed,
             responses_sse_events_from_anthropic_message,
         },
-        streaming_codex_chat::create_responses_sse_stream_from_chat_observed,
+        streaming_codex_chat::create_responses_sse_stream_from_chat_observed_with_reasoning,
         streaming_gemini::create_anthropic_sse_stream_from_gemini,
         streaming_responses::{
             create_anthropic_sse_stream_from_responses,
@@ -1626,13 +1626,14 @@ async fn handle_codex_xai_native_responses_rewrite(
         };
     let (mut response_headers, status, body_bytes) =
         read_decoded_body(response, ctx.tag, body_timeout).await?;
-    if let Some(attempt) = dlp_attempt.filter(|attempt| attempt.has_active_tokens()) {
+    if let Some(attempt) = dlp_attempt {
         let raw = match std::str::from_utf8(&body_bytes) {
             Ok(raw) => raw,
             Err(_) => {
                 return Ok(
-                    super::security::http_restoration::build_codex_restore_error_response(
+                    super::security::http_restoration::build_codex_restore_error_response_at(
                         super::security::response_restoration::RestoreError::RestoreFailed,
+                        super::security::restore_diagnostics::RestoreStage::JsonRestore,
                     ),
                 )
             }
@@ -1644,7 +1645,10 @@ async fn handle_codex_xai_native_responses_rewrite(
         };
         if let Err(error) = attempt.verify_upstream_json_completion(protocol, raw) {
             return Ok(
-                super::security::http_restoration::build_codex_restore_error_response(error),
+                super::security::http_restoration::build_codex_restore_error_response_at(
+                    error,
+                    super::security::restore_diagnostics::RestoreStage::CompletionEvidence,
+                ),
             );
         }
     }
@@ -1713,8 +1717,9 @@ async fn handle_codex_xai_native_responses_rewrite(
                 Ok(Some(Some(bytes))) => bytes,
                 Err(error) => {
                     return Ok(
-                        super::security::http_restoration::build_codex_restore_error_response(
+                        super::security::http_restoration::build_codex_restore_error_response_at(
                             error,
+                            super::security::restore_diagnostics::RestoreStage::JsonRestore,
                         ),
                     );
                 }
@@ -1836,6 +1841,14 @@ async fn handle_codex_chat_to_responses_transform(
         return handle_codex_chat_error_response(response, ctx, status).await;
     }
 
+    // Resolve against the actual attempt provider and mapped outbound model.
+    let reasoning_config = super::providers::resolve_codex_chat_reasoning_config(
+        &ctx.provider,
+        &serde_json::json!({
+            "model": ctx.outbound_model.as_deref().unwrap_or(&ctx.request_model)
+        }),
+    );
+
     if is_stream || response.is_sse() {
         let stream = crate::proxy::tool_observation::mount::observe_stream(
             response.bytes_stream(),
@@ -1846,14 +1859,18 @@ async fn handle_codex_chat_to_responses_transform(
             ),
         );
         let tracker = evidence.clone();
-        let sse_stream =
-            create_responses_sse_stream_from_chat_observed(stream, tool_context, move |fact| {
+        let sse_stream = create_responses_sse_stream_from_chat_observed_with_reasoning(
+            stream,
+            tool_context,
+            reasoning_config,
+            move |fact| {
                 if let Some(tracker) = &tracker {
                     if let Ok(mut tracker) = tracker.lock() {
                         tracker.observe(&fact);
                     }
                 }
-            });
+            },
+        );
         let history_owner = dlp_attempt.and_then(|attempt| attempt.upstream_payload_owner());
         let sse_stream = match history_owner {
             Some(owner) => {
@@ -1965,13 +1982,14 @@ async fn handle_codex_chat_to_responses_transform(
         };
     let (mut response_headers, status, body_bytes) =
         read_decoded_body(response, ctx.tag, body_timeout).await?;
-    if let Some(attempt) = dlp_attempt.filter(|attempt| attempt.has_active_tokens()) {
+    if let Some(attempt) = dlp_attempt {
         let raw = match std::str::from_utf8(&body_bytes) {
             Ok(raw) => raw,
             Err(_) => {
                 return Ok(
-                    super::security::http_restoration::build_codex_restore_error_response(
+                    super::security::http_restoration::build_codex_restore_error_response_at(
                         super::security::response_restoration::RestoreError::RestoreFailed,
+                        super::security::restore_diagnostics::RestoreStage::JsonRestore,
                     ),
                 )
             }
@@ -1984,7 +2002,10 @@ async fn handle_codex_chat_to_responses_transform(
         };
         if let Err(error) = verified {
             return Ok(
-                super::security::http_restoration::build_codex_restore_error_response(error),
+                super::security::http_restoration::build_codex_restore_error_response_at(
+                    error,
+                    super::security::restore_diagnostics::RestoreStage::CompletionEvidence,
+                ),
             );
         }
     }
@@ -2028,14 +2049,16 @@ async fn handle_codex_chat_to_responses_transform(
         &body_bytes,
         codex_chat_observation_metadata(ctx, &tool_context, transport),
     );
-    let responses_response = transform_codex_chat::chat_completion_to_response_with_context(
-        chat_response,
-        &tool_context,
-    )
-    .map_err(|e| {
-        log::error!("[Codex] Chat → Responses 响应转换失败: {e}");
-        e
-    })?;
+    let responses_response =
+        transform_codex_chat::chat_completion_to_response_with_context_and_reasoning(
+            chat_response,
+            &tool_context,
+            reasoning_config.as_ref(),
+        )
+        .map_err(|e| {
+            log::error!("[Codex] Chat → Responses 响应转换失败: {e}");
+            e
+        })?;
     if let Some(owner) = dlp_attempt.and_then(|attempt| attempt.upstream_payload_owner()) {
         state
             .codex_chat_history
@@ -2182,13 +2205,14 @@ async fn handle_codex_anthropic_to_responses_transform(
         };
     let (mut response_headers, status, body_bytes) =
         read_decoded_body(response, ctx.tag, body_timeout).await?;
-    if let Some(attempt) = dlp_attempt.filter(|attempt| attempt.has_active_tokens()) {
+    if let Some(attempt) = dlp_attempt {
         let raw = match std::str::from_utf8(&body_bytes) {
             Ok(raw) => raw,
             Err(_) => {
                 return Ok(
-                    super::security::http_restoration::build_codex_restore_error_response(
+                    super::security::http_restoration::build_codex_restore_error_response_at(
                         super::security::response_restoration::RestoreError::RestoreFailed,
+                        super::security::restore_diagnostics::RestoreStage::JsonRestore,
                     ),
                 )
             }
@@ -2201,20 +2225,22 @@ async fn handle_codex_anthropic_to_responses_transform(
         };
         if let Err(error) = verified {
             return Ok(
-                super::security::http_restoration::build_codex_restore_error_response(error),
+                super::security::http_restoration::build_codex_restore_error_response_at(
+                    error,
+                    super::security::restore_diagnostics::RestoreStage::CompletionEvidence,
+                ),
             );
         }
         if is_stream && !body_looks_like_sse(raw) {
             if let Some(tracker) = &evidence {
                 match tracker.lock() {
                     Ok(mut tracker) => tracker.observe_fully_read_anthropic_json(raw),
-                    Err(_) => {
-                        return Ok(
-                            super::security::http_restoration::build_codex_restore_error_response(
-                                super::security::response_restoration::RestoreError::RestoreFailed,
-                            ),
-                        )
-                    }
+                    Err(_) => return Ok(
+                        super::security::http_restoration::build_codex_restore_error_response_at(
+                            super::security::response_restoration::RestoreError::RestoreFailed,
+                            super::security::restore_diagnostics::RestoreStage::CompletionEvidence,
+                        ),
+                    ),
                 }
             }
         }
@@ -3609,6 +3635,162 @@ mod tests {
             let event = json!({"id":"chat_test","choices":[{"index":0,"delta":choice["message"],"finish_reason":choice["finish_reason"]}]});
             Bytes::from(format!("data: {event}\n\ndata: [DONE]\n\n"))
         }
+        async fn run_long_tag_handler(stream: bool, explicit_protocol: bool) -> Value {
+            let request = json!({"model":"synthetic-client-alias","input":[]});
+            let mut ctx = RequestContext::for_tool_risk_test(&request);
+            ctx.request_model = "synthetic-client-alias".into();
+            ctx.outbound_model = Some("synthetic-outbound-model".into());
+            // The response provider is the actual attempt, not the initial route.
+            ctx.provider = crate::provider::Provider::with_id(
+                "synthetic-actual-provider".into(),
+                "Synthetic actual provider".into(),
+                json!({}),
+                None,
+            );
+            if explicit_protocol {
+                ctx.provider.meta = Some(crate::provider::ProviderMeta {
+                    codex_chat_reasoning: Some(crate::provider::CodexChatReasoningConfig {
+                        output_format: Some("thinking_tags".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+            }
+            let chat = json!({
+                "id":"synthetic-chat", "model":"synthetic-outbound-model",
+                "choices":[{"index":0,"message":{
+                    "role":"assistant","content":"<thinking>synthetic 思考</thinking>synthetic answer"
+                },"finish_reason":"stop"}]
+            });
+            let body = if stream {
+                let event = json!({"id":"synthetic-chat","model":"synthetic-outbound-model",
+                    "choices":[{"index":0,"delta":chat["choices"][0]["message"],"finish_reason":"stop"}]});
+                Bytes::from(format!("data: {event}\n\ndata: [DONE]\n\n"))
+            } else {
+                let encoded = serde_json::to_vec(&chat);
+                assert!(encoded.is_ok(), "synthetic response encoding must succeed");
+                Bytes::from(encoded.unwrap_or_default())
+            };
+            let mut headers = http::HeaderMap::new();
+            headers.insert(
+                "content-type",
+                http::HeaderValue::from_static(if stream {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                }),
+            );
+            let response = if stream {
+                let chunks: Vec<_> = body
+                    .chunks(1)
+                    .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
+                    .collect();
+                ProxyResponse::streamed(
+                    http::StatusCode::OK,
+                    headers,
+                    futures::stream::iter(chunks),
+                )
+            } else {
+                ProxyResponse::buffered(http::StatusCode::OK, headers, body)
+            };
+            let db = Database::memory();
+            assert!(db.is_ok(), "synthetic database must initialize");
+            let Ok(db) = db else {
+                return Value::Null;
+            };
+            let result = super::super::handle_codex_chat_to_responses_transform(
+                response,
+                &ctx,
+                &state(Arc::new(db)),
+                stream,
+                None,
+                transform_codex_chat::build_codex_tool_context_from_request(&request),
+                super::super::CodexDlpTransformContext {
+                    attempt: None,
+                    evidence: None,
+                },
+            )
+            .await;
+            assert!(result.is_ok(), "synthetic handler conversion must succeed");
+            let Ok(response) = result else {
+                return Value::Null;
+            };
+            let body = response.into_body().collect().await;
+            assert!(body.is_ok(), "synthetic handler body must be readable");
+            let Ok(body) = body else {
+                return Value::Null;
+            };
+            let body = body.to_bytes();
+            let parsed = if stream {
+                let text = std::str::from_utf8(&body);
+                assert!(text.is_ok(), "synthetic stream must be valid UTF-8");
+                let Ok(text) = text else {
+                    return Value::Null;
+                };
+                super::super::responses_sse_to_response_value(text).ok()
+            } else {
+                serde_json::from_slice(&body).ok()
+            };
+            assert!(
+                parsed.is_some(),
+                "synthetic handler output must be parseable"
+            );
+            parsed.unwrap_or(Value::Null)
+        }
+
+        fn assert_long_tag_handler_output(output: &Value, explicit_protocol: bool) {
+            let items = output.get("output").and_then(Value::as_array);
+            assert!(items.is_some(), "synthetic output items must exist");
+            let Some(items) = items else {
+                return;
+            };
+            let reasoning = items.iter().find(|item| item["type"] == "reasoning");
+            let answer = items
+                .iter()
+                .find(|item| item["type"] == "message")
+                .and_then(|item| item["content"][0]["text"].as_str());
+            if explicit_protocol {
+                assert!(
+                    reasoning.and_then(|item| item["summary"][0]["text"].as_str())
+                        == Some("synthetic 思考"),
+                    "actual provider protocol must select reasoning"
+                );
+                assert!(
+                    answer == Some("synthetic answer"),
+                    "actual provider protocol must preserve answer"
+                );
+            } else {
+                assert!(
+                    reasoning.is_none(),
+                    "generic protocol must not infer long-tag reasoning"
+                );
+                assert!(
+                    answer == Some("<thinking>synthetic 思考</thinking>synthetic answer"),
+                    "generic protocol must preserve long tags as ordinary text"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn codex_chat_long_tag_handler_json_uses_actual_provider() {
+            assert_long_tag_handler_output(&run_long_tag_handler(false, true).await, true);
+        }
+
+        #[tokio::test]
+        async fn codex_chat_long_tag_handler_sse_uses_actual_provider() {
+            assert_long_tag_handler_output(&run_long_tag_handler(true, true).await, true);
+        }
+
+        #[tokio::test]
+        async fn codex_chat_long_tag_handler_json_generic_is_unchanged() {
+            assert_long_tag_handler_output(&run_long_tag_handler(false, false).await, false);
+        }
+
+        #[tokio::test]
+        async fn codex_chat_long_tag_handler_sse_generic_is_unchanged() {
+            assert_long_tag_handler_output(&run_long_tag_handler(true, false).await, false);
+        }
+
         fn state(db: Arc<Database>) -> ProxyState {
             ProxyState {
                 restoration_gateway:

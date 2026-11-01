@@ -904,7 +904,7 @@ mod tests {
     use futures::StreamExt;
     use serde_json::json;
 
-    const SYNTHETIC_TOKEN: &str = "vary_cu_00000000000000000000_ai";
+    const SYNTHETIC_TOKEN: &str = "rredact-custom-00000000000000000000-ai";
 
     fn tokenized_response(response_id: &str, call_id: &str) -> Value {
         json!({

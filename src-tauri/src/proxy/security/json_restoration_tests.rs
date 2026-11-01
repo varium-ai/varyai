@@ -49,6 +49,7 @@ fn fixture(budget: &PayloadBudget, raw: &str) -> (DlpTokenStore, DlpPreparedAtte
         ),
         pending_audit: PendingRequestAudit::empty(budget.clone()).expect("pending audit"),
         upstream_payload_owner: None,
+        history_mapping: None,
     };
     (store, attempt, token)
 }
@@ -117,6 +118,136 @@ async fn json_final_serialization_capacity_failure_does_not_publish_cursor() {
     );
 }
 
+#[tokio::test]
+async fn reasoning_history_json_final_encoding_failure_never_publishes(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for active in [false, true] {
+        for reasoning in [false, true] {
+            for fail_allocation in [false, true] {
+                let budget = PayloadBudget::with_limit(1024 * 1024);
+                let (store, mut attempt, _) = fixture(&budget, "synthetic-unused-authority");
+                if !active {
+                    let empty = store.admit("codex", Some("json-owner-session"), 1)?;
+                    attempt.binding = empty.bind_actual_attempt(
+                        "json-owner-provider",
+                        "openai_responses",
+                        "http://127.0.0.1:1/responses",
+                        Some("json-owner-account"),
+                    )?;
+                    attempt.lease = empty;
+                }
+                assert!(
+                    attempt.has_restoration_lease() == active,
+                    "JSON encoding fixture must cover the requested token-authority branch"
+                );
+                let observer = attempt.lease.fork_attempt()?;
+                let binding = attempt.binding.clone();
+                let item = if reasoning {
+                    json!({"id":"synthetic-json-reasoning", "type":"reasoning", "summary":[
+                        {"type":"summary_text", "text":"synthetic reasoning rredact-custom-"}
+                    ]})
+                } else {
+                    json!({"id":"synthetic-json-message", "type":"message", "role":"assistant",
+                    "status":"completed", "content":[
+                        {"type":"output_text", "text":"synthetic output rredact-custom-", "annotations":[]}
+                    ]})
+                };
+                let raw = json!({"id":"synthetic-json-encoding", "object":"response",
+                    "status":"completed", "output":[item]});
+                let replay = json!({"input":raw["output"]});
+                // Warm the controller without publishing any response authority.
+                let pending = observer
+                    .capture_delivered_history(&binding, &raw)
+                    .ok_or("synthetic history capture unavailable")?;
+                drop(pending);
+                assert!(
+                    observer.history_projection(&binding, &replay).is_none(),
+                    "warming optional capture must not authorize undelivered JSON history"
+                );
+                let history_before = store
+                    .history_metadata_bytes_for_test()
+                    .ok_or("synthetic history accounting unavailable")?;
+                let output = serde_json::to_vec(&raw)?;
+                let output_len = output.len();
+                // Trailing whitespace distinguishes input buffering from final encoding.
+                let input = format!("{}\n ", std::str::from_utf8(&output)?);
+                let reached = Rc::new(Cell::new(false));
+                let observed = reached.clone();
+                let pending_seen = Rc::new(Cell::new(false));
+                let captured = pending_seen.clone();
+                let accounting = store.clone();
+                let hook = test_support::install(move |event| {
+                    let phase = if fail_allocation {
+                        Phase::BeforeAllocation
+                    } else {
+                        Phase::CapacityObserved
+                    };
+                    if event.phase == phase && event.requested == output_len {
+                        observed.set(true);
+                        captured.set(
+                            accounting
+                                .history_metadata_bytes_for_test()
+                                .is_some_and(|bytes| bytes > history_before),
+                        );
+                        if fail_allocation {
+                            Action::FailAllocation
+                        } else {
+                            Action::ReportCapacity(output_len + 1)
+                        }
+                    } else {
+                        Action::Continue
+                    }
+                });
+                let response = attempt
+                    .restore_client_http_response(
+                        Response::builder()
+                            .header("content-type", "application/json")
+                            .body(Body::from(input))?,
+                        ArgumentNormalizationMode::Exact,
+                        None,
+                    )
+                    .await;
+                drop(hook);
+                assert!(reached.get(), "failure must reach final JSON encoding");
+                assert!(
+                    pending_seen.get(),
+                    "eligible pending proof must precede encoding"
+                );
+                assert!(
+                    response.status() == StatusCode::BAD_GATEWAY,
+                    "failed encoding must not release a successful response"
+                );
+                assert!(
+                    observer.history_projection(&binding, &replay).is_none(),
+                    "failed encoding must not publish history proof"
+                );
+                assert!(
+                    observer
+                        .fork_attempt()?
+                        .resume_completed_context(
+                            &binding,
+                            Some("synthetic-json-encoding"),
+                            &[],
+                            &[]
+                        )
+                        .is_err(),
+                    "failed encoding must not publish a cursor"
+                );
+                assert!(
+                    store.history_metadata_bytes_for_test() == Some(history_before),
+                    "failed encoding must release pending proof owners"
+                );
+                drop(response);
+                assert!(
+                    budget.used() == 0,
+                    "failed encoding must release transient owners"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn json_restored_leaf_charge_survives_until_owner_drop() {
     let budget = PayloadBudget::with_limit(64 * 1024);
@@ -173,7 +304,7 @@ fn json_staged_tree_retains_nested_arguments_reasoning_and_all_leaf_charges() {
     let staged =
         stage_json_response(&response, false, &attempt.lease, &budget).expect("staged tree");
     assert!(
-        budget.used() >= 8 * plaintext.len(),
+        budget.used() >= 5 * plaintext.len(),
         "all expanded leaves remain charged in the tree"
     );
     let args: Value = serde_json::from_str(
@@ -184,13 +315,20 @@ fn json_staged_tree_retains_nested_arguments_reasoning_and_all_leaf_charges() {
     .expect("nested JSON");
     assert!(args["nested"][0] == plaintext && args["nested"][1]["leaf"] == plaintext);
     assert_eq!(args["number"], 17);
-    for (item, field) in [
-        (2, "reasoning_content"),
-        (3, "input"),
-        (3, "reasoning_content"),
-    ] {
-        assert!(staged.as_value()["output"][item][field] == plaintext);
+    assert!(
+        staged.as_value()["output"][3]["input"] == plaintext,
+        "custom tool input must still restore"
+    );
+    for item in [2, 3] {
+        assert!(
+            staged.as_value()["output"][item]["reasoning_content"] == token,
+            "reasoning must remain delivered exactly"
+        );
     }
+    assert!(
+        staged.as_value()["output"][1]["summary"][0]["text"] == token,
+        "reasoning summary must remain delivered exactly"
+    );
     let mut next = store
         .admit("codex", Some("json-owner-session"), 1)
         .expect("next");
@@ -211,10 +349,13 @@ fn json_staged_tree_retains_nested_arguments_reasoning_and_all_leaf_charges() {
     let restored = staged
         .publish(&attempt.lease, &attempt.binding, &witness, &budget)
         .expect("publication");
-    assert_eq!(restored.restored_occurrences(), 8);
+    assert!(
+        restored.restored_occurrences() == 5,
+        "only nonreasoning leaves restore"
+    );
     drop(attempt);
     assert!(
-        budget.used() >= 8 * plaintext.len(),
+        budget.used() >= 5 * plaintext.len(),
         "published restored tree still owns its allocation charge"
     );
     assert!(next
@@ -294,4 +435,77 @@ async fn json_http_success_publishes_only_prepared_output_and_retains_charge_thr
     );
     drop(clone);
     assert_eq!(budget.used(), 0);
+}
+
+#[tokio::test]
+async fn reasoning_pair_json_http_validates_content_and_publishes_only_success() {
+    for case in 0..8 {
+        let budget = PayloadBudget::with_limit(1024 * 1024);
+        let (store, attempt, token) = fixture(&budget, "synthetic-unused-mapping");
+        let mut item = json!({"id":"synthetic-pair-reasoning","type":"reasoning","status":"completed",
+            "summary":[{"type":"summary_text","text":"rredact-custom-"}],
+            "content":[{"type":"reasoning_text","text":token}]});
+        match case {
+            1 => item["content"][0]["type"] = json!("summary_text"),
+            2 => item["summary"][0]["type"] = json!("reasoning_text"),
+            3 => item["content"][0]["text"] = json!(7),
+            4 => item["content"][0]["metadata"] = json!({"text":token}),
+            5 => item["metadata"] = json!({"text":token}),
+            6 => {
+                item["content"][0][&token] = json!(null);
+            }
+            7 => item["content"][0] = json!({"type":"future_text","text":token}),
+            _ => {}
+        }
+        let original = json!({"id":"synthetic-pair-json-response","object":"response","status":"completed","output":[item]});
+        let response = attempt
+            .restore_client_http_response(
+                Response::builder()
+                    .header("content-type", "application/json")
+                    .body(Body::from(original.to_string()))
+                    .expect("synthetic response"),
+                ArgumentNormalizationMode::Exact,
+                None,
+            )
+            .await;
+        let expected = case == 0;
+        assert!(
+            response.status().is_success() == expected,
+            "only exact reasoning content shapes may reach JSON delivery"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("synthetic JSON body");
+        let decoded: Value = serde_json::from_slice(&bytes).expect("synthetic JSON output");
+        if expected {
+            assert!(
+                decoded == original,
+                "delivered reasoning JSON must preserve exact text bytes"
+            );
+        } else {
+            assert!(
+                !std::str::from_utf8(&bytes)
+                    .expect("synthetic UTF-8")
+                    .contains(&token),
+                "rejected nonleaf data must not appear in errors"
+            );
+        }
+        let mut next = store
+            .admit("codex", Some("json-owner-session"), 1)
+            .expect("synthetic next lease");
+        let binding = next
+            .bind_actual_attempt(
+                "json-owner-provider",
+                "openai_responses",
+                "http://127.0.0.1:1/responses",
+                Some("json-owner-account"),
+            )
+            .expect("synthetic binding");
+        assert!(
+            next.resume_completed_context(&binding, Some("synthetic-pair-json-response"), &[], &[])
+                .is_ok()
+                == expected,
+            "only successfully delivered JSON may publish a completed context"
+        );
+    }
 }

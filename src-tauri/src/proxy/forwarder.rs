@@ -1955,7 +1955,18 @@ impl RequestForwarder {
 
         // Retain only this independent candidate's allocation through validation/send/cancel.
         let mut _namespace_owner = None;
-        let mut transform_to_filtered_body = |codex_body: Value| -> Result<Value, ProxyError> {
+        let mut transform_to_filtered_body = |codex_body: Value,
+                                              history_context: Option<
+            &super::security::http_restoration::DlpHistoryTransform<'_>,
+        >|
+         -> Result<
+            (
+                Value,
+                Option<super::security::history_provenance::DlpHistoryMapping>,
+            ),
+            ProxyError,
+        > {
+            let mut history_mapping = None;
             #[cfg(test)]
             super::security::http_restoration::transform_input_test_support::input(&codex_body);
             let mut request_body = if codex_responses_to_chat {
@@ -1983,10 +1994,16 @@ impl RequestForwarder {
                 super::providers::apply_codex_chat_upstream_model(provider, &mut mapped_body);
                 let reasoning_config =
                     super::providers::resolve_codex_chat_reasoning_config(provider, &mapped_body);
-                let mut chat_body = super::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning(
-                    mapped_body,
+                // Project the exact converter input after model/cache-key edits, while
+                // retaining only unchanged items at their original request coordinates.
+                let projection =
+                    history_context.and_then(|context| context.projection(&mapped_body));
+                let (mut chat_body, mapping) = super::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning_and_history(
+                    &mapped_body,
                     reasoning_config.as_ref(),
+                    projection.as_ref(),
                 )?;
+                history_mapping = mapping;
                 let session = self
                     .session_client_provided
                     .then_some(self.session_id.as_str());
@@ -2131,7 +2148,7 @@ impl RequestForwarder {
                     .build_outbound_tail(&request_body, patch)
                     .map_err(ProxyError::DlpForward)?;
                 _outbound_tail_owner = Some(owner);
-                return Ok(body);
+                return Ok((body, history_mapping));
             }
 
             let mut filtered_body = prepare_upstream_request_body(request_body);
@@ -2146,7 +2163,7 @@ impl RequestForwarder {
                     }
                 }
             }
-            Ok(filtered_body)
+            Ok((filtered_body, history_mapping))
         };
 
         let protocol = if codex_responses_to_chat {
@@ -2212,26 +2229,7 @@ impl RequestForwarder {
                 principal_headers.insert("chatgpt-account-id", value);
             }
         }
-        let auth_principal = if principal_headers.is_empty() {
-            None
-        } else {
-            use sha2::{Digest, Sha256};
-            let mut digest = Sha256::new();
-            for name in [
-                "authorization",
-                "x-api-key",
-                "x-goog-api-key",
-                "chatgpt-account-id",
-            ] {
-                for value in principal_headers.get_all(name) {
-                    digest.update((name.len() as u64).to_be_bytes());
-                    digest.update(name.as_bytes());
-                    digest.update((value.as_bytes().len() as u64).to_be_bytes());
-                    digest.update(value.as_bytes());
-                }
-            }
-            Some(format!("{:x}", digest.finalize()))
-        };
+        let auth_principal = dlp_auth_principal(&principal_headers);
         let (filtered_body, mut dlp_attempt) = if let Some(ref dlp_req) = self.dlp_request {
             let operation = super::providers::CodexAdapter::resolve_dlp_operation_descriptor(
                 &base_url,
@@ -2240,20 +2238,20 @@ impl RequestForwarder {
                 &url,
                 is_full_url,
             );
-            let (attempt, input_owner) = dlp_req.prepare_owned_attempt_with_operation_for_proxy(
+            let (attempt, input_owner) = dlp_req.prepare_owned_attempt_with_history_for_proxy(
                 operation.as_ref(),
                 &provider.id,
                 protocol,
                 &url,
                 auth_principal.as_deref(),
                 &mut mapped_body,
-                &mut transform_to_filtered_body,
+                |body, context| transform_to_filtered_body(body, Some(context)),
             )?;
             _transform_input_owner = Some(input_owner);
             (mapped_body, Some(attempt))
         } else {
             _transform_input_owner = None;
-            (transform_to_filtered_body(mapped_body)?, None)
+            (transform_to_filtered_body(mapped_body, None)?.0, None)
         };
         #[cfg(test)]
         super::security::http_restoration::transform_input_test_support::pause().await;
@@ -2265,14 +2263,19 @@ impl RequestForwarder {
         {
             outbound_model = Some(m.to_string());
         }
-        log_prompt_cache_trace(
-            app_type,
-            provider,
-            &effective_endpoint,
-            resolved_claude_api_format.as_deref(),
-            &filtered_body,
-            self.session_client_provided,
-        );
+        let suppress_payload_diagnostics = dlp_attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.suppress_payload_diagnostics());
+        if !suppress_payload_diagnostics {
+            log_prompt_cache_trace(
+                app_type,
+                provider,
+                &effective_endpoint,
+                resolved_claude_api_format.as_deref(),
+                &filtered_body,
+                self.session_client_provided,
+            );
+        }
         let request_is_streaming =
             is_streaming_request(&effective_endpoint, &filtered_body, headers);
         if matches!(resolved_claude_api_format.as_deref(), Some("gemini_native")) {
@@ -2725,6 +2728,13 @@ impl RequestForwarder {
             }
         }
 
+        #[cfg(test)]
+        let url = {
+            let mut actual_url = url;
+            final_send_binding_test_support::mutate_once(&mut actual_url, &mut ordered_headers);
+            actual_url
+        };
+
         reject_proxy_placeholder_for_managed_account_upstream(&url, &ordered_headers)?;
 
         // 日志目标 URL 的脱敏分两种情形：
@@ -2745,11 +2755,13 @@ impl RequestForwarder {
             .and_then(|v| v.as_str())
             .unwrap_or("<none>");
         log::info!("[{tag}] >>> 请求目标: {target_for_log} (model={request_model})");
-        log::debug!(
-            "[{tag}] >>> 请求体已准备: bytes={}, hash={} (content omitted)",
-            body_bytes.len(),
-            short_value_hash(Some(&filtered_body))
-        );
+        if !suppress_payload_diagnostics {
+            log::debug!(
+                "[{tag}] >>> 请求体已准备: bytes={}, hash={} (content omitted)",
+                body_bytes.len(),
+                short_value_hash(Some(&filtered_body))
+            );
+        }
 
         // 确定超时
         let timeout = if self.non_streaming_timeout.is_zero() {
@@ -2759,7 +2771,14 @@ impl RequestForwarder {
         };
 
         // 获取全局代理 URL
+        #[cfg(not(test))]
         let upstream_proxy_url: Option<String> = super::http_client::get_current_proxy_url();
+        #[cfg(test)]
+        let upstream_proxy_url: Option<String> = if final_send_binding_test_support::is_active() {
+            None
+        } else {
+            super::http_client::get_current_proxy_url()
+        };
 
         // SOCKS5 代理不支持 CONNECT 隧道，需要用 reqwest
         let is_socks_proxy = upstream_proxy_url
@@ -2781,7 +2800,23 @@ impl RequestForwarder {
             log::debug!(
                 "[Forwarder] Using pooled reqwest client (preserve_exact_header_case={preserve_exact_header_case}, socks_proxy={is_socks_proxy})"
             );
-            let client = super::http_client::get();
+            // Internal redirects cannot inherit a prepared attempt's target authority.
+            let bound_attempt = dlp_attempt.is_some();
+            #[cfg(test)]
+            let test_client = final_send_binding_test_support::client(bound_attempt)?;
+            #[cfg(not(test))]
+            let test_client: Option<reqwest::Client> = None;
+            let client = if let Some(client) = test_client {
+                client
+            } else if bound_attempt {
+                super::http_client::get_without_redirects().map_err(|_| {
+                    ProxyError::DlpForward(
+                        super::security::http_restoration::DlpForwardError::ContextUnavailable,
+                    )
+                })?
+            } else {
+                super::http_client::get()
+            };
             let mut request = client.request(method.clone(), &url);
             if request_is_streaming {
                 // reqwest 的 timeout 是整请求超时；流式请求交给 response_processor
@@ -2794,8 +2829,21 @@ impl RequestForwarder {
                 request = request.header(key, value);
             }
             if let Some(attempt) = dlp_attempt.as_ref() {
+                attempt
+                    .validate_final_send_binding(
+                        &provider.id,
+                        protocol,
+                        &url,
+                        dlp_auth_principal(&ordered_headers).as_deref(),
+                    )
+                    .map_err(ProxyError::DlpForward)?;
+                attempt
+                    .validate_final_send_history(&filtered_body)
+                    .map_err(ProxyError::DlpForward)?;
                 attempt.record_permitted_attempt(&provider.id, None);
             }
+            #[cfg(test)]
+            final_send_binding_test_support::observe_transport(true);
             let send = request.body(body_bytes).send();
             let send_result = if request_is_streaming {
                 let header_timeout = if self.streaming_first_byte_timeout.is_zero() {
@@ -2823,8 +2871,21 @@ impl RequestForwarder {
                 ProxyError::ForwardFailed(format!("Invalid upstream URL ({target_for_log}): {e}"))
             })?;
             if let Some(attempt) = dlp_attempt.as_ref() {
+                attempt
+                    .validate_final_send_binding(
+                        &provider.id,
+                        protocol,
+                        &url,
+                        dlp_auth_principal(&ordered_headers).as_deref(),
+                    )
+                    .map_err(ProxyError::DlpForward)?;
+                attempt
+                    .validate_final_send_history(&filtered_body)
+                    .map_err(ProxyError::DlpForward)?;
                 attempt.record_permitted_attempt(&provider.id, None);
             }
+            #[cfg(test)]
+            final_send_binding_test_support::observe_transport(false);
             super::hyper_client::send_request(
                 uri,
                 &target_for_log,
@@ -2844,9 +2905,13 @@ impl RequestForwarder {
         let has_restoration_lease = dlp_attempt
             .as_ref()
             .is_some_and(|attempt| attempt.has_restoration_lease());
-        if has_restoration_lease && !response.status().is_success() {
+        // A redirect is an unbound target even for a prepared zero-token attempt.
+        let bound_redirect = dlp_attempt.is_some() && response.status().is_redirection();
+        if bound_redirect || (has_restoration_lease && !response.status().is_success()) {
             return Err(ProxyError::DlpForward(
-                super::security::http_restoration::DlpForwardError::RestoreFailed,
+                super::security::http_restoration::DlpForwardError::UpstreamStatus(
+                    response.status(),
+                ),
             ));
         }
 
@@ -2854,10 +2919,24 @@ impl RequestForwarder {
         // existing first-byte/idle timeout and cancellation handling remain authoritative.
         let response = if let Some(attempt) = dlp_attempt.as_mut() {
             match tokio::time::timeout(timeout, attempt.guard_upstream_response(response)).await {
-                Ok(result) => result.map_err(ProxyError::DlpForward)?,
+                Ok(result) => result.map_err(|error| {
+                    ProxyError::DlpForward(
+                        if error
+                            == super::security::http_restoration::DlpForwardError::RestoreFailed
+                        {
+                            super::security::http_restoration::DlpForwardError::RestoreFailedAt(
+                                super::security::restore_diagnostics::RestoreStage::UpstreamGuard,
+                            )
+                        } else {
+                            error
+                        },
+                    )
+                })?,
                 Err(_) => {
                     return Err(ProxyError::DlpForward(
-                        super::security::http_restoration::DlpForwardError::RestoreFailed,
+                        super::security::http_restoration::DlpForwardError::RestoreFailedAt(
+                            super::security::restore_diagnostics::RestoreStage::UpstreamTimeout,
+                        ),
                     ));
                 }
             }
@@ -2874,7 +2953,9 @@ impl RequestForwarder {
             let safe_validation_error = |error| {
                 if has_restoration_lease {
                     ProxyError::DlpForward(
-                        super::security::http_restoration::DlpForwardError::RestoreFailed,
+                        super::security::http_restoration::DlpForwardError::RestoreFailedAt(
+                            super::security::restore_diagnostics::RestoreStage::SuccessValidation,
+                        ),
                     )
                 } else {
                     error
@@ -4121,6 +4202,136 @@ fn merge_json_override_inner(target: &mut Value, patch: &Value, is_top_level: bo
             }
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) mod final_send_binding_test_support {
+    use std::{
+        cell::{Cell, RefCell},
+        marker::PhantomData,
+        rc::Rc,
+    };
+
+    type Mutation = Box<dyn FnOnce(&mut String, &mut http::HeaderMap)>;
+    struct State {
+        mutation: RefCell<Option<Mutation>>,
+        client: Result<reqwest::Client, ()>,
+        reqwest_count: Cell<usize>,
+        hyper_count: Cell<usize>,
+    }
+    thread_local! {
+        static CURRENT: RefCell<Option<Rc<State>>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) struct Guard {
+        previous: Option<Rc<State>>,
+        state: Rc<State>,
+        _thread_bound: PhantomData<Rc<()>>,
+    }
+
+    impl Guard {
+        pub(crate) fn transport_counts(&self) -> (usize, usize) {
+            (self.state.reqwest_count.get(), self.state.hyper_count.get())
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            CURRENT.with(|slot| slot.replace(self.previous.take()));
+        }
+    }
+
+    pub(crate) fn install(
+        mutation: impl FnOnce(&mut String, &mut http::HeaderMap) + 'static,
+    ) -> Guard {
+        let state = Rc::new(State {
+            mutation: RefCell::new(Some(Box::new(mutation))),
+            client: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .map_err(|_| ()),
+            reqwest_count: Cell::new(0),
+            hyper_count: Cell::new(0),
+        });
+        let previous = CURRENT.with(|slot| slot.replace(Some(Rc::clone(&state))));
+        Guard {
+            previous,
+            state,
+            _thread_bound: PhantomData,
+        }
+    }
+
+    pub(crate) fn is_active() -> bool {
+        CURRENT.with(|slot| slot.borrow().is_some())
+    }
+
+    pub(super) fn client(
+        bound_attempt: bool,
+    ) -> Result<Option<reqwest::Client>, super::ProxyError> {
+        CURRENT.with(|slot| match slot.borrow().as_ref() {
+            None => Ok(None),
+            Some(_) if bound_attempt => super::super::http_client::get_without_redirects()
+                .map(Some)
+                .map_err(|_| {
+                    super::ProxyError::DlpForward(
+                        super::super::security::http_restoration::DlpForwardError::ContextUnavailable,
+                    )
+                }),
+            Some(state) => state
+                .client
+                .as_ref()
+                .map(|client| Some(client.clone()))
+                .map_err(|_| {
+                    super::ProxyError::ForwardFailed("Synthetic transport setup failed".to_owned())
+                }),
+        })
+    }
+
+    pub(super) fn observe_transport(reqwest: bool) {
+        CURRENT.with(|slot| {
+            if let Some(state) = slot.borrow().as_ref() {
+                let count = if reqwest {
+                    &state.reqwest_count
+                } else {
+                    &state.hyper_count
+                };
+                count.set(count.get().saturating_add(1));
+            }
+        });
+    }
+
+    pub(super) fn mutate_once(url: &mut String, headers: &mut http::HeaderMap) {
+        let mutation = CURRENT.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .and_then(|state| state.mutation.borrow_mut().take())
+        });
+        if let Some(mutation) = mutation {
+            mutation(url, headers);
+        }
+    }
+}
+
+// Memory-only credential identity; never log or persist this value.
+fn dlp_auth_principal(headers: &http::HeaderMap) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    let mut found = false;
+    for name in [
+        "authorization",
+        "x-api-key",
+        "x-goog-api-key",
+        "chatgpt-account-id",
+    ] {
+        for value in headers.get_all(name) {
+            found = true;
+            digest.update((name.len() as u64).to_be_bytes());
+            digest.update(name.as_bytes());
+            digest.update((value.as_bytes().len() as u64).to_be_bytes());
+            digest.update(value.as_bytes());
+        }
+    }
+    found.then(|| format!("{:x}", digest.finalize()))
 }
 
 fn apply_local_proxy_header_overrides(

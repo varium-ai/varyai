@@ -3,7 +3,10 @@
 //! No `unwrap()`/`expect()` is permitted here. All payload copies and event buffers
 //! reserve capacity from `PayloadBudget` before growth, and completed-context
 //! publication requires a verified `CompletionWitness` and `ActualAttemptBinding`.
-use std::io::{self, Write};
+use std::{
+    borrow::Cow,
+    io::{self, Write},
+};
 
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -18,7 +21,9 @@ use super::{
     payload_json::{JsonStringReplacement, PayloadJson},
     payload_metadata::PayloadVec,
     payload_text::PayloadText,
-    tokenization::{visit_token_references, DlpRequestLease},
+    restore_diagnostics::{RestoreReason, RestoreStage},
+    token_format_diagnostics::{Carrier, Site, TokenFormatDiagnosticState},
+    tokenization::{visit_token_references, DlpRequestLease, TokenError},
 };
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -26,7 +31,7 @@ const MAX_ARGUMENT_BYTES: usize = 1024 * 1024;
 const MAX_BARRIER_BYTES: usize = 8 * 1024 * 1024;
 const MAX_BARRIER_TOOLS: usize = 128;
 const MAX_RESPONSE_ITEMS: usize = 4096;
-const CATEGORY_CODES: [&str; 10] = ["ph", "id", "pk", "ak", "db", "pw", "ip", "pi", "cu", "mx"];
+use super::token_format;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DlpRestoreOutcome {
@@ -40,21 +45,72 @@ pub(crate) enum DlpRestoreOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RestoreError {
     RestoreFailed,
+    FailedBecause(RestoreReason),
     RestoreUnsupported,
 }
 
 impl RestoreError {
     pub(crate) fn code(self) -> &'static str {
         match self {
-            Self::RestoreFailed => "dlp_restore_failed",
+            Self::RestoreFailed | Self::FailedBecause(_) => "dlp_restore_failed",
             Self::RestoreUnsupported => "dlp_restore_unsupported",
         }
     }
 
     pub(crate) fn message(self) -> &'static str {
         match self {
-            Self::RestoreFailed => "Reversible DLP response restoration failed.",
+            Self::RestoreFailed | Self::FailedBecause(_) => RestoreStage::Unknown.message(),
             Self::RestoreUnsupported => "Reversible DLP response carrier is unsupported.",
+        }
+    }
+
+    pub(super) fn reason_at(self, stage: RestoreStage) -> Option<RestoreReason> {
+        match self {
+            Self::FailedBecause(reason) => Some(reason),
+            Self::RestoreFailed if stage == RestoreStage::TokenRestore => {
+                Some(RestoreReason::Unknown)
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn message_at(self, stage: RestoreStage) -> Cow<'static, str> {
+        if let Some(reason) = self.reason_at(stage) {
+            Cow::Owned(format!(
+                "Reversible DLP response restoration failed. [stage={} reason={}]",
+                stage.label(),
+                reason.label()
+            ))
+        } else if self == Self::RestoreFailed {
+            Cow::Borrowed(stage.message())
+        } else {
+            Cow::Borrowed(self.message())
+        }
+    }
+
+    fn capacity(_: TokenError) -> Self {
+        Self::FailedBecause(RestoreReason::RestoreCapacity)
+    }
+
+    fn scan_error(error: TokenError) -> Self {
+        match error {
+            TokenError::ContextUnavailable => Self::FailedBecause(RestoreReason::TokenFormat),
+            TokenError::CapacityExceeded | TokenError::Unavailable => Self::capacity(error),
+            _ => Self::RestoreFailed,
+        }
+    }
+
+    fn arguments_error(error: TokenError, checkpoint: RestoreReason) -> Self {
+        match error {
+            TokenError::CapacityExceeded | TokenError::Unavailable => Self::capacity(error),
+            _ => Self::FailedBecause(checkpoint),
+        }
+    }
+
+    fn with_fallback_reason(self, reason: RestoreReason) -> Self {
+        match self {
+            Self::RestoreFailed => Self::FailedBecause(reason),
+            _ => self,
         }
     }
 }
@@ -76,11 +132,11 @@ fn push_unique_text(
         return Ok(());
     }
     if list.len() >= MAX_RESPONSE_ITEMS {
-        return Err(RestoreError::RestoreFailed);
+        return Err(RestoreError::FailedBecause(RestoreReason::RestoreCapacity));
     }
-    let owned = PayloadText::try_from_str(text, budget.clone(), limit)
-        .map_err(|_| RestoreError::RestoreFailed)?;
-    list.push(owned).map_err(|_| RestoreError::RestoreFailed)
+    let owned =
+        PayloadText::try_from_str(text, budget.clone(), limit).map_err(RestoreError::capacity)?;
+    list.push(owned).map_err(RestoreError::capacity)
 }
 
 pub(super) fn check_no_tokens_in_str(
@@ -97,9 +153,9 @@ pub(super) fn check_no_tokens_in_str(
         }
         Ok(())
     })
-    .map_err(|_| RestoreError::RestoreFailed)?;
+    .map_err(RestoreError::scan_error)?;
     if found_unauthorized {
-        return Err(RestoreError::RestoreFailed);
+        return Err(RestoreError::FailedBecause(RestoreReason::TokenContext));
     }
     if found_authorized {
         return Err(RestoreError::RestoreUnsupported);
@@ -127,6 +183,172 @@ fn check_no_tokens_in_value(value: &Value, lease: &DlpRequestLease) -> Result<()
     }
 }
 
+// Only protocol-identified ordinary output-text leaves use exact recognition.
+// Keys, metadata, tools, refusal and unknown carriers remain strict.
+fn check_no_complete_output_references(
+    text: &str,
+    lease: &DlpRequestLease,
+) -> Result<(), RestoreError> {
+    let mut authorized = false;
+    let mut unauthorized = false;
+    super::output_text_matching::visit_complete_references(text, |range| {
+        if lease.resolve(&text[range]).is_ok() {
+            authorized = true;
+        } else {
+            unauthorized = true;
+        }
+        Ok(())
+    })
+    .map_err(RestoreError::scan_error)?;
+    if unauthorized {
+        return Err(RestoreError::FailedBecause(RestoreReason::TokenContext));
+    }
+    if authorized {
+        return Err(RestoreError::RestoreUnsupported);
+    }
+    Ok(())
+}
+
+fn check_restored_output_part(part: &Value, lease: &DlpRequestLease) -> Result<(), RestoreError> {
+    if part.get("type").and_then(Value::as_str) != Some("output_text") {
+        return check_no_tokens_in_value(part, lease);
+    }
+    for (key, value) in part.as_object().ok_or(RestoreError::RestoreFailed)? {
+        check_no_tokens_in_str(key, lease)?;
+        if key == "text" {
+            check_no_complete_output_references(
+                value.as_str().ok_or(RestoreError::RestoreFailed)?,
+                lease,
+            )?;
+        } else {
+            check_no_tokens_in_value(value, lease)?;
+        }
+    }
+    Ok(())
+}
+
+// Exemption is limited to protocol-identified text leaves, never their siblings.
+fn check_reasoning_part(
+    part: &Value,
+    expected_kind: &str,
+    lease: &DlpRequestLease,
+) -> Result<(), RestoreError> {
+    let object = part.as_object().ok_or(RestoreError::RestoreFailed)?;
+    if part.get("type").and_then(Value::as_str) != Some(expected_kind)
+        || !part.get("text").is_some_and(Value::is_string)
+    {
+        check_no_tokens_in_value(part, lease)?;
+        return Err(RestoreError::RestoreFailed);
+    }
+    for (key, value) in object {
+        check_no_tokens_in_str(key, lease)?;
+        if key != "text" {
+            check_no_tokens_in_value(value, lease)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_reasoning_item(item: &Value, lease: &DlpRequestLease) -> Result<(), RestoreError> {
+    for (key, value) in item.as_object().ok_or(RestoreError::RestoreFailed)? {
+        check_no_tokens_in_str(key, lease)?;
+        match key.as_str() {
+            "summary" | "content" => {
+                let expected = if key == "summary" {
+                    "summary_text"
+                } else {
+                    "reasoning_text"
+                };
+                for part in value.as_array().ok_or(RestoreError::RestoreFailed)? {
+                    check_reasoning_part(part, expected, lease)?;
+                }
+            }
+            _ => check_no_tokens_in_value(value, lease)?,
+        }
+    }
+    Ok(())
+}
+
+fn check_restored_output_item(item: &Value, lease: &DlpRequestLease) -> Result<(), RestoreError> {
+    let kind = item.get("type").and_then(Value::as_str);
+    if kind == Some("reasoning") {
+        return check_reasoning_item(item, lease);
+    }
+    if !matches!(kind, Some("message" | "function_call" | "custom_tool_call")) {
+        return check_no_tokens_in_value(item, lease);
+    }
+    for (key, value) in item.as_object().ok_or(RestoreError::RestoreFailed)? {
+        check_no_tokens_in_str(key, lease)?;
+        if kind == Some("message") && key == "content" {
+            for part in value.as_array().ok_or(RestoreError::RestoreFailed)? {
+                check_restored_output_part(part, lease)?;
+            }
+        } else if kind != Some("message") && key == "reasoning_content" {
+            if !value.is_null() && !value.is_string() {
+                return Err(RestoreError::RestoreFailed);
+            }
+        } else {
+            check_no_tokens_in_value(value, lease)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_restored_response(response: &Value, lease: &DlpRequestLease) -> Result<(), RestoreError> {
+    for (key, value) in response.as_object().ok_or(RestoreError::RestoreFailed)? {
+        check_no_tokens_in_str(key, lease)?;
+        if key == "output" {
+            for item in value.as_array().ok_or(RestoreError::RestoreFailed)? {
+                check_restored_output_item(item, lease)?;
+            }
+        } else {
+            check_no_tokens_in_value(value, lease)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_restored_event(
+    evt: &str,
+    data: &Value,
+    lease: &DlpRequestLease,
+) -> Result<(), RestoreError> {
+    for (key, value) in data.as_object().ok_or(RestoreError::RestoreFailed)? {
+        check_no_tokens_in_str(key, lease)?;
+        match (evt, key.as_str()) {
+            ("response.output_text.delta", "delta") | ("response.output_text.done", "text") => {
+                check_no_complete_output_references(
+                    value.as_str().ok_or(RestoreError::RestoreFailed)?,
+                    lease,
+                )?
+            }
+            ("response.reasoning_summary_text.delta", "delta")
+            | ("response.reasoning_summary_text.done", "text")
+            | ("response.reasoning_text.delta", "delta")
+            | ("response.reasoning_text.done", "text") => {
+                value.as_str().ok_or(RestoreError::RestoreFailed)?;
+            }
+            (
+                "response.reasoning_summary_part.added" | "response.reasoning_summary_part.done",
+                "part",
+            ) => check_reasoning_part(value, "summary_text", lease)?,
+            ("response.content_part.added" | "response.content_part.done", "part") => {
+                if value.get("type").and_then(Value::as_str) == Some("reasoning_text") {
+                    check_reasoning_part(value, "reasoning_text", lease)?;
+                } else {
+                    check_restored_output_part(value, lease)?;
+                }
+            }
+            ("response.output_item.added" | "response.output_item.done", "item") => {
+                check_restored_output_item(value, lease)?
+            }
+            ("response.completed", "response") => check_restored_response(value, lease)?,
+            _ => check_no_tokens_in_value(value, lease)?,
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn restore_text_with_lease(
     text: &str,
     lease: &DlpRequestLease,
@@ -134,38 +356,108 @@ pub(super) fn restore_text_with_lease(
     output_tokens: &mut PayloadVec<PayloadText>,
     restored_occurrences: &mut usize,
 ) -> Result<PayloadText, RestoreError> {
-    let mut ranges = PayloadVec::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
-    visit_token_references(text, |range| ranges.push(range))
-        .map_err(|_| RestoreError::RestoreFailed)?;
+    restore_text_with_matching(
+        text,
+        lease,
+        budget,
+        output_tokens,
+        restored_occurrences,
+        false,
+    )
+}
+
+fn copy_reasoning_text(
+    text: &str,
+    _lease: &DlpRequestLease,
+    budget: &PayloadBudget,
+    _output_tokens: &mut PayloadVec<PayloadText>,
+    _restored_occurrences: &mut usize,
+) -> Result<PayloadText, RestoreError> {
+    PayloadText::try_from_str(text, budget.clone(), MAX_FRAME_BYTES).map_err(RestoreError::capacity)
+}
+
+type RestoreTextPart = fn(
+    &str,
+    &DlpRequestLease,
+    &PayloadBudget,
+    &mut PayloadVec<PayloadText>,
+    &mut usize,
+) -> Result<PayloadText, RestoreError>;
+
+fn restore_text_part(kind: u8) -> RestoreTextPart {
+    match kind {
+        1 => restore_output_text_with_lease,
+        3 | 4 => copy_reasoning_text,
+        _ => restore_text_with_lease,
+    }
+}
+
+fn restore_output_text_with_lease(
+    text: &str,
+    lease: &DlpRequestLease,
+    budget: &PayloadBudget,
+    output_tokens: &mut PayloadVec<PayloadText>,
+    restored_occurrences: &mut usize,
+) -> Result<PayloadText, RestoreError> {
+    restore_text_with_matching(
+        text,
+        lease,
+        budget,
+        output_tokens,
+        restored_occurrences,
+        true,
+    )
+}
+
+fn restore_text_with_matching(
+    text: &str,
+    lease: &DlpRequestLease,
+    budget: &PayloadBudget,
+    output_tokens: &mut PayloadVec<PayloadText>,
+    restored_occurrences: &mut usize,
+    output_text: bool,
+) -> Result<PayloadText, RestoreError> {
+    let mut ranges = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
+    if output_text {
+        super::output_text_matching::visit_complete_references(text, |range| ranges.push(range))
+    } else {
+        visit_token_references(text, |range| ranges.push(range))
+    }
+    .map_err(RestoreError::scan_error)?;
     let mut out_len = text.len();
     for range in ranges.as_slice() {
         let token = &text[range.clone()];
         let plain = lease
             .resolve(token)
-            .map_err(|_| RestoreError::RestoreFailed)?;
-        push_unique_text(output_tokens, token, 31, budget)?;
+            .map_err(|_| RestoreError::FailedBecause(RestoreReason::TokenContext))?;
+        push_unique_text(
+            output_tokens,
+            token,
+            token_format::MAX_REFERENCE_BYTES,
+            budget,
+        )?;
         out_len = out_len
             .checked_sub(range.len())
             .and_then(|n| n.checked_add(plain.len()))
-            .ok_or(RestoreError::RestoreFailed)?;
+            .ok_or(RestoreError::FailedBecause(RestoreReason::RestoreCapacity))?;
         *restored_occurrences = restored_occurrences
             .checked_add(1)
-            .ok_or(RestoreError::RestoreFailed)?;
+            .ok_or(RestoreError::FailedBecause(RestoreReason::RestoreCapacity))?;
     }
     let mut out = PayloadText::with_capacity(out_len, budget.clone(), budget.limit())
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::capacity)?;
     let mut cursor = 0usize;
     for range in ranges.as_slice() {
         out.append(&text[cursor..range.start])
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::capacity)?;
         let plain = lease
             .resolve(&text[range.clone()])
-            .map_err(|_| RestoreError::RestoreFailed)?;
-        out.append(plain).map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(|_| RestoreError::FailedBecause(RestoreReason::TokenContext))?;
+        out.append(plain).map_err(RestoreError::capacity)?;
         cursor = range.end;
     }
     out.append(&text[cursor..])
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::capacity)?;
     Ok(out)
 }
 
@@ -185,7 +477,7 @@ fn restore_json_leaves<'a>(
                 restore_text_with_lease(text, lease, budget, output_tokens, restored_occurrences)?;
             replacements
                 .push((value, restored))
-                .map_err(|_| RestoreError::RestoreFailed)
+                .map_err(RestoreError::capacity)
         }
         Value::Array(items) => {
             for item in items {
@@ -288,16 +580,18 @@ pub(super) fn restore_json_arguments_string(
     output_tokens: &mut PayloadVec<PayloadText>,
     restored_occurrences: &mut usize,
 ) -> Result<PayloadText, RestoreError> {
-    if raw_args.trim().is_empty() || raw_args.len() > MAX_ARGUMENT_BYTES {
-        return Err(RestoreError::RestoreFailed);
+    if raw_args.trim().is_empty() {
+        return Err(RestoreError::FailedBecause(RestoreReason::ArgumentsEmpty));
+    }
+    if raw_args.len() > MAX_ARGUMENT_BYTES {
+        return Err(RestoreError::FailedBecause(RestoreReason::ArgumentsSize));
     }
     let parsed = PayloadJson::try_from_str(raw_args, budget.clone(), budget.limit())
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(|error| RestoreError::arguments_error(error, RestoreReason::ArgumentsJson))?;
     if !parsed.as_value().is_object() {
-        return Err(RestoreError::RestoreFailed);
+        return Err(RestoreError::FailedBecause(RestoreReason::ArgumentsShape));
     }
-    let mut replacements =
-        PayloadVec::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+    let mut replacements = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
     restore_json_leaves(
         parsed.as_value(),
         lease,
@@ -306,11 +600,14 @@ pub(super) fn restore_json_arguments_string(
         restored_occurrences,
         &mut replacements,
     )?;
-    let restored = apply_text_replacements(parsed.as_value(), &replacements, budget)?;
-    let encoded = serialize_json_with_budget(restored.as_value(), budget, MAX_ARGUMENT_BYTES)?;
-    let text = std::str::from_utf8(encoded.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
+    let restored = apply_text_replacements(parsed.as_value(), &replacements, budget)
+        .map_err(|error| error.with_fallback_reason(RestoreReason::ArgumentsRebuild))?;
+    let encoded = serialize_json_with_budget(restored.as_value(), budget, MAX_ARGUMENT_BYTES)
+        .map_err(|error| error.with_fallback_reason(RestoreReason::ArgumentsSerialize))?;
+    let text = std::str::from_utf8(encoded.as_slice())
+        .map_err(|_| RestoreError::FailedBecause(RestoreReason::ArgumentsCopy))?;
     PayloadText::try_from_str(text, budget.clone(), MAX_ARGUMENT_BYTES)
-        .map_err(|_| RestoreError::RestoreFailed)
+        .map_err(|error| RestoreError::arguments_error(error, RestoreReason::ArgumentsCopy))
 }
 
 fn restore_output_item<'a>(
@@ -328,12 +625,9 @@ fn restore_output_item<'a>(
         .and_then(Value::as_str)
         .ok_or(RestoreError::RestoreFailed)?;
     match kind {
-        "message" | "reasoning" => {
-            let parts_field = if kind == "message" {
-                "content"
-            } else {
-                "summary"
-            };
+        "reasoning" => check_reasoning_item(item, lease)?,
+        "message" => {
+            let parts_field = "content";
             for (key, value) in obj {
                 check_no_tokens_in_str(key, lease)?;
                 if key != parts_field {
@@ -365,13 +659,14 @@ fn restore_output_item<'a>(
                 }
                 let target = part.get(field).ok_or(RestoreError::RestoreFailed)?;
                 let text = target.as_str().ok_or(RestoreError::RestoreFailed)?;
-                let restored = restore_text_with_lease(
-                    text,
-                    lease,
-                    budget,
-                    output_tokens,
-                    restored_occurrences,
-                )?;
+                let restore = if kind == "message"
+                    && part.get("type").and_then(Value::as_str) == Some("output_text")
+                {
+                    restore_output_text_with_lease
+                } else {
+                    restore_text_with_lease
+                };
+                let restored = restore(text, lease, budget, output_tokens, restored_occurrences)?;
                 replacements
                     .push((target, restored))
                     .map_err(|_| RestoreError::RestoreFailed)?;
@@ -411,21 +706,11 @@ fn restore_output_item<'a>(
             replacements
                 .push((target, restored))
                 .map_err(|_| RestoreError::RestoreFailed)?;
-            match obj.get("reasoning_content") {
-                Some(target @ Value::String(text)) => {
-                    let restored = restore_text_with_lease(
-                        text,
-                        lease,
-                        budget,
-                        output_tokens,
-                        restored_occurrences,
-                    )?;
-                    replacements
-                        .push((target, restored))
-                        .map_err(|_| RestoreError::RestoreFailed)?;
-                }
-                Some(Value::Null) | None => {}
-                Some(_) => return Err(RestoreError::RestoreFailed),
+            if obj
+                .get("reasoning_content")
+                .is_some_and(|v| !v.is_null() && !v.is_string())
+            {
+                return Err(RestoreError::RestoreFailed);
             }
             if obj
                 .get("encrypted_reasoning")
@@ -627,7 +912,7 @@ fn item_string_edits<'a>(
     for field in ["content", "summary"] {
         if !matches!(
             (kind, field),
-            ("message", "content") | ("reasoning", "summary")
+            ("message", "content") | ("reasoning", "summary" | "content")
         ) {
             continue;
         }
@@ -652,24 +937,44 @@ fn item_string_edits<'a>(
     Ok(())
 }
 
-fn check_snapshot_carriers(data: &Value, lease: &DlpRequestLease) -> Result<(), RestoreError> {
-    let part_check = |part: &Value| -> Result<(), RestoreError> {
-        let field = match part.get("type").and_then(Value::as_str) {
-            Some("output_text" | "summary_text") => "text",
-            Some("refusal") => "refusal",
-            _ => {
-                check_no_tokens_in_value(part, lease)?;
-                return Err(RestoreError::RestoreFailed);
-            }
-        };
-        for (key, value) in part.as_object().ok_or(RestoreError::RestoreFailed)? {
-            check_no_tokens_in_str(key, lease)?;
-            if key != field {
-                check_no_tokens_in_value(value, lease)?;
-            }
+fn check_snapshot_part(
+    part: &Value,
+    container: &str,
+    lease: &DlpRequestLease,
+) -> Result<(), RestoreError> {
+    let kind = part.get("type").and_then(Value::as_str);
+    let field = match (container, kind) {
+        ("summary", Some("summary_text")) | ("reasoning_content", Some("reasoning_text")) => {
+            return check_reasoning_part(
+                part,
+                if container == "summary" {
+                    "summary_text"
+                } else {
+                    "reasoning_text"
+                },
+                lease,
+            );
         }
-        Ok(())
+        ("content", Some("output_text")) => "text",
+        ("content", Some("refusal")) => "refusal",
+        _ => {
+            check_no_tokens_in_value(part, lease)?;
+            return Err(RestoreError::RestoreFailed);
+        }
     };
+    if !part.get(field).is_some_and(Value::is_string) {
+        return Err(RestoreError::RestoreFailed);
+    }
+    for (key, value) in part.as_object().ok_or(RestoreError::RestoreFailed)? {
+        check_no_tokens_in_str(key, lease)?;
+        if key != field {
+            check_no_tokens_in_value(value, lease)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_snapshot_carriers(data: &Value, lease: &DlpRequestLease) -> Result<(), RestoreError> {
     if let Some(item) = data.get("item") {
         let kind = item
             .get("type")
@@ -678,9 +983,14 @@ fn check_snapshot_carriers(data: &Value, lease: &DlpRequestLease) -> Result<(), 
         for (key, value) in item.as_object().ok_or(RestoreError::RestoreFailed)? {
             check_no_tokens_in_str(key, lease)?;
             match (kind, key.as_str()) {
-                ("message", "content") | ("reasoning", "summary") => {
+                ("message", "content") | ("reasoning", "summary" | "content") => {
+                    let container = if kind == "reasoning" && key == "content" {
+                        "reasoning_content"
+                    } else {
+                        key.as_str()
+                    };
                     for part in value.as_array().ok_or(RestoreError::RestoreFailed)? {
-                        part_check(part)?;
+                        check_snapshot_part(part, container, lease)?;
                     }
                 }
                 ("function_call", "arguments" | "reasoning_content")
@@ -689,7 +999,18 @@ fn check_snapshot_carriers(data: &Value, lease: &DlpRequestLease) -> Result<(), 
             }
         }
     } else if let Some(part) = data.get("part") {
-        part_check(part)?;
+        let summary = data
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.starts_with("response.reasoning_summary_part."));
+        let container = if summary {
+            "summary"
+        } else if part.get("type").and_then(Value::as_str) == Some("reasoning_text") {
+            "reasoning_content"
+        } else {
+            "content"
+        };
+        check_snapshot_part(part, container, lease)?;
     }
     for (key, value) in data.as_object().ok_or(RestoreError::RestoreFailed)? {
         check_no_tokens_in_str(key, lease)?;
@@ -744,7 +1065,7 @@ fn validate_part_snapshot(
         return Err(RestoreError::RestoreFailed);
     }
     let field = match raw.get("type").and_then(Value::as_str) {
-        Some("output_text" | "summary_text") => "text",
+        Some("output_text" | "summary_text" | "reasoning_text") => "text",
         Some("refusal") => "refusal",
         _ => return Err(RestoreError::RestoreFailed),
     };
@@ -784,30 +1105,31 @@ fn validate_raw_snapshot(
         }
         match raw.get("type").and_then(Value::as_str) {
             Some("message" | "reasoning") => {
-                let field = if raw["type"] == "message" {
-                    "content"
-                } else {
-                    "summary"
-                };
-                match raw.get(field) {
-                    Some(value) => {
-                        let parts = value.as_array().ok_or(RestoreError::RestoreFailed)?;
-                        if added && parts.is_empty() {
-                            return Ok(());
-                        }
-                        let final_parts = final_item
-                            .get(field)
-                            .and_then(Value::as_array)
-                            .ok_or(RestoreError::RestoreFailed)?;
-                        if parts.len() != final_parts.len() {
-                            return Err(RestoreError::RestoreFailed);
-                        }
-                        for (part, final_part) in parts.iter().zip(final_parts) {
-                            validate_part_snapshot(part, final_part, added, mode, budget)?;
-                        }
+                for field in ["content", "summary"] {
+                    if raw["type"] == "message" && field == "summary" {
+                        continue;
                     }
-                    None if added || field == "summary" && final_item.get(field).is_none() => {}
-                    None => return Err(RestoreError::RestoreFailed),
+                    match raw.get(field) {
+                        Some(value) => {
+                            let parts = value.as_array().ok_or(RestoreError::RestoreFailed)?;
+                            if added && parts.is_empty() {
+                                continue;
+                            }
+                            let final_parts = final_item
+                                .get(field)
+                                .and_then(Value::as_array)
+                                .ok_or(RestoreError::RestoreFailed)?;
+                            if parts.len() != final_parts.len() {
+                                return Err(RestoreError::RestoreFailed);
+                            }
+                            for (part, final_part) in parts.iter().zip(final_parts) {
+                                validate_part_snapshot(part, final_part, added, mode, budget)?;
+                            }
+                        }
+                        None if added
+                            || raw["type"] == "reasoning" && final_item.get(field).is_none() => {}
+                        None => return Err(RestoreError::RestoreFailed),
+                    }
                 }
             }
             Some("function_call" | "custom_tool_call") => {
@@ -836,7 +1158,13 @@ fn validate_raw_snapshot(
         }
     } else {
         let summary = evt.starts_with("response.reasoning_summary_part.");
-        let expected_item = if summary { "reasoning" } else { "message" };
+        let reasoning_content =
+            data.pointer("/part/type").and_then(Value::as_str) == Some("reasoning_text");
+        let expected_item = if summary || reasoning_content {
+            "reasoning"
+        } else {
+            "message"
+        };
         if final_item.get("type").and_then(Value::as_str) != Some(expected_item)
             || data
                 .get("item_id")
@@ -901,7 +1229,10 @@ fn restore_completed_snapshot(
         let mut targets =
             PayloadVec::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
         match kind {
-            "message" | "reasoning" => {
+            "reasoning" => {
+                check_reasoning_item(item, lease)?;
+            }
+            "message" => {
                 let parts = if kind == "message" {
                     Some(
                         item.get("content")
@@ -933,11 +1264,6 @@ fn restore_completed_snapshot(
                 targets
                     .push(item.get(field).ok_or(RestoreError::RestoreFailed)?)
                     .map_err(|_| RestoreError::RestoreFailed)?;
-                if let Some(value) = item.get("reasoning_content").filter(|v| !v.is_null()) {
-                    targets
-                        .push(value)
-                        .map_err(|_| RestoreError::RestoreFailed)?;
-                }
             }
             _ => return Err(RestoreError::RestoreFailed),
         }
@@ -947,7 +1273,24 @@ fn restore_completed_snapshot(
             let restored = if kind == "function_call" && std::ptr::eq(*target, &item["arguments"]) {
                 restore_json_arguments_string(text, lease, budget, output_tokens, &mut ignored)?
             } else {
-                restore_text_with_lease(text, lease, budget, output_tokens, &mut ignored)?
+                let ordinary_output_text = kind == "message"
+                    && item
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                part.get("type").and_then(Value::as_str) == Some("output_text")
+                                    && part
+                                        .get("text")
+                                        .is_some_and(|value| std::ptr::eq(value, *target))
+                            })
+                        });
+                let restore = if ordinary_output_text {
+                    restore_output_text_with_lease
+                } else {
+                    restore_text_with_lease
+                };
+                restore(text, lease, budget, output_tokens, &mut ignored)?
             };
             replacements
                 .push((*target, restored))
@@ -970,7 +1313,7 @@ fn restore_completed_snapshot(
         budget.limit(),
     )
     .map_err(|_| RestoreError::RestoreFailed)?;
-    check_no_tokens_in_value(restored.as_value(), lease)?;
+    check_restored_response(restored.as_value(), lease)?;
     Ok(restored)
 }
 
@@ -1053,85 +1396,31 @@ fn publish_completed_snapshot(
     Ok(())
 }
 
-fn is_valid_token_prefix_candidate(bytes: &[u8]) -> Result<bool, RestoreError> {
-    if bytes.is_empty() || bytes.len() >= 31 {
-        return Ok(false);
-    }
-    const HEADER: &[u8] = b"vary_";
-    if bytes.len() <= HEADER.len() {
-        return Ok(HEADER.starts_with(bytes));
-    }
-    if !bytes.starts_with(HEADER) {
-        return Ok(false);
-    }
-    if bytes.len() == 6 {
-        let c0 = bytes[5];
-        return Ok(CATEGORY_CODES.iter().any(|code| code.as_bytes()[0] == c0));
-    }
-    let cat = &bytes[5..7];
-    if !CATEGORY_CODES.iter().any(|code| code.as_bytes() == cat) {
-        return Ok(false);
-    }
-    if bytes.len() == 7 {
-        return Ok(true);
-    }
-    if bytes[7] != b'_' {
-        return Ok(false);
-    }
-    // Once `vary_<valid cc>_` is matched, any invalid subsequent character is a malformed candidate.
-    for (idx, &b) in bytes[8..].iter().enumerate() {
-        let valid = match idx {
-            0..=19 => b.is_ascii_digit() || (b'a'..=b'f').contains(&b),
-            20 => b == b'_',
-            21 => b == b'a',
-            _ => false,
-        };
-        if !valid {
-            return Err(RestoreError::RestoreFailed);
-        }
-    }
-    Ok(true)
-}
-
 pub(super) fn split_safe_prefix_and_tail(combined: &str) -> Result<(&str, &str), RestoreError> {
     let bytes = combined.as_bytes();
-    // First, check if any `vary_<valid cc>_` inside `combined` is malformed.
-    let mut scan_offset = 0usize;
-    while let Some(rel) = combined[scan_offset..].find("vary_") {
-        let start = scan_offset + rel;
+    let mut offset = 0;
+    while let Some((start, prefix_len)) = token_format::next_candidate(combined, offset) {
+        offset = start + prefix_len;
         let rem = &bytes[start..];
-        if rem.len() >= 8
-            && rem[7] == b'_'
-            && CATEGORY_CODES
-                .iter()
-                .any(|code| code.as_bytes() == &rem[5..7])
-        {
-            if rem.len() >= 31 {
-                if !rem[8..28]
-                    .iter()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
-                    || &rem[28..31] != b"_ai"
-                {
-                    return Err(RestoreError::RestoreFailed);
-                }
-                scan_offset = start + 31;
-                continue;
-            } else {
-                // `rem` is < 31 bytes at the end of `combined` with a valid category header.
-                let _ = is_valid_token_prefix_candidate(rem)?;
-                return Ok((&combined[..start], &combined[start..]));
-            }
-        }
-        scan_offset = start + 5;
-    }
-
-    // Check if the last 1..=7 bytes could be the start of `vary_<cc>`.
-    let min_start = bytes.len().saturating_sub(30);
-    for start in min_start..bytes.len() {
-        if !combined.is_char_boundary(start) {
+        let Some(layout) = token_format::header(rem) else {
             continue;
+        };
+        if rem.len() >= layout.len {
+            if !layout.complete(rem) {
+                return Err(RestoreError::FailedBecause(RestoreReason::TokenFormat));
+            }
+            offset = start + layout.len;
+        } else if token_format::is_prefix(rem) {
+            return Ok((&combined[..start], &combined[start..]));
+        } else {
+            return Err(RestoreError::FailedBecause(RestoreReason::TokenFormat));
         }
-        if is_valid_token_prefix_candidate(&bytes[start..])? {
+    }
+    for start in bytes
+        .len()
+        .saturating_sub(token_format::MAX_REFERENCE_BYTES - 1)..bytes.len()
+    {
+        if combined.is_char_boundary(start) && token_format::is_prefix(&bytes[start..]) {
             return Ok((&combined[..start], &combined[start..]));
         }
     }
@@ -1426,7 +1715,7 @@ struct TextPartTrack {
     output_index: u64,
     item_id: Option<PayloadText>,
     part_index: u64,
-    kind: u8, // 1 = output_text, 2 = refusal, 3 = summary_text
+    kind: u8, // 1 = output_text, 2 = refusal, 3 = summary_text, 4 = reasoning_text
     saw_deltas: bool,
     raw_deltas: PayloadBuffer,
     restored_deltas: PayloadBuffer,
@@ -1470,7 +1759,11 @@ pub(crate) struct SseRestorationState {
     output_tokens: PayloadVec<PayloadText>,
     restored_occurrences: usize,
     completed_seen: bool,
+    finalized: bool,
     failed: Option<RestoreError>,
+    failure_stage: RestoreStage,
+    token_format_diagnostics: TokenFormatDiagnosticState,
+    pending_delivered_history: Option<super::history_provenance::PendingDeliveredHistory>,
 }
 
 impl SseRestorationState {
@@ -1499,8 +1792,27 @@ impl SseRestorationState {
             output_tokens: PayloadVec::new(budget).map_err(|_| RestoreError::RestoreFailed)?,
             restored_occurrences: 0,
             completed_seen: false,
+            finalized: false,
             failed: None,
+            failure_stage: RestoreStage::Unknown,
+            token_format_diagnostics: TokenFormatDiagnosticState::default(),
+            pending_delivered_history: None,
         })
+    }
+
+    /// Only the final wrapper may call this after every terminal frame was released.
+    pub(super) fn publish_released_history(&mut self) {
+        if self.failed.is_some() || !self.finalized {
+            self.pending_delivered_history = None;
+            return;
+        }
+        if let Some(pending) = self.pending_delivered_history.take() {
+            let _ = self.lease.publish_delivered_history(&self.binding, pending);
+        }
+    }
+
+    pub(super) fn failure_stage(&self) -> RestoreStage {
+        self.failure_stage
     }
 
     pub(super) fn payload_budget(&self) -> PayloadBudget {
@@ -1673,15 +1985,28 @@ impl SseRestorationState {
         if let Some(err) = self.failed {
             return Err(err);
         }
-        let res = self.process_sse_block_inner(block);
+        let res = if self.finalized {
+            self.failure_stage = RestoreStage::SseFrame;
+            Err(RestoreError::RestoreFailed)
+        } else {
+            self.process_sse_block_inner(block)
+        };
         if let Err(err) = res {
+            self.pending_delivered_history = None;
             self.failed = Some(err);
+            if err == RestoreError::FailedBecause(RestoreReason::TokenFormat) {
+                // Missing carrier context stays unknown; never inspect unrelated fields.
+                self.token_format_diagnostics
+                    .observe("", 0, Carrier::Other, Site::Unknown, false);
+                self.token_format_diagnostics.emit_once();
+            }
             return Err(err);
         }
         res
     }
 
     fn process_sse_block_inner(&mut self, block: &str) -> Result<Vec<Bytes>, RestoreError> {
+        self.failure_stage = RestoreStage::SseFrame;
         if block.len() > MAX_FRAME_BYTES {
             return Err(RestoreError::RestoreFailed);
         }
@@ -1748,6 +2073,7 @@ impl SseRestorationState {
         }
         let parsed = PayloadJson::try_from_str(data_str, self.budget.clone(), self.budget.limit())
             .map_err(|_| RestoreError::RestoreFailed)?;
+        self.failure_stage = RestoreStage::SseEvent;
         let data = parsed.as_value();
         let kind = data
             .get("type")
@@ -1755,6 +2081,8 @@ impl SseRestorationState {
             .ok_or(RestoreError::RestoreFailed)?
             .to_owned();
         let evt = event_name.unwrap_or(kind.as_str());
+        self.token_format_diagnostics
+            .record_event(evt, self.barrier_active, block.len());
         if evt != kind {
             return Err(RestoreError::RestoreFailed);
         }
@@ -1800,6 +2128,7 @@ impl SseRestorationState {
             }
         }
 
+        self.failure_stage = RestoreStage::SseSnapshot;
         if is_raw_snapshot_event(evt) {
             check_snapshot_carriers(data, &self.lease)?;
         }
@@ -1810,6 +2139,9 @@ impl SseRestorationState {
             "response.refusal.delta" | "response.refusal.done" => Some(("content_index", 2)),
             "response.reasoning_summary_text.delta" | "response.reasoning_summary_text.done" => {
                 Some(("summary_index", 3))
+            }
+            "response.reasoning_text.delta" | "response.reasoning_text.done" => {
+                Some(("content_index", 4))
             }
             _ => None,
         };
@@ -1890,24 +2222,25 @@ impl SseRestorationState {
             "response.output_text.done"
                 | "response.refusal.done"
                 | "response.reasoning_summary_text.done"
+                | "response.reasoning_text.done"
         ) {
             self.flush_ordinary_tail(evt, data)?;
         }
         let mut replacements =
             PayloadVec::new(self.budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+        self.failure_stage = RestoreStage::SseEvent;
         self.handle_pre_barrier_event(evt, data, &mut replacements)?;
         let rewritten = apply_text_replacements(data, &replacements, &self.budget)?;
         if matches!(
             evt,
             "response.content_part.done" | "response.reasoning_summary_part.done"
         ) {
-            check_no_tokens_in_value(rewritten.as_value(), &self.lease)?;
+            check_restored_event(evt, rewritten.as_value(), &self.lease)?;
         }
-        let has_short_tail = self
-            .text_parts
-            .as_slice()
-            .iter()
-            .any(|p| !p.pending_tail.as_slice().is_empty() && p.pending_tail.len() < 8);
+        let has_short_tail = self.text_parts.as_slice().iter().any(|p| {
+            !p.pending_tail.as_slice().is_empty()
+                && (p.kind == 1 || token_format::header(p.pending_tail.as_slice()).is_none())
+        });
         if self.deferred_events.len() != 0 || has_short_tail {
             self.deferred_bytes = self
                 .deferred_bytes
@@ -1983,6 +2316,11 @@ fn encode_sse_frame(
 }
 
 pub(crate) fn failed_sse_frame(err: RestoreError) -> Bytes {
+    failed_sse_frame_at(err, RestoreStage::Unknown)
+}
+
+pub(super) fn failed_sse_frame_at(err: RestoreError, stage: RestoreStage) -> Bytes {
+    super::restore_diagnostics::log_failure_with_reason(err.code(), stage, err.reason_at(stage));
     let payload = json!({
         "type": "response.failed",
         "response": {
@@ -1990,7 +2328,7 @@ pub(crate) fn failed_sse_frame(err: RestoreError) -> Bytes {
             "object": "response",
             "status": "failed",
             "error": {
-                "message": err.message(),
+                "message": err.message_at(stage),
                 "type": "server_error",
                 "code": err.code(),
                 "param": Value::Null,
@@ -2006,6 +2344,8 @@ pub(crate) fn failed_sse_frame(err: RestoreError) -> Bytes {
 fn text_event_key(evt: &str, data: &Value) -> (u64, u64, u8) {
     let (key, kind) = if evt.contains("reasoning_summary") {
         ("summary_index", 3)
+    } else if evt == "response.reasoning_text.delta" || evt == "response.reasoning_text.done" {
+        ("content_index", 4)
     } else if evt.contains("refusal") {
         ("content_index", 2)
     } else {
@@ -2027,6 +2367,7 @@ impl SseRestorationState {
             "response.output_text.delta"
                 | "response.refusal.delta"
                 | "response.reasoning_summary_text.delta"
+                | "response.reasoning_text.delta"
         ) {
             let (out, part, kind) = text_event_key(evt, data);
             let track = self.get_or_create_text_part(out, part, kind)?;
@@ -2035,10 +2376,22 @@ impl SseRestorationState {
         Ok(())
     }
 
+    fn flush_output_text_tail(&mut self, out: u64, part: u64) -> Result<(), RestoreError> {
+        let track = self.get_or_create_text_part(out, part, 1)?;
+        if !track.pending_tail.as_slice().is_empty() {
+            track
+                .restored_deltas
+                .append(track.pending_tail.as_slice())
+                .map_err(RestoreError::capacity)?;
+            track.pending_tail.clear();
+        }
+        Ok(())
+    }
+
     fn flush_ordinary_tail(&mut self, evt: &str, data: &Value) -> Result<(), RestoreError> {
         let (out, part, kind) = text_event_key(evt, data);
         let track = self.get_or_create_text_part(out, part, kind)?;
-        if track.pending_tail.len() >= 8 {
+        if kind != 1 && token_format::header(track.pending_tail.as_slice()).is_some() {
             return Err(RestoreError::RestoreFailed);
         }
         if !track.pending_tail.as_slice().is_empty() {
@@ -2064,6 +2417,7 @@ impl SseRestorationState {
                 "response.output_text.delta"
                     | "response.refusal.delta"
                     | "response.reasoning_summary_text.delta"
+                    | "response.reasoning_text.delta"
             ) {
                 let key = text_event_key(evt, data);
                 let track = self
@@ -2118,10 +2472,12 @@ impl SseRestorationState {
         match evt {
             "response.output_text.delta"
             | "response.refusal.delta"
-            | "response.reasoning_summary_text.delta" => {
+            | "response.reasoning_summary_text.delta"
+            | "response.reasoning_text.delta" => {
                 let (part_key, kind) = match evt {
                     "response.output_text.delta" => ("content_index", 1u8),
                     "response.refusal.delta" => ("content_index", 2u8),
+                    "response.reasoning_text.delta" => ("content_index", 4u8),
                     _ => ("summary_index", 3u8),
                 };
                 let part_idx = data.get(part_key).and_then(Value::as_u64).unwrap_or(0);
@@ -2141,10 +2497,12 @@ impl SseRestorationState {
             }
             "response.output_text.done"
             | "response.refusal.done"
-            | "response.reasoning_summary_text.done" => {
+            | "response.reasoning_summary_text.done"
+            | "response.reasoning_text.done" => {
                 let (part_key, field_key, kind) = match evt {
                     "response.output_text.done" => ("content_index", "text", 1u8),
                     "response.refusal.done" => ("content_index", "refusal", 2u8),
+                    "response.reasoning_text.done" => ("content_index", "text", 4u8),
                     _ => ("summary_index", "text", 3u8),
                 };
                 let part_idx = data.get(part_key).and_then(Value::as_u64).unwrap_or(0);
@@ -2269,10 +2627,12 @@ impl SseRestorationState {
         match evt {
             "response.output_text.delta"
             | "response.refusal.delta"
-            | "response.reasoning_summary_text.delta" => {
+            | "response.reasoning_summary_text.delta"
+            | "response.reasoning_text.delta" => {
                 let (part_key, kind) = match evt {
                     "response.output_text.delta" => ("content_index", 1u8),
                     "response.refusal.delta" => ("content_index", 2u8),
+                    "response.reasoning_text.delta" => ("content_index", 4u8),
                     _ => ("summary_index", 3u8),
                 };
                 let part_idx = data.get(part_key).and_then(Value::as_u64).unwrap_or(0);
@@ -2288,7 +2648,7 @@ impl SseRestorationState {
                     }
                 }
                 let budget = self.budget.clone();
-                let combined_buf = {
+                let (combined_buf, pending_before) = {
                     let track = self.get_or_create_text_part(out_idx, part_idx, kind)?;
                     if track.raw_done.is_some() {
                         return Err(RestoreError::RestoreFailed);
@@ -2309,18 +2669,66 @@ impl SseRestorationState {
                     buf.append(track.pending_tail.as_slice())
                         .and_then(|_| buf.append(delta.as_bytes()))
                         .map_err(|_| RestoreError::RestoreFailed)?;
-                    buf
+                    (buf, track.pending_tail.len())
                 };
+                self.token_format_diagnostics.record_delta_structure(
+                    pending_before,
+                    pending_before,
+                    delta.len(),
+                );
                 let combined_str = std::str::from_utf8(combined_buf.as_slice())
                     .map_err(|_| RestoreError::RestoreFailed)?;
-                let (safe_prefix, new_tail) = split_safe_prefix_and_tail(combined_str)?;
-                let restored_chunk = restore_text_with_lease(
+                self.failure_stage = RestoreStage::TokenRestore;
+                let carrier = match kind {
+                    1 => Carrier::OutputText,
+                    2 => Carrier::Refusal,
+                    _ => Carrier::Reasoning,
+                };
+                let split = if kind == 1 {
+                    Ok(super::output_text_matching::split_prefix_and_tail(
+                        combined_str,
+                    ))
+                } else if matches!(kind, 3 | 4) {
+                    Ok((combined_str, ""))
+                } else {
+                    split_safe_prefix_and_tail(combined_str)
+                };
+                let (safe_prefix, new_tail) = split.inspect_err(|err| {
+                    if *err == RestoreError::FailedBecause(RestoreReason::TokenFormat) {
+                        self.token_format_diagnostics.observe(
+                            combined_str,
+                            pending_before,
+                            carrier,
+                            Site::DeltaSplit,
+                            true,
+                        );
+                    }
+                })?;
+                let restore = restore_text_part(kind);
+                let restored_chunk = restore(
                     safe_prefix,
                     &self.lease,
                     &budget,
                     &mut self.output_tokens,
                     &mut self.restored_occurrences,
-                )?;
+                )
+                .inspect_err(|err| {
+                    if *err == RestoreError::FailedBecause(RestoreReason::TokenFormat) {
+                        self.token_format_diagnostics.observe(
+                            safe_prefix,
+                            pending_before,
+                            carrier,
+                            Site::DeltaRestore,
+                            false,
+                        );
+                    }
+                })?;
+                self.token_format_diagnostics.record_delta_structure(
+                    pending_before,
+                    new_tail.len(),
+                    delta.len(),
+                );
+                self.failure_stage = RestoreStage::SseEvent;
                 let track = self.get_or_create_text_part(out_idx, part_idx, kind)?;
                 let mut next_tail = PayloadBuffer::with_capacity(new_tail.len(), budget, 64)
                     .map_err(|_| RestoreError::RestoreFailed)?;
@@ -2341,10 +2749,12 @@ impl SseRestorationState {
             }
             "response.output_text.done"
             | "response.refusal.done"
-            | "response.reasoning_summary_text.done" => {
+            | "response.reasoning_summary_text.done"
+            | "response.reasoning_text.done" => {
                 let (part_key, field_key, kind) = match evt {
                     "response.output_text.done" => ("content_index", "text", 1u8),
                     "response.refusal.done" => ("content_index", "refusal", 2u8),
+                    "response.reasoning_text.done" => ("content_index", "text", 4u8),
                     _ => ("summary_index", "text", 3u8),
                 };
                 let part_idx = data.get(part_key).and_then(Value::as_u64).unwrap_or(0);
@@ -2359,6 +2769,7 @@ impl SseRestorationState {
                         check_no_tokens_in_value(v, &self.lease)?;
                     }
                 }
+                self.failure_stage = RestoreStage::SseSnapshot;
                 let budget = self.budget.clone();
                 {
                     let track = self.get_or_create_text_part(out_idx, part_idx, kind)?;
@@ -2369,14 +2780,33 @@ impl SseRestorationState {
                         return Err(RestoreError::RestoreFailed);
                     }
                 }
+                self.failure_stage = RestoreStage::TokenRestore;
                 let mut ignored_count = 0usize;
-                let restored_done = restore_text_with_lease(
+                let restore = restore_text_part(kind);
+                let restored_done = restore(
                     raw_text,
                     &self.lease,
                     &budget,
                     &mut self.output_tokens,
                     &mut ignored_count,
-                )?;
+                )
+                .inspect_err(|err| {
+                    if *err == RestoreError::FailedBecause(RestoreReason::TokenFormat) {
+                        let carrier = match kind {
+                            1 => Carrier::OutputText,
+                            2 => Carrier::Refusal,
+                            _ => Carrier::Reasoning,
+                        };
+                        self.token_format_diagnostics.observe(
+                            raw_text,
+                            0,
+                            carrier,
+                            Site::DoneRestore,
+                            false,
+                        );
+                    }
+                })?;
+                self.failure_stage = RestoreStage::SseSnapshot;
                 let saw_deltas = {
                     let track = self.get_or_create_text_part(out_idx, part_idx, kind)?;
                     if track.saw_deltas
@@ -2426,12 +2856,13 @@ impl SseRestorationState {
                     "output_text" => (1u8, "text"),
                     "refusal" => (2u8, "refusal"),
                     "summary_text" => (3u8, "text"),
+                    "reasoning_text" => (4u8, "text"),
                     _ => {
                         check_no_tokens_in_value(data, &self.lease)?;
                         return Err(RestoreError::RestoreFailed);
                     }
                 };
-                if default_kind == 3 && kind != 3 {
+                if (default_kind == 3) != (kind == 3) {
                     return Err(RestoreError::RestoreFailed);
                 }
                 let raw_text = part
@@ -2439,6 +2870,9 @@ impl SseRestorationState {
                     .and_then(Value::as_str)
                     .ok_or(RestoreError::RestoreFailed)?;
                 let budget = self.budget.clone();
+                if kind == 1 {
+                    self.flush_output_text_tail(out_idx, part_idx)?;
+                }
                 let restored_str = {
                     let track = self.get_or_create_text_part(out_idx, part_idx, kind)?;
                     if track.part_done_seen || !track.pending_tail.as_slice().is_empty() {
@@ -2466,13 +2900,30 @@ impl SseRestorationState {
                     Some(s) => s,
                     None => {
                         let mut dummy = 0usize;
-                        restore_text_with_lease(
+                        let restore = restore_text_part(kind);
+                        restore(
                             raw_text,
                             &self.lease,
                             &self.budget,
                             &mut self.output_tokens,
                             &mut dummy,
-                        )?
+                        )
+                        .inspect_err(|err| {
+                            if *err == RestoreError::FailedBecause(RestoreReason::TokenFormat) {
+                                let carrier = match kind {
+                                    1 => Carrier::OutputText,
+                                    2 => Carrier::Refusal,
+                                    _ => Carrier::Reasoning,
+                                };
+                                self.token_format_diagnostics.observe(
+                                    raw_text,
+                                    0,
+                                    carrier,
+                                    Site::SnapshotRestore,
+                                    false,
+                                );
+                            }
+                        })?
                     }
                 };
                 replacements
@@ -2505,6 +2956,9 @@ impl SseRestorationState {
                                 .get(field_key)
                                 .and_then(Value::as_str)
                                 .ok_or(RestoreError::RestoreFailed)?;
+                            if kind == 1 {
+                                self.flush_output_text_tail(out_idx, part_idx)?;
+                            }
                             let track = self.get_or_create_text_part(out_idx, part_idx, kind)?;
                             if track.item_done_seen || !track.pending_tail.as_slice().is_empty() {
                                 return Err(RestoreError::RestoreFailed);
@@ -2531,31 +2985,54 @@ impl SseRestorationState {
                             &mut self.output_tokens,
                             &mut dummy_count,
                             replacements,
-                        )?;
+                        )
+                        .inspect_err(|err| {
+                            if *err == RestoreError::FailedBecause(RestoreReason::TokenFormat) {
+                                // The nested helper does not identify the failing leaf.
+                                self.token_format_diagnostics.observe(
+                                    "",
+                                    0,
+                                    Carrier::Other,
+                                    Site::SnapshotRestore,
+                                    false,
+                                );
+                            }
+                        })?;
                     }
                     "reasoning" => {
-                        if let Some(summary) = item.get("summary").and_then(Value::as_array) {
-                            for (idx, part) in summary.iter().enumerate() {
-                                let raw_text = part
-                                    .get("text")
-                                    .and_then(Value::as_str)
-                                    .ok_or(RestoreError::RestoreFailed)?;
-                                let track = self.get_or_create_text_part(out_idx, idx as u64, 3)?;
-                                if track.item_done_seen || !track.pending_tail.as_slice().is_empty()
+                        for (field, kind) in [("summary", 3), ("content", 4)] {
+                            if let Some(parts) = item.get(field) {
+                                for (idx, part) in parts
+                                    .as_array()
+                                    .ok_or(RestoreError::RestoreFailed)?
+                                    .iter()
+                                    .enumerate()
                                 {
-                                    return Err(RestoreError::RestoreFailed);
-                                }
-                                if track.saw_deltas
-                                    && track.raw_deltas.as_slice() != raw_text.as_bytes()
-                                {
-                                    return Err(RestoreError::RestoreFailed);
-                                }
-                                if let Some(done) = &track.raw_done {
-                                    if done.as_str() != raw_text {
+                                    let raw_text = part
+                                        .get("text")
+                                        .and_then(Value::as_str)
+                                        .ok_or(RestoreError::RestoreFailed)?;
+                                    let track =
+                                        self.get_or_create_text_part(out_idx, idx as u64, kind)?;
+                                    if track.item_done_seen
+                                        || !track.pending_tail.as_slice().is_empty()
+                                    {
                                         return Err(RestoreError::RestoreFailed);
                                     }
+                                    if track.saw_deltas
+                                        && track.raw_deltas.as_slice() != raw_text.as_bytes()
+                                    {
+                                        return Err(RestoreError::RestoreFailed);
+                                    }
+                                    if track
+                                        .raw_done
+                                        .as_ref()
+                                        .is_some_and(|done| done.as_str() != raw_text)
+                                    {
+                                        return Err(RestoreError::RestoreFailed);
+                                    }
+                                    track.item_done_seen = true;
                                 }
-                                track.item_done_seen = true;
                             }
                         }
                         let mut dummy_count = 0usize;
@@ -2568,18 +3045,34 @@ impl SseRestorationState {
                             &mut self.output_tokens,
                             &mut dummy_count,
                             replacements,
-                        )?;
+                        )
+                        .inspect_err(|err| {
+                            if *err == RestoreError::FailedBecause(RestoreReason::TokenFormat) {
+                                // The nested helper does not identify the failing leaf.
+                                self.token_format_diagnostics.observe(
+                                    "",
+                                    0,
+                                    Carrier::Other,
+                                    Site::SnapshotRestore,
+                                    false,
+                                );
+                            }
+                        })?;
                     }
                     _ => return Err(RestoreError::RestoreFailed),
                 }
             }
             "response.output_item.added" => {
                 let item = data.get("item").ok_or(RestoreError::RestoreFailed)?;
-                let field = match item.get("type").and_then(Value::as_str) {
-                    Some("message") => "content",
-                    Some("reasoning") => "summary",
-                    _ => return Err(RestoreError::RestoreFailed),
-                };
+                let kind = item.get("type").and_then(Value::as_str);
+                if kind == Some("reasoning") {
+                    check_reasoning_item(item, &self.lease)?;
+                    return Ok(());
+                }
+                if kind != Some("message") {
+                    return Err(RestoreError::RestoreFailed);
+                }
+                let field = "content";
                 if let Some(parts) = item.get(field) {
                     for part in parts.as_array().ok_or(RestoreError::RestoreFailed)? {
                         let key = if part.get("type").and_then(Value::as_str) == Some("refusal") {
@@ -2589,13 +3082,39 @@ impl SseRestorationState {
                         };
                         if let Some(target) = part.get(key) {
                             let text = target.as_str().ok_or(RestoreError::RestoreFailed)?;
-                            let restored = restore_text_with_lease(
+                            let restore = if field == "content"
+                                && part.get("type").and_then(Value::as_str) == Some("output_text")
+                            {
+                                restore_output_text_with_lease
+                            } else if field == "summary" {
+                                copy_reasoning_text
+                            } else {
+                                restore_text_with_lease
+                            };
+                            let restored = restore(
                                 text,
                                 &self.lease,
                                 &self.budget,
                                 &mut self.output_tokens,
                                 &mut self.restored_occurrences,
-                            )?;
+                            )
+                            .inspect_err(|err| {
+                                if *err == RestoreError::FailedBecause(RestoreReason::TokenFormat) {
+                                    let carrier = match part.get("type").and_then(Value::as_str) {
+                                        Some("output_text") => Carrier::OutputText,
+                                        Some("refusal") => Carrier::Refusal,
+                                        Some("summary_text") => Carrier::Reasoning,
+                                        _ => Carrier::Other,
+                                    };
+                                    self.token_format_diagnostics.observe(
+                                        text,
+                                        0,
+                                        carrier,
+                                        Site::SnapshotRestore,
+                                        false,
+                                    );
+                                }
+                            })?;
                             replacements
                                 .push((target, restored))
                                 .map_err(|_| RestoreError::RestoreFailed)?;
@@ -2606,19 +3125,47 @@ impl SseRestorationState {
             "response.content_part.added" | "response.reasoning_summary_part.added" => {
                 let part = data.get("part").ok_or(RestoreError::RestoreFailed)?;
                 let field = match part.get("type").and_then(Value::as_str) {
-                    Some("output_text" | "summary_text") => "text",
+                    Some("output_text" | "summary_text" | "reasoning_text") => "text",
                     Some("refusal") => "refusal",
                     _ => return Err(RestoreError::RestoreFailed),
                 };
                 if let Some(target) = part.get(field) {
                     let text = target.as_str().ok_or(RestoreError::RestoreFailed)?;
-                    let restored = restore_text_with_lease(
+                    let restore = if evt == "response.content_part.added"
+                        && part.get("type").and_then(Value::as_str) == Some("output_text")
+                    {
+                        restore_output_text_with_lease
+                    } else if matches!(
+                        part.get("type").and_then(Value::as_str),
+                        Some("summary_text" | "reasoning_text")
+                    ) {
+                        copy_reasoning_text
+                    } else {
+                        restore_text_with_lease
+                    };
+                    let restored = restore(
                         text,
                         &self.lease,
                         &self.budget,
                         &mut self.output_tokens,
                         &mut self.restored_occurrences,
-                    )?;
+                    )
+                    .inspect_err(|err| {
+                        if *err == RestoreError::FailedBecause(RestoreReason::TokenFormat) {
+                            let carrier = match part.get("type").and_then(Value::as_str) {
+                                Some("output_text") => Carrier::OutputText,
+                                Some("refusal") => Carrier::Refusal,
+                                _ => Carrier::Reasoning,
+                            };
+                            self.token_format_diagnostics.observe(
+                                text,
+                                0,
+                                carrier,
+                                Site::SnapshotRestore,
+                                false,
+                            );
+                        }
+                    })?;
                     replacements
                         .push((target, restored))
                         .map_err(|_| RestoreError::RestoreFailed)?;
@@ -2638,11 +3185,27 @@ impl SseRestorationState {
         if let Some(err) = self.failed {
             return Err(err);
         }
-        let res = self.finalize_and_flush_inner(completion_permitted);
+        // Permission must be checked before the successful-reentry shortcut.
+        let res = if !completion_permitted {
+            self.failure_stage = RestoreStage::CompletionEvidence;
+            Err(RestoreError::RestoreFailed)
+        } else if self.finalized {
+            return Ok(Vec::new());
+        } else {
+            self.finalize_and_flush_inner(completion_permitted)
+        };
         if let Err(err) = res {
+            self.pending_delivered_history = None;
             self.failed = Some(err);
+            if err == RestoreError::FailedBecause(RestoreReason::TokenFormat) {
+                // Missing carrier context stays unknown; never inspect unrelated fields.
+                self.token_format_diagnostics
+                    .observe("", 0, Carrier::Other, Site::Unknown, false);
+                self.token_format_diagnostics.emit_once();
+            }
             return Err(err);
         }
+        self.finalized = true;
         res
     }
 
@@ -2650,15 +3213,19 @@ impl SseRestorationState {
         &mut self,
         completion_permitted: bool,
     ) -> Result<Vec<Bytes>, RestoreError> {
+        self.failure_stage = RestoreStage::CompletionEvidence;
         if !self.completed_seen {
             return Err(RestoreError::RestoreFailed);
         }
         let witness = CompletionWitness::from_verified_completion(completion_permitted)
             .map_err(|_| RestoreError::RestoreFailed)?;
 
-        // Ensure no pre-barrier text part has an unflushed tail.
+        self.failure_stage = RestoreStage::SseSnapshot;
+        // Ordinary text tails remain undecided until the complete raw field is
+        // restored below: post-barrier deltas may complete a pending reference.
+        // Strict carriers retain their existing unfinished-tail rejection.
         for part in self.text_parts.as_slice() {
-            if part.pending_tail.len() >= 8 {
+            if part.kind != 1 && token_format::header(part.pending_tail.as_slice()).is_some() {
                 return Err(RestoreError::RestoreFailed);
             }
         }
@@ -2778,13 +3345,36 @@ impl SseRestorationState {
                         }
                         if track.restored_done.is_none() {
                             let mut count = 0usize;
-                            let restored = restore_text_with_lease(
+                            self.failure_stage = RestoreStage::TokenRestore;
+                            let restore = if kind == 1 {
+                                restore_output_text_with_lease
+                            } else {
+                                restore_text_with_lease
+                            };
+                            let restored = restore(
                                 final_raw,
                                 &self.lease,
                                 &budget,
                                 &mut self.output_tokens,
                                 &mut count,
-                            )?;
+                            )
+                            .inspect_err(|err| {
+                                if *err == RestoreError::FailedBecause(RestoreReason::TokenFormat) {
+                                    let carrier = if kind == 1 {
+                                        Carrier::OutputText
+                                    } else {
+                                        Carrier::Refusal
+                                    };
+                                    self.token_format_diagnostics.observe(
+                                        final_raw,
+                                        0,
+                                        carrier,
+                                        Site::FinalTextRestore,
+                                        false,
+                                    );
+                                }
+                            })?;
+                            self.failure_stage = RestoreStage::SseSnapshot;
                             self.restored_occurrences = self
                                 .restored_occurrences
                                 .checked_add(count)
@@ -2796,41 +3386,44 @@ impl SseRestorationState {
                     }
                 }
                 Some("reasoning") => {
-                    if let Some(summary) = item.get("summary").and_then(Value::as_array) {
-                        for (part_idx, part) in summary.iter().enumerate() {
-                            let final_raw = part
-                                .get("text")
-                                .and_then(Value::as_str)
-                                .ok_or(RestoreError::RestoreFailed)?;
-                            let budget = self.budget.clone();
-                            let track =
-                                self.get_or_create_text_part(out_idx, part_idx as u64, 3)?;
-                            if track.saw_deltas
-                                && track.raw_deltas.as_slice() != final_raw.as_bytes()
+                    check_reasoning_item(item, &self.lease)?;
+                    for (field, kind) in [("summary", 3), ("content", 4)] {
+                        if let Some(parts) = item.get(field) {
+                            for (part_idx, part) in parts
+                                .as_array()
+                                .ok_or(RestoreError::RestoreFailed)?
+                                .iter()
+                                .enumerate()
                             {
-                                return Err(RestoreError::RestoreFailed);
-                            }
-                            if let Some(done) = &track.raw_done {
-                                if done.as_str() != final_raw {
+                                let final_raw = part
+                                    .get("text")
+                                    .and_then(Value::as_str)
+                                    .ok_or(RestoreError::RestoreFailed)?;
+                                let budget = self.budget.clone();
+                                let track =
+                                    self.get_or_create_text_part(out_idx, part_idx as u64, kind)?;
+                                if track.saw_deltas
+                                    && track.raw_deltas.as_slice() != final_raw.as_bytes()
+                                {
                                     return Err(RestoreError::RestoreFailed);
                                 }
-                            }
-                            if track.restored_done.is_none() {
-                                let mut count = 0usize;
-                                let restored = restore_text_with_lease(
-                                    final_raw,
-                                    &self.lease,
-                                    &budget,
-                                    &mut self.output_tokens,
-                                    &mut count,
-                                )?;
-                                self.restored_occurrences = self
-                                    .restored_occurrences
-                                    .checked_add(count)
-                                    .ok_or(RestoreError::RestoreFailed)?;
-                                let track =
-                                    self.get_or_create_text_part(out_idx, part_idx as u64, 3)?;
-                                track.restored_done = Some(restored);
+                                if track
+                                    .raw_done
+                                    .as_ref()
+                                    .is_some_and(|done| done.as_str() != final_raw)
+                                {
+                                    return Err(RestoreError::RestoreFailed);
+                                }
+                                if track.restored_done.is_none() {
+                                    track.restored_done = Some(
+                                        PayloadText::try_from_str(
+                                            final_raw,
+                                            budget,
+                                            MAX_FRAME_BYTES,
+                                        )
+                                        .map_err(RestoreError::capacity)?,
+                                    );
+                                }
                             }
                         }
                     }
@@ -2870,13 +3463,27 @@ impl SseRestorationState {
                         }
                     }
                     let mut count = 0usize;
+                    self.failure_stage = RestoreStage::TokenRestore;
                     let restored = restore_json_arguments_string(
                         final_raw,
                         &self.lease,
                         &budget,
                         &mut self.output_tokens,
                         &mut count,
-                    )?;
+                    )
+                    .inspect_err(|err| {
+                        if *err == RestoreError::FailedBecause(RestoreReason::TokenFormat) {
+                            // Do not rescan encoded JSON or guess which decoded leaf failed.
+                            self.token_format_diagnostics.observe(
+                                "",
+                                0,
+                                Carrier::FunctionArguments,
+                                Site::FinalToolRestore,
+                                false,
+                            );
+                        }
+                    })?;
+                    self.failure_stage = RestoreStage::SseSnapshot;
                     self.restored_occurrences = self
                         .restored_occurrences
                         .checked_add(count)
@@ -2907,13 +3514,26 @@ impl SseRestorationState {
                         }
                     }
                     let mut count = 0usize;
+                    self.failure_stage = RestoreStage::TokenRestore;
                     let restored = restore_text_with_lease(
                         final_raw,
                         &self.lease,
                         &budget,
                         &mut self.output_tokens,
                         &mut count,
-                    )?;
+                    )
+                    .inspect_err(|err| {
+                        if *err == RestoreError::FailedBecause(RestoreReason::TokenFormat) {
+                            self.token_format_diagnostics.observe(
+                                final_raw,
+                                0,
+                                Carrier::CustomInput,
+                                Site::FinalToolRestore,
+                                false,
+                            );
+                        }
+                    })?;
+                    self.failure_stage = RestoreStage::SseSnapshot;
                     self.restored_occurrences = self
                         .restored_occurrences
                         .checked_add(count)
@@ -2931,10 +3551,10 @@ impl SseRestorationState {
                 .ok()
                 .and_then(|n| output_arr.get(n))
                 .ok_or(RestoreError::RestoreFailed)?;
-            let (kind, field) = if part.kind == 3 {
-                ("reasoning", "summary")
-            } else {
-                ("message", "content")
+            let (kind, field) = match part.kind {
+                3 => ("reasoning", "summary"),
+                4 => ("reasoning", "content"),
+                _ => ("message", "content"),
             };
             let final_part = usize::try_from(part.part_index)
                 .ok()
@@ -2948,6 +3568,7 @@ impl SseRestorationState {
                 1 => "output_text",
                 2 => "refusal",
                 3 => "summary_text",
+                4 => "reasoning_text",
                 _ => return Err(RestoreError::RestoreFailed),
             };
             if item.get("type").and_then(Value::as_str) != Some(kind)
@@ -2977,6 +3598,7 @@ impl SseRestorationState {
             }
         }
 
+        self.failure_stage = RestoreStage::ToolCommit;
         // Prepare all immutable snapshots and frames before publication can authorize continuity.
         let restored_response = restore_completed_snapshot(
             response_val,
@@ -3047,15 +3669,24 @@ impl SseRestorationState {
                 "response.output_text.delta"
                 | "response.refusal.delta"
                 | "response.reasoning_summary_text.delta"
+                | "response.reasoning_text.delta"
                 | "response.output_text.done"
                 | "response.refusal.done"
                 | "response.reasoning_summary_text.done"
+                | "response.reasoning_text.done"
                 | "response.content_part.done"
                 | "response.reasoning_summary_part.done"
                 | "response.content_part.added"
                 | "response.reasoning_summary_part.added" => {
                     let (part_key, kind, field) = if evt.contains("reasoning_summary") {
                         ("summary_index", 3, "text")
+                    } else if matches!(
+                        evt,
+                        "response.reasoning_text.delta" | "response.reasoning_text.done"
+                    ) || data.pointer("/part/type").and_then(Value::as_str)
+                        == Some("reasoning_text")
+                    {
+                        ("content_index", 4, "text")
                     } else if evt.contains("refusal")
                         || data.pointer("/part/type").and_then(Value::as_str) == Some("refusal")
                     {
@@ -3138,9 +3769,10 @@ impl SseRestorationState {
                 self.budget.limit(),
             )
             .map_err(|_| RestoreError::RestoreFailed)?;
-            check_no_tokens_in_value(replay.as_value(), &self.lease)?;
+            check_restored_event(evt, replay.as_value(), &self.lease)?;
             out_frames.push(encode_sse_frame(evt, replay.as_value(), &self.budget)?);
         }
+        self.failure_stage = RestoreStage::ContextPublish;
         publish_completed_snapshot(
             response_val,
             &self.output_tokens,
@@ -3149,6 +3781,591 @@ impl SseRestorationState {
             &witness,
             &self.budget,
         )?;
+        self.pending_delivered_history = self
+            .lease
+            .capture_delivered_history(&self.binding, restored_response.as_value());
         Ok(out_frames)
+    }
+}
+
+/// Private groundwork only: never compiled into the production response path.
+#[cfg(test)]
+pub(super) const TEXT_PROJECTION_NOTICE: &str =
+    "Some response text was omitted because it could not be safely restored.";
+
+#[cfg(test)]
+pub(super) fn prepare_text_projection(
+    response: &Value,
+    lease: &DlpRequestLease,
+    budget: &PayloadBudget,
+) -> Result<PayloadJson, RestoreError> {
+    use super::{
+        completion_json::{JsonCompletion, JsonCompletionProtocol},
+        tokenization::validate_response_references,
+    };
+    lease
+        .validate_response_liveness()
+        .map_err(|_| RestoreError::FailedBecause(RestoreReason::TokenContext))?;
+    let encoded = serialize_json_with_budget(response, budget, budget.limit())?;
+    let raw = std::str::from_utf8(encoded.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
+    let mut evidence = JsonCompletion::new(JsonCompletionProtocol::NativeResponses);
+    evidence.observe_raw_json(raw, budget);
+    if !evidence.permits_completion() {
+        return Err(RestoreError::RestoreFailed);
+    }
+    let obj = response.as_object().ok_or(RestoreError::RestoreFailed)?;
+    if obj.get("object").and_then(Value::as_str) != Some("response") {
+        return Err(RestoreError::RestoreFailed);
+    }
+    for (key, value) in obj {
+        check_no_tokens_in_str(key, lease)?;
+        if key != "output" {
+            check_no_tokens_in_value(value, lease)?;
+        }
+    }
+    let output = obj
+        .get("output")
+        .and_then(Value::as_array)
+        .ok_or(RestoreError::RestoreFailed)?;
+    if output.len() > MAX_RESPONSE_ITEMS {
+        return Err(RestoreError::RestoreFailed);
+    }
+    let mut replacements = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
+    let mut tokens = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
+    let mut count = 0;
+    let mut damaged = false;
+    for item in output {
+        let obj = item.as_object().ok_or(RestoreError::RestoreFailed)?;
+        if item.get("type").and_then(Value::as_str) != Some("message") {
+            return Err(RestoreError::RestoreUnsupported);
+        }
+        for (key, value) in obj {
+            check_no_tokens_in_str(key, lease)?;
+            if key != "content" {
+                check_no_tokens_in_value(value, lease)?;
+            }
+        }
+        let content = item
+            .get("content")
+            .and_then(Value::as_array)
+            .ok_or(RestoreError::RestoreFailed)?;
+        if content.len() > MAX_RESPONSE_ITEMS {
+            return Err(RestoreError::RestoreFailed);
+        }
+        for part in content {
+            let obj = part.as_object().ok_or(RestoreError::RestoreFailed)?;
+            if part.get("type").and_then(Value::as_str) != Some("output_text") {
+                return Err(RestoreError::RestoreUnsupported);
+            }
+            for (key, value) in obj {
+                check_no_tokens_in_str(key, lease)?;
+                if key != "text" {
+                    check_no_tokens_in_value(value, lease)?;
+                }
+            }
+            let target = part.get("text").ok_or(RestoreError::RestoreFailed)?;
+            let text = target.as_str().ok_or(RestoreError::RestoreFailed)?;
+            if text.len() > MAX_FRAME_BYTES {
+                return Err(RestoreError::FailedBecause(RestoreReason::RestoreCapacity));
+            }
+            let has_format_error =
+                validate_response_references(text, lease).map_err(|error| match error {
+                    TokenError::CapacityExceeded | TokenError::Unavailable => {
+                        RestoreError::capacity(error)
+                    }
+                    _ => RestoreError::FailedBecause(RestoreReason::TokenContext),
+                })?;
+            let replacement = if has_format_error {
+                damaged = true;
+                PayloadText::try_from_str(TEXT_PROJECTION_NOTICE, budget.clone(), MAX_FRAME_BYTES)
+                    .map_err(RestoreError::capacity)?
+            } else {
+                restore_text_with_lease(text, lease, budget, &mut tokens, &mut count)?
+            };
+            replacements
+                .push((target, replacement))
+                .map_err(RestoreError::capacity)?;
+        }
+    }
+    if !damaged {
+        return Err(RestoreError::RestoreFailed);
+    }
+    let prepared = apply_text_replacements(response, &replacements, budget)?;
+    check_no_tokens_in_value(prepared.as_value(), lease)?;
+    lease
+        .validate_response_liveness()
+        .map_err(|_| RestoreError::FailedBecause(RestoreReason::TokenContext))?;
+    // No binding/witness/publication capability is available to this builder.
+    Ok(prepared)
+}
+
+/// Synthetic-only transaction. It cannot be selected by an HTTP request or runtime policy.
+#[cfg(test)]
+pub(super) struct TextProjectionStream {
+    raw: SseRestorationState,
+    evidence: super::completion_json::NativeSseCompletion,
+    bytes: usize,
+    frames: usize,
+    finished: bool,
+}
+
+#[cfg(test)]
+impl TextProjectionStream {
+    pub(super) fn new(lease: DlpRequestLease, budget: PayloadBudget) -> Result<Self, RestoreError> {
+        // The binding is test-local; projection never uses it to publish anything.
+        let binding = lease
+            .bind_actual_attempt(
+                "projection-fixture",
+                "openai_responses",
+                "http://127.0.0.1:1/responses",
+                None,
+            )
+            .map_err(|_| RestoreError::RestoreFailed)?;
+        let mut raw =
+            SseRestorationState::new(lease, binding, budget, ArgumentNormalizationMode::Exact)?;
+        raw.barrier_active = true;
+        Ok(Self {
+            raw,
+            evidence: super::completion_json::NativeSseCompletion::new(),
+            bytes: 0,
+            frames: 0,
+            finished: false,
+        })
+    }
+
+    pub(super) fn push_frame(&mut self, block: &str) -> Result<(), RestoreError> {
+        if self.finished {
+            return Err(RestoreError::RestoreFailed);
+        }
+        let result = self.push_inner(block);
+        if let Err(error) = result {
+            self.raw.failed.get_or_insert(error);
+            self.finished = true;
+        }
+        result
+    }
+
+    fn push_inner(&mut self, block: &str) -> Result<(), RestoreError> {
+        use super::completion_evidence::CompletionObservation;
+        self.bytes = self
+            .bytes
+            .checked_add(block.len())
+            .filter(|n| *n <= MAX_BARRIER_BYTES)
+            .ok_or(RestoreError::RestoreFailed)?;
+        self.frames = self
+            .frames
+            .checked_add(1)
+            .filter(|n| *n <= MAX_RESPONSE_ITEMS)
+            .ok_or(RestoreError::RestoreFailed)?;
+        if !(block.ends_with("\n\n") || block.ends_with("\r\n\r\n")) {
+            return Err(RestoreError::RestoreFailed);
+        }
+        // The inherited strict parser makes a temporary event-kind String. Reserve its
+        // worst-case decoded length for this test-only transaction before parsing/copying.
+        // Keep production parsing and its fixed diagnostics unchanged.
+        let _kind_copy_charge = self
+            .raw
+            .budget
+            .reserve(block.len())
+            .map_err(RestoreError::capacity)?;
+        self.evidence
+            .observe(&CompletionObservation::RawFrame(block), &self.raw.budget);
+        let before = self.raw.barrier_events.len();
+        let released = self.raw.process_sse_block(block)?;
+        if !released.is_empty() {
+            return Err(RestoreError::RestoreFailed);
+        }
+        if self.raw.barrier_events.len() != before {
+            let event = &self.raw.barrier_events.as_slice()[before];
+            let evt = event.event_name.as_str();
+            if !matches!(
+                evt,
+                "response.created"
+                    | "response.in_progress"
+                    | "response.output_item.added"
+                    | "response.output_item.done"
+                    | "response.content_part.added"
+                    | "response.content_part.done"
+                    | "response.output_text.delta"
+                    | "response.output_text.done"
+                    | "response.completed"
+            ) {
+                return Err(RestoreError::RestoreUnsupported);
+            }
+            let event_name = block
+                .lines()
+                .find_map(|line| line.strip_prefix("event:"))
+                .map(str::trim)
+                .unwrap_or("");
+            self.evidence.observe(
+                &CompletionObservation::NativeEvent {
+                    event_name,
+                    data: event.data.as_value(),
+                },
+                &self.raw.budget,
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn finish(&mut self, reached_eof: bool) -> Result<PayloadVec<Bytes>, RestoreError> {
+        if self.finished {
+            return Err(RestoreError::RestoreFailed);
+        }
+        self.finished = true;
+        let result = self.finish_inner(reached_eof);
+        if let Err(error) = &result {
+            self.raw.failed.get_or_insert(*error);
+        }
+        result
+    }
+
+    fn finish_inner(&mut self, reached_eof: bool) -> Result<PayloadVec<Bytes>, RestoreError> {
+        use super::completion_evidence::CompletionObservation;
+        self.evidence.observe(
+            &CompletionObservation::EntityEnd {
+                reached_eof,
+                unfinished_frame: false,
+                unfinished_utf8: false,
+            },
+            &self.raw.budget,
+        );
+        if !reached_eof || !self.evidence.permits_completion() || !self.raw.completed_seen {
+            return Err(RestoreError::RestoreFailed);
+        }
+        let events = self.raw.barrier_events.as_slice();
+        let last = events.last().ok_or(RestoreError::RestoreFailed)?;
+        if last.event_name.as_str() != "response.completed" {
+            return Err(RestoreError::RestoreFailed);
+        }
+        let response = last
+            .data
+            .as_value()
+            .get("response")
+            .ok_or(RestoreError::RestoreFailed)?;
+        let output = response
+            .get("output")
+            .and_then(Value::as_array)
+            .ok_or(RestoreError::RestoreFailed)?;
+        let mut closed_items =
+            PayloadVec::new(self.raw.budget.clone()).map_err(RestoreError::capacity)?;
+        let mut closed_parts =
+            PayloadVec::new(self.raw.budget.clone()).map_err(RestoreError::capacity)?;
+        // Validate original events, including those after the damaged text, before any substitution.
+        for event in events {
+            let data = event.data.as_value();
+            let evt = event.event_name.as_str();
+            if is_raw_snapshot_event(evt) {
+                validate_raw_snapshot(
+                    data,
+                    output,
+                    ArgumentNormalizationMode::Exact,
+                    &self.raw.budget,
+                )?;
+            }
+            for (key, value) in data.as_object().ok_or(RestoreError::RestoreFailed)? {
+                check_no_tokens_in_str(key, &self.raw.lease)?;
+                let carrier = match evt {
+                    "response.output_text.delta" => "delta",
+                    "response.output_text.done" => "text",
+                    "response.content_part.added" | "response.content_part.done" => "part",
+                    "response.output_item.added" | "response.output_item.done" => "item",
+                    "response.created" | "response.in_progress" | "response.completed" => {
+                        "response"
+                    }
+                    _ => return Err(RestoreError::RestoreUnsupported),
+                };
+                if key != carrier {
+                    check_no_tokens_in_value(value, &self.raw.lease)?;
+                }
+            }
+            for key in ["output_index", "content_index"] {
+                if data.get(key).is_some_and(|value| value.as_u64().is_none()) {
+                    return Err(RestoreError::RestoreFailed);
+                }
+            }
+            if is_raw_snapshot_event(evt) {
+                check_snapshot_carriers(data, &self.raw.lease)?;
+            }
+            if matches!(evt, "response.created" | "response.in_progress") {
+                check_no_tokens_in_value(data, &self.raw.lease)?;
+                let prefix = data.get("response").ok_or(RestoreError::RestoreFailed)?;
+                if !prefix.is_object()
+                    || prefix.get("id") != response.get("id")
+                    || prefix.get("object").and_then(Value::as_str) != Some("response")
+                    || prefix.get("status").and_then(Value::as_str) != Some("in_progress")
+                    || !prefix
+                        .get("output")
+                        .and_then(Value::as_array)
+                        .is_some_and(Vec::is_empty)
+                {
+                    return Err(RestoreError::RestoreFailed);
+                }
+            } else if evt != "response.completed" {
+                let index = data
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if closed_items.as_slice().contains(&index) {
+                    return Err(RestoreError::RestoreFailed);
+                }
+                if evt == "response.output_item.done" {
+                    closed_items.push(index).map_err(RestoreError::capacity)?;
+                } else if !evt.starts_with("response.output_item.") {
+                    let part_index = data
+                        .get("content_index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    let identity = (index, part_index);
+                    if closed_parts.as_slice().contains(&identity) {
+                        return Err(RestoreError::RestoreFailed);
+                    }
+                    if evt == "response.content_part.done" {
+                        closed_parts
+                            .push(identity)
+                            .map_err(RestoreError::capacity)?;
+                    }
+                }
+                let item = usize::try_from(index)
+                    .ok()
+                    .and_then(|i| output.get(i))
+                    .ok_or(RestoreError::RestoreFailed)?;
+                if item.get("type").and_then(Value::as_str) != Some("message") {
+                    return Err(RestoreError::RestoreUnsupported);
+                }
+                if data
+                    .get("item_id")
+                    .is_some_and(|id| Some(id) != item.get("id"))
+                {
+                    return Err(RestoreError::RestoreFailed);
+                }
+                if let Some(raw_item) = data.get("item") {
+                    for key in ["id", "type", "role", "call_id", "name", "namespace"] {
+                        if raw_item.get(key) != item.get(key) {
+                            return Err(RestoreError::RestoreFailed);
+                        }
+                    }
+                }
+                if evt.starts_with("response.output_text.") {
+                    let part_index = data
+                        .get("content_index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    let part = usize::try_from(part_index)
+                        .ok()
+                        .and_then(|i| item.get("content")?.as_array()?.get(i))
+                        .ok_or(RestoreError::RestoreFailed)?;
+                    if part.get("type").and_then(Value::as_str) != Some("output_text") {
+                        return Err(RestoreError::RestoreFailed);
+                    }
+                }
+            }
+        }
+        for track in self.raw.text_parts.as_slice() {
+            let part = usize::try_from(track.output_index)
+                .ok()
+                .and_then(|i| output.get(i))
+                .and_then(|item| item.get("content"))
+                .and_then(Value::as_array)
+                .and_then(|parts| {
+                    usize::try_from(track.part_index)
+                        .ok()
+                        .and_then(|i| parts.get(i))
+                })
+                .ok_or(RestoreError::RestoreFailed)?;
+            let final_text = part
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or(RestoreError::RestoreFailed)?;
+            if track.kind != 1
+                || (track.saw_deltas && track.raw_deltas.as_slice() != final_text.as_bytes())
+                || track
+                    .raw_done
+                    .as_ref()
+                    .is_some_and(|text| text.as_str() != final_text)
+            {
+                return Err(RestoreError::RestoreFailed);
+            }
+        }
+        let prepared = prepare_text_projection(response, &self.raw.lease, &self.raw.budget)?;
+        // Restoration stays failed even when a separate local projection can be prepared.
+        self.raw.failed = Some(RestoreError::FailedBecause(RestoreReason::TokenFormat));
+        let mut emitted =
+            PayloadVec::new(self.raw.budget.clone()).map_err(RestoreError::capacity)?;
+        let mut tails: PayloadVec<((u64, u64), PayloadBuffer, usize)> =
+            PayloadVec::new(self.raw.budget.clone()).map_err(RestoreError::capacity)?;
+        let mut tokens =
+            PayloadVec::new(self.raw.budget.clone()).map_err(RestoreError::capacity)?;
+        let mut occurrences = 0;
+        let mut frames =
+            PayloadVec::new(self.raw.budget.clone()).map_err(RestoreError::capacity)?;
+        for event in events {
+            let data = event.data.as_value();
+            let evt = event.event_name.as_str();
+            // Keep the charged per-delta replacement alive through immutable replay encoding.
+            let delta_text: PayloadText;
+            let mut edits =
+                PayloadVec::new(self.raw.budget.clone()).map_err(RestoreError::capacity)?;
+            if evt == "response.completed" {
+                copy_string_edits(response, prepared.as_value(), &mut edits)?;
+            } else if !matches!(evt, "response.created" | "response.in_progress") {
+                let index = data
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let projected_item = usize::try_from(index)
+                    .ok()
+                    .and_then(|i| prepared.as_value().get("output")?.as_array()?.get(i))
+                    .ok_or(RestoreError::RestoreFailed)?;
+                if matches!(
+                    evt,
+                    "response.output_item.added" | "response.output_item.done"
+                ) {
+                    let item = data.get("item").ok_or(RestoreError::RestoreFailed)?;
+                    item_string_edits(item, projected_item, evt.ends_with(".added"), &mut edits)?;
+                } else {
+                    let part_index = data
+                        .get("content_index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    let projected_part = usize::try_from(part_index)
+                        .ok()
+                        .and_then(|i| projected_item.get("content")?.as_array()?.get(i))
+                        .ok_or(RestoreError::RestoreFailed)?;
+                    let text = projected_part
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .ok_or(RestoreError::RestoreFailed)?;
+                    let target = match evt {
+                        "response.content_part.added" | "response.content_part.done" => {
+                            data.get("part").and_then(|part| part.get("text"))
+                        }
+                        "response.output_text.delta" => data.get("delta"),
+                        "response.output_text.done" => data.get("text"),
+                        _ => return Err(RestoreError::RestoreUnsupported),
+                    };
+                    if let Some(target) = target {
+                        let text = if evt == "response.output_text.delta" {
+                            let identity = (index, part_index);
+                            let original = usize::try_from(index)
+                                .ok()
+                                .and_then(|i| output.get(i))
+                                .and_then(|item| item.get("content")?.as_array())
+                                .and_then(|parts| {
+                                    usize::try_from(part_index).ok().and_then(|i| parts.get(i))
+                                })
+                                .and_then(|part| part.get("text"))
+                                .and_then(Value::as_str)
+                                .ok_or(RestoreError::RestoreFailed)?;
+                            let damaged = super::tokenization::validate_response_references(
+                                original,
+                                &self.raw.lease,
+                            )
+                            .map_err(|_| {
+                                RestoreError::FailedBecause(RestoreReason::TokenContext)
+                            })?;
+                            if damaged {
+                                if emitted.as_slice().contains(&identity) {
+                                    ""
+                                } else {
+                                    emitted.push(identity).map_err(RestoreError::capacity)?;
+                                    text
+                                }
+                            } else {
+                                let slot = match tails
+                                    .as_slice()
+                                    .iter()
+                                    .position(|(key, _, _)| *key == identity)
+                                {
+                                    Some(slot) => slot,
+                                    None => {
+                                        tails
+                                            .push((
+                                                identity,
+                                                PayloadBuffer::with_capacity(
+                                                    0,
+                                                    self.raw.budget.clone(),
+                                                    MAX_FRAME_BYTES,
+                                                )
+                                                .map_err(RestoreError::capacity)?,
+                                                0,
+                                            ))
+                                            .map_err(RestoreError::capacity)?;
+                                        tails.len() - 1
+                                    }
+                                };
+                                let (_, tail, received) =
+                                    tails.get_mut(slot).ok_or(RestoreError::RestoreFailed)?;
+                                let delta = target.as_str().ok_or(RestoreError::RestoreFailed)?;
+                                *received = received
+                                    .checked_add(delta.len())
+                                    .ok_or(RestoreError::RestoreFailed)?;
+                                let mut combined = PayloadBuffer::with_capacity(
+                                    tail.len()
+                                        .checked_add(delta.len())
+                                        .ok_or(RestoreError::RestoreFailed)?,
+                                    self.raw.budget.clone(),
+                                    MAX_FRAME_BYTES,
+                                )
+                                .map_err(RestoreError::capacity)?;
+                                combined
+                                    .append(tail.as_slice())
+                                    .and_then(|_| combined.append(delta.as_bytes()))
+                                    .map_err(RestoreError::capacity)?;
+                                let combined_text = std::str::from_utf8(combined.as_slice())
+                                    .map_err(|_| RestoreError::RestoreFailed)?;
+                                let (safe, pending) = if *received == original.len() {
+                                    // The original final field is already fully validated; flush its last safe tail.
+                                    (combined_text, "")
+                                } else {
+                                    split_safe_prefix_and_tail(combined_text)?
+                                };
+                                let mut next_tail = PayloadBuffer::with_capacity(
+                                    pending.len(),
+                                    self.raw.budget.clone(),
+                                    MAX_FRAME_BYTES,
+                                )
+                                .map_err(RestoreError::capacity)?;
+                                next_tail
+                                    .append(pending.as_bytes())
+                                    .map_err(RestoreError::capacity)?;
+                                delta_text = restore_text_with_lease(
+                                    safe,
+                                    &self.raw.lease,
+                                    &self.raw.budget,
+                                    &mut tokens,
+                                    &mut occurrences,
+                                )?;
+                                *tail = next_tail;
+                                delta_text.as_str()
+                            }
+                        } else if evt.ends_with(".added") && target.as_str() == Some("") {
+                            ""
+                        } else {
+                            text
+                        };
+                        edits
+                            .push(JsonStringReplacement { target, text })
+                            .map_err(RestoreError::capacity)?;
+                    }
+                }
+            }
+            let replay = PayloadJson::try_with_replacements(
+                data,
+                edits.as_slice(),
+                self.raw.budget.clone(),
+                self.raw.budget.limit(),
+            )
+            .map_err(RestoreError::capacity)?;
+            check_no_tokens_in_value(replay.as_value(), &self.raw.lease)?;
+            frames
+                .push(encode_sse_frame(evt, replay.as_value(), &self.raw.budget)?)
+                .map_err(RestoreError::capacity)?;
+        }
+        self.raw
+            .lease
+            .validate_response_liveness()
+            .map_err(|_| RestoreError::FailedBecause(RestoreReason::TokenContext))?;
+        Ok(frames)
     }
 }

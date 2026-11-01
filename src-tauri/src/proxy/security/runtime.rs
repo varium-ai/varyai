@@ -121,6 +121,13 @@ pub(super) fn admit_security_runtime(
     policy_gate().admit()
 }
 
+pub(super) fn with_history_policy_revision<T>(
+    revision: u64,
+    operation: impl FnOnce() -> T,
+) -> Option<T> {
+    policy_gate().with_history_revision(revision, operation)
+}
+
 /// Presentation and legacy callers only; forwarding admission must use the gate.
 pub fn get_security_runtime() -> Arc<SecurityRuntimeConfig> {
     policy_gate()

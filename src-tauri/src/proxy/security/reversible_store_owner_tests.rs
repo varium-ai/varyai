@@ -1188,3 +1188,19 @@ fn completed_context_ownership_enforces_1024_and_16384_ceilings_and_releases_out
     assert_eq!(ledger.used(), baseline);
     Ok(())
 }
+
+#[test]
+fn shared_control_ledger_unavailability_is_a_recoverable_error() -> Result<(), TokenError> {
+    use super::token_store_owners::test_support::{install, Kind, Phase};
+    let guard = install(|observation| {
+        if observation.kind == Kind::Namespace && observation.phase == Phase::BeforeAllocation {
+            return Err(TokenError::Unavailable);
+        }
+        Ok(())
+    });
+    let result = StoreAllocationLedger::new(0, 4096);
+    drop(guard);
+    assert_eq!(result.err(), Some(TokenError::Unavailable));
+    assert!(StoreAllocationLedger::new(0, 4096).is_ok());
+    Ok(())
+}

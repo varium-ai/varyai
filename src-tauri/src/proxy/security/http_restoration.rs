@@ -22,6 +22,10 @@ use super::{
     completion_evidence::CompletionObservation,
     completion_json::{JsonCompletion, JsonCompletionProtocol},
     extractor::extract_payload_texts,
+    history_provenance::{
+        history_target_for_path, visit_references_with_policy, visit_request_references,
+        DlpHistoryMapping, DlpHistoryProjection, HistoryLeafPolicy,
+    },
     inspect_and_intercept_mut_with_headers,
     payload_budget::PayloadBudget,
     payload_buffer::PayloadBuffer,
@@ -33,10 +37,10 @@ use super::{
     request_plan::{EffectiveAction, PlanError},
     request_preparation::prepare_codex_request_with_budget,
     response_restoration::{
-        failed_sse_frame, stage_json_response, ArgumentNormalizationMode, RestoreError,
-        SseRestorationState,
+        stage_json_response, ArgumentNormalizationMode, RestoreError, SseRestorationState,
     },
     restoration_audit::{PendingRequestAudit, RequestAuditState},
+    restore_diagnostics::{ContextCheckpoint, RestoreStage},
     runtime::{admit_security_runtime, SecurityRuntimeConfig},
     token_store_owners::{SharedAllocation, StoreText, StoreVec},
     tokenization::{visit_token_references, DlpRequestLease, DlpTokenStore, TokenError},
@@ -177,6 +181,19 @@ pub(crate) struct DlpPromptCacheOwner {
     _reservation: super::payload_budget::Reservation,
 }
 
+pub(crate) struct DlpHistoryTransform<'a> {
+    lease: &'a DlpRequestLease,
+    binding: &'a ActualAttemptBinding,
+    origin: &'a Value,
+}
+impl DlpHistoryTransform<'_> {
+    pub(crate) fn projection<'a>(&'a self, body: &'a Value) -> Option<DlpHistoryProjection<'a>> {
+        let mut projection = self.lease.history_projection(self.binding, body)?;
+        projection.restrict_to_origin(self.origin);
+        Some(projection)
+    }
+}
+
 pub(crate) struct DlpPreparedAttempt {
     pub(super) lease: DlpRequestLease,
     pub(super) binding: ActualAttemptBinding,
@@ -188,6 +205,7 @@ pub(crate) struct DlpPreparedAttempt {
     initial_audit: std::sync::Arc<PendingRequestAudit>,
     pending_audit: PendingRequestAudit,
     upstream_payload_owner: Option<super::UpstreamPayloadOwner>,
+    history_mapping: Option<DlpHistoryMapping>,
 }
 impl DlpPreparedAttempt {
     pub(crate) async fn guard_upstream_response(
@@ -213,6 +231,7 @@ impl DlpPreparedAttempt {
         &self,
         body: &Value,
     ) -> Result<Option<Bytes>, DlpForwardError> {
+        self.validate_final_send_history(body)?;
         if !self.has_restoration_lease() {
             return Ok(None);
         }
@@ -264,6 +283,47 @@ impl DlpPreparedAttempt {
             .record_permitted_attempt(&self.pending_audit, provider_id, request_id);
     }
 
+    /// Recheck the exact transport authority after all header/account overrides.
+    /// Operation-family continuity never authorizes a different actual send.
+    pub(crate) fn validate_final_send_binding(
+        &self,
+        provider_id: &str,
+        protocol: &str,
+        target_url: &str,
+        auth_principal: Option<&str>,
+    ) -> Result<(), DlpForwardError> {
+        let actual = self
+            .lease
+            .bind_actual_attempt(provider_id, protocol, target_url, auth_principal)
+            .map_err(DlpForwardError::from_token_error)?;
+        if actual.store_id != self.binding.store_id
+            || actual.namespace != self.binding.namespace
+            || actual.generation != self.binding.generation
+            || actual.policy_revision != self.binding.policy_revision
+            || actual.provider_fingerprint != self.binding.provider_fingerprint
+            || actual.reusable_principal != self.binding.reusable_principal
+        {
+            return Err(DlpForwardError::ContextUnavailable);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_final_send_history(&self, body: &Value) -> Result<(), DlpForwardError> {
+        if self
+            .history_mapping
+            .as_ref()
+            .is_some_and(|mapping| !mapping.validates_all(&self.lease, &self.binding, body))
+        {
+            return Err(DlpForwardError::ContextUnavailable);
+        }
+        Ok(())
+    }
+
+    /// Diagnostic suppression is conservative and grants no forwarding authority.
+    pub(crate) fn suppress_payload_diagnostics(&self) -> bool {
+        self.has_restoration_lease() || self.history_mapping.is_some()
+    }
+
     pub(crate) fn has_restoration_lease(&self) -> bool {
         !self.lease.is_empty()
     }
@@ -295,9 +355,20 @@ pub(crate) enum DlpForwardError {
     TokenCollision,
     Blocked,
     RestoreFailed,
+    RestoreFailedAt(super::restore_diagnostics::RestoreStage),
+    /// Status-only upstream refusal; its untrusted body is never retained or decoded.
+    UpstreamStatus(StatusCode),
 }
 
 impl DlpForwardError {
+    /// Preserve the original refusal; only fixed request-side boundaries are logged.
+    pub(super) fn at_context_checkpoint(self, checkpoint: ContextCheckpoint) -> Self {
+        if self == Self::ContextUnavailable {
+            super::restore_diagnostics::log_context_failure(checkpoint);
+        }
+        self
+    }
+
     pub(super) fn from_token_error(err: TokenError) -> Self {
         match err {
             TokenError::Unavailable => Self::Unavailable,
@@ -318,7 +389,8 @@ impl DlpForwardError {
     }
     pub(crate) fn status_code(self) -> StatusCode {
         match self {
-            Self::RestoreFailed => StatusCode::BAD_GATEWAY,
+            Self::UpstreamStatus(status) => status,
+            Self::RestoreFailed | Self::RestoreFailedAt(_) => StatusCode::BAD_GATEWAY,
             Self::ContextUnavailable
             | Self::PolicyConflict
             | Self::RestoreUnsupported
@@ -332,7 +404,8 @@ impl DlpForwardError {
 
     pub(crate) fn error_type(self) -> &'static str {
         match self {
-            Self::RestoreFailed => "server_error",
+            Self::UpstreamStatus(_) => "upstream_error",
+            Self::RestoreFailed | Self::RestoreFailedAt(_) => "server_error",
             Self::ContextUnavailable
             | Self::PolicyConflict
             | Self::RestoreUnsupported
@@ -344,7 +417,8 @@ impl DlpForwardError {
 
     pub(crate) fn code(self) -> &'static str {
         match self {
-            Self::RestoreFailed => "dlp_restore_failed",
+            Self::UpstreamStatus(_) => "upstream_error",
+            Self::RestoreFailed | Self::RestoreFailedAt(_) => "dlp_restore_failed",
             Self::ContextUnavailable => "dlp_context_unavailable",
             Self::PolicyConflict => "dlp_policy_conflict",
             Self::RestoreUnsupported => "dlp_restore_unsupported",
@@ -358,7 +432,11 @@ impl DlpForwardError {
 
     pub(crate) fn message(self) -> &'static str {
         match self {
-            Self::RestoreFailed => "Reversible DLP response restoration failed.",
+            Self::UpstreamStatus(_) => {
+                "Upstream request failed. The upstream error body was withheld for safety."
+            }
+            Self::RestoreFailed => super::restore_diagnostics::RestoreStage::Unknown.message(),
+            Self::RestoreFailedAt(stage) => stage.message(),
             Self::ContextUnavailable => "Reversible DLP session or cursor context is unavailable.",
             Self::PolicyConflict => {
                 "Reversible DLP token conflicts with an irreversible security rule."
@@ -374,11 +452,26 @@ impl DlpForwardError {
         }
     }
 
+    pub(crate) fn failure_class(self) -> &'static str {
+        match self {
+            Self::UpstreamStatus(_) => "Upstream request failed",
+            _ => "DLP forwarding error",
+        }
+    }
+
     pub(crate) fn into_codex_response(self) -> Response {
         self.into_app_response(&AppType::Codex)
     }
 
     pub(crate) fn into_app_response(self, app_type: &AppType) -> Response {
+        if let Self::RestoreFailedAt(stage) = self {
+            super::restore_diagnostics::log_failure(self.code(), stage);
+        } else if self == Self::RestoreFailed {
+            super::restore_diagnostics::log_failure(
+                self.code(),
+                super::restore_diagnostics::RestoreStage::Unknown,
+            );
+        }
         let status = self.status_code();
         let code = self.code();
         let message = self.message();
@@ -424,7 +517,7 @@ impl DlpForwardError {
 
 pub(crate) fn build_codex_json_error(
     status: StatusCode,
-    message: &'static str,
+    message: &str,
     error_type: &'static str,
     code: &'static str,
 ) -> Response {
@@ -450,15 +543,23 @@ pub(crate) fn build_codex_json_error(
 }
 
 pub(crate) fn build_codex_restore_error_response(err: RestoreError) -> Response {
+    build_codex_restore_error_response_at(err, super::restore_diagnostics::RestoreStage::Unknown)
+}
+
+pub(crate) fn build_codex_restore_error_response_at(
+    err: RestoreError,
+    stage: super::restore_diagnostics::RestoreStage,
+) -> Response {
+    super::restore_diagnostics::log_failure_with_reason(err.code(), stage, err.reason_at(stage));
     build_codex_json_error(
         StatusCode::BAD_GATEWAY,
-        err.message(),
+        &err.message_at(stage),
         "server_error",
         err.code(),
     )
 }
 
-fn body_contains_any_token_reference(body: &Value) -> Result<bool, TokenError> {
+fn value_contains_any_token_reference(body: &Value) -> Result<bool, TokenError> {
     match body {
         Value::String(s) => {
             let mut found = false;
@@ -470,7 +571,7 @@ fn body_contains_any_token_reference(body: &Value) -> Result<bool, TokenError> {
         }
         Value::Array(items) => {
             for item in items {
-                if body_contains_any_token_reference(item)? {
+                if value_contains_any_token_reference(item)? {
                     return Ok(true);
                 }
             }
@@ -483,7 +584,7 @@ fn body_contains_any_token_reference(body: &Value) -> Result<bool, TokenError> {
                     found = true;
                     Ok(())
                 })?;
-                if found || body_contains_any_token_reference(v)? {
+                if found || value_contains_any_token_reference(v)? {
                     return Ok(true);
                 }
             }
@@ -493,11 +594,53 @@ fn body_contains_any_token_reference(body: &Value) -> Result<bool, TokenError> {
     }
 }
 
+// Only actual encoded tool arguments gain a decoding pass. Ordinary strings and
+// metadata keep literal semantics, and decoded trees never authorize references.
+fn body_contains_any_token_reference(
+    body: &Value,
+    budget: &PayloadBudget,
+) -> Result<bool, TokenError> {
+    if value_contains_any_token_reference(body)? {
+        return Ok(true);
+    }
+    encoded_arguments_contain_any_token_reference(body, budget)
+}
+
+fn encoded_arguments_contain_any_token_reference(
+    body: &Value,
+    budget: &PayloadBudget,
+) -> Result<bool, TokenError> {
+    if let Some(items) = body.get("input").and_then(Value::as_array) {
+        for item in items {
+            if item.get("type").and_then(Value::as_str) != Some("function_call") {
+                continue;
+            }
+            let Some(encoded) = item.get("arguments").and_then(Value::as_str) else {
+                continue;
+            };
+            if !encoded.as_bytes().contains(&b'\\') {
+                continue;
+            }
+            // PayloadJson preflights 1 MiB, depth and nodes, then reserves both
+            // retained and parser scratch allocations before decoding keys/values.
+            let decoded = PayloadJson::try_from_str(encoded, budget.clone(), budget.limit())?;
+            if value_contains_any_token_reference(decoded.as_value())? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Allocation ownership from cached history cannot authorize token dependencies.
 /// A request without a captured restoration lease must refuse late references.
 pub(crate) fn validate_unleased_enriched_body(body: &Value) -> Result<(), DlpForwardError> {
-    if body_contains_any_token_reference(body).map_err(DlpForwardError::from_token_error)? {
-        return Err(DlpForwardError::ContextUnavailable);
+    if body_contains_any_token_reference(body, &PayloadBudget::default()).map_err(|error| {
+        DlpForwardError::from_token_error(error)
+            .at_context_checkpoint(ContextCheckpoint::ReferenceScan)
+    })? {
+        return Err(DlpForwardError::ContextUnavailable
+            .at_context_checkpoint(ContextCheckpoint::UnleasedReference));
     }
     Ok(())
 }
@@ -569,7 +712,12 @@ fn collect_tokens_from_value(
 ) -> Result<(), TokenError> {
     match value {
         Value::String(s) => visit_token_references(s, |range| {
-            push_unique_payload_text(tokens, &s[range], 31, budget)
+            push_unique_payload_text(
+                tokens,
+                &s[range],
+                super::token_format::MAX_REFERENCE_BYTES,
+                budget,
+            )
         }),
         Value::Array(items) => {
             for item in items {
@@ -580,7 +728,12 @@ fn collect_tokens_from_value(
         Value::Object(map) => {
             for (k, v) in map {
                 visit_token_references(k, |range| {
-                    push_unique_payload_text(tokens, &k[range], 31, budget)
+                    push_unique_payload_text(
+                        tokens,
+                        &k[range],
+                        super::token_format::MAX_REFERENCE_BYTES,
+                        budget,
+                    )
                 })?;
                 collect_tokens_from_value(v, tokens, budget)?;
             }
@@ -593,6 +746,7 @@ fn collect_tokens_from_value(
 fn extract_request_history(
     body: &Value,
     budget: &PayloadBudget,
+    projection: Option<&DlpHistoryProjection<'_>>,
 ) -> Result<ExtractedRequestHistory, TokenError> {
     let previous_response_id = match body.get("previous_response_id") {
         Some(Value::String(s)) => {
@@ -609,7 +763,14 @@ fn extract_request_history(
     let mut output_call_ids = PayloadVec::new(budget.clone())?;
     let mut referenced_tokens = PayloadVec::new(budget.clone())?;
 
-    collect_tokens_from_value(body, &mut referenced_tokens, budget)?;
+    visit_request_references(body, projection, |reference| {
+        push_unique_payload_text(
+            &mut referenced_tokens,
+            reference,
+            super::token_format::MAX_REFERENCE_BYTES,
+            budget,
+        )
+    })?;
 
     if let Some(input) = body.get("input") {
         let items_slice: Vec<&Value> = match input {
@@ -783,26 +944,31 @@ pub(crate) fn admit_http_request(
 ) -> Result<RestorationAdmission, crate::proxy::error::ProxyError> {
     let is_supported_codex =
         matches!(app_type, AppType::Codex) && endpoint_supported_codex_responses;
-    let has_tokens = match body_contains_any_token_reference(body) {
-        Ok(b) => b,
-        Err(err) => {
-            let fwd_err = if is_supported_codex {
-                DlpForwardError::from_token_error(err)
-            } else {
-                DlpForwardError::RestoreUnsupported
-            };
-            return Ok(RestorationAdmission::Intercepted(
-                fwd_err.into_app_response(app_type),
-            ));
+    let gateway_state = gateway.state();
+    let reference_budget = match &gateway_state {
+        Ok(Some(state)) => state.budget.clone(),
+        _ => PayloadBudget::default(),
+    };
+    let has_tokens = if matches!(gateway_state, Ok(Some(_))) && is_supported_codex {
+        false // Recomputed with private candidate proof after namespace admission.
+    } else {
+        match body_contains_any_token_reference(body, &reference_budget) {
+            Ok(found) => found,
+            Err(error) => {
+                return Ok(RestorationAdmission::Intercepted(
+                    DlpForwardError::from_token_error(error).into_app_response(app_type),
+                ))
+            }
         }
     };
 
-    let gw_state = match gateway.state() {
+    let gw_state = match gateway_state {
         Ok(Some(state)) => state,
         Ok(None) => {
             if has_tokens {
                 let fwd_err = if is_supported_codex {
                     DlpForwardError::ContextUnavailable
+                        .at_context_checkpoint(ContextCheckpoint::GatewayMissing)
                 } else {
                     DlpForwardError::RestoreUnsupported
                 };
@@ -817,7 +983,9 @@ pub(crate) fn admit_http_request(
         }
         Err(err) => {
             return Ok(RestorationAdmission::Intercepted(
-                DlpForwardError::from_token_error(err).into_app_response(app_type),
+                DlpForwardError::from_token_error(err)
+                    .at_context_checkpoint(ContextCheckpoint::GatewayState)
+                    .into_app_response(app_type),
             ));
         }
     };
@@ -831,60 +999,117 @@ pub(crate) fn admit_http_request(
         }
     };
 
-    let budget = gw_state.budget.clone();
-
-    let ledger = match gw_state.store.allocation_ledger() {
-        Ok(l) => l,
-        Err(err) => {
-            return Ok(RestorationAdmission::Intercepted(
-                DlpForwardError::from_token_error(err).into_app_response(app_type),
-            ));
-        }
+    let mut admitted_lease = if is_supported_codex {
+        Some(
+            gw_state
+                .store
+                .admit_published_policy(
+                    "codex",
+                    extract_codex_restoration_session_id(headers, body),
+                    snapshot.restoration_policy_revision,
+                )
+                .map_err(|error| {
+                    crate::proxy::error::ProxyError::DlpForward(
+                        DlpForwardError::from_token_error(error)
+                            .at_context_checkpoint(ContextCheckpoint::NamespaceAdmission),
+                    )
+                })?,
+        )
+    } else {
+        None
     };
-
-    let mut rule_refs = match PayloadVec::new(budget.clone()) {
-        Ok(v) => v,
-        Err(err) => {
-            return Ok(RestorationAdmission::Intercepted(
-                DlpForwardError::from_token_error(err).into_app_response(app_type),
-            ));
-        }
-    };
-    for r in gw_state.rules.as_slice() {
-        if let Err(err) = rule_refs.push(r.as_str()) {
-            return Ok(RestorationAdmission::Intercepted(
-                DlpForwardError::from_token_error(err).into_app_response(app_type),
-            ));
-        }
-    }
-
-    let dlp_active = snapshot.runtime.restoration_enabled()
-        || (snapshot.runtime.enabled && !rule_refs.as_slice().is_empty());
-    if !dlp_active && !has_tokens {
-        return match inspect_and_intercept_mut_with_headers(app_type, body, headers)? {
-            Some(resp) => Ok(RestorationAdmission::Intercepted(resp)),
-            None => Ok(RestorationAdmission::Passthrough),
-        };
-    }
-
-    let audit_state = match RequestAuditState::new(
-        app_type,
-        extract_codex_restoration_session_id(headers, body),
-        budget.clone(),
-    ) {
-        Ok(state) => std::sync::Arc::new(state),
-        Err(err) => {
-            return Ok(RestorationAdmission::Intercepted(
-                DlpForwardError::from_token_error(err).into_app_response(app_type),
-            ))
-        }
-    };
-    let refusal_audit =
-        PendingRequestAudit::capture_refusal(body, &snapshot.runtime, budget.clone()).ok();
+    let mut refusal_audit = None;
+    let mut refusal_state = None;
     let result = (|| {
+        // Optional discovery borrows the immutable request and never reserves mandatory payload bytes.
+        let candidate = admitted_lease
+            .as_ref()
+            .and_then(|lease| lease.history_admission_candidate_projection(body));
+        let has_tokens = if is_supported_codex {
+            let mut found = false;
+            if let Err(error) = visit_request_references(body, candidate.as_ref(), |_| {
+                found = true;
+                Ok(())
+            }) {
+                return Ok(RestorationAdmission::Intercepted(
+                    DlpForwardError::from_token_error(error)
+                        .at_context_checkpoint(ContextCheckpoint::ReferenceScan)
+                        .into_app_response(app_type),
+                ));
+            }
+            match encoded_arguments_contain_any_token_reference(body, &reference_budget) {
+                Ok(decoded_found) => found || decoded_found,
+                Err(error) => {
+                    return Ok(RestorationAdmission::Intercepted(
+                        DlpForwardError::from_token_error(error)
+                            .at_context_checkpoint(ContextCheckpoint::ReferenceScan)
+                            .into_app_response(app_type),
+                    ));
+                }
+            }
+        } else {
+            has_tokens
+        };
+        let budget = gw_state.budget.clone();
+
+        let ledger = match gw_state.store.allocation_ledger() {
+            Ok(l) => l,
+            Err(err) => {
+                return Ok(RestorationAdmission::Intercepted(
+                    DlpForwardError::from_token_error(err).into_app_response(app_type),
+                ));
+            }
+        };
+
+        let mut rule_refs = match PayloadVec::new(budget.clone()) {
+            Ok(v) => v,
+            Err(err) => {
+                return Ok(RestorationAdmission::Intercepted(
+                    DlpForwardError::from_token_error(err).into_app_response(app_type),
+                ));
+            }
+        };
+        for r in gw_state.rules.as_slice() {
+            if let Err(err) = rule_refs.push(r.as_str()) {
+                return Ok(RestorationAdmission::Intercepted(
+                    DlpForwardError::from_token_error(err).into_app_response(app_type),
+                ));
+            }
+        }
+
+        let dlp_active = snapshot.runtime.restoration_enabled()
+            || (snapshot.runtime.enabled && !rule_refs.as_slice().is_empty());
+        if !dlp_active && !has_tokens {
+            return match inspect_and_intercept_mut_with_headers(app_type, body, headers)? {
+                Some(resp) => Ok(RestorationAdmission::Intercepted(resp)),
+                None => Ok(RestorationAdmission::Passthrough),
+            };
+        }
+
+        let audit_state = match RequestAuditState::new(
+            app_type,
+            extract_codex_restoration_session_id(headers, body),
+            budget.clone(),
+        ) {
+            Ok(state) => std::sync::Arc::new(state),
+            Err(err) => {
+                return Ok(RestorationAdmission::Intercepted(
+                    DlpForwardError::from_token_error(err).into_app_response(app_type),
+                ))
+            }
+        };
+        refusal_audit = PendingRequestAudit::capture_refusal_with_history(
+            body,
+            &snapshot.runtime,
+            budget.clone(),
+            candidate.as_ref(),
+        )
+        .ok();
+        refusal_state = Some(std::sync::Arc::clone(&audit_state));
         if !snapshot.runtime.enabled && has_tokens {
             let fwd_err = if is_supported_codex {
                 DlpForwardError::ContextUnavailable
+                    .at_context_checkpoint(ContextCheckpoint::RuntimeDisabled)
             } else {
                 DlpForwardError::RestoreUnsupported
             };
@@ -918,41 +1143,43 @@ pub(crate) fn admit_http_request(
             };
         }
 
-        let session_id = extract_codex_restoration_session_id(headers, body);
         let mut base_lease =
-            match gw_state
-                .store
-                .admit("codex", session_id, snapshot.restoration_policy_revision)
-            {
-                Ok(l) => l,
-                Err(err) => {
-                    return Ok(RestorationAdmission::Intercepted(
-                        DlpForwardError::from_token_error(err).into_app_response(app_type),
-                    ));
-                }
-            };
+            admitted_lease
+                .take()
+                .ok_or(crate::proxy::error::ProxyError::DlpForward(
+                    DlpForwardError::ContextUnavailable,
+                ))?;
 
-        let history = match extract_request_history(body, &budget) {
+        let history = match extract_request_history(body, &budget, candidate.as_ref()) {
             Ok(h) => h,
             Err(err) => {
                 return Ok(RestorationAdmission::Intercepted(
-                    DlpForwardError::from_token_error(err).into_app_response(app_type),
+                    DlpForwardError::from_token_error(err)
+                        .at_context_checkpoint(ContextCheckpoint::HistoryExtract)
+                        .into_app_response(app_type),
                 ));
             }
         };
 
-        let fresh_readable_history = super::request_preparation::is_fresh_readable_history(
-            body, &budget,
-        )
-        .map_err(|error| {
-            crate::proxy::error::ProxyError::DlpForward(DlpForwardError::from_token_error(error))
-        })?;
-        let needs_provider_resume = !fresh_readable_history
-            && (history.previous_response_id.is_some()
-                || !history.calls.as_slice().is_empty()
-                || !history.opaques.as_slice().is_empty()
-                || !history.orphan_output_call_ids.is_slice_empty_helper()
-                || !history.referenced_tokens.as_slice().is_empty());
+        let fresh_readable_history =
+            super::request_preparation::is_fresh_readable_history_with_history(
+                body,
+                &budget,
+                candidate.as_ref(),
+            )
+            .map_err(|error| {
+                crate::proxy::error::ProxyError::DlpForward(
+                    DlpForwardError::from_token_error(error)
+                        .at_context_checkpoint(ContextCheckpoint::HistoryClassify),
+                )
+            })?;
+        let needs_provider_resume = candidate.is_some()
+            || !fresh_readable_history
+                && (history.previous_response_id.is_some()
+                    || !history.calls.as_slice().is_empty()
+                    || !history.opaques.as_slice().is_empty()
+                    || !history.orphan_output_call_ids.is_slice_empty_helper()
+                    || !history.referenced_tokens.as_slice().is_empty());
 
         let mut rules_copy = if gw_state.rules.is_empty() {
             StoreVec::new(ledger.clone(), 4096)
@@ -992,22 +1219,26 @@ pub(crate) fn admit_http_request(
         };
 
         let initial_audit = std::sync::Arc::new(
-            match PendingRequestAudit::capture(
+            match PendingRequestAudit::capture_with_history(
                 source_body.as_value(),
                 &snapshot.runtime,
                 rule_refs.as_slice(),
                 &base_lease,
                 budget.clone(),
+                candidate.as_ref(),
             ) {
                 Ok(summary) => summary,
                 Err(err) => {
                     return Ok(RestorationAdmission::Intercepted(
-                        DlpForwardError::from_plan_error(err).into_app_response(app_type),
+                        DlpForwardError::from_plan_error(err)
+                            .at_context_checkpoint(ContextCheckpoint::AdmissionAudit)
+                            .into_app_response(app_type),
                     ))
                 }
             },
         );
 
+        drop(candidate);
         if !needs_provider_resume && !fresh_readable_history {
             match prepare_codex_request_with_budget(
                 &mut base_lease,
@@ -1044,7 +1275,9 @@ pub(crate) fn admit_http_request(
                 }
                 Err(plan_err) => {
                     return Ok(RestorationAdmission::Intercepted(
-                        DlpForwardError::from_plan_error(plan_err).into_app_response(app_type),
+                        DlpForwardError::from_plan_error(plan_err)
+                            .at_context_checkpoint(ContextCheckpoint::AdmissionPrepare)
+                            .into_app_response(app_type),
                     ));
                 }
             }
@@ -1063,8 +1296,8 @@ pub(crate) fn admit_http_request(
         })))
     })();
     if matches!(&result, Ok(RestorationAdmission::Intercepted(_))) {
-        if let Some(pending) = &refusal_audit {
-            audit_state.record_refusal(pending, "", None);
+        if let (Some(pending), Some(state)) = (&refusal_audit, &refusal_state) {
+            state.record_refusal(pending, "", None);
         }
     }
     result
@@ -1206,11 +1439,18 @@ impl DlpHttpRequest {
     pub(crate) fn chat_history_provenance(
         &self,
     ) -> Result<super::chat_enrichment::ChatHistoryProvenance, DlpForwardError> {
-        let independent = super::request_preparation::is_fresh_readable_history(
+        let candidate = self
+            .base_lease
+            .history_admission_candidate_projection(self.source_body.as_value());
+        let independent = super::request_preparation::is_fresh_readable_history_with_history(
             self.source_body.as_value(),
             &self.budget,
+            candidate.as_ref(),
         )
-        .map_err(DlpForwardError::from_token_error)?;
+        .map_err(|error| {
+            DlpForwardError::from_token_error(error)
+                .at_context_checkpoint(ContextCheckpoint::HistoryClassify)
+        })?;
         Ok(if independent {
             super::chat_enrichment::ChatHistoryProvenance::IndependentReadable
         } else {
@@ -1369,16 +1609,17 @@ impl DlpHttpRequest {
         transform_and_override: F,
     ) -> Result<(DlpPreparedAttempt, DlpTransformInputOwner), DlpForwardError>
     where
-        F: FnOnce(Value) -> Result<Value, DlpForwardError>,
+        F: FnOnce(
+            Value,
+            &DlpHistoryTransform<'_>,
+        ) -> Result<(Value, Option<DlpHistoryMapping>), DlpForwardError>,
     {
-        let refusal_audit =
-            PendingRequestAudit::capture_refusal(enriched_body, &self.runtime, self.budget.clone())
-                .ok();
+        let mut refusal_audit = None;
         let result = (|| {
-            let mut attempt_lease = self
-                .base_lease
-                .fork_attempt()
-                .map_err(DlpForwardError::from_token_error)?;
+            let mut attempt_lease = self.base_lease.fork_attempt().map_err(|error| {
+                DlpForwardError::from_token_error(error)
+                    .at_context_checkpoint(ContextCheckpoint::AttemptFork)
+            })?;
             let binding = attempt_lease
                 .bind_actual_operation_attempt(
                     provider_id,
@@ -1387,10 +1628,27 @@ impl DlpHttpRequest {
                     auth_principal,
                     operation,
                 )
-                .map_err(DlpForwardError::from_token_error)?;
+                .map_err(|error| {
+                    DlpForwardError::from_token_error(error)
+                        .at_context_checkpoint(ContextCheckpoint::AttemptBinding)
+                })?;
 
-            let history = extract_request_history(enriched_body, &self.budget)
-                .map_err(DlpForwardError::from_token_error)?;
+            let mut projection = attempt_lease.history_projection(&binding, enriched_body);
+            if let Some(projection) = &mut projection {
+                projection.restrict_to_origin(self.source_body.as_value());
+            }
+            refusal_audit = PendingRequestAudit::capture_refusal_with_history(
+                enriched_body,
+                &self.runtime,
+                self.budget.clone(),
+                projection.as_ref(),
+            )
+            .ok();
+            let history = extract_request_history(enriched_body, &self.budget, projection.as_ref())
+                .map_err(|error| {
+                    DlpForwardError::from_token_error(error)
+                        .at_context_checkpoint(ContextCheckpoint::AttemptHistory)
+                })?;
 
             let mut call_specs =
                 PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
@@ -1438,7 +1696,10 @@ impl DlpHttpRequest {
                         call_specs.as_slice(),
                         opaque_refs.as_slice(),
                     )
-                    .map_err(DlpForwardError::from_token_error)?;
+                    .map_err(|error| {
+                        DlpForwardError::from_token_error(error)
+                            .at_context_checkpoint(ContextCheckpoint::ContextResume)
+                    })?;
 
                 attempt_lease
                     .verify_output_call_ids(
@@ -1449,7 +1710,10 @@ impl DlpHttpRequest {
                             .map(PayloadText::as_str),
                         orphan_refs.as_slice(),
                     )
-                    .map_err(DlpForwardError::from_token_error)?;
+                    .map_err(|error| {
+                        DlpForwardError::from_token_error(error)
+                            .at_context_checkpoint(ContextCheckpoint::OutputCallIds)
+                    })?;
             }
 
             let mut token_refs =
@@ -1461,7 +1725,10 @@ impl DlpHttpRequest {
             }
             attempt_lease
                 .resume_completed_tokens(&binding, token_refs.as_slice())
-                .map_err(DlpForwardError::from_token_error)?;
+                .map_err(|error| {
+                    DlpForwardError::from_token_error(error)
+                        .at_context_checkpoint(ContextCheckpoint::TokenResume)
+                })?;
 
             let mut rule_refs =
                 PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
@@ -1471,32 +1738,50 @@ impl DlpHttpRequest {
                     .map_err(DlpForwardError::from_token_error)?;
             }
 
-            let pending_audit = PendingRequestAudit::capture(
+            let pending_audit = PendingRequestAudit::capture_with_history(
                 enriched_body,
                 &self.runtime,
                 rule_refs.as_slice(),
                 &attempt_lease,
                 self.budget.clone(),
+                projection.as_ref(),
             )
-            .map_err(DlpForwardError::from_plan_error)?;
-            let prepared = prepare_codex_request_with_budget(
+            .map_err(|error| {
+                DlpForwardError::from_plan_error(error)
+                    .at_context_checkpoint(ContextCheckpoint::AttemptAudit)
+            })?;
+            let prepared = super::request_preparation::prepare_codex_request_with_history(
                 &mut attempt_lease,
                 enriched_body,
                 &self.runtime,
                 rule_refs.as_slice(),
                 token_refs.as_slice(),
                 self.budget.clone(),
+                projection.as_ref(),
                 |candidate_val, _encoded, proof| {
-                    validate_non_carrier_tokens(candidate_val, proof)?;
+                    visit_request_references(candidate_val, projection.as_ref(), |reference| {
+                        if proof.contains(&reference) {
+                            Ok(())
+                        } else {
+                            Err(TokenError::ContextUnavailable)
+                        }
+                    })?;
                     Ok(())
                 },
             )
-            .map_err(DlpForwardError::from_plan_error)?;
+            .map_err(|error| {
+                DlpForwardError::from_plan_error(error)
+                    .at_context_checkpoint(ContextCheckpoint::RequestPrepare)
+            })?;
 
             #[cfg(test)]
             transform_input_test_support::prepared(prepared.body.as_value());
             // Declare the reservation owner before every moved form of its tree.
             // Retaining it does not authorize allocations made by the callback.
+            let history_mapping = projection
+                .as_ref()
+                .and_then(|p| p.responses_mapping(prepared.body.as_value()));
+            drop(projection);
             let input_owner;
             let prepared_body = {
                 let (body, reservation) = prepared.body.into_parts();
@@ -1505,16 +1790,34 @@ impl DlpHttpRequest {
                 };
                 body
             };
-            let final_body = transform_and_override(prepared_body)?;
+            let context = DlpHistoryTransform {
+                lease: &attempt_lease,
+                binding: &binding,
+                origin: self.source_body.as_value(),
+            };
+            let (final_body, converted_mapping) = transform_and_override(prepared_body, &context)
+                .map_err(|error| {
+                error.at_context_checkpoint(ContextCheckpoint::RequestTransform)
+            })?;
+            let history_mapping = if protocol == "openai_responses" {
+                history_mapping
+            } else {
+                converted_mapping
+            };
             validate_final_outbound_body(
                 &final_body,
                 protocol,
                 &attempt_lease,
-                &self.runtime,
-                &self.budget,
-                &self.audit_state,
-                provider_id,
-            )?;
+                FinalOutboundContext {
+                    runtime: &self.runtime,
+                    budget: &self.budget,
+                    audit_state: &self.audit_state,
+                    provider_id,
+                    binding: Some(&binding),
+                    history: history_mapping.as_ref(),
+                },
+            )
+            .map_err(|error| error.at_context_checkpoint(ContextCheckpoint::FinalValidation))?;
             *enriched_body = final_body;
 
             Ok((
@@ -1537,6 +1840,7 @@ impl DlpHttpRequest {
                     initial_audit: std::sync::Arc::clone(&self.initial_audit),
                     pending_audit,
                     upstream_payload_owner: None,
+                    history_mapping,
                 },
                 input_owner,
             ))
@@ -1574,7 +1878,7 @@ impl DlpHttpRequest {
             auth_principal,
             None,
             enriched_body,
-            |body| transform_and_override(&body),
+            |body, _context| transform_and_override(&body).map(|body| (body, None)),
         )
         .map(|(attempt, _input_owner)| attempt)
     }
@@ -1618,6 +1922,35 @@ impl DlpHttpRequest {
     where
         F: FnOnce(Value) -> Result<Value, crate::proxy::error::ProxyError>,
     {
+        self.prepare_owned_attempt_with_history_for_proxy(
+            operation,
+            provider_id,
+            protocol,
+            target_url,
+            auth_principal,
+            enriched_body,
+            |body, _context| transform_and_override(body).map(|body| (body, None)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_owned_attempt_with_history_for_proxy<F>(
+        &self,
+        operation: Option<&crate::proxy::forwarder::DlpOperationDescriptor<'_>>,
+        provider_id: &str,
+        protocol: &str,
+        target_url: &str,
+        auth_principal: Option<&str>,
+        enriched_body: &mut Value,
+        transform_and_override: F,
+    ) -> Result<(DlpPreparedAttempt, DlpTransformInputOwner), crate::proxy::error::ProxyError>
+    where
+        F: FnOnce(
+            Value,
+            &DlpHistoryTransform<'_>,
+        )
+            -> Result<(Value, Option<DlpHistoryMapping>), crate::proxy::error::ProxyError>,
+    {
         let mut proxy_err: Option<crate::proxy::error::ProxyError> = None;
         let res = self.prepare_owned_attempt(
             provider_id,
@@ -1626,7 +1959,7 @@ impl DlpHttpRequest {
             auth_principal,
             operation,
             enriched_body,
-            |prepared_body| match transform_and_override(prepared_body) {
+            |prepared_body, context| match transform_and_override(prepared_body, context) {
                 Ok(val) => Ok(val),
                 Err(crate::proxy::error::ProxyError::DlpForward(dlp)) => Err(dlp),
                 Err(other) => {
@@ -1811,12 +2144,42 @@ fn collect_final_content<'a>(
     Ok(())
 }
 
+struct FinalInspectionCarriers {
+    carriers: CodexRequestCarriers,
+    // Flattened ordinal -> actual protocol coordinate, never a text lookup.
+    targets: PayloadVec<(usize, super::history_provenance::DlpHistoryTarget)>,
+    native: bool,
+}
+impl FinalInspectionCarriers {
+    fn policy_for_path(
+        &self,
+        path: &[super::history_provenance::HistoryPathStep<'_>],
+        policy: &impl Fn(super::history_provenance::DlpHistoryTarget) -> HistoryLeafPolicy,
+    ) -> HistoryLeafPolicy {
+        use super::history_provenance::HistoryPathStep::{Field, Index};
+        if self.native {
+            return history_target_for_path(path).map_or(HistoryLeafPolicy::Strict, policy);
+        }
+        if let [Field("input"), Index(index)] = path {
+            if let Some((_, target)) = self
+                .targets
+                .as_slice()
+                .iter()
+                .find(|(ordinal, _)| ordinal == index)
+            {
+                return policy(*target);
+            }
+        }
+        HistoryLeafPolicy::Strict
+    }
+}
+
 fn final_inspection_carriers(
     body: &Value,
     protocol: &str,
     budget: &PayloadBudget,
     for_refusal_audit: bool,
-) -> Result<CodexRequestCarriers, DlpForwardError> {
+) -> Result<FinalInspectionCarriers, DlpForwardError> {
     let collect = |value: &Value| {
         if for_refusal_audit {
             CodexRequestCarriers::from_body_for_refusal_audit(value, budget.clone())
@@ -1825,8 +2188,13 @@ fn final_inspection_carriers(
         }
         .map_err(DlpForwardError::from_token_error)
     };
+    let mut targets = PayloadVec::new(budget.clone()).map_err(DlpForwardError::from_token_error)?;
     if protocol == "openai_responses" {
-        return collect(body);
+        return Ok(FinalInspectionCarriers {
+            carriers: collect(body)?,
+            targets,
+            native: true,
+        });
     }
     let anthropic = match protocol {
         "openai_chat" => false,
@@ -1841,8 +2209,18 @@ fn final_inspection_carriers(
         }
     }
     if let Some(messages) = body.get("messages").and_then(Value::as_array) {
-        for message in messages {
+        for (message_index, message) in messages.iter().enumerate() {
             if let Some(content) = message.get("content") {
+                if !anthropic && content.is_string() {
+                    targets
+                        .push((
+                            items.len(),
+                            super::history_provenance::DlpHistoryTarget::ChatContent {
+                                message_index,
+                            },
+                        ))
+                        .map_err(DlpForwardError::from_token_error)?;
+                }
                 collect_final_content(content, anthropic, &mut items)
                     .map_err(DlpForwardError::from_token_error)?;
             }
@@ -1851,6 +2229,16 @@ fn final_inspection_carriers(
                     .map_err(DlpForwardError::from_token_error)?;
                 for key in ["reasoning_content", "reasoning", "refusal"] {
                     if let Some(text) = message.get(key).and_then(Value::as_str) {
+                        if key == "reasoning_content" {
+                            targets
+                                .push((
+                                    items.len(),
+                                    super::history_provenance::DlpHistoryTarget::ChatReasoning {
+                                        message_index,
+                                    },
+                                ))
+                                .map_err(DlpForwardError::from_token_error)?;
+                        }
                         items
                             .push(FinalInspectionItem::Text(text))
                             .map_err(DlpForwardError::from_token_error)?;
@@ -1896,7 +2284,11 @@ fn final_inspection_carriers(
         budget,
     )
     .map_err(DlpForwardError::from_token_error)?;
-    collect(projection.as_value())
+    Ok(FinalInspectionCarriers {
+        carriers: collect(projection.as_value())?,
+        targets,
+        native: false,
+    })
 }
 
 fn final_inspection_json(
@@ -1932,58 +2324,86 @@ fn final_inspection_json(
 }
 
 fn audit_final_refusal(
-    carriers: &CodexRequestCarriers,
+    carriers: &FinalInspectionCarriers,
+    policy: &impl Fn(super::history_provenance::DlpHistoryTarget) -> HistoryLeafPolicy,
     runtime: &SecurityRuntimeConfig,
     budget: &PayloadBudget,
     audit_state: &RequestAuditState,
     provider_id: &str,
 ) -> Result<(), TokenError> {
-    carriers.visit(|leaf| {
-        // Flatten only decoded inspection text; schemas, keys and opaque bytes are absent.
-        #[derive(serde::Serialize)]
-        struct PasswordArguments<'a> {
-            password: &'a str,
-        }
-        #[derive(serde::Serialize)]
-        struct PasswordItem<'a> {
-            #[serde(rename = "type")]
-            kind: &'static str,
-            arguments: PasswordArguments<'a>,
-        }
-        let body = if leaf.is_password_field {
-            final_inspection_json(
-                &FinalInspectionBody {
-                    input: &[PasswordItem {
-                        kind: "function_call",
-                        arguments: PasswordArguments {
-                            password: leaf.text,
-                        },
-                    }],
-                },
-                budget,
-            )?
-        } else {
-            final_inspection_json(&FinalInspectionBody { input: &leaf.text }, budget)?
-        };
-        let pending =
-            PendingRequestAudit::capture_refusal(body.as_value(), runtime, budget.clone())?;
-        audit_state.record_refusal(&pending, provider_id, None);
-        Ok(())
-    })
+    carriers.carriers.visit_with_path_policy(
+        |path| carriers.policy_for_path(path, policy),
+        |leaf| {
+            if leaf.policy == HistoryLeafPolicy::DeliveredReasoning {
+                return Ok(());
+            }
+            // Flatten only decoded inspection text; schemas, keys and opaque bytes are absent.
+            #[derive(serde::Serialize)]
+            struct PasswordArguments<'a> {
+                password: &'a str,
+            }
+            #[derive(serde::Serialize)]
+            struct PasswordItem<'a> {
+                #[serde(rename = "type")]
+                kind: &'static str,
+                arguments: PasswordArguments<'a>,
+            }
+            let body = if leaf.is_password_field {
+                final_inspection_json(
+                    &FinalInspectionBody {
+                        input: &[PasswordItem {
+                            kind: "function_call",
+                            arguments: PasswordArguments {
+                                password: leaf.text,
+                            },
+                        }],
+                    },
+                    budget,
+                )?
+            } else {
+                final_inspection_json(&FinalInspectionBody { input: &leaf.text }, budget)?
+            };
+            let pending =
+                PendingRequestAudit::capture_refusal(body.as_value(), runtime, budget.clone())?;
+            audit_state.record_refusal(&pending, provider_id, None);
+            Ok(())
+        },
+    )
+}
+
+struct FinalOutboundContext<'a> {
+    runtime: &'a SecurityRuntimeConfig,
+    budget: &'a PayloadBudget,
+    audit_state: &'a RequestAuditState,
+    provider_id: &'a str,
+    binding: Option<&'a ActualAttemptBinding>,
+    history: Option<&'a DlpHistoryMapping>,
 }
 
 fn validate_final_outbound_body(
     body: &Value,
     protocol: &str,
     lease: &DlpRequestLease,
-    runtime: &SecurityRuntimeConfig,
-    budget: &PayloadBudget,
-    audit_state: &RequestAuditState,
-    provider_id: &str,
+    context: FinalOutboundContext<'_>,
 ) -> Result<(), DlpForwardError> {
+    let FinalOutboundContext {
+        runtime,
+        budget,
+        audit_state,
+        provider_id,
+        binding,
+        history,
+    } = context;
     // Bound the actual tree before recursive token checks or borrowed projection traversal.
     let bounded_body = PayloadJson::try_from_value(body, budget.clone(), budget.limit())
         .map_err(DlpForwardError::from_token_error)?;
+    let policy = |target| {
+        history
+            .zip(binding)
+            .map_or(HistoryLeafPolicy::Strict, |(mapping, binding)| {
+                mapping.policy_for_target(lease, binding, body, target)
+            })
+    };
     let carriers = match final_inspection_carriers(bounded_body.as_value(), protocol, budget, false)
     {
         Ok(carriers) => carriers,
@@ -1991,8 +2411,15 @@ fn validate_final_outbound_body(
             // Collect valid siblings for refusal evidence only; this path never authorizes a send.
             let audit = final_inspection_carriers(bounded_body.as_value(), protocol, budget, true)
                 .and_then(|carriers| {
-                    audit_final_refusal(&carriers, runtime, budget, audit_state, provider_id)
-                        .map_err(DlpForwardError::from_token_error)
+                    audit_final_refusal(
+                        &carriers,
+                        &policy,
+                        runtime,
+                        budget,
+                        audit_state,
+                        provider_id,
+                    )
+                    .map_err(DlpForwardError::from_token_error)
                 });
             if audit.is_err() {
                 log::warn!("[SecurityAudit] stage=final_refusal category=unavailable");
@@ -2001,50 +2428,72 @@ fn validate_final_outbound_body(
         }
     };
     let result = (|| {
-        visit_value_tokens(body, &mut |tok| lease.resolve(tok).map(|_| ()))
-            .map_err(DlpForwardError::from_token_error)?;
+        visit_references_with_policy(
+            body,
+            |path| history_target_for_path(path).map_or(HistoryLeafPolicy::Strict, &policy),
+            |tok| lease.resolve(tok).map(|_| ()),
+        )
+        .map_err(DlpForwardError::from_token_error)?;
         let mut refusal = None;
         carriers
-            .visit(|leaf| {
-                let mut refs = PayloadVec::new(budget.clone())?;
-                visit_token_references(leaf.text, |range| {
-                    lease.resolve(&leaf.text[range.clone()])?;
-                    refs.push(range)
-                })?;
-                for found in detect_spans_with_budget(
-                    leaf.text,
-                    leaf.is_password_field,
-                    runtime,
-                    budget.clone(),
-                )?
-                .as_slice()
-                {
-                    if !matches!(
-                        found.action,
-                        EffectiveAction::Redact | EffectiveAction::Restore | EffectiveAction::Block
-                    ) {
-                        continue;
+            .carriers
+            .visit_with_path_policy(
+                |path| carriers.policy_for_path(path, &policy),
+                |leaf| {
+                    if leaf.policy == HistoryLeafPolicy::DeliveredReasoning {
+                        return Ok(());
                     }
-                    if found.range.is_empty()
-                        || !refs.as_slice().iter().any(|range| {
-                            range.start <= found.range.start && found.range.end <= range.end
-                        })
+                    let mut refs = PayloadVec::new(budget.clone())?;
+                    leaf.policy.visit_references(leaf.text, |range| {
+                        lease.resolve(&leaf.text[range.clone()])?;
+                        refs.push(range)
+                    })?;
+                    for found in detect_spans_with_budget(
+                        leaf.text,
+                        leaf.is_password_field,
+                        runtime,
+                        budget.clone(),
+                    )?
+                    .as_slice()
                     {
-                        refusal = Some(if found.action == EffectiveAction::Block {
-                            DlpForwardError::Blocked
-                        } else {
-                            DlpForwardError::RedactionFailed
-                        });
+                        if !matches!(
+                            found.action,
+                            EffectiveAction::Redact
+                                | EffectiveAction::Restore
+                                | EffectiveAction::Block
+                        ) {
+                            continue;
+                        }
+                        if found.range.is_empty()
+                            || !refs.as_slice().iter().any(|range| {
+                                range.start <= found.range.start && found.range.end <= range.end
+                            })
+                        {
+                            refusal = Some(if found.action == EffectiveAction::Block {
+                                DlpForwardError::Blocked
+                            } else {
+                                DlpForwardError::RedactionFailed
+                            });
+                        }
                     }
-                }
-                Ok(())
-            })
+                    Ok(())
+                },
+            )
             .map_err(DlpForwardError::from_token_error)?;
         refusal.map_or(Ok(()), Err)
     })();
     if result.is_err() {
         // Auditing is auxiliary: an audit failure cannot turn a refusal into forwarding.
-        if audit_final_refusal(&carriers, runtime, budget, audit_state, provider_id).is_err() {
+        if audit_final_refusal(
+            &carriers,
+            &policy,
+            runtime,
+            budget,
+            audit_state,
+            provider_id,
+        )
+        .is_err()
+        {
             log::warn!("[SecurityAudit] stage=final_refusal category=unavailable");
         }
     }
@@ -2163,19 +2612,14 @@ impl DlpPreparedAttempt {
     pub(crate) fn xai_original_sse_evidence_tracker(
         &self,
     ) -> Option<std::sync::Arc<std::sync::Mutex<UpstreamSseEvidenceTracker>>> {
-        self.has_active_tokens().then(|| {
-            std::sync::Arc::new(std::sync::Mutex::new(
-                UpstreamSseEvidenceTracker::xai_original(self.budget.clone()),
-            ))
-        })
+        Some(std::sync::Arc::new(std::sync::Mutex::new(
+            UpstreamSseEvidenceTracker::xai_original(self.budget.clone()),
+        )))
     }
 
     pub(crate) fn upstream_sse_evidence_tracker(
         &self,
     ) -> Option<std::sync::Arc<std::sync::Mutex<UpstreamSseEvidenceTracker>>> {
-        if !self.has_active_tokens() {
-            return None;
-        }
         let tracker = match self.upstream_json_protocol {
             Some(JsonCompletionProtocol::ChatCompletions) => {
                 UpstreamSseEvidenceTracker::chat(self.budget.clone())
@@ -2301,7 +2745,7 @@ impl DlpPreparedAttempt {
         evidence: Option<std::sync::Arc<std::sync::Mutex<UpstreamSseEvidenceTracker>>>,
     ) -> Response {
         let upstream_owner = self.upstream_payload_owner();
-        if !self.has_active_tokens() || !response.status().is_success() {
+        if !response.status().is_success() {
             let (parts, body) = response.into_parts();
             let stream = body
                 .into_data_stream()
@@ -2322,13 +2766,18 @@ impl DlpPreparedAttempt {
             .get(header::CONTENT_ENCODING)
             .is_some_and(|value| value != "identity");
         if encoded {
-            return build_codex_restore_error_response(RestoreError::RestoreFailed);
+            return build_codex_restore_error_response_at(
+                RestoreError::RestoreFailed,
+                RestoreStage::ResponseEncoding,
+            );
         }
         clear_entity_headers(&mut parts.headers);
         if is_sse {
             let restorer = match self.into_sse_restorer(parts.status.as_u16(), mode) {
                 Ok(restorer) => restorer,
-                Err(error) => return build_codex_restore_error_response(error),
+                Err(error) => {
+                    return build_codex_restore_error_response_at(error, RestoreStage::SseInit)
+                }
             };
             let stream = body
                 .into_data_stream()
@@ -2342,6 +2791,7 @@ impl DlpPreparedAttempt {
             );
         }
         let budget = self.budget.clone();
+        let mut stage = RestoreStage::JsonRestore;
         let result = async {
             let mut input = PayloadBuffer::new(
                 budget.clone(),
@@ -2357,6 +2807,7 @@ impl DlpPreparedAttempt {
             }
             let raw =
                 std::str::from_utf8(input.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
+            stage = RestoreStage::CompletionEvidence;
             if self
                 .json_completion
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -2372,15 +2823,21 @@ impl DlpPreparedAttempt {
                     _ => return Err(RestoreError::RestoreFailed),
                 }
             }
+            stage = RestoreStage::JsonRestore;
             let parsed = PayloadJson::try_from_str(raw, budget.clone(), budget.limit())
                 .map_err(|_| RestoreError::RestoreFailed)?;
+            stage = RestoreStage::CompletionEvidence;
             let witness = self.json_completion_witness(parts.status.as_u16(), None)?;
+            stage = RestoreStage::JsonRestore;
             let staged = stage_json_response(
                 parsed.as_value(),
                 self.endpoint_is_compact,
                 &self.lease,
                 &budget,
             )?;
+            let pending_history = self
+                .lease
+                .capture_delivered_history(&self.binding, staged.as_value());
             let output = super::response_restoration::serialize_json_with_budget(
                 staged.as_value(),
                 &budget,
@@ -2388,7 +2845,11 @@ impl DlpPreparedAttempt {
             )?;
             // The final bytes own their reservation before continuity can be published.
             let bytes = bytes_with_owner(output, upstream_owner);
+            stage = RestoreStage::ContextPublish;
             let _restored = staged.publish(&self.lease, &self.binding, &witness, &budget)?;
+            if let Some(pending) = pending_history {
+                let _ = self.lease.publish_delivered_history(&self.binding, pending);
+            }
             Ok::<_, RestoreError>(bytes)
         }
         .await;
@@ -2399,7 +2860,7 @@ impl DlpPreparedAttempt {
                 }
                 Response::from_parts(parts, Body::from(bytes))
             }
-            Err(error) => build_codex_restore_error_response(error),
+            Err(error) => build_codex_restore_error_response_at(error, stage),
         }
     }
 
@@ -2782,7 +3243,7 @@ where
         let mut frame = match PayloadBuffer::new(restorer.payload_budget(), 1024 * 1024) {
             Ok(buffer) => buffer,
             Err(_) => {
-                yield Ok(failed_sse_frame(RestoreError::RestoreFailed));
+                yield Ok(super::response_restoration::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseInit));
                 return;
             }
         };
@@ -2791,7 +3252,7 @@ where
             let chunk = match chunk_res {
                 Ok(chunk) => chunk,
                 Err(_) => {
-                    yield Ok(failed_sse_frame(RestoreError::RestoreFailed));
+                    yield Ok(super::response_restoration::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseRead));
                     return;
                 }
             };
@@ -2800,7 +3261,7 @@ where
                 let end = chunk[offset..].iter().position(|&byte| byte == b'\n')
                     .map_or(chunk.len(), |pos| offset + pos + 1);
                 if frame.append(&chunk[offset..end]).is_err() {
-                    yield Ok(failed_sse_frame(RestoreError::RestoreFailed));
+                    yield Ok(super::response_restoration::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseFrame));
                     return;
                 }
                 offset = end;
@@ -2816,7 +3277,7 @@ where
                 let block = match std::str::from_utf8(frame.as_slice()) {
                     Ok(block) => block,
                     Err(_) => {
-                        yield Ok(failed_sse_frame(RestoreError::RestoreFailed));
+                        yield Ok(super::response_restoration::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseFrame));
                         return;
                     }
                 };
@@ -2832,7 +3293,7 @@ where
                         let error = evidence.as_ref().and_then(|tracker| tracker.lock().ok()
                             .and_then(|guard| guard.has_unsupported_carrier().then_some(RestoreError::RestoreUnsupported)))
                             .unwrap_or(err);
-                        yield Ok(failed_sse_frame(error));
+                        yield Ok(super::response_restoration::failed_sse_frame_at(error, restorer.failure_stage()));
                         return;
                     }
                 }
@@ -2840,21 +3301,23 @@ where
         }
         // EOF is not an SSE delimiter and cannot authorize an unfinished event.
         if frame.len() != 0 {
-            yield Ok(failed_sse_frame(RestoreError::RestoreFailed));
+            yield Ok(super::response_restoration::failed_sse_frame_at(RestoreError::RestoreFailed, RestoreStage::SseEof));
             return;
         }
         if let Some(ref evidence) = evidence {
+            let mut stage = RestoreStage::CompletionEvidence;
             let checked = evidence.lock().map_err(|_| RestoreError::RestoreFailed)
                 .and_then(|guard| {
                     guard.completion_result()?;
                     if guard.xai_original.is_some() {
                         let original = guard.xai_original_output.as_ref().ok_or(RestoreError::RestoreFailed)?;
+                        stage = RestoreStage::SseSnapshot;
                         restorer.verify_original_xai_output(original.as_value())?;
                     }
                     Ok(())
                 });
             if let Err(error) = checked {
-                yield Ok(failed_sse_frame(error));
+                yield Ok(super::response_restoration::failed_sse_frame_at(error, stage));
                 return;
             }
         }
@@ -2863,8 +3326,9 @@ where
                 for frame in frames {
                     yield Ok(frame);
                 }
+                restorer.publish_released_history();
             }
-            Err(err) => yield Ok(failed_sse_frame(err)),
+            Err(err) => yield Ok(super::response_restoration::failed_sse_frame_at(err, restorer.failure_stage())),
         }
     })
 }
@@ -4198,6 +4662,7 @@ mod private_http_exit_tests {
                 PendingRequestAudit::empty(budget.clone()).expect("audit summary fixture"),
             ),
             upstream_payload_owner: None,
+            history_mapping: None,
             pending_audit: PendingRequestAudit::empty(budget.clone())
                 .expect("audit summary fixture"),
         };
@@ -4275,7 +4740,7 @@ mod private_production_activation_tests {
         );
         assert!(body["input"]
             .as_str()
-            .is_some_and(|text| text.starts_with("vary_ph_")));
+            .is_some_and(|text| text.starts_with("rredact-cn_phone-")));
         let mut unsupported = json!({"messages":[{"role":"user","content":"13800138000"}]});
         let admission = admit_http_request(
             &gateway,
@@ -4802,4 +5267,114 @@ pub(super) mod response_namespace_test_support {
             }
         }
     }
+}
+
+/// Synthetic native Responses adapter; no production dispatch or completion publication.
+#[cfg(test)]
+pub(super) async fn prepare_text_projection_http_for_test(
+    response: Response,
+    lease: DlpRequestLease,
+    budget: PayloadBudget,
+) -> Result<Response, RestoreError> {
+    use super::response_restoration::{prepare_text_projection, TextProjectionStream};
+
+    let (mut parts, body) = response.into_parts();
+    if !parts.status.is_success()
+        || parts
+            .headers
+            .get_all(header::CONTENT_ENCODING)
+            .iter()
+            .any(|value| {
+                !value
+                    .to_str()
+                    .is_ok_and(|value| value.trim().eq_ignore_ascii_case("identity"))
+            })
+    {
+        return Err(RestoreError::RestoreFailed);
+    }
+    let content_type = parts
+        .headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .ok_or(RestoreError::RestoreUnsupported)?;
+    let is_sse = if content_type.eq_ignore_ascii_case("text/event-stream") {
+        true
+    } else if content_type.eq_ignore_ascii_case("application/json") {
+        false
+    } else {
+        return Err(RestoreError::RestoreUnsupported);
+    };
+    let capacity_error =
+        |_| RestoreError::FailedBecause(super::restore_diagnostics::RestoreReason::RestoreCapacity);
+    let mut stream = body.into_data_stream();
+    if is_sse {
+        let mut projection = TextProjectionStream::new(lease, budget.clone())?;
+        let mut frame = PayloadBuffer::new(budget, 1024 * 1024).map_err(capacity_error)?;
+        let mut line_start = 0;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|_| RestoreError::RestoreFailed)?;
+            let mut offset = 0;
+            while offset < chunk.len() {
+                let end = chunk[offset..]
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map_or(chunk.len(), |position| offset + position + 1);
+                frame.append(&chunk[offset..end]).map_err(capacity_error)?;
+                offset = end;
+                if chunk[end - 1] != b'\n' {
+                    continue;
+                }
+                let line = &frame.as_slice()[line_start..];
+                let blank = line == b"\n" || line == b"\r\n";
+                line_start = frame.len();
+                if !blank {
+                    continue;
+                }
+                let raw = std::str::from_utf8(frame.as_slice())
+                    .map_err(|_| RestoreError::RestoreFailed)?;
+                projection.push_frame(raw)?;
+                frame.clear();
+                line_start = 0;
+            }
+        }
+        if frame.len() != 0 {
+            return Err(RestoreError::RestoreFailed);
+        }
+        let frames = projection.finish(true)?;
+        clear_entity_headers(&mut parts.headers);
+        // The charged vector stays alive while each Bytes retains its own output owner.
+        let output = async_stream::stream! {
+            for bytes in frames.as_slice() {
+                yield Ok::<_, std::io::Error>(bytes.clone());
+            }
+        };
+        return Ok(Response::from_parts(parts, Body::from_stream(output)));
+    }
+
+    let mut input = PayloadBuffer::new(
+        budget.clone(),
+        crate::proxy::hyper_client::MAX_RESPONSE_BODY_BYTES,
+    )
+    .map_err(capacity_error)?;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| RestoreError::RestoreFailed)?;
+        input.append(&chunk).map_err(capacity_error)?;
+    }
+    let raw = std::str::from_utf8(input.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
+    let parsed =
+        PayloadJson::try_from_str(raw, budget.clone(), budget.limit()).map_err(capacity_error)?;
+    let projected = prepare_text_projection(parsed.as_value(), &lease, &budget)?;
+    let output = super::response_restoration::serialize_json_with_budget(
+        projected.as_value(),
+        &budget,
+        crate::proxy::hyper_client::MAX_RESPONSE_BODY_BYTES,
+    )?;
+    let bytes = bytes_with_owner(output, ());
+    let length =
+        HeaderValue::from_str(&bytes.len().to_string()).map_err(|_| RestoreError::RestoreFailed)?;
+    clear_entity_headers(&mut parts.headers);
+    parts.headers.insert(header::CONTENT_LENGTH, length);
+    Ok(Response::from_parts(parts, Body::from(bytes)))
 }

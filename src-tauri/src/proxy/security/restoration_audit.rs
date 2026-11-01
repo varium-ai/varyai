@@ -7,6 +7,7 @@ use super::{
     aggregation::PendingAuditEvent,
     builtin_rules::BUILTIN_RULES,
     extractor::extract_payload_texts,
+    history_provenance::{DlpHistoryProjection, HistoryLeafPolicy},
     identity::{fingerprint, ContentFingerprint},
     payload_budget::{PayloadBudget, Reservation},
     payload_metadata::PayloadVec,
@@ -15,7 +16,7 @@ use super::{
     request_detection::detect_spans_with_budget,
     request_plan::{plan_request_with_budget, EffectiveAction, PlanError, PlanField, SpanMatch},
     runtime::SecurityRuntimeConfig,
-    tokenization::{visit_token_references, DlpRequestLease, TokenError},
+    tokenization::{DlpRequestLease, TokenError},
 };
 use crate::{app_config::AppType, database::AuditLogEvent};
 
@@ -64,12 +65,27 @@ impl PendingRequestAudit {
         lease: &DlpRequestLease,
         budget: PayloadBudget,
     ) -> Result<Self, PlanError> {
+        Self::capture_with_history(body, runtime, restore_ids, lease, budget, None)
+    }
+
+    pub(super) fn capture_with_history(
+        body: &Value,
+        runtime: &SecurityRuntimeConfig,
+        restore_ids: &[&str],
+        lease: &DlpRequestLease,
+        budget: PayloadBudget,
+        projection: Option<&DlpHistoryProjection<'_>>,
+    ) -> Result<Self, PlanError> {
         let carriers = CodexRequestCarriers::from_body_with_budget(body, budget.clone())?;
         let mut logical = PayloadVec::new(budget.clone())?;
         let mut count = 0usize;
-        carriers.visit(|leaf| {
+        carriers.visit_with_history(projection, |leaf| {
+            if leaf.policy == HistoryLeafPolicy::DeliveredReasoning {
+                return Ok(());
+            }
             let mut references = PayloadVec::new(budget.clone())?;
-            visit_token_references(leaf.text, |range| references.push(range))?;
+            leaf.policy
+                .visit_references(leaf.text, |range| references.push(range))?;
             let mut matches = PayloadVec::new(budget.clone())?;
             let mut rules = PayloadVec::new(budget.clone())?;
             for found in detect_spans_with_budget(
@@ -156,9 +172,21 @@ impl PendingRequestAudit {
         runtime: &SecurityRuntimeConfig,
         budget: PayloadBudget,
     ) -> Result<Self, TokenError> {
+        Self::capture_refusal_with_history(body, runtime, budget, None)
+    }
+
+    pub(super) fn capture_refusal_with_history(
+        body: &Value,
+        runtime: &SecurityRuntimeConfig,
+        budget: PayloadBudget,
+        projection: Option<&DlpHistoryProjection<'_>>,
+    ) -> Result<Self, TokenError> {
         let carriers = CodexRequestCarriers::from_body_with_budget(body, budget.clone())?;
         let mut pending = Self::empty(budget.clone())?;
-        carriers.visit(|leaf| {
+        carriers.visit_with_history(projection, |leaf| {
+            if leaf.policy == HistoryLeafPolicy::DeliveredReasoning {
+                return Ok(());
+            }
             for found in detect_spans_with_budget(
                 leaf.text,
                 leaf.is_password_field,
@@ -178,6 +206,10 @@ impl PendingRequestAudit {
             }
             Ok(())
         })?;
+        // The legacy extractor has no exact leaf policy and must not reintroduce proven reasoning.
+        if projection.is_some() {
+            return Ok(pending);
+        }
         // Legacy protocol roots are still findings when restoration refuses an unsupported route.
         // Precharge the worst-case extracted-node vector and display paths before the extractor allocates.
         let mut extraction_charge = budget.reserve(0)?;
@@ -328,7 +360,8 @@ fn overlaps(left: &Range<usize>, right: &Range<usize>) -> bool {
 
 fn safe_metadata(value: &str) -> bool {
     value.len() <= MAX_METADATA
-        && !value.contains("vary_")
+        && !value.contains(super::token_format::LEGACY_PREFIX)
+        && !value.contains(super::token_format::PREFIX)
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"-_:.".contains(&byte))
@@ -456,5 +489,26 @@ impl RequestAuditState {
             }
             emit(event);
         }
+    }
+}
+
+#[cfg(test)]
+mod reference_format_tests {
+    use super::*;
+
+    #[test]
+    fn reference_format_migration_metadata_rejects_both_prefixes() {
+        assert!(
+            !safe_metadata("rredact-custom-synthetic"),
+            "new prefix must never enter metadata"
+        );
+        assert!(
+            !safe_metadata("vary_cu_synthetic"),
+            "legacy prefix must remain excluded"
+        );
+        assert!(
+            safe_metadata("synthetic-safe"),
+            "ordinary bounded metadata remains allowed"
+        );
     }
 }

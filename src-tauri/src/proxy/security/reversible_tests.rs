@@ -10,8 +10,11 @@ fn test_key() -> [u8; 32] {
 #[test]
 fn token_matches_the_specification_vector_and_exact_length() -> Result<(), TokenError> {
     let token = make_token(&test_key(), "13800138000", TokenCategory::Phone)?;
-    assert!(token == "vary_ph_413ff0a68f6f0d574cb5_ai");
-    assert_eq!(token.len(), 31);
+    assert!(token == "rredact-cn_phone-413ff0a68f6f0d574cb5-ai");
+    assert!(
+        token.len() == 32 + "cn_phone".len(),
+        "approved phone reference length required"
+    );
     assert!(token.is_ascii());
     Ok(())
 }
@@ -21,7 +24,10 @@ fn digest_preserves_exact_decoded_bytes_and_excludes_category() -> Result<(), To
     let key = test_key();
     let first = make_token(&key, "fixture", TokenCategory::Phone)?;
     let other_category = make_token(&key, "fixture", TokenCategory::Custom)?;
-    assert!(first[8..28] == other_category[8..28]);
+    assert!(
+        first[first.len() - 23..first.len() - 3]
+            == other_category[other_category.len() - 23..other_category.len() - 3]
+    );
     for different in [" fixture", "fixture ", "FIXTURE", "fixture\n"] {
         assert!(first != make_token(&key, different, TokenCategory::Phone)?);
     }
@@ -61,7 +67,9 @@ fn scanner_finds_adjacent_tokens_with_original_utf8_byte_offsets() -> Result<(),
     let text = format!("前缀{token}{token}末尾");
     let ranges = scan_token_references(&text)?;
     assert_eq!(ranges.len(), 2);
-    assert!(ranges[0] == (6..37) && ranges[1] == (37..68));
+    assert!(
+        ranges[0] == (6..6 + token.len()) && ranges[1] == (6 + token.len()..6 + 2 * token.len())
+    );
     assert!(ranges
         .iter()
         .all(|range| text.get(range.clone()) == Some(token.as_str())));
@@ -72,6 +80,11 @@ fn scanner_finds_adjacent_tokens_with_original_utf8_byte_offsets() -> Result<(),
 #[test]
 fn scanner_rejects_malformed_candidates_only_after_a_known_header() {
     for candidate in [
+        "rredact-cn_phone-",
+        "rredact-cn_phone-413ff0a68f6f0d574cb5-Ai",
+        "rredact-cn_phone-413FF0A68F6F0D574CB5-ai",
+        "rredact-cn_phone-413ff0a68f6f0d574cb-ai",
+        "rredact-cn_phone-413ff0a68f6f0d574cb5-xx",
         "vary_ph_",
         "vary_ph_413ff0a68f6f0d574cb5_Ai",
         "vary_ph_413FF0A68F6F0D574CB5_ai",
@@ -440,7 +453,7 @@ fn all_supported_categories_are_recognized_without_granting_authority() -> Resul
         Mixed,
     ] {
         let token = make_token(&test_key(), "fixture", category)?;
-        assert!(scan_token_references(&token)? == [0..31]);
+        assert!(scan_token_references(&token)? == [0..token.len()]);
         assert!(matches!(
             lease.resolve(&token),
             Err(TokenError::ContextUnavailable)
@@ -623,7 +636,7 @@ fn review_token_scanner_rejects_reference_overflow_before_later_malformed_input(
     let token = make_token(&[0; 32], "synthetic", TokenCategory::Custom)?;
     let boundary = token.repeat(4096);
     assert_eq!(scan_token_references(&boundary)?.len(), 4096);
-    let overflow = format!("{boundary}{token} vary_ph_invalid");
+    let overflow = format!("{boundary}{token} rredact-cn_phone-invalid");
     assert_eq!(
         scan_token_references(&overflow).err(),
         Some(TokenError::CapacityExceeded)
@@ -645,7 +658,10 @@ fn reference_visitor_reports_utf8_spans_without_a_result_container() -> Result<(
         Ok(())
     })?;
     assert_eq!(count, 2);
-    assert_eq!(ranges, [3..34, 34..65]);
+    assert!(
+        ranges == [3..3 + token.len(), 3 + token.len()..3 + 2 * token.len()],
+        "visitor must preserve original byte offsets"
+    );
     assert!(ranges
         .iter()
         .all(|range| text.get(range.clone()) == Some(token.as_str())));
@@ -660,8 +676,13 @@ fn reference_visitor_preserves_fixed_malformed_errors_and_stops_at_4097() -> Res
 {
     use super::tokenization::visit_token_references;
     for text in [
+        "rredact-cn_phone-",
+        "rredact-cn_phone-413FF0A68F6F0D574CB5-ai",
+        "rredact-cn_phone-413ff0a68f6f0d574cb5-xx",
         "vary_ph_",
+        "vary_ph_413ff0a68f6f0d574cb5_Ai",
         "vary_ph_413FF0A68F6F0D574CB5_ai",
+        "vary_ph_413ff0a68f6f0d574cb_ai",
         "vary_ph_413ff0a68f6f0d574cb5_xx",
     ] {
         let mut count = 0;
@@ -697,7 +718,7 @@ fn reference_visitor_propagates_callback_failure_without_scanning_later_text(
 ) -> Result<(), TokenError> {
     use super::tokenization::visit_token_references;
     let token = make_token(&test_key(), "synthetic-visitor", TokenCategory::Custom)?;
-    let text = format!("{token}vary_ph_");
+    let text = format!("{token}rredact-cn_phone-");
     let mut count = 0;
     assert_eq!(
         visit_token_references(&text, |_| {
@@ -1472,8 +1493,12 @@ fn scratch_indices_bytes() -> usize {
 fn preparation_scratch_token_text_and_outer_capacity_difference_one_reject(
 ) -> Result<(), TokenError> {
     use super::{payload_budget::PayloadBudget, payload_text::PayloadText};
-    let exact = scratch_indices_bytes() + 31 + 4 * std::mem::size_of::<PayloadText>();
-    for limit in [scratch_indices_bytes() + 30, exact - 1] {
+    let exact =
+        scratch_indices_bytes() + (32 + "custom".len()) + 4 * std::mem::size_of::<PayloadText>();
+    for limit in [
+        scratch_indices_bytes() + (32 + "custom".len()) - 1,
+        exact - 1,
+    ] {
         let store = DlpTokenStore::new();
         let mut lease = store.admit("codex", None, 1)?;
         let before = store.stats()?;
@@ -1504,7 +1529,8 @@ fn preparation_scratch_token_text_and_outer_capacity_difference_one_reject(
 fn preparation_scratch_exact_all_owners_live_through_callback_then_release(
 ) -> Result<(), TokenError> {
     use super::{payload_budget::PayloadBudget, payload_text::PayloadText};
-    let exact = scratch_indices_bytes() + 31 + 4 * std::mem::size_of::<PayloadText>();
+    let exact =
+        scratch_indices_bytes() + (32 + "custom".len()) + 4 * std::mem::size_of::<PayloadText>();
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
     let budget = PayloadBudget::with_limit(exact);
@@ -1515,7 +1541,7 @@ fn preparation_scratch_exact_all_owners_live_through_callback_then_release(
         |tokens| {
             assert_eq!(budget.used(), exact);
             assert_eq!(tokens.len(), 1);
-            assert_eq!(tokens[0].as_str().len(), 31);
+            assert_eq!(tokens[0].as_str().len(), 32 + "custom".len());
             assert_eq!(store.stats()?.entries, 0);
             Ok(())
         },
@@ -1528,6 +1554,14 @@ fn preparation_scratch_exact_all_owners_live_through_callback_then_release(
 // Independent live-allocation model for the prevalidation scratch sequence.
 // This deliberately excludes postvalidation Arc/table backing and store accounting.
 fn scratch_profile(count: usize, new_count: usize) -> (usize, usize) {
+    scratch_profile_with_reference_len(count, new_count, 32 + "custom".len())
+}
+
+fn scratch_profile_with_reference_len(
+    count: usize,
+    new_count: usize,
+    reference_len: usize,
+) -> (usize, usize) {
     use super::payload_text::PayloadText;
     fn push(used: &mut usize, peak: &mut usize, len: usize, cap: &mut usize, width: usize) {
         if len == *cap {
@@ -1561,7 +1595,7 @@ fn scratch_profile(count: usize, new_count: usize) -> (usize, usize) {
                 std::mem::size_of::<usize>(),
             );
         }
-        used += 31;
+        used += reference_len;
         peak = peak.max(used);
         push(
             &mut used,
@@ -1665,11 +1699,12 @@ fn preparation_scratch_repeated_and_existing_tokens_keep_distinct_owners_and_fir
     ];
     let mut first_token = String::new();
     for new_count in [1, 0] {
-        let (retained, peak) = scratch_profile(fragments.len(), new_count);
+        let (retained, peak) =
+            scratch_profile_with_reference_len(fragments.len(), new_count, 32 + "cn_phone".len());
         let budget = PayloadBudget::with_limit(peak);
         lease.prepare_with_budget(&fragments, &[], budget.clone(), |tokens| {
             assert_eq!(budget.used(), retained);
-            assert!(tokens[0].as_str().starts_with("vary_ph_"));
+            assert!(tokens[0].as_str().starts_with("rredact-cn_phone-"));
             for token in &tokens[1..] {
                 assert!(token.as_str() == tokens[0].as_str());
                 assert!(token.as_str().as_ptr() != tokens[0].as_str().as_ptr());
@@ -1897,6 +1932,89 @@ fn preparation_scratch_validation_error_and_unwind_leave_prior_authority_intact(
         assert_eq!(store.stats()?, before);
         assert_eq!(lease.authorized_tokens()?.len(), 1);
         assert!(lease.resolve(&old)? == "synthetic-validation-pinned");
+    }
+    Ok(())
+}
+
+#[test]
+fn reference_format_migration_request_capacity_is_exact_for_every_category(
+) -> Result<(), TokenError> {
+    use super::{payload_budget::PayloadBudget, payload_text::PayloadText};
+    for (category, name) in [
+        (TokenCategory::Phone, "cn_phone"),
+        (TokenCategory::IdCard, "cn_id_card"),
+        (TokenCategory::PrivateKey, "private_key"),
+        (TokenCategory::ApiKey, "api_token"),
+        (TokenCategory::Database, "db_conn"),
+        (TokenCategory::Password, "password"),
+        (TokenCategory::Infrastructure, "infra"),
+        (TokenCategory::Personal, "personal"),
+        (TokenCategory::Custom, "custom"),
+        (TokenCategory::Mixed, "mixed"),
+    ] {
+        let reference_len = 32 + name.len();
+        let exact =
+            scratch_indices_bytes() + reference_len + 4 * std::mem::size_of::<PayloadText>();
+        for limit in [exact - 1, exact] {
+            let store = DlpTokenStore::new();
+            let mut lease = store.admit("codex", None, 1)?;
+            let before = store.stats()?;
+            let budget = PayloadBudget::with_limit(limit);
+            let mut validated = false;
+            let result = lease.prepare_with_budget(
+                &[TokenFragment {
+                    raw: "synthetic-category-capacity",
+                    whole_span_categories: &[category],
+                }],
+                &[],
+                budget.clone(),
+                |tokens| {
+                    validated = true;
+                    assert!(tokens.len() == 1, "one reference must be prepared");
+                    let reference = tokens[0].as_str();
+                    assert!(
+                        reference.len() == reference_len,
+                        "approved reference length required"
+                    );
+                    assert!(
+                        reference.starts_with(&format!("rredact-{name}-")),
+                        "approved category header required"
+                    );
+                    assert!(
+                        reference.ends_with("-ai"),
+                        "approved reference suffix required"
+                    );
+                    assert!(
+                        budget.used() == exact,
+                        "all scratch owners must remain charged"
+                    );
+                    Ok(())
+                },
+            );
+            if limit == exact {
+                assert!(result.is_ok(), "exact request capacity must succeed");
+                assert!(validated, "exact request capacity must reach validation");
+                assert!(
+                    store.stats()?.entries == 1,
+                    "successful preparation must commit once"
+                );
+            } else {
+                assert!(
+                    matches!(result, Err(TokenError::CapacityExceeded)),
+                    "short request capacity must fail atomically"
+                );
+                assert!(!validated, "capacity refusal must precede validation");
+                assert!(
+                    store.stats()? == before,
+                    "capacity refusal must not commit mappings"
+                );
+                assert!(
+                    lease.authorized_tokens()?.is_empty(),
+                    "capacity refusal must not grant authority"
+                );
+            }
+            assert!(budget.used() == 0, "request scratch charges must release");
+        }
     }
     Ok(())
 }

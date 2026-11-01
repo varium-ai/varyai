@@ -126,6 +126,22 @@ impl DlpPolicyGate {
         })
     }
 
+    /// Hold policy eligibility through an optional history operation only.
+    /// The closure must not forward requests, persist data, or acquire the writer.
+    pub(super) fn with_history_revision<T>(
+        &self,
+        revision: u64,
+        operation: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let state = self.state.read().ok()?;
+        if !state.available || state.published.as_ref()?.revision != revision {
+            return None;
+        }
+        let result = operation();
+        drop(state);
+        Some(result)
+    }
+
     /// Presentation snapshot only, never authorization to forward or restore.
     pub(super) fn runtime_snapshot(
         &self,

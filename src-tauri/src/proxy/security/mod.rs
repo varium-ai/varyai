@@ -15,8 +15,10 @@ pub(crate) mod completion_json;
 mod completion_tools;
 pub mod engine;
 pub mod extractor;
+pub(crate) mod history_provenance;
 pub(crate) mod http_restoration;
 mod identity;
+mod output_text_matching;
 mod payload_budget;
 mod payload_buffer;
 mod payload_json;
@@ -32,13 +34,22 @@ pub mod response;
 pub(crate) mod response_restoration;
 mod restoration_audit;
 mod restoration_policy;
+pub(crate) mod restore_diagnostics;
 pub mod runtime;
+mod token_format;
+mod token_format_diagnostics;
 mod token_store_owners;
 mod tokenization;
 mod upstream_guard;
 #[allow(unused_imports)]
 pub(crate) use upstream_guard::UpstreamPayloadOwner;
 pub mod types;
+#[allow(unused_imports)]
+pub(crate) use completed_context::ActualAttemptBinding;
+#[cfg(test)]
+pub(crate) use history_provenance::history_allocation_test_support;
+#[allow(unused_imports)]
+pub(crate) use tokenization::{DlpRequestLease, DlpTokenStore};
 
 #[allow(unused_imports)]
 pub use runtime::{get_security_runtime, reload_security_runtime, SecurityRuntimeConfig};
@@ -56,6 +67,8 @@ pub use types::*;
 
 #[cfg(test)]
 mod aggregation_tests;
+#[cfg(test)]
+mod history_provenance_tests;
 #[cfg(test)]
 mod restoration_audit_tests;
 #[cfg(test)]

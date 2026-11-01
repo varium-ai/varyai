@@ -19,7 +19,7 @@ pub(super) const OPAQUE_ENTRY_METADATA: usize = 128;
 
 // No Debug/Serialize: bindings and witnesses are private memory-only capabilities.
 #[derive(Clone)]
-pub(super) struct ActualAttemptBinding {
+pub(crate) struct ActualAttemptBinding {
     pub(super) store_id: usize,
     pub(super) namespace: u64,
     pub(super) generation: [u8; 16],

@@ -160,7 +160,7 @@ async fn reversible_http_native_json_tokenizes_upstream_and_restores_client() ->
         "fixture plaintext must not reach mock upstream"
     );
     assert!(
-        outbound.contains("vary_ph_"),
+        outbound.contains("rredact-cn_phone-"),
         "upstream must receive reversible reference, not irreversible placeholder"
     );
     assert_eq!(
@@ -200,7 +200,9 @@ struct MatrixFixture {
 
 fn fixture_text(value: &Value) -> Option<&str> {
     match value {
-        Value::String(text) if text.contains("vary_ph_") || text.contains(FIXTURE_PHONE) => {
+        Value::String(text)
+            if text.contains("rredact-cn_phone-") || text.contains(FIXTURE_PHONE) =>
+        {
             Some(text)
         }
         Value::Array(values) => values.iter().find_map(fixture_text),
@@ -336,7 +338,7 @@ async fn run_matrix_at(
         "fixture plaintext must not reach mock upstream"
     );
     assert!(
-        outbound.contains("vary_ph_"),
+        outbound.contains("rredact-cn_phone-"),
         "reversible reference required"
     );
     if complete {
@@ -350,7 +352,7 @@ async fn run_matrix_at(
             "client exit must restore supported text"
         );
         assert!(
-            !text.contains("vary_ph_"),
+            !text.contains("rredact-cn_phone-"),
             "client exit must not expose references"
         );
     } else if streaming {
@@ -698,7 +700,7 @@ async fn run_wire_policy_with_prompt(
         .ok_or("missing fixture input")?;
     if enabled && action == super::AuditAction::RedactRestore {
         assert!(
-            input.contains("vary_ph_"),
+            input.contains("rredact-cn_phone-"),
             "real policy must activate production tokenization"
         );
         assert!(
@@ -720,7 +722,7 @@ async fn run_wire_policy_with_prompt(
                 text.contains(FIXTURE_PHONE),
                 "supported client text must restore"
             );
-            assert!(!text.contains("vary_ph_"));
+            assert!(!text.contains("rredact-cn_phone-"));
         }
     } else {
         assert_eq!(status, http::StatusCode::OK);
@@ -851,7 +853,7 @@ async fn run_cache_owner_http(streaming: bool) -> TestResult {
         text.contains(FIXTURE_PHONE),
         "client tool argument must be restored without executing it"
     );
-    assert!(!text.contains("vary_ph_"));
+    assert!(!text.contains("rredact-cn_phone-"));
     drop(bytes);
     let followup_owners;
     let mut followup = json!({"input":[{"type":"function_call_output","call_id":"call_cache_owner","output":"synthetic result"}]});
@@ -863,7 +865,7 @@ async fn run_cache_owner_http(streaming: bool) -> TestResult {
     assert!(restored > 0, "synthetic call must remain cached");
     let cached = followup.to_string();
     assert!(
-        cached.contains("vary_ph_"),
+        cached.contains("rredact-cn_phone-"),
         "history must retain upstream-tokenized arguments"
     );
     assert!(!cached.contains(FIXTURE_PHONE));
@@ -992,7 +994,7 @@ async fn reversible_http_actual_send_audit_is_request_action_not_restoration_suc
     assert_eq!(events[0].log.provider_id, provider.id);
     let raw = serde_json::to_string(&events[0].log)?;
     assert!(!raw.contains(FIXTURE_PHONE));
-    assert!(!raw.contains("vary_ph_"));
+    assert!(!raw.contains("rredact-cn_phone-"));
     let attempt = result
         .dlp_attempt
         .take()
@@ -1027,10 +1029,22 @@ async fn reversible_http_actual_send_audit_is_request_action_not_restoration_suc
     Ok(())
 }
 
-async fn upstream_error_echo(Json(body): Json<Value>) -> axum::response::Response {
+#[derive(Clone)]
+struct UpstreamErrorFixture {
+    status: http::StatusCode,
+    hits: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+async fn upstream_error_echo(
+    State(fixture): State<UpstreamErrorFixture>,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    fixture
+        .hits
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let reference = fixture_text(&body).unwrap_or("synthetic-fallback");
     (
-        http::StatusCode::BAD_REQUEST,
+        fixture.status,
         Json(
             json!({"error":{"message":format!("synthetic-upstream-private-marker {reference}"),
         "type":"synthetic_upstream_error","code":"synthetic_error"}}),
@@ -1039,61 +1053,147 @@ async fn upstream_error_echo(Json(body): Json<Value>) -> axum::response::Respons
         .into_response()
 }
 
-#[tokio::test]
-#[serial_test::serial]
-async fn reversible_http_upstream_error_echo_is_fixed_without_reference_or_diagnostics(
+async fn check_upstream_error_echo(
+    upstream_status: http::StatusCode,
+    streaming: bool,
+    protocol: &str,
 ) -> TestResult {
-    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
-    runtime::set_security_runtime_for_test(Default::default());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let _transport = crate::proxy::forwarder::final_send_binding_test_support::install(|_, _| {});
+    assert!(
+        crate::proxy::forwarder::final_send_binding_test_support::is_active(),
+        "upstream error fixture requires explicit no-proxy transport"
+    );
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
+    let listener = tokio::time::timeout_at(deadline, tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .await
+        .map_err(|_| "synthetic upstream bind deadline exceeded")??;
     let addr = listener.local_addr()?;
-    let upstream = Router::new().fallback(post(upstream_error_echo));
-    let server = tokio::spawn(async move { axum::serve(listener, upstream).await });
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let upstream = Router::new()
+        .fallback(post(upstream_error_echo))
+        .with_state(UpstreamErrorFixture {
+            status: upstream_status,
+            hits: hits.clone(),
+        });
+    let server = FinalSendBindingServer::new(tokio::spawn(async move {
+        axum::serve(listener, upstream).await
+    }));
     let db = Arc::new(Database::memory()?);
     let provider = Provider::with_id(
         "synthetic-private-provider-marker".into(),
         "Synthetic private provider label".into(),
-        json!({"base_url":format!("http://{addr}"),"api_key":"synthetic-error-credential"}),
+        json!({"base_url":format!("http://{addr}"),"api_key":"synthetic-error-credential", "api_format":protocol}),
         None,
     );
     db.save_provider("codex", &provider)?;
     db.set_current_provider("codex", &provider.id)?;
-    let proxy_state = state(db);
+    let proxy_state = state(db.clone());
     let status = proxy_state.status.clone();
     let request = http::Request::builder()
         .method("POST")
         .uri("/v1/responses")
         .header("content-type", "application/json")
         .body(Body::from(
-            json!({"model":"synthetic-model","input":FIXTURE_PHONE,"stream":false}).to_string(),
+            json!({"model":"synthetic-model","input":FIXTURE_PHONE,"stream":streaming}).to_string(),
         ))?;
-    let response = handlers::handle_responses(State(proxy_state), request).await?;
+    let response = tokio::time::timeout_at(
+        deadline,
+        handlers::handle_responses(State(proxy_state), request),
+    )
+    .await
+    .map_err(|_| "synthetic upstream forwarding deadline exceeded")??;
     let http_status = response.status();
-    let bytes = response.into_body().collect().await?.to_bytes();
-    server.abort();
+    assert_eq!(response.headers()["content-type"], "application/json");
+    let bytes = tokio::time::timeout_at(deadline, response.into_body().collect())
+        .await
+        .map_err(|_| "synthetic upstream body deadline exceeded")??
+        .to_bytes();
+    server.finish_at(deadline).await?;
     let text = std::str::from_utf8(&bytes)?;
-    assert!(
-        !text.contains("vary_ph_"),
-        "leased errors must never expose references"
-    );
-    for forbidden in [
-        FIXTURE_PHONE,
-        "synthetic-upstream-private-marker",
-        "synthetic-private-provider-marker",
-        "Synthetic private provider label",
-        "synthetic-model",
-    ] {
-        assert!(
-            !text.contains(forbidden),
-            "leased upstream errors must be fixed, non-enriched responses"
-        );
+    let last_error = tokio::time::timeout_at(deadline, status.read())
+        .await
+        .map_err(|_| "synthetic upstream status deadline exceeded")?
+        .last_error
+        .clone()
+        .unwrap_or_default();
+    let (recorded_status, recorded_error, recorded_streaming): (u16, String, bool) = {
+        let conn = db
+            .conn
+            .lock()
+            .map_err(|_| "synthetic database lock poisoned")?;
+        conn.query_row(
+            "SELECT status_code, error_message, is_streaming FROM proxy_request_logs",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?
+    };
+    assert_eq!(recorded_status, upstream_status.as_u16());
+    assert_eq!(recorded_streaming, streaming);
+    assert_eq!(recorded_error, "Upstream request failed: upstream_error");
+    for observed in [text, last_error.as_str(), recorded_error.as_str()] {
+        for forbidden in [
+            FIXTURE_PHONE,
+            "rredact-cn_phone-",
+            "synthetic-upstream-private-marker",
+            "synthetic-private-provider-marker",
+            "Synthetic private provider label",
+            "synthetic-model",
+            "synthetic-error-credential",
+            "dlp_restore_failed",
+            "restoration failed",
+            "DLP forwarding error",
+        ] {
+            assert!(
+                !observed.contains(forbidden),
+                "leased upstream errors must be safe, non-enriched upstream failures"
+            );
+        }
     }
-    assert_eq!(http_status, http::StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        http_status, upstream_status,
+        "upstream status must survive isolation"
+    );
     let body: Value = serde_json::from_slice(&bytes)?;
-    assert_eq!(body["error"]["code"], "dlp_restore_failed");
-    let last_error = status.read().await.last_error.clone().unwrap_or_default();
-    assert!(!last_error.contains("vary_ph_"));
-    assert!(!last_error.contains("synthetic-upstream-private-marker"));
+    assert_eq!(body["error"]["code"], "upstream_error");
+    assert_eq!(body["error"]["type"], "upstream_error");
+    assert_eq!(
+        body["error"]["message"],
+        "Upstream request failed. The upstream error body was withheld for safety."
+    );
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        tokio::time::timeout_at(deadline, status.read())
+            .await
+            .map_err(|_| "synthetic upstream status deadline exceeded")?
+            .failed_requests,
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reversible_http_upstream_error_echo_is_fixed_without_reference_or_diagnostics(
+) -> TestResult {
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    check_upstream_error_echo(http::StatusCode::BAD_REQUEST, false, "responses").await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reversible_http_upstream_error_status_stream_protocol_matrix() -> TestResult {
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    for status in [400, 401, 403, 404, 413, 422, 429, 500, 502, 503, 504] {
+        for streaming in [false, true] {
+            for protocol in ["responses", "chat_completions", "anthropic"] {
+                check_upstream_error_echo(http::StatusCode::from_u16(status)?, streaming, protocol)
+                    .await?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1840,7 +1940,7 @@ async fn source_copy_forwarding_fixture(boundary: SourceBoundary) -> TestResult 
             sends.fetch_add(1, Ordering::SeqCst);
             assert!(body["input"]
                 .as_str()
-                .is_some_and(|value| value.contains("vary_ph_")));
+                .is_some_and(|value| value.contains("rredact-cn_phone-")));
             if matches!(boundary, SourceBoundary::PendingMapped) {
                 assert_eq!(body["model"].as_str().map(str::len), Some(16 * 1024));
             }
@@ -2244,7 +2344,7 @@ async fn reversible_http_leased_2xx_error_envelopes_are_fixed_without_diagnostic
         let text = std::str::from_utf8(&bytes)?;
         for forbidden in [
             FIXTURE_PHONE,
-            "vary_ph_",
+            "rredact-cn_phone-",
             "synthetic-private-diagnostic",
             "synthetic-error-provider",
             "synthetic-model",
@@ -2316,7 +2416,7 @@ async fn reversible_http_leased_post_guard_conversion_error_is_fixed() -> TestRe
     );
     for forbidden in [
         FIXTURE_PHONE,
-        "vary_ph_",
+        "rredact-cn_phone-",
         "synthetic-conversion-provider",
         "synthetic-model",
     ] {
@@ -2386,7 +2486,7 @@ async fn run_unknown_chat_carrier_http(streaming: bool, upstream_sse: bool) -> T
     let bytes = response.into_body().collect().await?.to_bytes();
     server.abort();
     let text = std::str::from_utf8(&bytes)?;
-    assert!(!text.contains(FIXTURE_PHONE) && !text.contains("vary_ph_"));
+    assert!(!text.contains(FIXTURE_PHONE) && !text.contains("rredact-cn_phone-"));
     assert!(!text.contains("response.completed") && !text.contains("[DONE]"));
     if streaming {
         assert!(
@@ -2470,7 +2570,7 @@ async fn run_unknown_anthropic_sibling_http(streaming: bool, upstream_sse: bool)
     let bytes = response.into_body().collect().await?.to_bytes();
     server.abort();
     let text = std::str::from_utf8(&bytes)?;
-    assert!(!text.contains(FIXTURE_PHONE) && !text.contains("vary_ph_"));
+    assert!(!text.contains(FIXTURE_PHONE) && !text.contains("rredact-cn_phone-"));
     if streaming {
         assert!(
             !text.contains("response.completed") && !text.contains("[DONE]"),
@@ -2610,7 +2710,7 @@ async fn outbound_retention_fixture_with_prompt(tail: bool, prompt: Option<bool>
             } else {
                 body["input"].as_str().expect("synthetic input")
             };
-            assert!(text.contains("vary_ph_") && !text.contains(FIXTURE_PHONE));
+            assert!(text.contains("rredact-cn_phone-") && !text.contains(FIXTURE_PHONE));
             sends.fetch_add(1, Ordering::SeqCst);
             entered.notify_one();
             std::future::pending::<Json<Value>>().await
@@ -3004,9 +3104,9 @@ async fn guarded_namespace_capacity_refuses_actual_forward_before_send() -> Test
         async move {
             assert!(uri.path().contains("api.x.ai"));
             assert_eq!(body["tools"][0]["name"], "synthetic_ns__tool_0");
-            assert!(body["input"]
-                .as_str()
-                .is_some_and(|text| text.contains("vary_ph_") && !text.contains(FIXTURE_PHONE)));
+            assert!(body["input"].as_str().is_some_and(
+                |text| text.contains("rredact-cn_phone-") && !text.contains(FIXTURE_PHONE)
+            ));
             captured.fetch_add(1, Ordering::SeqCst);
             Json(
                 json!({"id":"resp_namespace","object":"response","status":"completed","output":[]}),
@@ -3245,7 +3345,7 @@ async fn namespace_wire_lifecycle(participating: bool, namespace: bool) -> TestR
             let input = body["input"].as_str().expect("synthetic input");
             assert!(!input.contains(FIXTURE_PHONE));
             assert!(input.contains(if participating {
-                "vary_ph_"
+                "rredact-cn_phone-"
             } else {
                 "[REDACTED]"
             }));
@@ -3433,7 +3533,7 @@ async fn guarded_response_namespace_handler_producer_refuses_before_any_forwardi
     .await?;
     assert!(body["input"]
         .as_str()
-        .is_some_and(|text| text.contains("vary_ph_")));
+        .is_some_and(|text| text.contains("rredact-cn_phone-")));
     let before = budget.used();
     let foreign = budget.reserve(budget.limit() - before)?;
     let result = handlers::build_codex_response_namespace_table(&body, Some(&request));
@@ -3927,13 +4027,13 @@ async fn run_p1_cache_authorization(mode: &str) -> TestResult {
         "control must restore the synthetic argument"
     );
     assert!(
-        !initial_text.contains("vary_ph_"),
+        !initial_text.contains("rredact-cn_phone-"),
         "control must not expose references"
     );
     let followup_body = json!({"model":"synthetic-model","stream":false,"input":[{
         "type":"function_call_output","call_id":"call_cache_owner","output":"synthetic tool result"}]});
     assert!(
-        !followup_body.to_string().contains("vary_ph_"),
+        !followup_body.to_string().contains("rredact-cn_phone-"),
         "initial followup must carry no token"
     );
     let mut cache_probe = followup_body.clone();
@@ -3947,7 +4047,7 @@ async fn run_p1_cache_authorization(mode: &str) -> TestResult {
         "control must generate real cached tool history"
     );
     assert_eq!(
-        cache_probe.to_string().contains("vary_ph_"),
+        cache_probe.to_string().contains("rredact-cn_phone-"),
         mode != "legacy",
         "cache token presence must match control mode"
     );
@@ -4000,7 +4100,7 @@ async fn run_p1_cache_authorization(mode: &str) -> TestResult {
     let second_sends = requests.len().saturating_sub(initial_sends);
     let late_token_sent = requests
         .get(initial_sends)
-        .is_some_and(|body| body.to_string().contains("vary_ph_"));
+        .is_some_and(|body| body.to_string().contains("rredact-cn_phone-"));
     let allowed = matches!(mode, "valid" | "legacy");
     eprintln!("P1_CACHE mode={mode} control_success=true initial_followup_token_free=true second_upstream_sends={second_sends} late_token_sent={late_token_sent} followup_status={followup_status:?}");
     assert_eq!(second_sends, usize::from(allowed), "only currently authorized or ordinary token-free history may reach the second actual upstream send");
@@ -4207,7 +4307,9 @@ async fn p1_acceptance_xai_raw_completion() -> TestResult {
             assert!(arguments["phone"]
                 .as_str()
                 .is_some_and(|text| text.contains(FIXTURE_PHONE)));
-            assert!(!recorder.submissions[0].to_string().contains("vary_ph_"));
+            assert!(!recorder.submissions[0]
+                .to_string()
+                .contains("rredact-cn_phone-"));
         }
         let mut tool_frames = 0;
         let mut failed = false;
@@ -4231,7 +4333,7 @@ async fn p1_acceptance_xai_raw_completion() -> TestResult {
             }
         }
         let restored = text.contains(FIXTURE_PHONE);
-        let reference_exposed = text.contains("vary_ph_");
+        let reference_exposed = text.contains("rredact-cn_phone-");
         let before = seen.lock().map_err(|_| "synthetic capture poisoned")?.len();
         assert_eq!(
             before, 1,
@@ -4240,7 +4342,7 @@ async fn p1_acceptance_xai_raw_completion() -> TestResult {
         {
             let captured = seen.lock().map_err(|_| "synthetic capture poisoned")?;
             assert!(
-                captured[0].to_string().contains("vary_ph_"),
+                captured[0].to_string().contains("rredact-cn_phone-"),
                 "xAI upstream must receive an authorized generated reference"
             );
             assert!(
@@ -4421,7 +4523,7 @@ async fn p1_xai_original_frame_limits_budget_and_cancel() -> TestResult {
             mode != "exact",
             "failed/pending original evidence must refuse; mode={mode}"
         );
-        assert!(!text.contains("vary_ph_"));
+        assert!(!text.contains("rredact-cn_phone-"));
         drop(bytes);
         drop(body);
         drop(input_owner);
@@ -4441,13 +4543,21 @@ async fn p1_xai_original_frame_limits_budget_and_cancel() -> TestResult {
 #[tokio::test]
 #[serial_test::serial]
 async fn p1_xai_legacy_redact_keeps_native_namespace_without_restoration_budget() -> TestResult {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
+    let _transport = crate::proxy::forwarder::final_send_binding_test_support::install(|_, _| {});
+    assert!(
+        crate::proxy::forwarder::final_send_binding_test_support::is_active(),
+        "legacy xAI fixture requires explicit no-proxy transport"
+    );
     let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
     let mut config = runtime::SecurityRuntimeConfig::default();
     config
         .builtin_action_overrides
         .insert("chinese_phone_number".into(), super::AuditAction::Redact);
     runtime::set_security_runtime_for_test(config);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let listener = tokio::time::timeout_at(deadline, tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .await
+        .map_err(|_| "synthetic legacy xAI bind deadline exceeded")??;
     let addr = listener.local_addr()?;
     let seen = Arc::new(Mutex::new(Vec::new()));
     let captured = seen.clone();
@@ -4461,7 +4571,11 @@ async fn p1_xai_legacy_redact_keeps_native_namespace_without_restoration_budget(
             ([("content-type", "text/event-stream")], format!("event: response.completed\ndata: {event}")).into_response()
         }
     }));
-    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let server =
+        FinalSendBindingServer::new(tokio::spawn(
+            async move { axum::serve(listener, app).await },
+        ));
+    let outcome = tokio::time::timeout_at(deadline, async {
     let db = Arc::new(Database::memory()?);
     let provider = Provider::with_id(
         "p1-legacy-xai".into(),
@@ -4475,23 +4589,32 @@ async fn p1_xai_legacy_redact_keeps_native_namespace_without_restoration_budget(
     let budget = super::payload_budget::PayloadBudget::with_limit(59);
     let foreign = budget.reserve(59)?;
     let store = super::tokenization::DlpTokenStore::new();
+    // History discovery admits an empty published namespace before action selection.
+    // Compare against that exact admission, not against an uninitialized store.
+    const SESSION: &str = "synthetic-legacy-xai-session";
+    drop(store.admit_published_policy(
+        "codex",
+        Some(SESSION),
+        runtime::admit_security_runtime()?.restoration_policy_revision,
+    )?);
     let before = store.stats()?;
+    assert!(before.namespaces == 1 && before.entries == 0 && before.plaintext_bytes == 0);
     let mut proxy_state = state(db);
     proxy_state.restoration_gateway =
         RestorationGateway::with_test_store_and_rules(store.clone(), &[], budget.clone());
     let request = http::Request::builder().method("POST").uri("/v1/responses")
         .header("content-type", "application/json")
+        .header("session_id", SESSION)
         .body(Body::from(json!({"model":"synthetic-model","input":FIXTURE_PHONE,"stream":true,
             "tools":[{"type":"namespace","name":"synthetic","tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}]}]}).to_string()))?;
     let response = handlers::handle_responses(State(proxy_state), request).await?;
     assert_eq!(response.status(), http::StatusCode::OK);
     let bytes = response.into_body().collect().await?.to_bytes();
-    server.abort();
     let text = std::str::from_utf8(&bytes)?;
     assert!(text.contains("\"namespace\":\"synthetic\"") && text.contains("\"name\":\"lookup\""));
     assert!(
         !text.contains("response.failed")
-            && !text.contains("vary_ph_")
+            && !text.contains("rredact-cn_phone-")
             && !text.contains(FIXTURE_PHONE)
     );
     let requests = seen.lock().map_err(|_| "synthetic capture poisoned")?;
@@ -4501,7 +4624,7 @@ async fn p1_xai_legacy_redact_keeps_native_namespace_without_restoration_budget(
     assert_eq!(
         store.stats()?,
         before,
-        "legacy redact must create no token namespace/mappings"
+        "legacy redact must add no mappings or charges beyond empty history admission"
     );
     assert_eq!(
         budget.used(),
@@ -4510,7 +4633,14 @@ async fn p1_xai_legacy_redact_keeps_native_namespace_without_restoration_budget(
     );
     drop(foreign);
     assert_eq!(budget.used(), 0);
-    Ok(())
+    Ok(()) as TestResult
+    })
+    .await;
+    // Observe cleanup even when forwarding or collection returned an error.
+    let cleanup = server.finish_at(deadline).await;
+    let result = outcome.map_err(|_| "synthetic legacy xAI shared deadline exceeded")?;
+    cleanup?;
+    result
 }
 
 // Retained remaining-closure regressions: actual HTTP, synthetic values, no execution.
@@ -4801,7 +4931,7 @@ async fn run_closure_snapshots(mode: &'static str) -> TestResult {
             "no plaintext outbound"
         );
         assert!(
-            capture[0].to_string().contains("vary_ph_"),
+            capture[0].to_string().contains("rredact-cn_phone-"),
             "authorized token upstream"
         );
     }
@@ -4856,8 +4986,9 @@ async fn run_closure_snapshots(mode: &'static str) -> TestResult {
             "consistent supported snapshots must restore and authorize exactly one continuation"
         );
         assert!(
-            wire.contains(FIXTURE_PHONE) && !wire.contains("vary_ph_"),
-            "restored client output only"
+            wire.contains(FIXTURE_PHONE)
+                && (mode == "reasoning_part_added" || !wire.contains("rredact-cn_phone-")),
+            "tools restore while supported reasoning remains original"
         );
         for (index, event) in events.iter().enumerate() {
             assert!(
@@ -4906,7 +5037,7 @@ async fn run_closure_snapshots(mode: &'static str) -> TestResult {
             "contradictory raw snapshot must discard buffered tools and authorize no context"
         );
         assert!(
-            !wire.contains(FIXTURE_PHONE) && !wire.contains("vary_ph_"),
+            !wire.contains(FIXTURE_PHONE) && !wire.contains("rredact-cn_phone-"),
             "failure releases no restored tool or reference"
         );
     }
@@ -5043,7 +5174,7 @@ async fn run_closure_chat_sibling(
         converted_id, "chat_closure_carrier",
         "control must establish the actual converted identity"
     );
-    assert!(control_wire.contains(FIXTURE_PHONE) && !control_wire.contains("vary_ph_"));
+    assert!(control_wire.contains(FIXTURE_PHONE) && !control_wire.contains("rredact-cn_phone-"));
     assert_eq!(converted["output"][0]["type"], "function_call");
     let continuation = |session: &str| -> Result<_, http::Error> {
         http::Request::builder().method("POST").uri("/v1/responses")
@@ -5090,7 +5221,7 @@ async fn run_closure_chat_sibling(
     let leaked_tool = wire.contains("response.function_call_arguments")
         || wire.contains("\"type\":\"function_call\"");
     let unsupported = wire.contains("dlp_restore_unsupported");
-    let exposed = wire.contains(FIXTURE_PHONE) || wire.contains("vary_ph_");
+    let exposed = wire.contains(FIXTURE_PHONE) || wire.contains("rredact-cn_phone-");
     let completed = wire.contains("response.completed") || wire.contains("[DONE]");
     {
         let captured = seen.lock().map_err(|_| "synthetic capture poisoned")?;
@@ -5101,7 +5232,7 @@ async fn run_closure_chat_sibling(
         );
         for index in [0, 2] {
             assert!(
-                captured[index].to_string().contains("vary_ph_")
+                captured[index].to_string().contains("rredact-cn_phone-")
                     && !captured[index].to_string().contains(FIXTURE_PHONE)
             );
         }
@@ -5244,7 +5375,7 @@ async fn run_closure_digests(streaming: bool, sensitive: bool) -> TestResult {
         assert!(
             !capture[0].to_string().contains(FIXTURE_PHONE)
                 && wire.contains(FIXTURE_PHONE)
-                && !wire.contains("vary_ph_"),
+                && !wire.contains("rredact-cn_phone-"),
             "must reach successful final entity restoration"
         );
         assert!(
@@ -5448,7 +5579,7 @@ async fn run_closure_anthropic_json(mode: &'static str) -> TestResult {
             "genuine full JSON must authorize restored synthetic SSE and completed context"
         );
         assert!(
-            text.contains(FIXTURE_PHONE) && !text.contains("vary_ph_"),
+            text.contains(FIXTURE_PHONE) && !text.contains("rredact-cn_phone-"),
             "tool payload restored only at final client boundary"
         );
     } else {
@@ -5460,7 +5591,7 @@ async fn run_closure_anthropic_json(mode: &'static str) -> TestResult {
             !completed && tools == 0 && !continuation_ok && sends == 1,
             "invalid original JSON must release no tool or context"
         );
-        assert!(!text.contains(FIXTURE_PHONE) && !text.contains("vary_ph_"));
+        assert!(!text.contains(FIXTURE_PHONE) && !text.contains("rredact-cn_phone-"));
     }
     Ok(())
 }
@@ -5821,7 +5952,7 @@ async fn operation_lineage_fixture(mode: &str) -> TestResult {
         assert_eq!(captured[stage - 1].2, "synthetic-workspace");
         let outbound = serde_json::to_string(&captured[stage - 1].1)?;
         assert!(
-            !outbound.contains(FIXTURE_PHONE) && outbound.contains("vary_ph_"),
+            !outbound.contains(FIXTURE_PHONE) && outbound.contains("rredact-cn_phone-"),
             "every lineage operation must send only tokenized supported text"
         );
     }
@@ -5895,7 +6026,7 @@ async fn fresh_readable_history_fixture(
     };
     let mut body = json!({"model":"synthetic-model","stream":false,"input":[
         {"role":"user","content":format!("Synthetic user {FIXTURE_PHONE}")},
-        {"type":"reasoning","summary":[{"type":"summary_text","text":format!("Synthetic reasoning {FIXTURE_PHONE}")}]},
+        {"type":"reasoning","id":"rs_synthetic_fresh","summary":[{"type":"summary_text","text":format!("Synthetic reasoning {FIXTURE_PHONE}")}],"content":null,"encrypted_content":null},
         call, {"type":output_type,"call_id":"synthetic_fresh_call","output":format!("Synthetic result {FIXTURE_PHONE}")},
         {"role":"user","content":"Synthetic continue"}]});
     if unsupported_reasoning {
@@ -6007,13 +6138,13 @@ async fn fresh_readable_history_fixture(
         "complete original readable history must be reinspected as fresh input; status={status} sends={sends}");
     let response: Value = serde_json::from_slice(&bytes)?;
     let serialized = serde_json::to_string(&response)?;
-    assert!(serialized.contains(FIXTURE_PHONE) && !serialized.contains("vary_ph_"));
+    assert!(serialized.contains(FIXTURE_PHONE) && !serialized.contains("rredact-cn_phone-"));
     let captured = seen
         .lock()
         .map_err(|_| "synthetic fresh capture poisoned")?;
     let outbound = serde_json::to_string(&captured[0])?;
     assert!(
-        !outbound.contains(FIXTURE_PHONE) && outbound.contains("vary_ph_"),
+        !outbound.contains(FIXTURE_PHONE) && outbound.contains("rredact-cn_phone-"),
         "all supported fresh history text must be tokenized before the only send"
     );
     assert!(outbound.contains("synthetic_fresh_call") && outbound.contains("Synthetic result"));
@@ -6149,7 +6280,7 @@ async fn reversible_closure_req3_original_history_ignores_cached_completion() ->
     assert!(
         !outbound.contains("synthetic-cache-only-reasoning")
             && !outbound.contains(FIXTURE_PHONE)
-            && outbound.contains("vary_ph_"),
+            && outbound.contains("rredact-cn_phone-"),
         "original complete history must not inherit cached data or completion authority"
     );
     server.abort();
@@ -6240,10 +6371,10 @@ async fn fresh_history_boundary_fixture(boundary: &str) -> TestResult {
             negatives.push(("key", key));
         }
         "escaped_argument_key" => {
-            assert!(token.starts_with("vary_ph_"));
+            assert!(token.starts_with("rredact-cn_phone-"));
             let mut invalid = body.clone();
             invalid["input"][1]["arguments"] =
-                json!(format!("{{\"\\u0076{}\":\"synthetic\"}}", &token[1..]));
+                json!(format!("{{\"\\u0072{}\":\"synthetic\"}}", &token[1..]));
             negatives.push(("escaped_argument_key", invalid));
         }
         "message_type" => {
@@ -6845,7 +6976,7 @@ async fn core_failure_http_fixture(mode: &'static str) -> TestResult {
     let text = std::str::from_utf8(&wire)?;
     assert!(
         !text.contains(FIXTURE_PHONE)
-            && !text.contains("vary_ph_")
+            && !text.contains("rredact-cn_phone-")
             && !text.contains("synthetic-core-credential")
     );
     assert_eq!(
@@ -7005,7 +7136,7 @@ async fn run_closure_client_budget(xai: bool, exhaust: bool) -> TestResult {
     );
     assert_eq!(recorder.completed, !exhaust);
     assert_eq!(recorder.failed, exhaust);
-    assert!(!text.contains("vary_ph_"));
+    assert!(!text.contains("rredact-cn_phone-"));
     if !exhaust {
         let arguments: Value = serde_json::from_str(
             recorder.submissions[0]["arguments"]
@@ -7028,7 +7159,7 @@ async fn run_closure_client_budget(xai: bool, exhaust: bool) -> TestResult {
             1,
             "response budget fails after exactly one actual send"
         );
-        assert!(captured[0].to_string().contains("vary_ph_"));
+        assert!(captured[0].to_string().contains("rredact-cn_phone-"));
         assert!(!captured[0].to_string().contains(FIXTURE_PHONE));
     }
     let followup = http::Request::builder()
@@ -7135,7 +7266,7 @@ async fn run_closure_task_counterexample(mode: &'static str) -> TestResult {
             let source = body["input"].as_str().expect("synthetic task input");
             let (first, second) = source.strip_prefix("first=").and_then(|value| value.split_once("; second="))
                 .expect("synthetic task tokens");
-            assert!(first.starts_with("vary_") && second.starts_with("vary_") && first != second);
+            assert!(first.starts_with("rredact-") && second.starts_with("rredact-") && first != second);
             let value = match mode {
                 "literal" => first.to_owned(),
                 "shell_quote" => format!("printf '%s' '{first}'"),
@@ -7366,14 +7497,14 @@ async fn run_closure_task_counterexample(mode: &'static str) -> TestResult {
         assert!(
             !safe.contains("private-first")
                 && !safe.contains("private-second")
-                && !safe.contains("vary_")
+                && !safe.contains("rredact-")
         );
     }
     let safe_usage = serde_json::to_string(&mock_usage)?;
     assert!(
         !safe_usage.contains("private-first")
             && !safe_usage.contains("private-second")
-            && !safe_usage.contains("vary_")
+            && !safe_usage.contains("rredact-")
     );
     // Custom DLP rules are not a guarantee of arbitrary tool-summary sanitization.
     // The fixture retains summaries only in local memory, never logs or persists them.
@@ -7383,7 +7514,7 @@ async fn run_closure_task_counterexample(mode: &'static str) -> TestResult {
     assert!(
         !sent.contains("private-first")
             && !sent.contains("private-second")
-            && sent.contains("vary_")
+            && sent.contains("rredact-")
     );
     if !protocol_complete {
         assert!(
@@ -7442,12 +7573,6 @@ closure_task_test!(
 async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
     use super::{payload_budget::PayloadBudget, tokenization::DlpTokenStore};
     use handlers::xai_json_wire_test_support::{self, Event};
-    struct AbortServer(tokio::task::JoinHandle<std::io::Result<()>>);
-    impl Drop for AbortServer {
-        fn drop(&mut self) {
-            self.0.abort();
-        }
-    }
     #[derive(Default)]
     struct BoundaryState {
         entered: usize,
@@ -7468,7 +7593,15 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
             .insert("chinese_phone_number".into(), super::AuditAction::Redact);
     }
     runtime::set_security_runtime_for_test(config);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let _transport = crate::proxy::forwarder::final_send_binding_test_support::install(|_, _| {});
+    assert!(
+        crate::proxy::forwarder::final_send_binding_test_support::is_active(),
+        "xAI JSON fixture requires explicit no-proxy transport before network setup"
+    );
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
+    let listener = tokio::time::timeout_at(deadline, tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .await
+        .map_err(|_| "synthetic xAI bind deadline exceeded")??;
     let address = listener.local_addr()?;
     assert!(address.ip().is_loopback());
     let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -7490,8 +7623,12 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
             ..Default::default()
         },
     );
-    let (sender, mut observation_queue) =
-        crate::proxy::tool_observation::channel::test_channel().await;
+    let (sender, mut observation_queue) = tokio::time::timeout_at(
+        deadline,
+        crate::proxy::tool_observation::channel::test_channel(),
+    )
+    .await
+    .map_err(|_| "synthetic xAI observation lock deadline exceeded")?;
     // Saturate the real shared queue without closing its process-wide receiver.
     // The handler must still restore and deliver the response, without a retry.
     let _queue_occupant = if mode == "observation_full" {
@@ -7546,9 +7683,10 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
                     "name":"synthetic_ns__lookup","arguments":format!("{{\"phone\":{},\"count\":3.0,\"zero\":-0.0,\"signed_zero_text\":\"-0.0\",\"fraction\":1.25}}",json!(text))}]}))
         }
     }));
-    let _server = AbortServer(tokio::spawn(
-        async move { axum::serve(listener, app).await },
-    ));
+    let server =
+        FinalSendBindingServer::new(tokio::spawn(
+            async move { axum::serve(listener, app).await },
+        ));
     let db = Arc::new(Database::memory()?);
     let url = format!("http://{address}/api.x.ai/v1");
     let provider = Provider::with_id(
@@ -7626,18 +7764,15 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
         .header("content-type", "application/json")
         .header("session-id", format!("synthetic-wire-{mode}"))
         .body(Body::from(body.to_string()))?;
-    let response = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+    let response = tokio::time::timeout_at(
+        deadline,
         handlers::handle_responses(State(proxy_state.clone()), request),
     )
     .await??;
     let status = response.status();
-    let wire = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        response.into_body().collect(),
-    )
-    .await??
-    .to_bytes();
+    let wire = tokio::time::timeout_at(deadline, response.into_body().collect())
+        .await??
+        .to_bytes();
     {
         let captured = seen.lock().map_err(|_| "synthetic capture poisoned")?;
         assert_eq!(
@@ -7645,14 +7780,17 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
             1,
             "original upstream send must already have completed exactly once"
         );
-        assert_eq!(captured[0]["tools"][0]["name"], "synthetic_ns__lookup");
+        assert!(
+            captured[0]["tools"][0]["name"] == "synthetic_ns__lookup",
+            "upstream tool namespace normalization must remain unchanged"
+        );
         assert!(
             !captured[0].to_string().contains(FIXTURE_PHONE),
             "fixture plaintext must not reach upstream"
         );
         if !matches!(mode, "legacy" | "noactive") {
             assert!(
-                captured[0].to_string().contains("vary_ph_"),
+                captured[0].to_string().contains("rredact-cn_phone-"),
                 "active request must reach real upstream tokenized"
             );
         }
@@ -7677,8 +7815,6 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
                 "only the admitted active target boundary exhausts real shared budget"
             );
         }
-        eprintln!("WIRE_XAI_JSON mode={mode} initial_sends=1 target_entries={} active={} full={} encoded={} released={} recovered={} status={}",
-            observed.entered, observed.active, observed.full, observed.encoded, observed.released, observed.recovered, status.as_u16());
     }
     assert_eq!(status, if mode == "refuse" { http::StatusCode::BAD_GATEWAY } else { http::StatusCode::OK },
         "target xAI JSON wire serialization must fail closed when its independent budget reservation is refused");
@@ -7705,18 +7841,12 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
             "success control must exercise the real nonexecuting observation queue"
         );
     }
-    while tokio::time::timeout(
-        std::time::Duration::from_millis(10),
-        observation_queue.recv(),
-    )
-    .await
-    .is_ok()
-    {}
+    drain_xai_json_observations(&mut observation_queue, deadline).await?;
     let mut recorder = FinalClientRecorder::default();
     recorder.observe_json(&value);
     let text = std::str::from_utf8(&wire)?;
     assert!(
-        !text.contains("vary_ph_"),
+        !text.contains("rredact-cn_phone-"),
         "final client must not expose restoration references"
     );
     if mode == "refuse" {
@@ -7735,8 +7865,10 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
             "success delivers exactly one complete tool without executing it"
         );
         let item = &recorder.submissions[0];
-        assert_eq!(item["name"], "lookup");
-        assert_eq!(item["namespace"], "synthetic_ns");
+        assert!(
+            item["name"] == "lookup" && item["namespace"] == "synthetic_ns",
+            "delivered tool identity must preserve the native namespace"
+        );
         let arguments = item["arguments"]
             .as_str()
             .ok_or("missing synthetic arguments")?;
@@ -7822,19 +7954,16 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
                 "previous_response_id":response_id})
                 .to_string(),
             ))?;
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
+        let response = tokio::time::timeout_at(
+            deadline,
             handlers::handle_responses(State(proxy_state.clone()), followup),
         )
         .await?;
         let response = response.unwrap_or_else(IntoResponse::into_response);
         let followup_status = response.status();
-        let followup_wire = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            response.into_body().collect(),
-        )
-        .await??
-        .to_bytes();
+        let followup_wire = tokio::time::timeout_at(deadline, response.into_body().collect())
+            .await??
+            .to_bytes();
         let sends = seen.lock().map_err(|_| "synthetic capture poisoned")?.len();
         if mode == "refuse" {
             assert_eq!(followup_status, http::StatusCode::BAD_REQUEST);
@@ -7849,13 +7978,8 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
             );
         }
     }
-    while tokio::time::timeout(
-        std::time::Duration::from_millis(10),
-        observation_queue.recv(),
-    )
-    .await
-    .is_ok()
-    {}
+    drain_xai_json_observations(&mut observation_queue, deadline).await?;
+    server.finish_at(deadline).await?;
     drop(proxy_state);
     assert_eq!(
         budget.used(),
@@ -7907,4 +8031,6050 @@ async fn reversible_wire_xai_json_no_active_tokens_bypass_owner() -> TestResult 
 #[serial_test::serial]
 async fn reversible_wire_xai_json_legacy_redact_bypasses_owner() -> TestResult {
     run_reversible_wire_xai_json("legacy").await
+}
+
+#[tokio::test]
+async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> TestResult {
+    const CHILD: &str = "VARYAI_SYNTHETIC_CONTEXT_CHECKPOINT_TEST";
+    if legacy_diagnostic_observer::parent(
+        CHILD,
+        "proxy::security::reversible_integration_tests::reversible_context_checkpoints_are_fixed_and_preserve_refusals",
+    ).await? { return Ok(()); }
+    use super::{
+        http_restoration::{
+            admit_http_request, validate_unleased_enriched_body, DlpForwardError,
+            RestorationAdmission,
+        },
+        payload_budget::PayloadBudget,
+        tokenization::{DlpTokenStore, TokenCategory},
+    };
+    use crate::app_config::AppType;
+    const CHECKPOINTS: [(&str, &str); 20] = [
+        (
+            "reference_scan",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "reference_scan"
+            ),
+        ),
+        (
+            "unleased_reference",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "unleased_reference"
+            ),
+        ),
+        (
+            "gateway_state",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "gateway_state"
+            ),
+        ),
+        (
+            "gateway_missing",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "gateway_missing"
+            ),
+        ),
+        (
+            "runtime_disabled",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "runtime_disabled"
+            ),
+        ),
+        (
+            "namespace_admission",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "namespace_admission"
+            ),
+        ),
+        (
+            "history_extract",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "history_extract"
+            ),
+        ),
+        (
+            "history_classify",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "history_classify"
+            ),
+        ),
+        (
+            "admission_audit",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "admission_audit"
+            ),
+        ),
+        (
+            "admission_prepare",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "admission_prepare"
+            ),
+        ),
+        (
+            "attempt_fork",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "attempt_fork"
+            ),
+        ),
+        (
+            "attempt_binding",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "attempt_binding"
+            ),
+        ),
+        (
+            "attempt_history",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "attempt_history"
+            ),
+        ),
+        (
+            "context_resume",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "context_resume"
+            ),
+        ),
+        (
+            "output_call_ids",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "output_call_ids"
+            ),
+        ),
+        (
+            "token_resume",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "token_resume"
+            ),
+        ),
+        (
+            "attempt_audit",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "attempt_audit"
+            ),
+        ),
+        (
+            "request_prepare",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "request_prepare"
+            ),
+        ),
+        (
+            "request_transform",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "request_transform"
+            ),
+        ),
+        (
+            "final_validation",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "final_validation"
+            ),
+        ),
+    ];
+    // Only a fixed checkpoint index, a saturating count and a failure bit survive logging.
+    static RECORDS: Mutex<(usize, Option<usize>, bool)> = Mutex::new((0, None, false));
+    struct Logger;
+    impl log::Log for Logger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata
+                .target()
+                .ends_with("::security::restore_diagnostics")
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if !self.enabled(record.metadata()) {
+                return;
+            }
+            if let Ok(mut records) = RECORDS.lock() {
+                records.0 = records.0.saturating_add(1);
+                let index = CHECKPOINTS.iter().position(|(_, expected)| {
+                    legacy_diagnostic_observer::exact(*record.args(), expected)
+                });
+                records.1 = index;
+                records.2 |= index.is_none();
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOGGER: Logger = Logger;
+    log::set_logger(&LOGGER).map_err(|_| "isolated context logger unavailable")?;
+    log::set_max_level(log::LevelFilter::Warn);
+    runtime::set_security_runtime_for_test(Default::default());
+    let store = DlpTokenStore::new();
+    // A complete synthetic reference originating outside this gateway has no authority.
+    let mut unrelated = DlpTokenStore::new().admit("codex", Some("synthetic-unrelated"), 1)?;
+    let references = unrelated.prepare(
+        &[super::tokenization::TokenFragment {
+            raw: "synthetic-private-document-value",
+            whole_span_categories: &[TokenCategory::Custom],
+        }],
+        &[],
+        |tokens| Ok(tokens.to_vec()),
+    )?;
+    let reference = references.first().ok_or("synthetic reference missing")?;
+    let gateway = RestorationGateway::with_test_store_and_rules(
+        store,
+        &["chinese_phone_number"],
+        PayloadBudget::with_limit(64 * 1024 * 1024),
+    );
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        "session-id",
+        "synthetic-context-checkpoint-session".parse()?,
+    );
+    let check = |checkpoint: &str| -> TestResult {
+        let mut records = RECORDS
+            .lock()
+            .map_err(|_| "synthetic log capture poisoned")?;
+        let expected = CHECKPOINTS
+            .iter()
+            .position(|(label, _)| *label == checkpoint);
+        assert!(
+            expected.is_some() && records.0 == 1 && records.1 == expected && !records.2,
+            "context log must contain only the expected fixed checkpoint once"
+        );
+        *records = (0, None, false);
+        Ok(())
+    };
+    let response_contract = |error: DlpForwardError| {
+        assert!(
+            error == DlpForwardError::ContextUnavailable,
+            "context error identity changed"
+        );
+        assert_eq!(error.status_code(), http::StatusCode::BAD_REQUEST);
+        assert_eq!(error.code(), "dlp_context_unavailable");
+        assert_eq!(error.error_type(), "invalid_request_error");
+        assert_eq!(
+            error.message(),
+            "Reversible DLP session or cursor context is unavailable."
+        );
+    };
+    let mut token_only = json!({"model":"synthetic-model", "input":[{"role":"user","content":format!("Synthetic document sample {reference}")}]});
+    let admitted = match admit_http_request(
+        &gateway,
+        &AppType::Codex,
+        true,
+        false,
+        &mut token_only,
+        &headers,
+    )? {
+        RestorationAdmission::Admitted(request) => request,
+        _ => return Err("synthetic reference history was not admitted".into()),
+    };
+    assert!(
+        RECORDS
+            .lock()
+            .map_err(|_| "synthetic log capture poisoned")?
+            .0
+            == 0,
+        "successful admission must not emit a failure log"
+    );
+    let result = admitted.prepare_attempt(
+        "synthetic-provider",
+        "openai_responses",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-principal"),
+        &mut token_only,
+        |_| Err(DlpForwardError::Blocked),
+    );
+    response_contract(result.err().ok_or("unauthorized reference was accepted")?);
+    check("token_resume")?;
+
+    // The same data reference must not conceal a preceding call-context refusal.
+    let mut with_call = json!({"model":"synthetic-model", "input":[
+        {"type":"function_call","call_id":"synthetic-missing-call","name":"synthetic-tool","arguments":"{}"},
+        {"type":"function_call_output","call_id":"synthetic-missing-call","output":format!("Synthetic document sample {reference}")}
+    ]});
+    let admitted = match admit_http_request(
+        &gateway,
+        &AppType::Codex,
+        true,
+        false,
+        &mut with_call,
+        &headers,
+    )? {
+        RestorationAdmission::Admitted(request) => request,
+        _ => return Err("synthetic call history was not admitted".into()),
+    };
+    let result = admitted.prepare_attempt(
+        "synthetic-provider",
+        "openai_responses",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-principal"),
+        &mut with_call,
+        |_| Err(DlpForwardError::Blocked),
+    );
+    response_contract(result.err().ok_or("missing call context was accepted")?);
+    check("context_resume")?;
+
+    let mut orphan = json!({"model":"synthetic-model", "input":[
+        {"type":"function_call_output","call_id":"synthetic-orphan-call","output":format!("Synthetic document sample {reference}")}
+    ]});
+    let admitted = match admit_http_request(
+        &gateway,
+        &AppType::Codex,
+        true,
+        false,
+        &mut orphan,
+        &headers,
+    )? {
+        RestorationAdmission::Admitted(request) => request,
+        _ => return Err("synthetic orphan history was not admitted".into()),
+    };
+    let result = admitted.prepare_attempt(
+        "synthetic-provider",
+        "openai_responses",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-principal"),
+        &mut orphan,
+        |_| Err(DlpForwardError::Blocked),
+    );
+    response_contract(result.err().ok_or("orphan output was accepted")?);
+    check("output_call_ids")?;
+
+    response_contract(
+        validate_unleased_enriched_body(&json!({"input":reference}))
+            .err()
+            .ok_or("unleased reference was accepted")?,
+    );
+    check("unleased_reference")?;
+    let intercepted = match admit_http_request(
+        &RestorationGateway::disabled(),
+        &AppType::Codex,
+        true,
+        false,
+        &mut json!({"input":reference}),
+        &headers,
+    )? {
+        RestorationAdmission::Intercepted(response) => response,
+        _ => return Err("missing gateway did not refuse reference".into()),
+    };
+    assert_eq!(intercepted.status(), http::StatusCode::BAD_REQUEST);
+    let bytes = intercepted.into_body().collect().await?.to_bytes();
+    let payload: Value = serde_json::from_slice(&bytes)?;
+    assert!(
+        payload
+            == json!({"error":{"message":"Reversible DLP session or cursor context is unavailable.","type":"invalid_request_error","code":"dlp_context_unavailable","param":null}}),
+        "context response contract changed"
+    );
+    check("gateway_missing")?;
+
+    // Admission and later transformation boundaries also preserve the refusal contract.
+    let malformed_text = ["rredact-", "custom-", "broken"].concat();
+    let mut malformed = json!({"input": malformed_text});
+    let response = match admit_http_request(
+        &gateway,
+        &AppType::Codex,
+        true,
+        false,
+        &mut malformed,
+        &headers,
+    )? {
+        RestorationAdmission::Intercepted(response) => response,
+        _ => return Err("synthetic malformed reference was accepted".into()),
+    };
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    check("reference_scan")?;
+    let mut invalid_history = json!({"input":"synthetic", "previous_response_id":42});
+    let response = match admit_http_request(
+        &gateway,
+        &AppType::Codex,
+        true,
+        false,
+        &mut invalid_history,
+        &headers,
+    )? {
+        RestorationAdmission::Intercepted(response) => response,
+        _ => return Err("synthetic invalid cursor was accepted".into()),
+    };
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    check("history_extract")?;
+    let mut disabled = (*runtime::get_security_runtime()).clone();
+    disabled.enabled = false;
+    runtime::set_security_runtime_for_test(disabled);
+    let response = match admit_http_request(
+        &gateway,
+        &AppType::Codex,
+        true,
+        false,
+        &mut json!({"input":reference}),
+        &headers,
+    )? {
+        RestorationAdmission::Intercepted(response) => response,
+        _ => return Err("synthetic disabled runtime accepted reference".into()),
+    };
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    check("runtime_disabled")?;
+    runtime::set_security_runtime_for_test(Default::default());
+
+    for final_check in [false, true] {
+        let mut source = json!({"model":"synthetic-model", "input":"synthetic harmless text"});
+        let request = match admit_http_request(
+            &gateway,
+            &AppType::Codex,
+            true,
+            false,
+            &mut source,
+            &headers,
+        )? {
+            RestorationAdmission::Admitted(request) => request,
+            _ => return Err("synthetic transform request was not admitted".into()),
+        };
+        let result = request.prepare_attempt(
+            "synthetic-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-principal"),
+            &mut source,
+            |prepared| {
+                if final_check {
+                    let mut final_body = prepared.clone();
+                    final_body["input"] = json!(reference);
+                    Ok(final_body)
+                } else {
+                    Err(DlpForwardError::ContextUnavailable)
+                }
+            },
+        );
+        response_contract(result.err().ok_or("synthetic transform refusal missing")?);
+        check(if final_check {
+            "final_validation"
+        } else {
+            "request_transform"
+        })?;
+    }
+
+    use super::restore_diagnostics::ContextCheckpoint as C;
+    for (checkpoint, label) in [
+        (C::ReferenceScan, "reference_scan"),
+        (C::UnleasedReference, "unleased_reference"),
+        (C::GatewayState, "gateway_state"),
+        (C::GatewayMissing, "gateway_missing"),
+        (C::RuntimeDisabled, "runtime_disabled"),
+        (C::NamespaceAdmission, "namespace_admission"),
+        (C::HistoryExtract, "history_extract"),
+        (C::HistoryClassify, "history_classify"),
+        (C::AdmissionAudit, "admission_audit"),
+        (C::AdmissionPrepare, "admission_prepare"),
+        (C::AttemptFork, "attempt_fork"),
+        (C::AttemptBinding, "attempt_binding"),
+        (C::AttemptHistory, "attempt_history"),
+        (C::ContextResume, "context_resume"),
+        (C::OutputCallIds, "output_call_ids"),
+        (C::TokenResume, "token_resume"),
+        (C::AttemptAudit, "attempt_audit"),
+        (C::RequestPrepare, "request_prepare"),
+        (C::RequestTransform, "request_transform"),
+        (C::FinalValidation, "final_validation"),
+    ] {
+        response_contract(DlpForwardError::ContextUnavailable.at_context_checkpoint(checkpoint));
+        check(label)?;
+    }
+    for error in [
+        DlpForwardError::PolicyConflict,
+        DlpForwardError::RestoreUnsupported,
+        DlpForwardError::RedactionFailed,
+        DlpForwardError::Unavailable,
+        DlpForwardError::CapacityExceeded,
+        DlpForwardError::TokenCollision,
+        DlpForwardError::Blocked,
+        DlpForwardError::RestoreFailed,
+        DlpForwardError::RestoreFailedAt(super::restore_diagnostics::RestoreStage::TokenRestore),
+    ] {
+        assert!(
+            error.at_context_checkpoint(C::TokenResume) == error,
+            "checkpoint replaced non-context error"
+        );
+    }
+
+    let mut harmless = json!({"model":"synthetic-model","input":"synthetic harmless text"});
+    let admitted = match admit_http_request(
+        &gateway,
+        &AppType::Codex,
+        true,
+        false,
+        &mut harmless,
+        &headers,
+    )? {
+        RestorationAdmission::Admitted(request) => request,
+        _ => return Err("synthetic harmless request was not admitted".into()),
+    };
+    let result = admitted.prepare_attempt(
+        "synthetic-provider",
+        "openai_responses",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-principal"),
+        &mut harmless,
+        |_| Err(DlpForwardError::Blocked),
+    );
+    assert!(
+        matches!(result, Err(DlpForwardError::Blocked)),
+        "non-context error was replaced"
+    );
+    assert!(
+        RECORDS
+            .lock()
+            .map_err(|_| "synthetic log capture poisoned")?
+            .0
+            == 0,
+        "non-context error must not emit a context failure log"
+    );
+    std::process::exit(87);
+}
+
+#[cfg(test)]
+mod text_fallback_http_tests {
+    use super::super::{
+        http_restoration::{
+            admit_http_request, prepare_text_projection_http_for_test, RestorationAdmission,
+            RestorationGateway,
+        },
+        payload_budget::PayloadBudget,
+        response_restoration::{ArgumentNormalizationMode, TEXT_PROJECTION_NOTICE},
+        tokenization::{DlpRequestLease, DlpTokenStore, TokenCategory, TokenFragment},
+    };
+    use super::TestResult;
+    use axum::{body::Body, extract::State, response::Response, routing::post, Router};
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Empty};
+    use serde_json::{json, Value};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use tokio::{
+        sync::Notify,
+        time::{timeout, Duration},
+    };
+
+    const SESSION: &str = "synthetic-http-projection";
+    const ORIGINAL: &str = "synthetic-http-source-value";
+
+    struct Fixture {
+        store: DlpTokenStore,
+        lease: DlpRequestLease,
+        budget: PayloadBudget,
+        reference: String,
+    }
+
+    fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
+        let store = DlpTokenStore::new();
+        let budget = PayloadBudget::with_limit(32 * 1024 * 1024);
+        let mut lease = store.admit("codex", Some(SESSION), 1)?;
+        lease.prepare_with_budget(
+            &[TokenFragment {
+                raw: ORIGINAL,
+                whole_span_categories: &[TokenCategory::Custom],
+            }],
+            &[],
+            budget.clone(),
+            |_| Ok(()),
+        )?;
+        let reference = lease.authorized_tokens()?.as_slice()[0].to_owned();
+        Ok(Fixture {
+            store,
+            lease,
+            budget,
+            reference,
+        })
+    }
+
+    fn native(text: &str) -> Value {
+        json!({"id":"resp_http_projection", "object":"response", "status":"completed", "model":"synthetic-model",
+            "output":[{"id":"msg_http_projection", "type":"message", "role":"assistant", "status":"completed",
+                "content":[{"type":"output_text", "text":text, "annotations":[]}]}]})
+    }
+
+    fn wire(fixture: &Fixture, sse: bool) -> Vec<u8> {
+        wire_with_reference(&fixture.reference, sse)
+    }
+
+    fn wire_with_reference(reference: &str, sse: bool) -> Vec<u8> {
+        let text = format!("{reference} rredact-custom-damaged é");
+        let mut response = native(&text);
+        if !sse {
+            response["output"][0]["content"]
+                .as_array_mut()
+                .into_iter()
+                .for_each(|parts| {
+                    parts.push(json!({"type":"output_text", "text":reference, "annotations":[]}));
+                });
+            return response.to_string().into_bytes();
+        }
+        let part = response["output"][0]["content"][0].clone();
+        let item = response["output"][0].clone();
+        [
+            json!({"type":"response.output_text.delta", "output_index":0, "content_index":0, "item_id":"msg_http_projection", "delta":text}),
+            json!({"type":"response.output_text.done", "output_index":0, "content_index":0, "item_id":"msg_http_projection", "text":text}),
+            json!({"type":"response.content_part.done", "output_index":0, "content_index":0, "item_id":"msg_http_projection", "part":part}),
+            json!({"type":"response.output_item.done", "output_index":0, "item":item}),
+            json!({"type":"response.completed", "response":response}),
+        ].iter().map(|event| format!("event: {}\ndata: {event}\n\n", event["type"].as_str().unwrap_or("")))
+            .collect::<String>().into_bytes()
+    }
+
+    fn response(body: Body, sse: bool) -> Result<Response, http::Error> {
+        Response::builder()
+            .header(
+                "content-type",
+                if sse {
+                    "text/event-stream; charset=utf-8"
+                } else {
+                    "application/json; charset=utf-8"
+                },
+            )
+            .header("content-encoding", "identity")
+            .header("etag", "synthetic-stale")
+            .header("digest", "synthetic-stale")
+            .header("content-digest", "synthetic-stale")
+            .header("repr-digest", "synthetic-stale")
+            .header("content-md5", "synthetic-stale")
+            .header("x-synthetic-preserved", "yes")
+            .body(body)
+    }
+
+    fn no_authority(fixture: &Fixture) -> TestResult {
+        let mut observer = fixture.store.admit("codex", Some(SESSION), 1)?;
+        for provider in ["projection-fixture", "synthetic-http"] {
+            let binding = fixture.lease.bind_actual_attempt(
+                provider,
+                "openai_responses",
+                "http://127.0.0.1:1/responses",
+                None,
+            )?;
+            assert!(
+                observer
+                    .resume_completed_context(&binding, Some("resp_http_projection"), &[], &[])
+                    .is_err(),
+                "projection published response authority"
+            );
+            assert!(
+                observer
+                    .resume_completed_tokens(&binding, &[&fixture.reference])
+                    .is_err(),
+                "projection published token authority"
+            );
+        }
+        assert!(
+            observer.authorized_tokens()?.as_slice().is_empty(),
+            "observer gained authority"
+        );
+        Ok(())
+    }
+
+    fn clean_headers(response: &Response, sse: bool) {
+        for name in [
+            "content-encoding",
+            "transfer-encoding",
+            "etag",
+            "digest",
+            "content-digest",
+            "repr-digest",
+            "content-md5",
+        ] {
+            assert!(
+                !response.headers().contains_key(name),
+                "stale entity header retained: {name}"
+            );
+        }
+        assert!(response.headers()["x-synthetic-preserved"] == "yes");
+        assert_eq!(response.headers().contains_key("content-length"), !sse);
+        assert!(response.headers()["content-type"]
+            .to_str()
+            .is_ok_and(|value| value.starts_with(if sse {
+                "text/event-stream"
+            } else {
+                "application/json"
+            })));
+    }
+
+    #[tokio::test]
+    async fn text_fallback_loopback_finish_confirms_task_resource_release() -> TestResult {
+        struct Release(Arc<AtomicUsize>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let released = Arc::new(AtomicUsize::new(0));
+        let task_release = released.clone();
+        let (ready, received) = tokio::sync::oneshot::channel();
+        let task = super::FinalSendBindingServer::new(tokio::spawn(async move {
+            let _release = Release(task_release);
+            let _ = ready.send(());
+            std::future::pending::<std::io::Result<()>>().await
+        }));
+        timeout(Duration::from_secs(2), received).await??;
+        task.finish().await?;
+        assert!(
+            released.load(Ordering::SeqCst) == 1,
+            "cleanup success must confirm task-owned resources were released"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn text_fallback_loopback_finish_reports_task_failure() -> TestResult {
+        let handle = tokio::spawn(async {
+            panic!("synthetic loopback task failure");
+        });
+        let finished = handle.abort_handle();
+        let task = super::FinalSendBindingServer::new(handle);
+        timeout(Duration::from_secs(2), async {
+            while !finished.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert!(
+            task.finish().await.is_err(),
+            "failed task must not report cleanup success"
+        );
+        Ok(())
+    }
+    #[derive(Clone)]
+    struct Upstream {
+        wire: Bytes,
+        sse: bool,
+        attempts: Arc<AtomicUsize>,
+        reads: Arc<AtomicUsize>,
+        ready: Arc<Notify>,
+        eof: Arc<Notify>,
+    }
+
+    async fn upstream(State(state): State<Upstream>) -> Response {
+        state.attempts.fetch_add(1, Ordering::SeqCst);
+        let sse = state.sse;
+        let body = Body::from_stream(async_stream::stream! {
+            // Byte-sized network chunks exercise UTF-8 and frame boundaries independently.
+            for offset in 0..state.wire.len() {
+                state.reads.fetch_add(1, Ordering::SeqCst);
+                yield Ok::<_, std::io::Error>(state.wire.slice(offset..offset + 1));
+            }
+            state.ready.notify_one();
+            state.eof.notified().await;
+        });
+        response(body, sse).unwrap_or_else(|_| Response::new(Body::empty()))
+    }
+
+    #[tokio::test]
+    async fn text_fallback_http_loopback_native_json_sse_wait_for_eof_once_without_authority(
+    ) -> TestResult {
+        for sse in [false, true] {
+            let fixture = fixture()?;
+            let payload = wire(&fixture, sse);
+            let state = Upstream {
+                wire: Bytes::from(payload.clone()),
+                sse,
+                attempts: Arc::default(),
+                reads: Arc::default(),
+                ready: Arc::default(),
+                eof: Arc::default(),
+            };
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+            let listener =
+                tokio::time::timeout_at(deadline, tokio::net::TcpListener::bind("127.0.0.1:0"))
+                    .await??;
+            let address = listener.local_addr()?;
+            let app = Router::new()
+                .route("/responses", post(upstream))
+                .with_state(state.clone());
+            let server = super::FinalSendBindingServer::new(tokio::spawn(async move {
+                axum::serve(listener, app).await
+            }));
+            let socket = tokio::time::timeout_at(deadline, tokio::net::TcpStream::connect(address))
+                .await??;
+            let (mut client, connection) = tokio::time::timeout_at(
+                deadline,
+                hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(socket)),
+            )
+            .await??;
+            let connection = super::FinalSendBindingServer::new(tokio::spawn(async move {
+                connection.await.map_err(std::io::Error::other)
+            }));
+            let incoming = tokio::time::timeout_at(
+                deadline,
+                client.send_request(
+                    http::Request::builder()
+                        .method("POST")
+                        .uri("/responses")
+                        .header("host", address.to_string())
+                        .body(Empty::<Bytes>::new())?,
+                ),
+            )
+            .await??;
+            let (parts, body) = incoming.into_parts();
+            let mut native = Response::from_parts(parts, Body::new(body));
+            native.headers_mut().insert("content-length", "7".parse()?);
+            native
+                .headers_mut()
+                .insert("transfer-encoding", "chunked".parse()?);
+            let mut pending = Box::pin(prepare_text_projection_http_for_test(
+                native,
+                fixture.lease.fork_attempt_extracted()?,
+                fixture.budget.clone(),
+            ));
+            tokio::select! {
+                ready = tokio::time::timeout_at(deadline, state.ready.notified()) => { ready?; },
+                _ = &mut pending => return Err("projection returned before entity EOF".into()),
+            }
+            assert!(
+                timeout(Duration::from_millis(20), pending.as_mut())
+                    .await
+                    .is_err(),
+                "projection exposed output before EOF"
+            );
+            assert_eq!(state.reads.load(Ordering::SeqCst), payload.len());
+            no_authority(&fixture)?;
+            state.eof.notify_one();
+            let projected = tokio::time::timeout_at(deadline, pending)
+                .await?
+                .map_err(|_| "synthetic projection refused")?;
+            clean_headers(&projected, sse);
+            assert!(fixture.budget.used() > 0, "body lost output owners");
+            let length = projected.headers().get("content-length").map(|value| {
+                value
+                    .to_str()
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+            });
+            let output = tokio::time::timeout_at(deadline, projected.into_body().collect())
+                .await??
+                .to_bytes();
+            let raw = std::str::from_utf8(&output).map_err(|_| "projected entity is not UTF-8")?;
+            assert!(
+                !raw.contains("rredact-") && !raw.contains(&fixture.reference),
+                "projection leaked a reference"
+            );
+            if sse {
+                assert!(
+                    !raw.contains(ORIGINAL),
+                    "damaged field was only partially replaced"
+                );
+                let events: Vec<Value> = raw
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data: "))
+                    .map(serde_json::from_str)
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| "invalid projected SSE")?;
+                assert_eq!(events.len(), 5);
+                assert!(
+                    events[0]["delta"] == TEXT_PROJECTION_NOTICE
+                        && events[1]["text"] == TEXT_PROJECTION_NOTICE
+                );
+                assert!(events[4]["type"] == "response.completed");
+            } else {
+                assert_eq!(length, Some(Some(output.len())));
+                let value: Value =
+                    serde_json::from_slice(&output).map_err(|_| "invalid projected JSON")?;
+                assert!(value["output"][0]["content"][0]["text"] == TEXT_PROJECTION_NOTICE);
+                assert!(value["output"][0]["content"][1]["text"] == ORIGINAL);
+            }
+            drop(output);
+            assert_eq!(fixture.budget.used(), 0);
+            assert_eq!(
+                state.attempts.load(Ordering::SeqCst),
+                1,
+                "projection retried upstream"
+            );
+            assert_eq!(
+                state.reads.load(Ordering::SeqCst),
+                payload.len(),
+                "projection reread upstream"
+            );
+            no_authority(&fixture)?;
+            drop(client);
+            connection.finish_at(deadline).await?;
+            server.finish_at(deadline).await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn text_fallback_http_output_owners_live_through_body_drop() -> TestResult {
+        for sse in [false, true] {
+            let fixture = fixture()?;
+            let projected = prepare_text_projection_http_for_test(
+                response(Body::from(wire(&fixture, sse)), sse)?,
+                fixture.lease.fork_attempt_extracted()?,
+                fixture.budget.clone(),
+            )
+            .await
+            .map_err(|_| "synthetic projection refused")?;
+            assert!(fixture.budget.used() > 0);
+            let mut body = projected.into_body();
+            let first = body.frame().await.ok_or("missing projected frame")??;
+            drop(body);
+            assert!(
+                fixture.budget.used() > 0,
+                "emitted bytes lost their reservation"
+            );
+            drop(first);
+            assert_eq!(fixture.budget.used(), 0);
+            no_authority(&fixture)?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn text_fallback_http_capacity_cancel_truncation_io_and_utf8_refuse() -> TestResult {
+        for sse in [false, true] {
+            let fixture = fixture()?;
+            for variant in 0..7 {
+                let mut payload = wire(&fixture, sse);
+                match variant {
+                    0 => {
+                        payload.pop();
+                    }
+                    1 => payload.extend_from_slice(&[0xff]),
+                    2 => payload.extend_from_slice(&[0xe2, 0x82]),
+                    3 => payload.extend_from_slice(b"trailing"),
+                    4 if sse => payload.extend_from_slice(b"data: {}\n\n"),
+                    4 => {
+                        payload = wire(&fixture, true);
+                    }
+                    _ => {}
+                }
+                let reads = Arc::new(AtomicUsize::new(0));
+                let counter = reads.clone();
+                let body = Body::from_stream(async_stream::stream! {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    yield Ok::<_, std::io::Error>(Bytes::from(payload));
+                    if variant == 5 {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        yield Err(std::io::Error::other("Synthetic upstream failure."));
+                    }
+                });
+                let budget = if variant == 6 {
+                    PayloadBudget::with_limit(1)
+                } else {
+                    fixture.budget.clone()
+                };
+                let result = prepare_text_projection_http_for_test(
+                    response(body, sse)?,
+                    fixture.lease.fork_attempt_extracted()?,
+                    budget.clone(),
+                )
+                .await;
+                assert!(
+                    result.is_err(),
+                    "invalid synthetic entity accepted; mode={sse} case={variant}"
+                );
+                assert_eq!(
+                    reads.load(Ordering::SeqCst),
+                    if variant == 5 { 2 } else { 1 }
+                );
+                assert_eq!(budget.used(), 0);
+                no_authority(&fixture)?;
+            }
+            let payload = wire(&fixture, sse);
+            let body = Body::from_stream(async_stream::stream! {
+                yield Ok::<_, std::io::Error>(Bytes::from(payload));
+                futures::future::pending::<()>().await;
+            });
+            let mut pending = Box::pin(prepare_text_projection_http_for_test(
+                response(body, sse)?,
+                fixture.lease.fork_attempt_extracted()?,
+                fixture.budget.clone(),
+            ));
+            assert!(timeout(Duration::from_millis(20), pending.as_mut())
+                .await
+                .is_err());
+            assert!(fixture.budget.used() > 0);
+            no_authority(&fixture)?;
+            drop(pending);
+            assert_eq!(fixture.budget.used(), 0);
+            no_authority(&fixture)?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn text_fallback_http_encoded_status_and_non_native_refuse_before_body_read() -> TestResult
+    {
+        for variant in 0..8 {
+            let fixture = fixture()?;
+            let reads = Arc::new(AtomicUsize::new(0));
+            let counter = reads.clone();
+            let body = Body::from_stream(async_stream::stream! {
+                counter.fetch_add(1, Ordering::SeqCst);
+                yield Ok::<_, std::io::Error>(Bytes::from_static(b"synthetic"));
+            });
+            let mut native = response(body, false)?;
+            match variant {
+                0 => {
+                    *native.status_mut() = http::StatusCode::BAD_REQUEST;
+                }
+                1 => {
+                    *native.status_mut() = http::StatusCode::SERVICE_UNAVAILABLE;
+                }
+                2 => {
+                    native
+                        .headers_mut()
+                        .insert("content-encoding", "gzip".parse()?);
+                }
+                3 => {
+                    native
+                        .headers_mut()
+                        .append("content-encoding", "br".parse()?);
+                }
+                4 => {
+                    native
+                        .headers_mut()
+                        .insert("content-encoding", "identity, gzip".parse()?);
+                }
+                5 => {
+                    native
+                        .headers_mut()
+                        .insert("content-type", "application/octet-stream".parse()?);
+                }
+                6 => {
+                    native.headers_mut().remove("content-type");
+                }
+                _ => {
+                    native
+                        .headers_mut()
+                        .insert("content-type", "application/json-invalid".parse()?);
+                }
+            }
+            assert!(prepare_text_projection_http_for_test(
+                native,
+                fixture.lease.fork_attempt_extracted()?,
+                fixture.budget.clone()
+            )
+            .await
+            .is_err());
+            assert_eq!(reads.load(Ordering::SeqCst), 0, "refusal consumed the body");
+            assert_eq!(fixture.budget.used(), 0);
+            no_authority(&fixture)?;
+        }
+        let fixture = fixture()?;
+        for value in [
+            json!({"id":"synthetic", "object":"chat.completion", "choices":[]}),
+            json!({"type":"message", "content":[]}),
+        ] {
+            assert!(prepare_text_projection_http_for_test(
+                response(Body::from(value.to_string()), false)?,
+                fixture.lease.fork_attempt_extracted()?,
+                fixture.budget.clone()
+            )
+            .await
+            .is_err());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn text_fallback_http_sse_byte_chunks_crlf_and_frame_limit() -> TestResult {
+        for crlf in [false, true] {
+            let fixture = fixture()?;
+            let payload = String::from_utf8(wire(&fixture, true))
+                .map_err(|_| "invalid synthetic SSE fixture")?;
+            let payload = if crlf {
+                payload.replace('\n', "\r\n")
+            } else {
+                payload
+            };
+            let reads = Arc::new(AtomicUsize::new(0));
+            let counter = reads.clone();
+            let payload = Bytes::from(payload);
+            let expected = payload.len();
+            let body = Body::from_stream(async_stream::stream! {
+                for offset in 0..payload.len() {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    yield Ok::<_, std::io::Error>(payload.slice(offset..offset + 1));
+                }
+            });
+            let projected = prepare_text_projection_http_for_test(
+                response(body, true)?,
+                fixture.lease.fork_attempt_extracted()?,
+                fixture.budget.clone(),
+            )
+            .await
+            .map_err(|_| "synthetic fragmented SSE refused")?;
+            let output = projected.into_body().collect().await?.to_bytes();
+            let raw = std::str::from_utf8(&output).map_err(|_| "invalid projected SSE")?;
+            assert!(raw.contains(TEXT_PROJECTION_NOTICE) && !raw.contains("rredact-"));
+            assert_eq!(reads.load(Ordering::SeqCst), expected);
+            drop(output);
+            assert_eq!(fixture.budget.used(), 0);
+            no_authority(&fixture)?;
+        }
+        let fixture = fixture()?;
+        let oversized = Body::from(vec![b':'; 1024 * 1024 + 1]);
+        assert!(
+            prepare_text_projection_http_for_test(
+                response(oversized, true)?,
+                fixture.lease.fork_attempt_extracted()?,
+                fixture.budget.clone()
+            )
+            .await
+            .is_err(),
+            "oversized frame accepted"
+        );
+        assert_eq!(fixture.budget.used(), 0);
+        no_authority(&fixture)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn text_fallback_http_production_refusal_path_stays_strict() -> TestResult {
+        let _reset = super::RuntimeReset((*super::runtime::get_security_runtime()).clone());
+        super::runtime::set_security_runtime_for_test(Default::default());
+        for sse in [false, true] {
+            let store = DlpTokenStore::new();
+            let budget = PayloadBudget::with_limit(32 * 1024 * 1024);
+            let gateway = RestorationGateway::with_test_store_and_rules(
+                store,
+                &["chinese_phone_number"],
+                budget,
+            );
+            let mut request_body = json!({"model":"synthetic-model", "input":super::FIXTURE_PHONE});
+            let mut headers = http::HeaderMap::new();
+            headers.insert("session-id", "synthetic-strict-projection".parse()?);
+            let request = match admit_http_request(
+                &gateway,
+                &crate::app_config::AppType::Codex,
+                true,
+                false,
+                &mut request_body,
+                &headers,
+            )? {
+                RestorationAdmission::Admitted(request) => request,
+                _ => return Err("synthetic strict request was not admitted".into()),
+            };
+            let attempt = request
+                .prepare_attempt(
+                    "synthetic-http",
+                    "openai_responses",
+                    "http://127.0.0.1:1/responses",
+                    None,
+                    &mut request_body,
+                    |prepared| Ok(prepared.clone()),
+                )
+                .map_err(|_| "synthetic strict attempt was not prepared")?;
+            let reference = attempt.lease.authorized_tokens()?.as_slice()[0].to_owned();
+            let text = format!("{reference} rredact-custom-damaged");
+            let part = json!({"type":"refusal", "refusal":text});
+            let mut source = native("");
+            source["output"][0]["content"] = json!([part]);
+            let payload = if sse {
+                [
+                    json!({"type":"response.refusal.delta", "output_index":0, "content_index":0, "item_id":"msg_http_projection", "delta":text}),
+                    json!({"type":"response.refusal.done", "output_index":0, "content_index":0, "item_id":"msg_http_projection", "refusal":text}),
+                    json!({"type":"response.content_part.done", "output_index":0, "content_index":0, "item_id":"msg_http_projection", "part":part}),
+                    json!({"type":"response.output_item.done", "output_index":0, "item":source["output"][0]}),
+                    json!({"type":"response.completed", "response":source}),
+                ].iter().map(|event| format!("event: {}\ndata: {event}\n\n", event["type"].as_str().unwrap_or("")))
+                    .collect::<String>().into_bytes()
+            } else {
+                source.to_string().into_bytes()
+            };
+            let ordinary = attempt
+                .restore_client_http_response(
+                    response(Body::from(payload), sse)?,
+                    ArgumentNormalizationMode::Exact,
+                    None,
+                )
+                .await;
+            let status = ordinary.status();
+            let bytes = ordinary.into_body().collect().await?.to_bytes();
+            let raw = std::str::from_utf8(&bytes).map_err(|_| "invalid strict failure entity")?;
+            assert!(
+                !raw.contains(TEXT_PROJECTION_NOTICE)
+                    && !raw.contains("rredact-")
+                    && !raw.contains(super::FIXTURE_PHONE),
+                "production path emitted projection or private data"
+            );
+            if sse {
+                assert!(raw.contains("response.failed") && !raw.contains("response.completed"));
+            } else {
+                assert_eq!(status, http::StatusCode::BAD_GATEWAY);
+            }
+        }
+        Ok(())
+    }
+}
+
+async fn run_output_text_exact_http(
+    protocol: &'static str,
+    streaming: bool,
+    scenario: &'static str,
+) -> TestResult {
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    let mut unrelated = super::tokenization::DlpTokenStore::new().admit(
+        "codex",
+        Some("synthetic-exact-unrelated"),
+        1,
+    )?;
+    let foreign = unrelated.prepare_with_budget(
+        &[super::tokenization::TokenFragment {
+            raw: "synthetic-exact-unrelated-value",
+            whole_span_categories: &[super::tokenization::TokenCategory::Custom],
+        }],
+        &[],
+        super::payload_budget::PayloadBudget::with_limit(1024 * 1024),
+        |tokens| Ok(tokens[0].as_str().to_owned()),
+    )?;
+    let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let capture = seen.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let upstream = Router::new().fallback(post(move |Json(body): Json<Value>| {
+        let capture = capture.clone();
+        let foreign = foreign.clone();
+        async move {
+            if let Ok(mut seen) = capture.lock() {
+                seen.push(body.clone());
+            }
+            let reference = fixture_text(&body).unwrap_or("missing synthetic carrier");
+            let pieces = match scenario {
+                "tail" => vec![reference.to_owned(), " ends with rredact-cn_phone-123".to_owned()],
+                "unauthorized" => vec![
+                    "Literal rredact-".to_owned(),
+                    "cn_phone-doc_hint remains; then ".to_owned(),
+                    foreign,
+                ],
+                _ => vec![
+                    "Literal rredact-".to_owned(),
+                    "cn_phone-doc_hint remains; VARY_ph_sample and vary_zz_sample stay; then ".to_owned(),
+                    reference[..12.min(reference.len())].to_owned(),
+                    reference[12.min(reference.len())..].to_owned(),
+                    " done".to_owned(),
+                ],
+            };
+            let text = pieces.concat();
+            let complete = scenario != "incomplete_source";
+            let arguments = "{\"label\":\"synthetic-inert\"}";
+            let tool = json!({"id":"fc_exact_http","type":"function_call","call_id":"call_exact_http",
+                "name":"synthetic_lookup","arguments":arguments,"status":"completed"});
+            let part = json!({"type":"output_text","text":text,"annotations":[]});
+            let message = json!({"id":"msg_exact_http","type":"message","role":"assistant",
+                "status":"completed","content":[part]});
+            let native = json!({"id":"resp_exact_http","object":"response","model":"synthetic-model",
+                "status":if complete {"completed"} else {"incomplete"},"output":[tool,message]});
+            if !streaming {
+                return Json(native).into_response();
+            }
+            let mut events = Vec::new();
+            if protocol == "chat" {
+                events.push(json!({"id":"chat_exact_http","object":"chat.completion.chunk","model":"synthetic-model",
+                    "choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,
+                        "id":"call_exact_http","type":"function","function":{"name":"synthetic_lookup","arguments":arguments}}]},"finish_reason":null}]}));
+                for piece in pieces {
+                    events.push(json!({"id":"chat_exact_http","object":"chat.completion.chunk","model":"synthetic-model",
+                        "choices":[{"index":0,"delta":{"content":piece},"finish_reason":null}]}));
+                }
+                events.push(json!({"id":"chat_exact_http","object":"chat.completion.chunk","model":"synthetic-model",
+                    "choices":[{"index":0,"delta":{},"finish_reason":if complete {"tool_calls"} else {"length"}}]}));
+            } else {
+                events.push(json!({"type":"response.created","response":{"id":"resp_exact_http","object":"response",
+                    "status":"in_progress","model":"synthetic-model","output":[]}}));
+                let mut pending_tool = tool.clone();
+                pending_tool["status"] = json!("in_progress");
+                pending_tool["arguments"] = json!("");
+                events.push(json!({"type":"response.output_item.added","output_index":0,"item":pending_tool}));
+                events.push(json!({"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_exact_http","delta":arguments}));
+                events.push(json!({"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_exact_http","arguments":arguments}));
+                events.push(json!({"type":"response.output_item.done","output_index":0,"item":tool}));
+                events.push(json!({"type":"response.output_item.added","output_index":1,
+                    "item":{"id":"msg_exact_http","type":"message","role":"assistant","status":"in_progress","content":[]}}));
+                events.push(json!({"type":"response.content_part.added","output_index":1,"item_id":"msg_exact_http","content_index":0,
+                    "part":{"type":"output_text","text":"","annotations":[]}}));
+                for piece in pieces {
+                    events.push(json!({"type":"response.output_text.delta","output_index":1,"item_id":"msg_exact_http","content_index":0,"delta":piece}));
+                }
+                events.push(json!({"type":"response.output_text.done","output_index":1,"item_id":"msg_exact_http","content_index":0,"text":text}));
+                events.push(json!({"type":"response.content_part.done","output_index":1,"item_id":"msg_exact_http","content_index":0,"part":part}));
+                events.push(json!({"type":"response.output_item.done","output_index":1,"item":message}));
+                events.push(json!({"type":"response.completed","response":native}));
+            }
+            let mut wire = String::new();
+            for event in events {
+                if let Some(kind) = event["type"].as_str() {
+                    wire.push_str(&format!("event: {kind}\n"));
+                }
+                wire.push_str(&format!("data: {event}\n\n"));
+            }
+            wire.push_str("data: [DONE]\n\n");
+            ([("content-type", "text/event-stream")], wire).into_response()
+        }
+    }));
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await });
+    let db = Arc::new(Database::memory()?);
+    let provider = Provider::with_id(
+        "output-text-exact-http".into(),
+        "Synthetic exact output text".into(),
+        json!({"base_url":format!("http://{addr}"),"api_key":"synthetic-exact-credential",
+            "api_format":if protocol == "chat" {"chat_completions"} else {"responses"}}),
+        None,
+    );
+    db.save_provider("codex", &provider)?;
+    db.set_current_provider("codex", &provider.id)?;
+    let proxy = ProxyServer::new(ProxyConfig::default(), db, None).with_restoration_gateway(
+        RestorationGateway::with_test_rules(&["chinese_phone_number"], 64 * 1024 * 1024),
+    );
+    let request = http::Request::builder()
+        .method("POST")
+        .uri("/v1/responses")
+        .header("content-type", "application/json")
+        .header("session-id", "synthetic-output-text-exact-session")
+        .body(Body::from(
+            json!({"model":"synthetic-model","input":FIXTURE_PHONE,"stream":streaming,
+            "tools":[{"type":"function","name":"synthetic_lookup","parameters":{"type":"object"}}]})
+            .to_string(),
+        ))?;
+    let response = proxy.build_router().call(request).await?;
+    let status = response.status();
+    let collected = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        response.into_body().collect(),
+    )
+    .await;
+    server.abort();
+    let bytes = collected??.to_bytes();
+    let wire = std::str::from_utf8(&bytes)?;
+    {
+        let captured = seen.lock().map_err(|_| "synthetic capture poisoned")?;
+        assert_eq!(
+            captured.len(),
+            1,
+            "exact fixture must make one real loopback attempt"
+        );
+        let outbound = fixture_text(&captured[0]).ok_or("missing synthetic upstream text")?;
+        assert!(
+            outbound.contains("rredact-cn_phone-") && !outbound.contains(FIXTURE_PHONE),
+            "original lease must tokenize the synthetic upstream request"
+        );
+    }
+    let mut recorder = FinalClientRecorder::default();
+    if streaming {
+        recorder.observe_sse(wire)?;
+    } else {
+        recorder.observe_json(&serde_json::from_slice::<Value>(&bytes)?);
+    }
+    if matches!(scenario, "unauthorized" | "incomplete_source") {
+        assert!(
+            recorder.failed && !recorder.completed && recorder.submissions.is_empty(),
+            "failed original evidence or unauthorized reference must keep the tool barrier closed"
+        );
+        assert!(
+            !wire.contains("[DONE]") && !wire.contains(FIXTURE_PHONE),
+            "failed output must not expose plaintext or a success terminal"
+        );
+        if scenario == "unauthorized" {
+            assert!(wire.contains("reason=token_context"),
+                "scanner must continue after malformed text and reject the later unauthorized complete reference");
+        }
+        return Ok(());
+    }
+    assert!(
+        status == http::StatusCode::OK && recorder.completed && !recorder.failed,
+        "nonmatching ordinary output text must retain verified completion"
+    );
+    assert_eq!(
+        recorder.submissions.len(),
+        1,
+        "verified completion must release one inert tool fixture"
+    );
+    assert!(
+        recorder.submissions[0]["arguments"] == "{\"label\":\"synthetic-inert\"}",
+        "ordinary output text matching must not change tool arguments"
+    );
+    let expected = if scenario == "tail" {
+        format!("{FIXTURE_PHONE} ends with rredact-cn_phone-123")
+    } else {
+        format!("Literal rredact-cn_phone-doc_hint remains; VARY_ph_sample and vary_zz_sample stay; then {FIXTURE_PHONE} done")
+    };
+    if !streaming {
+        let response: Value = serde_json::from_slice(&bytes)?;
+        let message = response["output"]
+            .as_array()
+            .and_then(|items| items.iter().find(|item| item["type"] == "message"))
+            .ok_or("missing synthetic message snapshot")?;
+        assert!(
+            message["content"][0]["text"] == expected,
+            "native JSON must preserve every nonmatching byte and restore the authorized reference"
+        );
+        return Ok(());
+    }
+    let mut deltas = String::new();
+    let mut snapshots = 0;
+    for data in wire.lines().filter_map(|line| line.strip_prefix("data: ")) {
+        if data == "[DONE]" {
+            continue;
+        }
+        let event: Value = serde_json::from_str(data)?;
+        match event["type"].as_str() {
+            Some("response.output_text.delta") => deltas.push_str(
+                event["delta"]
+                    .as_str()
+                    .ok_or("missing synthetic text delta")?,
+            ),
+            Some("response.output_text.done") => {
+                assert!(
+                    event["text"] == expected,
+                    "output-text done snapshot must preserve exact text"
+                );
+                snapshots += 1;
+            }
+            Some("response.content_part.done") => {
+                assert!(
+                    event["part"]["text"] == expected,
+                    "content-part done snapshot must preserve exact text"
+                );
+                snapshots += 1;
+            }
+            Some("response.output_item.done") if event["item"]["type"] == "message" => {
+                assert!(
+                    event["item"]["content"][0]["text"] == expected,
+                    "message done snapshot must preserve exact text"
+                );
+                snapshots += 1;
+            }
+            Some("response.completed") => {
+                let message = event["response"]["output"]
+                    .as_array()
+                    .and_then(|items| items.iter().find(|item| item["type"] == "message"))
+                    .ok_or("missing synthetic completed message")?;
+                assert!(
+                    message["content"][0]["text"] == expected,
+                    "completed snapshot must preserve exact text"
+                );
+                snapshots += 1;
+                if protocol == "chat" {
+                    assert!(
+                        event["response"]["id"] != "chat_exact_http",
+                        "fixture must traverse the real Chat-to-Responses converter"
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        deltas == expected,
+        "cross-delta ordinary output text must not truncate or replace nonmatches"
+    );
+    assert_eq!(
+        snapshots, 4,
+        "all converted/native completion snapshots must be exercised"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn output_text_exact_chat_explanation_cross_deltas_preserves_snapshots_and_completion(
+) -> TestResult {
+    run_output_text_exact_http("chat", true, "explanation").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn output_text_exact_chat_incomplete_field_end_tail_is_preserved() -> TestResult {
+    run_output_text_exact_http("chat", true, "tail").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn output_text_exact_chat_unauthorized_after_malformed_prefix_keeps_tool_barrier(
+) -> TestResult {
+    run_output_text_exact_http("chat", true, "unauthorized").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn output_text_exact_chat_incomplete_original_evidence_keeps_tool_barrier() -> TestResult {
+    run_output_text_exact_http("chat", true, "incomplete_source").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn output_text_exact_native_json_preserves_nonmatches_and_authorized_reference() -> TestResult
+{
+    run_output_text_exact_http("native", false, "explanation").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn output_text_exact_native_sse_preserves_nonmatches_and_verified_snapshots() -> TestResult {
+    run_output_text_exact_http("native", true, "explanation").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reversible_http_upstream_error_does_not_read_body_or_fail_over() -> TestResult {
+    use super::http_restoration::{admit_http_request, DlpForwardError, RestorationAdmission};
+    use crate::{
+        app_config::AppType,
+        proxy::{
+            error::ProxyError,
+            error_mapper::{get_error_message, map_proxy_error_to_status},
+            forwarder::RequestForwarder,
+            types::{CopilotOptimizerConfig, OptimizerConfig, RectifierConfig},
+        },
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    for upstream_status in [401, 429, 503] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let upstream_hits = hits.clone();
+        // Send only headers. A decoder/body collector would stall until the deadline.
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                upstream_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut prefix = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while prefix.len() < 64 * 1024 {
+                        if socket.read_exact(&mut byte).await.is_err() {
+                            return;
+                        }
+                        prefix.push(byte[0]);
+                        if prefix.ends_with(b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let headers = format!("HTTP/1.1 {upstream_status} Synthetic\r\nContent-Length: 1048576\r\nContent-Type: application/json\r\n\r\n");
+                    if socket.write_all(headers.as_bytes()).await.is_ok() {
+                        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                            let mut discard = [0u8; 4096];
+                            while socket.read(&mut discard).await.is_ok_and(|size| size > 0) {}
+                        })
+                        .await;
+                    }
+                });
+            }
+        });
+        let db = Arc::new(Database::memory()?);
+        let provider = Provider::with_id(
+            "synthetic-first".into(),
+            "Synthetic first".into(),
+            json!({"base_url":format!("http://{addr}"),"api_key":"synthetic-credential"}),
+            None,
+        );
+        let mut backup = provider.clone();
+        backup.id = "synthetic-backup".into();
+        let proxy_state = state(db);
+        let mut body = json!({"model":"synthetic-model","input":FIXTURE_PHONE,"stream":true});
+        let request = match admit_http_request(
+            &proxy_state.restoration_gateway,
+            &AppType::Codex,
+            true,
+            false,
+            &mut body,
+            &Default::default(),
+        )? {
+            RestorationAdmission::Admitted(request) => request,
+            _ => return Err("synthetic request must have a restoration lease".into()),
+        };
+        let forwarder = RequestForwarder::new(
+            proxy_state.provider_router.clone(),
+            5,
+            proxy_state.status.clone(),
+            proxy_state.current_providers.clone(),
+            proxy_state.gemini_shadow.clone(),
+            proxy_state.codex_chat_history.clone(),
+            proxy_state.failover_manager.clone(),
+            None,
+            provider.id.clone(),
+            "synthetic-error-session".into(),
+            true,
+            5,
+            5,
+            RectifierConfig::default(),
+            OptimizerConfig::default(),
+            CopilotOptimizerConfig::default(),
+            1,
+        )
+        .with_dlp_request(Some(request));
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            forwarder.forward_with_retry(
+                &AppType::Codex,
+                http::Method::POST,
+                "/v1/responses",
+                body,
+                Default::default(),
+                Default::default(),
+                vec![provider, backup],
+            ),
+        )
+        .await;
+        server.abort();
+        let Err(failure) =
+            result.map_err(|_| "upstream error path waited for an untrusted body")?
+        else {
+            return Err("synthetic upstream refusal was accepted".into());
+        };
+        assert!(
+            failure.provider.is_none(),
+            "leased errors cannot enable provider enrichment"
+        );
+        assert!(
+            matches!(&failure.error, ProxyError::DlpForward(DlpForwardError::UpstreamStatus(status)) if status.as_u16() == upstream_status)
+        );
+        assert_eq!(map_proxy_error_to_status(&failure.error), upstream_status);
+        assert_eq!(
+            get_error_message(&failure.error),
+            "Upstream request failed: upstream_error"
+        );
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "status-only errors must retain the no-retry and no-failover barrier"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn reversible_http_upstream_error_fixed_logging() -> TestResult {
+    const CHILD: &str = "VARYAI_SYNTHETIC_UPSTREAM_ERROR_TEST";
+    if legacy_diagnostic_observer::parent(
+        CHILD,
+        "proxy::security::reversible_integration_tests::reversible_http_upstream_error_fixed_logging",
+    ).await? { return Ok(()); }
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static FORBIDDEN: AtomicBool = AtomicBool::new(false);
+    struct Logger;
+    impl log::Log for Logger {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if legacy_diagnostic_observer::forbidden(
+                *record.args(),
+                &[
+                    FIXTURE_PHONE,
+                    "rredact-cn_phone-",
+                    "synthetic-upstream-private-marker",
+                    "synthetic-private-provider-marker",
+                    "Synthetic private provider label",
+                    "synthetic-model",
+                    "synthetic-error-credential",
+                    "dlp_restore_failed",
+                    "restoration failure",
+                ],
+            ) {
+                FORBIDDEN.store(true, Ordering::SeqCst);
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOGGER: Logger = Logger;
+    log::set_logger(&LOGGER).map_err(|_| "isolated upstream logger unavailable")?;
+    log::set_max_level(log::LevelFilter::Warn);
+    runtime::set_security_runtime_for_test(Default::default());
+    let mut completed = 0;
+    for status in [400, 401, 429, 503] {
+        check_upstream_error_echo(http::StatusCode::from_u16(status)?, true, "responses").await?;
+        completed += 1;
+    }
+    // Silence at Warn is valid; success still requires all real fixture assertions.
+    assert!(
+        completed == 4,
+        "upstream error fixture must complete every scenario"
+    );
+    if FORBIDDEN.load(Ordering::SeqCst) {
+        std::process::exit(86);
+    }
+    std::process::exit(87);
+}
+
+async fn image_history_http_fixture(custom: bool) -> TestResult {
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    let transport = crate::proxy::forwarder::final_send_binding_test_support::install(|_, _| {});
+    assert!(
+        crate::proxy::forwarder::final_send_binding_test_support::is_active(),
+        "image history requires an explicit no-proxy transport before any network setup"
+    );
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let upstream = Router::new()
+        .fallback(post(matrix_upstream))
+        .with_state(MatrixFixture {
+            protocol: "native",
+            compact: false,
+            streaming: false,
+            complete: true,
+            seen: seen.clone(),
+        });
+    let server = FinalSendBindingServer::new(tokio::spawn(async move {
+        axum::serve(listener, upstream).await
+    }));
+    let db = Arc::new(Database::memory()?);
+    let provider = Provider::with_id(
+        "synthetic-image-history".into(),
+        "Synthetic image history".into(),
+        json!({"base_url":format!("http://{address}"),"api_key":"synthetic-image-key","api_format":"responses"}),
+        None,
+    );
+    db.save_provider("codex", &provider)?;
+    db.set_current_provider("codex", &provider.id)?;
+    let proxy = ProxyServer::new(ProxyConfig::default(), db, None).with_restoration_gateway(
+        RestorationGateway::with_test_rules(&["chinese_phone_number"], 64 * 1024 * 1024),
+    );
+    let mut router = proxy.build_router();
+    let image = json!({"type":"input_image","image_url":"data:image/png;base64,synthetic-opaque-not-decoded","detail":"auto"});
+    let message = json!({"type":"message","role":"user","content":[
+        {"type":"input_text","text":format!("Synthetic image question {FIXTURE_PHONE}")},image.clone()]});
+    let call = if custom {
+        json!({"type":"custom_tool_call","call_id":"synthetic_image_call","name":"synthetic_lookup","input":format!("Synthetic input {FIXTURE_PHONE}")})
+    } else {
+        json!({"type":"function_call","call_id":"synthetic_image_call","name":"synthetic_lookup","arguments":format!("{{\"phone\":\"{FIXTURE_PHONE}\"}}")})
+    };
+    let output = json!({"type":if custom {"custom_tool_call_output"} else {"function_call_output"},
+        "call_id":"synthetic_image_call","output":format!("Synthetic result {FIXTURE_PHONE}")});
+    let paired = json!({"model":"synthetic-model","stream":false,"input":[message.clone(),call,output,
+        {"type":"function_call","call_id":"synthetic_second_image_call","name":"synthetic_lookup","arguments":format!("{{\"phone\":\"{FIXTURE_PHONE}\"}}")},
+        {"type":"function_call_output","call_id":"synthetic_second_image_call","output":format!("Synthetic second result {FIXTURE_PHONE}")} ]});
+    let mut continued = paired.clone();
+    continued["input"]
+        .as_array_mut()
+        .ok_or("synthetic input missing")?
+        .push(json!({"role":"user","content":"Synthetic continue"}));
+    for body in [
+        json!({"model":"synthetic-model","stream":false,"input":[message]}),
+        paired.clone(),
+        continued,
+    ] {
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            router.call(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .header("session-id", "synthetic-image-session")
+                    .body(Body::from(body.to_string()))?,
+            ),
+        )
+        .await
+        .map_err(|_| "synthetic image router deadline exceeded")??;
+        assert!(
+            response.status() == http::StatusCode::OK,
+            "supported user image history must reach upstream before and after paired tool results"
+        );
+        let bytes = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            response.into_body().collect(),
+        )
+        .await
+        .map_err(|_| "synthetic image response deadline exceeded")??
+        .to_bytes();
+        assert!(
+            std::str::from_utf8(&bytes)?.contains(FIXTURE_PHONE),
+            "image history must preserve authorized response restoration"
+        );
+    }
+    {
+        let captured = seen
+            .lock()
+            .map_err(|_| "synthetic image capture poisoned")?;
+        assert!(
+            captured.len() == 3,
+            "each valid image history request must send exactly once"
+        );
+        for body in captured.iter() {
+            assert!(
+                body["input"][0]["content"][1] == image,
+                "opaque image fields must reach upstream unchanged"
+            );
+            let wire = body.to_string();
+            assert!(
+                !wire.contains(FIXTURE_PHONE) && wire.contains("rredact-cn_phone-"),
+                "all readable image history text and tool input must remain inspected"
+            );
+        }
+    }
+    let foreign = super::tokenization::DlpTokenStore::new();
+    let mut lease = foreign.admit("codex", Some("synthetic-foreign-image"), 1)?;
+    let reference = lease.prepare_with_budget(
+        &[super::tokenization::TokenFragment {
+            raw: "synthetic-foreign-image-secret",
+            whole_span_categories: &[super::tokenization::TokenCategory::Custom],
+        }],
+        &[],
+        super::payload_budget::PayloadBudget::with_limit(1024 * 1024),
+        |tokens| Ok(tokens[0].as_str().to_owned()),
+    )?;
+    let mut negatives = Vec::new();
+    for location in 0..6 {
+        let mut body = paired.clone();
+        match location {
+            0 => body["input"][0]["content"][0]["text"] = json!(reference),
+            1 => body["input"][0]["content"][1]["image_url"] = json!(reference),
+            2 => {
+                body["input"][1][if custom { "input" } else { "arguments" }] = json!(if custom {
+                    reference.clone()
+                } else {
+                    json!({"type":"input_image","image_url":"synthetic","value":reference})
+                        .to_string()
+                })
+            }
+            3 => body["input"][2]["output"] = json!(reference),
+            4 => body["metadata"] = json!({reference.clone(): "synthetic"}),
+            _ => {
+                body["input"][0]["content"] =
+                    json!([{"type":"refusal","refusal":reference},image.clone()])
+            }
+        }
+        negatives.push(body);
+    }
+    for mutation in 0..9 {
+        let mut body = paired.clone();
+        match mutation {
+            0 => body["input"][0]["content"][1]["text"] = json!("Synthetic hidden text"),
+            1 => body["input"][2]["output"] = json!([image.clone()]),
+            2 => body["input"]
+                .as_array_mut()
+                .ok_or("synthetic input missing")?
+                .push(json!({"type":"reasoning","summary":[image.clone()]})),
+            3 => body["input"][0]["content"][1]["image_url"] = Value::Null,
+            4 => body["input"][0]["content"][1]["type"] = json!("input_file"),
+            5 => {
+                body["input"]
+                    .as_array_mut()
+                    .ok_or("synthetic input missing")?
+                    .pop();
+            }
+            6 => body["input"][0]["encrypted_content"] = json!("synthetic-opaque-context"),
+            7 => body["previous_response_id"] = json!("resp_synthetic_image_expired"),
+            _ => body["input"]
+                .as_array_mut()
+                .ok_or("synthetic input missing")?
+                .push(paired["input"][1].clone()),
+        }
+        negatives.push(body);
+    }
+    for body in negatives {
+        for session in [
+            "synthetic-unleased-image-session",
+            "synthetic-image-session",
+        ] {
+            let response = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                router.call(
+                    http::Request::builder()
+                        .method("POST")
+                        .uri("/v1/responses")
+                        .header("content-type", "application/json")
+                        .header("session-id", session)
+                        .body(Body::from(body.to_string()))?,
+                ),
+            )
+            .await
+            .map_err(|_| "synthetic image router deadline exceeded")??;
+            assert!(
+                response.status() == http::StatusCode::BAD_REQUEST,
+                "image compatibility must not bypass strict history or dependency validation"
+            );
+            let bytes = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                response.into_body().collect(),
+            )
+            .await
+            .map_err(|_| "synthetic image response deadline exceeded")??
+            .to_bytes();
+            let error: Value = serde_json::from_slice(&bytes)?;
+            assert!(
+                error["error"]["code"] == "dlp_context_unavailable",
+                "invalid image history must retain the fixed context error"
+            );
+            assert!(
+                seen.lock()
+                    .map_err(|_| "synthetic image capture poisoned")?
+                    .len()
+                    == 3,
+                "rejected image history must send nothing upstream"
+            );
+        }
+    }
+    assert!(
+        transport.transport_counts() == (3, 0),
+        "valid image history must use the explicit no-proxy reqwest transport exactly once each"
+    );
+    server.finish().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn image_history_http_function_before_results_and_continue() -> TestResult {
+    image_history_http_fixture(false).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn image_history_http_custom_before_results_and_continue() -> TestResult {
+    image_history_http_fixture(true).await
+}
+
+async fn empty_lease_handler_json_fixture(protocol: &'static str) -> TestResult {
+    use super::{payload_budget::PayloadBudget, tokenization::DlpTokenStore};
+    use crate::proxy::providers::{transform_codex_anthropic, transform_codex_chat};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    const SESSION: &str = "synthetic-empty-handler-session";
+    const OUTPUT: &str = "Synthetic delivered output";
+    const REASONING: &str = "Synthetic delivered reasoning";
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    let transport = crate::proxy::forwarder::final_send_binding_test_support::install(|_, _| {});
+    assert!(crate::proxy::forwarder::final_send_binding_test_support::is_active());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let hits = Arc::new(AtomicUsize::new(0));
+    let captured = hits.clone();
+    let raw_response = move |complete: bool| match protocol {
+        "chat" => json!({"id":"chat_synthetic_empty_handler","object":"chat.completion",
+            "model":"synthetic-model","choices":[{"index":0,"message":{"role":"assistant",
+                "content":OUTPUT,"reasoning_content":REASONING},
+                "finish_reason":if complete {Some("stop")} else {None}}]}),
+        "anthropic" => {
+            json!({"id":"msg_synthetic_empty_handler","type":"message","role":"assistant",
+            "model":"synthetic-model","content":[{"type":"text","text":OUTPUT}],
+            "stop_reason":if complete {Some("end_turn")} else {None},
+            "usage":{"input_tokens":0,"output_tokens":0}})
+        }
+        _ => json!({"id":"resp_synthetic_empty_handler","object":"response",
+            "status":if complete {"completed"} else {"incomplete"},"model":"synthetic-model",
+            "output":[{"id":"msg_synthetic_empty_handler","type":"message","role":"assistant",
+                "status":"completed","content":[{"type":"output_text","text":OUTPUT,"annotations":[]}]}]}),
+    };
+    let upstream = Router::new().fallback(move || {
+        let complete = captured.fetch_add(1, Ordering::SeqCst) != 0;
+        async move { Json(raw_response(complete)) }
+    });
+    let server = FinalSendBindingServer::new(tokio::spawn(async move {
+        axum::serve(listener, upstream).await
+    }));
+    let db = Arc::new(Database::memory()?);
+    let settings = if protocol == "xai" {
+        json!({"auth":{"OPENAI_API_KEY":"synthetic-empty-handler-key"},"config":format!(
+            "model_provider = \"custom\"\n[model_providers.custom]\nname = \"xai\"\nbase_url = \"http://{address}/api.x.ai/v1\"\nwire_api = \"responses\"\n")})
+    } else {
+        json!({"base_url":format!("http://{address}"),"api_key":"synthetic-empty-handler-key",
+            "api_format":if protocol == "chat" {"chat_completions"} else {"anthropic"}})
+    };
+    let provider = Provider::with_id(
+        "synthetic-empty-handler-provider".into(),
+        "Synthetic empty handler".into(),
+        settings,
+        None,
+    );
+    db.save_provider("codex", &provider)?;
+    db.set_current_provider("codex", &provider.id)?;
+    let store = DlpTokenStore::new();
+    let observer = store.admit_published_policy(
+        "codex",
+        Some(SESSION),
+        runtime::admit_security_runtime()?.restoration_policy_revision,
+    )?;
+    let proxy = ProxyServer::new(ProxyConfig::default(), db, None).with_restoration_gateway(
+        RestorationGateway::with_test_store_and_rules(
+            store,
+            &["chinese_phone_number"],
+            PayloadBudget::with_limit(64 * 1024 * 1024),
+        ),
+    );
+    let mut router = proxy.build_router();
+    for complete in [false, true] {
+        let raw = raw_response(complete);
+        let expected = match protocol {
+            "chat" => transform_codex_chat::chat_completion_to_response(raw)?,
+            "anthropic" => transform_codex_anthropic::anthropic_response_to_responses(raw)?,
+            _ => raw,
+        };
+        let replay = json!({"input":expected["output"]});
+        assert!(
+            observer
+                .history_admission_candidate_projection(&replay)
+                .is_none(),
+            "no response proof may precede final delivery"
+        );
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            router.call(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .header("session-id", SESSION)
+                    .body(Body::from(
+                        json!({"model":"synthetic-model","stream":false,
+                    "input":"Synthetic inert prompt"})
+                        .to_string(),
+                    ))?,
+            ),
+        )
+        .await
+        .map_err(|_| "synthetic empty handler router deadline")??;
+        let status = response.status();
+        let bytes = tokio::time::timeout(Duration::from_secs(5), response.into_body().collect())
+            .await
+            .map_err(|_| "synthetic empty handler body deadline")??
+            .to_bytes();
+        let delivered: Value = serde_json::from_slice(&bytes)?;
+        if complete {
+            assert!(
+                status == http::StatusCode::OK,
+                "a valid original completion must succeed with empty token authority"
+            );
+            assert!(
+                delivered["output"] == expected["output"],
+                "the handler must preserve the converted delivered items"
+            );
+            assert!(
+                observer
+                    .history_admission_candidate_projection(&replay)
+                    .is_some(),
+                "only final successful delivery may publish complete typed-item proof"
+            );
+        } else {
+            assert!(
+                status == http::StatusCode::BAD_GATEWAY,
+                "missing original completion must not be repaired into authority"
+            );
+            assert!(
+                observer
+                    .history_admission_candidate_projection(&replay)
+                    .is_none(),
+                "rejected original completion must publish no proof"
+            );
+        }
+    }
+    assert!(
+        hits.load(Ordering::SeqCst) == 2,
+        "each handler request must send once"
+    );
+    assert!(
+        transport.transport_counts() == (2, 0),
+        "the handler must use explicit no-proxy transport"
+    );
+    server.finish().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_empty_lease_handler_chat_json_proof_boundary() -> TestResult {
+    empty_lease_handler_json_fixture("chat").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_empty_lease_handler_anthropic_json_proof_boundary() -> TestResult {
+    empty_lease_handler_json_fixture("anthropic").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_empty_lease_handler_xai_json_proof_boundary() -> TestResult {
+    empty_lease_handler_json_fixture("xai").await
+}
+
+async fn empty_lease_handler_sse_fixture(protocol: &'static str) -> TestResult {
+    use super::{payload_budget::PayloadBudget, tokenization::DlpTokenStore};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    const OUTPUT: &str = "Synthetic SSE delivered output";
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    let transport = crate::proxy::forwarder::final_send_binding_test_support::install(|_, _| {});
+    assert!(crate::proxy::forwarder::final_send_binding_test_support::is_active());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let hits = Arc::new(AtomicUsize::new(0));
+    let captured = hits.clone();
+    let upstream = Router::new().fallback(move || {
+        let mode = captured.fetch_add(1, Ordering::SeqCst);
+        async move {
+            let events = match protocol {
+                "chat" => {
+                    let mut events = vec![json!({"id":"chat_synthetic_empty_sse","object":"chat.completion.chunk",
+                        "model":"synthetic-model","choices":[{"index":0,"delta":{"role":"assistant","content":OUTPUT},"finish_reason":null}]})];
+                    if mode != 2 {
+                        events.push(json!({"id":"chat_synthetic_empty_sse","object":"chat.completion.chunk",
+                            "model":"synthetic-model","choices":[{"index":0,"delta":{},
+                            "finish_reason":if mode == 1 {None} else {Some("stop")}}]}));
+                    }
+                    events
+                }
+                "anthropic" => {
+                    let mut events = vec![
+                        json!({"type":"message_start","message":{"id":"msg_synthetic_empty_sse","type":"message",
+                            "role":"assistant","model":"synthetic-model","content":[],"usage":{"input_tokens":0,"output_tokens":0}}}),
+                        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+                        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":OUTPUT}}),
+                        json!({"type":"content_block_stop","index":0}),
+                    ];
+                    if mode != 2 {
+                        events.push(json!({"type":"message_delta","delta":{"stop_reason":if mode == 1 {None} else {Some("end_turn")}},"usage":{"output_tokens":0}}));
+                        events.push(json!({"type":"message_stop"}));
+                    }
+                    events
+                }
+                _ => {
+                    let response = json!({"id":"resp_synthetic_empty_sse","object":"response","model":"synthetic-model",
+                        "status":if mode == 1 {"incomplete"} else {"completed"},"output":[{
+                            "id":"msg_synthetic_empty_sse","type":"message","role":"assistant","status":"completed",
+                            "content":[{"type":"output_text","text":OUTPUT,"annotations":[]}]}]});
+                    if mode == 2 { vec![] } else { vec![json!({"type":"response.completed","response":response})] }
+                }
+            };
+            let mut wire = String::new();
+            for event in events {
+                if let Some(kind) = event["type"].as_str() { wire.push_str(&format!("event: {kind}\n")); }
+                wire.push_str(&format!("data: {event}\n\n"));
+            }
+            if protocol != "anthropic" && mode != 2 { wire.push_str("data: [DONE]\n\n"); }
+            if mode == 3 { wire.push_str("data: {"); }
+            ([("content-type", "text/event-stream")], wire)
+        }
+    });
+    let server = FinalSendBindingServer::new(tokio::spawn(async move {
+        axum::serve(listener, upstream).await
+    }));
+    let db = Arc::new(Database::memory()?);
+    let settings = if protocol == "xai" {
+        json!({"auth":{"OPENAI_API_KEY":"synthetic-empty-sse-key"},"config":format!(
+            "model_provider = \"custom\"\n[model_providers.custom]\nname = \"xai\"\nbase_url = \"http://{address}/api.x.ai/v1\"\nwire_api = \"responses\"\n")})
+    } else {
+        json!({"base_url":format!("http://{address}"),"api_key":"synthetic-empty-sse-key",
+            "api_format":if protocol == "chat" {"chat_completions"} else {"anthropic"}})
+    };
+    let provider = Provider::with_id(
+        "synthetic-empty-sse-provider".into(),
+        "Synthetic empty SSE".into(),
+        settings,
+        None,
+    );
+    db.save_provider("codex", &provider)?;
+    db.set_current_provider("codex", &provider.id)?;
+    let store = DlpTokenStore::new();
+    let proxy = ProxyServer::new(ProxyConfig::default(), db, None).with_restoration_gateway(
+        RestorationGateway::with_test_store_and_rules(
+            store.clone(),
+            &["chinese_phone_number"],
+            PayloadBudget::with_limit(64 * 1024 * 1024),
+        ),
+    );
+    let mut router = proxy.build_router();
+    let mut delivered_output = Value::Null;
+    for mode in 0..5 {
+        let session = format!("synthetic-empty-sse-session-{mode}");
+        let observer = store.admit_published_policy(
+            "codex",
+            Some(&session),
+            runtime::admit_security_runtime()?.restoration_policy_revision,
+        )?;
+        let response = tokio::time::timeout(Duration::from_secs(5), router.call(
+            http::Request::builder().method("POST").uri("/v1/responses")
+                .header("content-type", "application/json").header("session-id", &session)
+                .body(Body::from(json!({"model":"synthetic-model","stream":true,"input":"Synthetic inert prompt"}).to_string()))?,
+        )).await.map_err(|_| "synthetic empty SSE router deadline")??;
+        assert!(
+            response.status() == http::StatusCode::OK,
+            "SSE must reach the final wrapper"
+        );
+        let mut body = response.into_body();
+        let mut completed = false;
+        let mut failed = false;
+        let mut terminal_output = Value::Null;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while let Some(frame) = tokio::time::timeout_at(deadline, body.frame())
+            .await
+            .map_err(|_| "synthetic empty SSE body deadline")?
+        {
+            let frame = frame?;
+            if let Some(data) = frame.data_ref() {
+                for raw in std::str::from_utf8(data)?
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data: "))
+                {
+                    if raw == "[DONE]" {
+                        continue;
+                    }
+                    let event: Value = serde_json::from_str(raw)?;
+                    failed |= event["type"] == "response.failed";
+                    if event["type"] == "response.completed" {
+                        completed = true;
+                        terminal_output = event["response"]["output"].clone();
+                    }
+                }
+            }
+            if mode == 4 && completed {
+                break;
+            }
+        }
+        if mode == 0 {
+            assert!(
+                completed && !failed,
+                "valid original SSE must complete with empty authority"
+            );
+            delivered_output = terminal_output;
+            let replay = json!({"input":delivered_output});
+            assert!(
+                observer
+                    .history_admission_candidate_projection(&replay)
+                    .is_some(),
+                "fully released valid SSE must publish exact delivered proof"
+            );
+        } else {
+            let replay = json!({"input":if mode == 4 {&terminal_output} else {&delivered_output}});
+            assert!(
+                observer
+                    .history_admission_candidate_projection(&replay)
+                    .is_none(),
+                "failed or suspended terminal delivery must publish no proof"
+            );
+            if mode == 4 {
+                assert!(
+                    completed && !failed,
+                    "cancellation control must stop after a real terminal frame"
+                );
+                drop(body);
+                assert!(
+                    observer
+                        .history_admission_candidate_projection(&replay)
+                        .is_none(),
+                    "dropping after terminal yield must not publish proof"
+                );
+            } else {
+                assert!(
+                    !completed && failed,
+                    "missing original evidence must not become synthetic completion authority"
+                );
+            }
+        }
+    }
+    assert!(
+        hits.load(Ordering::SeqCst) == 5,
+        "each synthetic SSE request must send once"
+    );
+    assert!(
+        transport.transport_counts() == (5, 0),
+        "SSE must use explicit no-proxy transport"
+    );
+    server.finish().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_empty_lease_handler_chat_sse_proof_boundary() -> TestResult {
+    empty_lease_handler_sse_fixture("chat").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_empty_lease_handler_anthropic_sse_proof_boundary() -> TestResult {
+    empty_lease_handler_sse_fixture("anthropic").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reasoning_empty_lease_handler_xai_sse_proof_boundary() -> TestResult {
+    empty_lease_handler_sse_fixture("xai").await
+}
+
+#[derive(Clone, Copy)]
+enum FinalSendBindingTransport {
+    Reqwest,
+    Hyper,
+}
+
+#[derive(Clone, Copy)]
+enum FinalSendBindingChange {
+    Exact,
+    Authorization,
+    Account,
+    Query,
+    Operation,
+}
+
+struct FinalSendBindingAdapter {
+    loopback: LoopbackCodexAdapter,
+    transport: FinalSendBindingTransport,
+}
+
+impl crate::proxy::providers::ProviderAdapter for FinalSendBindingAdapter {
+    fn name(&self) -> &'static str {
+        match self.transport {
+            FinalSendBindingTransport::Reqwest => "Codex",
+            FinalSendBindingTransport::Hyper => "SyntheticFinalBinding",
+        }
+    }
+
+    fn extract_base_url(&self, provider: &Provider) -> Result<String, crate::proxy::ProxyError> {
+        self.loopback.extract_base_url(provider)
+    }
+
+    fn extract_auth(&self, provider: &Provider) -> Option<crate::proxy::providers::AuthInfo> {
+        self.loopback.extract_auth(provider)
+    }
+
+    fn build_url(&self, base: &str, endpoint: &str) -> String {
+        self.loopback.build_url(base, endpoint)
+    }
+
+    fn get_auth_headers(
+        &self,
+        auth: &crate::proxy::providers::AuthInfo,
+    ) -> Result<Vec<(http::HeaderName, http::HeaderValue)>, crate::proxy::ProxyError> {
+        self.loopback.get_auth_headers(auth)
+    }
+}
+
+struct FinalSendBindingServer {
+    cancel: Option<tokio::sync::oneshot::Sender<tokio::time::Instant>>,
+    completed: Option<tokio::sync::oneshot::Receiver<Result<(), &'static str>>>,
+}
+
+async fn supervise_loopback_cleanup(
+    completion: impl std::future::Future<Output = Result<(), &'static str>>,
+    deadline: tokio::time::Instant,
+    sent: tokio::sync::oneshot::Sender<Result<(), &'static str>>,
+) {
+    tokio::pin!(completion);
+    match tokio::time::timeout_at(deadline, &mut completion).await {
+        Ok(result) => {
+            let _ = sent.send(result);
+        }
+        Err(_) => {
+            let _ = sent.send(Err("synthetic loopback cleanup deadline exceeded"));
+            // A timeout is a failure report, not evidence of completed cleanup.
+            // Retain reaping responsibility while this Tokio runtime remains live.
+            let _ = completion.await;
+        }
+    }
+}
+
+async fn observe_loopback_fixture_ready(
+    ready: tokio::sync::oneshot::Receiver<()>,
+    fixture: tokio::task::JoinHandle<std::io::Result<()>>,
+    deadline: tokio::time::Instant,
+) -> Result<FinalSendBindingServer, &'static str> {
+    let guard = FinalSendBindingServer::new(fixture);
+    tokio::time::timeout_at(deadline, ready)
+        .await
+        .map_err(|_| "synthetic fixture readiness deadline exceeded")?
+        .map_err(|_| "synthetic fixture readiness unavailable")?;
+    Ok(guard)
+}
+
+impl FinalSendBindingServer {
+    fn new(task: tokio::task::JoinHandle<std::io::Result<()>>) -> Self {
+        let (cancel, cancelled) = tokio::sync::oneshot::channel();
+        let (sent, received) = tokio::sync::oneshot::channel();
+        // While the runtime stays live, retain the task across fixture failure
+        // and cancellation; deadline failures never masquerade as completed cleanup.
+        tokio::spawn(async move {
+            let deadline = cancelled.await.unwrap_or_else(|_| {
+                tokio::time::Instant::now() + std::time::Duration::from_secs(5)
+            });
+            task.abort();
+            supervise_loopback_cleanup(
+                async move {
+                    match task.await {
+                        Ok(Ok(())) => Ok(()),
+                        Err(error) if error.is_cancelled() => Ok(()),
+                        _ => Err("synthetic loopback task failed"),
+                    }
+                },
+                deadline,
+                sent,
+            )
+            .await;
+        });
+        Self {
+            cancel: Some(cancel),
+            completed: Some(received),
+        }
+    }
+    fn cleanup_receipt(
+        &mut self,
+    ) -> Option<tokio::sync::oneshot::Receiver<Result<(), &'static str>>> {
+        self.completed.take()
+    }
+    fn request_cleanup(&mut self, deadline: tokio::time::Instant) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(deadline);
+        }
+    }
+    async fn finish(self) -> Result<(), &'static str> {
+        self.finish_at(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+            .await
+    }
+    async fn finish_at(mut self, deadline: tokio::time::Instant) -> Result<(), &'static str> {
+        let receipt = self
+            .cleanup_receipt()
+            .ok_or("synthetic loopback receipt missing")?;
+        self.request_cleanup(deadline);
+        tokio::time::timeout_at(deadline, receipt)
+            .await
+            .map_err(|_| "synthetic loopback acknowledgement deadline exceeded")?
+            .map_err(|_| "synthetic loopback supervisor unavailable")?
+    }
+}
+
+impl Drop for FinalSendBindingServer {
+    fn drop(&mut self) {
+        self.request_cleanup(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+    }
+}
+
+async fn loopback_cleanup_abnormal_fixture(mode: u8) -> TestResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    struct Dropped(Arc<AtomicBool>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let dropped = Arc::new(AtomicBool::new(false));
+    let retained = Dropped(dropped.clone());
+    let task = tokio::spawn(async move {
+        let _retained = retained;
+        std::future::pending::<std::io::Result<()>>().await
+    });
+    let mut server = FinalSendBindingServer::new(task);
+    let receipt = server
+        .cleanup_receipt()
+        .ok_or("synthetic cleanup receipt missing")?;
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (observed, result) = tokio::sync::oneshot::channel();
+    struct Outcome(tokio::sync::oneshot::Sender<u8>);
+    let outcome = Outcome(observed);
+    let fixture = tokio::spawn(async move {
+        let _server = server;
+        let _ = started.send(());
+        match mode {
+            0 => {
+                let _ = outcome.0.send(0);
+                Err(std::io::Error::other("synthetic early fixture error"))
+            }
+            1 => {
+                let _ = outcome.0.send(1);
+                panic!("synthetic loopback fixture interruption")
+            }
+            _ => {
+                let _outcome = outcome;
+                std::future::pending().await
+            }
+        }
+    });
+    let fixture = observe_loopback_fixture_ready(
+        ready,
+        fixture,
+        tokio::time::Instant::now() + Duration::from_secs(1),
+    )
+    .await?;
+    if mode == 2 {
+        fixture.finish().await?;
+        assert!(tokio::time::timeout(Duration::from_secs(1), result)
+            .await?
+            .is_err());
+    } else {
+        assert!(tokio::time::timeout(Duration::from_secs(1), result).await?? == mode);
+        // Panic and early-error results are failures, but still acknowledge that
+        // the supervisor actually joined the fixture before this check returns.
+        assert!(fixture.finish().await.is_err());
+    }
+    let reaped = tokio::time::timeout(Duration::from_secs(1), receipt).await;
+    assert!(
+        matches!(reaped, Ok(Ok(Ok(())))),
+        "abnormal cleanup must acknowledge bounded task reaping"
+    );
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "task-owned state must be destroyed before cleanup acknowledgement"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn reasoning_history_loopback_cleanup_early_error() -> TestResult {
+    loopback_cleanup_abnormal_fixture(0).await
+}
+#[tokio::test]
+async fn reasoning_history_loopback_cleanup_panic() -> TestResult {
+    loopback_cleanup_abnormal_fixture(1).await
+}
+#[tokio::test]
+async fn reasoning_history_loopback_cleanup_cancellation() -> TestResult {
+    loopback_cleanup_abnormal_fixture(2).await
+}
+
+#[tokio::test]
+async fn reasoning_history_loopback_cleanup_timeout_retains_reaping_owner() -> TestResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    struct Probe(Arc<AtomicBool>);
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let dropped = Arc::new(AtomicBool::new(false));
+    let probe = Probe(dropped.clone());
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let (sent, receipt) = tokio::sync::oneshot::channel();
+    let supervisor = tokio::spawn(supervise_loopback_cleanup(
+        async move {
+            let _probe = probe;
+            let _ = released.await;
+            Ok(())
+        },
+        tokio::time::Instant::now() + Duration::from_millis(5),
+        sent,
+    ));
+    let verdict = tokio::time::timeout(Duration::from_secs(1), receipt).await??;
+    let abandoned_before_release = dropped.load(Ordering::SeqCst);
+    let _ = release.send(());
+    tokio::time::timeout(Duration::from_secs(1), supervisor).await??;
+    assert!(verdict == Err("synthetic loopback cleanup deadline exceeded"));
+    assert!(
+        !abandoned_before_release,
+        "deadline failure must retain the pending reaping owner"
+    );
+    assert!(dropped.load(Ordering::SeqCst));
+    Ok(())
+}
+
+#[tokio::test]
+async fn reasoning_history_loopback_cleanup_readiness_timeout_reaps_fixture() -> TestResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    struct Probe(Arc<AtomicBool>);
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let dropped = Arc::new(AtomicBool::new(false));
+    let probe = Probe(dropped.clone());
+    let (started, ready) = tokio::sync::oneshot::channel::<()>();
+    let (finished, completion) = tokio::sync::oneshot::channel();
+    let fixture = tokio::spawn(async move {
+        let _probe = probe;
+        let _started = started;
+        struct Finished(tokio::sync::oneshot::Sender<()>);
+        impl Drop for Finished {
+            fn drop(&mut self) {}
+        }
+        let _finished = Finished(finished);
+        std::future::pending::<std::io::Result<()>>().await
+    });
+    let abort = fixture.abort_handle();
+    let result = observe_loopback_fixture_ready(
+        ready,
+        fixture,
+        tokio::time::Instant::now() + Duration::from_millis(5),
+    )
+    .await;
+    let observed = tokio::time::timeout(Duration::from_millis(50), completion).await;
+    let reaped_before_fallback = dropped.load(Ordering::SeqCst);
+    abort.abort();
+    tokio::task::yield_now().await;
+    assert!(result.is_err());
+    assert!(
+        observed.is_ok() && reaped_before_fallback,
+        "readiness timeout must cancel and reap its fixture"
+    );
+    Ok(())
+}
+
+async fn final_send_binding_http_fixture(
+    transport: FinalSendBindingTransport,
+    change: FinalSendBindingChange,
+) -> TestResult {
+    use super::http_restoration::{admit_http_request, DlpForwardError, RestorationAdmission};
+    use crate::{
+        app_config::AppType,
+        proxy::{
+            error::ProxyError,
+            forwarder::{final_send_binding_test_support, RequestForwarder},
+        },
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|_| "synthetic final binding listener failed")?;
+    let address = listener
+        .local_addr()
+        .map_err(|_| "synthetic final binding address unavailable")?;
+    let hits = Arc::new(AtomicUsize::new(0));
+    let valid_requests = Arc::new(AtomicUsize::new(0));
+    let captured_hits = hits.clone();
+    let captured_valid = valid_requests.clone();
+    let upstream = Router::new().fallback(move |request: http::Request<Body>| {
+        let captured_hits = captured_hits.clone();
+        let captured_valid = captured_valid.clone();
+        async move {
+            // Count every upstream request before parsing, including unexpected routes/bodies.
+            captured_hits.fetch_add(1, Ordering::SeqCst);
+            let exact_headers = request
+                .headers()
+                .get(http::header::AUTHORIZATION)
+                .is_some_and(|value| value == "Bearer synthetic-final-binding-principal-a")
+                && request
+                    .headers()
+                    .get("chatgpt-account-id")
+                    .is_some_and(|value| value == "synthetic-final-binding-account-a");
+            let exact_target = request
+                .uri()
+                .path_and_query()
+                .is_some_and(|target| target.as_str() == "/v1/responses?operation=synthetic-a");
+            let tokenized = match axum::body::to_bytes(request.into_body(), 64 * 1024).await {
+                Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
+                    .ok()
+                    .is_some_and(|body| {
+                        body["input"].as_str().is_some_and(|text| {
+                            text.contains("rredact-cn_phone-") && !text.contains(FIXTURE_PHONE)
+                        })
+                    }),
+                Err(_) => false,
+            };
+            if exact_headers && exact_target && tokenized {
+                captured_valid.fetch_add(1, Ordering::SeqCst);
+            }
+            Json(json!({
+                "id":"resp_final_binding", "object":"response", "status":"completed",
+                "model":"synthetic-model", "output":[{
+                    "id":"msg_final_binding", "type":"message", "role":"assistant",
+                    "status":"completed", "content":[{
+                        "type":"output_text", "text":"Synthetic inert final binding response",
+                        "annotations":[]
+                    }]
+                }]
+            }))
+        }
+    });
+    let server = FinalSendBindingServer::new(tokio::spawn(async move {
+        axum::serve(listener, upstream).await
+    }));
+    let proxy_state = state(Arc::new(
+        Database::memory().map_err(|_| "synthetic final binding database failed")?,
+    ));
+    let provider = Provider::with_id(
+        "synthetic-final-binding-provider".into(),
+        "Synthetic final binding".into(),
+        json!({"base_url":format!("http://{address}"),
+            "api_key":"synthetic-final-binding-principal-a"}),
+        None,
+    );
+    let adapter = FinalSendBindingAdapter {
+        loopback: LoopbackCodexAdapter(address),
+        transport,
+    };
+    // A working exact send on the same listener brackets every negative attempt.
+    let stages: &[FinalSendBindingChange] = if matches!(change, FinalSendBindingChange::Exact) {
+        &[FinalSendBindingChange::Exact]
+    } else {
+        &[
+            FinalSendBindingChange::Exact,
+            change,
+            FinalSendBindingChange::Exact,
+        ]
+    };
+    for &stage in stages {
+        hits.store(0, Ordering::SeqCst);
+        valid_requests.store(0, Ordering::SeqCst);
+        let mut body = json!({"model":"synthetic-model", "input":FIXTURE_PHONE, "stream":false});
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "session-id",
+            http::HeaderValue::from_static("synthetic-final-binding-session"),
+        );
+        headers.insert(
+            "chatgpt-account-id",
+            http::HeaderValue::from_static("synthetic-final-binding-account-a"),
+        );
+        let request = match admit_http_request(
+            &proxy_state.restoration_gateway,
+            &AppType::Codex,
+            true,
+            false,
+            &mut body,
+            &headers,
+        )
+        .map_err(|_| "synthetic final binding admission failed")?
+        {
+            RestorationAdmission::Admitted(request) => request,
+            _ => return Err("synthetic final binding request not admitted".into()),
+        };
+        let observe_audit = request.audit_observer_for_test();
+        let forwarder = RequestForwarder::new(
+            proxy_state.provider_router.clone(),
+            5,
+            proxy_state.status.clone(),
+            proxy_state.current_providers.clone(),
+            proxy_state.gemini_shadow.clone(),
+            proxy_state.codex_chat_history.clone(),
+            proxy_state.failover_manager.clone(),
+            None,
+            provider.id.clone(),
+            "synthetic-final-binding-session".into(),
+            true,
+            5,
+            5,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            0,
+        )
+        .with_dlp_request(Some(request));
+        let reached = Arc::new(AtomicUsize::new(0));
+        let observed_reached = reached.clone();
+        let hook = final_send_binding_test_support::install(move |target, headers| {
+            observed_reached.fetch_add(1, Ordering::SeqCst);
+            match stage {
+                FinalSendBindingChange::Exact => {}
+                FinalSendBindingChange::Authorization => {
+                    headers.insert(
+                        http::header::AUTHORIZATION,
+                        http::HeaderValue::from_static(
+                            "Bearer synthetic-final-binding-principal-b",
+                        ),
+                    );
+                }
+                FinalSendBindingChange::Account => {
+                    headers.insert(
+                        "chatgpt-account-id",
+                        http::HeaderValue::from_static("synthetic-final-binding-account-b"),
+                    );
+                }
+                FinalSendBindingChange::Query => {
+                    target.push_str("&synthetic_final_scope=changed");
+                }
+                FinalSendBindingChange::Operation => {
+                    *target =
+                        format!("http://{address}/v1/responses/compact?operation=synthetic-a");
+                }
+            }
+        });
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            forwarder.forward_with_adapter_for_test(
+                &provider,
+                "/responses?operation=synthetic-a",
+                &body,
+                &headers,
+                &adapter,
+            ),
+        )
+        .await
+        .map_err(|_| "synthetic final binding forwarding timed out")?;
+        assert!(
+            reached.load(Ordering::SeqCst) == 1,
+            "fixture must reach the actual post-preparation send binding hook exactly once"
+        );
+        let counts = hook.transport_counts();
+        if matches!(stage, FinalSendBindingChange::Exact) {
+            assert!(
+                match transport {
+                    FinalSendBindingTransport::Reqwest => counts == (1, 0),
+                    FinalSendBindingTransport::Hyper => counts == (0, 1),
+                },
+                "exact binding must invoke the requested real transport exactly once"
+            );
+            let result = result.map_err(|_| "synthetic exact final binding send refused")?;
+            assert!(
+                result.response.status() == http::StatusCode::OK && result.dlp_attempt.is_some(),
+                "exact final binding must retain the prepared attempt and upstream success"
+            );
+            result
+                .response
+                .bytes_with_limit(64 * 1024)
+                .await
+                .map_err(|_| "synthetic final binding response read failed")?;
+            assert!(
+                hits.load(Ordering::SeqCst) == 1 && valid_requests.load(Ordering::SeqCst) == 1,
+                "exact binding must send the tokenized request and original principal exactly once"
+            );
+            assert!(
+                observe_audit().len() == 1,
+                "an exact binding send must record exactly one permitted request action"
+            );
+        } else {
+            assert!(
+                counts == (0, 0),
+                "a changed final actual binding must not invoke either real transport"
+            );
+            assert!(
+                hits.load(Ordering::SeqCst) == 0,
+                "a changed final actual binding must send no request to the loopback upstream"
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(ProxyError::DlpForward(DlpForwardError::ContextUnavailable))
+                ),
+                "a late binding mismatch must return only the fixed context refusal"
+            );
+            assert!(
+                observe_audit().is_empty(),
+                "a refused final binding must not record a permitted request action"
+            );
+        }
+    }
+    server.finish().await?;
+    Ok(())
+}
+
+macro_rules! final_send_binding_http_test {
+    ($name:ident, $transport:ident, $change:ident) => {
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn $name() -> TestResult {
+            final_send_binding_http_fixture(
+                FinalSendBindingTransport::$transport,
+                FinalSendBindingChange::$change,
+            )
+            .await
+        }
+    };
+}
+
+final_send_binding_http_test!(
+    reversible_http_final_send_binding_reqwest_exact_attempt_sends,
+    Reqwest,
+    Exact
+);
+final_send_binding_http_test!(
+    reversible_http_final_send_binding_hyper_exact_attempt_sends,
+    Hyper,
+    Exact
+);
+final_send_binding_http_test!(
+    reversible_http_final_send_binding_reqwest_late_authorization_change_sends_nothing,
+    Reqwest,
+    Authorization
+);
+final_send_binding_http_test!(
+    reversible_http_final_send_binding_hyper_late_authorization_change_sends_nothing,
+    Hyper,
+    Authorization
+);
+final_send_binding_http_test!(
+    reversible_http_final_send_binding_reqwest_late_account_change_sends_nothing,
+    Reqwest,
+    Account
+);
+final_send_binding_http_test!(
+    reversible_http_final_send_binding_hyper_late_account_change_sends_nothing,
+    Hyper,
+    Account
+);
+final_send_binding_http_test!(
+    reversible_http_final_send_binding_reqwest_late_query_change_sends_nothing,
+    Reqwest,
+    Query
+);
+final_send_binding_http_test!(
+    reversible_http_final_send_binding_hyper_late_query_change_sends_nothing,
+    Hyper,
+    Query
+);
+final_send_binding_http_test!(
+    reversible_http_final_send_binding_reqwest_late_operation_change_sends_nothing,
+    Reqwest,
+    Operation
+);
+final_send_binding_http_test!(
+    reversible_http_final_send_binding_hyper_late_operation_change_sends_nothing,
+    Hyper,
+    Operation
+);
+
+#[derive(Clone, Copy)]
+enum ChatHistoryLoopbackStage {
+    InitialDelivery,
+    ExactReplay,
+    OverrideContent,
+    OverrideReasoning,
+    OverrideSibling,
+    CachedReasoning,
+    LateAccount,
+    LateQuery,
+    LatePolicy,
+    RedirectReplay,
+}
+
+async fn delivered_chat_history_transport_loopback_fixture(
+    transport: FinalSendBindingTransport,
+) -> TestResult {
+    delivered_chat_history_transport_boundary_fixture(transport, true, false, None, None).await
+}
+
+async fn delivered_chat_history_transport_boundary_fixture(
+    transport: FinalSendBindingTransport,
+    active_authority: bool,
+    late_policy: bool,
+    observe_diagnostics: Option<&'static std::sync::atomic::AtomicBool>,
+    redirect_status: Option<http::StatusCode>,
+) -> TestResult {
+    use super::{
+        completion_json::JsonCompletionProtocol,
+        http_restoration::{admit_http_request, DlpForwardError, RestorationAdmission},
+        response_restoration::ArgumentNormalizationMode,
+    };
+    use crate::{
+        app_config::AppType,
+        provider::{LocalProxyRequestOverrides, ProviderMeta},
+        proxy::{
+            error::ProxyError,
+            forwarder::{final_send_binding_test_support, RequestForwarder},
+            providers::transform_codex_chat::chat_completion_to_response,
+        },
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const OUTPUT: &str = "Synthetic delivered answer rredact-custom- literal";
+    const REASONING: &str = "Synthetic delivered thought rredact-custom- literal";
+    const SESSION: &str = "synthetic-chat-history-loopback-session";
+    const SAFE_INPUT: &str = "Synthetic inert history prompt";
+    let prompt = if active_authority {
+        FIXTURE_PHONE
+    } else {
+        SAFE_INPUT
+    };
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|_| "synthetic Chat history listener failed")?;
+    let address = listener
+        .local_addr()
+        .map_err(|_| "synthetic Chat history address unavailable")?;
+    let hits = Arc::new(AtomicUsize::new(0));
+    let valid_requests = Arc::new(AtomicUsize::new(0));
+    let redirect_next = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let redirected_hits = Arc::new(AtomicUsize::new(0));
+    let redirected_body_bytes = Arc::new(AtomicUsize::new(0));
+    let captured_hits = hits.clone();
+    let captured_valid = valid_requests.clone();
+    let captured_redirect = redirect_next.clone();
+    let captured_redirected_hits = redirected_hits.clone();
+    let captured_redirected_bytes = redirected_body_bytes.clone();
+    let upstream = Router::new().fallback(move |request: http::Request<Body>| {
+        let captured_hits = captured_hits.clone();
+        let captured_valid = captured_valid.clone();
+        let captured_redirect = captured_redirect.clone();
+        let captured_redirected_hits = captured_redirected_hits.clone();
+        let captured_redirected_bytes = captured_redirected_bytes.clone();
+        async move {
+            if request.uri().path() == "/synthetic-unbound-target" {
+                captured_redirected_hits.fetch_add(1, Ordering::SeqCst);
+                let size = axum::body::to_bytes(request.into_body(), 64 * 1024)
+                    .await
+                    .map_or(0, |body| body.len());
+                captured_redirected_bytes.fetch_add(size, Ordering::SeqCst);
+                return http::StatusCode::BAD_REQUEST.into_response();
+            }
+            if captured_redirect.swap(false, Ordering::SeqCst) {
+                captured_hits.fetch_add(1, Ordering::SeqCst);
+                let status = redirect_status.unwrap_or(http::StatusCode::TEMPORARY_REDIRECT);
+                return (
+                    status,
+                    [(
+                        http::header::LOCATION,
+                        "/synthetic-unbound-target?operation=synthetic-changed",
+                    )],
+                )
+                    .into_response();
+            }
+            // Keep only counts, never request text or credential diagnostics.
+            captured_hits.fetch_add(1, Ordering::SeqCst);
+            let valid_target = request.uri().path_and_query().is_some_and(|target| {
+                target.as_str() == "/v1/chat/completions?operation=synthetic-history"
+            });
+            let valid_headers = request
+                .headers()
+                .get(http::header::AUTHORIZATION)
+                .is_some_and(|value| {
+                    value == concat!("Bearer ", "synthetic-chat-history-principal")
+                })
+                && request
+                    .headers()
+                    .get("chatgpt-account-id")
+                    .is_some_and(|value| value == "synthetic-chat-history-account");
+            let valid_body = match axum::body::to_bytes(request.into_body(), 64 * 1024).await {
+                Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
+                    .ok()
+                    .is_some_and(|body| {
+                        let tokenized_user = |message: &Value| {
+                            message["role"] == "user"
+                                && message["content"].as_str().is_some_and(|text| {
+                                    if active_authority {
+                                        text.contains("rredact-cn_phone-")
+                                            && !text.contains(FIXTURE_PHONE)
+                                    } else {
+                                        text == SAFE_INPUT
+                                    }
+                                })
+                        };
+                        body["model"] == "synthetic-chat-history-upstream"
+                            && body["prompt_cache_key"] == "synthetic-explicit-history-key"
+                            && body["stream"] == false
+                            && body.get("input").is_none()
+                            && body["messages"].as_array().is_some_and(|messages| {
+                                match messages.as_slice() {
+                                    [user] => tokenized_user(user),
+                                    [assistant, user] => {
+                                        assistant["role"] == "assistant"
+                                            && assistant["content"] == OUTPUT
+                                            && assistant["reasoning_content"] == REASONING
+                                            && tokenized_user(user)
+                                    }
+                                    _ => false,
+                                }
+                            })
+                    }),
+                Err(_) => false,
+            };
+            if valid_target && valid_headers && valid_body {
+                captured_valid.fetch_add(1, Ordering::SeqCst);
+            }
+            Json(json!({
+                "id":"chat_synthetic_delivered_history", "object":"chat.completion",
+                "model":"synthetic-chat-history-upstream", "created":1,
+                "choices":[{"index":0,"message":{"role":"assistant",
+                    "content":OUTPUT,"reasoning_content":REASONING},"finish_reason":"stop"}]
+            }))
+            .into_response()
+        }
+    });
+    let server = FinalSendBindingServer::new(tokio::spawn(async move {
+        axum::serve(listener, upstream).await
+    }));
+    let proxy_state = state(Arc::new(
+        Database::memory().map_err(|_| "synthetic Chat history database failed")?,
+    ));
+    let mut provider = Provider::with_id(
+        "synthetic-chat-history-provider".into(),
+        "Synthetic Chat history".into(),
+        json!({"base_url":format!("http://{address}"),
+            "api_key":"synthetic-chat-history-principal", "api_format":"chat_completions",
+            "model":"synthetic-chat-history-upstream"}),
+        None,
+    );
+    provider.meta = Some(ProviderMeta {
+        prompt_cache_routing: Some("enabled".into()),
+        ..Default::default()
+    });
+    let adapter = FinalSendBindingAdapter {
+        loopback: LoopbackCodexAdapter(address),
+        transport,
+    };
+    let mut delivered_output = Value::Null;
+    // New-policy delivery is a fresh source, never a revival of the revoked proof.
+    let stages: &[ChatHistoryLoopbackStage] = if redirect_status.is_some() {
+        &[
+            ChatHistoryLoopbackStage::InitialDelivery,
+            ChatHistoryLoopbackStage::ExactReplay,
+            ChatHistoryLoopbackStage::RedirectReplay,
+            ChatHistoryLoopbackStage::ExactReplay,
+        ]
+    } else if late_policy {
+        &[
+            ChatHistoryLoopbackStage::InitialDelivery,
+            ChatHistoryLoopbackStage::ExactReplay,
+            ChatHistoryLoopbackStage::LatePolicy,
+            ChatHistoryLoopbackStage::InitialDelivery,
+            ChatHistoryLoopbackStage::ExactReplay,
+        ]
+    } else {
+        &[
+            ChatHistoryLoopbackStage::InitialDelivery,
+            ChatHistoryLoopbackStage::ExactReplay,
+            ChatHistoryLoopbackStage::OverrideContent,
+            ChatHistoryLoopbackStage::OverrideReasoning,
+            ChatHistoryLoopbackStage::OverrideSibling,
+            ChatHistoryLoopbackStage::CachedReasoning,
+            ChatHistoryLoopbackStage::LateAccount,
+            ChatHistoryLoopbackStage::LateQuery,
+            ChatHistoryLoopbackStage::ExactReplay,
+        ]
+    };
+    for &stage in stages {
+        hits.store(0, Ordering::SeqCst);
+        valid_requests.store(0, Ordering::SeqCst);
+        let initial = matches!(stage, ChatHistoryLoopbackStage::InitialDelivery);
+        let redirecting = matches!(stage, ChatHistoryLoopbackStage::RedirectReplay);
+        redirect_next.store(redirecting, Ordering::SeqCst);
+        let permitted =
+            initial || redirecting || matches!(stage, ChatHistoryLoopbackStage::ExactReplay);
+        let mut body = json!({"model":"synthetic-chat-history-local-alias", "stream":false,
+            "prompt_cache_key":" \u{2003}synthetic-explicit-history-key\t ",
+            "input":if initial { json!(prompt) } else { delivered_output.clone() }});
+        if !initial {
+            body["input"]
+                .as_array_mut()
+                .ok_or("synthetic delivered output missing")?
+                .push(json!({"role":"user","content":prompt}));
+        }
+        let mut stage_provider = provider.clone();
+        if matches!(
+            stage,
+            ChatHistoryLoopbackStage::OverrideContent
+                | ChatHistoryLoopbackStage::OverrideReasoning
+                | ChatHistoryLoopbackStage::OverrideSibling
+        ) {
+            let mut messages = json!([
+                {"role":"assistant","content":OUTPUT,"reasoning_content":REASONING},
+                {"role":"user","content":"Synthetic inert continuation"}
+            ]);
+            match stage {
+                ChatHistoryLoopbackStage::OverrideContent => {
+                    messages[0]["content"] =
+                        json!("Synthetic changed answer rredact-custom- literal");
+                }
+                ChatHistoryLoopbackStage::OverrideReasoning => {
+                    messages[0]["reasoning_content"] =
+                        json!("Synthetic changed thought rredact-custom- literal");
+                }
+                _ => messages
+                    .as_array_mut()
+                    .ok_or("synthetic override messages missing")?
+                    .push(json!({"role":"assistant","content":OUTPUT})),
+            }
+            stage_provider
+                .meta
+                .as_mut()
+                .ok_or("synthetic Chat metadata missing")?
+                .local_proxy_request_overrides = Some(LocalProxyRequestOverrides {
+                body: Some(json!({"messages":messages})),
+                ..Default::default()
+            });
+        }
+        if matches!(stage, ChatHistoryLoopbackStage::CachedReasoning) {
+            // An equal cached string is not an actually delivered typed source item.
+            let cached = json!({"id":"resp_synthetic_unproven_cache","output":[{
+                "id":"fc_synthetic_unproven_cache","type":"function_call",
+                "call_id":"call_synthetic_unproven_cache","name":"synthetic_lookup",
+                "arguments":"{}","reasoning_content":REASONING
+            }]});
+            assert!(
+                proxy_state
+                    .codex_chat_history
+                    .record_response(&cached)
+                    .await
+                    == 1,
+                "synthetic unproven cache entry must be present"
+            );
+            let input = body["input"]
+                .as_array_mut()
+                .ok_or("synthetic cache replay input missing")?;
+            input.push(
+                json!({"type":"function_call","call_id":"call_synthetic_unproven_cache",
+                "name":"synthetic_lookup","arguments":"{}"}),
+            );
+            input.push(json!({"type":"function_call_output",
+                "call_id":"call_synthetic_unproven_cache","output":"Synthetic inert result"}));
+            let mut probe = body.clone();
+            let (enriched, _owners) = proxy_state
+                .codex_chat_history
+                .enrich_request_with_payload_owners(&mut probe)
+                .await
+                .map_err(|_| "synthetic cache probe failed")?;
+            assert!(
+                enriched > 0
+                    && probe["input"]
+                        .as_array()
+                        .is_some_and(|items| items.iter().any(|item| {
+                            item["type"] == "function_call"
+                                && item["reasoning_content"] == REASONING
+                        })),
+                "negative cache fixture must contribute an equal but unproven reasoning field"
+            );
+        }
+        let mut headers = http::HeaderMap::new();
+        headers.insert("session-id", http::HeaderValue::from_static(SESSION));
+        headers.insert(
+            "chatgpt-account-id",
+            http::HeaderValue::from_static("synthetic-chat-history-account"),
+        );
+        let request = match admit_http_request(
+            &proxy_state.restoration_gateway,
+            &AppType::Codex,
+            true,
+            false,
+            &mut body,
+            &headers,
+        )
+        .map_err(|_| "synthetic Chat history admission failed")?
+        {
+            RestorationAdmission::Admitted(request) => request,
+            _ => return Err("synthetic Chat history request not admitted".into()),
+        };
+        let observe_audit = request.audit_observer_for_test();
+        let forwarder = RequestForwarder::new(
+            proxy_state.provider_router.clone(),
+            5,
+            proxy_state.status.clone(),
+            proxy_state.current_providers.clone(),
+            proxy_state.gemini_shadow.clone(),
+            proxy_state.codex_chat_history.clone(),
+            proxy_state.failover_manager.clone(),
+            None,
+            provider.id.clone(),
+            SESSION.into(),
+            true,
+            5,
+            5,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            0,
+        )
+        .with_dlp_request(Some(request));
+        let reached = Arc::new(AtomicUsize::new(0));
+        let observed_reached = reached.clone();
+        let revision = runtime::admit_security_runtime()?.restoration_policy_revision;
+        let mut changed_policy = (*runtime::get_security_runtime()).clone();
+        changed_policy
+            .builtin_action_overrides
+            .insert("chinese_id_card".into(), super::types::AuditAction::Audit);
+        let hook = final_send_binding_test_support::install(move |target, headers| {
+            observed_reached.fetch_add(1, Ordering::SeqCst);
+            match stage {
+                ChatHistoryLoopbackStage::LateAccount => {
+                    headers.insert(
+                        "chatgpt-account-id",
+                        http::HeaderValue::from_static("synthetic-chat-history-other-account"),
+                    );
+                }
+                ChatHistoryLoopbackStage::LateQuery => {
+                    target.push_str("&synthetic_late_scope=changed");
+                }
+                ChatHistoryLoopbackStage::LatePolicy => {
+                    runtime::set_security_runtime_for_test(changed_policy.clone());
+                }
+                _ => {}
+            }
+        });
+        if let Some(observe) = observe_diagnostics {
+            // Empty initial traffic is neither leased nor proof-bearing yet.
+            observe.store(active_authority || !initial, Ordering::SeqCst);
+        }
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            forwarder.forward_with_adapter_for_test(
+                &stage_provider,
+                "/responses?operation=synthetic-history",
+                &body,
+                &headers,
+                &adapter,
+            ),
+        )
+        .await
+        .map_err(|_| "synthetic Chat history forwarding timed out")?;
+        if let Some(observe) = observe_diagnostics {
+            observe.store(false, Ordering::SeqCst);
+        }
+        if matches!(stage, ChatHistoryLoopbackStage::LatePolicy) {
+            assert!(
+                runtime::admit_security_runtime()?.restoration_policy_revision > revision,
+                "final send hook must publish a semantic policy revision before transport"
+            );
+        }
+        let late_binding = matches!(
+            stage,
+            ChatHistoryLoopbackStage::LateAccount
+                | ChatHistoryLoopbackStage::LateQuery
+                | ChatHistoryLoopbackStage::LatePolicy
+        );
+        assert!(
+            reached.load(Ordering::SeqCst) == usize::from(permitted || late_binding),
+            "only prepared exact history may reach the actual late send-binding hook"
+        );
+        if !permitted {
+            assert!(
+                hook.transport_counts() == (0, 0) && hits.load(Ordering::SeqCst) == 0,
+                "unproven text or changed final authority must invoke neither transport nor listener"
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(ProxyError::DlpForward(DlpForwardError::ContextUnavailable))
+                ),
+                "unproven Chat history must return only the fixed context refusal"
+            );
+            assert!(
+                observe_audit()
+                    .iter()
+                    .all(|event| event.log.action_taken == "block"),
+                "a refused history replay must not record a permitted request action"
+            );
+            continue;
+        }
+        assert!(
+            match transport {
+                FinalSendBindingTransport::Reqwest => hook.transport_counts() == (1, 0),
+                FinalSendBindingTransport::Hyper => hook.transport_counts() == (0, 1),
+            },
+            "exact Chat history must reach the selected production transport once"
+        );
+        if redirecting {
+            assert!(
+                hits.load(Ordering::SeqCst) == 1
+                    && redirected_hits.load(Ordering::SeqCst) == 0
+                    && redirected_body_bytes.load(Ordering::SeqCst) == 0,
+                "bound history must never resend its body to a redirected target"
+            );
+            assert!(
+                matches!(result, Err(ProxyError::DlpForward(DlpForwardError::UpstreamStatus(status)))
+                    if Some(status) == redirect_status),
+                "bound redirect must return only a fixed upstream-status refusal"
+            );
+            continue;
+        }
+        let mut result = result.map_err(|_| "synthetic exact Chat history send refused")?;
+        assert!(
+            result.response.status() == http::StatusCode::OK
+                && result.outbound_model.as_deref() == Some("synthetic-chat-history-upstream")
+                && hits.load(Ordering::SeqCst) == 1
+                && valid_requests.load(Ordering::SeqCst) == 1,
+            "loopback must accept the exact converted history after model and explicit cache-key edits"
+        );
+        assert!(
+            observe_audit().len() == usize::from(active_authority),
+            "exact history must audit actual findings without inventing an empty-authority event"
+        );
+        let attempt = result
+            .dlp_attempt
+            .take()
+            .ok_or("synthetic Chat history attempt missing")?;
+        assert!(
+            attempt.has_restoration_lease() == active_authority,
+            "loopback fixture must exercise the requested token-authority branch"
+        );
+        let bytes = result
+            .response
+            .bytes_with_limit(64 * 1024)
+            .await
+            .map_err(|_| "synthetic Chat response read failed")?;
+        if initial {
+            // Use actual received Chat bytes and the real final-delivery wrapper, not a proof seed.
+            let raw =
+                std::str::from_utf8(&bytes).map_err(|_| "synthetic Chat response must be UTF-8")?;
+            attempt
+                .verify_upstream_json_completion(JsonCompletionProtocol::ChatCompletions, raw)
+                .map_err(|_| "synthetic original Chat completion was not verified")?;
+            let chat: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| "synthetic Chat response must encode JSON")?;
+            let converted = chat_completion_to_response(chat)
+                .map_err(|_| "synthetic Chat response conversion failed")?;
+            let proof_observer = attempt.lease.fork_attempt()?;
+            let delivered_binding = attempt.binding.clone();
+            let unpublished_replay = json!({"input":converted["output"]});
+            assert!(
+                proof_observer
+                    .history_projection(&delivered_binding, &unpublished_replay)
+                    .is_none(),
+                "conversion before final delivery must not publish a history proof"
+            );
+            let response = attempt
+                .restore_client_http_response(
+                    http::Response::builder()
+                        .header("content-type", "application/json")
+                        .body(Body::from(converted.to_string()))?,
+                    ArgumentNormalizationMode::Exact,
+                    None,
+                )
+                .await;
+            assert!(
+                response.status() == http::StatusCode::OK,
+                "actual Chat delivery must permit inert malformed synthetic output"
+            );
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .map_err(|_| "synthetic delivered Chat wrapper collection failed")?
+                .to_bytes();
+            let delivered: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| "synthetic delivered Chat wrapper must encode JSON")?;
+            assert!(
+                delivered["status"] == "completed"
+                    && delivered["output"]
+                        .as_array()
+                        .is_some_and(|items| items.len() == 2)
+                    && delivered["output"][0]["type"] == "reasoning"
+                    && delivered["output"][0]["summary"][0]["text"] == REASONING
+                    && delivered["output"][1]["type"] == "message"
+                    && delivered["output"][1]["content"][0]["text"] == OUTPUT,
+                "only actually delivered typed reasoning and ordinary output may be replayed"
+            );
+            let delivered_replay = json!({"input":delivered["output"]});
+            let projection = proof_observer
+                .history_projection(&delivered_binding, &delivered_replay)
+                .ok_or("actual loopback delivery must publish a nonempty history proof")?;
+            use super::history_provenance::DlpHistoryLeafField as Field;
+            assert!(
+                projection
+                    .source_for_responses_leaf(0, Field::ReasoningSummary, 0)
+                    .is_some()
+                    && projection
+                        .source_for_responses_leaf(1, Field::OutputText, 0)
+                        .is_some(),
+                "empty and active authority must prove actual delivered reasoning and ordinary output"
+            );
+            delivered_output = delivered["output"].clone();
+        }
+    }
+    server.finish().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reversible_http_delivered_chat_history_reqwest_production_loopback() -> TestResult {
+    delivered_chat_history_transport_loopback_fixture(FinalSendBindingTransport::Reqwest).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reversible_http_delivered_chat_history_hyper_production_loopback() -> TestResult {
+    delivered_chat_history_transport_loopback_fixture(FinalSendBindingTransport::Hyper).await
+}
+
+mod delivered_chat_history_reqwest_failover {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use super::super::{
+        completion_json::JsonCompletionProtocol,
+        history_provenance::DlpHistoryLeafField,
+        http_restoration::{
+            admit_http_request, source_copy_test_support, DlpForwardError, RestorationAdmission,
+        },
+        response_restoration::ArgumentNormalizationMode,
+    };
+    use crate::{
+        app_config::AppType,
+        proxy::{
+            error::ProxyError,
+            forwarder::{final_send_binding_test_support, RequestForwarder},
+            providers::transform_codex_chat::chat_completion_to_response,
+        },
+    };
+
+    const OUTPUT: &str = "Synthetic failover answer rredact-custom- literal";
+    const REASONING: &str = "Synthetic failover thought rredact-custom- literal";
+    const SAFE_INPUT: &str = "Synthetic inert failover prompt";
+    const SESSION: &str = "synthetic-delivered-history-failover-session";
+
+    fn spawn_upstream(
+        listener: tokio::net::TcpListener,
+        hits: Arc<AtomicUsize>,
+        valid: Arc<AtomicUsize>,
+        disconnect: Arc<AtomicBool>,
+        deadline: tokio::time::Instant,
+    ) -> FinalSendBindingServer {
+        // The supervised task owns every connection; no detached connection tasks survive it.
+        FinalSendBindingServer::new(tokio::spawn(async move {
+            loop {
+                let (socket, _) = tokio::time::timeout_at(deadline, listener.accept())
+                    .await
+                    .map_err(|_| std::io::Error::other("synthetic failover accept deadline"))??;
+                hits.fetch_add(1, Ordering::SeqCst);
+                let valid = valid.clone();
+                let disconnect = disconnect.clone();
+                let service = hyper::service::service_fn(
+                    move |request: http::Request<hyper::body::Incoming>| {
+                        let valid = valid.clone();
+                        let disconnect = disconnect.clone();
+                        async move {
+                            let valid_target = request.method() == http::Method::POST
+                                && request.uri().path_and_query().is_some_and(|target| {
+                                    target.as_str()
+                                        == "/v1/chat/completions?operation=synthetic-failover"
+                                });
+                            let valid_headers = request
+                                .headers()
+                                .get(http::header::AUTHORIZATION)
+                                .is_some_and(|value| {
+                                    value == concat!("Bearer ", "synthetic-failover-principal")
+                                })
+                                && request
+                                    .headers()
+                                    .get("chatgpt-account-id")
+                                    .is_some_and(|value| value == "synthetic-failover-account");
+                            let bytes =
+                                axum::body::to_bytes(Body::new(request.into_body()), 64 * 1024)
+                                    .await
+                                    .map_err(|_| {
+                                        std::io::Error::other(
+                                            "synthetic failover request incomplete",
+                                        )
+                                    })?;
+                            let valid_body = serde_json::from_slice::<Value>(&bytes)
+                                .ok()
+                                .is_some_and(|body| {
+                                    body["model"] == "synthetic-failover-upstream"
+                                        && body["stream"] == false
+                                        && body.get("input").is_none()
+                                        && body["messages"].as_array().is_some_and(|messages| {
+                                            match messages.as_slice() {
+                                                [user] => {
+                                                    user["role"] == "user"
+                                                        && user["content"] == SAFE_INPUT
+                                                }
+                                                [assistant, user] => {
+                                                    assistant["role"] == "assistant"
+                                                        && assistant["content"] == OUTPUT
+                                                        && assistant["reasoning_content"]
+                                                            == REASONING
+                                                        && user["role"] == "user"
+                                                        && user["content"].as_str().is_some_and(
+                                                            |text| {
+                                                                text.contains("rredact-cn_phone-")
+                                                                    && !text.contains(FIXTURE_PHONE)
+                                                            },
+                                                        )
+                                                }
+                                                _ => false,
+                                            }
+                                        })
+                                });
+                            if !(valid_target && valid_headers && valid_body) {
+                                return Err(std::io::Error::other(
+                                    "synthetic failover request rejected",
+                                ));
+                            }
+                            valid.fetch_add(1, Ordering::SeqCst);
+                            if disconnect.load(Ordering::SeqCst) {
+                                // A complete valid request is received before closing without HTTP headers.
+                                return Err(std::io::Error::other(
+                                    "synthetic failover disconnect before response",
+                                ));
+                            }
+                            let mut response = Json(json!({
+                                "id":"chat_synthetic_failover", "object":"chat.completion",
+                                "model":"synthetic-failover-upstream", "created":1,
+                                "choices":[{"index":0,"message":{"role":"assistant",
+                                    "content":OUTPUT,"reasoning_content":REASONING},
+                                    "finish_reason":"stop"}]
+                            }))
+                            .into_response();
+                            response.headers_mut().insert(
+                                http::header::CONNECTION,
+                                http::HeaderValue::from_static("close"),
+                            );
+                            Ok::<_, std::io::Error>(response)
+                        }
+                    },
+                );
+                // A service error intentionally closes the socket, rather than sending a leased 503.
+                let _ = tokio::time::timeout_at(
+                    deadline,
+                    hyper::server::conn::http1::Builder::new()
+                        .serve_connection(hyper_util::rt::TokioIo::new(socket), service),
+                )
+                .await
+                .map_err(|_| std::io::Error::other("synthetic failover connection deadline"))?;
+            }
+        }))
+    }
+
+    async fn fixture(replay_old_proof: bool) -> TestResult {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+        let work_deadline = deadline - Duration::from_secs(1);
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+        runtime::set_security_runtime_for_test(Default::default());
+        let proxy_state = state(Arc::new(
+            Database::memory().map_err(|_| "synthetic failover database failed")?,
+        ));
+        let listener_a =
+            tokio::time::timeout_at(work_deadline, tokio::net::TcpListener::bind("127.0.0.1:0"))
+                .await
+                .map_err(|_| "synthetic failover listener deadline")?
+                .map_err(|_| "synthetic failover listener failed")?;
+        let listener_b =
+            tokio::time::timeout_at(work_deadline, tokio::net::TcpListener::bind("127.0.0.1:0"))
+                .await
+                .map_err(|_| "synthetic failover listener deadline")?
+                .map_err(|_| "synthetic failover listener failed")?;
+        let address_a = listener_a
+            .local_addr()
+            .map_err(|_| "synthetic failover address unavailable")?;
+        let address_b = listener_b
+            .local_addr()
+            .map_err(|_| "synthetic failover address unavailable")?;
+        let provider_a = Provider::with_id(
+            "synthetic-history-failover-a".into(),
+            "Synthetic history failover".into(),
+            json!({"base_url":format!("http://{address_a}"),
+                "api_key":"synthetic-failover-principal", "api_format":"chat_completions",
+                "model":"synthetic-failover-upstream"}),
+            None,
+        );
+        let mut provider_b = provider_a.clone();
+        provider_b.id = "synthetic-history-failover-b".into();
+        provider_b.settings_config["base_url"] = json!(format!("http://{address_b}"));
+        let hits_a = Arc::new(AtomicUsize::new(0));
+        let hits_b = Arc::new(AtomicUsize::new(0));
+        let valid_a = Arc::new(AtomicUsize::new(0));
+        let valid_b = Arc::new(AtomicUsize::new(0));
+        let disconnect_a = Arc::new(AtomicBool::new(false));
+        let server_a = spawn_upstream(
+            listener_a,
+            hits_a.clone(),
+            valid_a.clone(),
+            disconnect_a.clone(),
+            deadline,
+        );
+        let server_b = spawn_upstream(
+            listener_b,
+            hits_b.clone(),
+            valid_b.clone(),
+            Arc::new(AtomicBool::new(false)),
+            deadline,
+        );
+        // All fallible work returns through the shared-deadline cleanup below, including timeouts.
+        let outcome = tokio::time::timeout_at(work_deadline, async {
+            let mut headers = http::HeaderMap::new();
+            headers.insert("session-id", http::HeaderValue::from_static(SESSION));
+            headers.insert(
+                "chatgpt-account-id",
+                http::HeaderValue::from_static("synthetic-failover-account"),
+            );
+            let make_forwarder = |request| {
+                RequestForwarder::new(
+                    proxy_state.provider_router.clone(),
+                    5,
+                    proxy_state.status.clone(),
+                    proxy_state.current_providers.clone(),
+                    proxy_state.gemini_shadow.clone(),
+                    proxy_state.codex_chat_history.clone(),
+                    proxy_state.failover_manager.clone(),
+                    None,
+                    provider_a.id.clone(),
+                    SESSION.into(),
+                    true,
+                    5,
+                    5,
+                    Default::default(),
+                    Default::default(),
+                    Default::default(),
+                    1,
+                )
+                .with_dlp_request(Some(request))
+            };
+            let mut body = json!({"model":"synthetic-failover-local-alias",
+                "input":SAFE_INPUT, "stream":false});
+            let request = match admit_http_request(
+                &proxy_state.restoration_gateway,
+                &AppType::Codex,
+                true,
+                false,
+                &mut body,
+                &headers,
+            )
+            .map_err(|_| "synthetic failover delivery admission failed")?
+            {
+                RestorationAdmission::Admitted(request) => request,
+                _ => return Err("synthetic failover delivery not admitted".into()),
+            };
+            // Reuse the existing no-proxy transport guard without changing the final target.
+            let transport = final_send_binding_test_support::install(|_, _| {});
+            let mut delivered = make_forwarder(request)
+                .forward_with_retry(
+                    &AppType::Codex,
+                    http::Method::POST,
+                    "/responses?operation=synthetic-failover",
+                    body,
+                    headers.clone(),
+                    Default::default(),
+                    vec![provider_a.clone()],
+                )
+                .await
+                .map_err(|_| "synthetic failover initial delivery failed")?;
+            if !(delivered.response.status() == http::StatusCode::OK
+                && transport.transport_counts() == (1, 0)
+                && hits_a.load(Ordering::SeqCst) == 1
+                && valid_a.load(Ordering::SeqCst) == 1
+                && hits_b.load(Ordering::SeqCst) == 0)
+            {
+                return Err("synthetic failover initial delivery invalid".into());
+            }
+            let attempt = delivered
+                .dlp_attempt
+                .take()
+                .ok_or("synthetic failover delivery attempt missing")?;
+            if attempt.has_restoration_lease() {
+                return Err("synthetic failover initial delivery must be safe".into());
+            }
+            let bytes = delivered
+                .response
+                .bytes_with_limit(64 * 1024)
+                .await
+                .map_err(|_| "synthetic failover initial response incomplete")?;
+            let raw = std::str::from_utf8(&bytes)
+                .map_err(|_| "synthetic failover initial response invalid")?;
+            attempt
+                .verify_upstream_json_completion(JsonCompletionProtocol::ChatCompletions, raw)
+                .map_err(|_| "synthetic failover completion unverified")?;
+            let chat = serde_json::from_slice(&bytes)
+                .map_err(|_| "synthetic failover response invalid")?;
+            let converted = chat_completion_to_response(chat)
+                .map_err(|_| "synthetic failover conversion failed")?;
+            let observer = attempt
+                .lease
+                .fork_attempt()
+                .map_err(|_| "synthetic failover proof observer unavailable")?;
+            let binding = attempt.binding.clone();
+            let replay = json!({"input":converted["output"]});
+            if observer.history_projection(&binding, &replay).is_some() {
+                return Err("synthetic failover conversion published proof prematurely".into());
+            }
+            // Only fully collected final client delivery may publish the proof replayed below.
+            let response = attempt
+                .restore_client_http_response(
+                    http::Response::builder()
+                        .header("content-type", "application/json")
+                        .body(Body::from(converted.to_string()))
+                        .map_err(|_| "synthetic failover wrapper construction failed")?,
+                    ArgumentNormalizationMode::Exact,
+                    None,
+                )
+                .await;
+            if response.status() != http::StatusCode::OK {
+                return Err("synthetic failover final delivery refused".into());
+            }
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .map_err(|_| "synthetic failover final delivery incomplete")?
+                .to_bytes();
+            let delivered: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| "synthetic failover final delivery invalid")?;
+            let replay = json!({"input":delivered["output"]});
+            let projection = observer
+                .history_projection(&binding, &replay)
+                .ok_or("synthetic failover delivered proof missing")?;
+            if !(delivered["status"] == "completed"
+                && delivered["output"][0]["summary"][0]["text"] == REASONING
+                && delivered["output"][1]["content"][0]["text"] == OUTPUT
+                && projection
+                    .source_for_responses_leaf(0, DlpHistoryLeafField::ReasoningSummary, 0)
+                    .is_some()
+                && projection
+                    .source_for_responses_leaf(1, DlpHistoryLeafField::OutputText, 0)
+                    .is_some())
+            {
+                return Err("synthetic failover delivered proof invalid".into());
+            }
+            drop(transport);
+            hits_a.store(0, Ordering::SeqCst);
+            valid_a.store(0, Ordering::SeqCst);
+            disconnect_a.store(true, Ordering::SeqCst);
+            let mut body = json!({"model":"synthetic-failover-local-alias",
+                "input":SAFE_INPUT, "stream":false});
+            if replay_old_proof {
+                body["input"] = delivered["output"].clone();
+                body["input"]
+                    .as_array_mut()
+                    .ok_or("synthetic failover replay output missing")?
+                    .push(json!({"role":"user", "content":FIXTURE_PHONE}));
+            }
+            let request = match admit_http_request(
+                &proxy_state.restoration_gateway,
+                &AppType::Codex,
+                true,
+                false,
+                &mut body,
+                &headers,
+            )
+            .map_err(|_| "synthetic failover replay admission failed")?
+            {
+                RestorationAdmission::Admitted(request) => request,
+                _ => return Err("synthetic failover replay not admitted".into()),
+            };
+            let transport = final_send_binding_test_support::install(|_, _| {});
+            let source = source_copy_test_support::install();
+            let result = make_forwarder(request)
+                .forward_with_retry(
+                    &AppType::Codex,
+                    http::Method::POST,
+                    "/responses?operation=synthetic-failover",
+                    body,
+                    headers,
+                    Default::default(),
+                    vec![provider_a.clone(), provider_b.clone()],
+                )
+                .await;
+            if !(source.snapshot().attempts == 2
+                && hits_a.load(Ordering::SeqCst) == 1
+                && valid_a.load(Ordering::SeqCst) == 1
+                && provider_a.name == provider_b.name
+                && provider_a.id != provider_b.id)
+            {
+                return Err(
+                    "synthetic failover must prepare both providers after one complete send".into(),
+                );
+            }
+            if replay_old_proof {
+                if !(matches!(result,
+                    Err(failure) if failure.provider.is_none()
+                        && matches!(failure.error,
+                            ProxyError::DlpForward(DlpForwardError::ContextUnavailable)))
+                    && transport.transport_counts() == (1, 0)
+                    && hits_b.load(Ordering::SeqCst) == 0
+                    && valid_b.load(Ordering::SeqCst) == 0)
+                {
+                    return Err(
+                        "synthetic old proof must be refused before backup transport".into(),
+                    );
+                }
+            } else {
+                let result = result.map_err(|_| "synthetic safe failover refused")?;
+                if !(result.provider.id == provider_b.id
+                    && result.response.status() == http::StatusCode::OK
+                    && transport.transport_counts() == (2, 0)
+                    && hits_b.load(Ordering::SeqCst) == 1
+                    && valid_b.load(Ordering::SeqCst) == 1)
+                {
+                    return Err("synthetic safe failover must reach the backup once".into());
+                }
+                let bytes = result
+                    .response
+                    .bytes_with_limit(64 * 1024)
+                    .await
+                    .map_err(|_| "synthetic safe backup response incomplete")?;
+                let response: Value = serde_json::from_slice(&bytes)
+                    .map_err(|_| "synthetic safe backup response invalid")?;
+                if response["choices"][0]["message"]["content"] != OUTPUT {
+                    return Err("synthetic safe backup response unexpected".into());
+                }
+            }
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })
+        .await;
+        // Preserve cleanup responsibility even when admission, forwarding or collection failed.
+        let (cleanup_a, cleanup_b) =
+            tokio::join!(server_a.finish_at(deadline), server_b.finish_at(deadline),);
+        cleanup_a?;
+        cleanup_b?;
+        outcome.map_err(|_| "synthetic failover shared work deadline exceeded")??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn reversible_http_delivered_chat_history_reqwest_retry_rejects_old_provider_proof(
+    ) -> TestResult {
+        fixture(true).await
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn reversible_http_delivered_chat_history_reqwest_retry_safe_input_reaches_backup(
+    ) -> TestResult {
+        fixture(false).await
+    }
+}
+
+macro_rules! reasoning_history_late_policy_loopback_test {
+    ($name:ident, $transport:ident, $active_authority:expr) => {
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn $name() -> TestResult {
+            delivered_chat_history_transport_boundary_fixture(
+                FinalSendBindingTransport::$transport,
+                $active_authority,
+                true,
+                None,
+                None,
+            )
+            .await
+        }
+    };
+}
+
+reasoning_history_late_policy_loopback_test!(
+    reasoning_history_late_policy_reqwest_active_authority,
+    Reqwest,
+    true
+);
+reasoning_history_late_policy_loopback_test!(
+    reasoning_history_late_policy_hyper_active_authority,
+    Hyper,
+    true
+);
+reasoning_history_late_policy_loopback_test!(
+    reasoning_history_late_policy_reqwest_empty_authority,
+    Reqwest,
+    false
+);
+reasoning_history_late_policy_loopback_test!(
+    reasoning_history_late_policy_hyper_empty_authority,
+    Hyper,
+    false
+);
+
+mod history_diagnostic_marker_observer {
+    use std::fmt::{self, Write};
+
+    const MARKERS: [&[u8]; 3] = [b"[CacheTrace]", b"hash=", b"_hash="];
+
+    // Retain only fixed-marker progress and booleans, never formatted log contents.
+    #[derive(Default)]
+    pub(super) struct MarkerProbe {
+        active_prefixes: [usize; MARKERS.len()],
+        pub(super) matched: bool,
+    }
+    impl Write for MarkerProbe {
+        fn write_str(&mut self, text: &str) -> fmt::Result {
+            for byte in text.bytes() {
+                for (index, marker) in MARKERS.iter().enumerate() {
+                    // Track every matching prefix length, not just the longest:
+                    // a mismatch can leave a shorter overlapping prefix alive.
+                    let previous = self.active_prefixes[index];
+                    let mut next = usize::from(byte == marker[0]);
+                    for (prefix_len, expected) in marker.iter().enumerate().skip(1) {
+                        if previous & (1usize << (prefix_len - 1)) != 0 && byte == *expected {
+                            if prefix_len + 1 == marker.len() {
+                                self.matched = true;
+                            } else {
+                                next |= 1usize << prefix_len;
+                            }
+                        }
+                    }
+                    self.active_prefixes[index] = next;
+                    if marker.len() == 1 && next != 0 {
+                        self.matched = true;
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    pub(super) fn reasoning_history_diagnostic_marker_observer() -> super::TestResult {
+        for marker in MARKERS {
+            let marker = std::str::from_utf8(marker)?;
+            let mut probe = MarkerProbe::default();
+            for byte in marker.as_bytes() {
+                probe.write_str(std::str::from_utf8(std::slice::from_ref(byte))?)?;
+            }
+            assert!(
+                probe.matched,
+                "streaming diagnostic marker observer must detect split fields"
+            );
+            // Only fixed field-name bytes enter this self-check. A partial prefix
+            // followed by a complete marker must survive every formatting split.
+            for prefix_len in 1..marker.len() {
+                for split in 0..=marker.len() {
+                    let mut probe = MarkerProbe::default();
+                    probe.write_str(&marker[..prefix_len])?;
+                    assert!(
+                        !probe.matched,
+                        "partial diagnostic field must not count as a complete match"
+                    );
+                    probe.write_str(&marker[..split])?;
+                    probe.write_str(&marker[split..])?;
+                    assert!(
+                        probe.matched,
+                        "streaming observer must recover overlapping field prefixes across splits"
+                    );
+                }
+            }
+        }
+        let mut benign = MarkerProbe::default();
+        benign.write_str("synthetic forwarding metadata")?;
+        assert!(
+            !benign.matched,
+            "marker observer must not reject fixed benign metadata"
+        );
+        Ok(())
+    }
+}
+
+type HistoryDiagnosticChildResult = Result<std::process::ExitStatus, &'static str>;
+
+struct HistoryDiagnosticChild {
+    process: Option<tokio::process::Child>,
+    cleanup: Option<tokio::task::JoinHandle<(HistoryDiagnosticChildResult, tokio::process::Child)>>,
+}
+
+impl HistoryDiagnosticChild {
+    fn new(process: tokio::process::Child) -> Self {
+        Self {
+            process: Some(process),
+            cleanup: None,
+        }
+    }
+}
+
+async fn cleanup_history_diagnostic_child(
+    child: &mut tokio::process::Child,
+    deadline: tokio::time::Instant,
+) -> Result<(), &'static str> {
+    let killed = child.start_kill();
+    finish_history_diagnostic_cleanup(killed, child.wait(), deadline).await
+}
+
+async fn finish_history_diagnostic_cleanup<T>(
+    killed: std::io::Result<()>,
+    reaped: impl std::future::Future<Output = std::io::Result<T>>,
+    deadline: tokio::time::Instant,
+) -> Result<(), &'static str> {
+    match tokio::time::timeout_at(deadline, reaped).await {
+        Ok(Ok(_)) if killed.is_ok() => Ok(()),
+        Ok(Ok(_)) => Err("isolated diagnostic fixture kill failed; output discarded"),
+        Ok(Err(_)) => Err("isolated diagnostic fixture reap failed; output discarded"),
+        Err(_) => Err("isolated diagnostic fixture cleanup timed out; output discarded"),
+    }
+}
+
+fn history_diagnostic_cleanup_task_error(_: tokio::task::JoinError) -> &'static str {
+    "isolated diagnostic fixture cleanup task failed; output discarded"
+}
+
+async fn wait_history_diagnostic_child(
+    child: &mut HistoryDiagnosticChild,
+    observation_timeout: std::time::Duration,
+    cleanup_timeout: std::time::Duration,
+) -> HistoryDiagnosticChildResult {
+    let mut process = child
+        .process
+        .take()
+        .ok_or("isolated diagnostic fixture already observed; output discarded")?;
+    let (cancel_on_drop, mut cancelled) = tokio::sync::oneshot::channel::<()>();
+    let observation_deadline = tokio::time::Instant::now() + observation_timeout;
+    let total_deadline = observation_deadline + cleanup_timeout;
+    child.cleanup = Some(tokio::spawn(async move {
+        let result = async {
+            let observation_error = tokio::select! {
+                _ = &mut cancelled => "isolated diagnostic fixture observation cancelled; output discarded",
+                result = tokio::time::timeout_at(observation_deadline, process.wait()) => {
+                    match result {
+                        Ok(Ok(status)) => return Ok(status),
+                        Ok(Err(_)) => "isolated diagnostic fixture observation failed; output discarded",
+                        Err(_) => "isolated diagnostic fixture observation timed out; output discarded",
+                    }
+                }
+            };
+            let cleanup_deadline = total_deadline
+                .min(tokio::time::Instant::now() + cleanup_timeout);
+            cleanup_history_diagnostic_child(&mut process, cleanup_deadline).await?;
+            Err(observation_error)
+        }
+        .await;
+        (result, process)
+    }));
+    let (result, process) = match child.cleanup.as_mut() {
+        Some(cleanup) => cleanup
+            .await
+            .map_err(history_diagnostic_cleanup_task_error)?,
+        None => return Err("isolated diagnostic fixture cleanup unavailable; output discarded"),
+    };
+    drop(cancel_on_drop);
+    child.cleanup.take();
+    child.process = Some(process);
+    result
+}
+
+#[tokio::test]
+async fn reasoning_history_diagnostic_child_cleanup_failures() -> TestResult {
+    use std::{
+        future, io,
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
+    for kill_fails in [false, true] {
+        for reap_fails in [false, true] {
+            let reaped = AtomicBool::new(false);
+            let killed = if kill_fails {
+                Err(io::Error::other("synthetic kill failure"))
+            } else {
+                Ok(())
+            };
+            let reap = async {
+                reaped.store(true, Ordering::SeqCst);
+                if reap_fails {
+                    Err(io::Error::other("synthetic reap failure"))
+                } else {
+                    Ok(())
+                }
+            };
+            let result = finish_history_diagnostic_cleanup(
+                killed,
+                reap,
+                tokio::time::Instant::now() + Duration::from_millis(200),
+            )
+            .await;
+            assert!(
+                reaped.load(Ordering::SeqCst),
+                "reap must be attempted even after kill failure"
+            );
+            let expected = if reap_fails {
+                Err("isolated diagnostic fixture reap failed; output discarded")
+            } else if kill_fails {
+                Err("isolated diagnostic fixture kill failed; output discarded")
+            } else {
+                Ok(())
+            };
+            assert_eq!(result, expected);
+        }
+        let killed = if kill_fails {
+            Err(io::Error::other("synthetic kill failure"))
+        } else {
+            Ok(())
+        };
+        let started = std::time::Instant::now();
+        let result = finish_history_diagnostic_cleanup(
+            killed,
+            future::pending::<io::Result<()>>(),
+            tokio::time::Instant::now() + Duration::from_millis(20),
+        )
+        .await;
+        assert_eq!(
+            result,
+            Err("isolated diagnostic fixture cleanup timed out; output discarded")
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "pending reap must remain bounded"
+        );
+    }
+    let task = tokio::spawn(future::pending::<()>());
+    task.abort();
+    let error = task
+        .await
+        .err()
+        .ok_or("synthetic cancelled task must fail")?;
+    assert_eq!(
+        history_diagnostic_cleanup_task_error(error),
+        "isolated diagnostic fixture cleanup task failed; output discarded"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn reasoning_history_diagnostic_child_deadline() -> TestResult {
+    const CHILD: &str = "VARYAI_SYNTHETIC_HISTORY_DEADLINE_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        std::process::exit(87);
+    }
+    let process = tokio::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "proxy::security::reversible_integration_tests::reasoning_history_diagnostic_child_deadline",
+            "--test-threads=1",
+        ])
+        .env(CHILD, "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut child = HistoryDiagnosticChild::new(process);
+    let started = std::time::Instant::now();
+    let result = wait_history_diagnostic_child(
+        &mut child,
+        std::time::Duration::from_millis(40),
+        std::time::Duration::from_millis(200),
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "observation deadline must reject a still-running child"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(300),
+        "observation and cleanup must share a bounded total duration"
+    );
+    let process = child
+        .process
+        .as_mut()
+        .ok_or("missing reaped fixture child")?;
+    assert!(
+        process.try_wait()?.is_some(),
+        "timed-out child must be reaped before returning"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn reasoning_history_diagnostic_child_cancellation() -> TestResult {
+    const CHILD: &str = "VARYAI_SYNTHETIC_HISTORY_CANCEL_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        std::process::exit(87);
+    }
+    let process = tokio::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "proxy::security::reversible_integration_tests::reasoning_history_diagnostic_child_cancellation",
+            "--test-threads=1",
+        ])
+        .env(CHILD, "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut child = HistoryDiagnosticChild::new(process);
+    let cancelled = tokio::time::timeout(
+        std::time::Duration::from_millis(20),
+        wait_history_diagnostic_child(
+            &mut child,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(200),
+        ),
+    )
+    .await;
+    assert!(
+        cancelled.is_err(),
+        "synthetic observation must be cancelled"
+    );
+    let cleanup = child
+        .cleanup
+        .as_mut()
+        .ok_or("missing fixture cleanup task")?;
+    let (result, mut process) =
+        tokio::time::timeout(std::time::Duration::from_millis(250), cleanup).await??;
+    assert_eq!(
+        result.err(),
+        Some("isolated diagnostic fixture observation cancelled; output discarded")
+    );
+    assert!(
+        process.try_wait()?.is_some(),
+        "cancelled observation must terminate and reap its child"
+    );
+    child.cleanup.take();
+    Ok(())
+}
+
+#[tokio::test]
+async fn reasoning_history_diagnostic_child_success_and_cleanup_control() -> TestResult {
+    const CHILD: &str = "VARYAI_SYNTHETIC_HISTORY_CONTROL_CHILD";
+    if let Some(mode) = std::env::var_os(CHILD) {
+        if mode == "slow" {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        std::process::exit(87);
+    }
+    for mode in ["fast", "slow"] {
+        let process = tokio::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "proxy::security::reversible_integration_tests::reasoning_history_diagnostic_child_success_and_cleanup_control",
+                "--test-threads=1",
+            ])
+            .env(CHILD, mode)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+        let mut child = HistoryDiagnosticChild::new(process);
+        if mode == "fast" {
+            let status = wait_history_diagnostic_child(
+                &mut child,
+                std::time::Duration::from_secs(2),
+                std::time::Duration::from_millis(200),
+            )
+            .await?;
+            assert_eq!(
+                status.code(),
+                Some(87),
+                "successful child verdict must be preserved"
+            );
+        } else {
+            let process = child.process.as_mut().ok_or("missing fixture child")?;
+            cleanup_history_diagnostic_child(
+                process,
+                tokio::time::Instant::now() + std::time::Duration::from_millis(200),
+            )
+            .await?;
+        }
+        let process = child
+            .process
+            .as_mut()
+            .ok_or("missing reaped fixture child")?;
+        assert!(
+            process.try_wait()?.is_some(),
+            "control child must be reaped"
+        );
+    }
+    Ok(())
+}
+
+async fn history_forwarding_diagnostic_fixture(
+    transport: FinalSendBindingTransport,
+    active_authority: bool,
+    test_name: &'static str,
+) -> TestResult {
+    use std::{
+        fmt,
+        process::Stdio,
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    const CHILD: &str = "VARYAI_SYNTHETIC_HISTORY_LOG_TEST";
+    const FORBIDDEN_DIAGNOSTIC_EXIT: i32 = 86;
+    const OBSERVER_SUCCESS_EXIT: i32 = 87;
+    if std::env::var_os(CHILD).is_none() {
+        let process = tokio::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", test_name, "--test-threads=1"])
+            .env(CHILD, "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+        let mut child = HistoryDiagnosticChild::new(process);
+        let status = wait_history_diagnostic_child(
+            &mut child,
+            std::time::Duration::from_secs(55),
+            std::time::Duration::from_secs(5),
+        )
+        .await?;
+        if status.code() == Some(FORBIDDEN_DIAGNOSTIC_EXIT) {
+            panic!("isolated observer detected a forbidden diagnostic field; output discarded");
+        }
+        assert!(
+            status.code() == Some(OBSERVER_SUCCESS_EXIT),
+            "isolated diagnostic fixture failed before its observation verdict; output discarded"
+        );
+        return Ok(());
+    }
+
+    static OBSERVING: AtomicBool = AtomicBool::new(false);
+    static FORBIDDEN: AtomicBool = AtomicBool::new(false);
+    static OBSERVED: AtomicUsize = AtomicUsize::new(0);
+    use history_diagnostic_marker_observer::MarkerProbe;
+
+    struct Logger;
+    impl log::Log for Logger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            OBSERVING.load(Ordering::SeqCst) && metadata.target().ends_with("::proxy::forwarder")
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if !self.enabled(record.metadata()) {
+                return;
+            }
+            OBSERVED.fetch_add(1, Ordering::SeqCst);
+            let mut probe = MarkerProbe::default();
+            if fmt::write(&mut probe, *record.args()).is_err() || probe.matched {
+                FORBIDDEN.store(true, Ordering::SeqCst);
+            }
+        }
+        fn flush(&self) {}
+    }
+
+    history_diagnostic_marker_observer::reasoning_history_diagnostic_marker_observer()?;
+
+    static LOGGER: Logger = Logger;
+    log::set_logger(&LOGGER).map_err(|_| "isolated leased diagnostic logger unavailable")?;
+    log::set_max_level(log::LevelFilter::Debug);
+    delivered_chat_history_transport_boundary_fixture(
+        transport,
+        active_authority,
+        false,
+        Some(&OBSERVING),
+        None,
+    )
+    .await?;
+    assert!(
+        OBSERVED.load(Ordering::SeqCst) > 0,
+        "real leased forwarding must reach the diagnostic observer"
+    );
+    if FORBIDDEN.load(Ordering::SeqCst) {
+        // Distinguish an observed contract violation from any fixture/harness failure.
+        std::process::exit(FORBIDDEN_DIAGNOSTIC_EXIT);
+    }
+    // A zero-tests subprocess must not masquerade as an observed success.
+    std::process::exit(OBSERVER_SUCCESS_EXIT);
+}
+
+macro_rules! reasoning_history_diagnostic_test {
+    ($name:ident, $transport:ident, $active_authority:expr) => {
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn $name() -> TestResult {
+            history_forwarding_diagnostic_fixture(
+                FinalSendBindingTransport::$transport,
+                $active_authority,
+                concat!(
+                    "proxy::security::reversible_integration_tests::",
+                    stringify!($name)
+                ),
+            )
+            .await
+        }
+    };
+}
+
+reasoning_history_diagnostic_test!(
+    reasoning_history_leased_forwarding_reqwest_omits_content_hash_diagnostics,
+    Reqwest,
+    true
+);
+reasoning_history_diagnostic_test!(
+    reasoning_history_leased_forwarding_hyper_omits_content_hash_diagnostics,
+    Hyper,
+    true
+);
+reasoning_history_diagnostic_test!(
+    reasoning_history_leased_forwarding_reqwest_empty_authority_omits_content_hash_diagnostics,
+    Reqwest,
+    false
+);
+reasoning_history_diagnostic_test!(
+    reasoning_history_leased_forwarding_hyper_empty_authority_omits_content_hash_diagnostics,
+    Hyper,
+    false
+);
+
+macro_rules! reasoning_history_redirect_loopback_test {
+    ($name:ident, $transport:ident, $active:expr, $status:ident) => {
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn $name() -> TestResult {
+            delivered_chat_history_transport_boundary_fixture(
+                FinalSendBindingTransport::$transport,
+                $active,
+                false,
+                None,
+                Some(http::StatusCode::$status),
+            )
+            .await
+        }
+    };
+}
+
+reasoning_history_redirect_loopback_test!(
+    reasoning_history_redirect_reqwest_active_307,
+    Reqwest,
+    true,
+    TEMPORARY_REDIRECT
+);
+reasoning_history_redirect_loopback_test!(
+    reasoning_history_redirect_reqwest_empty_307,
+    Reqwest,
+    false,
+    TEMPORARY_REDIRECT
+);
+reasoning_history_redirect_loopback_test!(
+    reasoning_history_redirect_reqwest_active_308,
+    Reqwest,
+    true,
+    PERMANENT_REDIRECT
+);
+reasoning_history_redirect_loopback_test!(
+    reasoning_history_redirect_reqwest_empty_308,
+    Reqwest,
+    false,
+    PERMANENT_REDIRECT
+);
+reasoning_history_redirect_loopback_test!(
+    reasoning_history_redirect_hyper_active_307,
+    Hyper,
+    true,
+    TEMPORARY_REDIRECT
+);
+reasoning_history_redirect_loopback_test!(
+    reasoning_history_redirect_hyper_empty_307,
+    Hyper,
+    false,
+    TEMPORARY_REDIRECT
+);
+reasoning_history_redirect_loopback_test!(
+    reasoning_history_redirect_hyper_active_308,
+    Hyper,
+    true,
+    PERMANENT_REDIRECT
+);
+reasoning_history_redirect_loopback_test!(
+    reasoning_history_redirect_hyper_empty_308,
+    Hyper,
+    false,
+    PERMANENT_REDIRECT
+);
+
+mod legacy_diagnostic_observer {
+    use std::fmt;
+
+    struct ExactProbe<'a> {
+        expected: &'a [u8],
+        offset: usize,
+        failed: bool,
+    }
+
+    impl fmt::Write for ExactProbe<'_> {
+        fn write_str(&mut self, text: &str) -> fmt::Result {
+            if self.failed {
+                return Err(fmt::Error);
+            }
+            for byte in text.bytes() {
+                if self.expected.get(self.offset) != Some(&byte) {
+                    self.failed = true;
+                    return Err(fmt::Error);
+                }
+                self.offset += 1;
+            }
+            Ok(())
+        }
+    }
+
+    pub(super) fn exact(args: fmt::Arguments<'_>, expected: &str) -> bool {
+        let mut probe = ExactProbe {
+            expected: expected.as_bytes(),
+            offset: 0,
+            failed: false,
+        };
+        fmt::write(&mut probe, args).is_ok()
+            && !probe.failed
+            && probe.offset == probe.expected.len()
+    }
+
+    struct ForbiddenProbe<'a, const N: usize> {
+        markers: &'a [&'a str; N],
+        prefixes: [usize; N],
+        failed: bool,
+    }
+
+    impl<const N: usize> fmt::Write for ForbiddenProbe<'_, N> {
+        fn write_str(&mut self, text: &str) -> fmt::Result {
+            if self.failed {
+                self.failed = true;
+                return Err(fmt::Error);
+            }
+            for byte in text.bytes() {
+                for (index, marker) in self.markers.iter().enumerate() {
+                    let marker = marker.as_bytes();
+                    if marker.is_empty() || marker.len() > usize::BITS as usize {
+                        self.failed = true;
+                        return Err(fmt::Error);
+                    }
+                    let previous = self.prefixes[index];
+                    let mut next = usize::from(byte == marker[0]);
+                    if marker.len() == 1 && next != 0 {
+                        self.failed = true;
+                        return Err(fmt::Error);
+                    }
+                    for (prefix, expected) in marker.iter().enumerate().skip(1) {
+                        if previous & (1usize << (prefix - 1)) != 0 && byte == *expected {
+                            if prefix + 1 == marker.len() {
+                                self.failed = true;
+                                return Err(fmt::Error);
+                            }
+                            next |= 1usize << prefix;
+                        }
+                    }
+                    self.prefixes[index] = next;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    pub(super) fn forbidden<const N: usize>(args: fmt::Arguments<'_>, markers: &[&str; N]) -> bool {
+        let mut probe = ForbiddenProbe {
+            markers,
+            prefixes: [0; N],
+            failed: false,
+        };
+        fmt::write(&mut probe, args).is_err() || probe.failed
+    }
+
+    pub(super) fn verdict(code: Option<i32>) -> Result<(), &'static str> {
+        match code {
+            Some(87) => Ok(()),
+            Some(86) => Err("isolated observer detected forbidden diagnostics; output discarded"),
+            _ => Err("isolated fixture ended without an observation verdict; output discarded"),
+        }
+    }
+
+    pub(super) async fn parent(
+        child_flag: &str,
+        test_name: &str,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        if std::env::var_os(child_flag).is_some() {
+            return Ok(false);
+        }
+        let process = tokio::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", test_name, "--test-threads=1"])
+            .env(child_flag, "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+        let mut child = super::HistoryDiagnosticChild::new(process);
+        let status = super::wait_history_diagnostic_child(
+            &mut child,
+            std::time::Duration::from_secs(55),
+            std::time::Duration::from_secs(5),
+        )
+        .await?;
+        verdict(status.code())?;
+        Ok(true)
+    }
+
+    struct TailAfterMismatch<'a> {
+        first: &'a str,
+        tail_visited: &'a std::cell::Cell<bool>,
+    }
+
+    impl fmt::Display for TailAfterMismatch<'_> {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str(self.first)?;
+            self.tail_visited.set(true);
+            formatter.write_str("synthetic unneeded diagnostic tail")
+        }
+    }
+
+    #[test]
+    fn legacy_diagnostic_exact_stops_before_unneeded_tail() {
+        let visited = std::cell::Cell::new(false);
+        let value = TailAfterMismatch {
+            first: "synthetic mismatch",
+            tail_visited: &visited,
+        };
+        assert!(!exact(format_args!("{value}"), "fixed checkpoint"));
+        assert!(
+            !visited.get(),
+            "exact observer must stop at the first mismatch"
+        );
+        assert!(exact(
+            format_args!("{}{}", "fixed ", "checkpoint"),
+            "fixed checkpoint"
+        ));
+        assert!(!exact(
+            format_args!("fixed checkpoint suffix"),
+            "fixed checkpoint"
+        ));
+        assert!(!exact(format_args!("fixed"), "fixed checkpoint"));
+    }
+
+    #[test]
+    fn legacy_diagnostic_forbidden_stops_before_unneeded_tail() {
+        let visited = std::cell::Cell::new(false);
+        let value = TailAfterMismatch {
+            first: "synthetic-forbidden-field",
+            tail_visited: &visited,
+        };
+        assert!(forbidden(
+            format_args!("{value}"),
+            &["synthetic-forbidden-field"]
+        ));
+        assert!(
+            !visited.get(),
+            "forbidden observer must stop before retaining a tail"
+        );
+        for split in 0..="abab".len() {
+            assert!(forbidden(
+                format_args!("aba{}{}", &"abab"[..split], &"abab"[split..]),
+                &["abab"]
+            ));
+        }
+        assert!(!forbidden(
+            format_args!("synthetic safe metadata"),
+            &["abab"]
+        ));
+    }
+
+    #[test]
+    fn legacy_diagnostic_verdict_rejects_zero_tests_and_failures() {
+        for code in [Some(0), Some(1), Some(86), None] {
+            assert!(
+                verdict(code).is_err(),
+                "only an explicit observation verdict may pass"
+            );
+        }
+        assert!(
+            verdict(Some(87)).is_ok(),
+            "explicit observation success must pass"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_diagnostic_parent_rejects_actual_zero_test_child() -> super::TestResult {
+        assert!(parent("VARYAI_SYNTHETIC_LEGACY_ZERO_TEST_CHILD",
+            "proxy::security::reversible_integration_tests::legacy_diagnostic_observer::nonexistent_synthetic_test")
+            .await.is_err(), "a successful zero-tests subprocess must not pass");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_diagnostic_parent_rejects_actual_fixture_error() -> super::TestResult {
+        const CHILD: &str = "VARYAI_SYNTHETIC_LEGACY_ERROR_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            return Err("synthetic isolated fixture failure".into());
+        }
+        assert!(parent(CHILD,
+            "proxy::security::reversible_integration_tests::legacy_diagnostic_observer::legacy_diagnostic_parent_rejects_actual_fixture_error")
+            .await.is_err(), "a fixture failure must not pass as a verdict");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_diagnostic_parent_accepts_actual_explicit_success() -> super::TestResult {
+        const CHILD: &str = "VARYAI_SYNTHETIC_LEGACY_SUCCESS_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            std::process::exit(87);
+        }
+        assert!(parent(CHILD,
+            "proxy::security::reversible_integration_tests::legacy_diagnostic_observer::legacy_diagnostic_parent_accepts_actual_explicit_success")
+            .await?, "the explicit successful observation must reach the parent");
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_diagnostic_format_error_cannot_clear_observation_failure() {
+        struct IgnoresWriteError;
+        impl fmt::Display for IgnoresWriteError {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let _ = formatter.write_str("synthetic-forbidden-field");
+                formatter.write_str("fixed checkpoint")
+            }
+        }
+        assert!(
+            !exact(format_args!("{}", IgnoresWriteError), "fixed checkpoint"),
+            "ignored formatter errors must not clear an exact mismatch"
+        );
+        assert!(
+            forbidden(
+                format_args!("{}", IgnoresWriteError),
+                &["synthetic-forbidden-field"]
+            ),
+            "ignored formatter errors must not clear a forbidden observation"
+        );
+    }
+}
+
+async fn drain_xai_json_observations(
+    queue: &mut crate::proxy::tool_observation::channel::ObservationReceiver,
+    deadline: tokio::time::Instant,
+) -> Result<usize, &'static str> {
+    let mut drained = 0;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err("synthetic xAI observation drain deadline exceeded");
+        }
+        let quiet_deadline =
+            deadline.min(tokio::time::Instant::now() + std::time::Duration::from_millis(10));
+        match tokio::time::timeout_at(quiet_deadline, queue.recv()).await {
+            Ok(Some(piece)) => {
+                drop(piece);
+                drained += 1;
+                tokio::task::yield_now().await;
+            }
+            Ok(None) => return Ok(drained),
+            Err(_) if tokio::time::Instant::now() >= deadline => {
+                return Err("synthetic xAI observation drain deadline exceeded");
+            }
+            Err(_) => return Ok(drained),
+        }
+    }
+}
+
+#[cfg(test)]
+mod xai_json_fixture_boundary_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::time::{timeout, Duration, Instant};
+
+    #[tokio::test]
+    async fn xai_json_observation_drain_releases_queued_state() -> TestResult {
+        use crate::proxy::tool_observation::channel::{
+            create_channel, OutputQuality, ResponseMetadata, Transport,
+        };
+        let (sender, mut queue) = create_channel(2);
+        let mut tap = sender
+            .start(
+                ResponseMetadata {
+                    protocol: "openai_responses",
+                    client: "codex",
+                    transport: Transport::Json,
+                    quality: OutputQuality::Native,
+                    definitions: Arc::new(Vec::new()),
+                },
+                917,
+            )
+            .ok_or("synthetic observation reservation unavailable")?;
+        let retained = Arc::downgrade(&tap.state);
+        tap.push(&bytes::Bytes::from_static(b"synthetic observation piece"));
+        drop(tap);
+        let drained = timeout(
+            Duration::from_millis(200),
+            drain_xai_json_observations(&mut queue, Instant::now() + Duration::from_secs(1)),
+        )
+        .await??;
+        assert!(
+            drained == 1 && retained.upgrade().is_none(),
+            "draining must release the last queued response-state owner"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn xai_json_observation_drain_accepts_live_quiet_queue() -> TestResult {
+        let (_sender, mut queue) = crate::proxy::tool_observation::channel::create_channel(2);
+        let drained = timeout(
+            Duration::from_millis(200),
+            drain_xai_json_observations(&mut queue, Instant::now() + Duration::from_secs(1)),
+        )
+        .await??;
+        assert!(
+            drained == 0,
+            "a live quiet queue must finish without inventing a piece"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn xai_json_observation_drain_rejects_total_deadline() -> TestResult {
+        let (_sender, mut queue) = crate::proxy::tool_observation::channel::create_channel(2);
+        let past = drain_xai_json_observations(&mut queue, Instant::now()).await;
+        let imminent = timeout(
+            Duration::from_millis(200),
+            drain_xai_json_observations(&mut queue, Instant::now() + Duration::from_millis(1)),
+        )
+        .await?;
+        assert!(
+            past.is_err() && imminent.is_err(),
+            "an exhausted shared deadline must not masquerade as a quiet queue"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn xai_json_closed_observation_queue_terminates() -> TestResult {
+        let (sender, mut queue) = crate::proxy::tool_observation::channel::create_channel(2);
+        drop(sender);
+        let result = timeout(
+            Duration::from_millis(40),
+            drain_xai_json_observations(&mut queue, Instant::now() + Duration::from_secs(1)),
+        )
+        .await;
+        assert!(
+            matches!(result, Ok(Ok(0))),
+            "closed observation queues must terminate instead of spinning or timing out"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn xai_json_finish_confirms_task_resource_release() -> TestResult {
+        struct Release(Arc<AtomicUsize>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let released = Arc::new(AtomicUsize::new(0));
+        let task_release = released.clone();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let (ready, received) = tokio::sync::oneshot::channel();
+        let task = FinalSendBindingServer::new(tokio::spawn(async move {
+            let _release = Release(task_release);
+            let _ = ready.send(());
+            std::future::pending::<std::io::Result<()>>().await
+        }));
+        tokio::time::timeout_at(deadline, received).await??;
+        task.finish_at(deadline).await?;
+        assert!(
+            released.load(Ordering::SeqCst) == 1,
+            "successful xAI fixture cleanup must confirm task-owned resource release"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn xai_json_finish_reports_task_failure() -> TestResult {
+        let handle = tokio::spawn(async {
+            panic!("synthetic xAI fixture task failure");
+        });
+        let finished = handle.abort_handle();
+        let task = FinalSendBindingServer::new(handle);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        tokio::time::timeout_at(deadline, async {
+            while !finished.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert!(
+            task.finish_at(deadline).await.is_err(),
+            "a failed xAI fixture task must not report cleanup success"
+        );
+        Ok(())
+    }
+}
+
+async fn converter_warning_diagnostic_fixture(
+    private_finish: bool,
+    test_name: &'static str,
+) -> TestResult {
+    use crate::proxy::{
+        providers::{
+            streaming_codex_chat::create_responses_sse_stream_from_chat_observed,
+            transform_codex_chat::CodexToolContext,
+        },
+        security::{
+            http_restoration::{admit_http_request, RestorationAdmission},
+            response_restoration::ArgumentNormalizationMode,
+        },
+    };
+    use std::{
+        process::Stdio,
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    const CHILD: &str = "VARYAI_SYNTHETIC_CONVERTER_DIAGNOSTIC";
+    if std::env::var_os(CHILD).is_none() {
+        let process = tokio::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", test_name, "--test-threads=1"])
+            .env(CHILD, "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+        let mut child = HistoryDiagnosticChild::new(process);
+        let status = wait_history_diagnostic_child(
+            &mut child,
+            std::time::Duration::from_secs(55),
+            std::time::Duration::from_secs(5),
+        )
+        .await?;
+        if status.code() == Some(86) {
+            panic!("converter diagnostic contract failed; child output discarded");
+        }
+        assert!(
+            status.code() == Some(87),
+            "converter fixture failed before explicit verdict; child output discarded"
+        );
+        return Ok(());
+    }
+    static OBSERVED: AtomicUsize = AtomicUsize::new(0);
+    static VIOLATION: AtomicBool = AtomicBool::new(false);
+    struct Logger;
+    impl log::Log for Logger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata
+                .target()
+                .ends_with("::proxy::providers::streaming_codex_chat")
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if !self.enabled(record.metadata()) {
+                return;
+            }
+            OBSERVED.fetch_add(1, Ordering::SeqCst);
+            if record.level() != log::Level::Warn || !legacy_diagnostic_observer::exact(*record.args(),
+                "[Codex] dropped streaming tool call: chat_index=0 call_id_empty=false args_bytes=2 finish_reason_present=true tools_total=1") {
+                VIOLATION.store(true, Ordering::SeqCst);
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOGGER: Logger = Logger;
+    log::set_logger(&LOGGER).map_err(|_| "synthetic converter observer unavailable")?;
+    log::set_max_level(log::LevelFilter::Debug);
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    for active in [false, true] {
+        let gateway =
+            RestorationGateway::with_test_rules(&["chinese_phone_number"], 64 * 1024 * 1024);
+        let mut body =
+            json!({"input":if active {FIXTURE_PHONE} else {"synthetic safe"},"stream":true});
+        let admitted = match admit_http_request(
+            &gateway,
+            &crate::app_config::AppType::Codex,
+            true,
+            false,
+            &mut body,
+            &http::HeaderMap::new(),
+        )? {
+            RestorationAdmission::Admitted(request) => request,
+            _ => return Err("synthetic converter admission unavailable".into()),
+        };
+        let (attempt, _owner) = admitted.prepare_owned_attempt_for_proxy(
+            "synthetic-converter",
+            "openai_chat",
+            "http://127.0.0.1:1/v1/chat/completions",
+            Some("synthetic-converter-account"),
+            &mut body,
+            crate::proxy::providers::transform_codex_chat::responses_to_chat_completions,
+        )?;
+        let lease = attempt.lease.fork_attempt_extracted()?;
+        let binding = attempt.binding.clone();
+        let tracker = attempt
+            .upstream_sse_evidence_tracker()
+            .ok_or("synthetic tracker unavailable")?;
+        let observer = tracker.clone();
+        let chunk = json!({"id":"synthetic-converter-response",
+            "model":if private_finish {"synthetic-model"} else {"SYNTHETIC_PRIVATE_MODEL"},
+            "choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"synthetic-call",
+                "type":"function","function":{"arguments":"{}"}}]},
+                "finish_reason":if private_finish {"SYNTHETIC_PRIVATE_FINISH"} else {"tool_calls"}}]});
+        let input = format!("data: {chunk}\n\ndata: [DONE]\n\n");
+        let converted = create_responses_sse_stream_from_chat_observed(
+            futures::stream::iter([Ok::<_, std::io::Error>(bytes::Bytes::from(input))]),
+            CodexToolContext::default(),
+            move |fact| {
+                if let Ok(mut tracker) = observer.lock() {
+                    tracker.observe(&fact);
+                }
+            },
+        );
+        let response = http::Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::from_stream(converted))?;
+        let restored = attempt
+            .restore_client_http_response(
+                response,
+                ArgumentNormalizationMode::ChatCanonical,
+                Some(tracker),
+            )
+            .await;
+        let bytes = restored
+            .into_body()
+            .collect()
+            .await
+            .map_err(|_| "synthetic converter body failure")?
+            .to_bytes();
+        let wire = std::str::from_utf8(&bytes).map_err(|_| "synthetic converter UTF-8 failure")?;
+        let mut recorder = FinalClientRecorder::default();
+        recorder
+            .observe_sse(wire)
+            .map_err(|_| "synthetic converter event failure")?;
+        assert!(
+            recorder.failed && !recorder.completed && recorder.submissions.is_empty(),
+            "invalid converter completion must release neither success nor executable tools"
+        );
+        let replay = json!({"input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"synthetic safe"}]}]});
+        assert!(
+            lease.history_projection(&binding, &replay).is_none(),
+            "failed converter must not publish history proof"
+        );
+    }
+    assert!(
+        OBSERVED.load(Ordering::SeqCst) == 2,
+        "both authority branches must reach the converter warning"
+    );
+    std::process::exit(if VIOLATION.load(Ordering::SeqCst) {
+        86
+    } else {
+        87
+    });
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn history_converter_warning_omits_private_model() -> TestResult {
+    converter_warning_diagnostic_fixture(false, "proxy::security::reversible_integration_tests::history_converter_warning_omits_private_model").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn history_converter_warning_omits_private_finish_reason() -> TestResult {
+    converter_warning_diagnostic_fixture(true, "proxy::security::reversible_integration_tests::history_converter_warning_omits_private_finish_reason").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn history_provenance_failure_diagnostics_are_silent() -> TestResult {
+    const CHILD: &str = "VARYAI_SYNTHETIC_PROVENANCE_FAILURE_DIAGNOSTIC";
+    const TEST: &str = "proxy::security::reversible_integration_tests::history_provenance_failure_diagnostics_are_silent";
+    if legacy_diagnostic_observer::parent(CHILD, TEST).await? {
+        return Ok(());
+    }
+    use super::{
+        token_store_owners::test_support::{install, Kind, Phase},
+        tokenization::{DlpTokenStore, TokenError},
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static FORBIDDEN: AtomicBool = AtomicBool::new(false);
+    static CONTROL: AtomicBool = AtomicBool::new(false);
+    struct Logger;
+    impl log::Log for Logger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.target().contains("::proxy::security")
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if !self.enabled(record.metadata()) {
+                return;
+            }
+            if record.target() == "cc_switch_lib::proxy::security::synthetic_history_control"
+                && legacy_diagnostic_observer::exact(
+                    *record.args(),
+                    "synthetic history diagnostic observer control",
+                )
+            {
+                CONTROL.store(true, Ordering::SeqCst);
+            } else {
+                // These optional failure paths have no diagnostic contract beyond silence.
+                FORBIDDEN.store(true, Ordering::SeqCst);
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOGGER: Logger = Logger;
+    log::set_logger(&LOGGER).map_err(|_| "synthetic history failure logger unavailable")?;
+    log::set_max_level(log::LevelFilter::Trace);
+    log::warn!(target: "cc_switch_lib::proxy::security::synthetic_history_control",
+        "synthetic history diagnostic observer control");
+    assert!(
+        CONTROL.load(Ordering::SeqCst),
+        "synthetic failure observer must receive its control"
+    );
+    let store = DlpTokenStore::new();
+    let lease = store.admit("codex", Some("synthetic-failure-diagnostic-session"), 1)?;
+    let binding = lease.bind_actual_attempt_extracted(
+        "synthetic-failure-diagnostic-provider",
+        "responses",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-failure-diagnostic-principal"),
+    )?;
+    let response = json!({"output":[{"type":"reasoning","summary":[
+        {"type":"summary_text","text":"synthetic failure diagnostic text"}]}]});
+    let replay = json!({"input":response["output"]});
+    let warmup = lease
+        .capture_delivered_history(&binding, &response)
+        .ok_or("synthetic failure diagnostic warmup unavailable")?;
+    drop(warmup);
+    let baseline = store.history_bytes_for_test()?;
+    let mandatory = store.allocation_ledger()?.used();
+    let guard = install(|observation| {
+        if observation.kind == Kind::Shared && observation.phase == Phase::BeforeAllocation {
+            return Err(TokenError::Unavailable);
+        }
+        Ok(())
+    });
+    let allocation_miss = lease.capture_delivered_history(&binding, &response);
+    drop(guard);
+    assert!(
+        allocation_miss.is_none(),
+        "optional allocation failure must discard the complete capture"
+    );
+    let mut invalid = response.clone();
+    invalid["output"][0]["summary"][0]["type"] = json!("synthetic_unknown");
+    assert!(
+        lease
+            .capture_delivered_history(&binding, &invalid)
+            .is_none(),
+        "unsupported capture must remain optional"
+    );
+    let mut oversized = response.clone();
+    oversized["output"][0]["summary"][0]["text"] = json!("s".repeat(256 * 1024));
+    assert!(
+        lease
+            .capture_delivered_history(&binding, &oversized)
+            .is_none(),
+        "over-budget capture must be discarded"
+    );
+    assert!(
+        store.history_bytes_for_test()? == baseline,
+        "failed captures must release optional charges"
+    );
+    let pending = lease
+        .capture_delivered_history(&binding, &response)
+        .ok_or("synthetic failure diagnostic capture unavailable")?;
+    let mut changed = binding.clone();
+    changed.policy_revision += 1;
+    assert!(
+        !lease.publish_delivered_history(&changed, pending),
+        "wrong live binding must reject publication"
+    );
+    assert!(
+        lease.history_projection(&binding, &replay).is_none(),
+        "failed publication must leave no partial proof"
+    );
+    assert!(
+        store.history_bytes_for_test()? == baseline,
+        "rejected publication must release its charge"
+    );
+    let pending = lease
+        .capture_delivered_history(&binding, &response)
+        .ok_or("synthetic failure diagnostic recovery unavailable")?;
+    assert!(
+        lease.publish_delivered_history(&binding, pending),
+        "valid capture must recover after optional misses"
+    );
+    assert!(
+        lease.history_projection(&binding, &replay).is_some(),
+        "exact history control must acquire proof"
+    );
+    let mut mismatch = replay.clone();
+    mismatch["input"][0]["summary"][0]["text"] = json!("synthetic failure diagnostic texu");
+    assert!(
+        lease.history_projection(&binding, &mismatch).is_none(),
+        "single-byte mismatch must not acquire proof"
+    );
+    assert!(
+        lease.history_projection(&changed, &replay).is_none(),
+        "changed binding must not acquire old proof"
+    );
+    assert!(
+        store.allocation_ledger()?.used() == mandatory,
+        "optional failures must preserve mandatory accounting"
+    );
+    drop(lease);
+    store.expire_idle_at(std::time::Instant::now() + std::time::Duration::from_secs(7200))?;
+    assert!(
+        store.history_bytes_for_test()? < 4096,
+        "failure fixture must release every optional response charge"
+    );
+    if FORBIDDEN.load(Ordering::SeqCst) {
+        std::process::exit(86);
+    }
+    std::process::exit(87);
+}
+
+pub(super) async fn history_client_diagnostic_parent(
+    child_flag: &str,
+    test_name: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    legacy_diagnostic_observer::parent(child_flag, test_name).await
+}
+
+pub(super) fn history_client_diagnostic_exact(
+    args: std::fmt::Arguments<'_>,
+    expected: &'static str,
+) -> bool {
+    legacy_diagnostic_observer::exact(args, expected)
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn history_provenance_extended_failure_diagnostics_are_silent() -> TestResult {
+    const CHILD: &str = "VARYAI_SYNTHETIC_PROVENANCE_EXTENDED_FAILURE_DIAGNOSTIC";
+    const TEST: &str = "proxy::security::reversible_integration_tests::history_provenance_extended_failure_diagnostics_are_silent";
+    if legacy_diagnostic_observer::parent(CHILD, TEST).await? {
+        return Ok(());
+    }
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static FORBIDDEN: AtomicBool = AtomicBool::new(false);
+    static CONTROL: AtomicBool = AtomicBool::new(false);
+    struct Logger;
+    impl log::Log for Logger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.target().contains("::proxy::security")
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if !self.enabled(record.metadata()) {
+                return;
+            }
+            if record.target() == "cc_switch_lib::proxy::security::synthetic_history_control"
+                && legacy_diagnostic_observer::exact(
+                    *record.args(),
+                    "synthetic history diagnostic observer control",
+                )
+            {
+                CONTROL.store(true, Ordering::SeqCst);
+            } else {
+                // Observe presence only; never retain or format a diagnostic payload.
+                FORBIDDEN.store(true, Ordering::SeqCst);
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOGGER: Logger = Logger;
+    log::set_logger(&LOGGER).map_err(|_| "synthetic extended failure logger unavailable")?;
+    log::set_max_level(log::LevelFilter::Trace);
+    log::warn!(target: "cc_switch_lib::proxy::security::synthetic_history_control",
+        "synthetic history diagnostic observer control");
+    assert!(
+        CONTROL.load(Ordering::SeqCst),
+        "synthetic extended observer must receive its control"
+    );
+    extended_history_failure_diagnostics::run()?;
+    if FORBIDDEN.load(Ordering::SeqCst) {
+        std::process::exit(86);
+    }
+    std::process::exit(87);
+}
+
+mod extended_history_failure_diagnostics {
+    use super::super::{
+        completed_context::ActualAttemptBinding,
+        history_provenance::{
+            global_history_allocation, DlpHistoryLeafField as Field, DlpHistoryMapping,
+            DlpHistoryProjection, DlpHistorySeparator as Sep, DlpHistoryTarget as Target,
+            HistoryNamespace, GLOBAL_BYTES,
+        },
+        token_store_owners::{
+            test_support::{install, Guard, Kind, Observation, Phase},
+            AllocationCharge, StoreAllocationLedger,
+        },
+        tokenization::{DlpRequestLease, DlpTokenStore, TokenError},
+    };
+    use super::{json, TestResult, Value};
+    use std::{
+        cell::Cell,
+        rc::Rc,
+        time::{Duration, Instant},
+    };
+
+    const NAMESPACE: usize = 0x0003;
+    const SHARED: usize = 0x000c;
+    const VECTOR: usize = 0x0030;
+    const MOVE: usize = 0x0040;
+    const TEXT: usize = 0x0380;
+    const CONTENT: Target = Target::ChatContent { message_index: 0 };
+    const REASONING: Target = Target::ChatReasoning { message_index: 0 };
+
+    fn event_bit(event: Observation) -> usize {
+        let index = match (event.kind, event.phase) {
+            (Kind::Namespace, Phase::BeforeAllocation) => 0,
+            (Kind::Namespace, Phase::AfterAllocation) => 1,
+            (Kind::Shared, Phase::BeforeAllocation) => 2,
+            (Kind::Shared, Phase::AfterAllocation) => 3,
+            (Kind::Vector, Phase::BeforeAllocation) => 4,
+            (Kind::Vector, Phase::AfterAllocation) => 5,
+            (Kind::Vector, Phase::BeforeMove) => 6,
+            (Kind::Text, Phase::BeforeAllocation) => 7,
+            (Kind::Text, Phase::AfterAllocation) => 8,
+            (Kind::Text, Phase::BeforeCopy) => 9,
+            _ => return 0,
+        };
+        1 << index
+    }
+
+    #[derive(Clone, Default)]
+    struct Probe {
+        count: Rc<Cell<usize>>,
+        mask: Rc<Cell<usize>>,
+        hit: Rc<Cell<bool>>,
+    }
+    impl Probe {
+        fn install(failure: Option<usize>) -> (Guard, Self) {
+            let probe = Self::default();
+            let observed = probe.clone();
+            let guard = install(move |event| {
+                let bit = event_bit(event);
+                if bit != 0 {
+                    let ordinal = observed.count.get();
+                    observed.count.set(ordinal + 1);
+                    observed.mask.set(observed.mask.get() | bit);
+                    if failure == Some(ordinal) {
+                        observed.hit.set(true);
+                        return Err(TokenError::Unavailable);
+                    }
+                }
+                Ok(())
+            });
+            (guard, probe)
+        }
+        fn assert_hit(&self, failure: usize) {
+            assert!(self.hit.get(), "synthetic allocation hook must be reached");
+            assert!(
+                self.count.get() == failure + 1,
+                "synthetic allocation failure must stop the complete operation"
+            );
+        }
+    }
+
+    fn delivered() -> Value {
+        json!({"output":[
+            {"type":"message","role":"assistant","content":[
+                {"type":"output_text","text":"synthetic output"}]},
+            {"type":"reasoning","summary":[
+                {"type":"summary_text","text":"synthetic first"},
+                {"type":"summary_text","text":"synthetic second"}],
+                "content":[{"type":"reasoning_text","text":"synthetic detail"}]}
+        ]})
+    }
+
+    fn outbound() -> Value {
+        json!({"messages":[{"role":"assistant",
+            "content":"synthetic output","reasoning_content":"synthetic first",
+            "metadata":{"synthetic":["synthetic nested",{"synthetic":true}]},
+            "tool_calls":[{"id":"synthetic-call","type":"function",
+                "function":{"name":"synthetic_tool","arguments":"{}"}}]}]})
+    }
+
+    struct Fixture {
+        store: DlpTokenStore,
+        lease: DlpRequestLease,
+        binding: ActualAttemptBinding,
+        response: Value,
+        request: Value,
+        optional: usize,
+        mandatory: AllocationCharge,
+        global_before: AllocationCharge,
+    }
+    impl Fixture {
+        fn new() -> Result<Self, TokenError> {
+            let global_before = global_history_allocation()?.used();
+            let store = DlpTokenStore::new();
+            let lease = store.admit("codex", Some("synthetic-extended-diagnostics"), 1)?;
+            let binding = lease.bind_actual_attempt_extracted(
+                "synthetic-provider",
+                "responses",
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-principal"),
+            )?;
+            let response = delivered();
+            let request = json!({"input":response["output"]});
+            let warmup = lease
+                .capture_delivered_history(&binding, &response)
+                .ok_or(TokenError::Unavailable)?;
+            drop(warmup);
+            let optional = store.history_bytes_for_test()?;
+            let mandatory = store.allocation_ledger()?.used();
+            Ok(Self {
+                store,
+                lease,
+                binding,
+                response,
+                request,
+                optional,
+                mandatory,
+                global_before,
+            })
+        }
+        fn unchanged(&self, optional: usize) -> TestResult {
+            assert!(
+                self.store.history_bytes_for_test()? == optional,
+                "synthetic optional owners must release every temporary charge"
+            );
+            assert!(
+                self.store.allocation_ledger()?.used() == self.mandatory,
+                "synthetic optional failures must preserve mandatory accounting"
+            );
+            Ok(())
+        }
+        fn publish(&self) -> TestResult {
+            let pending = self
+                .lease
+                .capture_delivered_history(&self.binding, &self.response)
+                .ok_or("synthetic extended capture unavailable")?;
+            assert!(
+                self.lease.publish_delivered_history(&self.binding, pending),
+                "synthetic optional capture must recover"
+            );
+            Ok(())
+        }
+        fn finish(self) -> TestResult {
+            drop(self.lease);
+            self.store
+                .expire_idle_at(Instant::now() + Duration::from_secs(7200))?;
+            assert!(
+                global_history_allocation()?.used() == self.global_before,
+                "synthetic teardown must release all namespace and response owners"
+            );
+            Ok(())
+        }
+    }
+
+    fn mapping(projection: &DlpHistoryProjection<'_>) -> Result<DlpHistoryMapping, TokenError> {
+        let output = projection
+            .source_for_responses_leaf(0, Field::OutputText, 0)
+            .ok_or(TokenError::Unavailable)?;
+        let reasoning = projection
+            .source_for_responses_leaf(1, Field::ReasoningSummary, 0)
+            .ok_or(TokenError::Unavailable)?;
+        let mut mapping = projection.mapping().ok_or(TokenError::Unavailable)?;
+        assert!(mapping.record(CONTENT, &[output], Sep::None));
+        assert!(mapping.record(REASONING, &[reasoning], Sep::None));
+        Ok(mapping)
+    }
+
+    fn bootstrap_failures() -> TestResult {
+        let fixture = Fixture::new()?;
+        let local = StoreAllocationLedger::new(0, GLOBAL_BYTES)?;
+        let baseline = local.used();
+        let (guard, measured) = Probe::install(None);
+        let namespace = HistoryNamespace::new(local.clone());
+        drop(guard);
+        assert!(
+            namespace.is_some(),
+            "synthetic local bootstrap must succeed"
+        );
+        assert!(measured.mask.get() == (NAMESPACE | SHARED));
+        drop(namespace);
+        assert!(local.used() == baseline);
+        for failure in 0..measured.count.get() {
+            let (guard, probe) = Probe::install(Some(failure));
+            let namespace = HistoryNamespace::new(local.clone());
+            drop(guard);
+            probe.assert_hit(failure);
+            assert!(
+                namespace.is_none(),
+                "failed bootstrap must discard its owner"
+            );
+            assert!(
+                local.used() == baseline,
+                "failed bootstrap must release its permits"
+            );
+            assert!(fixture
+                .lease
+                .history_projection(&fixture.binding, &fixture.request)
+                .is_none());
+            fixture.unchanged(fixture.optional)?;
+        }
+        let namespace = HistoryNamespace::new(local.clone())
+            .ok_or("synthetic local bootstrap recovery unavailable")?;
+        let pending = namespace
+            .get()?
+            .capture(&fixture.binding, &fixture.response)
+            .ok_or("synthetic local capture recovery unavailable")?;
+        assert!(namespace
+            .get()?
+            .projection(
+                fixture.store.clone(),
+                Some(&fixture.binding),
+                &fixture.request
+            )
+            .is_none());
+        drop(pending);
+        drop(namespace);
+        assert!(local.used() == baseline);
+        fixture.finish()
+    }
+
+    fn capture_failures() -> TestResult {
+        let fixture = Fixture::new()?;
+        let (guard, measured) = Probe::install(None);
+        let pending = fixture
+            .lease
+            .capture_delivered_history(&fixture.binding, &fixture.response);
+        drop(guard);
+        assert!(pending.is_some());
+        assert!(measured.mask.get() == (NAMESPACE | SHARED | VECTOR | TEXT));
+        drop(pending);
+        fixture.unchanged(fixture.optional)?;
+        // Warming the namespace isolates both RecordPin phases from namespace sharing.
+        for failure in 0..measured.count.get() {
+            let (guard, probe) = Probe::install(Some(failure));
+            let pending = fixture
+                .lease
+                .capture_delivered_history(&fixture.binding, &fixture.response);
+            drop(guard);
+            probe.assert_hit(failure);
+            assert!(
+                pending.is_none(),
+                "one capture failure must discard every typed item"
+            );
+            assert!(fixture
+                .lease
+                .history_projection(&fixture.binding, &fixture.request)
+                .is_none());
+            assert!(fixture
+                .lease
+                .history_admission_candidate_projection(&fixture.request)
+                .is_none());
+            fixture.unchanged(fixture.optional)?;
+        }
+        fixture.publish()?;
+        let projection = fixture
+            .lease
+            .history_projection(&fixture.binding, &fixture.request)
+            .ok_or("synthetic capture recovery proof unavailable")?;
+        for (index, field, part) in [
+            (0, Field::OutputText, 0),
+            (1, Field::ReasoningSummary, 0),
+            (1, Field::ReasoningSummary, 1),
+            (1, Field::ReasoningContent, 0),
+        ] {
+            assert!(projection
+                .source_for_responses_leaf(index, field, part)
+                .is_some());
+        }
+        drop(projection);
+        assert!(fixture.store.allocation_ledger()?.used() == fixture.mandatory);
+        fixture.finish()
+    }
+
+    fn projection_exhaustion() -> TestResult {
+        let fixture = Fixture::new()?;
+        let local = StoreAllocationLedger::new(0, GLOBAL_BYTES)?;
+        let empty = local.used();
+        let owner = HistoryNamespace::new(local.clone())
+            .ok_or("synthetic projection namespace unavailable")?;
+        let namespace = owner.get()?;
+        let pending = namespace
+            .capture(&fixture.binding, &fixture.response)
+            .ok_or("synthetic projection capture unavailable")?;
+        assert!(namespace.publish(pending).is_ok());
+        let baseline = local.used();
+        // Leave less than one projection permit in the private global ledger.
+        let reservation = local.reserve(AllocationCharge {
+            plaintext: 0,
+            metadata: local.limits_for_test().metadata - baseline.metadata - 2047,
+        })?;
+        assert!(local.used().metadata + 2047 == local.limits_for_test().metadata);
+        for binding in [Some(&fixture.binding), None] {
+            assert!(
+                namespace
+                    .projection(fixture.store.clone(), binding, &fixture.request)
+                    .is_none(),
+                "exhausted optional global metadata must not yield a projection"
+            );
+        }
+        drop(reservation);
+        assert!(local.used() == baseline);
+
+        // Bound the loop above the namespace's maximum possible 2048-byte pins.
+        let mut held = Vec::new();
+        let mut exhausted = false;
+        for _ in 0..512 {
+            match namespace.projection(
+                fixture.store.clone(),
+                Some(&fixture.binding),
+                &fixture.request,
+            ) {
+                Some(projection) => held.push(projection),
+                None => {
+                    exhausted = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            exhausted && !held.is_empty(),
+            "synthetic namespace permits must exhaust"
+        );
+        assert!(local.used().metadata < local.limits_for_test().metadata);
+        assert!(namespace
+            .projection(fixture.store.clone(), None, &fixture.request)
+            .is_none());
+        drop(held);
+        assert!(
+            local.used() == baseline,
+            "failed lookup must release both permit planes"
+        );
+        let recovered = namespace
+            .projection(
+                fixture.store.clone(),
+                Some(&fixture.binding),
+                &fixture.request,
+            )
+            .ok_or("synthetic projection recovery unavailable")?;
+        assert!(recovered
+            .source_for_responses_leaf(1, Field::ReasoningSummary, 0)
+            .is_some());
+        drop(recovered);
+        let mut items = vec![Value::Null; 4096];
+        items[4095] = fixture.response["output"][1].clone();
+        let mut boundary = json!({"input":items});
+        let permitted = namespace
+            .projection(fixture.store.clone(), Some(&fixture.binding), &boundary)
+            .ok_or("synthetic projection boundary unavailable")?;
+        assert!(permitted
+            .source_for_responses_leaf(4095, Field::ReasoningSummary, 0)
+            .is_some());
+        drop(permitted);
+        boundary["input"]
+            .as_array_mut()
+            .ok_or("synthetic projection boundary input unavailable")?
+            .push(Value::Null);
+        for binding in [Some(&fixture.binding), None] {
+            assert!(namespace
+                .projection(fixture.store.clone(), binding, &boundary)
+                .is_none());
+        }
+        assert!(local.used() == baseline);
+        drop(owner);
+        assert!(local.used() == empty);
+        fixture.unchanged(fixture.optional)?;
+        fixture.finish()
+    }
+
+    fn mapping_failures() -> TestResult {
+        let fixture = Fixture::new()?;
+        fixture.publish()?;
+        let projection = fixture
+            .lease
+            .history_projection(&fixture.binding, &fixture.request)
+            .ok_or("synthetic mapping projection unavailable")?;
+        let baseline = fixture.store.history_bytes_for_test()?;
+        // A metadata owner has a fallible local ledger, not a fallible projection copy.
+        for is_mapping in [false, true] {
+            let (guard, measured) = Probe::install(None);
+            let available = if is_mapping {
+                projection.mapping().is_some()
+            } else {
+                projection.trace().is_some()
+            };
+            drop(guard);
+            assert!(available && measured.mask.get() == NAMESPACE);
+            fixture.unchanged(baseline)?;
+            for failure in 0..measured.count.get() {
+                let (guard, probe) = Probe::install(Some(failure));
+                let available = if is_mapping {
+                    projection.mapping().is_some()
+                } else {
+                    projection.trace().is_some()
+                };
+                drop(guard);
+                probe.assert_hit(failure);
+                assert!(!available, "failed metadata bootstrap must yield no owner");
+                fixture.unchanged(baseline)?;
+            }
+        }
+        let reasoning = projection
+            .source_for_responses_leaf(1, Field::ReasoningSummary, 0)
+            .ok_or("synthetic mapping source unavailable")?;
+        let outbound = outbound();
+        let mut measured_mapping = mapping(&projection)?;
+        let (guard, measured) = Probe::install(None);
+        let recorded =
+            measured_mapping.record(REASONING, std::slice::from_ref(&reasoning), Sep::None);
+        drop(guard);
+        assert!(recorded && measured.mask.get() == (NAMESPACE | VECTOR | MOVE));
+        drop(measured_mapping);
+        fixture.unchanged(baseline)?;
+        for failure in 0..measured.count.get() {
+            let mut failed = mapping(&projection)?;
+            assert!(failed.seal_chat_targets(&outbound));
+            for target in [CONTENT, REASONING] {
+                assert!(failed.validates_target(
+                    &fixture.lease,
+                    &fixture.binding,
+                    &outbound,
+                    target
+                ));
+            }
+            let (guard, probe) = Probe::install(Some(failure));
+            let recorded = failed.record(REASONING, std::slice::from_ref(&reasoning), Sep::None);
+            drop(guard);
+            probe.assert_hit(failure);
+            assert!(!recorded && failed.failed() && !failed.valid());
+            for target in [CONTENT, REASONING] {
+                assert!(!failed.validates_target(
+                    &fixture.lease,
+                    &fixture.binding,
+                    &outbound,
+                    target
+                ));
+            }
+            drop(failed);
+            fixture.unchanged(baseline)?;
+        }
+        // Fill all four initial mapping slots so the next target must grow its vector.
+        let full_mapping = || {
+            let mut full = mapping(&projection)?;
+            assert!(full.record(
+                Target::ChatReasoning { message_index: 1 },
+                std::slice::from_ref(&reasoning),
+                Sep::None,
+            ));
+            assert!(full.record(
+                Target::ChatReasoning { message_index: 2 },
+                std::slice::from_ref(&reasoning),
+                Sep::None,
+            ));
+            Ok::<_, TokenError>(full)
+        };
+        let next_trace = || {
+            let mut trace = projection.trace().ok_or(TokenError::Unavailable)?;
+            assert!(trace.push(&reasoning, Sep::None));
+            Ok::<_, TokenError>(trace)
+        };
+        let next_target = Target::ChatReasoning { message_index: 3 };
+        let mut measured_mapping = full_mapping()?;
+        let next = next_trace()?;
+        let (guard, measured) = Probe::install(None);
+        let recorded = measured_mapping.record_trace(next_target, next);
+        drop(guard);
+        assert!(recorded && measured.mask.get() == (VECTOR | MOVE));
+        drop(measured_mapping);
+        fixture.unchanged(baseline)?;
+        for failure in 0..measured.count.get() {
+            let mut failed = full_mapping()?;
+            assert!(failed.seal_chat_targets(&outbound));
+            assert!(failed.validates_target(&fixture.lease, &fixture.binding, &outbound, CONTENT));
+            let next = next_trace()?;
+            let (guard, probe) = Probe::install(Some(failure));
+            let recorded = failed.record_trace(next_target, next);
+            drop(guard);
+            probe.assert_hit(failure);
+            assert!(!recorded && failed.failed() && !failed.valid());
+            for target in [CONTENT, REASONING, next_target] {
+                assert!(!failed.validates_target(
+                    &fixture.lease,
+                    &fixture.binding,
+                    &outbound,
+                    target
+                ));
+            }
+            drop(failed);
+            fixture.unchanged(baseline)?;
+        }
+        let mut recovered = mapping(&projection)?;
+        assert!(recovered.seal_chat_targets(&outbound));
+        for target in [CONTENT, REASONING] {
+            assert!(recovered.validates_target(
+                &fixture.lease,
+                &fixture.binding,
+                &outbound,
+                target
+            ));
+        }
+        drop(recovered);
+        drop(reasoning);
+        fixture.unchanged(baseline)?;
+        drop(projection);
+        fixture.finish()
+    }
+
+    fn trace_growth_failures() -> TestResult {
+        let fixture = Fixture::new()?;
+        fixture.publish()?;
+        let mut request = fixture.request.clone();
+        for _ in 0..512 {
+            request["input"]
+                .as_array_mut()
+                .ok_or("synthetic trace input unavailable")?
+                .push(fixture.response["output"][1].clone());
+        }
+        let projection = fixture
+            .lease
+            .history_projection(&fixture.binding, &request)
+            .ok_or("synthetic trace projection unavailable")?;
+        let baseline = fixture.store.history_bytes_for_test()?;
+        let trace = || {
+            let mut trace = projection.trace().ok_or(TokenError::Unavailable)?;
+            for index in 1..=4 {
+                let source = projection
+                    .source_for_responses_leaf(index, Field::ReasoningSummary, 0)
+                    .ok_or(TokenError::Unavailable)?;
+                assert!(trace.push(&source, if index == 1 { Sep::None } else { Sep::Newline }));
+            }
+            Ok::<_, TokenError>(trace)
+        };
+        let source = projection
+            .source_for_responses_leaf(5, Field::ReasoningSummary, 0)
+            .ok_or("synthetic growth source unavailable")?;
+        let mut measured_trace = trace()?;
+        let (guard, measured) = Probe::install(None);
+        let pushed = measured_trace.push(&source, Sep::Newline);
+        drop(guard);
+        assert!(pushed && measured.mask.get() == (VECTOR | MOVE));
+        drop(measured_trace);
+        fixture.unchanged(baseline)?;
+        let outbound = outbound();
+        for failure in 0..measured.count.get() {
+            let mut failed_mapping = mapping(&projection)?;
+            assert!(failed_mapping.seal_chat_targets(&outbound));
+            assert!(failed_mapping.validates_target(
+                &fixture.lease,
+                &fixture.binding,
+                &outbound,
+                CONTENT
+            ));
+            let mut failed_trace = trace()?;
+            let (guard, probe) = Probe::install(Some(failure));
+            let pushed = failed_trace.push(&source, Sep::Newline);
+            drop(guard);
+            probe.assert_hit(failure);
+            assert!(!pushed && failed_trace.failed() && !failed_trace.valid());
+            assert!(!failed_mapping.record_trace(REASONING, failed_trace));
+            assert!(failed_mapping.failed() && !failed_mapping.valid());
+            for target in [CONTENT, REASONING] {
+                assert!(!failed_mapping.validates_target(
+                    &fixture.lease,
+                    &fixture.binding,
+                    &outbound,
+                    target
+                ));
+            }
+            drop(failed_mapping);
+            fixture.unchanged(baseline)?;
+        }
+        let mut recovered = trace()?;
+        assert!(recovered.push(&source, Sep::Newline) && recovered.valid());
+        drop(recovered);
+        let mut bounded = trace()?;
+        let mut exhausted = false;
+        for index in 5..514 {
+            let source = projection
+                .source_for_responses_leaf(index, Field::ReasoningSummary, 0)
+                .ok_or("synthetic bounded trace source unavailable")?;
+            if !bounded.push(&source, Sep::Newline) {
+                exhausted = true;
+                break;
+            }
+        }
+        assert!(exhausted && bounded.failed() && !bounded.valid());
+        let mut failed_mapping = mapping(&projection)?;
+        assert!(failed_mapping.seal_chat_targets(&outbound));
+        assert!(failed_mapping.validates_target(
+            &fixture.lease,
+            &fixture.binding,
+            &outbound,
+            CONTENT
+        ));
+        assert!(!failed_mapping.record_trace(REASONING, bounded));
+        assert!(failed_mapping.failed() && !failed_mapping.valid());
+        for target in [CONTENT, REASONING] {
+            assert!(!failed_mapping.validates_target(
+                &fixture.lease,
+                &fixture.binding,
+                &outbound,
+                target
+            ));
+        }
+        drop(failed_mapping);
+        drop(source);
+        fixture.unchanged(baseline)?;
+        drop(projection);
+        fixture.finish()
+    }
+
+    fn snapshot_failures() -> TestResult {
+        let fixture = Fixture::new()?;
+        fixture.publish()?;
+        let projection = fixture
+            .lease
+            .history_projection(&fixture.binding, &fixture.request)
+            .ok_or("synthetic snapshot projection unavailable")?;
+        let baseline = fixture.store.history_bytes_for_test()?;
+        let outbound = outbound();
+        let unchanged = outbound.clone();
+        let mut successful = mapping(&projection)?;
+        let (guard, measured) = Probe::install(None);
+        let sealed = successful.seal_chat_targets(&outbound);
+        drop(guard);
+        assert!(sealed && measured.mask.get() == (NAMESPACE | VECTOR | TEXT));
+        for target in [CONTENT, REASONING] {
+            assert!(successful.validates_target(
+                &fixture.lease,
+                &fixture.binding,
+                &outbound,
+                target
+            ));
+        }
+        drop(successful);
+        fixture.unchanged(baseline)?;
+        for failure in 0..measured.count.get() {
+            let mut failed = mapping(&projection)?;
+            let (guard, probe) = Probe::install(Some(failure));
+            let sealed = failed.seal_chat_targets(&outbound);
+            drop(guard);
+            probe.assert_hit(failure);
+            assert!(!sealed && failed.failed() && !failed.valid());
+            for target in [CONTENT, REASONING] {
+                assert!(!failed.validates_target(
+                    &fixture.lease,
+                    &fixture.binding,
+                    &outbound,
+                    target
+                ));
+            }
+            assert!(
+                outbound == unchanged,
+                "failed snapshot must not mutate the outbound body"
+            );
+            drop(failed);
+            fixture.unchanged(baseline)?;
+        }
+        for limit in 0..4 {
+            let mut oversized = outbound.clone();
+            match limit {
+                0 => oversized["messages"][0]["metadata"] = json!("s".repeat(256 * 1024)),
+                1 => oversized["messages"]
+                    .as_array_mut()
+                    .ok_or("synthetic snapshot messages unavailable")?
+                    .resize(4097, Value::Null),
+                2 => {
+                    let mut nested = Value::Null;
+                    for _ in 0..65 {
+                        nested = json!([nested]);
+                    }
+                    oversized["messages"][0]["metadata"] = nested;
+                }
+                _ => oversized["messages"][0]["metadata"] = json!(vec![Value::Null; 4096]),
+            }
+            let mut failed = mapping(&projection)?;
+            assert!(!failed.seal_chat_targets(&oversized) && failed.failed());
+            for target in [CONTENT, REASONING] {
+                assert!(!failed.validates_target(
+                    &fixture.lease,
+                    &fixture.binding,
+                    &oversized,
+                    target
+                ));
+            }
+            drop(failed);
+            fixture.unchanged(baseline)?;
+        }
+        let mut recovered = mapping(&projection)?;
+        assert!(recovered.seal_chat_targets(&outbound));
+        for target in [CONTENT, REASONING] {
+            assert!(recovered.validates_target(
+                &fixture.lease,
+                &fixture.binding,
+                &outbound,
+                target
+            ));
+        }
+        drop(recovered);
+        fixture.unchanged(baseline)?;
+        // Three retained responses leave insufficient namespace room for a snapshot.
+        fixture.publish()?;
+        fixture.publish()?;
+        let full = fixture.store.history_bytes_for_test()?;
+        let mut failed = mapping(&projection)?;
+        assert!(!failed.seal_chat_targets(&outbound) && failed.failed());
+        for target in [CONTENT, REASONING] {
+            assert!(!failed.validates_target(&fixture.lease, &fixture.binding, &outbound, target));
+        }
+        drop(failed);
+        fixture.unchanged(full)?;
+        drop(projection);
+        fixture.finish()
+    }
+
+    pub(super) fn run() -> TestResult {
+        // Initialize the process-global OnceLock before any bootstrap denial.
+        global_history_allocation()?;
+        bootstrap_failures()?;
+        capture_failures()?;
+        projection_exhaustion()?;
+        mapping_failures()?;
+        trace_growth_failures()?;
+        snapshot_failures()
+    }
 }

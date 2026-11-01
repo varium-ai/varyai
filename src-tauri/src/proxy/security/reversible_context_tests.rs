@@ -831,3 +831,1028 @@ fn reversible_closure_req2_ambiguous_routes_issue_no_descriptor() {
         );
     }
 }
+
+mod text_fallback_context_tests {
+    use super::super::{
+        completed_context::{ActualAttemptBinding, CompletedCallSpec, CompletionWitness},
+        http_restoration::{admit_http_request, RestorationAdmission, RestorationGateway},
+        request_preparation::is_fresh_readable_history,
+        response_restoration::{prepare_text_projection, RestoreError, TEXT_PROJECTION_NOTICE},
+        restore_diagnostics::RestoreReason,
+        runtime::{self, SecurityRuntimeConfig},
+        tokenization::{DlpRequestLease, TokenStoreLimits},
+    };
+    use super::*;
+    use crate::{app_config::AppType, proxy::providers::codex_chat_history::CodexChatHistoryStore};
+    use serde_json::{json, Value};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    const SESSION: &str = "synthetic-projection-context";
+    const PROJECTED_ID: &str = "resp_synthetic_projected_context";
+    const PROVIDER: &str = "synthetic-projection-provider";
+    const TARGET: &str = "https://synthetic.invalid/v1/responses";
+    const PRINCIPAL: &str = "synthetic-projection-principal";
+    const OPAQUE: &str = "synthetic-projection-opaque";
+    const ORIGINAL: &str = "synthetic-projection-context-value";
+
+    struct Fixture {
+        store: DlpTokenStore,
+        lease: DlpRequestLease,
+        budget: PayloadBudget,
+        reference: String,
+    }
+
+    fn fixture(revision: u64) -> Result<Fixture, TokenError> {
+        let store = DlpTokenStore::new();
+        let budget = PayloadBudget::with_limit(16 * 1024 * 1024);
+        let mut lease = store.admit("codex", Some(SESSION), revision)?;
+        let reference = lease.prepare_with_budget(
+            &[TokenFragment {
+                raw: ORIGINAL,
+                whole_span_categories: &[TokenCategory::Custom],
+            }],
+            &[],
+            budget.clone(),
+            |tokens| Ok(tokens[0].as_str().to_owned()),
+        )?;
+        Ok(Fixture {
+            store,
+            lease,
+            budget,
+            reference,
+        })
+    }
+
+    fn binding(lease: &DlpRequestLease) -> Result<ActualAttemptBinding, TokenError> {
+        let binding =
+            lease.bind_actual_attempt(PROVIDER, "openai_responses", TARGET, Some(PRINCIPAL))?;
+        assert!(
+            binding.reusable_principal,
+            "fixture must permit ordinary resume"
+        );
+        Ok(binding)
+    }
+
+    fn response(text: &str) -> Value {
+        json!({"id":PROJECTED_ID, "object":"response", "status":"completed", "output":[{
+            "id":"msg_synthetic_projected_context", "type":"message", "role":"assistant", "status":"completed",
+            "content":[{"type":"output_text", "text":text, "annotations":[]}]
+        }]})
+    }
+
+    fn call(payload: &str) -> CompletedCallSpec<'_> {
+        CompletedCallSpec {
+            call_id: "call_synthetic_projection_cache",
+            item_type: "function_call",
+            name: "synthetic_history_only",
+            payload,
+            reasoning: Some("synthetic-cached-reasoning"),
+            encrypted_reasoning: Some(OPAQUE),
+        }
+    }
+
+    fn assert_no_projection_authority(
+        lease: &mut DlpRequestLease,
+        binding: &ActualAttemptBinding,
+        reference: &str,
+        call: CompletedCallSpec<'_>,
+    ) -> Result<(), TokenError> {
+        assert_eq!(
+            lease
+                .resume_completed_context(binding, Some(PROJECTED_ID), &[], &[])
+                .err(),
+            Some(TokenError::ContextUnavailable),
+            "projection must not publish a completed cursor"
+        );
+        assert_eq!(
+            lease.resume_completed_tokens(binding, &[reference]).err(),
+            Some(TokenError::ContextUnavailable),
+            "projection must not publish reference lineage"
+        );
+        assert_eq!(
+            lease
+                .resume_completed_context(binding, None, &[call], &[])
+                .err(),
+            Some(TokenError::ContextUnavailable),
+            "a cached call alone must not grant authority"
+        );
+        assert_eq!(
+            lease
+                .resume_completed_context(binding, None, &[], &[OPAQUE])
+                .err(),
+            Some(TokenError::ContextUnavailable),
+            "opaque state alone must not grant authority"
+        );
+        assert_eq!(
+            lease
+                .verify_output_call_ids(binding, Some(PROJECTED_ID), &[call.call_id])
+                .err(),
+            Some(TokenError::ContextUnavailable),
+            "a cached output call ID must not grant authority"
+        );
+        assert_eq!(
+            lease
+                .resume_completed_context(binding, Some(PROJECTED_ID), &[call], &[OPAQUE])
+                .err(),
+            Some(TokenError::ContextUnavailable),
+            "combining uncompleted dependencies must not create authority"
+        );
+        assert_eq!(
+            lease.resolve(reference).err(),
+            Some(TokenError::ContextUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_context_json_publishes_no_cursor_reference_call_or_opaque_authority(
+    ) -> TestResult {
+        let fixture = fixture(1)?;
+        let source_binding = binding(&fixture.lease)?;
+        let payload = json!({"value":fixture.reference}).to_string();
+        let call = call(&payload);
+        let mut raw = response(&format!("{} rredact-custom-damaged", fixture.reference));
+        raw["output"][0]["content"] = json!([
+            {"type":"output_text", "text":format!("{} rredact-custom-damaged", fixture.reference), "annotations":[]},
+            {"type":"output_text", "text":fixture.reference, "annotations":[]}
+        ]);
+        let before = fixture.store.stats()?;
+        let prepared = prepare_text_projection(&raw, &fixture.lease, &fixture.budget)
+            .map_err(|error| std::io::Error::other(error.code()))?;
+        assert!(prepared.as_value()["output"][0]["content"][0]["text"] == TEXT_PROJECTION_NOTICE);
+        assert!(prepared.as_value()["output"][0]["content"][1]["text"] == ORIGINAL);
+        assert!(prepared.as_value()["id"] == PROJECTED_ID);
+        assert_eq!(
+            fixture.store.stats()?,
+            before,
+            "projection must not change store authority"
+        );
+        assert_eq!(fixture.lease.authorized_tokens()?.len(), 1);
+
+        let mut next = fixture.store.admit("codex", Some(SESSION), 1)?;
+        let next_binding = binding(&next)?;
+        assert_no_projection_authority(&mut next, &next_binding, &fixture.reference, call)?;
+        assert!(next.authorized_tokens()?.is_empty());
+
+        // The same principal and dependencies work only after ordinary verified publication.
+        fixture.lease.publish_completed_context(
+            &source_binding,
+            &CompletionWitness::from_verified_completion(true)?,
+            "resp_synthetic_strict_context",
+            &[&fixture.reference],
+            &[call],
+            &[OPAQUE],
+        )?;
+        next.resume_completed_context(
+            &next_binding,
+            Some("resp_synthetic_strict_context"),
+            &[call],
+            &[OPAQUE],
+        )?;
+        next.verify_output_call_ids(
+            &next_binding,
+            Some("resp_synthetic_strict_context"),
+            &[call.call_id],
+        )?;
+        assert!(next.resolve(&fixture.reference)? == ORIGINAL);
+        drop(prepared);
+        assert_eq!(fixture.budget.used(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn text_fallback_context_cached_calls_and_references_do_not_authorize_projected_turn(
+    ) -> TestResult {
+        let fixture = fixture(1)?;
+        let payload = json!({"value":fixture.reference}).to_string();
+        let cache = CodexChatHistoryStore::default();
+        // A legacy cache entry is independent data, not a tool in the eligible text-only response.
+        let cached_call = json!({"type":"function_call", "call_id":call(&payload).call_id,
+            "name":"synthetic_history_only", "arguments":payload,
+            "reasoning_content":"synthetic-cached-reasoning", "encrypted_reasoning":OPAQUE});
+        assert_eq!(
+            cache
+                .record_response(&json!({"id":PROJECTED_ID, "output":[cached_call]}))
+                .await,
+            1
+        );
+        let prepared = prepare_text_projection(
+            &response(&format!("{} rredact-custom-damaged", fixture.reference)),
+            &fixture.lease,
+            &fixture.budget,
+        )
+        .map_err(|error| std::io::Error::other(error.code()))?;
+        assert!(prepared.as_value()["output"][0]["content"][0]["text"] == TEXT_PROJECTION_NOTICE);
+        assert_eq!(cache.record_response(prepared.as_value()).await, 0);
+
+        for with_cursor in [true, false] {
+            let mut request = json!({"input":[{"type":"function_call_output",
+                "call_id":call(&payload).call_id, "output":"synthetic-cached-output"}]});
+            if with_cursor {
+                request["previous_response_id"] = json!(PROJECTED_ID);
+            }
+            assert_eq!(cache.enrich_request(&mut request).await, 1);
+            assert!(
+                request["input"][0] == cached_call,
+                "fixture must actually retrieve cached dependencies"
+            );
+            assert!(!is_fresh_readable_history(&request, &fixture.budget)?);
+            let cached_payload = request["input"][0]["arguments"]
+                .as_str()
+                .ok_or(TokenError::Unavailable)?;
+            let mut next = fixture.store.admit("codex", Some(SESSION), 1)?;
+            let next_binding = binding(&next)?;
+            assert_no_projection_authority(
+                &mut next,
+                &next_binding,
+                &fixture.reference,
+                call(cached_payload),
+            )?;
+            assert!(next.authorized_tokens()?.is_empty());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_context_actual_provider_attempt_binding_cannot_inherit_projection(
+    ) -> TestResult {
+        let fixture = fixture(1)?;
+        let prepared = prepare_text_projection(
+            &response(&format!("{} rredact-custom-damaged", fixture.reference)),
+            &fixture.lease,
+            &fixture.budget,
+        )
+        .map_err(|error| std::io::Error::other(error.code()))?;
+        assert!(prepared.as_value()["id"] == PROJECTED_ID);
+        let mut strict = fixture.store.admit("codex", Some(SESSION), 1)?;
+        let strict_reference = strict.prepare_with_budget(
+            &[TokenFragment {
+                raw: "synthetic-strict-only-value",
+                whole_span_categories: &[TokenCategory::Custom],
+            }],
+            &[],
+            fixture.budget.clone(),
+            |tokens| Ok(tokens[0].as_str().to_owned()),
+        )?;
+        let source_binding = binding(&strict)?;
+        strict.publish_completed_context(
+            &source_binding,
+            &CompletionWitness::from_verified_completion(true)?,
+            "resp_synthetic_binding_control",
+            &[&strict_reference],
+            &[],
+            &[],
+        )?;
+        for (provider, protocol, target, principal, matches_source) in [
+            (PROVIDER, "openai_responses", TARGET, PRINCIPAL, true),
+            (
+                "synthetic-other-provider",
+                "openai_responses",
+                TARGET,
+                PRINCIPAL,
+                false,
+            ),
+            (PROVIDER, "openai_chat", TARGET, PRINCIPAL, false),
+            (
+                PROVIDER,
+                "openai_responses",
+                "https://synthetic.invalid/other/responses",
+                PRINCIPAL,
+                false,
+            ),
+            (
+                PROVIDER,
+                "openai_responses",
+                TARGET,
+                "synthetic-other-principal",
+                false,
+            ),
+        ] {
+            let base = fixture.store.admit("codex", Some(SESSION), 1)?;
+            for _ in 0..2 {
+                let mut attempt = base.fork_attempt()?;
+                let actual =
+                    attempt.bind_actual_attempt(provider, protocol, target, Some(principal))?;
+                assert!(actual.reusable_principal);
+                assert_eq!(
+                    actual.provider_fingerprint == source_binding.provider_fingerprint,
+                    matches_source
+                );
+                assert!(attempt.authorized_tokens()?.is_empty());
+                assert_no_projection_authority(
+                    &mut attempt,
+                    &actual,
+                    &fixture.reference,
+                    call("{}"),
+                )?;
+                assert!(attempt.authorized_tokens()?.is_empty());
+                let control = attempt.resume_completed_context(
+                    &actual,
+                    Some("resp_synthetic_binding_control"),
+                    &[],
+                    &[],
+                );
+                if matches_source {
+                    control?;
+                    assert!(attempt.resolve(&strict_reference)? == "synthetic-strict-only-value");
+                    assert_eq!(
+                        attempt.resolve(&fixture.reference).err(),
+                        Some(TokenError::ContextUnavailable)
+                    );
+                } else {
+                    assert_eq!(control.err(), Some(TokenError::ContextUnavailable));
+                }
+            }
+            assert!(
+                base.authorized_tokens()?.is_empty(),
+                "attempts must not mutate base authority"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn text_fallback_context_independent_new_history_admission_and_strict_completion_work(
+    ) -> TestResult {
+        struct RuntimeReset(SecurityRuntimeConfig);
+        impl Drop for RuntimeReset {
+            fn drop(&mut self) {
+                runtime::set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+        runtime::set_security_runtime_for_test(SecurityRuntimeConfig::default());
+        let revision = runtime::admit_security_runtime()?.restoration_policy_revision;
+        let fixture = fixture(revision)?;
+        let prepared = prepare_text_projection(
+            &response(&format!("{} rredact-custom-damaged", fixture.reference)),
+            &fixture.lease,
+            &fixture.budget,
+        )
+        .map_err(|error| std::io::Error::other(error.code()))?;
+        let mut history = json!({"model":"synthetic-model", "input":[
+            {"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":TEXT_PROJECTION_NOTICE}]},
+            {"type":"function_call", "call_id":"call_synthetic_independent", "name":"synthetic_history_only", "arguments":"{\"label\":\"synthetic-independent-history\"}"},
+            {"type":"function_call_output", "call_id":"call_synthetic_independent", "output":"synthetic-readable-output"},
+            {"role":"user", "content":"Call 13800138000"}
+        ]});
+        assert!(is_fresh_readable_history(&history, &fixture.budget)?);
+        let original_history = history.clone();
+        let gateway = RestorationGateway::with_test_store_and_rules(
+            fixture.store.clone(),
+            &["chinese_phone_number"],
+            fixture.budget.clone(),
+        );
+        let mut headers = http::HeaderMap::new();
+        headers.insert("session-id", SESSION.parse()?);
+        let request = match admit_http_request(
+            &gateway,
+            &AppType::Codex,
+            true,
+            false,
+            &mut history,
+            &headers,
+        )? {
+            RestorationAdmission::Admitted(request) => request,
+            _ => return Err("independent synthetic history was not admitted".into()),
+        };
+        assert!(
+            history == original_history,
+            "admission must preserve independent source history"
+        );
+        assert!(matches!(
+            request.chat_history_provenance(),
+            Ok(super::super::chat_enrichment::ChatHistoryProvenance::IndependentReadable)
+        ));
+        let transformed = std::cell::Cell::new(0);
+        let (mut attempt, _input_owner) = request.prepare_owned_attempt_for_proxy(
+            PROVIDER,
+            "openai_responses",
+            TARGET,
+            Some(PRINCIPAL),
+            &mut history,
+            |candidate| {
+                transformed.set(transformed.get() + 1);
+                assert!(
+                    candidate["input"][0]["content"][0]["text"]
+                        == prepared.as_value()["output"][0]["content"][0]["text"]
+                );
+                assert!(candidate["input"][1] == original_history["input"][1]);
+                assert!(candidate["input"][2] == original_history["input"][2]);
+                assert!(candidate["input"][3]["content"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("Call rredact-cn_phone-")));
+                Ok(candidate)
+            },
+        )?;
+        assert_eq!(transformed.get(), 1);
+        let authorized = attempt.lease.authorized_tokens()?;
+        assert_eq!(authorized.len(), 1);
+        let new_reference = authorized.as_slice()[0].to_owned();
+        drop(authorized);
+        assert!(attempt.lease.resolve(&new_reference)? == "13800138000");
+        assert_no_projection_authority(
+            &mut attempt.lease,
+            &attempt.binding,
+            &fixture.reference,
+            call("{}"),
+        )?;
+        assert!(attempt.lease.resolve(&new_reference)? == "13800138000");
+        attempt.lease.publish_completed_context(
+            &attempt.binding,
+            &CompletionWitness::from_verified_completion(true)?,
+            "resp_synthetic_independent_completed",
+            &[&new_reference],
+            &[],
+            &[],
+        )?;
+        let mut fixture_following = fixture.store.admit("codex", Some(SESSION), revision)?;
+        let fixture_binding = binding(&fixture_following)?;
+        assert!(
+            matches!(
+                fixture_following.resume_completed_context(
+                    &fixture_binding,
+                    Some("resp_synthetic_independent_completed"),
+                    &[],
+                    &[],
+                ),
+                Err(TokenError::ContextUnavailable)
+            ),
+            "fixture namespaces must not inherit published completion authority"
+        );
+        let mut following =
+            fixture
+                .store
+                .admit_published_policy("codex", Some(SESSION), revision)?;
+        let following_binding = binding(&following)?;
+        following.resume_completed_context(
+            &following_binding,
+            Some("resp_synthetic_independent_completed"),
+            &[],
+            &[],
+        )?;
+        assert!(following.resolve(&new_reference)? == "13800138000");
+        assert_eq!(
+            following.resolve(&fixture.reference).err(),
+            Some(TokenError::ContextUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_context_stale_generation_remains_hard_after_projection() -> TestResult {
+        let fixture = fixture(1)?;
+        let old_binding = binding(&fixture.lease)?;
+        let prepared = prepare_text_projection(
+            &response(&format!("{} rredact-custom-damaged", fixture.reference)),
+            &fixture.lease,
+            &fixture.budget,
+        )
+        .map_err(|error| std::io::Error::other(error.code()))?;
+        assert!(prepared.as_value()["output"][0]["content"][0]["text"] == TEXT_PROJECTION_NOTICE);
+        drop(fixture.lease);
+        fixture.store.expire_idle_at(
+            std::time::Instant::now()
+                + TokenStoreLimits::default().idle_ttl
+                + std::time::Duration::from_secs(1),
+        )?;
+        assert_eq!(
+            fixture.store.stats()?.namespaces,
+            0,
+            "projection must not pin an expired namespace"
+        );
+        let mut next = fixture.store.admit("codex", Some(SESSION), 1)?;
+        let actual = binding(&next)?;
+        assert!(
+            actual.generation != old_binding.generation,
+            "fixture must recreate the namespace generation"
+        );
+        assert_no_projection_authority(&mut next, &old_binding, &fixture.reference, call("{}"))?;
+        assert_no_projection_authority(&mut next, &actual, &fixture.reference, call("{}"))?;
+        for text in [
+            format!("{} rredact-custom-damaged", fixture.reference),
+            format!("rredact-custom-damaged {}", fixture.reference),
+        ] {
+            assert_eq!(
+                prepare_text_projection(&response(&text), &next, &fixture.budget).err(),
+                Some(RestoreError::FailedBecause(RestoreReason::TokenContext)),
+                "a stale complete reference must remain hard before or after format damage"
+            );
+        }
+        // A live, independent format-only field remains eligible without reviving old authority.
+        let fresh =
+            prepare_text_projection(&response("rredact-custom-damaged"), &next, &fixture.budget)
+                .map_err(|error| std::io::Error::other(error.code()))?;
+        assert!(fresh.as_value()["output"][0]["content"][0]["text"] == TEXT_PROJECTION_NOTICE);
+        assert!(next.authorized_tokens()?.is_empty());
+        assert_eq!(
+            next.resolve(&fixture.reference).err(),
+            Some(TokenError::ContextUnavailable)
+        );
+        drop(fresh);
+        drop(prepared);
+        assert_eq!(fixture.budget.used(), 0);
+        Ok(())
+    }
+}
+
+#[test]
+fn output_text_exact_nonmatching_completed_text_never_adds_reference_authority(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use super::{completed_context::CompletionWitness, response_restoration::stage_json_response};
+    use serde_json::json;
+
+    let (store, lease) = seeded_dependencies(1)?;
+    let budget = PayloadBudget::with_limit(16 * 1024 * 1024);
+    let mut foreign = store.admit("codex", Some("synthetic-exact-foreign-context"), 1)?;
+    let foreign_reference = foreign.prepare_with_budget(
+        &[TokenFragment {
+            raw: "synthetic-exact-context-foreign-value",
+            whole_span_categories: &[TokenCategory::Custom],
+        }],
+        &[],
+        budget.clone(),
+        |tokens| Ok(tokens[0].as_str().to_owned()),
+    )?;
+    let binding = lease.bind_actual_attempt(
+        "synthetic-exact-context-provider",
+        "openai_responses",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-exact-principal"),
+    )?;
+    let nonmatching = format!(
+        "Literal rredact-custom-document and VARY_cu_sample; tail {}",
+        &foreign_reference[..18]
+    );
+    let source = json!({"id":"resp_exact_nonmatching_context","object":"response","status":"completed",
+        "output":[{"id":"msg_exact_nonmatching_context","type":"message","role":"assistant","status":"completed",
+            "content":[{"type":"output_text","text":nonmatching,"annotations":[]}]}]});
+    assert_eq!(lease.authorized_tokens()?.len(), 1);
+    assert!(
+        lease.resolve(&foreign_reference).is_err(),
+        "foreign reference must start unauthorized"
+    );
+    let staged = stage_json_response(&source, false, &lease, &budget)
+        .map_err(|error| std::io::Error::other(error.code()))?;
+    assert!(
+        staged.as_value()["output"][0]["content"][0]["text"] == nonmatching,
+        "nonmatching context text must remain byte-for-byte unchanged"
+    );
+    let restored = staged
+        .publish(
+            &lease,
+            &binding,
+            &CompletionWitness::from_verified_completion(true)?,
+            &budget,
+        )
+        .map_err(|error| std::io::Error::other(error.code()))?;
+    assert_eq!(restored.restored_occurrences(), 0);
+    assert_eq!(lease.authorized_tokens()?.len(), 1);
+    assert!(
+        lease.resolve(&foreign_reference).is_err(),
+        "preserved nonmatches must not expand source authority"
+    );
+    let mut next = store.admit("codex", Some("synthetic-collector"), 1)?;
+    assert!(
+        next.authorized_tokens()?.is_empty(),
+        "a fresh lease must start without authority"
+    );
+    let actual = next.bind_actual_attempt(
+        "synthetic-exact-context-provider",
+        "openai_responses",
+        "https://synthetic.invalid/v1/responses",
+        Some("synthetic-exact-principal"),
+    )?;
+    next.resume_completed_context(&actual, Some("resp_exact_nonmatching_context"), &[], &[])?;
+    assert_eq!(
+        next.authorized_tokens()?.len(),
+        1,
+        "only original lineage may resume"
+    );
+    assert!(
+        next.resolve(&foreign_reference).is_err(),
+        "nonmatching snapshots must not authorize a complete foreign reference"
+    );
+    assert_eq!(
+        next.resume_completed_tokens(&actual, &[&foreign_reference])
+            .err(),
+        Some(TokenError::ContextUnavailable)
+    );
+    assert_eq!(
+        next.authorized_tokens()?.len(),
+        1,
+        "failed foreign resume must not expand authority"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn output_text_exact_request_side_malformed_and_unauthorized_admission_remains_strict(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use super::{
+        http_restoration::{
+            admit_http_request, DlpForwardError, RestorationAdmission, RestorationGateway,
+        },
+        runtime::{self, SecurityRuntimeConfig},
+    };
+    use crate::app_config::AppType;
+    use http_body_util::BodyExt;
+    use serde_json::json;
+
+    struct RuntimeReset(SecurityRuntimeConfig);
+    impl Drop for RuntimeReset {
+        fn drop(&mut self) {
+            runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    let revision = runtime::admit_security_runtime()?.restoration_policy_revision;
+    let store = DlpTokenStore::new();
+    let mut foreign = store.admit("codex", Some("synthetic-exact-strict-foreign"), revision)?;
+    let reference = foreign.prepare_with_budget(
+        &[TokenFragment {
+            raw: "synthetic-exact-strict-foreign-value",
+            whole_span_categories: &[TokenCategory::Custom],
+        }],
+        &[],
+        PayloadBudget::with_limit(1024 * 1024),
+        |tokens| Ok(tokens[0].as_str().to_owned()),
+    )?;
+    let gateway = RestorationGateway::with_test_store_and_rules(
+        store,
+        &["chinese_phone_number"],
+        PayloadBudget::with_limit(64 * 1024 * 1024),
+    );
+    let mut headers = http::HeaderMap::new();
+    headers.insert("session-id", "synthetic-exact-strict-request".parse()?);
+    for text in [
+        "Literal rredact-custom-document".to_owned(),
+        "Field tail rredact-custom-123".to_owned(),
+        format!("Literal rredact-custom-document then {reference}"),
+        reference,
+    ] {
+        let mut body = json!({"model":"synthetic-model","input":format!("Call 13800138000; {text}"),"stream":false});
+        let original = body.clone();
+        let transformed = std::cell::Cell::new(false);
+        let failure =
+            match admit_http_request(&gateway, &AppType::Codex, true, false, &mut body, &headers) {
+                Err(crate::proxy::ProxyError::DlpForward(error)) => error,
+                Err(_) => {
+                    return Err("strict request fixture returned an unexpected error class".into())
+                }
+                Ok(RestorationAdmission::Admitted(request)) => request
+                    .prepare_attempt(
+                        "synthetic-exact-strict-provider",
+                        "openai_responses",
+                        "https://synthetic.invalid/v1/responses",
+                        Some("synthetic-exact-strict-principal"),
+                        &mut body,
+                        |candidate| {
+                            transformed.set(true);
+                            Ok(candidate.clone())
+                        },
+                    )
+                    .err()
+                    .ok_or("strict request fixture unexpectedly reached forwarding")?,
+                Ok(RestorationAdmission::Intercepted(response)) => {
+                    assert!(
+                        response.status() == http::StatusCode::BAD_REQUEST,
+                        "strict malformed request must be rejected before an attempt"
+                    );
+                    let bytes = response.into_body().collect().await?.to_bytes();
+                    let error: serde_json::Value = serde_json::from_slice(&bytes)?;
+                    assert!(
+                        error["error"]["code"] == "dlp_context_unavailable",
+                        "strict malformed request must retain the context refusal code"
+                    );
+                    DlpForwardError::ContextUnavailable
+                }
+                Ok(RestorationAdmission::Passthrough) => {
+                    return Err("strict request fixture bypassed restoration admission".into())
+                }
+            };
+        assert!(
+            failure == DlpForwardError::ContextUnavailable,
+            "response-only matching must not relax malformed or unauthorized request admission"
+        );
+        assert!(
+            !transformed.get(),
+            "strict request rejection must precede transformation"
+        );
+        assert!(
+            body == original,
+            "strict request rejection must preserve the original body"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reference_format_legacy_request_dependencies_refuse_disabled_and_admitted_paths(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use super::{
+        http_restoration::{
+            admit_http_request, DlpForwardError, RestorationAdmission, RestorationGateway,
+        },
+        runtime::{self, SecurityRuntimeConfig},
+    };
+    use crate::app_config::AppType;
+    use http_body_util::BodyExt;
+    use serde_json::json;
+    struct RuntimeReset(SecurityRuntimeConfig);
+    impl Drop for RuntimeReset {
+        fn drop(&mut self) {
+            runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    for enabled in [false, true] {
+        runtime::set_security_runtime_for_test(SecurityRuntimeConfig {
+            enabled,
+            ..Default::default()
+        });
+        let gateway =
+            RestorationGateway::with_test_rules(&["chinese_phone_number"], 64 * 1024 * 1024);
+        for (case, body) in [
+            (
+                "complete",
+                json!({"input":"vary_cu_00000000000000000000_ai"}),
+            ),
+            ("malformed", json!({"input":"vary_cu_broken"})),
+            (
+                "nested_key",
+                json!({"input":"synthetic", "metadata":{"vary_cu_00000000000000000000_ai":"synthetic"}}),
+            ),
+            (
+                "escaped_argument",
+                json!({"input":[{"type":"function_call","call_id":"synthetic-legacy-call","name":"non_executing_fixture","arguments":"{\"value\":\"\\u0076ary_cu_00000000000000000000_ai\"}"}]}),
+            ),
+            (
+                "escaped_new_argument",
+                json!({"input":[{"type":"function_call","call_id":"synthetic-new-call","name":"non_executing_fixture","arguments":"{\"value\":\"\\u0072redact-custom-00000000000000000000-ai\"}"}]}),
+            ),
+        ] {
+            let mut source = body.clone();
+            match admit_http_request(
+                &gateway,
+                &AppType::Codex,
+                true,
+                false,
+                &mut source,
+                &Default::default(),
+            ) {
+                Ok(RestorationAdmission::Intercepted(response)) => {
+                    assert!(
+                        response.status() == http::StatusCode::BAD_REQUEST,
+                        "legacy request dependencies must be rejected"
+                    );
+                    let bytes = response.into_body().collect().await?.to_bytes();
+                    let error: serde_json::Value = serde_json::from_slice(&bytes)?;
+                    assert!(
+                        error["error"]["code"] == "dlp_context_unavailable",
+                        "legacy requests must retain context refusal"
+                    );
+                }
+                Err(crate::proxy::ProxyError::DlpForward(error)) => {
+                    assert!(
+                        error == DlpForwardError::ContextUnavailable,
+                        "legacy request dependencies must retain fixed refusal"
+                    );
+                }
+                Ok(RestorationAdmission::Admitted(request)) => {
+                    let transformed = std::cell::Cell::new(false);
+                    let result = request.prepare_attempt(
+                        "synthetic-provider",
+                        "openai_responses",
+                        "http://127.0.0.1:1/responses",
+                        None,
+                        &mut source,
+                        |candidate| {
+                            transformed.set(true);
+                            Ok(candidate.clone())
+                        },
+                    );
+                    assert!(
+                        matches!(result, Err(DlpForwardError::ContextUnavailable)),
+                        "admitted legacy dependencies must refuse before forwarding"
+                    );
+                    assert!(
+                        !transformed.get(),
+                        "legacy refusal must precede transformation"
+                    );
+                }
+                Ok(RestorationAdmission::Passthrough) => match (enabled, case) {
+                    (false, "complete") => {
+                        panic!("disabled complete legacy dependency bypassed admission")
+                    }
+                    (false, "malformed") => {
+                        panic!("disabled malformed legacy dependency bypassed admission")
+                    }
+                    (false, "nested_key") => {
+                        panic!("disabled nested legacy key bypassed admission")
+                    }
+                    (false, "escaped_new_argument") => {
+                        panic!("disabled escaped new argument bypassed admission")
+                    }
+                    (false, _) => panic!("disabled escaped legacy argument bypassed admission"),
+                    (true, _) => panic!("active legacy dependency bypassed admission"),
+                },
+                _ => panic!("legacy request returned an unexpected error class"),
+            }
+            assert!(
+                source == body,
+                "legacy refusal must not mutate request input"
+            );
+        }
+        if enabled {
+            let mut source = json!({"input":"synthetic-safe-input"});
+            let request = match admit_http_request(
+                &gateway,
+                &AppType::Codex,
+                true,
+                false,
+                &mut source,
+                &Default::default(),
+            )? {
+                RestorationAdmission::Admitted(request) => request,
+                _ => return Err("synthetic control request must be admitted".into()),
+            };
+            source["metadata"] = json!({"nested":{"vary_cu_00000000000000000000_ai":"synthetic"}});
+            let original = source.clone();
+            let transformed = std::cell::Cell::new(false);
+            let result = request.prepare_attempt(
+                "synthetic-provider",
+                "openai_responses",
+                "http://127.0.0.1:1/responses",
+                None,
+                &mut source,
+                |candidate| {
+                    transformed.set(true);
+                    Ok(candidate.clone())
+                },
+            );
+            assert!(
+                matches!(result, Err(DlpForwardError::ContextUnavailable)),
+                "late legacy dependencies must refuse after request admission"
+            );
+            assert!(
+                !transformed.get(),
+                "legacy dependency refusal must precede transformation"
+            );
+            assert!(
+                source == original,
+                "admitted legacy refusal must preserve the enriched input"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn reference_format_escaped_unleased_arguments_reject_decoded_keys_and_values() {
+    use super::http_restoration::{validate_unleased_enriched_body, DlpForwardError};
+    use serde_json::json;
+
+    for reference in [
+        "\\u0076ary_cu_00000000000000000000_ai",
+        "\\u0072redact-custom-00000000000000000000-ai",
+        "\\u0076ary_cu_broken",
+        "\\u0072redact-custom-broken",
+    ] {
+        for arguments in [
+            format!("{{\"nested\":[{{\"value\":\"{reference}\"}}]}}"),
+            format!("{{\"nested\":[{{\"{reference}\":\"synthetic\"}}]}}"),
+        ] {
+            let body = json!({"input":[{"type":"function_call","arguments":arguments}]});
+            assert!(
+                matches!(
+                    validate_unleased_enriched_body(&body),
+                    Err(DlpForwardError::ContextUnavailable)
+                ),
+                "decoded unleased dependencies must be refused"
+            );
+        }
+    }
+}
+
+#[test]
+fn reference_format_escaped_unleased_arguments_preserve_noncarriers() {
+    use super::http_restoration::validate_unleased_enriched_body;
+    use serde_json::json;
+
+    for body in [
+        json!({"input":"\\u0072redact-custom-00000000000000000000-ai"}),
+        json!({"input":[{"type":"custom_tool_call","input":"{\"value\":\"\\u0072redact-custom-00000000000000000000-ai\"}"}]}),
+        json!({"input":[{"type":"function_call","arguments":"{\"value\":\"synthetic\\ntext\"}"}]}),
+        json!({"metadata":{"arguments":"{\"value\":\"\\u0072redact-custom-00000000000000000000-ai\"}"}}),
+    ] {
+        let before = body.clone();
+        assert!(
+            validate_unleased_enriched_body(&body).is_ok(),
+            "nondependencies must remain unchanged"
+        );
+        assert!(
+            body == before,
+            "dependency inspection must not mutate input"
+        );
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn reference_format_escaped_admission_uses_shared_budget_and_releases_parse_owners(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use super::{
+        http_restoration::{admit_http_request, RestorationAdmission, RestorationGateway},
+        runtime::{self, SecurityRuntimeConfig},
+    };
+    use crate::app_config::AppType;
+    use serde_json::json;
+    struct RuntimeReset(SecurityRuntimeConfig);
+    impl Drop for RuntimeReset {
+        fn drop(&mut self) {
+            runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(SecurityRuntimeConfig::default());
+    let budget = PayloadBudget::with_limit(64 * 1024);
+    let gateway =
+        RestorationGateway::with_test_store_and_rules(DlpTokenStore::new(), &[], budget.clone());
+    let safe =
+        json!({"input":[{"type":"function_call","arguments":"{\"value\":\"synthetic\\ntext\"}"}]});
+    let held = budget.reserve(budget.limit())?;
+    let mut body = safe.clone();
+    assert!(
+        matches!(
+            admit_http_request(
+                &gateway,
+                &AppType::Codex,
+                true,
+                false,
+                &mut body,
+                &Default::default()
+            ),
+            Ok(RestorationAdmission::Intercepted(_))
+        ),
+        "escaped arguments must not bypass the shared budget"
+    );
+    assert!(body == safe, "budget refusal must preserve input");
+    assert!(
+        budget.used() == budget.limit(),
+        "failed parsing must not leak reservations"
+    );
+    drop(held);
+    assert!(budget.used() == 0, "released budget must be empty");
+    assert!(
+        matches!(
+            admit_http_request(
+                &gateway,
+                &AppType::Codex,
+                true,
+                false,
+                &mut body,
+                &Default::default()
+            ),
+            Ok(RestorationAdmission::Passthrough)
+        ),
+        "safe decoded arguments must retain passthrough"
+    );
+    assert!(
+        budget.used() == 0,
+        "successful inspection must release reservations"
+    );
+    for arguments in [
+        "{\"value\":\"\\u0072redact-custom-00000000000000000000-ai\"}",
+        "{\"\\u0072redact-custom-00000000000000000000-ai\":\"synthetic\"}",
+        "{\"value\":\"\\u0076ary_cu_00000000000000000000_ai\"}",
+        "{\"value\":\"synthetic\\q\"}",
+    ] {
+        let mut source = json!({"input":[{"type":"function_call","arguments":arguments}]});
+        let before = source.clone();
+        assert!(
+            matches!(
+                admit_http_request(
+                    &gateway,
+                    &AppType::Codex,
+                    true,
+                    false,
+                    &mut source,
+                    &Default::default()
+                ),
+                Ok(RestorationAdmission::Intercepted(_))
+            ),
+            "escaped dependencies and invalid carriers must be refused"
+        );
+        assert!(source == before, "inspection refusal must preserve input");
+        assert!(
+            budget.used() == 0,
+            "inspection refusal must release reservations"
+        );
+    }
+    Ok(())
+}

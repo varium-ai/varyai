@@ -358,13 +358,16 @@ fn validate_native_output_item(item: &Value, budget: &PayloadBudget) -> Result<(
             {
                 return Err(TokenError::RedactionFailed);
             }
-            if let Some(summary) = obj.get("summary") {
-                let summary = summary.as_array().ok_or(TokenError::RedactionFailed)?;
-                for part in summary {
-                    if part.get("type").and_then(Value::as_str) != Some("summary_text")
-                        || !part.get("text").is_some_and(Value::is_string)
-                    {
-                        return Err(TokenError::RedactionFailed);
+            for (field, expected_kind) in
+                [("summary", "summary_text"), ("content", "reasoning_text")]
+            {
+                if let Some(parts) = obj.get(field) {
+                    for part in parts.as_array().ok_or(TokenError::RedactionFailed)? {
+                        if part.get("type").and_then(Value::as_str) != Some(expected_kind)
+                            || !part.get("text").is_some_and(Value::is_string)
+                        {
+                            return Err(TokenError::RedactionFailed);
+                        }
                     }
                 }
             }
@@ -415,25 +418,90 @@ fn validate_native_output_item(item: &Value, budget: &PayloadBudget) -> Result<(
     Ok(())
 }
 
+// Return whether the converter selects nonempty text; None means data would be ignored.
+fn chat_reasoning_object_supported(value: &Value, details: bool, depth: usize) -> Option<bool> {
+    if depth > 32 {
+        return None;
+    }
+    let object = value.as_object()?;
+    let mut selected = 0usize;
+    let mut parts_selected = false;
+    for (key, value) in object {
+        match key.as_str() {
+            "text" | "content" | "summary" => match value {
+                Value::Null => {}
+                Value::String(text) => selected += usize::from(!text.is_empty()),
+                _ => return None,
+            },
+            "parts" if details => {
+                let parts = value.as_array()?;
+                for part in parts {
+                    parts_selected |= chat_reasoning_object_supported(part, true, depth + 1)?;
+                }
+            }
+            "type" if details && value.as_str() == Some("reasoning_text") => {}
+            _ => return None,
+        }
+    }
+    if selected > 1 || selected != 0 && parts_selected {
+        return None;
+    }
+    Some(selected != 0 || parts_selected)
+}
+
+fn chat_reasoning_carriers_supported(message: &serde_json::Map<String, Value>) -> bool {
+    let mut selected = 0usize;
+    for field in ["reasoning_content", "reasoning", "reasoning_details"] {
+        let Some(value) = message.get(field) else {
+            continue;
+        };
+        let active = match value {
+            Value::Null => Some(false),
+            Value::String(text) => Some(!text.is_empty()),
+            Value::Object(_) if field != "reasoning_content" => {
+                chat_reasoning_object_supported(value, field == "reasoning_details", 0)
+            }
+            Value::Array(parts) if field == "reasoning_details" => {
+                let mut active = false;
+                for part in parts {
+                    let Some(part_active) = chat_reasoning_object_supported(part, true, 0) else {
+                        return false;
+                    };
+                    active |= part_active;
+                }
+                Some(active)
+            }
+            _ => None,
+        };
+        let Some(active) = active else {
+            return false;
+        };
+        selected += usize::from(active);
+    }
+    selected <= 1
+}
+
 /// Match readable Chat carriers to the JSON/SSE converters before they can drop data.
-/// Reasoning variants remain converter-defined; tool validation is separate.
+/// Validate reasoning containers before priority extraction can discard their siblings.
 pub(super) fn chat_carriers_supported(
     message: &serde_json::Map<String, Value>,
     streaming: bool,
 ) -> bool {
-    if message.iter().any(|(key, value)| {
-        !value.is_null()
-            && !matches!(
-                key.as_str(),
-                "role"
-                    | "content"
-                    | "refusal"
-                    | "reasoning_content"
-                    | "reasoning"
-                    | "reasoning_details"
-                    | "tool_calls"
-            )
-    }) {
+    if !chat_reasoning_carriers_supported(message)
+        || message.iter().any(|(key, value)| {
+            !value.is_null()
+                && !matches!(
+                    key.as_str(),
+                    "role"
+                        | "content"
+                        | "refusal"
+                        | "reasoning_content"
+                        | "reasoning"
+                        | "reasoning_details"
+                        | "tool_calls"
+                )
+        })
+    {
         return false;
     }
     if message
@@ -472,7 +540,7 @@ fn validate_chat_json_response(
     unsupported_carrier: &mut bool,
 ) -> Result<(), TokenError> {
     let obj = body.as_object().ok_or(TokenError::RedactionFailed)?;
-    if obj.get("error").is_some()
+    if obj.get("error").is_some_and(|v| !v.is_null())
         || !obj
             .get("id")
             .and_then(Value::as_str)
@@ -498,9 +566,9 @@ fn validate_chat_json_response(
         .ok_or(TokenError::RedactionFailed)?;
     if message
         .get("role")
-        .and_then(Value::as_str)
-        .is_some_and(|r| r != "assistant")
-        || message.contains_key("function_call")
+        .filter(|v| !v.is_null())
+        .is_some_and(|r| r.as_str() != Some("assistant"))
+        || message.get("function_call").is_some_and(|v| !v.is_null())
     {
         return Err(TokenError::RedactionFailed);
     }
@@ -509,7 +577,7 @@ fn validate_chat_json_response(
         return Err(TokenError::RedactionFailed);
     }
     let tool_reason = matches!(reason, Some("tool_calls" | "function_call"));
-    if let Some(tools) = message.get("tool_calls") {
+    if let Some(tools) = message.get("tool_calls").filter(|v| !v.is_null()) {
         let tools = tools.as_array().ok_or(TokenError::RedactionFailed)?;
         if tools.is_empty() || tools.len() > 128 || !tool_reason {
             return Err(TokenError::RedactionFailed);

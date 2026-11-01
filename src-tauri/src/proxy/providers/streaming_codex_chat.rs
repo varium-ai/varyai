@@ -3,7 +3,8 @@
 use super::codex_responses_sse as sse;
 use super::{
     codex_chat_common::{
-        extract_reasoning_field_text, split_leading_think_block, strip_leading_think_open_tag,
+        allows_long_thinking_tags, extract_reasoning_field_text,
+        split_leading_think_block_with_compatibility, strip_leading_think_open_tag,
     },
     transform_codex_chat::{
         chat_usage_to_responses_usage, custom_tool_input_from_chat_arguments,
@@ -79,6 +80,8 @@ struct ChatToResponsesState {
     latest_usage: Option<Value>,
     finish_reason: Option<String>,
     tool_context: CodexToolContext,
+    allow_long_thinking_tags: bool,
+    trim_inline_answer_separator: bool,
     /// 本回合因缺少合法函数名而被丢弃的工具调用数（见 `finalize_tools`）。
     dropped_tool_calls: usize,
 }
@@ -101,6 +104,8 @@ impl Default for ChatToResponsesState {
             latest_usage: None,
             finish_reason: None,
             tool_context: CodexToolContext::default(),
+            allow_long_thinking_tags: false,
+            trim_inline_answer_separator: false,
             dropped_tool_calls: 0,
         }
     }
@@ -155,7 +160,12 @@ impl ChatToResponsesState {
                 }
             }
 
-            if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
+            // Empty optional arrays are not a tool boundary; reasoning may continue.
+            if let Some(tool_calls) = delta
+                .get("tool_calls")
+                .and_then(|v| v.as_array())
+                .filter(|calls| !calls.is_empty())
+            {
                 events.extend(self.flush_inline_think_at_boundary());
                 let reasoning_for_tool_call = self.current_reasoning_text();
                 events.extend(self.finalize_reasoning());
@@ -177,13 +187,26 @@ impl ChatToResponsesState {
     fn push_content_delta(&mut self, delta: &str) -> Vec<Bytes> {
         match self.inline_think.mode {
             InlineThinkMode::Text => {
+                // Long-tag separators may arrive after the close tag in another delta.
+                let delta = if self.trim_inline_answer_separator {
+                    delta.trim_start_matches(['\r', '\n', '\t', ' '])
+                } else {
+                    delta
+                };
+                if delta.is_empty() {
+                    return Vec::new();
+                }
+                self.trim_inline_answer_separator = false;
                 let mut events = self.finalize_reasoning();
                 events.extend(self.push_text_delta(delta));
                 events
             }
             InlineThinkMode::Detecting => {
                 self.inline_think.buffer.push_str(delta);
-                match leading_think_prefix_decision(&self.inline_think.buffer) {
+                match leading_think_prefix_decision(
+                    &self.inline_think.buffer,
+                    self.allow_long_thinking_tags,
+                ) {
                     ThinkPrefixDecision::NeedMore => Vec::new(),
                     ThinkPrefixDecision::Reasoning => {
                         self.inline_think.mode = InlineThinkMode::Reasoning;
@@ -206,10 +229,20 @@ impl ChatToResponsesState {
     }
 
     fn drain_complete_inline_think(&mut self) -> Vec<Bytes> {
-        let Some((reasoning, answer)) = split_leading_think_block(&self.inline_think.buffer) else {
+        let Some((reasoning, answer)) = split_leading_think_block_with_compatibility(
+            &self.inline_think.buffer,
+            self.allow_long_thinking_tags,
+        ) else {
             return Vec::new();
         };
 
+        self.trim_inline_answer_separator = self.allow_long_thinking_tags
+            && self
+                .inline_think
+                .buffer
+                .trim_start()
+                .starts_with("<thinking>")
+            && answer.is_empty();
         self.inline_think.mode = InlineThinkMode::Text;
         self.inline_think.buffer.clear();
 
@@ -242,7 +275,10 @@ impl ChatToResponsesState {
             InlineThinkMode::Reasoning => {
                 let buffered = std::mem::take(&mut self.inline_think.buffer);
                 self.inline_think.mode = InlineThinkMode::Text;
-                if let Some((reasoning, answer)) = split_leading_think_block(&buffered) {
+                if let Some((reasoning, answer)) = split_leading_think_block_with_compatibility(
+                    &buffered,
+                    self.allow_long_thinking_tags,
+                ) {
                     let mut events = Vec::new();
                     if !reasoning.is_empty() {
                         events.extend(self.push_reasoning_delta(&reasoning));
@@ -251,6 +287,14 @@ impl ChatToResponsesState {
                     if !answer.is_empty() {
                         events.extend(self.push_text_delta(&answer));
                     }
+                    return events;
+                }
+
+                // Long-tag compatibility requires a complete pair, even at a tool boundary.
+                if self.allow_long_thinking_tags && buffered.trim_start().starts_with("<thinking>")
+                {
+                    let mut events = self.finalize_reasoning();
+                    events.extend(self.push_text_delta(&buffered));
                     return events;
                 }
 
@@ -630,16 +674,14 @@ impl ChatToResponsesState {
                     state.done = true;
                 }
                 self.dropped_tool_calls += 1;
-                // 只记结构信息：arguments 内容可能包含用户代码，且前端日志出口是
-                // allowlist 脱敏，新字段不进白名单就不会被处理，因此只输出字节数。
+                // Upstream fields may contain private text; log only structural facts.
                 log::warn!(
-                    "[Codex] dropped streaming tool call: model={} chat_index={} \
-                     call_id_empty={} args_bytes={} finish_reason={} tools_total={}",
-                    self.model,
+                    "[Codex] dropped streaming tool call: chat_index={} \
+                     call_id_empty={} args_bytes={} finish_reason_present={} tools_total={}",
                     key,
                     call_id_empty,
                     args_bytes,
-                    self.finish_reason.as_deref().unwrap_or("<none>"),
+                    self.finish_reason.is_some(),
                     self.tools.len()
                 );
                 continue;
@@ -780,17 +822,17 @@ enum ThinkPrefixDecision {
     Text,
 }
 
-fn leading_think_prefix_decision(buffer: &str) -> ThinkPrefixDecision {
+fn leading_think_prefix_decision(buffer: &str, allow_long_tags: bool) -> ThinkPrefixDecision {
     let trimmed = buffer.trim_start();
     if trimmed.is_empty() {
         return ThinkPrefixDecision::NeedMore;
     }
 
-    if trimmed.starts_with("<think>") {
+    if trimmed.starts_with("<think>") || (allow_long_tags && trimmed.starts_with("<thinking>")) {
         return ThinkPrefixDecision::Reasoning;
     }
 
-    if "<think>".starts_with(trimmed) {
+    if "<think>".starts_with(trimmed) || (allow_long_tags && "<thinking>".starts_with(trimmed)) {
         return ThinkPrefixDecision::NeedMore;
     }
 
@@ -821,6 +863,24 @@ pub(crate) fn create_responses_sse_stream_from_chat_observed<
 >(
     stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static,
     tool_context: CodexToolContext,
+    observe: impl for<'a> FnMut(crate::proxy::security::completion_evidence::CompletionObservation<'a>)
+        + Send,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    create_responses_sse_stream_from_chat_observed_with_reasoning(
+        stream,
+        tool_context,
+        None,
+        observe,
+    )
+}
+
+/// Convert using explicit output compatibility while observing unchanged upstream facts.
+pub(crate) fn create_responses_sse_stream_from_chat_observed_with_reasoning<
+    E: std::error::Error + Send + 'static,
+>(
+    stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static,
+    tool_context: CodexToolContext,
+    reasoning_config: Option<crate::provider::CodexChatReasoningConfig>,
     mut observe: impl for<'a> FnMut(crate::proxy::security::completion_evidence::CompletionObservation<'a>)
         + Send,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
@@ -829,6 +889,7 @@ pub(crate) fn create_responses_sse_stream_from_chat_observed<
         let mut buffer = String::new();
         let mut utf8_remainder: Vec<u8> = Vec::new();
         let mut state = ChatToResponsesState::with_tool_context(tool_context);
+        state.allow_long_thinking_tags = allows_long_thinking_tags(reasoning_config.as_ref());
         let mut transport = crate::proxy::security::completion_evidence::CompletionTransport::default();
 
         tokio::pin!(stream);
@@ -879,7 +940,9 @@ pub(crate) fn create_responses_sse_stream_from_chat_observed<
                         };
 
                         observe(CompletionObservation::ChatChunk(&chunk));
-                        if event_name.as_deref() == Some("error") || chunk.get("error").is_some() {
+                        if event_name.as_deref() == Some("error")
+                            || chunk.get("error").is_some_and(|v| !v.is_null())
+                        {
                             let (message, error_type) = extract_chat_sse_error(&chunk);
                             yield Ok(state.failed_event(message, error_type));
                             transport.abort();
@@ -986,6 +1049,292 @@ mod tests {
             .collect()
     }
 
+    async fn long_thinking_sse_fixture(
+        parts: &[&str],
+        format: Option<&str>,
+        bytewise: bool,
+    ) -> Value {
+        use std::sync::{Arc, Mutex};
+        let mut wire = String::new();
+        for part in parts {
+            wire.push_str("data: ");
+            wire.push_str(
+                &json!({"id": "chatcmpl_synthetic", "choices": [{"delta": {"content": part}}]})
+                    .to_string(),
+            );
+            wire.push_str("\n\n");
+        }
+        wire.push_str(
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+        );
+        let chunks: Vec<Result<Bytes, std::io::Error>> = if bytewise {
+            wire.as_bytes()
+                .iter()
+                .map(|byte| Ok(Bytes::copy_from_slice(&[*byte])))
+                .collect()
+        } else {
+            vec![Ok(Bytes::copy_from_slice(wire.as_bytes()))]
+        };
+        let config = format.map(|format| {
+            let Ok(config) = serde_json::from_value::<crate::provider::CodexChatReasoningConfig>(
+                json!({"outputFormat": format, "supportsThinking": true}),
+            ) else {
+                panic!("synthetic long-tag config must deserialize");
+            };
+            config
+        });
+        let observed = Arc::new(Mutex::new((Vec::<String>::new(), 0usize, 0usize, 0usize)));
+        let captured = observed.clone();
+        let converted = create_responses_sse_stream_from_chat_observed_with_reasoning(
+            stream::iter(chunks),
+            CodexToolContext::default(),
+            config,
+            move |fact| {
+                use crate::proxy::security::completion_evidence::CompletionObservation;
+                let Ok(mut captured) = captured.lock() else {
+                    panic!("synthetic observation lock must remain available");
+                };
+                match fact {
+                    CompletionObservation::ChatChunk(chunk) => {
+                        if let Some(text) = chunk
+                            .pointer("/choices/0/delta/content")
+                            .and_then(Value::as_str)
+                        {
+                            captured.0.push(text.to_string());
+                        }
+                    }
+                    CompletionObservation::RawFrame(_) => captured.1 += 1,
+                    CompletionObservation::ChatDone => captured.2 += 1,
+                    CompletionObservation::EntityEnd {
+                        reached_eof,
+                        unfinished_frame,
+                        unfinished_utf8,
+                    } => {
+                        assert!(
+                            reached_eof && !unfinished_frame && !unfinished_utf8,
+                            "synthetic observation must retain clean entity-end facts"
+                        );
+                        captured.3 += 1;
+                    }
+                    _ => {}
+                }
+            },
+        );
+        let items: Vec<_> = converted.collect().await;
+        let mut bytes = Vec::new();
+        for item in items {
+            let Ok(item) = item else {
+                panic!("synthetic SSE conversion must succeed");
+            };
+            bytes.extend_from_slice(&item);
+        }
+        let Ok(output) = String::from_utf8(bytes) else {
+            panic!("synthetic SSE output must be valid UTF-8");
+        };
+        let events = parse_sse_events(&output);
+        let Some(completed) = events
+            .iter()
+            .find(|event| event["type"] == "response.completed")
+        else {
+            panic!("synthetic SSE conversion must complete");
+        };
+        let Ok(captured) = observed.lock() else {
+            panic!("synthetic observation lock must remain available");
+        };
+        assert!(
+            captured
+                .0
+                .iter()
+                .map(String::as_str)
+                .eq(parts.iter().copied()),
+            "raw chunk observation must precede tag conversion and preserve content"
+        );
+        assert!(
+            captured.1 == parts.len() + 2 && captured.2 == 1 && captured.3 == 1,
+            "raw frame, done, and entity-end observations must not be bypassed"
+        );
+        completed["response"].clone()
+    }
+
+    #[tokio::test]
+    async fn long_thinking_protocol_sse_preserves_incomplete_blocks_at_stop() {
+        for text in [
+            " \n<thinking>Synthetic 思考🧪. ",
+            "<thinking>Synthetic thought.</think>",
+            "<thinking>Synthetic thought.</thinking",
+        ] {
+            for (cut, _) in text.char_indices() {
+                let response = long_thinking_sse_fixture(
+                    &[&text[..cut], &text[cut..]],
+                    Some("thinking_tags"),
+                    true,
+                )
+                .await;
+                assert!(
+                    response["output"][0]["type"] == "message"
+                        && response["output"][0]["content"][0]["text"] == text
+                        && response["output"]
+                            .as_array()
+                            .is_some_and(|items| items.len() == 1),
+                    "incomplete long-tag blocks must remain exact ordinary text at stop"
+                );
+            }
+        }
+        let complete = "<thinking>Synthetic 思考🧪.</thinking>";
+        for (cut, _) in complete.char_indices().skip(1) {
+            let text = &complete[..cut];
+            let response = long_thinking_sse_fixture(&[text], Some("thinking_tags"), true).await;
+            assert!(
+                response["output"][0]["type"] == "message"
+                    && response["output"][0]["content"][0]["text"] == text,
+                "every unfinished long-tag boundary must remain ordinary text"
+            );
+        }
+    }
+
+    #[test]
+    fn long_thinking_protocol_sse_preserves_incomplete_blocks_at_other_boundaries() {
+        let text = " \n<thinking>Synthetic 思考🧪. ";
+        for finish in ["length", "tool_calls"] {
+            let mut state = ChatToResponsesState::default();
+            state.allow_long_thinking_tags = true;
+            for ch in text.chars() {
+                state.handle_chat_chunk(&json!({"choices":[{"delta":{"content":ch.to_string()}}]}));
+            }
+            let delta = if finish == "tool_calls" {
+                json!({"tool_calls":[{"index":0,"id":"call_synthetic_boundary","type":"function","function":{"name":"synthetic_lookup","arguments":"{}"}}]})
+            } else {
+                json!({})
+            };
+            state.handle_chat_chunk(&json!({"choices":[{"delta":delta,"finish_reason":finish}]}));
+            state.finalize();
+            let output = state.completed_output_items();
+            assert!(
+                output.first().is_some_and(
+                    |item| item["type"] == "message" && item["content"][0]["text"] == text
+                ) && output
+                    .iter()
+                    .all(|item| item["type"] != "reasoning"
+                        && item.get("reasoning_content").is_none()),
+                "unfinished long-tag text must not become reasoning at a length or tool boundary"
+            );
+            assert!(
+                state.finish_reason.as_deref() == Some(finish),
+                "literal fallback must preserve the actual finish reason"
+            );
+        }
+        let mut short = ChatToResponsesState::default();
+        short.allow_long_thinking_tags = true;
+        short.handle_chat_chunk(&json!({"choices":[{"delta":{"content":"<think>Synthetic legacy thought. "},"finish_reason":"stop"}]}));
+        short.finalize();
+        assert!(
+            short
+                .completed_output_items()
+                .first()
+                .is_some_and(|item| item["type"] == "reasoning"
+                    && item["summary"][0]["text"] == "Synthetic legacy thought."),
+            "unfinished short tags must retain their existing legacy fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn long_thinking_protocol_sse_covers_every_tag_and_unicode_boundary() {
+        let text = " \n<thinking>Synthetic 思考🧪.</thinking>\nSynthetic 答案🌱.";
+        for (cut, _) in text.char_indices() {
+            let response = long_thinking_sse_fixture(
+                &[&text[..cut], &text[cut..]],
+                Some("thinking_tags"),
+                true,
+            )
+            .await;
+            assert!(
+                response["output"][0]["summary"][0]["text"] == "Synthetic 思考🧪.",
+                "every tag/content split must retain long-tag reasoning"
+            );
+            assert!(
+                response["output"][1]["content"][0]["text"] == "Synthetic 答案🌱.",
+                "byte-fragmented Unicode answer must remain unchanged"
+            );
+        }
+        let parts: Vec<_> = text
+            .char_indices()
+            .map(|(offset, ch)| &text[offset..offset + ch.len_utf8()])
+            .collect();
+        let response = long_thinking_sse_fixture(&parts, Some("thinking_tags"), true).await;
+        assert!(
+            response["output"][0]["summary"][0]["text"] == "Synthetic 思考🧪.",
+            "single-character SSE deltas must retain reasoning"
+        );
+        assert!(
+            response["output"][1]["content"][0]["text"] == "Synthetic 答案🌱.",
+            "single-character SSE deltas must retain the answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn long_thinking_protocol_sse_generic_and_literal_paths_do_not_remove_text() {
+        let text = "<thinking>Synthetic 思考🧪.</thinking>Answer.";
+        for format in [
+            None,
+            Some("auto"),
+            Some("think_tags"),
+            Some("reasoning_content"),
+            Some("THINKING_TAGS"),
+            Some(" thinking_tags "),
+        ] {
+            for (cut, _) in text.char_indices() {
+                let response =
+                    long_thinking_sse_fixture(&[&text[..cut], &text[cut..]], format, true).await;
+                assert!(
+                    response["output"][0]["type"] == "message",
+                    "generic SSE conversion must not classify long tags as reasoning"
+                );
+                assert!(
+                    response["output"][0]["content"][0]["text"] == text,
+                    "generic SSE conversion must not remove long tags at any boundary"
+                );
+            }
+        }
+        for text in [
+            "Synthetic example: <thinking>literal</thinking>.",
+            "`<thinking>literal</thinking>`",
+            "```xml\n<thinking>literal</thinking>\n```",
+            "<thinking attr=\"example\">literal</thinking>",
+        ] {
+            let parts: Vec<_> = text
+                .char_indices()
+                .map(|(offset, ch)| &text[offset..offset + ch.len_utf8()])
+                .collect();
+            for format in [None, Some("thinking_tags")] {
+                let response = long_thinking_sse_fixture(&parts, format, true).await;
+                assert!(
+                    response["output"][0]["content"][0]["text"] == text,
+                    "mid-text and code examples must remain unchanged"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn long_thinking_protocol_sse_keeps_short_tag_compatibility() {
+        for format in [None, Some("thinking_tags")] {
+            let response = long_thinking_sse_fixture(
+                &["<thi", "nk>Synthetic 思考🧪.</th", "ink>Answer."],
+                format,
+                true,
+            )
+            .await;
+            assert!(
+                response["output"][0]["summary"][0]["text"] == "Synthetic 思考🧪.",
+                "short tags must retain existing compatibility"
+            );
+            assert!(
+                response["output"][1]["content"][0]["text"] == "Answer.",
+                "short tags must retain existing answer extraction"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn converts_text_chat_sse_to_responses_sse() {
         let output = collect(vec![
@@ -1010,6 +1359,56 @@ mod tests {
             2
         );
         assert_eq!(completed["response"]["usage"]["cache_read_input_tokens"], 2);
+    }
+
+    #[test]
+    fn empty_tool_calls_do_not_close_reasoning_before_the_real_boundary() {
+        for inline in [false, true] {
+            let mut state = ChatToResponsesState::default();
+            let delta = |text: &str| {
+                if inline {
+                    json!({"content": text, "tool_calls": []})
+                } else {
+                    json!({"reasoning_content": text, "tool_calls": []})
+                }
+            };
+            let first = if inline { "<think>Need " } else { "Need " };
+            let mut early = state.handle_chat_chunk(&json!({
+                "id": "chatcmpl_empty_tools", "choices": [{"delta": delta(first)}]
+            }));
+            early.extend(state.handle_chat_chunk(&json!({
+                "id": "chatcmpl_empty_tools", "choices": [{"delta": delta("context.")}]
+            })));
+            let early_events =
+                parse_sse_events(&String::from_utf8(early.concat()).expect("synthetic UTF-8"));
+            assert!(
+                early_events
+                    .iter()
+                    .all(|event| event["type"] != "response.output_item.done"),
+                "empty tool arrays must not finalize reasoning or inline-think detection"
+            );
+            let answer = if inline { "</think>Done" } else { "Done" };
+            let mut end = state.handle_chat_chunk(&json!({
+                "id": "chatcmpl_empty_tools", "choices": [{
+                    "delta": {"content": answer}, "finish_reason": "stop"
+                }]
+            }));
+            end.extend(state.finalize());
+            let events =
+                parse_sse_events(&String::from_utf8(end.concat()).expect("synthetic UTF-8"));
+            let completed = events
+                .iter()
+                .find(|event| event["type"] == "response.completed")
+                .expect("synthetic completion");
+            assert_eq!(
+                completed["response"]["output"][0]["summary"][0]["text"],
+                "Need context."
+            );
+            assert_eq!(
+                completed["response"]["output"][1]["content"][0]["text"],
+                "Done"
+            );
+        }
     }
 
     #[tokio::test]

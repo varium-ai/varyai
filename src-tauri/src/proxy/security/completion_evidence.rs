@@ -403,7 +403,7 @@ impl SseCompletion {
                 Err(_) => self.invalid = true,
             }
         }
-        if self.chat_done || data.get("error").is_some() {
+        if self.chat_done || data.get("error").is_some_and(|v| !v.is_null()) {
             self.invalid = true;
             return;
         }
@@ -437,10 +437,14 @@ impl SseCompletion {
         self.invalid |= self.unsupported_carrier
             || delta
                 .get("role")
+                .filter(|v| !v.is_null())
                 .is_some_and(|v| v.as_str() != Some("assistant"))
-            || delta.get("tool_calls").is_some_and(|v| !v.is_array());
-        self.invalid |= delta.contains_key("function_call");
-        if let Some(tools) = delta.get("tool_calls") {
+            || delta
+                .get("tool_calls")
+                .filter(|v| !v.is_null())
+                .is_some_and(|v| !v.is_array());
+        self.invalid |= delta.get("function_call").is_some_and(|v| !v.is_null());
+        if let Some(tools) = delta.get("tool_calls").filter(|v| !v.is_null()) {
             if self.chat_tools.is_none() {
                 match super::completion_tools::ChatTools::new(budget.clone()) {
                     Ok(tools) => self.chat_tools = Some(tools),

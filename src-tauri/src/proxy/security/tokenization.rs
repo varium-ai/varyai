@@ -4,39 +4,9 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::{fmt, ops::Range};
 
-const TOKEN_BYTES: usize = 31;
-const CATEGORY_CODES: [&str; 10] = ["ph", "id", "pk", "ak", "db", "pw", "ip", "pi", "cu", "mx"];
+use super::token_format::{self, MAX_REFERENCE_BYTES as TOKEN_BYTES};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum TokenCategory {
-    PrivateKey,
-    Database,
-    ApiKey,
-    Password,
-    IdCard,
-    Phone,
-    Infrastructure,
-    Personal,
-    Custom,
-    Mixed,
-}
-
-impl TokenCategory {
-    fn code(self) -> &'static str {
-        match self {
-            Self::PrivateKey => "pk",
-            Self::Database => "db",
-            Self::ApiKey => "ak",
-            Self::Password => "pw",
-            Self::IdCard => "id",
-            Self::Phone => "ph",
-            Self::Infrastructure => "ip",
-            Self::Personal => "pi",
-            Self::Custom => "cu",
-            Self::Mixed => "mx",
-        }
-    }
-}
+pub(super) use super::token_format::TokenCategory;
 
 /// The caller supplies only categories covering the complete merged span.
 /// An empty set means no category covers that span, so it is mixed.
@@ -105,27 +75,16 @@ pub(super) fn visit_token_references(
     const MAX_REFERENCES: usize = 4096;
     let mut count = 0usize;
     let mut offset = 0;
-    while let Some(relative) = text[offset..].find("vary_") {
-        let start = offset + relative;
+    while let Some((start, prefix_len)) = token_format::next_candidate(text, offset) {
+        offset = start + prefix_len;
         let bytes = &text.as_bytes()[start..];
-        let recognized = bytes.len() >= 8
-            && bytes[7] == b'_'
-            && CATEGORY_CODES
-                .iter()
-                .any(|code| code.as_bytes() == &bytes[5..7]);
-        if !recognized {
-            offset = start + 5;
+        let Some(layout) = token_format::header(bytes) else {
             continue;
-        }
-        if bytes.len() < TOKEN_BYTES
-            || !bytes[8..28]
-                .iter()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
-            || &bytes[28..TOKEN_BYTES] != b"_ai"
-        {
+        };
+        if !layout.complete(bytes) {
             return Err(TokenError::ContextUnavailable);
         }
-        offset = start + TOKEN_BYTES;
+        offset = start + layout.len;
         if count >= MAX_REFERENCES {
             return Err(TokenError::CapacityExceeded);
         }
@@ -146,6 +105,39 @@ pub(super) fn scan_token_references(text: &str) -> Result<Vec<Range<usize>>, Tok
         Ok(())
     })?;
     Ok(ranges)
+}
+
+/// Validate original response text without granting restoration authority.
+/// Format defects are recorded; complete references still require the original lease.
+#[cfg(test)]
+pub(super) fn validate_response_references(
+    text: &str,
+    lease: &DlpRequestLease,
+) -> Result<bool, TokenError> {
+    const MAX_REFERENCES: usize = 4096;
+    lease.validate_response_liveness()?;
+    let mut malformed = false;
+    let mut count = 0usize;
+    let mut offset = 0;
+    while let Some((start, prefix_len)) = token_format::next_candidate(text, offset) {
+        offset = start + prefix_len;
+        let bytes = &text.as_bytes()[start..];
+        let Some(layout) = token_format::header(bytes) else {
+            continue;
+        };
+        count = count.checked_add(1).ok_or(TokenError::CapacityExceeded)?;
+        if count > MAX_REFERENCES {
+            return Err(TokenError::CapacityExceeded);
+        }
+        if !layout.complete(bytes) {
+            malformed = true;
+            continue;
+        }
+        offset = start + layout.len;
+        lease.resolve(&text[start..offset])?;
+    }
+    lease.validate_response_liveness()?;
+    Ok(malformed)
 }
 
 #[cfg(test)]
@@ -253,11 +245,12 @@ use super::token_store_owners::{SharedAllocation, StoreAllocationLedger, StoreTe
 pub(super) struct Mapping {
     raw: StoreText,
     token: [u8; TOKEN_BYTES],
+    token_len: usize,
 }
 
 impl Mapping {
     fn token(&self) -> Result<&str, TokenError> {
-        std::str::from_utf8(&self.token).map_err(|_| TokenError::Unavailable)
+        std::str::from_utf8(&self.token[..self.token_len]).map_err(|_| TokenError::Unavailable)
     }
 }
 
@@ -305,9 +298,27 @@ impl MappingIndex {
 
 type ContextTable = StoreVec<super::completed_context::ContextEntry>;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HistoryPolicySource {
+    Published,
+    #[cfg(test)]
+    Fixture,
+}
+
+impl HistoryPolicySource {
+    fn with_revision<T>(self, revision: u64, operation: impl FnOnce() -> T) -> Option<T> {
+        match self {
+            Self::Published => super::runtime::with_history_policy_revision(revision, operation),
+            #[cfg(test)]
+            Self::Fixture => Some(operation()),
+        }
+    }
+}
+
 struct Namespace {
     identity: Option<[u8; 32]>,
     policy_revision: u64,
+    history_policy: HistoryPolicySource,
     generation: [u8; 16],
     key: [u8; 32],
     version: u64,
@@ -318,6 +329,7 @@ struct Namespace {
     context_entries: usize,
     committed: Charge,
     reserved: Charge,
+    history: Option<SharedAllocation<super::history_provenance::HistoryNamespace>>,
 }
 
 #[cfg(test)]
@@ -389,6 +401,7 @@ struct StoreState {
 
 struct StoreInner {
     allocation: StoreAllocationLedger,
+    history_allocation: OnceLock<Result<StoreAllocationLedger, TokenError>>,
     state: Mutex<StoreState>,
     // Separate from mapping and audit keys. A failed initialization stays closed.
     identity_key: OnceLock<Result<[u8; 32], TokenError>>,
@@ -402,12 +415,12 @@ struct StoreInner {
 }
 
 #[derive(Clone)]
-pub(super) struct DlpTokenStore {
+pub(crate) struct DlpTokenStore {
     inner: Result<SharedAllocation<StoreInner>, TokenError>,
 }
 
 /// Authority is request-local, not equivalent to membership in the namespace.
-pub(super) struct DlpRequestLease {
+pub(crate) struct DlpRequestLease {
     store: DlpTokenStore,
     namespace: u64,
     generation: [u8; 16],
@@ -427,6 +440,13 @@ struct Reservation {
 impl DlpTokenStore {
     pub(super) fn new() -> Self {
         Self::from_limits(TokenStoreLimits::default())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn history_fixture_lease_for_test(session: &str) -> Option<(Self, DlpRequestLease)> {
+        let store = Self::new();
+        let lease = store.admit("codex", Some(session), 1).ok()?;
+        Some((store, lease))
     }
 
     fn from_limits(limits: TokenStoreLimits) -> Self {
@@ -452,6 +472,7 @@ impl DlpTokenStore {
             SharedAllocation::new(
                 StoreInner {
                     allocation: ledger.clone(),
+                    history_allocation: OnceLock::new(),
                     state: Mutex::new(StoreState::default()),
                     identity_key: OnceLock::new(),
                     limits,
@@ -513,11 +534,36 @@ impl DlpTokenStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn admit(
         &self,
         app: &str,
         session: Option<&str>,
         policy_revision: u64,
+    ) -> Result<DlpRequestLease, TokenError> {
+        self.admit_with_history_policy(app, session, policy_revision, HistoryPolicySource::Fixture)
+    }
+
+    pub(super) fn admit_published_policy(
+        &self,
+        app: &str,
+        session: Option<&str>,
+        policy_revision: u64,
+    ) -> Result<DlpRequestLease, TokenError> {
+        self.admit_with_history_policy(
+            app,
+            session,
+            policy_revision,
+            HistoryPolicySource::Published,
+        )
+    }
+
+    fn admit_with_history_policy(
+        &self,
+        app: &str,
+        session: Option<&str>,
+        policy_revision: u64,
+        history_policy: HistoryPolicySource,
     ) -> Result<DlpRequestLease, TokenError> {
         if app.is_empty() || app.len() > 256 {
             return Err(TokenError::ContextUnavailable);
@@ -555,7 +601,8 @@ impl DlpTokenStore {
             let existing = identity.and_then(|identity| {
                 state.namespaces.iter().find_map(|(id, namespace)| {
                     (namespace.identity == Some(identity)
-                        && namespace.policy_revision == policy_revision)
+                        && namespace.policy_revision == policy_revision
+                        && namespace.history_policy == history_policy)
                         .then_some(*id)
                 })
             });
@@ -634,6 +681,7 @@ impl DlpTokenStore {
             let namespace = Namespace {
                 identity,
                 policy_revision,
+                history_policy,
                 generation,
                 key,
                 version: 0,
@@ -641,6 +689,7 @@ impl DlpTokenStore {
                 last_used: Instant::now(),
                 mappings: MappingIndex::default(),
                 contexts: None,
+                history: None,
                 context_entries: 0,
                 committed: namespace_charge,
                 reserved: Charge::default(),
@@ -1067,25 +1116,42 @@ fn token_digest(key: &[u8; 32], raw: &str) -> Result<[u8; 10], TokenError> {
 
 fn encode_token(digest: [u8; 10], category: TokenCategory) -> String {
     // Compatibility fixtures only; production staging writes directly to its owner.
-    let bytes = encode_token_bytes(digest, category);
-    String::from_utf8_lossy(&bytes).into_owned()
+    let (bytes, len) = encode_token_bytes(digest, category);
+    String::from_utf8_lossy(&bytes[..len]).into_owned()
 }
 
-fn encode_token_bytes(digest: [u8; 10], category: TokenCategory) -> [u8; TOKEN_BYTES] {
+fn encode_token_bytes(digest: [u8; 10], category: TokenCategory) -> ([u8; TOKEN_BYTES], usize) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut bytes = [0u8; TOKEN_BYTES];
-    bytes[..5].copy_from_slice(b"vary_");
-    bytes[5..7].copy_from_slice(category.code().as_bytes());
-    bytes[7] = b'_';
+    let category_end = token_format::PREFIX.len() + category.code().len();
+    bytes[..token_format::PREFIX.len()].copy_from_slice(token_format::PREFIX.as_bytes());
+    bytes[token_format::PREFIX.len()..category_end].copy_from_slice(category.code().as_bytes());
+    bytes[category_end] = b'-';
+    let digest_start = category_end + 1;
     for (index, byte) in digest.into_iter().enumerate() {
-        bytes[8 + index * 2] = HEX[usize::from(byte >> 4)];
-        bytes[9 + index * 2] = HEX[usize::from(byte & 15)];
+        bytes[digest_start + index * 2] = HEX[usize::from(byte >> 4)];
+        bytes[digest_start + index * 2 + 1] = HEX[usize::from(byte & 15)];
     }
-    bytes[28..].copy_from_slice(b"_ai");
-    bytes
+    let len = digest_start + token_format::DIGEST_HEX_BYTES + 3;
+    bytes[len - 3..len].copy_from_slice(b"-ai");
+    (bytes, len)
 }
 
 impl DlpRequestLease {
+    /// Check response context without authorizing references or refreshing idle TTL.
+    #[cfg(test)]
+    pub(super) fn validate_response_liveness(&self) -> Result<(), TokenError> {
+        let state = self.store.lock()?;
+        let namespace = state
+            .namespaces
+            .get(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        if namespace.generation != self.generation {
+            return Err(TokenError::ContextUnavailable);
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(super) fn observe_drop_authority_capacity_for_test(
         &mut self,
@@ -1243,12 +1309,12 @@ impl DlpRequestLease {
                         new_bytes = new_bytes
                             .checked_add(fragment.raw.len())
                             .ok_or(TokenError::CapacityExceeded)?;
-                        let bytes = encode_token_bytes(
+                        let (bytes, len) = encode_token_bytes(
                             *digest,
                             select_category(fragment.whole_span_categories),
                         );
-                        let text =
-                            std::str::from_utf8(&bytes).map_err(|_| TokenError::Unavailable)?;
+                        let text = std::str::from_utf8(&bytes[..len])
+                            .map_err(|_| TokenError::Unavailable)?;
                         super::payload_text::PayloadText::try_from_str(
                             text,
                             budget.clone(),
@@ -1319,11 +1385,9 @@ impl DlpRequestLease {
                 limits.entries_per_namespace,
             )?;
             for index in new_indices.as_slice() {
-                let token = tokens.as_slice()[*index]
-                    .as_str()
-                    .as_bytes()
-                    .try_into()
-                    .map_err(|_| TokenError::Unavailable)?;
+                let text = tokens.as_slice()[*index].as_str();
+                let mut token = [0u8; TOKEN_BYTES];
+                token[..text.len()].copy_from_slice(text.as_bytes());
                 let mapping = SharedAllocation::new(
                     Mapping {
                         raw: StoreText::try_from_str(
@@ -1332,6 +1396,7 @@ impl DlpRequestLease {
                             limits.fragment_bytes,
                         )?,
                         token,
+                        token_len: text.len(),
                     },
                     ledger.clone(),
                 )?;
@@ -1487,20 +1552,14 @@ impl DlpRequestLease {
     }
 
     pub(super) fn resolve(&self, token: &str) -> Result<&str, TokenError> {
-        if token.len() != TOKEN_BYTES {
-            return Err(TokenError::ContextUnavailable);
-        }
-        let mut complete = false;
-        visit_token_references(token, |range| {
-            complete = range == (0..TOKEN_BYTES);
-            Ok(())
-        })?;
-        if !complete {
+        let bytes = token.as_bytes();
+        let layout = token_format::header(bytes).ok_or(TokenError::ContextUnavailable)?;
+        if layout.legacy || token.len() != layout.len || !layout.complete(bytes) {
             return Err(TokenError::ContextUnavailable);
         }
         let mut digest = [0u8; 10];
         for (index, byte) in digest.iter_mut().enumerate() {
-            let offset = 8 + index * 2;
+            let offset = layout.digest_start + index * 2;
             let hex = |value: u8| {
                 if value <= b'9' {
                     value - b'0'
@@ -1584,6 +1643,18 @@ impl DlpRequestLease {
 
     fn store_id(&self) -> Result<usize, TokenError> {
         Ok(self.store.inner()? as *const StoreInner as usize)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn history_binding_for_test(
+        &self,
+        provider_id: &str,
+        protocol: &str,
+        target_url: &str,
+        principal: Option<&str>,
+    ) -> Option<super::completed_context::ActualAttemptBinding> {
+        self.bind_actual_attempt_extracted(provider_id, protocol, target_url, principal)
+            .ok()
     }
 
     pub(super) fn bind_actual_attempt_extracted(
@@ -1718,11 +1789,8 @@ impl DlpRequestLease {
                 visit_token_references(spec.payload, |range| {
                     self.resolve(&spec.payload[range]).map(|_| ())
                 })?;
-                if let Some(reasoning) = spec.reasoning {
-                    visit_token_references(reasoning, |range| {
-                        self.resolve(&reasoning[range]).map(|_| ())
-                    })?;
-                }
+                // Supported upstream reasoning is literal text, not token authority.
+                // Its bounded snapshot remains part of mandatory call completion.
                 vec.push_without_growth(CompletedCallEntry {
                     call_digest: call_id_digest(key, spec.call_id)?,
                     snapshot_digest: call_snapshot_digest(key, spec)?,
@@ -2484,5 +2552,637 @@ pub(super) mod identity_test_support {
             Some(hook) => hook(phase, state_unlocked),
             None => Ok(()),
         })
+    }
+}
+
+#[cfg(test)]
+mod response_scan_tests {
+    use super::*;
+
+    fn response_lease() -> Result<(DlpRequestLease, String), TokenError> {
+        let store = DlpTokenStore::with_test_key([0x73; 32]);
+        let mut lease = store.admit("codex", Some("synthetic-scan"), 1)?;
+        let reference = lease.prepare(
+            &[TokenFragment {
+                raw: "synthetic response scan value",
+                whole_span_categories: &[TokenCategory::Custom],
+            }],
+            &[],
+            |tokens| tokens.first().cloned().ok_or(TokenError::Unavailable),
+        )?;
+        Ok((lease, reference))
+    }
+
+    #[test]
+    fn reference_format_migration_all_categories_and_encoding() -> Result<(), TokenError> {
+        let categories = [
+            (TokenCategory::Phone, "cn_phone"),
+            (TokenCategory::IdCard, "cn_id_card"),
+            (TokenCategory::PrivateKey, "private_key"),
+            (TokenCategory::ApiKey, "api_token"),
+            (TokenCategory::Database, "db_conn"),
+            (TokenCategory::Password, "password"),
+            (TokenCategory::Infrastructure, "infra"),
+            (TokenCategory::Personal, "personal"),
+            (TokenCategory::Custom, "custom"),
+            (TokenCategory::Mixed, "mixed"),
+        ];
+        for (category, name) in categories {
+            let key = [0x61; 32];
+            let raw = "synthetic migration value";
+            let reference = make_token(&key, raw, category)?;
+            let header = format!("rredact-{name}-");
+            assert!(
+                reference.starts_with(&header),
+                "new semantic header required"
+            );
+            assert!(
+                reference.len() == header.len() + 23,
+                "bounded semantic length required"
+            );
+            let digest = token_digest(&key, raw)?;
+            let expected: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+            assert!(
+                reference[header.len()..reference.len() - 3] == expected,
+                "encoding must remain stable"
+            );
+            assert!(reference.ends_with("-ai"), "hyphen suffix required");
+            let ranges = scan_token_references(&reference)?;
+            assert!(
+                ranges == [0..reference.len()],
+                "new reference must be recognized exactly"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reference_format_migration_authority_and_legacy_rejection() -> Result<(), TokenError> {
+        let (lease, reference) = response_lease()?;
+        assert!(
+            reference.starts_with("rredact-custom-"),
+            "new reference generation required"
+        );
+        assert!(
+            lease.resolve(&reference).is_ok(),
+            "issued reference must resolve"
+        );
+        let digest = &reference["rredact-custom-".len()..reference.len() - 3];
+        for name in ["cn_phone", "private_key", "unknown"] {
+            let changed = format!("rredact-{name}-{digest}-ai");
+            assert!(
+                lease.resolve(&changed).is_err(),
+                "type changes never grant authority"
+            );
+        }
+        let legacy = format!("vary_cu_{digest}_ai");
+        assert!(
+            scan_token_references(&legacy)?.len() == 1,
+            "legacy reference must remain recognized"
+        );
+        assert!(
+            lease.resolve(&legacy).is_err(),
+            "legacy aliases must not restore"
+        );
+        assert!(
+            scan_token_references("vary_cu_bad").is_err(),
+            "legacy strict damage must refuse"
+        );
+        let other = lease.store.admit("codex", Some("synthetic-scan"), 1)?;
+        assert!(
+            other.resolve(&reference).is_err(),
+            "membership remains lease scoped"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_plain_and_authorized_text() -> Result<(), TokenError> {
+        let (lease, reference) = response_lease()?;
+        for text in ["", "ordinary response", reference.as_str()] {
+            assert_eq!(validate_response_references(text, &lease), Ok(false));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_reports_only_recognized_malformed_candidates() -> Result<(), TokenError> {
+        let (lease, _) = response_lease()?;
+        for text in [
+            "rredact-custom-".to_owned(),
+            format!("rredact-cn_phone-{}-ai", "A".repeat(20)),
+            format!("rredact-password-{}-ax", "0".repeat(20)),
+            format!("rredact-infra-{}-ai", "g".repeat(20)),
+        ] {
+            assert_eq!(validate_response_references(&text, &lease), Ok(true));
+        }
+        assert_eq!(
+            validate_response_references("vary_zz_ vary_cuX vary_CU_ vary_c", &lease),
+            Ok(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_authorized_and_malformed_in_either_order() -> Result<(), TokenError> {
+        let (lease, reference) = response_lease()?;
+        for text in [
+            format!("{reference} rredact-custom-"),
+            format!("rredact-custom- {reference}"),
+        ] {
+            assert_eq!(validate_response_references(&text, &lease), Ok(true));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_unauthorized_before_malformed_is_hard() -> Result<(), TokenError> {
+        let (owner, reference) = response_lease()?;
+        let lease = owner.store.admit("codex", Some("synthetic-scan"), 1)?;
+        assert_eq!(
+            validate_response_references(&format!("{reference} rredact-custom-"), &lease),
+            Err(TokenError::ContextUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_unauthorized_after_malformed_is_hard() -> Result<(), TokenError> {
+        let (owner, reference) = response_lease()?;
+        let lease = owner.store.admit("codex", Some("synthetic-scan"), 1)?;
+        assert_eq!(
+            validate_response_references(&format!("rredact-custom- {reference}"), &lease),
+            Err(TokenError::ContextUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_nested_authorized_reference_is_checked() -> Result<(), TokenError> {
+        let (lease, reference) = response_lease()?;
+        assert_eq!(
+            validate_response_references(&format!("rredact-custom-{reference}"), &lease),
+            Ok(true)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_nested_unauthorized_reference_is_hard() -> Result<(), TokenError> {
+        let (owner, reference) = response_lease()?;
+        let lease = owner.store.admit("codex", Some("synthetic-scan"), 1)?;
+        assert_eq!(
+            validate_response_references(&format!("rredact-custom-{reference}"), &lease),
+            Err(TokenError::ContextUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_category_mismatch_after_malformed_is_hard() -> Result<(), TokenError> {
+        let (lease, mut reference) = response_lease()?;
+        reference.replace_range(8..14, "cn_phone");
+        assert_eq!(
+            validate_response_references(&format!("rredact-custom-{reference}"), &lease),
+            Err(TokenError::ContextUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_foreign_namespace_reference_is_hard() -> Result<(), TokenError> {
+        let (owner, reference) = response_lease()?;
+        let lease = owner
+            .store
+            .admit("codex", Some("other-synthetic-scan"), 1)?;
+        assert_eq!(
+            validate_response_references(&format!("rredact-custom- {reference}"), &lease),
+            Err(TokenError::ContextUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_malformed_candidate_limit() -> Result<(), TokenError> {
+        let (lease, _) = response_lease()?;
+        let mut text = "rredact-custom-".repeat(4096);
+        assert_eq!(validate_response_references(&text, &lease), Ok(true));
+        text.push_str("rredact-custom-");
+        assert_eq!(
+            validate_response_references(&text, &lease),
+            Err(TokenError::CapacityExceeded)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_complete_candidate_limit() -> Result<(), TokenError> {
+        let (lease, reference) = response_lease()?;
+        let mut text = reference.repeat(4096);
+        assert_eq!(validate_response_references(&text, &lease), Ok(false));
+        text.push_str(&reference);
+        assert_eq!(
+            validate_response_references(&text, &lease),
+            Err(TokenError::CapacityExceeded)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_mixed_candidate_limit_counts_nested_complete() -> Result<(), TokenError> {
+        let (lease, reference) = response_lease()?;
+        let mut text = "rredact-custom-".repeat(4095);
+        text.push_str(&reference);
+        assert_eq!(validate_response_references(&text, &lease), Ok(true));
+        text.push_str("rredact-custom-");
+        assert_eq!(
+            validate_response_references(&text, &lease),
+            Err(TokenError::CapacityExceeded)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_unknown_prefixes_do_not_count_toward_limit() -> Result<(), TokenError> {
+        let (lease, _) = response_lease()?;
+        assert_eq!(
+            validate_response_references(&"vary_zz_".repeat(4097), &lease),
+            Ok(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_utf8_malformed_and_nested_complete() -> Result<(), TokenError> {
+        let (lease, reference) = response_lease()?;
+        for width in 0..=TOKEN_BYTES {
+            let text = format!(
+                "前🔒rredact-custom-{}🔐{reference}尾vary_🦀_",
+                "0".repeat(width)
+            );
+            assert_eq!(validate_response_references(&text, &lease), Ok(true));
+        }
+        assert_eq!(
+            validate_response_references(&format!("前🔒{reference}尾"), &lease),
+            Ok(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_utf8_does_not_hide_unauthorized_reference() -> Result<(), TokenError> {
+        let (owner, reference) = response_lease()?;
+        let lease = owner.store.admit("codex", Some("synthetic-scan"), 1)?;
+        assert_eq!(
+            validate_response_references(&format!("前🔒rredact-custom-🔐{reference}尾"), &lease),
+            Err(TokenError::ContextUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_strict_scanner_still_stops_at_malformed() -> Result<(), TokenError> {
+        let (lease, reference) = response_lease()?;
+        let text = format!("{reference} rredact-custom-{reference}");
+        assert_eq!(validate_response_references(&text, &lease), Ok(true));
+        let mut visited = 0;
+        assert_eq!(
+            visit_token_references(&text, |_| {
+                visited += 1;
+                Ok(())
+            }),
+            Err(TokenError::ContextUnavailable)
+        );
+        assert_eq!(visited, 1);
+        assert_eq!(
+            scan_token_references(&text).err(),
+            Some(TokenError::ContextUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_strict_complete_limit_is_unchanged() -> Result<(), TokenError> {
+        let (_, reference) = response_lease()?;
+        let mut text = reference.repeat(4096);
+        assert!(scan_token_references(&text).is_ok());
+        text.push_str(&reference);
+        assert_eq!(
+            scan_token_references(&text).err(),
+            Some(TokenError::CapacityExceeded)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_strict_resolve_is_unchanged() -> Result<(), TokenError> {
+        let (lease, reference) = response_lease()?;
+        assert!(lease.resolve(&reference).is_ok());
+        assert_eq!(
+            lease.resolve("rredact-custom-").err(),
+            Some(TokenError::ContextUnavailable)
+        );
+        let mut wrong_category = reference.clone();
+        wrong_category.replace_range(8..14, "cn_phone");
+        assert_eq!(
+            lease.resolve(&wrong_category).err(),
+            Some(TokenError::ContextUnavailable)
+        );
+        let unauthorized = lease.store.admit("codex", Some("synthetic-scan"), 1)?;
+        assert_eq!(
+            unauthorized.resolve(&reference).err(),
+            Some(TokenError::ContextUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_liveness_never_grants_authority_or_refreshes_ttl(
+    ) -> Result<(), TokenError> {
+        let (owner, reference) = response_lease()?;
+        let lease = owner.store.admit("codex", Some("synthetic-scan"), 1)?;
+        let before = {
+            let state = lease.store.lock()?;
+            let namespace = state
+                .namespaces
+                .get(&lease.namespace)
+                .ok_or(TokenError::Unavailable)?;
+            (namespace.last_used, namespace.active_leases)
+        };
+        let stats = lease.store.stats()?;
+        assert_eq!(lease.validate_response_liveness(), Ok(()));
+        assert_eq!(
+            validate_response_references("rredact-custom-", &lease),
+            Ok(true)
+        );
+        let after = {
+            let state = lease.store.lock()?;
+            let namespace = state
+                .namespaces
+                .get(&lease.namespace)
+                .ok_or(TokenError::Unavailable)?;
+            (namespace.last_used, namespace.active_leases)
+        };
+        assert_eq!(before, after);
+        assert_eq!(lease.store.stats()?, stats);
+        assert_eq!(
+            lease.resolve(&reference).err(),
+            Some(TokenError::ContextUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_stale_generation_is_hard_even_without_complete() -> Result<(), TokenError>
+    {
+        let (lease, reference) = response_lease()?;
+        {
+            let mut state = lease.store.lock()?;
+            let namespace = state
+                .namespaces
+                .get_mut(&lease.namespace)
+                .ok_or(TokenError::Unavailable)?;
+            namespace.generation[0] ^= 1;
+        }
+        assert_eq!(
+            lease.validate_response_liveness(),
+            Err(TokenError::ContextUnavailable)
+        );
+        for text in [
+            "",
+            "ordinary response",
+            "rredact-custom-",
+            reference.as_str(),
+        ] {
+            assert_eq!(
+                validate_response_references(text, &lease),
+                Err(TokenError::ContextUnavailable)
+            );
+        }
+        assert_eq!(
+            lease.resolve(&reference).err(),
+            Some(TokenError::ContextUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_missing_namespace_is_hard() -> Result<(), TokenError> {
+        let (mut lease, _) = response_lease()?;
+        let namespace = lease.namespace;
+        lease.namespace = u64::MAX;
+        assert_eq!(
+            lease.validate_response_liveness(),
+            Err(TokenError::ContextUnavailable)
+        );
+        assert_eq!(
+            validate_response_references("rredact-custom-", &lease),
+            Err(TokenError::ContextUnavailable)
+        );
+        lease.namespace = namespace;
+        Ok(())
+    }
+
+    #[test]
+    fn text_fallback_scan_unavailable_store_is_hard() -> Result<(), TokenError> {
+        let (lease, _) = response_lease()?;
+        lease.store.lock()?.unavailable = true;
+        assert_eq!(
+            lease.validate_response_liveness(),
+            Err(TokenError::Unavailable)
+        );
+        for text in ["", "ordinary response", "rredact-custom-"] {
+            assert_eq!(
+                validate_response_references(text, &lease),
+                Err(TokenError::Unavailable)
+            );
+        }
+        Ok(())
+    }
+}
+
+// Optional delivered-history APIs never participate in token authority.
+impl DlpRequestLease {
+    pub(crate) fn history_binding_live(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+    ) -> bool {
+        binding.namespace == self.namespace
+            && binding.generation == self.generation
+            && self.store.history_binding_live(binding)
+    }
+
+    fn history_namespace(
+        &self,
+        create: bool,
+    ) -> Option<SharedAllocation<super::history_provenance::HistoryNamespace>> {
+        {
+            let state = self.store.lock().ok()?;
+            let ns = state.namespaces.get(&self.namespace)?;
+            if ns.generation != self.generation || ns.identity.is_none() {
+                return None;
+            }
+            if let Some(history) = &ns.history {
+                return Some(history.clone());
+            }
+        }
+        if !create {
+            return None;
+        }
+        let global = self.store.history_allocation().ok()?;
+        let staged = super::history_provenance::HistoryNamespace::new(global)?;
+        let mut state = self.store.lock().ok()?;
+        let ns = state.namespaces.get_mut(&self.namespace)?;
+        if ns.generation != self.generation || ns.identity.is_none() {
+            return None;
+        }
+        let history = ns.history.get_or_insert(staged).clone();
+        Some(history)
+    }
+
+    pub(crate) fn capture_delivered_history(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        response: &serde_json::Value,
+    ) -> Option<super::history_provenance::PendingDeliveredHistory> {
+        if !self.history_binding_live(binding) {
+            return None;
+        }
+        self.history_namespace(true)?
+            .get()
+            .ok()?
+            .capture(binding, response)
+    }
+
+    /// Caller must finish mandatory validation, encoding and delivery first.
+    pub(crate) fn publish_delivered_history(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        pending: super::history_provenance::PendingDeliveredHistory,
+    ) -> bool {
+        let Some(issued) = pending.binding() else {
+            return false;
+        };
+        if !self.history_binding_live(binding)
+            || issued.store_id != binding.store_id
+            || issued.namespace != binding.namespace
+            || issued.generation != binding.generation
+            || issued.policy_revision != binding.policy_revision
+            || issued.provider_fingerprint != binding.provider_fingerprint
+            || !issued.reusable_principal
+        {
+            return false;
+        }
+        let Some(history) = self.history_namespace(false) else {
+            return false;
+        };
+        self.store
+            .with_live_history_binding(binding, || {
+                history.get().map(|history| history.publish(pending))
+            })
+            .is_some_and(|result| result.is_ok_and(|published| published.is_ok()))
+    }
+
+    pub(crate) fn history_projection<'a>(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        request: &'a serde_json::Value,
+    ) -> Option<super::history_provenance::DlpHistoryProjection<'a>> {
+        if !self.history_binding_live(binding) {
+            return None;
+        }
+        self.history_namespace(false)?.get().ok()?.projection(
+            self.store.clone(),
+            Some(binding),
+            request,
+        )
+    }
+
+    /// Deferred exact candidates cannot authorize sending: final mapping checks
+    /// still require the actual provider/protocol/target/principal binding.
+    pub(crate) fn history_admission_candidate_projection<'a>(
+        &self,
+        request: &'a serde_json::Value,
+    ) -> Option<super::history_provenance::DlpHistoryProjection<'a>> {
+        self.history_namespace(false)?
+            .get()
+            .ok()?
+            .projection(self.store.clone(), None, request)
+    }
+}
+impl DlpTokenStore {
+    fn history_allocation(&self) -> Result<StoreAllocationLedger, TokenError> {
+        self.inner()?
+            .history_allocation
+            .get_or_init(super::history_provenance::global_history_allocation)
+            .as_ref()
+            .cloned()
+            .map_err(|error| *error)
+    }
+
+    fn with_live_history_binding<T>(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        operation: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let inner = self.inner().ok()?;
+        if binding.store_id != inner as *const StoreInner as usize || !binding.reusable_principal {
+            return None;
+        }
+        // Read the immutable source, then release store state before taking the
+        // policy read guard. All nested locking is policy -> store -> history.
+        let policy = {
+            let state = self.lock().ok()?;
+            let ns = state.namespaces.get(&binding.namespace)?;
+            if ns.generation != binding.generation
+                || ns.policy_revision != binding.policy_revision
+                || ns.identity.is_none()
+            {
+                return None;
+            }
+            ns.history_policy
+        };
+        policy
+            .with_revision(binding.policy_revision, || {
+                let state = self.lock().ok()?;
+                let ns = state.namespaces.get(&binding.namespace)?;
+                if ns.generation != binding.generation
+                    || ns.policy_revision != binding.policy_revision
+                    || ns.history_policy != policy
+                    || ns.identity.is_none()
+                {
+                    return None;
+                }
+                let result = operation();
+                drop(state);
+                Some(result)
+            })
+            .flatten()
+    }
+
+    pub(super) fn history_binding_live(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+    ) -> bool {
+        self.with_live_history_binding(binding, || ()).is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn history_metadata_bytes_for_test(&self) -> Option<usize> {
+        self.history_bytes_for_test().ok()
+    }
+
+    #[cfg(test)]
+    pub(super) fn history_bytes_for_test(&self) -> Result<usize, TokenError> {
+        match self.inner()?.history_allocation.get() {
+            Some(Ok(ledger)) => {
+                let used = ledger.used();
+                used.plaintext
+                    .checked_add(used.metadata)
+                    .ok_or(TokenError::CapacityExceeded)
+            }
+            Some(Err(error)) => Err(*error),
+            None => Ok(0),
+        }
     }
 }
