@@ -33,7 +33,7 @@ const copyByAction: Record<
     bodyKey: "security.notifyRedactRestoreBody",
     defaultTitle: "Sensitive Information Tokenized",
     defaultBody:
-      "{{app}} request detected “{{rule}}”. Replaced with local references before sending; response restoration is not confirmed.",
+      "{{app}} request detected “{{rule}}”. Replaced with local references before sending.",
   },
   audit: {
     titleKey: "security.notifyAuditTitle",
