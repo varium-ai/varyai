@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 mod aggregation;
+mod atomic_update;
 pub mod audit_logger;
 pub mod builtin_rules;
 pub(crate) mod chat_enrichment;
@@ -65,6 +66,15 @@ pub use response::build_blocked_response;
 pub use engine::SecurityAuditEngine;
 #[allow(unused_imports)]
 pub use types::*;
+#[cfg(test)]
+#[path = "tests/atomic_compat_tests.rs"]
+mod atomic_compat_tests;
+#[cfg(test)]
+#[path = "tests/atomic_update_tests.rs"]
+mod atomic_update_tests;
+#[cfg(test)]
+#[path = "tests/history_test_process.rs"]
+pub(super) mod history_test_process;
 
 #[cfg(test)]
 #[path = "tests/aggregation_tests.rs"]

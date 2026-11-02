@@ -1220,6 +1220,9 @@ mod allocation_tests {
     #[test]
     fn history_provenance_record_allocator_null_discards_proof_and_releases_all_charges(
     ) -> Result<(), TokenError> {
+        let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+            return Ok(());
+        };
         use super::super::token_store_owners::allocator_test_support::fail_next_shared;
         use super::super::tokenization::DlpTokenStore;
         let store = DlpTokenStore::new();
@@ -1231,7 +1234,7 @@ mod allocation_tests {
             Some("synthetic-principal"),
         )?;
         let response = serde_json::json!({"output":[{"type":"reasoning","summary":[
-            {"type":"summary_text","text":"synthetic allocator record"}]}]});
+        {"type":"summary_text","text":"synthetic allocator record"}]}]});
         let warmup = lease
             .capture_delivered_history(&binding, &response)
             .ok_or(TokenError::Unavailable)?;

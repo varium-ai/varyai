@@ -1,5 +1,6 @@
 //! Client-only upstream errors. Diagnostics never expose response payloads.
 use super::{
+    atomic_update::try_update_usize,
     payload_budget::PayloadBudget,
     payload_buffer::PayloadBuffer,
     payload_json::PayloadJson,
@@ -130,12 +131,11 @@ pub(super) struct ErrorSafetyContext<'a> {
 struct Work(AtomicUsize);
 impl Work {
     fn charge(&self, bytes: usize) -> Result<(), TokenError> {
-        self.0
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                used.checked_add(bytes).filter(|next| *next <= WORK_LIMIT)
-            })
-            .map(|_| ())
-            .map_err(|_| TokenError::CapacityExceeded)
+        try_update_usize(&self.0, Ordering::Relaxed, Ordering::Relaxed, |used| {
+            used.checked_add(bytes).filter(|next| *next <= WORK_LIMIT)
+        })
+        .map(|_| ())
+        .map_err(|_| TokenError::CapacityExceeded)
     }
 }
 #[derive(Clone, Copy)]

@@ -2533,7 +2533,7 @@ fn validate_final_outbound_body(
             .map_err(DlpForwardError::from_token_error)?;
         visit_references_with_policy(
             body,
-            |path| history_target_for_path(path).map_or(HistoryLeafPolicy::Strict, &policy),
+            |path| history_target_for_path(path).map_or(HistoryLeafPolicy::Strict, policy),
             |tok| lease.resolve_if_authorized(tok).map(|_| ()),
         )
         .map_err(DlpForwardError::from_token_error)?;

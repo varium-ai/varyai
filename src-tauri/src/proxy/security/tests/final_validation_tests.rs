@@ -994,10 +994,13 @@ async fn reasoning_delivered_history_sse_requires_terminal_release() -> TestResu
     Ok(())
 }
 
-// Shared optional-ledger equality requires --test-threads=1.
+// Isolate the production global ledger while retaining exact accounting assertions.
 #[tokio::test]
 #[serial_test::serial]
 async fn reasoning_delivered_history_sse_final_yield_requires_wrapper_resume() -> TestResult {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     use crate::proxy::security::history_provenance::DlpHistoryLeafField as Field;
     use http_body_util::BodyExt;
 
@@ -1215,10 +1218,13 @@ async fn reasoning_delivered_history_sse_final_yield_requires_wrapper_resume() -
     Ok(())
 }
 
-// Shared optional-ledger equality requires --test-threads=1.
+// Isolate the production global ledger while retaining exact accounting assertions.
 #[tokio::test]
 #[serial_test::serial]
 async fn reasoning_delivered_history_sse_abort_or_failure_never_publishes() -> TestResult {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     use http_body_util::BodyExt;
     for active_tokens in [false, true] {
         for mode in 0..6 {
@@ -1418,6 +1424,9 @@ async fn reasoning_delivered_history_sse_abort_or_failure_never_publishes() -> T
 #[tokio::test]
 #[serial_test::serial]
 async fn reasoning_history_admission_candidate_preserves_mandatory_budget() -> TestResult {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     use super::super::{payload_json::test_support as json_probe, runtime};
     use http_body_util::BodyExt;
     use std::{cell::Cell, rc::Rc};

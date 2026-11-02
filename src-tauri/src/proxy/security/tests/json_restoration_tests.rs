@@ -121,6 +121,9 @@ async fn json_final_serialization_capacity_failure_does_not_publish_cursor() {
 #[tokio::test]
 async fn reasoning_history_json_final_encoding_failure_never_publishes(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     for active in [false, true] {
         for reasoning in [false, true] {
             for fail_allocation in [false, true] {

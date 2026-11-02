@@ -3051,6 +3051,24 @@ mod history_source_trace_tests {
     }
 
     #[test]
+    fn history_source_trace_fixture_accounting_is_independent_of_another_live_fixture() {
+        let (store, _lease, _binding, _delivered) = history_fixture();
+        let Some(baseline) = store.history_metadata_bytes_for_test() else {
+            panic!("synthetic_history_baseline_unavailable");
+        };
+        let (other_store, other_lease, other_binding, other_delivered) = history_fixture();
+        assert!(
+            store.history_metadata_bytes_for_test() == Some(baseline),
+            "history_fixture_shared_ledger"
+        );
+        drop((other_delivered, other_binding, other_lease, other_store));
+        assert!(
+            store.history_metadata_bytes_for_test() == Some(baseline),
+            "history_fixture_drop_changed_independent_ledger"
+        );
+    }
+
+    #[test]
     fn history_source_trace_snapshot_preserves_function_and_custom_targets() {
         for custom in [false, true] {
             let (store, lease, binding, _) = history_fixture();

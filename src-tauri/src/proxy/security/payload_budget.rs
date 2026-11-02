@@ -4,7 +4,7 @@
 //! that allocation is released. Distinct copies need distinct charges. Immutable sharing
 //! uses an `Arc` around the payload and its reservation, not a cloned reservation.
 //! This primitive does not allocate payloads, enforce caller integration or cap process RSS.
-use super::tokenization::TokenError;
+use super::{atomic_update::try_update_usize, tokenization::TokenError};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, LazyLock,
@@ -29,22 +29,20 @@ impl BudgetState {
 
     fn charge(&self, bytes: usize) -> Result<(), TokenError> {
         // These atomics account only for bytes; they do not publish payload memory.
-        self.used
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                used.checked_add(bytes).filter(|next| *next <= self.limit)
-            })
-            .map(|_| ())
-            .map_err(|_| TokenError::CapacityExceeded)
+        try_update_usize(&self.used, Ordering::Relaxed, Ordering::Relaxed, |used| {
+            used.checked_add(bytes).filter(|next| *next <= self.limit)
+        })
+        .map(|_| ())
+        .map_err(|_| TokenError::CapacityExceeded)
     }
 
     fn release(&self, bytes: usize) -> Result<(), TokenError> {
         // Never wrap or reset another owner's charge if an invariant is violated.
-        self.used
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                used.checked_sub(bytes)
-            })
-            .map(|_| ())
-            .map_err(|_| TokenError::Unavailable)
+        try_update_usize(&self.used, Ordering::Relaxed, Ordering::Relaxed, |used| {
+            used.checked_sub(bytes)
+        })
+        .map(|_| ())
+        .map_err(|_| TokenError::Unavailable)
     }
 }
 

@@ -252,10 +252,13 @@ fn history_provenance_requires_full_live_binding_without_operation_transfer(
 #[test]
 fn history_provenance_projection_count_boundary_keeps_exact_match_and_releases_pins(
 ) -> Result<(), TokenError> {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     let store = DlpTokenStore::new();
     let (lease, binding) = admitted(&store)?;
     let response = json!({"output":[{"type":"reasoning","summary":[
-        {"type":"summary_text","text":"s".repeat(220 * 1024)}]}]});
+    {"type":"summary_text","text":"s".repeat(220 * 1024)}]}]});
     assert!(publish(&lease, &binding, &response));
     let baseline = store.history_bytes_for_test()?;
     let mut items = vec![Value::Null; 4096];
@@ -295,6 +298,9 @@ fn history_provenance_projection_count_boundary_keeps_exact_match_and_releases_p
 #[test]
 fn history_provenance_chat_snapshot_failure_discards_all_targets_and_releases_charges(
 ) -> Result<(), TokenError> {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     for failure in 0..5 {
         let store = DlpTokenStore::new();
         let (lease, binding) = admitted(&store)?;
@@ -321,7 +327,7 @@ fn history_provenance_chat_snapshot_failure_discards_all_targets_and_releases_ch
         assert!(mapping.record(reasoning_target, &[source], Sep::None));
         assert!(mapping.record(content_target, &[output], Sep::None));
         let mut outbound = json!({"messages":[{"role":"assistant",
-            "content":"synthetic output","reasoning_content":"synthetic first"}]});
+        "content":"synthetic output","reasoning_content":"synthetic first"}]});
         match failure {
             0 => outbound["messages"][0]["metadata"] = json!("s".repeat(256 * 1024)),
             1 => {
@@ -366,6 +372,9 @@ fn history_provenance_chat_snapshot_failure_discards_all_targets_and_releases_ch
 #[test]
 fn history_provenance_chat_snapshot_message_limit_and_lifetime_are_exact() -> Result<(), TokenError>
 {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     let store = DlpTokenStore::new();
     let (lease, binding) = admitted(&store)?;
     let response = delivered();
@@ -509,6 +518,9 @@ fn history_provenance_mapping_is_typed_ordered_exact_and_live() -> Result<(), To
 
 #[test]
 fn history_provenance_capture_is_optional_atomic_bounded_and_releases() -> Result<(), TokenError> {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     let store = DlpTokenStore::new();
     let (lease, binding) = admitted(&store)?;
     let mandatory = store.allocation_ledger()?.used();
@@ -544,6 +556,9 @@ fn history_provenance_capture_is_optional_atomic_bounded_and_releases() -> Resul
 #[test]
 fn history_provenance_namespace_global_pending_and_replacement_peaks_are_charged(
 ) -> Result<(), TokenError> {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     let store = DlpTokenStore::new();
     let (lease, binding) = admitted(&store)?;
     let response = delivered();
@@ -595,6 +610,9 @@ fn history_provenance_namespace_global_pending_and_replacement_peaks_are_charged
 
 #[test]
 fn history_provenance_process_global_limit_spans_distinct_stores() -> Result<(), TokenError> {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     let response = delivered();
     let mut owners = Vec::new();
     let mut held = Vec::new();
@@ -741,6 +759,9 @@ fn history_provenance_trace_growth_failure_invalidates_entire_mapping() -> Resul
 
 #[test]
 fn history_provenance_namespace_control_stays_charged_until_last_trace() -> Result<(), TokenError> {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     let store = DlpTokenStore::new();
     let (lease, binding) = admitted(&store)?;
     let response = delivered();
@@ -763,6 +784,9 @@ fn history_provenance_namespace_control_stays_charged_until_last_trace() -> Resu
 #[test]
 fn history_provenance_chat_snapshot_each_fallible_copy_failure_revokes_all_targets(
 ) -> Result<(), TokenError> {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     use super::token_store_owners::test_support::{install, Kind, Phase};
     use std::{cell::Cell, rc::Rc};
 
@@ -793,10 +817,10 @@ fn history_provenance_chat_snapshot_each_fallible_copy_failure_revokes_all_targe
         Ok::<_, TokenError>(mapping)
     };
     let outbound = json!({"messages":[{"role":"assistant",
-        "content":"synthetic output","reasoning_content":"synthetic first",
-        "metadata":{"synthetic":["synthetic nested",{"synthetic":true}]},
-        "tool_calls":[{"id":"synthetic-call","type":"function",
-            "function":{"name":"synthetic_tool","arguments":"{}"}}]}]});
+    "content":"synthetic output","reasoning_content":"synthetic first",
+    "metadata":{"synthetic":["synthetic nested",{"synthetic":true}]},
+    "tool_calls":[{"id":"synthetic-call","type":"function",
+        "function":{"name":"synthetic_tool","arguments":"{}"}}]}]});
     let unchanged = outbound.clone();
     let count = Rc::new(Cell::new(0));
     let kinds = Rc::new(Cell::new(0_usize));
@@ -866,6 +890,9 @@ fn history_provenance_chat_snapshot_each_fallible_copy_failure_revokes_all_targe
 
 #[test]
 fn history_provenance_chat_snapshot_depth_64_65_boundary_is_exact() -> Result<(), TokenError> {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     let store = DlpTokenStore::new();
     let (lease, binding) = admitted(&store)?;
     let response = delivered();
@@ -885,7 +912,7 @@ fn history_provenance_chat_snapshot_depth_64_65_boundary_is_exact() -> Result<()
             nested = json!([nested]);
         }
         let outbound = json!({"messages":[{"role":"assistant",
-            "reasoning_content":"synthetic first","metadata":nested}]});
+        "reasoning_content":"synthetic first","metadata":nested}]});
         let mut mapping = projection.mapping().ok_or(TokenError::Unavailable)?;
         assert!(mapping.record(target, &[source.clone()], Sep::None));
         assert_eq!(mapping.seal_chat_targets(&outbound), depth == 64);
@@ -903,6 +930,9 @@ fn history_provenance_chat_snapshot_depth_64_65_boundary_is_exact() -> Result<()
 #[test]
 fn history_provenance_chat_snapshot_multibyte_exact_byte_ceiling_releases_charges(
 ) -> Result<(), TokenError> {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     use super::token_store_owners::test_support::{install, Kind, Phase};
     use std::{cell::Cell, rc::Rc};
 
@@ -925,7 +955,7 @@ fn history_provenance_chat_snapshot_multibyte_exact_byte_ceiling_releases_charge
         Ok::<_, TokenError>(mapping)
     };
     let mut outbound = json!({"messages":[{"role":"assistant",
-        "reasoning_content":"synthetic first","metadata":"界"}]});
+    "reasoning_content":"synthetic first","metadata":"界"}]});
     let peak = Rc::new(Cell::new(0_usize));
     let observed = peak.clone();
     let mut measured = mapping()?;
@@ -978,6 +1008,9 @@ fn history_provenance_chat_snapshot_multibyte_exact_byte_ceiling_releases_charge
 #[test]
 fn history_provenance_record_control_unavailability_discards_pending_and_releases(
 ) -> Result<(), TokenError> {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     use super::token_store_owners::test_support::{install, Kind, Phase};
     let store = DlpTokenStore::new();
     let (lease, binding) = admitted(&store)?;
@@ -1150,6 +1183,9 @@ fn history_provenance_concurrent_pending_capture_publish_drop_is_atomic_and_boun
 #[serial_test::serial]
 fn history_provenance_concurrent_publication_and_last_shared_owner_release(
 ) -> Result<(), TokenError> {
+    let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+        return Ok(());
+    };
     use super::history_provenance::global_history_allocation;
     use std::sync::Barrier;
 
@@ -1225,9 +1261,9 @@ fn history_provenance_concurrent_publication_and_last_shared_owner_release(
         "pending public captures must not authorize history"
     );
     assert!(
-        results.iter().enumerate().all(|(index, (_, published))| *published == (index == 0)),
-        "only the exact live policy binding may publish while other captures are rejected or dropped"
-    );
+    results.iter().enumerate().all(|(index, (_, published))| *published == (index == 0)),
+    "only the exact live policy binding may publish while other captures are rejected or dropped"
+);
     for (index, request) in replays.iter().enumerate() {
         let projection = lease.history_projection(&binding, request);
         assert!(
@@ -1300,12 +1336,12 @@ fn history_provenance_concurrent_publication_and_last_shared_owner_release(
         "shared history owner threads must finish without panic"
     );
     assert!(
-        cloned == pinned && one_remaining == pinned,
-        "shared clones and racing nonfinal drops must neither double-charge nor release the final owner"
-    );
+    cloned == pinned && one_remaining == pinned,
+    "shared clones and racing nonfinal drops must neither double-charge nor release the final owner"
+);
     assert!(
-        global.used() == global_before && store.allocation_ledger()?.used() == mandatory_before,
-        "final shared owner release must return the complete optional delta and local mandatory charges"
-    );
+    global.used() == global_before && store.allocation_ledger()?.used() == mandatory_before,
+    "final shared owner release must return the complete optional delta and local mandatory charges"
+);
     Ok(())
 }

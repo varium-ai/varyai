@@ -730,10 +730,13 @@ mod barrier_regressions {
             .is_ok()
     }
 
-    // Shared optional-ledger equality requires --test-threads=1.
+    // Isolate the production global ledger while retaining exact accounting assertions.
     #[test]
     fn reasoning_history_sse_successful_finalize_is_single_release(
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+            return Ok(());
+        };
         for publish_first in [false, true] {
             let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
             let (store, lease, binding, _) = fixture(&budget);
@@ -808,6 +811,9 @@ mod barrier_regressions {
     #[test]
     fn reasoning_history_sse_failed_reentry_discards_pending_proof(
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+            return Ok(());
+        };
         for fail_on_frame in [false, true] {
             let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
             let (store, lease, binding, _) = fixture(&budget);
@@ -899,6 +905,9 @@ mod barrier_regressions {
     #[test]
     fn reasoning_history_sse_processing_after_finalize_is_closed(
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+            return Ok(());
+        };
         for block in ["", ": synthetic comment\n\n", "data: [DONE]\n\n"] {
             let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
             let (store, lease, binding, _) = fixture(&budget);
@@ -1032,10 +1041,13 @@ mod barrier_regressions {
         check_history_sse_local_encoding_boundary(None)
     }
 
-    // Global optional-ledger equality requires --test-threads=1.
+    // Isolate the production global ledger while retaining exact accounting assertions.
     fn check_history_sse_local_encoding_boundary(
         fail_final_frame: Option<bool>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(_completion) = crate::proxy::security::history_test_process::enter()? else {
+            return Ok(());
+        };
         use super::super::payload_buffer::test_support::{self, Action, Phase};
         use std::{cell::Cell, rc::Rc};
 

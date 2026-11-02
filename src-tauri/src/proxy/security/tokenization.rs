@@ -445,6 +445,14 @@ impl DlpTokenStore {
     #[cfg(test)]
     pub(crate) fn history_fixture_lease_for_test(session: &str) -> Option<(Self, DlpRequestLease)> {
         let store = Self::new();
+        // Exact fixture snapshots must not observe other parallel tests' charges.
+        let ledger = StoreAllocationLedger::new(0, super::history_provenance::GLOBAL_BYTES).ok()?;
+        store
+            .inner()
+            .ok()?
+            .history_allocation
+            .set(Ok(ledger))
+            .ok()?;
         let lease = store.admit("codex", Some(session), 1).ok()?;
         Some((store, lease))
     }

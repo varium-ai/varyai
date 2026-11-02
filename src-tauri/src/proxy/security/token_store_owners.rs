@@ -1,6 +1,6 @@
 //! Independent, memory-only allocation ownership for token-store backing.
 //! No owner references the store or acquires its state mutex during destruction.
-use super::tokenization::TokenError;
+use super::{atomic_update::try_update_usize, tokenization::TokenError};
 use std::{
     alloc::Layout,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -78,13 +78,13 @@ impl<T> FallibleShared<T> {
         // saturated count deliberately retains backing and its charge forever,
         // rather than wrapping and freeing memory still owned by another clone.
         let inner = unsafe { self.pointer.as_ref() };
-        let previous = inner
-            .header
-            .strong
-            .fetch_update(Ordering::Release, Ordering::Relaxed, |count| {
-                (count != usize::MAX).then(|| count - 1)
-            })
-            .ok()?;
+        let previous = try_update_usize(
+            &inner.header.strong,
+            Ordering::Release,
+            Ordering::Relaxed,
+            |count| (count != usize::MAX).then(|| count - 1),
+        )
+        .ok()?;
         if previous != 1 {
             return None;
         }
@@ -109,7 +109,8 @@ impl<T> Clone for FallibleShared<T> {
     fn clone(&self) -> Self {
         // Saturation is a conservative, permanently charged leak, never an abort
         // or a wrapping counter. It cannot be reached by bounded proof metadata.
-        let _ = unsafe { self.pointer.as_ref() }.header.strong.fetch_update(
+        let _ = try_update_usize(
+            &unsafe { self.pointer.as_ref() }.header.strong,
             Ordering::Relaxed,
             Ordering::Relaxed,
             |count| Some(count.saturating_add(1)),
@@ -215,19 +216,17 @@ impl StoreAllocationLedger {
         })
     }
     fn add(counter: &AtomicUsize, bytes: usize, limit: usize) -> Result<(), TokenError> {
-        counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                used.checked_add(bytes).filter(|next| *next <= limit)
-            })
-            .map(|_| ())
-            .map_err(|_| TokenError::CapacityExceeded)
+        try_update_usize(counter, Ordering::Relaxed, Ordering::Relaxed, |used| {
+            used.checked_add(bytes).filter(|next| *next <= limit)
+        })
+        .map(|_| ())
+        .map_err(|_| TokenError::CapacityExceeded)
     }
     fn subtract(&self, counter: &AtomicUsize, bytes: usize) {
-        if counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                used.checked_sub(bytes)
-            })
-            .is_err()
+        if try_update_usize(counter, Ordering::Relaxed, Ordering::Relaxed, |used| {
+            used.checked_sub(bytes)
+        })
+        .is_err()
         {
             // Never wrap or reset another owner's charge after an invariant failure.
             self.state.unavailable.store(true, Ordering::Relaxed);
