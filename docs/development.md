@@ -11,7 +11,9 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-`pnpm dev:renderer` starts only the browser renderer. Native commands, the proxy and database operations require the Tauri runtime. Exit an existing app before starting a separate development instance.
+`pnpm dev` owns the renderer and Tauri processes together. Vite selects an available port starting at 3000, and the launcher passes its actual URL to Tauri without starting a second renderer. An occupied port, including one held by an older development process, is skipped without stopping the existing listener. `Ctrl+C`, termination, or a failed Tauri startup closes the launcher's renderer and Tauri process group. Additional Tauri options can be passed directly, for example `pnpm dev --no-watch`.
+
+`pnpm dev:renderer` starts only the browser renderer on port 3000 and requires that port to be available. Native commands, the proxy and database operations require the Tauri runtime. Exit an existing app before starting a separate development instance.
 
 The optional `setup.sh` changes the host environment: it can install system packages, activate global tools and select a Rust toolchain. Review it before running it. Manual setup is sufficient for contribution checks; this guide does not claim that every installer path has been validated.
 
@@ -21,8 +23,10 @@ The optional `setup.sh` changes the host environment: it can install system pack
 pnpm typecheck
 pnpm build:renderer
 pnpm test:unit
+pnpm test:dev
 pnpm test:trae-bridge
 pnpm test:qoder-codec
+python3 -B scripts/tests/recover-shared-v23.test.py
 pnpm audit --prod
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --lib --manifest-path src-tauri/Cargo.toml

@@ -10,6 +10,8 @@ use rusqlite::{backup::Backup, Connection, OptionalExtension};
 use std::{path::Path, sync::Mutex, time::Duration};
 
 pub(super) const EXTENSION_TABLES: &[&str] = &[
+    "intent_routing_groups",
+    "intent_routing_preferences",
     "gateway_keys",
     "gateway_usage",
     "gateway_agent_bindings",
@@ -45,7 +47,7 @@ impl Database {
 
     pub(crate) fn is_legacy_vary_database(conn: &Connection) -> Result<bool, AppError> {
         let version = Self::get_user_version(conn)?;
-        // A version alone is ambiguous: official v19/v20 have different migrations.
+        // A version alone is ambiguous: upstream and historical Vary v19-v24 differ.
         if !(19..=SCHEMA_VERSION).contains(&version) {
             return Ok(false);
         }
@@ -67,20 +69,26 @@ impl Database {
     }
 
     pub(crate) fn ensure_upstream_shared_columns(conn: &Connection) -> Result<(), AppError> {
-        for table in ["mcp_servers", "skills"] {
-            Self::add_column_if_missing(
-                conn,
-                table,
-                "enabled_mcode",
-                "BOOLEAN NOT NULL DEFAULT 0",
-            )?;
+        Self::ensure_upstream_shared_columns_through(conn, SHARED_SCHEMA_VERSION)
+    }
+
+    pub(super) fn ensure_upstream_shared_columns_through(
+        conn: &Connection,
+        version: i32,
+    ) -> Result<(), AppError> {
+        for (introduced, column, tables) in [
+            (19, "enabled_mcode", &["mcp_servers", "skills"][..]),
+            (20, "enabled_pi", &["mcp_servers"][..]),
+            (21, "enabled_agy", &["mcp_servers", "skills"][..]),
+            (22, "enabled_kimi", &["mcp_servers", "skills"][..]),
+            (23, "enabled_omp", &["mcp_servers"][..]),
+        ] {
+            if version >= introduced {
+                for table in tables {
+                    Self::add_column_if_missing(conn, table, column, "BOOLEAN NOT NULL DEFAULT 0")?;
+                }
+            }
         }
-        Self::add_column_if_missing(
-            conn,
-            "mcp_servers",
-            "enabled_pi",
-            "BOOLEAN NOT NULL DEFAULT 0",
-        )?;
         Ok(())
     }
 
@@ -110,13 +118,16 @@ impl Database {
         let ext_path = parent.join("vary-ai.db");
         // Inspect before any shared schema writes. Unknown extension formats are
         // preserved for a newer application to read.
-        if ext_path.exists() {
+        let extension_needs_upgrade = if ext_path.exists() {
             let ext =
                 Connection::open_with_flags(&ext_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
             Self::check_extension_version(&ext)?;
             Self::validate_extension_schema(&ext)?;
-        }
-        if legacy || (version > 0 && version < SHARED_SCHEMA_VERSION) {
+            Self::get_user_version(&ext)? < EXTENSION_SCHEMA_VERSION
+        } else {
+            false
+        };
+        if legacy || (version > 0 && version < SHARED_SCHEMA_VERSION) || extension_needs_upgrade {
             Self::storage_migration_backup(&conn, path)?;
             if ext_path.exists() {
                 let ext = Connection::open_with_flags(
@@ -216,16 +227,40 @@ impl Database {
             }
         }
         let version = Self::get_user_version(conn)?;
+        let contains = |table: &str| tables.iter().any(|name| name == table);
+        // Two development branches independently used v3/v4. Recognize only
+        // their complete known layouts; never treat arbitrary missing tables as optional.
+        let intent_layout = (version == 3
+            && contains("intent_routing_groups")
+            && !contains("intent_routing_preferences")
+            || version == 4
+                && contains("intent_routing_groups")
+                && contains("intent_routing_preferences"))
+            && !contains("gateway_agent_bindings")
+            && !contains("gateway_usage_details")
+            && !contains("gateway_usage_models");
+        if (3..=4).contains(&version)
+            && (contains("intent_routing_groups") || contains("intent_routing_preferences"))
+            && !intent_layout
+        {
+            return Err(AppError::Database(
+                "Unknown Vary extension database structure; automatic migration stopped without changing the files.".into(),
+            ));
+        }
         if version > 0
-            && EXTENSION_TABLES
-                .iter()
-                .filter(|t| version >= 2 || !matches!(**t, "gateway_keys" | "gateway_usage"))
-                .filter(|t| {
-                    version >= 3
-                        || !matches!(**t, "gateway_agent_bindings" | "gateway_usage_details")
-                })
-                .filter(|t| version >= 4 || **t != "gateway_usage_models")
-                .any(|t| !tables.iter().any(|name| name == t))
+            && EXTENSION_TABLES.iter().any(|table| {
+                let required = match *table {
+                    "gateway_keys" | "gateway_usage" => version >= 2,
+                    "gateway_agent_bindings" | "gateway_usage_details" => {
+                        version >= 3 && !intent_layout
+                    }
+                    "gateway_usage_models" => version >= 4 && !intent_layout,
+                    "intent_routing_groups" => version >= 5 || intent_layout,
+                    "intent_routing_preferences" => version >= 5 || intent_layout && version == 4,
+                    _ => true,
+                };
+                required && !contains(table)
+            })
         {
             return Err(AppError::Database(
                 "Vary 扩展数据库结构不完整，已保留原库。".into(),

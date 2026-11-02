@@ -409,27 +409,14 @@ impl Database {
     }
 
     /// One native WorkBuddy model ID can be owned by only one saved configuration.
-    pub(crate) fn activate_workbuddy_models(
-        &self,
-        provider_id: &str,
-        model_ids: &[String],
-    ) -> Result<(), AppError> {
+    pub(crate) fn activate_workbuddy_models(&self, provider_id: &str) -> Result<(), AppError> {
         let mut conn = lock_conn!(self.conn);
         let tx = conn
             .transaction()
             .map_err(|e| AppError::Database(e.to_string()))?;
-        for model_id in model_ids {
-            tx.execute(
-            "UPDATE providers SET meta = json_set(COALESCE(meta, '{}'), '$.liveConfigManaged', json('false'))
-             WHERE app_type = 'workbuddy' AND id != ?1 AND (
-               json_extract(settings_config, '$.id') = ?2 OR EXISTS (
-                 SELECT 1 FROM json_each(settings_config, '$.models')
-                 WHERE json_extract(value, '$.id') = ?2))",
-            params![provider_id, model_id],
-        )
-        .map_err(|e| AppError::Database(e.to_string()))?;
-        }
-        tx.execute("UPDATE providers SET meta = json_set(COALESCE(meta, '{}'), '$.liveConfigManaged', json('true')) WHERE app_type = 'workbuddy' AND id = ?1", params![provider_id])
+        tx.execute("UPDATE providers SET meta = json_set(COALESCE(meta, '{}'), '$.liveConfigManaged', json('false')) WHERE app_type = 'workbuddy'", [])
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.execute("UPDATE providers SET meta = json_set(COALESCE(meta, '{}'), '$.liveConfigManaged', json('true')) WHERE app_type = 'workbuddy' AND id = ?1 AND category IS NOT 'official'", params![provider_id])
             .map_err(|e| AppError::Database(e.to_string()))?;
         tx.execute(
             "UPDATE providers SET is_current = (id = ?1) WHERE app_type = 'workbuddy'",

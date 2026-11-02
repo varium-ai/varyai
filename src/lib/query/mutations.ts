@@ -93,7 +93,7 @@ export const useAddProviderMutation = (appId: AppId) => {
       await providersApi.add(
         newProvider,
         appId,
-        ["qoder", "trae", "kimi", "qwen", "zcode"].includes(appId)
+        ["workbuddy", "qoder", "trae", "kimi", "qwen", "zcode"].includes(appId)
           ? false
           : addToLive,
       );

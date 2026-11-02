@@ -224,6 +224,7 @@ export function ToolRiskRulesPanel({
   const [sandboxInput, setSandboxInput] = useState('{"command": "ls"}');
   const [sandboxClient, setSandboxClient] = useState("");
   const [sandboxDefinitionRef, setSandboxDefinitionRef] = useState("");
+  const [sandboxInputError, setSandboxInputError] = useState(false);
 
   const visibleRules = rules;
   const enabledCount = useMemo(
@@ -325,10 +326,17 @@ export function ToolRiskRulesPanel({
   };
 
   const handleRunSandbox = async () => {
+    setSandboxInputError(false);
+    sandbox.reset();
     let parsed: unknown;
     try {
       parsed = JSON.parse(sandboxInput);
     } catch {
+      // Preserve free-form inputs such as apply_patch, but never reinterpret broken JSON.
+      if (/^\s*[{[\"]/.test(sandboxInput)) {
+        setSandboxInputError(true);
+        return;
+      }
       parsed = sandboxInput;
     }
     await sandbox.test({
@@ -725,9 +733,17 @@ export function ToolRiskRulesPanel({
         <div className="mt-1 text-xs text-muted-foreground">
           {t("toolRisk.sandboxDescription", {
             defaultValue:
-              "不执行工具、不落盘、不回显原文，仅返回固定枚举结论。",
+              "手动预览规则，不受实时观测总开关影响；不执行工具、不产生风险记录、不保存或回显原文。",
           })}
         </div>
+        {settings && !settings.enabled && (
+          <p
+            role="status"
+            className="mt-2 text-xs text-amber-700 dark:text-amber-400"
+          >
+            {t("toolRisk.sandboxObservationDisabled")}
+          </p>
+        )}
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="tool-risk-sandbox-client">
@@ -755,6 +771,12 @@ export function ToolRiskRulesPanel({
         <p className="mt-2 text-xs text-muted-foreground">
           {t("toolRisk.sandboxTrustHint")}
         </p>
+        {sandboxClient.trim() === "openai" &&
+          sandboxTool.trim() === "write_file" && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t("toolRisk.sandboxOpenaiWriteHint")}
+            </p>
+          )}
         <div className="mt-4 grid gap-3 sm:grid-cols-[160px_1fr_auto]">
           <Input
             value={sandboxTool}
@@ -775,6 +797,11 @@ export function ToolRiskRulesPanel({
             {t("toolRisk.sandboxRun", { defaultValue: "测试" })}
           </Button>
         </div>
+        {sandboxInputError && (
+          <p role="alert" className="mt-2 text-xs text-destructive">
+            {t("toolRisk.sandboxInvalidJson")}
+          </p>
+        )}
         {sandbox.result && (
           <div className="mt-3 rounded-xl border border-border/80 bg-muted/40 p-3 text-xs">
             <div className="flex flex-wrap gap-3">

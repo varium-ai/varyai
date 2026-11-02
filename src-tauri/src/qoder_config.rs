@@ -146,6 +146,24 @@ pub(crate) fn change_provider_at<T>(
     replacement: Option<&Value>,
     commit: impl FnOnce() -> Result<T, AppError>,
 ) -> Result<T, AppError> {
+    change_provider_at_with_replacement(path, id, expected, replacement, false, commit)
+}
+pub(crate) fn replace_provider<T>(
+    id: &str,
+    expected: Option<&Value>,
+    replacement: Option<&Value>,
+    commit: impl FnOnce() -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    change_provider_at_with_replacement(&path(), id, expected, replacement, true, commit)
+}
+fn change_provider_at_with_replacement<T>(
+    path: &Path,
+    id: &str,
+    expected: Option<&Value>,
+    replacement: Option<&Value>,
+    replace_managed: bool,
+    commit: impl FnOnce() -> Result<T, AppError>,
+) -> Result<T, AppError> {
     let _guard = CONFIG_LOCK.get_or_init(|| Mutex::new(())).lock()?;
     if let Some(config) = replacement {
         validate_provider(config)?;
@@ -158,6 +176,13 @@ pub(crate) fn change_provider_at<T>(
         document["providers"] = json!({});
     }
     let providers = document["providers"].as_object_mut().ok_or_else(invalid)?;
+    if replace_managed {
+        providers.retain(|key, _| {
+            !key.strip_prefix("varyai-").is_some_and(|hash| {
+                hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        });
+    }
     match replacement {
         Some(value) => {
             providers.insert(id.into(), value.clone());

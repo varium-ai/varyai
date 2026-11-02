@@ -1,7 +1,7 @@
-use crate::config::{atomic_write, write_json_file_with_contents};
+use crate::config::{atomic_write, atomic_write_private, write_json_file_with_contents};
 use crate::error::AppError;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -120,6 +120,10 @@ fn config_error(code: &str) -> AppError {
             "WorkBuddy 配置被其他程序修改，请刷新后重试",
             "WorkBuddy configuration changed externally; refresh and retry",
         ),
+        "ownership" => (
+            "WorkBuddy 模型管理记录不可用，已保留原配置，请刷新后重试",
+            "WorkBuddy model ownership data is unavailable; the original configuration was preserved",
+        ),
         _ => (
             "WorkBuddy 模型需要名称、模型 ID、API Key 和有效的 Chat Completions 地址",
             "A WorkBuddy model requires a name, model ID, API key and a valid Chat Completions URL",
@@ -131,6 +135,7 @@ fn config_error(code: &str) -> AppError {
         "duplicate_model" => "workbuddy.duplicate_model",
         "missing_model" => "workbuddy.missing_model",
         "changed" => "workbuddy.changed",
+        "ownership" => "workbuddy.ownership",
         _ => "workbuddy.invalid_model",
     };
     AppError::localized(key, zh, en)
@@ -249,13 +254,93 @@ pub fn visible_model_ids() -> Result<Vec<String>, AppError> {
 
 static MODEL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+pub(crate) fn ownership_path() -> PathBuf {
+    get_workbuddy_dir().join("models.json.varyai-owned")
+}
+type OwnershipSnapshot = (BTreeMap<String, String>, Option<Vec<u8>>);
+fn read_ownership() -> Result<OwnershipSnapshot, AppError> {
+    let bytes = match std::fs::read(ownership_path()) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((BTreeMap::new(), None))
+        }
+        Err(_) => return Err(config_error("ownership")),
+    };
+    let entries: BTreeMap<String, String> =
+        serde_json::from_slice(&bytes).map_err(|_| config_error("ownership"))?;
+    if entries.iter().any(|(id, hash)| {
+        id.is_empty() || hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }) {
+        return Err(config_error("ownership"));
+    }
+    Ok((entries, Some(bytes)))
+}
+fn ownership_fingerprint(model: &Value) -> Result<String, AppError> {
+    use sha2::{Digest, Sha256};
+    // Names and routed URLs can change without transferring ownership. Never persist the key.
+    let identity = serde_json::to_vec(&(&model["id"], &model["apiKey"]))
+        .map_err(|_| config_error("ownership"))?;
+    Ok(format!("{:x}", Sha256::digest(identity)))
+}
+pub(crate) fn managed_model_ids() -> Result<Vec<String>, AppError> {
+    let (entries, _) = read_ownership()?;
+    read_models()?
+        .iter()
+        .filter_map(|model| {
+            let id = model["id"].as_str()?;
+            entries.get(id).map(|hash| {
+                ownership_fingerprint(model).map(|actual| (actual == *hash).then(|| id.to_string()))
+            })
+        })
+        .filter_map(|result| result.transpose())
+        .collect()
+}
+
 pub(crate) fn change_models<T>(
     old_ids: &[String],
     models: &[Value],
     commit: impl FnOnce() -> Result<T, AppError>,
 ) -> Result<T, AppError> {
     let _guard = MODEL_LOCK.get_or_init(|| Mutex::new(())).lock()?;
-    edit_models_at(&get_workbuddy_config_path(), old_ids, models, commit)
+    let (mut entries, original) = read_ownership()?;
+    let current = read_models()?;
+    for id in old_ids {
+        if let (Some(expected), Some(model)) = (
+            entries.get(id),
+            current
+                .iter()
+                .find(|model| model["id"].as_str() == Some(id)),
+        ) {
+            if ownership_fingerprint(model)? != *expected {
+                return Err(config_error("changed"));
+            }
+        }
+    }
+    entries.retain(|id, _| current.iter().any(|model| model["id"].as_str() == Some(id)));
+    entries.retain(|id, _| !old_ids.contains(id));
+    for model in models {
+        let id = model["id"]
+            .as_str()
+            .ok_or_else(|| config_error("invalid_model"))?;
+        entries.insert(id.to_string(), ownership_fingerprint(model)?);
+    }
+    let encoded = serde_json::to_vec(&entries).map_err(|_| config_error("ownership"))?;
+    edit_models_at(&get_workbuddy_config_path(), old_ids, models, || {
+        let result = (|| {
+            atomic_write_private(&ownership_path(), &encoded)
+                .map_err(|_| config_error("ownership"))?;
+            commit()
+        })();
+        if result.is_err() {
+            if let Some(bytes) = original {
+                atomic_write_private(&ownership_path(), &bytes)
+                    .map_err(|_| config_error("ownership"))?;
+            } else if ownership_path().exists() {
+                std::fs::remove_file(ownership_path()).map_err(|_| config_error("ownership"))?;
+            }
+        }
+        result
+    })
 }
 
 /// Rewrite only managed endpoint URLs, preserving native fields and visibility.
@@ -536,6 +621,41 @@ mod tests {
             std::fs::read_to_string(&path).expect("read"),
             "{\"external\":true}"
         );
+    }
+
+    #[test]
+    fn ownership_records_survive_routing_and_roll_back_with_failed_model_changes() {
+        let dir = tempfile::tempdir().expect("dir");
+        with_test_dir(dir.path(), || {
+            change_models(&[], &[model("owned")], || Ok(())).expect("write");
+            let original = std::fs::read(ownership_path()).expect("ownership");
+            assert!(!String::from_utf8_lossy(&original).contains("test-key"));
+            assert_eq!(managed_model_ids().expect("owned"), vec!["owned"]);
+            assert!(
+                change_models(&["owned".into()], &[model("new")], || Err::<(), _>(
+                    config_error("changed")
+                ))
+                .is_err()
+            );
+            assert_eq!(
+                std::fs::read(ownership_path()).expect("ownership"),
+                original
+            );
+            assert_eq!(managed_model_ids().expect("owned"), vec!["owned"]);
+            rewrite_model_urls(dir.path(), |_| {
+                Some("http://127.0.0.1:1/workbuddy/providers/test/v1/chat/completions".into())
+            })
+            .expect("route");
+            assert_eq!(
+                managed_model_ids().expect("routed ownership"),
+                vec!["owned"]
+            );
+            let path = get_workbuddy_config_path();
+            let (mut document, _) = read_at(&path).expect("native");
+            document["models"][0]["apiKey"] = json!("synthetic-user-replacement");
+            std::fs::write(path, document.to_string()).expect("external edit");
+            assert!(managed_model_ids().expect("ownership").is_empty());
+        });
     }
 
     #[test]

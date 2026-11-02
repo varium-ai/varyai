@@ -6,6 +6,97 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test]
+async fn concurrent_codex_requests_keep_independent_request_and_upstream_models(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use axum::{
+        body::{to_bytes, Body},
+        http::Request,
+        middleware,
+    };
+    use tower::Service;
+    let db = Arc::new(Database::memory()?);
+    let key = db.create_gateway_key(KeyPolicy {
+        name: "Synthetic attribution".into(),
+        models: vec![],
+        all_models: true,
+        token_limit: None,
+        period: Period::Never,
+    })?;
+    db.bind_gateway_agent("codex", Some(&key.key.id))?;
+    let proxy = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        db.clone(),
+        None,
+    );
+    let app = Router::new()
+        .fallback(|request: Request<Body>| async move {
+            let upstream = request
+                .extensions()
+                .get::<crate::proxy::gateway::GatewayUpstreamModel>()
+                .cloned();
+            let body = to_bytes(request.into_body(), 4096)
+                .await
+                .expect("fixture body");
+            let body: serde_json::Value = serde_json::from_slice(&body).expect("fixture json");
+            let model = body["model"].as_str().expect("fixture model");
+            if let Some(upstream) = upstream {
+                upstream.record(Some(model));
+            }
+            // Finish the second model first while both requests share the same agent and key.
+            if model == "synthetic-glm" {
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            }
+            Json(json!({"model":model,"usage":{"input_tokens":body["tokens"],"output_tokens":0}}))
+        })
+        .layer(middleware::from_fn_with_state(
+            proxy.state.clone(),
+            crate::proxy::gateway::enforce_agent,
+        ));
+    let send = |mut app: Router, model: &'static str, tokens: u64| async move {
+        let response = app
+            .call(Request::post("/v1/responses").body(Body::from(
+                json!({"model":model,"tokens":tokens}).to_string(),
+            ))?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        to_bytes(response.into_body(), 4096).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let (first, second) = tokio::join!(
+        send(app.clone(), "synthetic-glm", 17),
+        send(app, "synthetic-qwen", 29)
+    );
+    first?;
+    second?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if db
+                .list_gateway_usage(Some(&key.key.id))
+                .is_ok_and(|rows| rows.len() == 2)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    let rows = db.list_gateway_usage(Some(&key.key.id))?;
+    for (model, tokens) in [("synthetic-glm", 17), ("synthetic-qwen", 29)] {
+        let row = rows
+            .iter()
+            .find(|row| row.model == model)
+            .ok_or("missing model attribution")?;
+        assert_eq!(row.upstream_model.as_deref(), Some(model));
+        assert_eq!(row.tokens, tokens);
+        assert_eq!(row.requests, 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 #[serial_test::serial]
 async fn codex_anthropic_omits_disabled_strict_without_downgrading_strict_tools(
 ) -> Result<(), Box<dyn std::error::Error>> {

@@ -215,7 +215,6 @@ describe("ShellCommandListsPanel", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "toolRisk.commandLists.add" }),
     );
-    fireEvent.click(screen.getByText("toolRisk.commandLists.advanced"));
     change("matchKind", "regex");
     change("pattern", "[");
     confirm();
@@ -268,7 +267,6 @@ describe("ShellCommandListsPanel", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "toolRisk.commandLists.add" }),
     );
-    fireEvent.click(screen.getByText("toolRisk.commandLists.advanced"));
     change("matchKind", "regex");
     change("pattern", "^git");
     fireEvent.click(
@@ -447,7 +445,6 @@ describe("advanced list boundaries", () => {
     expect(
       screen.getByRole("button", { name: "toolRisk.commandLists.confirmSave" }),
     ).toBeEnabled();
-    fireEvent.click(screen.getByText("toolRisk.commandLists.advanced"));
     change("matchKind", "keyword");
     expect(
       screen.getByText("toolRisk.commandLists.scope.keyword"),
@@ -510,8 +507,6 @@ describe("risk boundary explanations", () => {
     "explains the single unknown segment restriction for %s",
     (kind) => {
       render(<ShellCommandListDialog open onOpenChange={vi.fn()} />);
-      if (kind !== "exact")
-        fireEvent.click(screen.getByText("toolRisk.commandLists.advanced"));
       change("matchKind", kind);
       expect(
         screen.getByText("toolRisk.commandLists.singleSegmentWhitelistHint"),
@@ -678,8 +673,6 @@ describe("Phase 2 Program scope and conservative previews", () => {
     "does not show Program basename hints for %s in either list",
     (kind) => {
       render(<ShellCommandListDialog open onOpenChange={vi.fn()} />);
-      if (kind === "keyword" || kind === "regex")
-        fireEvent.click(screen.getByText("toolRisk.commandLists.advanced"));
       change("matchKind", kind);
       for (const listType of ["blacklist", "whitelist"]) {
         change("listType", listType);

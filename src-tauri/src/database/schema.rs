@@ -439,6 +439,13 @@ impl Database {
     }
 
     pub(crate) fn create_extension_tables_on_conn(conn: &Connection) -> Result<(), AppError> {
+        // Preserve the intent-routing branch's storage without enabling its runtime.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS intent_routing_groups (
+                id TEXT PRIMARY KEY, revision INTEGER NOT NULL, config TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS intent_routing_preferences (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )?;
         conn.execute_batch("CREATE TABLE IF NOT EXISTS gateway_keys (id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL UNIQUE, policy TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS gateway_usage (key_id TEXT NOT NULL, window INTEGER NOT NULL, tokens INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(key_id,window));
             CREATE TABLE IF NOT EXISTS gateway_agent_bindings (app TEXT PRIMARY KEY, key_id TEXT NOT NULL);
@@ -705,13 +712,9 @@ impl Database {
                         Self::migrate_v17_to_v18(conn)?;
                         Self::set_user_version(conn, 18)?;
                     }
-                    18 if shared => {
-                        Self::ensure_upstream_shared_columns(conn)?;
-                        Self::set_user_version(conn, 19)?;
-                    }
-                    19 if shared => {
-                        Self::ensure_upstream_shared_columns(conn)?;
-                        Self::set_user_version(conn, 20)?;
+                    18..=22 if shared => {
+                        Self::ensure_upstream_shared_columns_through(conn, version + 1)?;
+                        Self::set_user_version(conn, version + 1)?;
                     }
                     18 => {
                         log::info!(

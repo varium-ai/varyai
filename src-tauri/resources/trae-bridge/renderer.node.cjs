@@ -11,6 +11,10 @@ function createBridge(service, audit, refresh) {
     stores.set(service, {
       getItem: (key) => values.get(key) ?? null,
       setItem: (key, value) => values.set(key, value),
+      key: (index) => [...values.keys()][index] ?? null,
+      get length() {
+        return values.size;
+      },
     });
   }
   return nativeBridge(service, audit, refresh, stores.get(service));
@@ -555,4 +559,100 @@ test("native model edits refresh the desktop model selector", async () => {
   assert.equal(refreshed, 3);
   await b.remove("test");
   assert.equal(refreshed, 5);
+});
+
+test("replacement removes models from lost provider IDs while preserving native models", async () => {
+  const f = fixture();
+  f.models.push({
+    custom_model_id: "manual",
+    name: "native",
+    display_name: "Native",
+    provider: "custom_openai_compatible",
+    base_url: "https://native.example/v1",
+  });
+  const b = createBridge(f.service, async () => ({}));
+  const config = {
+    protocol: "openai",
+    baseUrl: "https://example.test/v1",
+    apiKey: "synthetic-old",
+    models: [{ model: "shared" }, { model: "obsolete" }],
+  };
+  await b.apply("lost", "Old", config);
+  const add = f.service.addCustomModel;
+  f.service.addCustomModel = async (row) =>
+    f.models.some(
+      (existing) =>
+        existing.model_name === row.model_name &&
+        existing.base_url === row.base_url,
+    )
+      ? { code: 409 }
+      : add(row);
+  await b.replace("new", "New", {
+    ...config,
+    apiKey: "synthetic-new",
+    models: [{ model: "shared" }],
+  });
+  assert.equal(f.models.length, 2);
+  assert.equal(
+    f.models.find((m) => m.model_name === "shared").ak,
+    "synthetic-new",
+  );
+  assert.equal(f.models[0].custom_model_id, "manual");
+  await b.replace("official", "Official", null);
+  assert.deepEqual(
+    f.models.map((m) => m.custom_model_id),
+    ["manual"],
+  );
+});
+
+test("failed replacement restores orphaned native models without persisting credentials", async () => {
+  const f = fixture();
+  const b = createBridge(f.service, async () => ({}));
+  const config = {
+    protocol: "openai",
+    baseUrl: "https://example.test/v1",
+    apiKey: "synthetic-old",
+    models: [{ model: "shared" }, { model: "obsolete" }],
+  };
+  await b.apply("lost", "Old", config);
+  const add = f.service.addCustomModel;
+  f.service.addCustomModel = async (row) =>
+    row.ak === "synthetic-new" ? { code: 429 } : add(row);
+  await assert.rejects(
+    b.replace("new", "New", { ...config, apiKey: "synthetic-new" }),
+    /model_add_failed:429/,
+  );
+  assert.deepEqual(f.models.map((m) => m.model_name).sort(), [
+    "obsolete",
+    "shared",
+  ]);
+  assert.ok(
+    f.models.every(
+      (m) => m.ak === "synthetic-old" && m.display_name.endsWith(" · Old"),
+    ),
+  );
+  const storage = stores.get(f.service);
+  for (let i = 0; i < storage.length; i++)
+    assert.ok(!storage.getItem(storage.key(i)).includes("synthetic-old"));
+  await b.replace("official", "Official", null);
+  assert.equal(f.models.length, 0);
+});
+
+test("replacement refuses destructive changes when native recovery credentials are unavailable", async () => {
+  const f = fixture();
+  const b = createBridge(f.service, async () => ({}));
+  const config = {
+    protocol: "openai",
+    baseUrl: "https://example.test/v1",
+    apiKey: "synthetic",
+    models: [{ model: "old" }],
+  };
+  await b.apply("lost", "Old", config);
+  delete f.models[0].ak;
+  const before = structuredClone(f.models);
+  await assert.rejects(
+    b.replace("new", "New", config),
+    /model_recovery_unavailable/,
+  );
+  assert.deepEqual(f.models, before);
 });

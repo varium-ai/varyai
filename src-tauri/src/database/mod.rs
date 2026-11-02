@@ -33,6 +33,12 @@ mod storage;
 mod split_storage_tests;
 
 #[cfg(test)]
+mod upstream_compat_tests;
+
+#[cfg(test)]
+mod extension_compat_tests;
+
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]
@@ -76,9 +82,9 @@ use std::sync::Mutex;
 /// Historical monolithic format, used only to upgrade/import portable backups.
 /// New Vary features must increment EXTENSION_SCHEMA_VERSION, never this value.
 pub(crate) const SCHEMA_VERSION: i32 = 24;
-/// Public schema follows CC Switch: v19 adds MCode, v20 adds Pi MCP flags.
-pub(crate) const SHARED_SCHEMA_VERSION: i32 = 20;
-pub(crate) const EXTENSION_SCHEMA_VERSION: i32 = 4;
+/// Released CC Switch v4.0.21 schema; never follow unreleased main migrations.
+pub(crate) const SHARED_SCHEMA_VERSION: i32 = 23;
+pub(crate) const EXTENSION_SCHEMA_VERSION: i32 = 5;
 
 /// 安全地序列化 JSON，避免 unwrap panic
 pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError> {

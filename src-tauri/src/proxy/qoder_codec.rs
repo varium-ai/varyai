@@ -64,6 +64,19 @@ pub(crate) async fn check() -> Result<(), ProxyError> {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn qoder_runtime_does_not_trust_an_uninstalled_synthetic_root() {
+        if installation().is_err() {
+            return;
+        }
+        let temp = tempfile::tempdir().expect("directory");
+        let certificate = crate::services::qoder_certificate::create_at(temp.path().join("cert"))
+            .expect("synthetic certificate");
+        let result = call(json!({"operation": "trust", "ca": certificate.pem}))
+            .await
+            .expect("runtime trust probe");
+        assert_eq!(result, json!({"trusted": false}));
+    }
+    #[tokio::test]
     async fn qoder_installed_runtime_decodes_redacts_and_resigns_large_native_payload() {
         if installation().is_err() {
             return;

@@ -105,6 +105,15 @@ export function showFetchModelsError(
     toast.error(t("providerForm.fetchModelsAuthFailed"));
     return;
   }
+  const status = Number(msg.match(/\bHTTP\s+(\d{3})\b/)?.[1]);
+  if (status === 429) {
+    toast.error(t("providerForm.fetchModelsRateLimited"));
+    return;
+  }
+  if (status >= 500 && status <= 599) {
+    toast.error(t("providerForm.fetchModelsUpstreamFailed", { status }));
+    return;
+  }
   // 所有候选端点均返回 404/405：供应商可能未开放 /models 接口，或 Base URL 有误
   if (msg.includes("All candidates failed")) {
     toast.error(t("providerForm.fetchModelsEndpointNotFound"));
@@ -120,6 +129,18 @@ export function showFetchModelsError(
   }
   if (msg.includes("Failed to parse")) {
     toast.error(t("providerForm.fetchModelsNotSupported"));
+    return;
+  }
+  if (msg.includes("Request failed:")) {
+    toast.error(t("providerForm.fetchModelsNetworkFailed"));
+    return;
+  }
+  if (
+    msg.includes("Invalid models endpoint") ||
+    msg.includes("Cannot derive models endpoint") ||
+    msg.includes("Base URL is empty")
+  ) {
+    toast.error(t("providerForm.fetchModelsInvalidConfig"));
     return;
   }
 

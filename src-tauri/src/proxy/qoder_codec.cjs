@@ -4,6 +4,22 @@ const fs = require("node:fs");
 const crypto = require("node:crypto");
 function main() {
   const input = JSON.parse(fs.readFileSync(0, "utf8"));
+  if (input.operation === "trust") {
+    const ca = new crypto.X509Certificate(input.ca);
+    const tls = require("node:tls");
+    if (typeof tls.getCACertificates !== "function") throw new Error();
+    return {
+      trusted: tls.getCACertificates("system").some((pem) => {
+        const root = new crypto.X509Certificate(pem);
+        return (
+          root.ca &&
+          root.subject === root.issuer &&
+          root.verify(root.publicKey) &&
+          root.fingerprint256 === ca.fingerprint256
+        );
+      }),
+    };
+  }
   const source = fs.readFileSync(process.env.VARYAI_QODER_WORKER, "utf8");
   if (
     crypto.createHash("sha256").update(source).digest("hex") !==

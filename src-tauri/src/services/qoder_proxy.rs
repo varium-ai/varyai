@@ -324,6 +324,9 @@ impl Manager {
             if !super::qoder_certificate::trusted(&certificate).await? {
                 super::qoder_certificate::trust(&certificate.directory, self.app_handle.get())
                     .await?;
+                if !super::qoder_certificate::trusted(&certificate).await? {
+                    return Err("Qoder certificate verify_trust failed: failed".into());
+                }
             }
             *server = Some(
                 crate::proxy::qoder_tls::Server::start(
@@ -373,6 +376,7 @@ impl Manager {
             if let Ok(certificate) = inspected {
                 if certificate.sha1 == saved.sha1
                     && certificate.expires_at > chrono::Utc::now().timestamp()
+                    && !super::qoder_certificate::has_legacy_serial(&certificate)?
                 {
                     return Ok(certificate);
                 }

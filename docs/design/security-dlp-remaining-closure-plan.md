@@ -10,7 +10,7 @@ Authoritative contract: [reversible tokenization specification](security-dlp-rev
 
 ## Execution context and baseline
 
-Repository root: `/Users/chikham/workspace/varyai`. HEAD: `4dbfc90d1ff495c04b95bb04962bde57df799d82`. The dirty tree has 55 tracked modified and 12 untracked paths, with no staged changes. The parent verified pending, owned, context and protected hashes and exact HEAD/status against the previous final identity. New baseline: `/tmp/vary-dlp-remaining-start-identity.json`, SHA-256 `cff2ebc73a90846de3d1a2423f9ffb984d3f4f5210d3abbefc383c644dc6acf9`.
+Repository root: `<workspace>`. HEAD: `4dbfc90d1ff495c04b95bb04962bde57df799d82`. The dirty tree has 55 tracked modified and 12 untracked paths, with no staged changes. The parent verified pending, owned, context and protected hashes and exact HEAD/status against the previous final identity. New baseline: `/tmp/vary-dlp-remaining-start-identity.json`, SHA-256 `cff2ebc73a90846de3d1a2423f9ffb984d3f4f5210d3abbefc383c644dc6acf9`.
 
 Use synthetic fixtures, in-memory databases, temporary files and actual HTTP listeners on `127.0.0.1:0`. Do not start the application, package, use live models, execute generated commands/tools, stage, commit, push or create a PR. Parent owns all writes; agents perform bounded read-only reviews. No global formatting. Rust commands run from the repository root with `CARGO_INCREMENTAL=0`, `--offline --locked`; use bounded test timeouts. Current environment: macOS arm64, Rust/Cargo 1.98.1, Node v25.2.1, pnpm 10.12.3; free disk approximately 5.7 GiB at admission.
 

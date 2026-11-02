@@ -5,12 +5,19 @@ const { isChatTarget, bootstrapSource, PipeClient } = require("./agent.cjs");
 const { PassThrough } = require("node:stream");
 test("model diagnostics expose only a recognized operation and numeric code", () => {
   const { safeModelError } = require("./agent.cjs");
-  assert.equal(safeModelError("model_add_failed:409"), "model_add_failed:409");
+  for (const value of [
+    "model_add_failed:409",
+    "model_restore_failed",
+    "model_recovery_unavailable",
+  ])
+    assert.equal(safeModelError(value), value);
   for (const message of [
     "synthetic-private-detail",
     "model_add_failed:409 synthetic-secret",
     "model_remove_failed:secret",
     "model_update_failed:409\nprivate",
+    "model_restore_failed:private",
+    "model_recovery_unavailable private",
   ]) {
     assert.equal(safeModelError(message), "TRAE native bridge unavailable");
   }
@@ -257,4 +264,46 @@ test("passive connection accepts only the random local browser endpoint and neve
   );
   assert.deepEqual(await pipe.call("Runtime.enable"), { ok: true });
   socket.close();
+});
+
+test("bootstrap replaces an older resident bridge and keeps the current bridge on repeated scans", async () => {
+  const vm = require("node:vm");
+  let released = 0;
+  const proto = {
+    async convertReqToRustPayload(request) {
+      return request;
+    },
+  };
+  const client = Object.create(proto);
+  const context = {
+    __varyaiTraeNativeBridge: {
+      bridge: {
+        disable() {
+          released++;
+        },
+      },
+    },
+    __varyaiTraeSoloDI: {
+      isInitialized: () => true,
+      resolve: (id) =>
+        id === "IICubeAiChatConnectionService"
+          ? { getDefaultClient: async () => client }
+          : { notifyModelChanges: async () => {} },
+    },
+    document: { querySelector: () => null },
+    setTimeout,
+    clearTimeout,
+  };
+  await vm.runInNewContext(bootstrapSource(), context);
+  assert.equal(released, 1);
+  assert.equal(context.__varyaiTraeNativeBridge.revision, 2);
+  const current = context.__varyaiTraeNativeBridge;
+  assert.equal(typeof current.bridge.replace, "function");
+  await current.bridge.enable();
+  const wrapped = proto.convertReqToRustPayload;
+  await vm.runInNewContext(bootstrapSource(), context);
+  assert.equal(context.__varyaiTraeNativeBridge, current);
+  assert.equal(proto.convertReqToRustPayload, wrapped);
+  assert.equal(released, 1);
+  current.bridge.disable();
 });

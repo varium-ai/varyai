@@ -6,6 +6,10 @@ Enable takeover deliberately, back up the client settings and restart WorkBuddy 
 
 When no official endpoint is set in `settings.json`, routing reads the newest product cache in the WorkBuddy configuration directory. Both `cache/acc-product-config-v3.json` and `cache/acc-product-config-v3-*.json` are supported. Start WorkBuddy first if no cache exists. An unreadable or invalid newest cache stops setup without changing client settings.
 
+Switching suppliers replaces all identifiable VaryAI-managed models with the selected supplier's catalog. Switching to the official entry removes those managed custom models while preserving native login, settings and unrelated user models. A private `models.json.varyai-owned` file beside the native catalog records model IDs and SHA-256 ownership fingerprints, without plaintext credentials. It survives deletion of the shared database and participates in profile undo. Configuration changes restore the previous ownership file if the database commit fails. URL changes during routing do not change model ownership.
+
+Historical models without ownership records cannot be identified after their database records are deleted. Import or resolve those native conflicts rather than deleting unrelated models automatically.
+
 If adding a provider reports an existing model ID, use the saved provider or import the native configuration before editing it. WorkBuddy's native model catalog requires unique model IDs; adding the same IDs again does not select the existing provider. Click **Use this** on its card to make it current.
 
 WorkBuddy displays each custom model as its name followed by its model ID. VaryAI uses the provider name for that display name without appending the ID again. To update labels written by an older version, edit the saved provider and save it again. Restart WorkBuddy if it still displays the old catalog. This updates display names while preserving model IDs.
@@ -17,3 +21,5 @@ The active status requires a running proxy, a recovery backup, and the injected 
 Official forwarding retains the relevant login state. API-key forwarding uses the selected provider and strips official-only authentication data. Both follow the enabled inspection settings; a successful provider response is not a guarantee that every tool, payload or future vendor version is covered.
 
 Use a disposable profile and explicitly synthetic message content when testing. Keep actual API keys and private settings out of prompts, logs and screenshots. Coverage and recovery behavior are implemented in [the takeover service](../../src-tauri/src/services/workbuddy_proxy.rs), [provider handling](../../src-tauri/src/services/provider/workbuddy.rs), and [proxy adapter](../../src-tauri/src/proxy/workbuddy.rs).
+
+New suppliers are saved as inactive alternatives. Creating a supplier does not apply it to WorkBuddy; select it explicitly to replace the managed catalog.

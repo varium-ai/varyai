@@ -129,7 +129,14 @@ pub(super) fn add(
     }
     let incoming = models(&provider)?;
     let saved = state.db.get_all_providers(APP)?;
+    let owned = crate::workbuddy_config::managed_model_ids()?;
     if native_models(state)?.iter().any(|native| {
+        if native["id"]
+            .as_str()
+            .is_some_and(|id| owned.iter().any(|owned| owned == id))
+        {
+            return false;
+        }
         incoming.iter().any(|model| model["id"] == native["id"])
             && !saved
                 .values()
@@ -205,10 +212,13 @@ pub(super) fn update_with_lock(
     if ProviderService::provider_live_config_managed(&previous) == Some(true) {
         ProviderService::set_provider_live_config_managed(&mut provider, true);
     }
-    check_unique(state, &provider)?;
+    let selected = current(state)? == provider.id;
+    if !selected {
+        check_unique(state, &provider)?;
+    }
     let previous_models = models(&previous)?;
     let native = native_models(state)?;
-    let old_ids: Vec<String> = native
+    let mut old_ids: Vec<String> = native
         .iter()
         .filter(|model| previous_models.iter().any(|old| old["id"] == model["id"]))
         .filter_map(|model| model["id"].as_str().map(str::to_string))
@@ -216,6 +226,27 @@ pub(super) fn update_with_lock(
     if old_ids.is_empty() {
         state.db.save_provider(APP, &provider)?;
         return Ok(true);
+    }
+    if selected {
+        for id in crate::workbuddy_config::managed_model_ids()? {
+            if !old_ids.contains(&id) {
+                old_ids.push(id);
+            }
+        }
+        for previous in state.db.get_all_providers(APP)?.values().filter(|p| {
+            p.id != provider.id
+                && p.category.as_deref() != Some("official")
+                && ProviderService::provider_live_config_managed(p) != Some(false)
+        }) {
+            let owned = models(previous)?;
+            for model in native.iter().filter(|model| owned.contains(model)) {
+                if let Some(id) = model["id"].as_str() {
+                    if !old_ids.iter().any(|old| old == id) {
+                        old_ids.push(id.to_string());
+                    }
+                }
+            }
+        }
     }
     let mut replacements = live_models(state, &provider)?;
     for (index, model) in replacements.iter_mut().enumerate() {
@@ -272,6 +303,9 @@ pub(super) fn update_with_lock(
     }
     crate::workbuddy_config::change_models(&old_ids, &replacements, || {
         state.db.save_provider(APP, &synced)?;
+        if selected {
+            state.db.activate_workbuddy_models(&provider.id)?;
+        }
         Ok(true)
     })
 }
@@ -353,14 +387,15 @@ fn enable_model(state: &AppState, id: &str) -> Result<SwitchResult, AppError> {
         .get_provider_by_id(id, APP)?
         .ok_or_else(|| AppError::InvalidInput("WorkBuddy configuration not found".into()))?;
     ProviderService::validate_provider_settings(&AppType::WorkBuddy, &provider)?;
-    if provider.category.as_deref() == Some("official") {
-        state.db.set_current_provider(APP, id)?;
-        return Ok(SwitchResult::default());
-    }
-    let desired = models(&provider)?;
+    let official = provider.category.as_deref() == Some("official");
+    let desired = if official {
+        Vec::new()
+    } else {
+        models(&provider)?
+    };
     let native = native_models(state)?;
     let saved = state.db.get_all_providers(APP)?;
-    let mut old_ids = Vec::new();
+    let mut old_ids = crate::workbuddy_config::managed_model_ids()?;
     for model in native
         .iter()
         .filter(|model| desired.iter().any(|new| new["id"] == model["id"]))
@@ -376,7 +411,12 @@ fn enable_model(state: &AppState, id: &str) -> Result<SwitchResult, AppError> {
                     .map(|models| models.iter().any(|saved| saved == model))
                     .unwrap_or(false)
             });
-        if !desired.iter().any(|new| new == model) && !managed {
+        if !desired.iter().any(|new| new == model)
+            && !managed
+            && !model["id"]
+                .as_str()
+                .is_some_and(|id| old_ids.iter().any(|old| old == id))
+        {
             return Err(AppError::localized("workbuddy.duplicate_model", "WorkBuddy 中已有不同内容的同名模型，请先处理冲突配置", "WorkBuddy already has a different configuration for this model ID; resolve the conflicting configuration first"));
         }
         old_ids.push(
@@ -386,32 +426,27 @@ fn enable_model(state: &AppState, id: &str) -> Result<SwitchResult, AppError> {
                 .to_string(),
         );
     }
-    // Replacing an overlapping group also removes its other owned models.
+    // A supplier switch withdraws all models previously managed by VaryAI.
     for saved in saved.values().filter(|saved| {
-        saved.id != provider.id
-            && saved.category.as_deref() != Some("official")
+        saved.category.as_deref() != Some("official")
             && ProviderService::provider_live_config_managed(saved) != Some(false)
     }) {
         let owned = models(saved)?;
-        if owned
-            .iter()
-            .any(|model| desired.iter().any(|new| new["id"] == model["id"]))
-        {
-            for model in native.iter().filter(|model| owned.contains(model)) {
-                if let Some(id) = model["id"].as_str() {
-                    if !old_ids.iter().any(|old| old == id) {
-                        old_ids.push(id.to_string());
-                    }
+        for model in native.iter().filter(|model| owned.contains(model)) {
+            if let Some(id) = model["id"].as_str() {
+                if !old_ids.iter().any(|old| old == id) {
+                    old_ids.push(id.to_string());
                 }
             }
         }
     }
-    let ids: Vec<String> = desired
-        .iter()
-        .filter_map(|model| model["id"].as_str().map(str::to_string))
-        .collect();
-    crate::workbuddy_config::change_models(&old_ids, &live_models(state, &provider)?, || {
-        state.db.activate_workbuddy_models(&provider.id, &ids)?;
+    let replacement = if official {
+        Vec::new()
+    } else {
+        live_models(state, &provider)?
+    };
+    crate::workbuddy_config::change_models(&old_ids, &replacement, || {
+        state.db.activate_workbuddy_models(&provider.id)?;
         Ok(SwitchResult::default())
     })
 }
@@ -507,6 +542,43 @@ mod tests {
             }),
             None,
         )
+    }
+
+    #[test]
+    fn workbuddy_switch_replaces_managed_models_after_database_reset_and_preserves_manual_models() {
+        let dir = tempfile::tempdir().expect("dir");
+        with_test_dir(dir.path(), || {
+            let manual = provider("manual", "manual").settings_config;
+            std::fs::write(
+                get_workbuddy_config_path(),
+                json!({"models":[manual.clone()],"customSetting":true}).to_string(),
+            )
+            .expect("native");
+            let state = AppState::new(Arc::new(Database::memory().expect("old db")));
+            let mut old = provider("lost", "shared");
+            old.settings_config["models"] =
+                json!([{"id":"shared","name":"Shared"},{"id":"obsolete","name":"Obsolete"}]);
+            add(&state, old, true).expect("old installation");
+            let state = AppState::new(Arc::new(Database::memory().expect("reset db")));
+            list(&state).expect("official");
+            let mut target = provider("new", "shared");
+            target.settings_config["apiKey"] = json!("synthetic-new");
+            add(&state, target.clone(), false).expect("recreate supplier");
+            enable(&state, &target.id).expect("replace old models");
+            let native = read_models().expect("models");
+            assert_eq!(native.len(), 2);
+            assert!(native.contains(&manual));
+            assert!(native.contains(&target.settings_config));
+            enable(&state, OFFICIAL_ID).expect("official");
+            assert_eq!(read_models().expect("models"), vec![manual]);
+            assert_eq!(
+                serde_json::from_slice::<Value>(
+                    &std::fs::read(get_workbuddy_config_path()).expect("read")
+                )
+                .expect("parse")["customSetting"],
+                true
+            );
+        });
     }
 
     #[test]
@@ -831,7 +903,7 @@ mod tests {
                 ProviderService::list(&state, AppType::WorkBuddy).expect("list")[&official_id].name,
                 "My official account"
             );
-            assert_eq!(read_models().expect("native models").len(), 1);
+            assert!(read_models().expect("native models").is_empty());
         });
     }
 
