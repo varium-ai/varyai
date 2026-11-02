@@ -27,6 +27,7 @@ use super::{
         DlpHistoryMapping, DlpHistoryProjection, HistoryLeafPolicy,
     },
     inspect_and_intercept_mut_with_headers,
+    output_text_matching::visit_complete_references as visit_token_references,
     payload_budget::PayloadBudget,
     payload_buffer::PayloadBuffer,
     payload_json::{JsonStringReplacement, PayloadJson},
@@ -43,7 +44,7 @@ use super::{
     restore_diagnostics::{ContextCheckpoint, RestoreStage},
     runtime::{admit_security_runtime, SecurityRuntimeConfig},
     token_store_owners::{SharedAllocation, StoreText, StoreVec},
-    tokenization::{visit_token_references, DlpRequestLease, DlpTokenStore, TokenError},
+    tokenization::{DlpRequestLease, DlpTokenStore, TokenError},
 };
 struct GatewayState {
     store: DlpTokenStore,
@@ -321,7 +322,7 @@ impl DlpPreparedAttempt {
 
     /// Diagnostic suppression is conservative and grants no forwarding authority.
     pub(crate) fn suppress_payload_diagnostics(&self) -> bool {
-        self.has_restoration_lease() || self.history_mapping.is_some()
+        true
     }
 
     pub(crate) fn has_restoration_lease(&self) -> bool {
@@ -633,15 +634,13 @@ fn encoded_arguments_contain_any_token_reference(
 }
 
 /// Allocation ownership from cached history cannot authorize token dependencies.
-/// A request without a captured restoration lease must refuse late references.
+/// Without a captured restoration lease, reference-shaped text remains untrusted literal text.
 pub(crate) fn validate_unleased_enriched_body(body: &Value) -> Result<(), DlpForwardError> {
-    if body_contains_any_token_reference(body, &PayloadBudget::default()).map_err(|error| {
+    // Validate decoded carriers and bounds without treating literal syntax as authority.
+    body_contains_any_token_reference(body, &PayloadBudget::default()).map_err(|error| {
         DlpForwardError::from_token_error(error)
             .at_context_checkpoint(ContextCheckpoint::ReferenceScan)
-    })? {
-        return Err(DlpForwardError::ContextUnavailable
-            .at_context_checkpoint(ContextCheckpoint::UnleasedReference));
-    }
+    })?;
     Ok(())
 }
 
@@ -953,7 +952,7 @@ pub(crate) fn admit_http_request(
         false // Recomputed with private candidate proof after namespace admission.
     } else {
         match body_contains_any_token_reference(body, &reference_budget) {
-            Ok(found) => found,
+            Ok(_) => false,
             Err(error) => {
                 return Ok(RestorationAdmission::Intercepted(
                     DlpForwardError::from_token_error(error).into_app_response(app_type),
@@ -999,7 +998,9 @@ pub(crate) fn admit_http_request(
         }
     };
 
-    let mut admitted_lease = if is_supported_codex {
+    let dlp_active = snapshot.runtime.restoration_enabled()
+        || (snapshot.runtime.enabled && !gw_state.rules.is_empty());
+    let mut admitted_lease = if is_supported_codex && dlp_active {
         Some(
             gw_state
                 .store
@@ -1026,27 +1027,20 @@ pub(crate) fn admit_http_request(
             .as_ref()
             .and_then(|lease| lease.history_admission_candidate_projection(body));
         let has_tokens = if is_supported_codex {
-            let mut found = false;
-            if let Err(error) = visit_request_references(body, candidate.as_ref(), |_| {
-                found = true;
-                Ok(())
-            }) {
+            // Syntax is bounded and validated, but never creates restoration authority.
+            if let Err(error) = visit_request_references(body, candidate.as_ref(), |_| Ok(()))
+                .and_then(|_| {
+                    encoded_arguments_contain_any_token_reference(body, &reference_budget)
+                        .map(|_| ())
+                })
+            {
                 return Ok(RestorationAdmission::Intercepted(
                     DlpForwardError::from_token_error(error)
                         .at_context_checkpoint(ContextCheckpoint::ReferenceScan)
                         .into_app_response(app_type),
                 ));
             }
-            match encoded_arguments_contain_any_token_reference(body, &reference_budget) {
-                Ok(decoded_found) => found || decoded_found,
-                Err(error) => {
-                    return Ok(RestorationAdmission::Intercepted(
-                        DlpForwardError::from_token_error(error)
-                            .at_context_checkpoint(ContextCheckpoint::ReferenceScan)
-                            .into_app_response(app_type),
-                    ));
-                }
-            }
+            false
         } else {
             has_tokens
         };
@@ -1077,8 +1071,6 @@ pub(crate) fn admit_http_request(
             }
         }
 
-        let dlp_active = snapshot.runtime.restoration_enabled()
-            || (snapshot.runtime.enabled && !rule_refs.as_slice().is_empty());
         if !dlp_active && !has_tokens {
             return match inspect_and_intercept_mut_with_headers(app_type, body, headers)? {
                 Some(resp) => Ok(RestorationAdmission::Intercepted(resp)),
@@ -1173,13 +1165,12 @@ pub(crate) fn admit_http_request(
                         .at_context_checkpoint(ContextCheckpoint::HistoryClassify),
                 )
             })?;
-        let needs_provider_resume = candidate.is_some()
-            || !fresh_readable_history
-                && (history.previous_response_id.is_some()
-                    || !history.calls.as_slice().is_empty()
-                    || !history.opaques.as_slice().is_empty()
-                    || !history.orphan_output_call_ids.is_slice_empty_helper()
-                    || !history.referenced_tokens.as_slice().is_empty());
+        let needs_bound_history_inspection = candidate.is_some();
+        let needs_provider_resume = !fresh_readable_history
+            && (history.previous_response_id.is_some()
+                || !history.calls.as_slice().is_empty()
+                || !history.opaques.as_slice().is_empty()
+                || !history.orphan_output_call_ids.is_slice_empty_helper());
 
         let mut rules_copy = if gw_state.rules.is_empty() {
             StoreVec::new(ledger.clone(), 4096)
@@ -1239,7 +1230,11 @@ pub(crate) fn admit_http_request(
         );
 
         drop(candidate);
-        if !needs_provider_resume && !fresh_readable_history {
+        if !needs_bound_history_inspection
+            && !needs_provider_resume
+            && !fresh_readable_history
+            && history.referenced_tokens.as_slice().is_empty()
+        {
             match prepare_codex_request_with_budget(
                 &mut base_lease,
                 source_body.as_value(),
@@ -1495,6 +1490,39 @@ impl DlpHttpRequest {
         ))
     }
 
+    pub(crate) fn capture_error_credentials(
+        &self,
+        headers: &http::HeaderMap,
+    ) -> Option<super::upstream_error::ErrorCredentials> {
+        super::upstream_error::ErrorCredentials::capture(headers, self.budget.clone()).ok()
+    }
+
+    pub(crate) async fn read_upstream_error(
+        &self,
+        response: crate::proxy::hyper_client::ProxyResponse,
+        provider: &Value,
+        credentials: &[String],
+        sent_credentials: Option<&super::upstream_error::ErrorCredentials>,
+        timeout: std::time::Duration,
+    ) -> super::upstream_error::SafeUpstreamError {
+        if sent_credentials.is_none() {
+            return super::upstream_error::SafeUpstreamError::unavailable(response.status());
+        }
+        super::upstream_error::read_error(
+            response,
+            super::upstream_error::ErrorSafetyContext {
+                runtime: &self.runtime,
+                request: self.source_body.as_value(),
+                provider,
+                credentials,
+                sent_credentials,
+                budget: self.budget.clone(),
+            },
+            timeout,
+        )
+        .await
+    }
+
     pub(crate) fn build_mapped_body(
         &self,
         body: &Value,
@@ -1650,23 +1678,6 @@ impl DlpHttpRequest {
                         .at_context_checkpoint(ContextCheckpoint::AttemptHistory)
                 })?;
 
-            let mut call_specs =
-                PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
-            for c in history.calls.as_slice() {
-                call_specs
-                    .push(CompletedCallSpec {
-                        call_id: c.call_id.as_str(),
-                        item_type: c.item_type.as_str(),
-                        name: c.name.as_str(),
-                        payload: c.payload.as_str(),
-                        reasoning: c.reasoning.as_ref().map(PayloadText::as_str),
-                        encrypted_reasoning: c
-                            .encrypted_reasoning
-                            .as_ref()
-                            .map(PayloadText::as_str),
-                    })
-                    .map_err(DlpForwardError::from_token_error)?;
-            }
             let mut opaque_refs =
                 PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
             for o in history.opaques.as_slice() {
@@ -1682,10 +1693,104 @@ impl DlpHttpRequest {
                     .map_err(DlpForwardError::from_token_error)?;
             }
 
-            if !matches!(
-                self.chat_history_provenance()?,
-                super::chat_enrichment::ChatHistoryProvenance::IndependentReadable
-            ) {
+            let mut token_candidates =
+                PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
+            for t in history.referenced_tokens.as_slice() {
+                token_candidates
+                    .push(t.as_str())
+                    .map_err(DlpForwardError::from_token_error)?;
+            }
+            attempt_lease
+                .resume_matching_completed_tokens(&binding, token_candidates.as_slice())
+                .map_err(|error| {
+                    DlpForwardError::from_token_error(error)
+                        .at_context_checkpoint(ContextCheckpoint::TokenResume)
+                })?;
+            let mut token_refs =
+                PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
+            for &reference in token_candidates.as_slice() {
+                if attempt_lease
+                    .resolve_if_authorized(reference)
+                    .map_err(DlpForwardError::from_token_error)?
+                    .is_some()
+                {
+                    token_refs
+                        .push(reference)
+                        .map_err(DlpForwardError::from_token_error)?;
+                }
+            }
+
+            let dependency_projection = self
+                .base_lease
+                .history_admission_candidate_projection(self.source_body.as_value());
+            // Freeze dependency obligations with the same candidate used for call selection.
+            let requires_completed_context =
+                !super::request_preparation::is_fresh_readable_history_with_history(
+                    self.source_body.as_value(),
+                    &self.budget,
+                    dependency_projection.as_ref(),
+                )
+                .map_err(|error| {
+                    DlpForwardError::from_token_error(error)
+                        .at_context_checkpoint(ContextCheckpoint::HistoryClassify)
+                })? || !token_refs.as_slice().is_empty();
+            // Only unchanged, fully readable client history can separate unrelated calls.
+            // Real references, explicit/opaque dependencies and cache contributions keep all witnesses.
+            let per_call_readable_history = dependency_projection.is_some()
+                && token_refs.as_slice().is_empty()
+                && history.previous_response_id.is_none()
+                && opaque_refs.as_slice().is_empty()
+                && self.source_body.as_value().get("input") == enriched_body.get("input")
+                && super::request_preparation::is_fresh_readable_history(
+                    self.source_body.as_value(),
+                    &self.budget,
+                )
+                .map_err(|error| {
+                    DlpForwardError::from_token_error(error)
+                        .at_context_checkpoint(ContextCheckpoint::HistoryClassify)
+                })?;
+            let mut call_specs =
+                PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
+            for c in history.calls.as_slice() {
+                if per_call_readable_history
+                    && !self
+                        .source_body
+                        .as_value()
+                        .get("input")
+                        .and_then(Value::as_array)
+                        .is_some_and(|items| {
+                            items.iter().any(|item| {
+                                item.get("call_id").and_then(Value::as_str)
+                                    == Some(c.call_id.as_str())
+                                    && dependency_projection
+                                        .as_ref()
+                                        .is_some_and(|p| p.has_recorded_call_identity(item))
+                            })
+                        })
+                {
+                    continue;
+                }
+                call_specs
+                    .push(CompletedCallSpec {
+                        call_id: c.call_id.as_str(),
+                        item_type: c.item_type.as_str(),
+                        name: c.name.as_str(),
+                        payload: c.payload.as_str(),
+                        reasoning: c.reasoning.as_ref().map(PayloadText::as_str),
+                        encrypted_reasoning: c
+                            .encrypted_reasoning
+                            .as_ref()
+                            .map(PayloadText::as_str),
+                    })
+                    .map_err(DlpForwardError::from_token_error)?;
+            }
+            #[cfg(test)]
+            completion_selection_test_support::after_selection();
+            drop(dependency_projection);
+
+            if requires_completed_context
+                || (per_call_readable_history && !call_specs.as_slice().is_empty())
+            {
                 attempt_lease
                     .resume_completed_context(
                         &binding,
@@ -1716,20 +1821,6 @@ impl DlpHttpRequest {
                     })?;
             }
 
-            let mut token_refs =
-                PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
-            for t in history.referenced_tokens.as_slice() {
-                token_refs
-                    .push(t.as_str())
-                    .map_err(DlpForwardError::from_token_error)?;
-            }
-            attempt_lease
-                .resume_completed_tokens(&binding, token_refs.as_slice())
-                .map_err(|error| {
-                    DlpForwardError::from_token_error(error)
-                        .at_context_checkpoint(ContextCheckpoint::TokenResume)
-                })?;
-
             let mut rule_refs =
                 PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
             for r in self.restore_rules.as_slice() {
@@ -1758,15 +1849,8 @@ impl DlpHttpRequest {
                 token_refs.as_slice(),
                 self.budget.clone(),
                 projection.as_ref(),
-                |candidate_val, _encoded, proof| {
-                    visit_request_references(candidate_val, projection.as_ref(), |reference| {
-                        if proof.contains(&reference) {
-                            Ok(())
-                        } else {
-                            Err(TokenError::ContextUnavailable)
-                        }
-                    })?;
-                    Ok(())
+                |candidate_val, _encoded, _proof| {
+                    visit_request_references(candidate_val, projection.as_ref(), |_| Ok(()))
                 },
             )
             .map_err(|error| {
@@ -2428,10 +2512,29 @@ fn validate_final_outbound_body(
         }
     };
     let result = (|| {
+        super::request_carriers::visit_bounded_key_references(
+            bounded_body.as_value(),
+            &mut |reference| {
+                if lease.resolve_if_authorized(reference)?.is_some() {
+                    return Err(TokenError::ContextUnavailable);
+                }
+                Ok(())
+            },
+        )
+        .map_err(DlpForwardError::from_token_error)?;
+        carriers
+            .carriers
+            .visit_key_references(|reference| {
+                if lease.resolve_if_authorized(reference)?.is_some() {
+                    return Err(TokenError::ContextUnavailable);
+                }
+                Ok(())
+            })
+            .map_err(DlpForwardError::from_token_error)?;
         visit_references_with_policy(
             body,
             |path| history_target_for_path(path).map_or(HistoryLeafPolicy::Strict, &policy),
-            |tok| lease.resolve(tok).map(|_| ()),
+            |tok| lease.resolve_if_authorized(tok).map(|_| ()),
         )
         .map_err(DlpForwardError::from_token_error)?;
         let mut refusal = None;
@@ -2445,8 +2548,13 @@ fn validate_final_outbound_body(
                     }
                     let mut refs = PayloadVec::new(budget.clone())?;
                     leaf.policy.visit_references(leaf.text, |range| {
-                        lease.resolve(&leaf.text[range.clone()])?;
-                        refs.push(range)
+                        if lease
+                            .resolve_if_authorized(&leaf.text[range.clone()])?
+                            .is_some()
+                        {
+                            refs.push(range)?;
+                        }
+                        Ok(())
                     })?;
                     for found in detect_spans_with_budget(
                         leaf.text,
@@ -2771,8 +2879,8 @@ impl DlpPreparedAttempt {
                 RestoreStage::ResponseEncoding,
             );
         }
-        clear_entity_headers(&mut parts.headers);
         if is_sse {
+            clear_entity_headers(&mut parts.headers);
             let restorer = match self.into_sse_restorer(parts.status.as_u16(), mode) {
                 Ok(restorer) => restorer,
                 Err(error) => {
@@ -2838,11 +2946,18 @@ impl DlpPreparedAttempt {
             let pending_history = self
                 .lease
                 .capture_delivered_history(&self.binding, staged.as_value());
-            let output = super::response_restoration::serialize_json_with_budget(
+            let changed = staged.as_value() != parsed.as_value();
+            let encoded = super::response_restoration::serialize_json_with_budget(
                 staged.as_value(),
                 &budget,
                 crate::proxy::hyper_client::MAX_RESPONSE_BODY_BYTES,
             )?;
+            let output = if changed {
+                encoded
+            } else {
+                drop(encoded);
+                input
+            };
             // The final bytes own their reservation before continuity can be published.
             let bytes = bytes_with_owner(output, upstream_owner);
             stage = RestoreStage::ContextPublish;
@@ -2850,11 +2965,14 @@ impl DlpPreparedAttempt {
             if let Some(pending) = pending_history {
                 let _ = self.lease.publish_delivered_history(&self.binding, pending);
             }
-            Ok::<_, RestoreError>(bytes)
+            Ok::<_, RestoreError>((bytes, changed))
         }
         .await;
         match result {
-            Ok(bytes) => {
+            Ok((bytes, changed)) => {
+                if changed {
+                    clear_entity_headers(&mut parts.headers);
+                }
                 if let Ok(length) = HeaderValue::from_str(&bytes.len().to_string()) {
                     parts.headers.insert(header::CONTENT_LENGTH, length);
                 }
@@ -5377,4 +5495,34 @@ pub(super) async fn prepare_text_projection_http_for_test(
     clear_entity_headers(&mut parts.headers);
     parts.headers.insert(header::CONTENT_LENGTH, length);
     Ok(Response::from_parts(parts, Body::from(bytes)))
+}
+
+#[cfg(test)]
+pub(super) mod completion_selection_test_support {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static AFTER_SELECTION: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    }
+
+    pub(crate) struct Guard(Option<Box<dyn FnOnce()>>);
+
+    pub(crate) fn install(hook: impl FnOnce() + 'static) -> Guard {
+        Guard(AFTER_SELECTION.with(|slot| slot.replace(Some(Box::new(hook)))))
+    }
+
+    pub(super) fn after_selection() {
+        let hook = AFTER_SELECTION.with(|slot| slot.take());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            AFTER_SELECTION.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
 }

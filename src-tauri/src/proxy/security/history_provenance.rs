@@ -222,6 +222,16 @@ impl HistoryNamespace {
         records[0] = Some(pending.record);
         Ok(RetiredHistory { _record: displaced })
     }
+    #[cfg(test)]
+    pub(super) fn evict_records_for_test(&self) -> Result<(), TokenError> {
+        let retired = {
+            let mut records = self.records.lock().map_err(|_| TokenError::Unavailable)?;
+            std::mem::replace(&mut *records, std::array::from_fn(|_| None))
+        };
+        drop(retired);
+        Ok(())
+    }
+
     pub(super) fn projection<'a>(
         &self,
         store: DlpTokenStore,
@@ -254,14 +264,15 @@ impl HistoryNamespace {
                 *pin = None;
             }
         }
-        // A live record alone is not a candidate for this request. Compare full
-        // typed items without copying text, including calls with no reasoning leaf.
+        // Exact items may prove inspection leaves. A recorded tool identity only
+        // preserves completion dependencies; it never proves changed text.
         let matched = pins.iter().flatten().any(|pin| {
             pin.get().is_ok_and(|record| {
                 record.items.as_slice().iter().any(|frozen| {
-                    items
-                        .iter()
-                        .any(|item| supported_item(item) && frozen.matches(item))
+                    items.iter().any(|item| {
+                        (supported_item(item) && frozen.matches(item))
+                            || frozen.matches_call_identity(item)
+                    })
                 })
             })
         });
@@ -339,6 +350,22 @@ impl FrozenValue {
             }
             _ => false,
         }
+    }
+    fn matches_call_identity(&self, item: &Value) -> bool {
+        if !matches!(
+            self.get("type").and_then(Self::text),
+            Some("function_call" | "custom_tool_call")
+        ) || !matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call" | "custom_tool_call")
+        ) {
+            return false;
+        }
+        ["call_id", "id"].iter().any(|key| {
+            item.get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|id| self.get(key).and_then(Self::text) == Some(id))
+        })
     }
     fn get(&self, key: &str) -> Option<&Self> {
         let Self::Object(fields) = self else {
@@ -565,6 +592,21 @@ impl DlpHistoryProjection<'_> {
     pub(crate) fn consumed_body_matches(&self, body: &Value) -> bool {
         self.request == body
     }
+    /// A recorded tool identity keeps its mandatory completion checks even if its text changes.
+    /// Message-only inspection provenance does not create a dependency for unrelated calls.
+    pub(super) fn has_recorded_call_identity(&self, item: &Value) -> bool {
+        self.records.iter().flatten().any(|record| {
+            record.get().is_ok_and(|record| {
+                self.store.history_binding_live(&record.binding)
+                    && record
+                        .items
+                        .as_slice()
+                        .iter()
+                        .any(|frozen| frozen.matches_call_identity(item))
+            })
+        })
+    }
+
     pub(crate) fn source_for_responses_leaf(
         &self,
         index: usize,
@@ -1215,10 +1257,20 @@ mod allocation_tests {
 pub(super) enum HistoryLeafPolicy {
     #[default]
     Strict,
+    UnprovenText,
     DeliveredOutput,
     DeliveredReasoning,
 }
 impl HistoryLeafPolicy {
+    /// Request compatibility changes recognition only, never inspection provenance.
+    pub(super) fn for_request_literals(self) -> Self {
+        if self == Self::Strict {
+            Self::UnprovenText
+        } else {
+            self
+        }
+    }
+
     pub(super) fn visit_references(
         self,
         text: &str,
@@ -1226,7 +1278,7 @@ impl HistoryLeafPolicy {
     ) -> Result<(), TokenError> {
         match self {
             Self::Strict => super::tokenization::visit_token_references(text, visitor),
-            Self::DeliveredOutput => {
+            Self::UnprovenText | Self::DeliveredOutput => {
                 super::output_text_matching::visit_complete_references(text, visitor)
             }
             Self::DeliveredReasoning => Ok(()),
@@ -1392,9 +1444,9 @@ pub(super) fn visit_references_with_policy<'a>(
             return Err(TokenError::CapacityExceeded);
         }
         match value {
-            Value::String(text) => {
-                policy(&path[..depth]).visit_references(text, |r| visitor(&text[r]))
-            }
+            Value::String(text) => policy(&path[..depth])
+                .for_request_literals()
+                .visit_references(text, |r| visitor(&text[r])),
             Value::Array(items) => {
                 for (index, item) in items.iter().enumerate() {
                     path[depth] = HistoryPathStep::Index(index);
@@ -1405,7 +1457,9 @@ pub(super) fn visit_references_with_policy<'a>(
             Value::Object(fields) => {
                 for (key, value) in fields {
                     // Keys never inherit a text-leaf exception.
-                    super::tokenization::visit_token_references(key, |r| visitor(&key[r]))?;
+                    super::output_text_matching::visit_complete_references(key, |r| {
+                        visitor(&key[r])
+                    })?;
                     path[depth] = HistoryPathStep::Field(key);
                     walk(value, path, depth + 1, policy, visitor)?;
                 }

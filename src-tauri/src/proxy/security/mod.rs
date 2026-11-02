@@ -40,6 +40,7 @@ mod token_format;
 mod token_format_diagnostics;
 mod token_store_owners;
 mod tokenization;
+pub(crate) mod upstream_error;
 mod upstream_guard;
 #[allow(unused_imports)]
 pub(crate) use upstream_guard::UpstreamPayloadOwner;
@@ -71,6 +72,12 @@ mod aggregation_tests;
 #[cfg(test)]
 #[path = "tests/history_provenance_tests.rs"]
 mod history_provenance_tests;
+#[cfg(test)]
+#[path = "tests/request_literal_tests.rs"]
+mod request_literal_tests;
+#[cfg(test)]
+#[path = "tests/response_literal_tests.rs"]
+mod response_literal_tests;
 #[cfg(test)]
 #[path = "tests/restoration_audit_tests.rs"]
 mod restoration_audit_tests;
@@ -357,3 +364,7 @@ pub(crate) fn audit_session_id(
 #[cfg(test)]
 #[path = "tests/reversible_integration_tests.rs"]
 mod reversible_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/upstream_error_tests.rs"]
+mod upstream_error_tests;

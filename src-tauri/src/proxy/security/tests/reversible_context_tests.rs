@@ -1449,16 +1449,13 @@ fn output_text_exact_nonmatching_completed_text_never_adds_reference_authority(
 
 #[tokio::test]
 #[serial_test::serial]
-async fn output_text_exact_request_side_malformed_and_unauthorized_admission_remains_strict(
+async fn output_text_exact_request_side_literals_preserve_independent_pii_detection(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use super::{
-        http_restoration::{
-            admit_http_request, DlpForwardError, RestorationAdmission, RestorationGateway,
-        },
+        http_restoration::{admit_http_request, RestorationAdmission, RestorationGateway},
         runtime::{self, SecurityRuntimeConfig},
     };
     use crate::app_config::AppType;
-    use http_body_util::BodyExt;
     use serde_json::json;
 
     struct RuntimeReset(SecurityRuntimeConfig);
@@ -1496,72 +1493,48 @@ async fn output_text_exact_request_side_malformed_and_unauthorized_admission_rem
     ] {
         let mut body = json!({"model":"synthetic-model","input":format!("Call 13800138000; {text}"),"stream":false});
         let original = body.clone();
-        let transformed = std::cell::Cell::new(false);
-        let failure =
-            match admit_http_request(&gateway, &AppType::Codex, true, false, &mut body, &headers) {
-                Err(crate::proxy::ProxyError::DlpForward(error)) => error,
-                Err(_) => {
-                    return Err("strict request fixture returned an unexpected error class".into())
-                }
-                Ok(RestorationAdmission::Admitted(request)) => request
-                    .prepare_attempt(
-                        "synthetic-exact-strict-provider",
-                        "openai_responses",
-                        "https://synthetic.invalid/v1/responses",
-                        Some("synthetic-exact-strict-principal"),
-                        &mut body,
-                        |candidate| {
-                            transformed.set(true);
-                            Ok(candidate.clone())
-                        },
-                    )
-                    .err()
-                    .ok_or("strict request fixture unexpectedly reached forwarding")?,
-                Ok(RestorationAdmission::Intercepted(response)) => {
-                    assert!(
-                        response.status() == http::StatusCode::BAD_REQUEST,
-                        "strict malformed request must be rejected before an attempt"
-                    );
-                    let bytes = response.into_body().collect().await?.to_bytes();
-                    let error: serde_json::Value = serde_json::from_slice(&bytes)?;
-                    assert!(
-                        error["error"]["code"] == "dlp_context_unavailable",
-                        "strict malformed request must retain the context refusal code"
-                    );
-                    DlpForwardError::ContextUnavailable
-                }
-                Ok(RestorationAdmission::Passthrough) => {
-                    return Err("strict request fixture bypassed restoration admission".into())
-                }
-            };
+        let request = match admit_http_request(
+            &gateway,
+            &AppType::Codex,
+            true,
+            false,
+            &mut body,
+            &headers,
+        )? {
+            RestorationAdmission::Admitted(request) => request,
+            _ => return Err("literal_admission_rejected".into()),
+        };
+        let attempt = request
+            .prepare_attempt(
+                "synthetic-provider",
+                "openai_responses",
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-principal"),
+                &mut body,
+                |candidate| Ok(candidate.clone()),
+            )
+            .map_err(|_| "literal_preparation_rejected")?;
+        assert!(attempt.has_active_tokens(), "independent_pii_not_protected");
+        let output = body["input"].as_str().ok_or("literal_output_missing")?;
+        assert!(output.contains(&text), "literal_bytes_changed");
         assert!(
-            failure == DlpForwardError::ContextUnavailable,
-            "response-only matching must not relax malformed or unauthorized request admission"
+            !output.contains("13800138000"),
+            "independent_pii_not_redacted"
         );
-        assert!(
-            !transformed.get(),
-            "strict request rejection must precede transformation"
-        );
-        assert!(
-            body == original,
-            "strict request rejection must preserve the original body"
-        );
+        assert!(body != original, "independent_detector_skipped");
     }
     Ok(())
 }
 
 #[tokio::test]
 #[serial_test::serial]
-async fn reference_format_legacy_request_dependencies_refuse_disabled_and_admitted_paths(
+async fn reference_format_legacy_request_literals_preserve_disabled_and_admitted_paths(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use super::{
-        http_restoration::{
-            admit_http_request, DlpForwardError, RestorationAdmission, RestorationGateway,
-        },
+        http_restoration::{admit_http_request, RestorationAdmission, RestorationGateway},
         runtime::{self, SecurityRuntimeConfig},
     };
     use crate::app_config::AppType;
-    use http_body_util::BodyExt;
     use serde_json::json;
     struct RuntimeReset(SecurityRuntimeConfig);
     impl Drop for RuntimeReset {
@@ -1605,63 +1578,32 @@ async fn reference_format_legacy_request_dependencies_refuse_disabled_and_admitt
                 &mut source,
                 &Default::default(),
             ) {
-                Ok(RestorationAdmission::Intercepted(response)) => {
-                    assert!(
-                        response.status() == http::StatusCode::BAD_REQUEST,
-                        "legacy request dependencies must be rejected"
-                    );
-                    let bytes = response.into_body().collect().await?.to_bytes();
-                    let error: serde_json::Value = serde_json::from_slice(&bytes)?;
-                    assert!(
-                        error["error"]["code"] == "dlp_context_unavailable",
-                        "legacy requests must retain context refusal"
-                    );
-                }
-                Err(crate::proxy::ProxyError::DlpForward(error)) => {
-                    assert!(
-                        error == DlpForwardError::ContextUnavailable,
-                        "legacy request dependencies must retain fixed refusal"
-                    );
-                }
                 Ok(RestorationAdmission::Admitted(request)) => {
-                    let transformed = std::cell::Cell::new(false);
-                    let result = request.prepare_attempt(
-                        "synthetic-provider",
-                        "openai_responses",
-                        "http://127.0.0.1:1/responses",
-                        None,
-                        &mut source,
-                        |candidate| {
-                            transformed.set(true);
-                            Ok(candidate.clone())
-                        },
-                    );
-                    assert!(
-                        matches!(result, Err(DlpForwardError::ContextUnavailable)),
-                        "admitted legacy dependencies must refuse before forwarding"
-                    );
-                    assert!(
-                        !transformed.get(),
-                        "legacy refusal must precede transformation"
-                    );
+                    let attempt = request
+                        .prepare_attempt(
+                            "synthetic-provider",
+                            "openai_responses",
+                            "https://synthetic.invalid/v1/responses",
+                            None,
+                            &mut source,
+                            |candidate| Ok(candidate.clone()),
+                        )
+                        .map_err(|_| "literal_preparation_rejected")?;
+                    assert!(!attempt.has_active_tokens(), "literal_granted_authority");
                 }
-                Ok(RestorationAdmission::Passthrough) => match (enabled, case) {
-                    (false, "complete") => {
-                        panic!("disabled complete legacy dependency bypassed admission")
-                    }
-                    (false, "malformed") => {
-                        panic!("disabled malformed legacy dependency bypassed admission")
-                    }
-                    (false, "nested_key") => {
-                        panic!("disabled nested legacy key bypassed admission")
-                    }
-                    (false, "escaped_new_argument") => {
-                        panic!("disabled escaped new argument bypassed admission")
-                    }
-                    (false, _) => panic!("disabled escaped legacy argument bypassed admission"),
-                    (true, _) => panic!("active legacy dependency bypassed admission"),
-                },
-                _ => panic!("legacy request returned an unexpected error class"),
+                Ok(RestorationAdmission::Passthrough) if !enabled => {}
+                Ok(RestorationAdmission::Intercepted(_)) => {
+                    return Err(format!("literal_intercepted_{enabled}_{case}").into())
+                }
+                Ok(RestorationAdmission::Passthrough) => {
+                    return Err(format!("literal_passthrough_{enabled}_{case}").into())
+                }
+                Err(crate::proxy::ProxyError::DlpForward(
+                    super::http_restoration::DlpForwardError::ContextUnavailable,
+                )) if enabled && matches!(case, "escaped_argument" | "escaped_new_argument") => {
+                    // A lone call without its output is not independent completed history.
+                }
+                Err(_) => return Err(format!("literal_error_{enabled}_{case}").into()),
             }
             assert!(
                 source == body,
@@ -1683,38 +1625,29 @@ async fn reference_format_legacy_request_dependencies_refuse_disabled_and_admitt
             };
             source["metadata"] = json!({"nested":{"vary_cu_00000000000000000000_ai":"synthetic"}});
             let original = source.clone();
-            let transformed = std::cell::Cell::new(false);
-            let result = request.prepare_attempt(
-                "synthetic-provider",
-                "openai_responses",
-                "http://127.0.0.1:1/responses",
-                None,
-                &mut source,
-                |candidate| {
-                    transformed.set(true);
-                    Ok(candidate.clone())
-                },
-            );
+            let attempt = request
+                .prepare_attempt(
+                    "synthetic-provider",
+                    "openai_responses",
+                    "https://synthetic.invalid/v1/responses",
+                    None,
+                    &mut source,
+                    |candidate| Ok(candidate.clone()),
+                )
+                .map_err(|_| "late_literal_preparation_rejected")?;
             assert!(
-                matches!(result, Err(DlpForwardError::ContextUnavailable)),
-                "late legacy dependencies must refuse after request admission"
+                !attempt.has_active_tokens(),
+                "late_literal_granted_authority"
             );
-            assert!(
-                !transformed.get(),
-                "legacy dependency refusal must precede transformation"
-            );
-            assert!(
-                source == original,
-                "admitted legacy refusal must preserve the enriched input"
-            );
+            assert!(source == original, "late_literal_bytes_changed");
         }
     }
     Ok(())
 }
 
 #[test]
-fn reference_format_escaped_unleased_arguments_reject_decoded_keys_and_values() {
-    use super::http_restoration::{validate_unleased_enriched_body, DlpForwardError};
+fn reference_format_escaped_unleased_arguments_preserve_decoded_literals() {
+    use super::http_restoration::validate_unleased_enriched_body;
     use serde_json::json;
 
     for reference in [
@@ -1729,11 +1662,8 @@ fn reference_format_escaped_unleased_arguments_reject_decoded_keys_and_values() 
         ] {
             let body = json!({"input":[{"type":"function_call","arguments":arguments}]});
             assert!(
-                matches!(
-                    validate_unleased_enriched_body(&body),
-                    Err(DlpForwardError::ContextUnavailable)
-                ),
-                "decoded unleased dependencies must be refused"
+                validate_unleased_enriched_body(&body).is_ok(),
+                "decoded_literal_rejected"
             );
         }
     }
@@ -1834,19 +1764,22 @@ fn reference_format_escaped_admission_uses_shared_budget_and_releases_parse_owne
     ] {
         let mut source = json!({"input":[{"type":"function_call","arguments":arguments}]});
         let before = source.clone();
+        let invalid_json = arguments.contains("\\q");
+        let result = admit_http_request(
+            &gateway,
+            &AppType::Codex,
+            true,
+            false,
+            &mut source,
+            &Default::default(),
+        );
         assert!(
-            matches!(
-                admit_http_request(
-                    &gateway,
-                    &AppType::Codex,
-                    true,
-                    false,
-                    &mut source,
-                    &Default::default()
-                ),
-                Ok(RestorationAdmission::Intercepted(_))
-            ),
-            "escaped dependencies and invalid carriers must be refused"
+            if invalid_json {
+                matches!(result, Ok(RestorationAdmission::Intercepted(_)))
+            } else {
+                matches!(result, Ok(RestorationAdmission::Passthrough))
+            },
+            "decoded_literal_or_protocol_contract_changed"
         );
         assert!(source == before, "inspection refusal must preserve input");
         assert!(

@@ -413,6 +413,99 @@ fn final_validation_valid_tokens_survive_protocol_conversion_without_plaintext()
 }
 
 #[test]
+fn final_validation_actual_body_immutable_keys_refuse_authorized_references() -> TestResult {
+    for protocol in ["openai_chat", "anthropic", "openai_responses"] {
+        for placement in 0..3 {
+            let mut source = json!({"input":"private-a"});
+            let original = source.clone();
+            let request = request(&source)?;
+            let budget = request.budget.clone();
+            let result = request.prepare_attempt_for_proxy(
+                "final-fixture-provider", protocol,
+                "https://synthetic.invalid/v1/responses", Some("synthetic-account"),
+                &mut source, |prepared| {
+                    let token = prepared["input"].as_str().ok_or(
+                        crate::proxy::error::ProxyError::DlpForward(DlpForwardError::RedactionFailed)
+                    )?;
+                    let mut body = match protocol {
+                        "openai_chat" => json!({"messages":[{"role":"user","content":[{"type":"text","text":"safe"}]}]}),
+                        "anthropic" => json!({"messages":[{"role":"user","content":[{"type":"text","text":"safe"}]}]}),
+                        _ => json!({"input":[{"role":"user","content":[{"type":"input_text","text":"safe"}]}]}),
+                    };
+                    match placement {
+                        0 => body["metadata"] = json!({token:1}),
+                        1 => {
+                            let root = if protocol == "openai_responses" {"input"} else {"messages"};
+                            body[root][0]["content"][0][token] = json!(1);
+                        }
+                        _ => body["tools"] = json!([{ "type":"function", "parameters":{"properties":{token:{"type":"string"}}}}]),
+                    }
+                    Ok(body)
+                },
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(crate::proxy::error::ProxyError::DlpForward(
+                        DlpForwardError::ContextUnavailable
+                    ))
+                ),
+                "authorized immutable key must be refused case={placement}"
+            );
+            assert!(source == original, "refusal cannot publish the candidate");
+            drop(result);
+            drop(request);
+            assert!(
+                budget.used() == 0,
+                "refusal must release transient payload owners"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn final_validation_actual_body_unknown_key_literal_preserves_encoding() -> TestResult {
+    let literal = format!("rredact-custom-{}-ai", "a".repeat(20));
+    for protocol in ["openai_chat", "anthropic", "openai_responses"] {
+        let mut source = json!({"input":"private-a"});
+        let request = request(&source)?;
+        let budget = request.budget.clone();
+        let mut body = if protocol == "openai_responses" {
+            json!({"input":"safe"})
+        } else {
+            json!({"messages":[{"role":"user","content":"safe"}]})
+        };
+        body["metadata"] = json!({&literal:1});
+        let attempt = prepare(&request, protocol, &body, &mut source)?;
+        assert!(
+            source == body,
+            "unknown immutable literal must remain unchanged"
+        );
+        assert!(
+            attempt.lease.resolve_if_authorized(&literal)?.is_none(),
+            "literal cannot gain authority"
+        );
+        let encoded = attempt
+            .encode_outbound_body(&source)
+            .map_err(|_| "synthetic body encoding refused")?;
+        let bytes = encoded.as_ref().ok_or("synthetic body encoding absent")?;
+        assert!(
+            bytes.as_ref() == serde_json::to_vec(&body)?.as_slice(),
+            "actual encoded body must preserve the literal"
+        );
+        drop(encoded);
+        drop(attempt);
+        drop(request);
+        assert!(
+            budget.used() == 0,
+            "successful send encoding must release payload owners"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn final_validation_password_context_is_preserved_in_refusal_audit() -> TestResult {
     let mut source = json!({"input":"safe"});
     let mut request = request(&source)?;
@@ -1479,7 +1572,7 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
         HeaderValue::from_static("synthetic-history-roundtrip"),
     );
     for reasoning in [true, false] {
-        let mut source = json!({"input":"synthetic safe prompt"});
+        let mut source = json!({"input":"synthetic-protected"});
         let admitted = match admit_http_request(
             &gateway,
             &AppType::Codex,
@@ -1499,6 +1592,13 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
             &mut source,
             |body| Ok(body.clone()),
         )?;
+        let issued = source["input"]
+            .as_str()
+            .ok_or("synthetic signed input missing")?;
+        assert!(
+            attempt.lease.resolve_if_authorized(issued)?.is_some(),
+            "roundtrip fixture must issue a current-lease reference"
+        );
         let literal_reference = format!("rredact-custom-{}-ai", "a".repeat(20));
         let item = if reasoning {
             json!({"id":"synthetic-history-reasoning", "type":"reasoning", "summary":[
@@ -1508,7 +1608,9 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
             json!({"id":"synthetic-history-message", "type":"message", "role":"assistant", "status":"completed",
                 "content":[{"type":"output_text", "text":"synthetic rredact-custom- literal", "annotations":[]}]})
         };
-        let raw = json!({"id":"synthetic-history-response", "object":"response", "status":"completed", "output":[item]});
+        let raw = json!({"id":format!("synthetic-history-response-{}", usize::from(reasoning)), "object":"response", "status":"completed", "output":[item,
+            {"id":"synthetic-history-restored", "type":"message", "role":"assistant", "status":"completed",
+                "content":[{"type":"output_text", "text":issued, "annotations":[]}]}]});
         let response = attempt
             .restore_client_http_response(
                 Response::builder()
@@ -1525,7 +1627,8 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
         let bytes = response.into_body().collect().await?.to_bytes();
         let delivered: Value =
             serde_json::from_slice(&bytes).map_err(|_| "synthetic delivery must encode JSON")?;
-        let mut replay = json!({"input":delivered["output"]});
+        let mut replay =
+            json!({"previous_response_id":delivered["id"], "input":delivered["output"]});
         let request = match admit_http_request(
             &gateway,
             &AppType::Codex,
@@ -1562,10 +1665,39 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
         };
         *changed
             .pointer_mut(pointer)
-            .ok_or("synthetic history path missing")? = json!("changed rredact-custom-");
+            .ok_or("synthetic history path missing")? =
+            json!("changed synthetic-protected rredact-custom-");
         assert!(
             attempt.validate_final_send_history(&changed).is_err(),
             "late text mutation must lose proof"
+        );
+        let mut uncompleted = json!({"previous_response_id":"synthetic-uncompleted-response", "input":delivered["output"]});
+        let uncompleted_request = match admit_http_request(
+            &gateway,
+            &AppType::Codex,
+            true,
+            false,
+            &mut uncompleted,
+            &headers,
+        )? {
+            RestorationAdmission::Admitted(request) => request,
+            _ => return Err("completion dependency must defer its actual binding check".into()),
+        };
+        assert!(
+            matches!(
+                uncompleted_request.prepare_attempt_for_proxy(
+                    "synthetic-history-provider",
+                    "openai_responses",
+                    "https://synthetic.invalid/v1/responses",
+                    Some("synthetic-history-principal"),
+                    &mut uncompleted,
+                    |body| Ok(body.clone())
+                ),
+                Err(crate::proxy::error::ProxyError::DlpForward(
+                    DlpForwardError::ContextUnavailable
+                ))
+            ),
+            "exact delivered-history proof must not authorize an uncompleted response dependency"
         );
         for (provider, target, principal) in [
             (
@@ -1584,7 +1716,8 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
                 "synthetic-other-principal",
             ),
         ] {
-            let mut candidate = json!({"input":delivered["output"]});
+            let mut candidate =
+                json!({"previous_response_id":delivered["id"], "input":delivered["output"]});
             let request = match admit_http_request(
                 &gateway,
                 &AppType::Codex,
@@ -1610,60 +1743,87 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
                 "different actual authority must refuse history"
             );
         }
-        for mutation in 0..5 {
-            let mut candidate = json!({"input":delivered["output"]});
-            match mutation {
-                0 => {
-                    *candidate
-                        .pointer_mut(pointer)
-                        .ok_or("synthetic history path missing")? = json!("changed rredact-custom-")
-                }
-                1 => {
-                    candidate["input"][0]["metadata"] = json!({"synthetic":"rredact-custom-"});
-                }
-                2 => {
-                    candidate["input"].as_array_mut().ok_or("synthetic input missing")?.push(json!({
-                    "type":"function_call", "call_id":"synthetic-strict-call", "name":"synthetic", "arguments":"{\"value\":\"rredact-custom-\"}"}));
-                }
-                3 => {
-                    candidate["input"][0]
-                        .as_object_mut()
-                        .ok_or("synthetic item missing")?
-                        .insert("rredact-custom-".into(), json!("safe"));
-                }
-                _ => {
-                    candidate["input"]
-                        .as_array_mut()
-                        .ok_or("synthetic input missing")?
-                        .push(json!({"role":"user", "content":"rredact-custom-"}));
-                }
-            }
-            let admitted = admit_http_request(
+        for mutation in 0..4 {
+            let mut candidate =
+                json!({"previous_response_id":delivered["id"], "input":delivered["output"]});
+            let request = match admit_http_request(
                 &gateway,
                 &AppType::Codex,
                 true,
                 false,
                 &mut candidate,
                 &headers,
-            );
-            let refused = match admitted {
-                Ok(RestorationAdmission::Admitted(request)) => request
-                    .prepare_attempt_for_proxy(
-                        "synthetic-history-provider",
-                        "openai_responses",
-                        "https://synthetic.invalid/v1/responses",
-                        Some("synthetic-history-principal"),
-                        &mut candidate,
-                        |body| Ok(body.clone()),
-                    )
-                    .is_err(),
-                _ => true,
+            )? {
+                RestorationAdmission::Admitted(request) => request,
+                _ => return Err("synthetic mutation control must be admitted".into()),
             };
+            let result = request.prepare_attempt_for_proxy(
+                "synthetic-history-provider", "openai_responses", "https://synthetic.invalid/v1/responses",
+                Some("synthetic-history-principal"), &mut candidate, |body| {
+                    let mut changed = body.clone();
+                    match mutation {
+                        0 => changed["input"][0][if reasoning { "summary" } else { "content" }][0]["text"] =
+                            json!("changed synthetic-protected rredact-custom-"),
+                        1 => changed["input"][0]["metadata"] =
+                            json!({"synthetic":"synthetic-protected rredact-custom-"}),
+                        2 => changed["input"].as_array_mut().ok_or(
+                            crate::proxy::error::ProxyError::DlpForward(DlpForwardError::RedactionFailed))?
+                            .push(json!({"type":"function_call", "call_id":"synthetic-strict-call",
+                                "name":"synthetic", "arguments":"{\"value\":\"synthetic-protected rredact-custom-\"}"})),
+                        _ => changed["input"][0]["rredact-custom-"] = json!("synthetic-protected"),
+                    }
+                    Ok(changed)
+                });
             assert!(
-                refused,
-                "changed item, keys, arguments and unproven siblings must remain strict"
+                matches!(
+                    result,
+                    Err(crate::proxy::error::ProxyError::DlpForward(
+                        DlpForwardError::RedactionFailed
+                    ))
+                ),
+                "post-prepare protective plaintext must not bypass exact history inspection"
             );
         }
+        let mut literal_sibling =
+            json!({"previous_response_id":delivered["id"], "input":delivered["output"]});
+        literal_sibling["input"]
+            .as_array_mut()
+            .ok_or("synthetic input missing")?
+            .push(json!({"role":"user", "content":literal_reference}));
+        let literal_request = match admit_http_request(
+            &gateway,
+            &AppType::Codex,
+            true,
+            false,
+            &mut literal_sibling,
+            &headers,
+        )? {
+            RestorationAdmission::Admitted(request) => request,
+            _ => return Err("ordinary literal sibling must be admitted".into()),
+        };
+        let literal_attempt = literal_request.prepare_attempt_for_proxy(
+            "synthetic-history-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-history-principal"),
+            &mut literal_sibling,
+            |body| Ok(body.clone()),
+        )?;
+        assert!(
+            literal_sibling["input"]
+                .as_array()
+                .and_then(|items| items.last())
+                .and_then(|item| item["content"].as_str())
+                == Some(literal_reference.as_str()),
+            "unproven literal siblings must retain every byte"
+        );
+        assert!(
+            literal_attempt
+                .lease
+                .resolve_if_authorized(&literal_reference)?
+                .is_none(),
+            "unproven literal siblings must not acquire authority"
+        );
     }
     Ok(())
 }
@@ -1756,7 +1916,7 @@ async fn check_history_http_isolation(
         "session-id",
         HeaderValue::from_static("synthetic-history-isolation"),
     );
-    let mut source = json!({"input": "synthetic safe prompt"});
+    let mut source = json!({"input": "synthetic-isolation-protected"});
     let admitted = match admit_http_request(
         &gateway,
         &AppType::Codex,
@@ -1776,6 +1936,13 @@ async fn check_history_http_isolation(
         &mut source,
         |body| Ok(body.clone()),
     )?;
+    let issued = source["input"]
+        .as_str()
+        .ok_or("synthetic isolation signed input missing")?;
+    assert!(
+        attempt.lease.resolve_if_authorized(issued)?.is_some(),
+        "isolation fixture must issue a current-lease reference"
+    );
     let item = if reasoning {
         json!({"id": "synthetic-isolation-reasoning", "type": "reasoning", "summary": [
             {"type": "summary_text", "text": "synthetic reasoning rredact-custom-"}
@@ -1787,7 +1954,9 @@ async fn check_history_http_isolation(
         ]})
     };
     let raw = json!({"id": "synthetic-isolation-response", "object": "response",
-        "status": "completed", "output": [item]});
+        "status": "completed", "output": [item,
+            {"id":"synthetic-isolation-restored", "type":"message", "role":"assistant", "status":"completed",
+                "content":[{"type":"output_text", "text":issued, "annotations":[]}]}]});
     let response = attempt
         .restore_client_http_response(
             Response::builder()
@@ -1804,7 +1973,7 @@ async fn check_history_http_isolation(
     let bytes = response.into_body().collect().await?.to_bytes();
     let delivered: Value = serde_json::from_slice(&bytes)
         .map_err(|_| "synthetic isolation delivery must encode JSON")?;
-    let mut replay = json!({"input": delivered["output"]});
+    let mut replay = json!({"previous_response_id":delivered["id"], "input": delivered["output"]});
     let replay_request = match admit_http_request(
         &gateway,
         &AppType::Codex,
@@ -1856,7 +2025,8 @@ async fn check_history_http_isolation(
         );
         let no_session = HeaderMap::new();
         for candidate_headers in [&other_session, &no_session] {
-            let mut candidate = json!({"input": delivered["output"]});
+            let mut candidate =
+                json!({"previous_response_id":delivered["id"], "input": delivered["output"]});
             let admission = admit_http_request(
                 &gateway,
                 &AppType::Codex,
@@ -1865,7 +2035,7 @@ async fn check_history_http_isolation(
                 &mut candidate,
                 candidate_headers,
             )?;
-            assert_history_context_refusal(admission).await?;
+            assert_bound_history_context_refusal(admission, &mut candidate).await?;
         }
         return Ok(());
     }
@@ -1938,7 +2108,8 @@ async fn check_history_http_isolation(
         "synthetic policy change must advance restoration authority"
     );
     if matches!(boundary, HistoryIsolationBoundary::PolicyAdmission) {
-        let mut candidate = json!({"input": delivered["output"]});
+        let mut candidate =
+            json!({"previous_response_id":delivered["id"], "input": delivered["output"]});
         let admission = admit_http_request(
             &gateway,
             &AppType::Codex,
@@ -1947,7 +2118,7 @@ async fn check_history_http_isolation(
             &mut candidate,
             &headers,
         )?;
-        assert_history_context_refusal(admission).await?;
+        assert_bound_history_context_refusal(admission, &mut candidate).await?;
     } else {
         // Revoke proof eligibility, not the request's captured detection matcher.
         let proof_revoked = matches!(
@@ -1966,10 +2137,31 @@ async fn check_history_http_isolation(
     Ok(())
 }
 
-async fn assert_history_context_refusal(admission: RestorationAdmission) -> TestResult {
+async fn assert_bound_history_context_refusal(
+    admission: RestorationAdmission,
+    body: &mut Value,
+) -> TestResult {
     let response = match admission {
         RestorationAdmission::Intercepted(response) => response,
-        _ => return Err("unproven synthetic history must be intercepted at admission".into()),
+        RestorationAdmission::Admitted(request) => {
+            let error = match request.prepare_attempt_for_proxy(
+                "synthetic-isolation-provider",
+                "openai_responses",
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-isolation-principal"),
+                body,
+                |body| Ok(body.clone()),
+            ) {
+                Err(crate::proxy::error::ProxyError::DlpForward(error)) => error,
+                _ => {
+                    return Err("unproven real completion dependency must refuse at binding".into())
+                }
+            };
+            error.into_codex_response()
+        }
+        RestorationAdmission::Passthrough => {
+            return Err("real history dependency cannot pass through".into())
+        }
     };
     assert_history_context_refusal_response(response).await
 }
@@ -2196,9 +2388,9 @@ fn history_client_refusal_chat_fixture(
 }
 
 #[tokio::test]
-async fn reasoning_history_chat_prepare_failures_return_fixed_client_refusal() -> TestResult {
-    const CHILD: &str = "VARYAI_SYNTHETIC_HISTORY_PREPARE_CLIENT_DIAGNOSTIC";
-    const TEST: &str = "proxy::security::http_restoration::final_validation_tests::reasoning_history_chat_prepare_failures_return_fixed_client_refusal";
+async fn reasoning_history_chat_mapping_failures_return_fixed_client_refusal() -> TestResult {
+    const CHILD: &str = "VARYAI_SYNTHETIC_HISTORY_MAPPING_CLIENT_DIAGNOSTIC";
+    const TEST: &str = "proxy::security::http_restoration::final_validation_tests::reasoning_history_chat_mapping_failures_return_fixed_client_refusal";
     if history_client_diagnostics::parent(CHILD, TEST).await? {
         return Ok(());
     }
@@ -2236,9 +2428,13 @@ async fn reasoning_history_chat_prepare_failures_return_fixed_client_refusal() -
                 Ok((converted, mapping))
             },
         );
+        let (attempt, _owner) = result
+            .map_err(|_| "synthetic unproven literals must prepare without acquiring authority")?;
+        assert!(
+            !attempt.has_active_tokens(),
+            "synthetic literal mapping must not grant token authority"
+        );
         if mode == 0 {
-            let (attempt, _owner) = result
-                .map_err(|_| "synthetic exact history must prepare before refusal mutations")?;
             for target in [
                 DlpHistoryTarget::ChatReasoning { message_index: 0 },
                 DlpHistoryTarget::ChatContent { message_index: 0 },
@@ -2256,17 +2452,23 @@ async fn reasoning_history_chat_prepare_failures_return_fixed_client_refusal() -
             );
             continue;
         }
-        let error = match result {
-            Err(crate::proxy::error::ProxyError::DlpForward(error)) => error,
-            _ => {
-                return Err("synthetic history preparation must produce a real DLP refusal".into())
-            }
-        };
-        assert_history_context_refusal_response(error.into_codex_response()).await?;
+        // Ordinary literals may prepare, but a stale converter mapping cannot authorize a send.
+        for checked in [
+            attempt.validate_final_send_history(&body),
+            attempt.encode_outbound_body(&body).map(|_| ()),
+        ] {
+            let error = match checked {
+                Err(error) => error,
+                Ok(()) => {
+                    return Err("synthetic stale mapping must refuse at the send boundary".into())
+                }
+            };
+            assert_history_context_refusal_response(error.into_codex_response()).await?;
+        }
     }
     drop(request);
     drop(source);
-    history_client_diagnostics::finish(7)
+    history_client_diagnostics::finish(0)
 }
 
 #[tokio::test]
@@ -2355,7 +2557,10 @@ fn reasoning_history_refusal_audit_uses_bound_eligible_leaves() -> TestResult {
     enriched["input"]
         .as_array_mut()
         .ok_or("synthetic audit input missing")?
-        .push(json!({"role":"user","content":"rredact-custom-"}));
+        .push(
+            json!({"type":"function_call", "call_id":"synthetic-audit-malformed",
+            "name":"synthetic", "arguments":"{broken"}),
+        );
     assert!(
         request
             .prepare_attempt_for_proxy(
@@ -2400,7 +2605,7 @@ fn reasoning_history_chat_mapping_overrides_strict_fallback_and_optional_miss() 
         issuer.publish_delivered_history(&binding, pending),
         "synthetic matrix publication failed"
     );
-    for mode in 0..9 {
+    for mode in 0..10 {
         let mut body = source.clone();
         let result = request.prepare_owned_attempt_with_history_for_proxy(None,
             "final-fixture-provider", "openai_chat", "https://synthetic.invalid/v1/responses",
@@ -2414,15 +2619,17 @@ fn reasoning_history_chat_mapping_overrides_strict_fallback_and_optional_miss() 
                     &body, None, if mode == 8 { None } else { projection.as_ref() })?;
                 drop(fault);
                 match mode {
-                    1 => converted["messages"][0]["reasoning_content"] = json!("changed rredact-custom-"),
-                    2 => converted["messages"][0]["content"] = json!("changed rredact-custom-"),
+                    1 => converted["messages"][0]["reasoning_content"] = json!("changed private-a rredact-custom-"),
+                    2 => converted["messages"][0]["content"] = json!("changed private-a rredact-custom-"),
                     3 => converted["messages"].as_array_mut().ok_or(crate::proxy::error::ProxyError::DlpForward(DlpForwardError::RedactionFailed))?
-                        .push(json!({"role":"user","content":"rredact-custom-"})),
+                        .push(json!({"role":"user","content":"private-a rredact-custom-"})),
                     4 => converted["messages"][0]["tool_calls"] = json!([{"id":"synthetic-call","type":"function",
-                        "function":{"name":"synthetic", "arguments":"{\"value\":\"rredact-custom-\"}"}}]),
-                    5 => converted["messages"][0]["name"] = json!("rredact-custom-"),
-                    6 => { converted["messages"][0].as_object_mut().ok_or(crate::proxy::error::ProxyError::DlpForward(DlpForwardError::RedactionFailed))?
-                        .insert("rredact-custom-".into(), json!("safe")); },
+                        "function":{"name":"synthetic", "arguments":"{\"value\":\"private-a rredact-custom-\"}"}}]),
+                    5 => converted["messages"][0]["name"] = json!("private-a rredact-custom-"),
+                    6 => converted["messages"].as_array_mut().ok_or(crate::proxy::error::ProxyError::DlpForward(DlpForwardError::RedactionFailed))?
+                        .push(json!({"role":"user","content":[{"type":"future_text","rredact-custom-":"private-a"}]})),
+                    9 => converted["messages"].as_array_mut().ok_or(crate::proxy::error::ProxyError::DlpForward(DlpForwardError::RedactionFailed))?
+                        .push(json!({"role":"user","content":"rredact-custom-"})),
                     _ => {},
                 }
                 Ok((converted, mapping))
@@ -2448,6 +2655,21 @@ fn reasoning_history_chat_mapping_overrides_strict_fallback_and_optional_miss() 
                     "encoding must not accept a stale history mapping"
                 );
             }
+        } else if mode == 9 {
+            let (attempt, _owner) =
+                result.map_err(|_| "synthetic unproven literal must prepare")?;
+            assert!(
+                body["messages"]
+                    .as_array()
+                    .and_then(|messages| messages.last())
+                    .and_then(|message| message["content"].as_str())
+                    == Some("rredact-custom-"),
+                "unproven literal must retain every byte"
+            );
+            assert!(
+                !attempt.has_active_tokens(),
+                "literal sibling must not grant authority"
+            );
         } else {
             assert!(
                 result.is_err(),
@@ -2508,9 +2730,21 @@ fn reasoning_history_output_complete_references_keep_request_local_authority() -
             &mut body,
             |body| Ok(body.clone()),
         );
+        let attempt = result.map_err(|_| "synthetic complete reference must remain readable")?;
+        let expected = format!("synthetic malformed rredact-custom- and complete {token}");
         assert!(
-            result.is_ok() == authorized,
+            body.pointer("/input/0/content/0/text")
+                .and_then(Value::as_str)
+                == Some(expected.as_str()),
+            "complete reference and surrounding literal bytes must remain unchanged"
+        );
+        assert!(
+            attempt.lease.resolve_if_authorized(&token)?.is_some() == authorized,
             "delivered output must not grant authority to complete references"
+        );
+        assert!(
+            attempt.has_active_tokens() == authorized,
+            "only existing request-local authority may activate restoration"
         );
     }
     Ok(())
@@ -2724,3 +2958,704 @@ async fn history_provenance_sse_restored_output_matches_delivered_not_raw() -> T
     let delivered = delivered.ok_or("restored SSE terminal response unavailable")?;
     assert_restored_history_matches_delivered_not_raw(&request, &binding, &raw, &delivered)
 }
+
+// These scenarios exercise real admission, preparation, restoration, and replay without transport.
+mod synthetic_repeat_diagnostics {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        OnceLock,
+    };
+
+    static CHECKPOINT: AtomicUsize = AtomicUsize::new(0);
+    static INSTALLED: OnceLock<Result<(), log::SetLoggerError>> = OnceLock::new();
+    struct Logger;
+    static LOGGER: Logger = Logger;
+
+    impl log::Log for Logger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.target() == "cc_switch_lib::proxy::security::restore_diagnostics"
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if !self.enabled(record.metadata()) {
+                return;
+            }
+            let exact =
+                super::super::super::reversible_integration_tests::history_client_diagnostic_exact;
+            let checkpoint = if exact(
+                *record.args(),
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=request_prepare",
+            ) {
+                1
+            } else if exact(
+                *record.args(),
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=final_validation",
+            ) {
+                2
+            } else if exact(
+                *record.args(),
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=attempt_history",
+            ) {
+                3
+            } else {
+                4
+            };
+            CHECKPOINT.store(checkpoint, Ordering::SeqCst);
+        }
+        fn flush(&self) {}
+    }
+
+    pub(super) struct Reset(log::LevelFilter);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            log::set_max_level(self.0);
+        }
+    }
+    pub(super) fn install() -> Result<Reset, &'static str> {
+        if INSTALLED.get_or_init(|| log::set_logger(&LOGGER)).is_err() {
+            return Err("synthetic_repeat stage=fixture category=logger_unavailable");
+        }
+        let reset = Reset(log::max_level());
+        log::set_max_level(log::LevelFilter::Warn);
+        super::super::super::restore_diagnostics::log_context_failure(
+            super::super::super::restore_diagnostics::ContextCheckpoint::FinalValidation,
+        );
+        if CHECKPOINT.swap(0, Ordering::SeqCst) != 2 {
+            return Err("synthetic_repeat stage=fixture category=logger_control");
+        }
+        Ok(reset)
+    }
+    pub(super) fn take_checkpoint() -> usize {
+        CHECKPOINT.swap(0, Ordering::SeqCst)
+    }
+    pub(super) fn finish() -> ! {
+        std::process::exit(87);
+    }
+}
+
+struct SyntheticRepeatRuntimeReset(SecurityRuntimeConfig);
+
+impl Drop for SyntheticRepeatRuntimeReset {
+    fn drop(&mut self) {
+        super::super::runtime::set_security_runtime_for_test(self.0.clone());
+    }
+}
+
+fn synthetic_repeat_pii() -> (String, String) {
+    let phone = format!("139{}", "0".repeat(8));
+    // The administrative prefix is deliberately synthetic; the detector checks the checksum.
+    let mut identity = "99000020000101001".to_owned();
+    let weights = [7u32, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+    let sum: u32 = identity
+        .bytes()
+        .zip(weights)
+        .map(|(digit, weight)| u32::from(digit - b'0') * weight)
+        .sum();
+    identity.push(['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2'][(sum % 11) as usize]);
+    (phone, identity)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SyntheticRepeatHistory {
+    Plain,
+    OutputLiteral,
+    ReasoningExact,
+    ReasoningWhitespace,
+}
+
+async fn check_synthetic_repeat_pii(
+    protocol: &str,
+    replay_history: bool,
+    history_kind: SyntheticRepeatHistory,
+    case_filter: Option<usize>,
+) -> TestResult {
+    use http_body_util::BodyExt;
+    let literal_history = history_kind == SyntheticRepeatHistory::OutputLiteral;
+    let reasoning_history = matches!(
+        history_kind,
+        SyntheticRepeatHistory::ReasoningExact | SyntheticRepeatHistory::ReasoningWhitespace
+    );
+    let _diagnostics = synthetic_repeat_diagnostics::install()?;
+
+    let _reset =
+        SyntheticRepeatRuntimeReset((*super::super::runtime::get_security_runtime()).clone());
+    let mut policy = SecurityRuntimeConfig::default();
+    for rule in ["chinese_phone_number", "chinese_id_card"] {
+        policy
+            .builtin_action_overrides
+            .insert(rule.into(), AuditAction::RedactRestore);
+    }
+    super::super::runtime::set_security_runtime_for_test(policy);
+    let (phone, identity) = synthetic_repeat_pii();
+    assert!(
+        super::super::pii::is_valid_chinese_id_card(&identity),
+        "synthetic_repeat stage=fixture category=checksum"
+    );
+
+    for case in (0..3).filter(|case| case_filter.is_none_or(|selected| selected == *case)) {
+        let prompt = match case {
+            0 => format!("Synthetic phone: {phone}."),
+            1 => format!("Synthetic identity: {identity}."),
+            _ => format!("Synthetic phone: {phone}; synthetic identity: {identity}."),
+        };
+        let gateway = RestorationGateway::with_rules(&[], 32 * 1024 * 1024);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "session-id",
+            HeaderValue::from_static("synthetic-repeat-session"),
+        );
+        let mut history = Vec::new();
+        for turn in 0..2 {
+            let user = json!({"type":"message", "role":"user", "content":[
+                {"type":"input_text", "text":prompt}
+            ]});
+            let mut items = if replay_history {
+                history.clone()
+            } else {
+                Vec::new()
+            };
+            items.push(user.clone());
+            let mut outbound = json!({"model":"synthetic-repeat-model", "input":items});
+            let request = match admit_http_request(
+                &gateway,
+                &AppType::Codex,
+                true,
+                false,
+                &mut outbound,
+                &headers,
+            )
+            .map_err(|_| "synthetic_repeat stage=admission category=error")?
+            {
+                RestorationAdmission::Admitted(request) => request,
+                _ => return Err("synthetic_repeat stage=admission category=intercepted".into()),
+            };
+            if reasoning_history && turn == 1 {
+                use super::super::history_provenance::{DlpHistoryLeafField, DlpHistoryTarget};
+                let issuer = request.base_lease.fork_attempt()?;
+                let binding = issuer.bind_actual_attempt(
+                    "synthetic-repeat-provider",
+                    protocol,
+                    "https://synthetic.invalid/v1/responses",
+                    Some("synthetic-repeat-principal"),
+                )?;
+                let projection = issuer
+                    .history_projection(&binding, &outbound)
+                    .ok_or("synthetic_repeat stage=proof category=missing_reasoning")?;
+                assert!(
+                    projection.policy_for_target(
+                        &outbound,
+                        DlpHistoryTarget::ResponsesLeaf {
+                            input_index: 1,
+                            field: DlpHistoryLeafField::ReasoningSummary,
+                            part_index: 0,
+                        }
+                    ) == HistoryLeafPolicy::DeliveredReasoning,
+                    "synthetic_repeat stage=proof category=initial_reasoning"
+                );
+            }
+            if literal_history && turn == 1 {
+                use super::super::history_provenance::DlpHistoryLeafField;
+                let issuer = request.base_lease.fork_attempt()?;
+                let binding = issuer.bind_actual_attempt(
+                    "synthetic-repeat-provider",
+                    protocol,
+                    "https://synthetic.invalid/v1/responses",
+                    Some("synthetic-repeat-principal"),
+                )?;
+                let projection = issuer
+                    .history_projection(&binding, &outbound)
+                    .ok_or("synthetic_repeat stage=proof category=missing")?;
+                assert!(
+                    projection
+                        .source_for_responses_leaf(1, DlpHistoryLeafField::OutputText, 0)
+                        .is_some(),
+                    "synthetic_repeat stage=proof category=initial_source"
+                );
+                let mut changed = outbound.clone();
+                let original = outbound
+                    .pointer("/input/1/content/0/text")
+                    .and_then(Value::as_str)
+                    .ok_or("synthetic_repeat stage=proof category=missing_text")?;
+                // A safe replacement isolates exact-item invalidation without token authority.
+                changed["input"][1]["content"][0]["text"] = json!(original
+                    .replace(&phone, "[REDACTED]")
+                    .replace(&identity, "[REDACTED]"));
+                // Remove PII from every other leaf to isolate literal-only final validation.
+                for item in changed["input"]
+                    .as_array_mut()
+                    .ok_or("synthetic input missing")?
+                {
+                    if item.get("role").and_then(Value::as_str) == Some("user") {
+                        let text = item
+                            .pointer("/content/0/text")
+                            .and_then(Value::as_str)
+                            .ok_or("synthetic user text missing")?;
+                        item["content"][0]["text"] = json!(text
+                            .replace(&phone, "[REDACTED]")
+                            .replace(&identity, "[REDACTED]"));
+                    }
+                }
+                assert!(
+                    projection.policy_for_target(
+                        &changed,
+                        super::super::history_provenance::DlpHistoryTarget::ResponsesLeaf {
+                            input_index: 1,
+                            field: DlpHistoryLeafField::OutputText,
+                            part_index: 0,
+                        }
+                    ) == HistoryLeafPolicy::Strict,
+                    "synthetic_repeat stage=proof category=changed_item_policy"
+                );
+                let before = projection
+                    .responses_mapping(&outbound)
+                    .ok_or("synthetic_repeat stage=proof category=missing_mapping")?;
+                let after = projection
+                    .responses_mapping(&changed)
+                    .ok_or("synthetic_repeat stage=proof category=missing_changed_mapping")?;
+                let context = |history| FinalOutboundContext {
+                    runtime: &request.runtime,
+                    budget: &request.budget,
+                    audit_state: &request.audit_state,
+                    provider_id: "synthetic-repeat-provider",
+                    binding: Some(&binding),
+                    history: Some(history),
+                };
+                // The original exact leaf permits literal lookalikes but still detects PII.
+                assert!(
+                    matches!(
+                        validate_final_outbound_body(
+                            &outbound,
+                            "openai_responses",
+                            &issuer,
+                            context(&before)
+                        ),
+                        Err(DlpForwardError::RedactionFailed)
+                    ),
+                    "synthetic_repeat stage=proof category=original_reference_policy"
+                );
+                assert!(
+                    validate_final_outbound_body(
+                        &changed,
+                        "openai_responses",
+                        &issuer,
+                        context(&after)
+                    )
+                    .is_ok(),
+                    "synthetic_repeat stage=proof category=changed_reference_policy"
+                );
+                synthetic_repeat_diagnostics::take_checkpoint();
+                assert!(
+                    changed != outbound,
+                    "synthetic_repeat stage=proof category=unchanged_fixture"
+                );
+            }
+            let prepared = request.prepare_owned_attempt_with_history_for_proxy(
+                None,
+                "synthetic-repeat-provider",
+                protocol,
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-repeat-principal"),
+                &mut outbound,
+                |body, context| {
+                    if protocol == "openai_chat" {
+                        let projection = context.projection(&body);
+                        let converted = crate::proxy::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning_and_history(
+                            &body,
+                            None,
+                            projection.as_ref(),
+                        )?;
+                        if reasoning_history && turn == 1 {
+                            assert!(converted.1.is_some(), "synthetic_repeat stage=conversion category=mapping_absent");
+                            let text = converted.0.pointer("/messages/1/reasoning_content").and_then(Value::as_str)
+                                .ok_or(crate::proxy::error::ProxyError::DlpForward(DlpForwardError::RedactionFailed))?;
+                            assert!(text == "Synthetic reasoning rredact-custom-",
+                                "synthetic_repeat stage=conversion category=reasoning_shape");
+                            let target = super::super::history_provenance::DlpHistoryTarget::ChatReasoning { message_index: 1 };
+                            let expected = if history_kind == SyntheticRepeatHistory::ReasoningWhitespace {
+                                HistoryLeafPolicy::Strict
+                            } else {
+                                HistoryLeafPolicy::DeliveredReasoning
+                            };
+                            assert!(converted.1.as_ref().is_some_and(|mapping| {
+                                mapping.policy_for_target(context.lease, context.binding, &converted.0, target) == expected
+                            }), "synthetic_repeat stage=conversion category=reasoning_policy");
+                        }
+                        Ok(converted)
+                    } else {
+                        Ok((body, None))
+                    }
+                },
+            );
+            let (attempt, _owner) = prepared.map_err(|error| {
+                let checkpoint = synthetic_repeat_diagnostics::take_checkpoint();
+                match error {
+                    crate::proxy::error::ProxyError::DlpForward(DlpForwardError::ContextUnavailable) if checkpoint == 1 => {
+                        "synthetic_repeat checkpoint=request_prepare category=dlp_context_unavailable"
+                    }
+                    crate::proxy::error::ProxyError::DlpForward(DlpForwardError::ContextUnavailable) => {
+                        "synthetic_repeat stage=prepare category=dlp_context_unavailable"
+                    }
+                    _ => "synthetic_repeat stage=prepare category=other",
+                }
+            })?;
+            let mut authorized = 0;
+            attempt.lease.visit_authorized_tokens(|reference| {
+                let plaintext = attempt.lease.resolve(reference)?;
+                assert!(
+                    plaintext == phone || plaintext == identity,
+                    "synthetic_repeat stage=authority category=unexpected_plaintext"
+                );
+                authorized += 1;
+                Ok(())
+            })?;
+            assert!(
+                authorized == if case == 2 { 2 } else { 1 },
+                "synthetic_repeat stage=authority category=literal_granted_authority"
+            );
+            if turn == 1 && (literal_history || reasoning_history) {
+                assert!(
+                    serde_json::to_string(&outbound)?.contains("rredact-custom-"),
+                    "synthetic_repeat stage=outbound category=literal_bytes_changed"
+                );
+            }
+            let encoded = attempt
+                .encode_outbound_body(&outbound)
+                .map_err(|_| "synthetic_repeat stage=encode category=refused")?
+                .ok_or("synthetic_repeat stage=encode category=missing_body")?;
+            let encoded_text = std::str::from_utf8(encoded.as_ref())
+                .map_err(|_| "synthetic_repeat stage=encode category=invalid_utf8")?;
+            assert!(
+                !encoded_text.contains(&phone) && !encoded_text.contains(&identity),
+                "synthetic_repeat stage=outbound category=plaintext"
+            );
+            let text = if protocol == "openai_chat" {
+                outbound
+                    .get("messages")
+                    .and_then(Value::as_array)
+                    .and_then(|messages| messages.last())
+                    .and_then(|message| message.get("content"))
+                    .and_then(Value::as_str)
+            } else {
+                outbound
+                    .get("input")
+                    .and_then(Value::as_array)
+                    .and_then(|items| items.last())
+                    .and_then(|item| item.pointer("/content/0/text"))
+                    .and_then(Value::as_str)
+            }
+            .ok_or("synthetic_repeat stage=outbound category=missing_text")?;
+            assert!(
+                !text.contains(&phone) && !text.contains(&identity),
+                "synthetic_repeat stage=outbound category=unredacted_leaf"
+            );
+            let reasoning_text = if history_kind == SyntheticRepeatHistory::ReasoningWhitespace {
+                "  Synthetic reasoning rredact-custom-  "
+            } else {
+                "Synthetic reasoning rredact-custom-"
+            };
+            let expected_response = if literal_history {
+                format!("{prompt} Synthetic literal rredact-custom-")
+            } else {
+                prompt.clone()
+            };
+            let response_text = if literal_history {
+                format!("{text} Synthetic literal rredact-custom-")
+            } else {
+                text.to_owned()
+            };
+            let raw = if protocol == "openai_chat" {
+                let mut chat = json!({"id":format!("synthetic-repeat-chat-{turn}"),
+                    "object":"chat.completion", "created":0, "model":"synthetic-repeat-model",
+                    "choices":[{"index":0, "message":{"role":"assistant", "content":response_text},
+                        "finish_reason":"stop"}]});
+                if reasoning_history {
+                    chat["choices"][0]["message"]["reasoning_content"] = json!(reasoning_text);
+                }
+                attempt
+                    .verify_upstream_json_completion(
+                        JsonCompletionProtocol::ChatCompletions,
+                        &chat.to_string(),
+                    )
+                    .map_err(|_| "synthetic_repeat stage=completion category=refused")?;
+                crate::proxy::providers::transform_codex_chat::chat_completion_to_response(chat)
+                    .map_err(|_| "synthetic_repeat stage=conversion category=refused")?
+            } else {
+                let message = json!({"id":format!("synthetic-repeat-message-{turn}"),
+                "type":"message", "role":"assistant", "status":"completed", "content":[
+                    {"type":"output_text", "text":response_text, "annotations":[]}
+                ]});
+                let output = if reasoning_history {
+                    vec![
+                        json!({"id":format!("synthetic-repeat-reasoning-{turn}"),
+                        "type":"reasoning", "summary":[{"type":"summary_text", "text":reasoning_text}]}),
+                        message,
+                    ]
+                } else {
+                    vec![message]
+                };
+                json!({"id":format!("synthetic-repeat-response-{turn}"), "object":"response",
+                    "status":"completed", "output":output})
+            };
+            let response = attempt
+                .restore_client_http_response(
+                    Response::builder()
+                        .header("content-type", "application/json")
+                        .body(Body::from(raw.to_string()))?,
+                    ArgumentNormalizationMode::Exact,
+                    None,
+                )
+                .await;
+            assert!(
+                response.status() == StatusCode::OK,
+                "synthetic_repeat stage=restoration category=refused"
+            );
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .map_err(|_| "synthetic_repeat stage=delivery category=body")?
+                .to_bytes();
+            let delivered: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| "synthetic_repeat stage=delivery category=json")?;
+            let output_index = usize::from(reasoning_history);
+            assert!(
+                delivered
+                    .get("output")
+                    .and_then(Value::as_array)
+                    .and_then(|items| items.get(output_index))
+                    .and_then(|item| item.pointer("/content/0/text"))
+                    .and_then(Value::as_str)
+                    == Some(expected_response.as_str()),
+                "synthetic_repeat stage=delivery category=restoration_mismatch"
+            );
+            if reasoning_history {
+                assert!(
+                    delivered
+                        .pointer("/output/0/summary/0/text")
+                        .and_then(Value::as_str)
+                        == Some(reasoning_text),
+                    "synthetic_repeat stage=delivery category=reasoning_mismatch"
+                );
+            }
+            history.push(user);
+            history.extend(
+                delivered
+                    .get("output")
+                    .and_then(Value::as_array)
+                    .ok_or("synthetic_repeat stage=delivery category=output")?
+                    .iter()
+                    .cloned(),
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn run_synthetic_repeat_pii(
+    name: &'static str,
+    protocol: &str,
+    replay_history: bool,
+    history_kind: SyntheticRepeatHistory,
+    case_filter: Option<usize>,
+) -> TestResult {
+    let test = format!("proxy::security::http_restoration::final_validation_tests::{name}");
+    if history_client_diagnostics::parent("VARYAI_SYNTHETIC_REPEAT_PII_CHILD", &test).await? {
+        return Ok(());
+    }
+    check_synthetic_repeat_pii(protocol, replay_history, history_kind, case_filter).await?;
+    synthetic_repeat_diagnostics::finish()
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn synthetic_repeat_pii_native_without_history() -> TestResult {
+    run_synthetic_repeat_pii(
+        "synthetic_repeat_pii_native_without_history",
+        "openai_responses",
+        false,
+        SyntheticRepeatHistory::Plain,
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn synthetic_repeat_pii_chat_without_history() -> TestResult {
+    run_synthetic_repeat_pii(
+        "synthetic_repeat_pii_chat_without_history",
+        "openai_chat",
+        false,
+        SyntheticRepeatHistory::Plain,
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn synthetic_repeat_pii_native_restored_history() -> TestResult {
+    run_synthetic_repeat_pii(
+        "synthetic_repeat_pii_native_restored_history",
+        "openai_responses",
+        true,
+        SyntheticRepeatHistory::Plain,
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn synthetic_repeat_pii_chat_restored_history() -> TestResult {
+    run_synthetic_repeat_pii(
+        "synthetic_repeat_pii_chat_restored_history",
+        "openai_chat",
+        true,
+        SyntheticRepeatHistory::Plain,
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn synthetic_repeat_pii_native_restored_history_literal() -> TestResult {
+    run_synthetic_repeat_pii(
+        "synthetic_repeat_pii_native_restored_history_literal",
+        "openai_responses",
+        true,
+        SyntheticRepeatHistory::OutputLiteral,
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn synthetic_repeat_pii_chat_restored_history_literal() -> TestResult {
+    run_synthetic_repeat_pii(
+        "synthetic_repeat_pii_chat_restored_history_literal",
+        "openai_chat",
+        true,
+        SyntheticRepeatHistory::OutputLiteral,
+        None,
+    )
+    .await
+}
+
+// Regressions retain literal bytes while exercising normal PII protection on both turns.
+macro_rules! synthetic_repeat_literal_regression {
+    ($name:ident, $protocol:literal, $case:literal) => {
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn $name() -> TestResult {
+            run_synthetic_repeat_pii(
+                stringify!($name),
+                $protocol,
+                true,
+                SyntheticRepeatHistory::OutputLiteral,
+                Some($case),
+            )
+            .await
+        }
+    };
+}
+
+synthetic_repeat_literal_regression!(
+    synthetic_repeat_pii_native_phone_output_literal_preserved_regression,
+    "openai_responses",
+    0
+);
+synthetic_repeat_literal_regression!(
+    synthetic_repeat_pii_native_identity_output_literal_preserved_regression,
+    "openai_responses",
+    1
+);
+synthetic_repeat_literal_regression!(
+    synthetic_repeat_pii_native_mixed_output_literal_preserved_regression,
+    "openai_responses",
+    2
+);
+synthetic_repeat_literal_regression!(
+    synthetic_repeat_pii_chat_phone_output_literal_preserved_regression,
+    "openai_chat",
+    0
+);
+synthetic_repeat_literal_regression!(
+    synthetic_repeat_pii_chat_identity_output_literal_preserved_regression,
+    "openai_chat",
+    1
+);
+synthetic_repeat_literal_regression!(
+    synthetic_repeat_pii_chat_mixed_output_literal_preserved_regression,
+    "openai_chat",
+    2
+);
+
+macro_rules! synthetic_repeat_reasoning_replay {
+    ($name:ident, $protocol:literal, $kind:ident) => {
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn $name() -> TestResult {
+            run_synthetic_repeat_pii(
+                stringify!($name),
+                $protocol,
+                true,
+                SyntheticRepeatHistory::$kind,
+                None,
+            )
+            .await
+        }
+    };
+}
+
+synthetic_repeat_reasoning_replay!(
+    synthetic_repeat_pii_native_reasoning_exact,
+    "openai_responses",
+    ReasoningExact
+);
+synthetic_repeat_reasoning_replay!(
+    synthetic_repeat_pii_chat_reasoning_exact,
+    "openai_chat",
+    ReasoningExact
+);
+synthetic_repeat_reasoning_replay!(
+    synthetic_repeat_pii_native_reasoning_whitespace,
+    "openai_responses",
+    ReasoningWhitespace
+);
+synthetic_repeat_reasoning_replay!(
+    synthetic_repeat_pii_chat_reasoning_whitespace,
+    "openai_chat",
+    ReasoningWhitespace
+);
+
+macro_rules! synthetic_repeat_reasoning_literal_regression {
+    ($name:ident, $case:literal) => {
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn $name() -> TestResult {
+            run_synthetic_repeat_pii(
+                stringify!($name),
+                "openai_chat",
+                true,
+                SyntheticRepeatHistory::ReasoningWhitespace,
+                Some($case),
+            )
+            .await
+        }
+    };
+}
+
+synthetic_repeat_reasoning_literal_regression!(
+    synthetic_repeat_pii_chat_phone_reasoning_literal_preserved_regression,
+    0
+);
+synthetic_repeat_reasoning_literal_regression!(
+    synthetic_repeat_pii_chat_identity_reasoning_literal_preserved_regression,
+    1
+);
+synthetic_repeat_reasoning_literal_regression!(
+    synthetic_repeat_pii_chat_mixed_reasoning_literal_preserved_regression,
+    2
+);

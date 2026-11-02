@@ -70,13 +70,9 @@ pub(super) fn is_fresh_readable_history_with_history(
         value: &Value,
         projection: Option<&DlpHistoryProjection<'_>>,
     ) -> Result<bool, TokenError> {
-        let mut found = false;
-        visit_request_references(value, projection, |_| {
-            found = true;
-            Ok(())
-        })?;
-        let encrypted = encrypted_dependency(value, 0)?;
-        Ok(found || encrypted)
+        // Syntax alone is not a dependency or execution proof.
+        visit_request_references(value, projection, |_| Ok(()))?;
+        encrypted_dependency(value, 0)
     }
     fn opaque_input_image(part: &Value) -> bool {
         fn valid_detail(value: Option<&Value>) -> bool {
@@ -166,6 +162,7 @@ pub(super) fn is_fresh_readable_history_with_history(
     }
     let mut calls = PayloadVec::new(budget.clone())?;
     let mut outputs = PayloadVec::new(budget.clone())?;
+    let mut has_recorded_call = false;
     let has_calls = items.iter().any(|item| {
         matches!(
             item.get("type").and_then(Value::as_str),
@@ -209,9 +206,8 @@ pub(super) fn is_fresh_readable_history_with_history(
                 if kind == Some("function_call") {
                     let parsed =
                         PayloadJson::try_from_str(payload, budget.clone(), budget.limit())?;
-                    if prior_dependency(parsed.as_value(), None)? {
-                        return Ok(false);
-                    }
+                    // Decoded arguments are tool data, not protocol dependency envelopes.
+                    visit_request_references(parsed.as_value(), None, |_| Ok(()))?;
                 }
                 if item
                     .get("reasoning_content")
@@ -219,6 +215,7 @@ pub(super) fn is_fresh_readable_history_with_history(
                 {
                     return Err(TokenError::ContextUnavailable);
                 }
+                has_recorded_call |= projection.is_some_and(|p| p.has_recorded_call_identity(item));
                 calls.push((id, kind == Some("custom_tool_call")))?;
             }
             Some("function_call_output" | "custom_tool_call_output") => {
@@ -266,8 +263,8 @@ pub(super) fn is_fresh_readable_history_with_history(
     if calls.as_slice().len() != outputs.as_slice().len() {
         return Err(TokenError::ContextUnavailable);
     }
-    // Delivered history proof grants inspection exceptions, never independent execution authority.
-    Ok(projection.is_none())
+    // Message inspection proof is not a tool dependency; recorded calls keep completion checks.
+    Ok(!has_recorded_call)
 }
 
 #[cfg(test)]
@@ -350,6 +347,12 @@ pub(super) fn prepare_codex_request_with_history<T>(
         return Err(TokenError::CapacityExceeded.into());
     }
     let carriers = CodexRequestCarriers::from_body_with_budget(body, budget.clone())?;
+    carriers.visit_key_references(|reference| {
+        if lease.resolve_if_authorized(reference)?.is_some() {
+            return Err(TokenError::ContextUnavailable);
+        }
+        Ok(())
+    })?;
     let mut logical = PayloadVec::new(budget.clone())?;
     let mut match_count = 0usize;
     let mut protective_block = false;
@@ -458,6 +461,12 @@ pub(super) fn prepare_codex_request_with_history<T>(
             })?;
             let final_carriers =
                 CodexRequestCarriers::from_body_with_budget(candidate.as_value(), budget.clone())?;
+            final_carriers.visit_key_references(|reference| {
+                if proof.contains(&reference) {
+                    return Err(TokenError::ContextUnavailable);
+                }
+                Ok(())
+            })?;
             final_carriers.visit_with_history(projection, |leaf| {
                 if leaf.policy == HistoryLeafPolicy::DeliveredReasoning {
                     return Ok(());
@@ -465,7 +474,7 @@ pub(super) fn prepare_codex_request_with_history<T>(
                 let mut references = PayloadVec::new(budget.clone())?;
                 leaf.policy.visit_references(leaf.text, |range| {
                     if !proof.contains(&&leaf.text[range.clone()]) {
-                        return Err(TokenError::ContextUnavailable);
+                        return Ok(());
                     }
                     references.push(range)
                 })?;

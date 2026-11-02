@@ -47,6 +47,63 @@ fn rule(id: &str, pattern: &str, action: AuditAction) -> CompiledCustomRule {
 }
 
 #[test]
+fn preparation_new_authority_cannot_collide_with_immutable_keys() -> Result<(), PlanError> {
+    let key = [7; 32];
+    let raw = "13800138000";
+    let token = super::tokenization::make_token(&key, raw, TokenCategory::Phone)?;
+    for decoded in [false, true] {
+        let store = DlpTokenStore::with_test_key(key);
+        let mut lease = store.admit("codex", Some("synthetic-key-collision"), 1)?;
+        let budget = PayloadBudget::with_limit(1024 * 1024);
+        let body = if decoded {
+            let arguments = serde_json::to_string(&json!({&token:1,"value":raw}))
+                .map_err(|_| TokenError::RedactionFailed)?;
+            json!({"input":[{"type":"function_call","call_id":"call_collision","name":"fixture","arguments":arguments}]})
+        } else {
+            json!({"input":raw,"metadata":{&token:1}})
+        };
+        let mut called = false;
+        let result = prepare_codex_request_with_budget(
+            &mut lease,
+            &body,
+            &SecurityRuntimeConfig::default(),
+            &["chinese_phone_number"],
+            &[],
+            budget.clone(),
+            |_, _, _| {
+                called = true;
+                Ok(())
+            },
+        );
+        assert!(
+            matches!(
+                result,
+                Err(PlanError::Token(TokenError::ContextUnavailable))
+            ),
+            "new authority in immutable keys must refuse before commit"
+        );
+        assert!(
+            !called,
+            "refused immutable references cannot reach the validator"
+        );
+        assert!(
+            store.stats()?.entries == 0,
+            "refusal cannot commit token mappings"
+        );
+        assert!(
+            lease.resolve_if_authorized(&token)?.is_none(),
+            "refusal cannot grant authority"
+        );
+        drop(result);
+        assert!(
+            budget.used() == 0,
+            "refusal must release every candidate charge"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn preparation_connects_detectors_carriers_transaction_and_exact_serialization(
 ) -> Result<(), PlanError> {
     let store = DlpTokenStore::with_test_key(std::array::from_fn(|index| index as u8));
@@ -247,8 +304,8 @@ fn preparation_serialized_candidate_validation_failure_rolls_back_every_new_mapp
 }
 
 #[test]
-fn preparation_uses_current_lease_history_and_rejects_unknown_references() -> Result<(), PlanError>
-{
+fn preparation_uses_current_lease_history_without_authorizing_unknown_literals(
+) -> Result<(), PlanError> {
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", Some("synthetic-history"), 1)?;
     let tokens = lease.prepare(
@@ -279,11 +336,16 @@ fn preparation_uses_current_lease_history_and_rejects_unknown_references() -> Re
         &SecurityRuntimeConfig::default(),
         &[],
         &[],
-        |_, _, _| Ok(()),
-    );
-    assert_eq!(
-        result.err(),
-        Some(PlanError::Token(TokenError::ContextUnavailable))
+        |_, _, proof| {
+            assert!(proof.is_empty(), "literal_granted_proof");
+            Ok(())
+        },
+    )?;
+    assert!(result.body.as_value() == &body, "literal_bytes_changed");
+    assert!(sibling.is_empty(), "literal_granted_authority");
+    assert!(
+        sibling.resolve(&tokens[0]).is_err(),
+        "literal_resolved_without_permission"
     );
     Ok(())
 }
@@ -2063,7 +2125,8 @@ fn reversible_closure_req3_classifier_validates_every_readable_part() -> Result<
 }
 
 #[test]
-fn reversible_closure_req3_classifier_key_references_are_not_fresh() -> Result<(), TokenError> {
+fn reversible_closure_req3_classifier_key_literals_do_not_establish_dependencies(
+) -> Result<(), TokenError> {
     use super::request_preparation::is_fresh_readable_history;
     let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
     let source = json!({"input":[
@@ -2088,8 +2151,8 @@ fn reversible_closure_req3_classifier_key_references_are_not_fresh() -> Result<(
             json!({reference.clone():"synthetic"})
         };
         assert!(
-            !is_fresh_readable_history(&body, &budget)?,
-            "reference keys must retain strict resume provenance"
+            is_fresh_readable_history(&body, &budget)?,
+            "literal_keys_do_not_establish_dependencies"
         );
         assert_eq!(budget.used(), 0);
     }
@@ -2097,7 +2160,8 @@ fn reversible_closure_req3_classifier_key_references_are_not_fresh() -> Result<(
 }
 
 #[test]
-fn reversible_closure_req3_classifier_decodes_argument_dependencies() -> Result<(), TokenError> {
+fn reversible_closure_req3_classifier_decoded_literals_do_not_establish_dependencies(
+) -> Result<(), TokenError> {
     use super::request_preparation::is_fresh_readable_history;
     let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
     let store = DlpTokenStore::new();
@@ -2125,8 +2189,8 @@ fn reversible_closure_req3_classifier_decodes_argument_dependencies() -> Result<
         let mut body = source.clone();
         body["input"][0]["arguments"] = json!(arguments);
         assert!(
-            !is_fresh_readable_history(&body, &budget)?,
-            "decoded references retain strict resume provenance"
+            is_fresh_readable_history(&body, &budget)?,
+            "decoded_literals_do_not_establish_dependencies"
         );
         assert_eq!(budget.used(), 0);
     }

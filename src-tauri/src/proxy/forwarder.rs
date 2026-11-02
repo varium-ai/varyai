@@ -1941,6 +1941,13 @@ impl RequestForwarder {
                 )
                 .await
                 .map_err(ProxyError::DlpForward)?;
+            if self.dlp_request.is_none() && owners.is_some() {
+                // With no current budget, an owner means this candidate copied guarded cache data.
+                // Allocation provenance cannot replace the missing restoration admission.
+                return Err(ProxyError::DlpForward(
+                    super::security::http_restoration::DlpForwardError::ContextUnavailable,
+                ));
+            }
             _enrichment_payload_owners = owners;
             if self.dlp_request.is_none() {
                 super::security::http_restoration::validate_unleased_enriched_body(&mapped_body)
@@ -2754,7 +2761,9 @@ impl RequestForwarder {
             .get("model")
             .and_then(|v| v.as_str())
             .unwrap_or("<none>");
-        log::info!("[{tag}] >>> 请求目标: {target_for_log} (model={request_model})");
+        if !suppress_payload_diagnostics {
+            log::info!("[{tag}] >>> 请求目标: {target_for_log} (model={request_model})");
+        }
         if !suppress_payload_diagnostics {
             log::debug!(
                 "[{tag}] >>> 请求体已准备: bytes={}, hash={} (content omitted)",
@@ -2774,7 +2783,9 @@ impl RequestForwarder {
         #[cfg(not(test))]
         let upstream_proxy_url: Option<String> = super::http_client::get_current_proxy_url();
         #[cfg(test)]
-        let upstream_proxy_url: Option<String> = if final_send_binding_test_support::is_active() {
+        let upstream_proxy_url: Option<String> = if final_send_binding_test_support::is_active()
+            || upstream_error_test_support::is_active()
+        {
             None
         } else {
             super::http_client::get_current_proxy_url()
@@ -2793,8 +2804,33 @@ impl RequestForwarder {
             is_copilot,
         );
 
-        // 发送请求
-        let response = if is_socks_proxy || !preserve_exact_header_case {
+        let error_credentials = self
+            .dlp_request
+            .as_ref()
+            .and_then(|request| request.capture_error_credentials(&ordered_headers));
+
+        // The test-only transport is exhaustive: an installed fixture never reaches a socket.
+        #[cfg(test)]
+        let injected = upstream_error_test_support::take(&filtered_body);
+        #[cfg(not(test))]
+        let injected: Option<Result<ProxyResponse, ProxyError>> = None;
+        let response = if let Some(injected) = injected {
+            if let Some(attempt) = dlp_attempt.as_ref() {
+                attempt
+                    .validate_final_send_binding(
+                        &provider.id,
+                        protocol,
+                        &url,
+                        dlp_auth_principal(&ordered_headers).as_deref(),
+                    )
+                    .map_err(ProxyError::DlpForward)?;
+                attempt
+                    .validate_final_send_history(&filtered_body)
+                    .map_err(ProxyError::DlpForward)?;
+                attempt.record_permitted_attempt(&provider.id, None);
+            }
+            injected?
+        } else if is_socks_proxy || !preserve_exact_header_case {
             // OpenAI / Copilot / Codex 类后端不依赖原始 header 大小写；走 reqwest
             // 连接池，避免 raw TCP/TLS path 每次请求都重新握手。SOCKS5 也只能走 reqwest。
             log::debug!(
@@ -2899,15 +2935,23 @@ impl RequestForwarder {
             .await?
         };
 
-        // Admit leased responses before any decoder, retry validation, or converter reads them.
-        // A leased error body is untrusted and may echo references or private metadata.
-        // Refuse it before any legacy body parser, retry diagnostic, or client error builder.
-        let has_restoration_lease = dlp_attempt
-            .as_ref()
-            .is_some_and(|attempt| attempt.has_restoration_lease());
+        // Isolate prepared errors before legacy diagnostics; success admission stays lease-bound.
         // A redirect is an unbound target even for a prepared zero-token attempt.
         let bound_redirect = dlp_attempt.is_some() && response.status().is_redirection();
-        if bound_redirect || (has_restoration_lease && !response.status().is_success()) {
+        if !bound_redirect && dlp_attempt.is_some() && !response.status().is_success() {
+            if let Some(request) = self.dlp_request.as_ref() {
+                let error = request
+                    .read_upstream_error(
+                        response,
+                        &provider.settings_config,
+                        &log_secrets,
+                        error_credentials.as_ref(),
+                        timeout,
+                    )
+                    .await;
+                return Err(ProxyError::SafeUpstream(error));
+            }
+        } else if bound_redirect {
             return Err(ProxyError::DlpForward(
                 super::security::http_restoration::DlpForwardError::UpstreamStatus(
                     response.status(),
@@ -2949,9 +2993,9 @@ impl RequestForwarder {
 
         if status.is_success() {
             // Legacy semantic validation may include upstream diagnostics in its errors.
-            // A restoration lease must never expose or retry those diagnostic errors.
+            // Every prepared request, including an empty lease, has the same error boundary.
             let safe_validation_error = |error| {
-                if has_restoration_lease {
+                if dlp_attempt.is_some() {
                     ProxyError::DlpForward(
                         super::security::http_restoration::DlpForwardError::RestoreFailedAt(
                             super::security::restore_diagnostics::RestoreStage::SuccessValidation,
@@ -3453,17 +3497,7 @@ fn build_terminal_failure_log(
 
 fn summarize_proxy_error(error: &ProxyError) -> String {
     match error {
-        ProxyError::UpstreamError { status, body } => {
-            let body_summary = body
-                .as_deref()
-                .map(summarize_upstream_body)
-                .filter(|summary| !summary.is_empty());
-
-            match body_summary {
-                Some(summary) => format!("上游 HTTP {status}: {summary}"),
-                None => format!("上游 HTTP {status}"),
-            }
-        }
+        ProxyError::UpstreamError { status, .. } => format!("upstream_error HTTP {status}"),
         ProxyError::Timeout(message) => {
             format!("请求超时: {}", summarize_text_for_log(message, 180))
         }
@@ -3481,34 +3515,6 @@ fn summarize_proxy_error(error: &ProxyError) -> String {
         }
         _ => summarize_text_for_log(&error.to_string(), 180),
     }
-}
-
-fn summarize_upstream_body(body: &str) -> String {
-    if let Ok(json_body) = serde_json::from_str::<Value>(body) {
-        if let Some(message) = extract_json_error_message(&json_body) {
-            return summarize_text_for_log(&message, 180);
-        }
-
-        if let Ok(compact_json) = serde_json::to_string(&json_body) {
-            return summarize_text_for_log(&compact_json, 180);
-        }
-    }
-
-    summarize_text_for_log(body, 180)
-}
-
-fn extract_json_error_message(body: &Value) -> Option<String> {
-    let candidates = [
-        body.pointer("/error/message"),
-        body.pointer("/message"),
-        body.pointer("/detail"),
-        body.pointer("/error"),
-    ];
-
-    candidates
-        .into_iter()
-        .flatten()
-        .find_map(|value| value.as_str().map(ToString::to_string))
 }
 
 fn split_endpoint_and_query(endpoint: &str) -> (&str, Option<&str>) {
@@ -4878,9 +4884,9 @@ mod tests {
 
         assert_eq!(code, log_fwd::SINGLE_PROVIDER_FAILED);
         assert!(message.contains("Provider PackyCode-response 请求失败"));
-        assert!(message.contains("上游 HTTP 429"));
-        // 上游错误消息保留(截断)，用于诊断失败原因。
-        assert!(message.contains("rate limit exceeded"));
+        assert!(message.contains("upstream_error HTTP 429"));
+        // Diagnostics retain the status, never the raw upstream body.
+        assert!(!message.contains("rate limit exceeded"));
         assert!(!message.contains("切换下一个"));
     }
 
@@ -6493,5 +6499,69 @@ mod tests {
         });
         let body = body_with_image("any-model");
         assert!(fwd.media_retry_should_trigger("Claude", false, &body, &image_unsupported_error()));
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod upstream_error_test_support {
+    use super::{ProxyError, ProxyResponse};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+
+    type Factory = Box<dyn FnOnce(&serde_json::Value) -> ProxyResponse>;
+    struct State {
+        response: RefCell<Option<Factory>>,
+        attempts: Cell<usize>,
+    }
+    thread_local! {
+        static CURRENT: RefCell<Option<Rc<State>>> = const { RefCell::new(None) };
+    }
+    pub(crate) struct Guard {
+        previous: Option<Rc<State>>,
+        state: Rc<State>,
+    }
+    impl Guard {
+        pub(crate) fn attempts(&self) -> usize {
+            self.state.attempts.get()
+        }
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            CURRENT.with(|slot| slot.replace(self.previous.take()));
+        }
+    }
+    pub(crate) fn install(response: ProxyResponse) -> Guard {
+        install_with(move |_| response)
+    }
+    pub(crate) fn install_with(
+        factory: impl FnOnce(&serde_json::Value) -> ProxyResponse + 'static,
+    ) -> Guard {
+        let state = Rc::new(State {
+            response: RefCell::new(Some(Box::new(factory))),
+            attempts: Cell::new(0),
+        });
+        let previous = CURRENT.with(|slot| slot.replace(Some(state.clone())));
+        Guard { previous, state }
+    }
+    pub(crate) fn diagnostic_summary(error: &ProxyError) -> String {
+        super::summarize_proxy_error(error)
+    }
+    pub(crate) fn is_active() -> bool {
+        CURRENT.with(|slot| slot.borrow().is_some())
+    }
+    pub(super) fn take(body: &serde_json::Value) -> Option<Result<ProxyResponse, ProxyError>> {
+        CURRENT.with(|slot| {
+            slot.borrow().as_ref().map(|state| {
+                state.attempts.set(state.attempts.get().saturating_add(1));
+                state
+                    .response
+                    .borrow_mut()
+                    .take()
+                    .map(|factory| factory(body))
+                    .ok_or_else(|| ProxyError::Internal("synthetic_transport_exhausted".into()))
+            })
+        })
     }
 }

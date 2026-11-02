@@ -15,6 +15,7 @@ pub(super) const MAX_GLOBAL_CONTEXT_ENTRIES: usize = 16384;
 pub(super) const MAX_CALLS_PER_CONTEXT: usize = 128;
 pub(super) const CONTEXT_ENTRY_METADATA: usize = 512;
 pub(super) const CALL_ENTRY_METADATA: usize = 256;
+pub(super) const MAX_DELIVERED_CALL_SNAPSHOTS: usize = 4;
 pub(super) const OPAQUE_ENTRY_METADATA: usize = 128;
 
 // No Debug/Serialize: bindings and witnesses are private memory-only capabilities.
@@ -104,10 +105,25 @@ pub(super) struct CompletedContextHandle {
     pub(super) response_digest: [u8; 32],
 }
 
+/// Exact delivered variants share the original call identity and immutable completion.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct CompletedCallEntry {
     pub(super) call_digest: [u8; 32],
     pub(super) snapshot_digest: [u8; 32],
+    pub(super) delivered_digests: [[u8; 32]; MAX_DELIVERED_CALL_SNAPSHOTS],
+    pub(super) delivered_len: usize,
+}
+
+impl CompletedCallEntry {
+    pub(super) fn contains_snapshot(&self, digest: &[u8; 32]) -> bool {
+        self.snapshot_digest == *digest
+            || self.delivered_digests[..self.delivered_len].contains(digest)
+    }
+}
+
+pub(super) struct CompletedCallPublications<'a> {
+    pub(super) originals: &'a [CompletedCallSpec<'a>],
+    pub(super) delivered: &'a [CompletedCallSpec<'a>],
 }
 
 pub(super) struct CompletedContextRecord {
@@ -279,13 +295,36 @@ impl DlpRequestLease {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn publish_completed_context(
+        &self,
+        binding: &ActualAttemptBinding,
+        witness: &CompletionWitness,
+        response_id: &str,
+        output_tokens: &[&str],
+        calls: &[CompletedCallSpec<'_>],
+        opaques: &[&str],
+    ) -> Result<CompletedContextHandle, TokenError> {
+        self.publish_completed_context_variants(
+            binding,
+            witness,
+            response_id,
+            output_tokens,
+            CompletedCallPublications {
+                originals: calls,
+                delivered: &[],
+            },
+            opaques,
+        )
+    }
+
+    pub(super) fn publish_completed_context_variants(
         &self,
         binding: &ActualAttemptBinding,
         _witness: &CompletionWitness,
         response_id: &str,
         output_tokens: &[&str],
-        calls: &[CompletedCallSpec<'_>],
+        calls: CompletedCallPublications<'_>,
         opaques: &[&str],
     ) -> Result<CompletedContextHandle, TokenError> {
         self.publish_completed_context_extracted(

@@ -201,8 +201,16 @@ async fn handle_messages_for_app(
         super::security::http_restoration::RestorationAdmission::Admitted(request) => Some(request),
     };
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        app_type.clone(),
+        tag,
+        app_type_str,
+        dlp_request.as_deref(),
+    )
+    .await?;
 
     let raw_endpoint = uri
         .path_and_query()
@@ -869,8 +877,16 @@ pub async fn handle_chat_completions(
         super::security::http_restoration::RestorationAdmission::Admitted(request) => Some(request),
     };
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        AppType::Codex,
+        "Codex",
+        "codex",
+        dlp_request.as_deref(),
+    )
+    .await?;
     let endpoint = endpoint_with_query(&uri, "/chat/completions");
 
     let is_stream = body
@@ -975,8 +991,16 @@ async fn handle_responses_for_app(
         super::security::http_restoration::RestorationAdmission::Admitted(request) => Some(request),
     };
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        app_type.clone(),
+        tag,
+        app_type_str,
+        dlp_request.as_deref(),
+    )
+    .await?;
     let endpoint = endpoint_with_query(&uri, "/responses");
 
     let is_stream = body
@@ -1014,9 +1038,7 @@ async fn handle_responses_for_app(
     };
 
     let dlp_attempt = result.dlp_attempt.take();
-    let leased_response = dlp_attempt
-        .as_ref()
-        .is_some_and(|attempt| attempt.has_active_tokens());
+    let leased_response = dlp_attempt.is_some();
     let evidence = dlp_attempt
         .as_ref()
         .and_then(|attempt| attempt.upstream_sse_evidence_tracker());
@@ -1209,8 +1231,16 @@ async fn handle_codex_standalone_passthrough(
         super::security::http_restoration::RestorationAdmission::Admitted(request) => Some(request),
     };
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        AppType::Codex,
+        "Codex",
+        "codex",
+        dlp_request.as_deref(),
+    )
+    .await?;
     let endpoint = endpoint_with_query(&uri, canonical_endpoint);
 
     let forwarder = ctx.create_forwarder(&state).with_dlp_request(dlp_request);
@@ -1300,8 +1330,16 @@ async fn handle_responses_compact_for_app(
         super::security::http_restoration::RestorationAdmission::Admitted(request) => Some(request),
     };
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        app_type.clone(),
+        tag,
+        app_type_str,
+        dlp_request.as_deref(),
+    )
+    .await?;
     let endpoint = endpoint_with_query(&uri, "/responses/compact");
 
     let is_stream = body
@@ -1336,9 +1374,7 @@ async fn handle_responses_compact_for_app(
     };
 
     let dlp_attempt = result.dlp_attempt.take();
-    let leased_response = dlp_attempt
-        .as_ref()
-        .is_some_and(|attempt| attempt.has_active_tokens());
+    let leased_response = dlp_attempt.is_some();
     let evidence = dlp_attempt
         .as_ref()
         .and_then(|attempt| attempt.upstream_sse_evidence_tracker());
@@ -2552,6 +2588,9 @@ fn build_codex_proxy_error_response(
     endpoint: &str,
     error: &ProxyError,
 ) -> Result<axum::response::Response, ProxyError> {
+    if let ProxyError::SafeUpstream(error) = error {
+        return Ok(error.to_response());
+    }
     if let ProxyError::DlpForward(error) = error {
         return Ok(error.into_codex_response());
     }
@@ -2582,6 +2621,16 @@ fn codex_proxy_error_json(
     endpoint: &str,
     error: &ProxyError,
 ) -> Value {
+    if let ProxyError::UpstreamError {
+        body: Some(raw), ..
+    } = error
+    {
+        return serde_json::from_str(raw).unwrap_or_else(|_| {
+            json!({"error":{
+                "message":raw, "type":"upstream_error", "code":"upstream_error", "param":null
+            }})
+        });
+    }
     let (mut body, upstream_status) = match error {
         ProxyError::UpstreamError { status, body } => {
             let parsed_body = body
@@ -2705,7 +2754,9 @@ fn codex_proxy_error_code(error: &ProxyError) -> &'static str {
         ProxyError::TransformError(_) => "cc_switch_transform_error",
         ProxyError::InvalidRequest(_) => "cc_switch_invalid_request",
         ProxyError::AuthError(_) => "cc_switch_auth_error",
-        ProxyError::UpstreamError { .. } => "cc_switch_upstream_error",
+        ProxyError::UpstreamError { .. } | ProxyError::SafeUpstream(_) => {
+            "cc_switch_upstream_error"
+        }
         ProxyError::DatabaseError(_) => "cc_switch_database_error",
         ProxyError::Internal(_) => "cc_switch_internal_error",
         ProxyError::AlreadyRunning
@@ -2776,9 +2827,17 @@ pub async fn handle_gemini(
     }
 
     // Gemini 的模型名称在 URI 中
-    let mut ctx = RequestContext::new(&state, &body, &headers, AppType::Gemini, "Gemini", "gemini")
-        .await?
-        .with_model_from_uri(&uri);
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        AppType::Gemini,
+        "Gemini",
+        "gemini",
+        None,
+    )
+    .await?
+    .with_model_from_uri(&uri);
 
     // 提取完整的路径和查询参数
     let endpoint = uri
@@ -4991,52 +5050,66 @@ data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n
     }
 
     #[test]
-    fn codex_proxy_upstream_error_normalizes_nonstandard_body() {
+    fn codex_proxy_upstream_error_preserves_nonstandard_body() {
+        let expected = serde_json::json!({"base_resp":{"status_code":2013,"status_msg":"synthetic gateway failure"}});
         let error = ProxyError::UpstreamError {
             status: 502,
-            body: Some(
-                r#"{"base_resp":{"status_code":2013,"status_msg":"upstream gateway failed"}}"#
-                    .to_string(),
-            ),
+            body: Some(expected.to_string()),
         };
-        let body = codex_proxy_error_json("MiniMax", "abab6.5s", "/responses", &error);
-
-        let message = body["error"]["message"].as_str().unwrap();
-        assert!(message.contains("upstream_status: HTTP 502"));
-        assert!(message.contains("upstream gateway failed"));
-        assert_eq!(body["error"]["code"], 2013);
-        assert_eq!(body["error"]["upstream_status"], 502);
+        let body = codex_proxy_error_json(
+            "synthetic-provider",
+            "synthetic-model",
+            "/responses",
+            &error,
+        );
+        assert!(body == expected, "upstream_body_changed");
     }
 
     #[test]
-    fn codex_proxy_413_points_to_upstream_not_local_proxy() {
-        // 模拟上游渠道商 nginx 因 client_max_body_size 返回的 413 HTML 页面
-        // （见 issue #666：长上下文 / 大图 / 大日志撞上游体积上限）
+    fn codex_proxy_413_preserves_upstream_reason_without_local_enrichment() {
         let error = ProxyError::UpstreamError {
             status: 413,
-            body: Some(
-                "<html>\r\n<head><title>413 Request Entity Too Large</title></head>\r\n\
-                 <body>\r\n<center><h1>413 Request Entity Too Large</h1></center>\r\n\
-                 <hr><center>nginx/1.29.6</center>\r\n</body>\r\n</html>"
-                    .to_string(),
-            ),
+            body: Some("synthetic payload limit".into()),
         };
-        let body = codex_proxy_error_json("HCAI", "gpt-5.5", "/responses", &error);
+        let body = codex_proxy_error_json(
+            "synthetic-provider",
+            "synthetic-model",
+            "/responses",
+            &error,
+        );
+        assert!(
+            body["error"]["message"] == "synthetic payload limit",
+            "upstream_reason_changed"
+        );
+        for field in ["provider", "model", "endpoint", "upstream_status"] {
+            assert!(
+                body["error"].get(field).is_none(),
+                "upstream_error_enriched"
+            );
+        }
+        assert!(
+            !body.to_string().contains("Vary AI local proxy failed"),
+            "upstream_error_misclassified_as_local"
+        );
+    }
+}
 
-        let message = body["error"]["message"].as_str().unwrap();
-        // 不再误导成「本地代理失败」
-        assert!(!message.contains("Vary AI local proxy failed"));
-        // 明确指向上游 + 体积超限 + 可操作指引
-        assert!(message.contains("413"));
-        assert!(message.to_lowercase().contains("upstream"));
-        assert!(message.contains("/compact"));
-        // 关键：不把整段 nginx HTML 回显给用户
-        assert!(!message.contains("<html>"));
-        assert!(!message.contains("nginx/1.29.6"));
-        // 结构化字段仍然保留，便于程序化消费 / UI 呈现
-        assert_eq!(body["error"]["upstream_status"], 413);
-        assert_eq!(body["error"]["provider"], "HCAI");
-        assert_eq!(body["error"]["model"], "gpt-5.5");
-        assert_eq!(body["error"]["endpoint"], "/responses");
+#[cfg(test)]
+mod upstream_error_passthrough_tests {
+    use super::*;
+    #[test]
+    fn upstream_error_passthrough_unleased_codex_keeps_upstream_fields() {
+        let upstream = serde_json::json!({"error":{"message":"synthetic unsupported model", "type":"invalid_request_error", "code":"model_not_found", "param":"model", "safe_extension":true}});
+        let error = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(upstream.to_string()),
+        };
+        let actual = codex_proxy_error_json(
+            "synthetic-provider",
+            "synthetic-model",
+            "/v1/responses",
+            &error,
+        );
+        assert!(actual == upstream, "upstream_error_misclassified_as_local");
     }
 }

@@ -1011,6 +1011,7 @@ fn concurrent_history_response(index: usize) -> Value {
     for item in 0..3 {
         response["output"][item]["id"] = json!(format!("synthetic-concurrent-{index}-{item}"));
     }
+    response["output"][2]["call_id"] = json!(format!("synthetic-concurrent-call-{index}"));
     response
 }
 

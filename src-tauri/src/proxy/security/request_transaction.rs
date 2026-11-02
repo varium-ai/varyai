@@ -84,11 +84,13 @@ pub(super) fn prepare_fields_with_history<T>(
     for (index, field) in fields.iter().enumerate() {
         let policy = policies
             .get(index)
-            .map_or(HistoryLeafPolicy::Strict, |policy| *policy);
+            .map_or(HistoryLeafPolicy::UnprovenText, |policy| {
+                policy.for_request_literals()
+            });
         policy.visit_references(field.text, |range| {
             reference_count = bounded_sum(reference_count, 1, MAX_ITEMS)?;
             let token = &field.text[range];
-            if lease.resolve(token).is_ok() {
+            if lease.resolve_if_authorized(token)?.is_some() {
                 push_bounded(&mut proven, token)?;
             } else {
                 push_bounded(&mut literals, token)?;
@@ -127,11 +129,7 @@ pub(super) fn prepare_fields_with_history<T>(
             literals.as_slice(),
             budget.clone(),
             |tokens| {
-                // Collision detection runs first, but unknown references never escape
-                // merely because a replacement would remove their original carrier.
-                if !literals.as_slice().is_empty() {
-                    return Err(TokenError::ContextUnavailable);
-                }
+                // Exact unknown literals remain collision inputs, not restoration proof.
                 let candidate = build_candidate(fields, plan.as_slice(), tokens, &budget)?;
                 let mut proof = PayloadVec::new(budget.clone())?;
                 for token in proven
@@ -149,12 +147,13 @@ pub(super) fn prepare_fields_with_history<T>(
                 for (index, text) in candidate.as_slice().iter().enumerate() {
                     let policy = policies
                         .get(index)
-                        .map_or(HistoryLeafPolicy::Strict, |policy| *policy);
+                        .map_or(HistoryLeafPolicy::UnprovenText, |policy| {
+                            policy.for_request_literals()
+                        });
                     policy.visit_references(text.as_str(), |range| {
-                        if proof
-                            .as_slice()
-                            .binary_search(&&text.as_str()[range])
-                            .is_err()
+                        let reference = &text.as_str()[range];
+                        if !proof.as_slice().contains(&reference)
+                            && !literals.as_slice().contains(&reference)
                         {
                             return Err(TokenError::ContextUnavailable);
                         }

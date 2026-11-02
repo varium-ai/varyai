@@ -172,6 +172,30 @@ enum CollectionPurpose {
     RefusalAudit,
 }
 
+/// Inspect immutable keys only after the tree has passed depth, node and byte limits.
+pub(super) fn visit_bounded_key_references<'a>(
+    value: &'a Value,
+    visitor: &mut impl FnMut(&'a str) -> Result<(), TokenError>,
+) -> Result<(), TokenError> {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                visit_bounded_key_references(item, visitor)?;
+            }
+        }
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                super::output_text_matching::visit_complete_references(key, |range| {
+                    visitor(&key[range])
+                })?;
+                visit_bounded_key_references(value, visitor)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 impl CodexRequestCarriers {
     pub(super) fn from_body(body: &Value) -> Result<Self, TokenError> {
         Self::from_body_with_budget(body, PayloadBudget::default())
@@ -233,6 +257,19 @@ impl CodexRequestCarriers {
         Ok(plan)
     }
 
+    /// Keys are immutable protocol/data structure, including decoded argument keys.
+    pub(super) fn visit_key_references<'a>(
+        &'a self,
+        mut visitor: impl FnMut(&'a str) -> Result<(), TokenError>,
+    ) -> Result<(), TokenError> {
+        // Both trees already passed the depth, node, and byte preflight.
+        visit_bounded_key_references(self.original.as_value(), &mut visitor)?;
+        for document in self.documents.as_slice() {
+            visit_bounded_key_references(document.value.as_value(), &mut visitor)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn visit<'a>(
         &'a self,
         mut visitor: impl FnMut(CarrierLeaf<'a>) -> Result<(), TokenError>,
@@ -287,6 +324,7 @@ impl CodexRequestCarriers {
                 }
                 view.policy = policy(&path[..leaf.path.len()]);
             }
+            view.policy = view.policy.for_request_literals();
             visitor(view)?;
         }
         Ok(())

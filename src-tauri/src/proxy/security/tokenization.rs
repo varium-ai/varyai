@@ -1551,6 +1551,36 @@ impl DlpRequestLease {
         Ok(tokens)
     }
 
+    /// A syntactic nonmatch has no authority; live authorized mappings still fail closed.
+    pub(super) fn resolve_if_authorized(&self, token: &str) -> Result<Option<&str>, TokenError> {
+        let bytes = token.as_bytes();
+        let Some(layout) = token_format::header(bytes) else {
+            return Ok(None);
+        };
+        if layout.legacy || token.len() != layout.len || !layout.complete(bytes) {
+            return Ok(None);
+        }
+        let mut digest = [0u8; 10];
+        for (index, byte) in digest.iter_mut().enumerate() {
+            let offset = layout.digest_start + index * 2;
+            let hex = |value: u8| {
+                if value <= b'9' {
+                    value - b'0'
+                } else {
+                    value - b'a' + 10
+                }
+            };
+            *byte = (hex(bytes[offset]) << 4) | hex(bytes[offset + 1]);
+        }
+        let Some(mapping) = self.authorized.get(&digest) else {
+            return Ok(None);
+        };
+        if mapping.get()?.token()? != token {
+            return Ok(None);
+        }
+        self.resolve(token).map(Some)
+    }
+
     pub(super) fn resolve(&self, token: &str) -> Result<&str, TokenError> {
         let bytes = token.as_bytes();
         let layout = token_format::header(bytes).ok_or(TokenError::ContextUnavailable)?;
@@ -1736,7 +1766,7 @@ impl DlpRequestLease {
         binding: &super::completed_context::ActualAttemptBinding,
         response_id: &str,
         output_tokens: &[&str],
-        calls: &[super::completed_context::CompletedCallSpec<'_>],
+        publications: super::completed_context::CompletedCallPublications<'_>,
         opaques: &[&str],
     ) -> Result<super::completed_context::CompletedContextHandle, TokenError> {
         use super::completed_context::{
@@ -1754,11 +1784,31 @@ impl DlpRequestLease {
             return Err(TokenError::ContextUnavailable);
         }
         let limits = &self.store.inner()?.limits;
+        let calls = publications.originals;
+        let delivered = publications.delivered;
         if calls.len() > MAX_CALLS_PER_CONTEXT
+            || delivered.len()
+                > calls
+                    .len()
+                    .saturating_mul(super::completed_context::MAX_DELIVERED_CALL_SNAPSHOTS)
             || output_tokens.len() > limits.entries_per_namespace
             || opaques.len() > MAX_CONTEXT_ENTRIES_PER_NAMESPACE
         {
             return Err(TokenError::CapacityExceeded);
+        }
+        for variant in delivered {
+            let original = calls
+                .iter()
+                .find(|spec| spec.call_id == variant.call_id)
+                .ok_or(TokenError::ContextUnavailable)?;
+            if original.item_type != variant.item_type
+                || original.name != variant.name
+                || original.reasoning != variant.reasoning
+                || original.encrypted_reasoning != variant.encrypted_reasoning
+                || variant.payload.len() > limits.fragment_bytes
+            {
+                return Err(TokenError::ContextUnavailable);
+            }
         }
         for &tok in output_tokens {
             self.resolve(tok)?;
@@ -1786,15 +1836,34 @@ impl DlpRequestLease {
                 {
                     return Err(TokenError::ContextUnavailable);
                 }
-                visit_token_references(spec.payload, |range| {
-                    self.resolve(&spec.payload[range]).map(|_| ())
+                super::output_text_matching::visit_complete_references(spec.payload, |range| {
+                    self.resolve_if_authorized(&spec.payload[range]).map(|_| ())
                 })?;
                 // Supported upstream reasoning is literal text, not token authority.
                 // Its bounded snapshot remains part of mandatory call completion.
-                vec.push_without_growth(CompletedCallEntry {
+                let mut entry = CompletedCallEntry {
                     call_digest: call_id_digest(key, spec.call_id)?,
                     snapshot_digest: call_snapshot_digest(key, spec)?,
-                })?;
+                    delivered_digests: [[0; 32];
+                        super::completed_context::MAX_DELIVERED_CALL_SNAPSHOTS],
+                    delivered_len: 0,
+                };
+                for variant in delivered
+                    .iter()
+                    .filter(|variant| variant.call_id == spec.call_id)
+                {
+                    let digest = call_snapshot_digest(key, variant)?;
+                    if !entry.contains_snapshot(&digest) {
+                        let slot = entry
+                            .delivered_digests
+                            .get_mut(entry.delivered_len)
+                            .ok_or(TokenError::CapacityExceeded)?;
+                        *slot = digest;
+                        entry.delivered_len += 1;
+                    }
+                }
+                entry.delivered_digests[..entry.delivered_len].sort_unstable();
+                vec.push_without_growth(entry)?;
             }
             vec.sort_unstable_by(|a, b| a.call_digest.cmp(&b.call_digest));
             if vec
@@ -2153,7 +2222,7 @@ impl DlpRequestLease {
                 if let Some(pidx) = prev_idx {
                     let rec = snapshot.as_slice()[pidx].get()?;
                     if let Some(found) = rec.find_call(&call_digest) {
-                        if found.snapshot_digest != snapshot_digest {
+                        if !found.contains_snapshot(&snapshot_digest) {
                             return Err(TokenError::ContextUnavailable);
                         }
                         continue;
@@ -2168,7 +2237,7 @@ impl DlpRequestLease {
                         continue;
                     }
                     if let Some(found) = rec.find_call(&call_digest) {
-                        if found.snapshot_digest != snapshot_digest || found_idx.is_some() {
+                        if !found.contains_snapshot(&snapshot_digest) || found_idx.is_some() {
                             return Err(TokenError::ContextUnavailable);
                         }
                         found_idx = Some(idx);
@@ -2288,6 +2357,24 @@ impl DlpRequestLease {
         binding: &super::completed_context::ActualAttemptBinding,
         referenced_tokens: &[&str],
     ) -> Result<(), TokenError> {
+        self.resume_matching_tokens_impl(binding, referenced_tokens, true)
+    }
+
+    /// Literal candidates may acquire only existing, exact, binding-authorized completion proof.
+    pub(super) fn resume_matching_completed_tokens(
+        &mut self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        referenced_tokens: &[&str],
+    ) -> Result<(), TokenError> {
+        self.resume_matching_tokens_impl(binding, referenced_tokens, false)
+    }
+
+    fn resume_matching_tokens_impl(
+        &mut self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        referenced_tokens: &[&str],
+        require_all: bool,
+    ) -> Result<(), TokenError> {
         use super::completed_context::MAX_CONTEXT_ENTRIES_PER_NAMESPACE;
         if referenced_tokens.is_empty() {
             return Ok(());
@@ -2298,9 +2385,15 @@ impl DlpRequestLease {
         if binding.store_id != self.store_id()?
             || binding.namespace != self.namespace
             || binding.generation != self.generation
-            || !binding.reusable_principal
         {
             return Err(TokenError::ContextUnavailable);
+        }
+        if !binding.reusable_principal {
+            return if require_all {
+                Err(TokenError::ContextUnavailable)
+            } else {
+                Ok(())
+            };
         }
         let limits = &self.store.inner()?.limits;
         let ledger = self.store.allocation_ledger()?;
@@ -2310,14 +2403,18 @@ impl DlpRequestLease {
                 .namespaces
                 .get(&self.namespace)
                 .ok_or(TokenError::ContextUnavailable)?;
-            if ns.identity.is_none()
-                || ns.generation != self.generation
-                || ns.policy_revision != binding.policy_revision
-            {
+            if ns.generation != self.generation || ns.policy_revision != binding.policy_revision {
                 return Err(TokenError::ContextUnavailable);
             }
+            if ns.identity.is_none() {
+                return if require_all {
+                    Err(TokenError::ContextUnavailable)
+                } else {
+                    Ok(())
+                };
+            }
             let slice = ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice);
-            if slice.is_empty() {
+            if require_all && slice.is_empty() {
                 return Err(TokenError::ContextUnavailable);
             }
             let mut copied = StoreVec::with_capacity(
@@ -2359,7 +2456,12 @@ impl DlpRequestLease {
                     break;
                 }
             }
-            let idx = found_idx.ok_or(TokenError::ContextUnavailable)?;
+            let Some(idx) = found_idx else {
+                if require_all {
+                    return Err(TokenError::ContextUnavailable);
+                }
+                continue;
+            };
             if !matched_indices.as_slice().contains(&idx) {
                 matched_indices.push_without_growth(idx)?;
             }
@@ -3096,6 +3198,14 @@ impl DlpRequestLease {
             Some(binding),
             request,
         )
+    }
+
+    #[cfg(test)]
+    pub(super) fn evict_delivered_history_for_test(&self) -> Result<(), TokenError> {
+        self.history_namespace(false)
+            .ok_or(TokenError::Unavailable)?
+            .get()?
+            .evict_records_for_test()
     }
 
     /// Deferred exact candidates cannot authorize sending: final mapping checks

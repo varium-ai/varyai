@@ -23,7 +23,7 @@ use super::{
     payload_text::PayloadText,
     restore_diagnostics::{RestoreReason, RestoreStage},
     token_format_diagnostics::{Carrier, Site, TokenFormatDiagnosticState},
-    tokenization::{visit_token_references, DlpRequestLease, TokenError},
+    tokenization::{DlpRequestLease, TokenError},
 };
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -143,22 +143,17 @@ pub(super) fn check_no_tokens_in_str(
     text: &str,
     lease: &DlpRequestLease,
 ) -> Result<(), RestoreError> {
+    // Unsupported carriers retain literals, but cannot carry an authorized reference.
     let mut found_authorized = false;
-    let mut found_unauthorized = false;
-    visit_token_references(text, |range| {
-        if lease.resolve(&text[range]).is_ok() {
+    super::output_text_matching::visit_complete_references(text, |range| {
+        if lease.resolve_if_authorized(&text[range])?.is_some() {
             found_authorized = true;
-        } else {
-            found_unauthorized = true;
         }
         Ok(())
     })
     .map_err(RestoreError::scan_error)?;
-    if found_unauthorized {
-        return Err(RestoreError::FailedBecause(RestoreReason::TokenContext));
-    }
     if found_authorized {
-        return Err(RestoreError::RestoreUnsupported);
+        return Err(RestoreError::FailedBecause(RestoreReason::TokenContext));
     }
     Ok(())
 }
@@ -183,30 +178,11 @@ fn check_no_tokens_in_value(value: &Value, lease: &DlpRequestLease) -> Result<()
     }
 }
 
-// Only protocol-identified ordinary output-text leaves use exact recognition.
-// Keys, metadata, tools, refusal and unknown carriers remain strict.
 fn check_no_complete_output_references(
     text: &str,
     lease: &DlpRequestLease,
 ) -> Result<(), RestoreError> {
-    let mut authorized = false;
-    let mut unauthorized = false;
-    super::output_text_matching::visit_complete_references(text, |range| {
-        if lease.resolve(&text[range]).is_ok() {
-            authorized = true;
-        } else {
-            unauthorized = true;
-        }
-        Ok(())
-    })
-    .map_err(RestoreError::scan_error)?;
-    if unauthorized {
-        return Err(RestoreError::FailedBecause(RestoreReason::TokenContext));
-    }
-    if authorized {
-        return Err(RestoreError::RestoreUnsupported);
-    }
-    Ok(())
+    check_no_tokens_in_str(text, lease)
 }
 
 fn check_restored_output_part(part: &Value, lease: &DlpRequestLease) -> Result<(), RestoreError> {
@@ -415,14 +391,15 @@ fn restore_text_with_matching(
     budget: &PayloadBudget,
     output_tokens: &mut PayloadVec<PayloadText>,
     restored_occurrences: &mut usize,
-    output_text: bool,
+    _output_text: bool,
 ) -> Result<PayloadText, RestoreError> {
     let mut ranges = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
-    if output_text {
-        super::output_text_matching::visit_complete_references(text, |range| ranges.push(range))
-    } else {
-        visit_token_references(text, |range| ranges.push(range))
-    }
+    super::output_text_matching::visit_complete_references(text, |range| {
+        if lease.resolve_if_authorized(&text[range.clone()])?.is_some() {
+            ranges.push(range)?;
+        }
+        Ok(())
+    })
     .map_err(RestoreError::scan_error)?;
     let mut out_len = text.len();
     for range in ranges.as_slice() {
@@ -591,6 +568,7 @@ pub(super) fn restore_json_arguments_string(
     if !parsed.as_value().is_object() {
         return Err(RestoreError::FailedBecause(RestoreReason::ArgumentsShape));
     }
+    let before = *restored_occurrences;
     let mut replacements = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
     restore_json_leaves(
         parsed.as_value(),
@@ -600,6 +578,10 @@ pub(super) fn restore_json_arguments_string(
         restored_occurrences,
         &mut replacements,
     )?;
+    if *restored_occurrences == before {
+        return PayloadText::try_from_str(raw_args, budget.clone(), MAX_ARGUMENT_BYTES)
+            .map_err(RestoreError::capacity);
+    }
     let restored = apply_text_replacements(parsed.as_value(), &replacements, budget)
         .map_err(|error| error.with_fallback_reason(RestoreReason::ArgumentsRebuild))?;
     let encoded = serialize_json_with_budget(restored.as_value(), budget, MAX_ARGUMENT_BYTES)
@@ -767,6 +749,11 @@ impl StagedJsonResponse<'_> {
     ) -> Result<RestoredJsonResponse, RestoreError> {
         publish_completed_snapshot(
             self.source,
+            DeliveredToolSnapshots {
+                response: self.restored.as_value(),
+                tracks: &[],
+                events: &[],
+            },
             &self.output_tokens,
             lease,
             binding,
@@ -887,6 +874,7 @@ fn item_string_edits<'a>(
     raw: &'a Value,
     restored: &'a Value,
     added: bool,
+    preserve_payload: bool,
     edits: &mut PayloadVec<JsonStringReplacement<'a>>,
 ) -> Result<(), RestoreError> {
     // Only supported text is rewritten; metadata and unknown siblings stay untouched.
@@ -900,7 +888,7 @@ fn item_string_edits<'a>(
             ("function_call", "arguments" | "reasoning_content")
                 | ("custom_tool_call", "input" | "reasoning_content")
         );
-        if !supported {
+        if !supported || (preserve_payload && matches!(field, "arguments" | "input")) {
             continue;
         }
         if let (Some(a), Some(b)) = (raw.get(field), restored.get(field)) {
@@ -940,6 +928,7 @@ fn item_string_edits<'a>(
 fn check_snapshot_part(
     part: &Value,
     container: &str,
+    added: bool,
     lease: &DlpRequestLease,
 ) -> Result<(), RestoreError> {
     let kind = part.get("type").and_then(Value::as_str);
@@ -962,7 +951,7 @@ fn check_snapshot_part(
             return Err(RestoreError::RestoreFailed);
         }
     };
-    if !part.get(field).is_some_and(Value::is_string) {
+    if !part.get(field).is_some_and(Value::is_string) && !(added && part.get(field).is_none()) {
         return Err(RestoreError::RestoreFailed);
     }
     for (key, value) in part.as_object().ok_or(RestoreError::RestoreFailed)? {
@@ -975,6 +964,10 @@ fn check_snapshot_part(
 }
 
 fn check_snapshot_carriers(data: &Value, lease: &DlpRequestLease) -> Result<(), RestoreError> {
+    let added = data
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|event| event.ends_with(".added"));
     if let Some(item) = data.get("item") {
         let kind = item
             .get("type")
@@ -990,7 +983,7 @@ fn check_snapshot_carriers(data: &Value, lease: &DlpRequestLease) -> Result<(), 
                         key.as_str()
                     };
                     for part in value.as_array().ok_or(RestoreError::RestoreFailed)? {
-                        check_snapshot_part(part, container, lease)?;
+                        check_snapshot_part(part, container, added, lease)?;
                     }
                 }
                 ("function_call", "arguments" | "reasoning_content")
@@ -1010,7 +1003,7 @@ fn check_snapshot_carriers(data: &Value, lease: &DlpRequestLease) -> Result<(), 
         } else {
             "content"
         };
-        check_snapshot_part(part, container, lease)?;
+        check_snapshot_part(part, container, added, lease)?;
     }
     for (key, value) in data.as_object().ok_or(RestoreError::RestoreFailed)? {
         check_no_tokens_in_str(key, lease)?;
@@ -1317,8 +1310,36 @@ fn restore_completed_snapshot(
     Ok(restored)
 }
 
+struct DeliveredToolSnapshots<'a> {
+    response: &'a Value,
+    tracks: &'a [ToolItemTrack],
+    events: &'a [BufferedSseEvent],
+}
+
+fn completed_call_spec(item: &Value) -> Result<CompletedCallSpec<'_>, RestoreError> {
+    let required = |key| {
+        item.get(key)
+            .and_then(Value::as_str)
+            .ok_or(RestoreError::RestoreFailed)
+    };
+    let kind = required("type")?;
+    Ok(CompletedCallSpec {
+        call_id: required("call_id")?,
+        item_type: kind,
+        name: required("name")?,
+        payload: required(if kind == "function_call" {
+            "arguments"
+        } else {
+            "input"
+        })?,
+        reasoning: item.get("reasoning_content").and_then(Value::as_str),
+        encrypted_reasoning: item.get("encrypted_reasoning").and_then(Value::as_str),
+    })
+}
+
 fn publish_completed_snapshot(
     response: &Value,
+    delivery: DeliveredToolSnapshots<'_>,
     output_tokens: &PayloadVec<PayloadText>,
     lease: &DlpRequestLease,
     binding: &ActualAttemptBinding,
@@ -1351,24 +1372,8 @@ fn publish_completed_snapshot(
             .and_then(Value::as_str)
             .ok_or(RestoreError::RestoreFailed)?;
         if matches!(kind, "function_call" | "custom_tool_call") {
-            let required = |key| {
-                item.get(key)
-                    .and_then(Value::as_str)
-                    .ok_or(RestoreError::RestoreFailed)
-            };
             calls
-                .push(CompletedCallSpec {
-                    call_id: required("call_id")?,
-                    item_type: kind,
-                    name: required("name")?,
-                    payload: required(if kind == "function_call" {
-                        "arguments"
-                    } else {
-                        "input"
-                    })?,
-                    reasoning: item.get("reasoning_content").and_then(Value::as_str),
-                    encrypted_reasoning: item.get("encrypted_reasoning").and_then(Value::as_str),
-                })
+                .push(completed_call_spec(item)?)
                 .map_err(|_| RestoreError::RestoreFailed)?;
         }
         for field in ["encrypted_content", "encrypted_reasoning"] {
@@ -1383,13 +1388,84 @@ fn publish_completed_snapshot(
             }
         }
     }
+    let mut delivered = PayloadVec::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+    for (index, item) in delivery
+        .response
+        .get("output")
+        .and_then(Value::as_array)
+        .ok_or(RestoreError::RestoreFailed)?
+        .iter()
+        .enumerate()
+    {
+        if !matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call" | "custom_tool_call")
+        ) {
+            continue;
+        }
+        let spec = completed_call_spec(item)?;
+        delivered
+            .push(spec)
+            .map_err(|_| RestoreError::RestoreFailed)?;
+        if let Some(track) = delivery
+            .tracks
+            .iter()
+            .find(|track| track.output_index == index as u64 && !track.payload_replaced)
+        {
+            // Only complete carriers validated against this final snapshot may join its record.
+            let delta = if track.saw_deltas {
+                Some(
+                    std::str::from_utf8(track.raw_deltas.as_slice())
+                        .map_err(|_| RestoreError::RestoreFailed)?,
+                )
+            } else {
+                None
+            };
+            for payload in [
+                delta,
+                track.raw_done.as_ref().map(PayloadText::as_str),
+                track
+                    .raw_item_done
+                    .as_ref()
+                    .filter(|_| {
+                        delivery.events.iter().any(|event| {
+                            let data = event.data.as_value();
+                            if event.event_name.as_str() != "response.output_item.done"
+                                || data.get("output_index").and_then(Value::as_u64)
+                                    != Some(index as u64)
+                            {
+                                return false;
+                            }
+                            let Some(raw) = data.get("item") else {
+                                return false;
+                            };
+                            // Replay does not fill missing reasoning or rewrite opaque siblings.
+                            raw.get("reasoning_content").and_then(Value::as_str) == spec.reasoning
+                                && raw.get("encrypted_reasoning").and_then(Value::as_str)
+                                    == spec.encrypted_reasoning
+                        })
+                    })
+                    .map(PayloadText::as_str),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                delivered
+                    .push(CompletedCallSpec { payload, ..spec })
+                    .map_err(|_| RestoreError::RestoreFailed)?;
+            }
+        }
+    }
     lease
-        .publish_completed_context(
+        .publish_completed_context_variants(
             binding,
             witness,
             response_id,
             tokens.as_slice(),
-            calls.as_slice(),
+            super::completed_context::CompletedCallPublications {
+                originals: calls.as_slice(),
+                delivered: delivered.as_slice(),
+            },
             opaques.as_slice(),
         )
         .map_err(|_| RestoreError::RestoreFailed)?;
@@ -1397,34 +1473,7 @@ fn publish_completed_snapshot(
 }
 
 pub(super) fn split_safe_prefix_and_tail(combined: &str) -> Result<(&str, &str), RestoreError> {
-    let bytes = combined.as_bytes();
-    let mut offset = 0;
-    while let Some((start, prefix_len)) = token_format::next_candidate(combined, offset) {
-        offset = start + prefix_len;
-        let rem = &bytes[start..];
-        let Some(layout) = token_format::header(rem) else {
-            continue;
-        };
-        if rem.len() >= layout.len {
-            if !layout.complete(rem) {
-                return Err(RestoreError::FailedBecause(RestoreReason::TokenFormat));
-            }
-            offset = start + layout.len;
-        } else if token_format::is_prefix(rem) {
-            return Ok((&combined[..start], &combined[start..]));
-        } else {
-            return Err(RestoreError::FailedBecause(RestoreReason::TokenFormat));
-        }
-    }
-    for start in bytes
-        .len()
-        .saturating_sub(token_format::MAX_REFERENCE_BYTES - 1)..bytes.len()
-    {
-        if combined.is_char_boundary(start) && token_format::is_prefix(&bytes[start..]) {
-            return Ok((&combined[..start], &combined[start..]));
-        }
-    }
-    Ok((combined, ""))
+    Ok(super::output_text_matching::split_prefix_and_tail(combined))
 }
 
 fn permits_xai_argument_normalization(
@@ -1735,6 +1784,7 @@ struct ToolItemTrack {
     raw_done: Option<PayloadText>,
     raw_item_done: Option<PayloadText>,
     restored_payload: Option<PayloadText>,
+    payload_replaced: bool,
 }
 
 struct BufferedSseEvent {
@@ -1948,6 +1998,7 @@ impl SseRestorationState {
                 raw_done: None,
                 raw_item_done: None,
                 restored_payload: None,
+                payload_replaced: false,
             })
             .map_err(|_| RestoreError::RestoreFailed)?;
         self.tool_items
@@ -2237,10 +2288,11 @@ impl SseRestorationState {
         ) {
             check_restored_event(evt, rewritten.as_value(), &self.lease)?;
         }
-        let has_short_tail = self.text_parts.as_slice().iter().any(|p| {
-            !p.pending_tail.as_slice().is_empty()
-                && (p.kind == 1 || token_format::header(p.pending_tail.as_slice()).is_none())
-        });
+        let has_short_tail = self
+            .text_parts
+            .as_slice()
+            .iter()
+            .any(|p| !p.pending_tail.as_slice().is_empty());
         if self.deferred_events.len() != 0 || has_short_tail {
             self.deferred_bytes = self
                 .deferred_bytes
@@ -2376,8 +2428,8 @@ impl SseRestorationState {
         Ok(())
     }
 
-    fn flush_output_text_tail(&mut self, out: u64, part: u64) -> Result<(), RestoreError> {
-        let track = self.get_or_create_text_part(out, part, 1)?;
+    fn flush_text_tail(&mut self, out: u64, part: u64, kind: u8) -> Result<(), RestoreError> {
+        let track = self.get_or_create_text_part(out, part, kind)?;
         if !track.pending_tail.as_slice().is_empty() {
             track
                 .restored_deltas
@@ -2391,9 +2443,6 @@ impl SseRestorationState {
     fn flush_ordinary_tail(&mut self, evt: &str, data: &Value) -> Result<(), RestoreError> {
         let (out, part, kind) = text_event_key(evt, data);
         let track = self.get_or_create_text_part(out, part, kind)?;
-        if kind != 1 && token_format::header(track.pending_tail.as_slice()).is_some() {
-            return Err(RestoreError::RestoreFailed);
-        }
         if !track.pending_tail.as_slice().is_empty() {
             track
                 .restored_deltas
@@ -2771,6 +2820,7 @@ impl SseRestorationState {
                 }
                 self.failure_stage = RestoreStage::SseSnapshot;
                 let budget = self.budget.clone();
+                self.flush_text_tail(out_idx, part_idx, kind)?;
                 {
                     let track = self.get_or_create_text_part(out_idx, part_idx, kind)?;
                     if track.raw_done.is_some() || !track.pending_tail.as_slice().is_empty() {
@@ -2870,9 +2920,7 @@ impl SseRestorationState {
                     .and_then(Value::as_str)
                     .ok_or(RestoreError::RestoreFailed)?;
                 let budget = self.budget.clone();
-                if kind == 1 {
-                    self.flush_output_text_tail(out_idx, part_idx)?;
-                }
+                self.flush_text_tail(out_idx, part_idx, kind)?;
                 let restored_str = {
                     let track = self.get_or_create_text_part(out_idx, part_idx, kind)?;
                     if track.part_done_seen || !track.pending_tail.as_slice().is_empty() {
@@ -2956,9 +3004,7 @@ impl SseRestorationState {
                                 .get(field_key)
                                 .and_then(Value::as_str)
                                 .ok_or(RestoreError::RestoreFailed)?;
-                            if kind == 1 {
-                                self.flush_output_text_tail(out_idx, part_idx)?;
-                            }
+                            self.flush_text_tail(out_idx, part_idx, kind)?;
                             let track = self.get_or_create_text_part(out_idx, part_idx, kind)?;
                             if track.item_done_seen || !track.pending_tail.as_slice().is_empty() {
                                 return Err(RestoreError::RestoreFailed);
@@ -3221,14 +3267,8 @@ impl SseRestorationState {
             .map_err(|_| RestoreError::RestoreFailed)?;
 
         self.failure_stage = RestoreStage::SseSnapshot;
-        // Ordinary text tails remain undecided until the complete raw field is
-        // restored below: post-barrier deltas may complete a pending reference.
-        // Strict carriers retain their existing unfinished-tail rejection.
-        for part in self.text_parts.as_slice() {
-            if part.kind != 1 && token_format::header(part.pending_tail.as_slice()).is_some() {
-                return Err(RestoreError::RestoreFailed);
-            }
-        }
+        // Pending text is reconciled with the raw completed snapshot below.
+        // Literal tails never stand in for completion evidence.
 
         // Locate the final `response.completed` event in `barrier_events`.
         let completed_pos = self
@@ -3489,6 +3529,7 @@ impl SseRestorationState {
                         .checked_add(count)
                         .ok_or(RestoreError::RestoreFailed)?;
                     let track = self.get_or_create_tool_item(out_idx, false)?;
+                    track.payload_replaced = count != 0;
                     track.restored_payload = Some(restored);
                 }
                 Some("custom_tool_call") => {
@@ -3539,6 +3580,7 @@ impl SseRestorationState {
                         .checked_add(count)
                         .ok_or(RestoreError::RestoreFailed)?;
                     let track = self.get_or_create_tool_item(out_idx, true)?;
+                    track.payload_replaced = count != 0;
                     track.restored_payload = Some(restored);
                 }
                 _ => return Err(RestoreError::RestoreFailed),
@@ -3633,38 +3675,44 @@ impl SseRestorationState {
                 | "response.function_call_arguments.done"
                 | "response.custom_tool_call_input.done" => {
                     let custom = evt.starts_with("response.custom_tool_call_input.");
-                    let restored = self
+                    let track = self
                         .tool_items
                         .as_slice()
                         .iter()
                         .find(|t| t.output_index == out_idx && t.is_custom == custom)
-                        .and_then(|t| t.restored_payload.as_ref())
                         .ok_or(RestoreError::RestoreFailed)?;
-                    let key = if evt.ends_with(".delta") {
-                        "delta"
-                    } else if custom {
-                        "input"
-                    } else {
-                        "arguments"
-                    };
-                    let text = if key == "delta" {
-                        if emitted_tool_delta.as_slice().contains(&out_idx) {
-                            ""
+                    let restored = track
+                        .restored_payload
+                        .as_ref()
+                        .ok_or(RestoreError::RestoreFailed)?;
+                    // Zero replacements preserve each validated raw carrier, including delta boundaries.
+                    if track.payload_replaced {
+                        let key = if evt.ends_with(".delta") {
+                            "delta"
+                        } else if custom {
+                            "input"
                         } else {
-                            emitted_tool_delta
-                                .push(out_idx)
-                                .map_err(|_| RestoreError::RestoreFailed)?;
+                            "arguments"
+                        };
+                        let text = if key == "delta" {
+                            if emitted_tool_delta.as_slice().contains(&out_idx) {
+                                ""
+                            } else {
+                                emitted_tool_delta
+                                    .push(out_idx)
+                                    .map_err(|_| RestoreError::RestoreFailed)?;
+                                restored.as_str()
+                            }
+                        } else {
                             restored.as_str()
-                        }
-                    } else {
-                        restored.as_str()
-                    };
-                    edits
-                        .push(JsonStringReplacement {
-                            target: data.get(key).ok_or(RestoreError::RestoreFailed)?,
-                            text,
-                        })
-                        .map_err(|_| RestoreError::RestoreFailed)?;
+                        };
+                        edits
+                            .push(JsonStringReplacement {
+                                target: data.get(key).ok_or(RestoreError::RestoreFailed)?,
+                                text,
+                            })
+                            .map_err(|_| RestoreError::RestoreFailed)?;
+                    }
                 }
                 "response.output_text.delta"
                 | "response.refusal.delta"
@@ -3694,6 +3742,14 @@ impl SseRestorationState {
                     } else {
                         ("content_index", 1, "text")
                     };
+                    if evt.ends_with(".added")
+                        && data.get("part").and_then(|p| p.get(field)).is_none()
+                    {
+                        // Missing added text makes no content claim and stays missing on replay.
+                        check_no_tokens_in_value(data, &self.lease)?;
+                        out_frames.push(encode_sse_frame(evt, data, &self.budget)?);
+                        continue;
+                    }
                     let part_idx = data.get(part_key).and_then(Value::as_u64).unwrap_or(0);
                     let restored = self
                         .text_parts
@@ -3728,14 +3784,6 @@ impl SseRestorationState {
                     } else {
                         restored.as_str()
                     };
-                    if evt.ends_with(".added")
-                        && data.get("part").and_then(|p| p.get(field)).is_none()
-                    {
-                        // Missing added text makes no content claim and stays missing on replay.
-                        check_no_tokens_in_value(data, &self.lease)?;
-                        out_frames.push(encode_sse_frame(evt, data, &self.budget)?);
-                        continue;
-                    }
                     let target = if evt.ends_with(".delta") {
                         data.get("delta")
                     } else if evt.contains("_part.") {
@@ -3758,7 +3806,19 @@ impl SseRestorationState {
                         .and_then(Value::as_array)
                         .and_then(|a| a.get(out_idx as usize))
                         .ok_or(RestoreError::RestoreFailed)?;
-                    item_string_edits(raw, restored, evt.ends_with(".added"), &mut edits)?;
+                    let preserve_payload = self
+                        .tool_items
+                        .as_slice()
+                        .iter()
+                        .find(|track| track.output_index == out_idx)
+                        .is_some_and(|track| !track.payload_replaced);
+                    item_string_edits(
+                        raw,
+                        restored,
+                        evt.ends_with(".added"),
+                        preserve_payload,
+                        &mut edits,
+                    )?;
                 }
                 _ => {}
             }
@@ -3775,6 +3835,11 @@ impl SseRestorationState {
         self.failure_stage = RestoreStage::ContextPublish;
         publish_completed_snapshot(
             response_val,
+            DeliveredToolSnapshots {
+                response: restored_response.as_value(),
+                tracks: self.tool_items.as_slice(),
+                events: self.barrier_events.as_slice(),
+            },
             &self.output_tokens,
             &self.lease,
             &self.binding,
@@ -4222,7 +4287,13 @@ impl TextProjectionStream {
                     "response.output_item.added" | "response.output_item.done"
                 ) {
                     let item = data.get("item").ok_or(RestoreError::RestoreFailed)?;
-                    item_string_edits(item, projected_item, evt.ends_with(".added"), &mut edits)?;
+                    item_string_edits(
+                        item,
+                        projected_item,
+                        evt.ends_with(".added"),
+                        false,
+                        &mut edits,
+                    )?;
                 } else {
                     let part_index = data
                         .get("content_index")

@@ -276,11 +276,32 @@ fn read_decoded(
     budget: &PayloadBudget,
     owner: &UpstreamPayloadOwner,
 ) -> Result<PayloadBuffer, DlpForwardError> {
-    let limit = MAX_CUMULATIVE_BYTES.min(MAX_RESPONSE_BODY_BYTES);
-    let mut output =
-        PayloadBuffer::new(budget.clone(), limit).map_err(DlpForwardError::from_token_error)?;
+    read_decoded_with_limit(&mut reader, budget, owner, None)
+}
+
+fn read_decoded_with_limit(
+    mut reader: impl Read,
+    budget: &PayloadBudget,
+    owner: &UpstreamPayloadOwner,
+    error_limit: Option<usize>,
+) -> Result<PayloadBuffer, DlpForwardError> {
+    let limit = error_limit.unwrap_or(MAX_CUMULATIVE_BYTES.min(MAX_RESPONSE_BODY_BYTES));
+    let mut output = if error_limit.is_some() {
+        PayloadBuffer::with_capacity(limit, budget.clone(), limit)
+    } else {
+        PayloadBuffer::new(budget.clone(), limit)
+    }
+    .map_err(DlpForwardError::from_token_error)?;
     let mut scratch = [0u8; 8192];
+    let started = std::time::Instant::now();
+    let mut reads = 0usize;
     loop {
+        if error_limit.is_some() {
+            reads += 1;
+            if reads > 4096 || started.elapsed() >= std::time::Duration::from_secs(1) {
+                return Err(DlpForwardError::CapacityExceeded);
+            }
+        }
         // One stack byte past the cap distinguishes exact-cap EOF from overrun.
         let capacity = scratch.len().min(limit - output.len() + 1);
         let count = match reader.read(&mut scratch[..capacity]) {
@@ -308,18 +329,35 @@ fn decode_one(
     budget: &PayloadBudget,
     owner: &UpstreamPayloadOwner,
 ) -> Result<PayloadBuffer, DlpForwardError> {
+    decode_one_with_limit(coding, input, budget, owner, None)
+}
+
+fn decode_one_with_limit(
+    coding: Coding,
+    input: &[u8],
+    budget: &PayloadBudget,
+    owner: &UpstreamPayloadOwner,
+    error_limit: Option<usize>,
+) -> Result<PayloadBuffer, DlpForwardError> {
+    let read = |reader: &mut dyn Read| {
+        if error_limit.is_some() {
+            read_decoded_with_limit(reader, budget, owner, error_limit)
+        } else {
+            read_decoded(reader, budget, owner)
+        }
+    };
     match coding {
-        Coding::Gzip => read_decoded(flate2::read::MultiGzDecoder::new(input), budget, owner),
+        Coding::Gzip => read(&mut flate2::read::MultiGzDecoder::new(input)),
         Coding::Deflate => {
-            match read_decoded(flate2::read::ZlibDecoder::new(input), budget, owner) {
+            match read(&mut flate2::read::ZlibDecoder::new(input)) {
                 // Capacity failures must not become a second unbudgeted decoding attempt.
                 Err(DlpForwardError::RestoreFailed) => {
-                    read_decoded(flate2::read::DeflateDecoder::new(input), budget, owner)
+                    read(&mut flate2::read::DeflateDecoder::new(input))
                 }
                 result => result,
             }
         }
-        Coding::Brotli => read_decoded(brotli::Decompressor::new(input, 4096), budget, owner),
+        Coding::Brotli => read(&mut brotli::Decompressor::new(input, 4096)),
         Coding::Zstd => {
             let mut decoder = zstd::stream::read::Decoder::new(input)
                 .map_err(|_| DlpForwardError::RestoreFailed)?;
@@ -328,7 +366,7 @@ fn decode_one(
             decoder
                 .window_log_max(23)
                 .map_err(|_| DlpForwardError::RestoreFailed)?;
-            read_decoded(decoder, budget, owner)
+            read(&mut decoder)
         }
         Coding::Identity => Err(DlpForwardError::RestoreFailed),
     }
@@ -338,8 +376,23 @@ pub(super) async fn guard_upstream_response(
     response: ProxyResponse,
     budget: &PayloadBudget,
 ) -> Result<GuardedUpstream, DlpForwardError> {
+    guard_response(response, budget, false).await
+}
+
+pub(super) async fn guard_upstream_error_response(
+    response: ProxyResponse,
+    budget: &PayloadBudget,
+) -> Result<GuardedUpstream, DlpForwardError> {
+    guard_response(response, budget, true).await
+}
+
+async fn guard_response(
+    response: ProxyResponse,
+    budget: &PayloadBudget,
+    force_buffered: bool,
+) -> Result<GuardedUpstream, DlpForwardError> {
     let (codings, coding_count) = content_codings(response.headers())?;
-    let streamed = is_sse(response.headers());
+    let streamed = !force_buffered && is_sse(response.headers());
     if streamed && coding_count != 0 {
         return Err(DlpForwardError::RestoreFailed);
     }
@@ -376,15 +429,29 @@ pub(super) async fn guard_upstream_response(
         });
     }
 
-    let mut body = PayloadBuffer::new(
-        budget.clone(),
-        MAX_CUMULATIVE_BYTES.min(MAX_RESPONSE_BODY_BYTES),
-    )
+    let error_limit = force_buffered.then_some(1024 * 1024);
+    let limit = error_limit.unwrap_or(MAX_CUMULATIVE_BYTES.min(MAX_RESPONSE_BODY_BYTES));
+    let mut body = if force_buffered {
+        PayloadBuffer::with_capacity(limit, budget.clone(), limit)
+    } else {
+        PayloadBuffer::new(budget.clone(), limit)
+    }
     .map_err(DlpForwardError::from_token_error)?;
     let mut stream = Box::pin(response.bytes_stream());
+    let mut empty_chunks = 0usize;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| DlpForwardError::RestoreFailed)?;
+        if force_buffered && chunk.is_empty() {
+            empty_chunks += 1;
+            if empty_chunks > 1024 {
+                return Err(DlpForwardError::CapacityExceeded);
+            }
+            continue;
+        }
         let next = next_input_size(body.len(), chunk.len())?;
+        if next > limit {
+            return Err(DlpForwardError::CapacityExceeded);
+        }
         owner.cover_input(next)?;
         let incoming_charge = budget
             .reserve(chunk.len())
@@ -397,7 +464,11 @@ pub(super) async fn guard_upstream_response(
     drop(stream);
     for coding in codings[..coding_count].iter().rev() {
         // Old and new buffers are separately charged until replacement completes.
-        body = decode_one(*coding, body.as_slice(), budget, &owner)?;
+        body = if force_buffered {
+            decode_one_with_limit(*coding, body.as_slice(), budget, &owner, error_limit)?
+        } else {
+            decode_one(*coding, body.as_slice(), budget, &owner)?
+        };
     }
     if coding_count != 0 {
         clear_entity_headers(&mut headers);
@@ -410,6 +481,42 @@ pub(super) async fn guard_upstream_response(
         response: ProxyResponse::buffered(status, headers, bytes),
         owner,
     })
+}
+
+#[cfg(test)]
+mod error_work_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn upstream_error_decoder_interrupted_reads_are_bounded() -> Result<(), io::Error> {
+        struct Interrupted<'a>(&'a Cell<usize>);
+        impl Read for Interrupted<'_> {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                self.0.set(self.0.get() + 1);
+                if self.0.get() <= 8192 {
+                    Err(io::ErrorKind::Interrupted.into())
+                } else {
+                    Ok(0)
+                }
+            }
+        }
+        let budget = PayloadBudget::with_limit(16 * 1024 * 1024);
+        let owner = UpstreamPayloadOwner::new(&budget)
+            .map_err(|_| io::Error::other("fixture_owner_failed"))?;
+        let calls = Cell::new(0);
+        let result =
+            read_decoded_with_limit(Interrupted(&calls), &budget, &owner, Some(1024 * 1024));
+        assert!(
+            matches!(result, Err(DlpForwardError::CapacityExceeded)),
+            "decoder_work_not_bounded"
+        );
+        assert!(calls.get() <= 4096, "decoder_read_count_unbounded");
+        drop(result);
+        drop(owner);
+        assert!(budget.used() == 0, "budget_owner_retained");
+        Ok(())
+    }
 }
 
 #[cfg(test)]

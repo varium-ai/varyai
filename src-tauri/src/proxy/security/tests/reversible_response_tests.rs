@@ -15,7 +15,7 @@ use super::{
 };
 
 #[test]
-fn split_safe_prefix_retains_each_reference_prefix_and_rejects_malformed() {
+fn split_safe_prefix_retains_each_reference_prefix_and_preserves_malformed() {
     let token = "rredact-cn_phone-0123456789abcdef0123-ai";
     assert!(
         token.len() == 32 + "cn_phone".len(),
@@ -44,11 +44,10 @@ fn split_safe_prefix_retains_each_reference_prefix_and_rejects_malformed() {
     assert_eq!(tail, "");
 
     let malformed = "hello rredact-cn_phone-0123456789abcdef012Z-ai";
-    assert_eq!(
-        split_safe_prefix_and_tail(malformed),
-        Err(RestoreError::FailedBecause(
-            super::restore_diagnostics::RestoreReason::TokenFormat,
-        ))
+    let (safe, tail) = split_safe_prefix_and_tail(malformed).expect("literal split");
+    assert!(
+        safe == malformed && tail.is_empty(),
+        "malformed_literal_changed"
     );
 }
 
@@ -124,7 +123,7 @@ fn restore_json_and_compact_responses_publish_context_and_reject_unsupported_car
         Value::String("{\"phone\":\"13800138000\"}".to_string())
     );
 
-    // Unsupported carrier: token in function_call `name` must return RestoreUnsupported.
+    // Current authorized references in immutable fields must be refused.
     let unsupported = json!({
         "id": "resp_json_bad",
         "object": "response",
@@ -140,20 +139,23 @@ fn restore_json_and_compact_responses_publish_context_and_reject_unsupported_car
             }
         ]
     });
-    assert_eq!(
-        restore_and_publish_json_response(
-            &unsupported,
-            false,
-            &lease,
-            &binding,
-            &witness,
-            &budget,
-        )
-        .err(),
-        Some(RestoreError::RestoreUnsupported)
+    let denied =
+        restore_and_publish_json_response(&unsupported, false, &lease, &binding, &witness, &budget);
+    assert!(matches!(
+        denied,
+        Err(RestoreError::FailedBecause(
+            super::restore_diagnostics::RestoreReason::TokenContext
+        ))
+    ));
+    let mut literal = unsupported.clone();
+    literal["output"][0]["name"] = json!("rredact-custom-00000000000000000000-ai");
+    let staged =
+        restore_and_publish_json_response(&literal, false, &lease, &binding, &witness, &budget);
+    assert!(
+        staged.is_ok_and(|value| value.as_value() == &literal && value.restored_occurrences() == 0)
     );
 
-    // Compact response: message + reasoning + compaction succeeds, but token in compaction encrypted_content is rejected.
+    // Compact restoration preserves unrelated opaque fields.
     let compact = json!({
         "id": "resp_compact_1",
         "object": "response.compaction",
@@ -1227,9 +1229,7 @@ mod barrier_regressions {
             .process_sse_block(&frame(&added()))
             .unwrap()
             .is_empty());
-        let item = tool_item(&format!(
-            "{{\"value\":\"{token}\",\"bad\":\"rredact-custom-invalid\"}}"
-        ));
+        let item = tool_item(&format!("{{\"value\":\"{token}\",}}"));
         assert!(state
             .process_sse_block(&frame(&completed(item)))
             .unwrap()
@@ -1238,7 +1238,7 @@ mod barrier_regressions {
         assert_eq!(error.code(), "dlp_restore_failed");
         assert_eq!(
             error.reason_at(state.failure_stage()),
-            Some(super::super::restore_diagnostics::RestoreReason::TokenFormat,)
+            Some(super::super::restore_diagnostics::RestoreReason::ArgumentsJson,)
         );
         assert!(!cursor_exists(&observer, &binding));
         assert!(observer
@@ -1289,11 +1289,14 @@ mod barrier_regressions {
         .unwrap();
         let mut event = added();
         event["unsupported_fixture_field"] = json!(token);
-        // Reject the original unsupported carrier before it can be replayed or overwritten.
-        assert_eq!(
+        // A current authorized reference in unsupported metadata closes the barrier immediately.
+        assert!(matches!(
             state.process_sse_block(&frame(&event)),
-            Err(RestoreError::RestoreUnsupported)
-        );
+            Err(RestoreError::FailedBecause(
+                super::super::restore_diagnostics::RestoreReason::TokenContext
+            ))
+        ));
+        assert!(state.finalize_and_flush(false).is_err());
         assert!(
             !cursor_exists(&lease, &binding),
             "failed replay must not register a reusable cursor"
@@ -1868,12 +1871,22 @@ mod text_fallback_tests {
             } else {
                 format!("rredact-custom-bad {unknown}")
             };
-            assert!(prepare_text_projection(&response(&text), &lease, &budget).is_err());
+            let result = prepare_text_projection(&response(&text), &lease, &budget);
+            assert!(
+                result.is_err(),
+                "zero_restore_projection_must_not_gain_authority"
+            );
         }
         for field in ["id", "annotations", "unknown"] {
             let mut raw = response("rredact-custom-bad");
             raw["output"][0]["content"][0][field] = json!("rredact-custom-bad");
-            assert!(prepare_text_projection(&raw, &lease, &budget).is_err());
+            let projected = prepare_text_projection(&raw, &lease, &budget)
+                .expect("test-only damaged projection");
+            assert!(
+                projected.as_value()["output"][0]["content"][0][field]
+                    == raw["output"][0]["content"][0][field],
+                "literal_metadata_changed"
+            );
         }
         for kind in [
             "reasoning",
@@ -1932,9 +1945,7 @@ mod text_fallback_tests {
 
 #[cfg(test)]
 mod output_text_exact_tests {
-    use super::super::{
-        response_restoration::stage_json_response, restore_diagnostics::RestoreReason,
-    };
+    use super::super::response_restoration::stage_json_response;
     use super::*;
 
     fn text_response(text: &str) -> Value {
@@ -2018,7 +2029,7 @@ mod output_text_exact_tests {
     }
 
     #[test]
-    fn output_text_exact_json_complete_unauthorized_reference_still_refuses() {
+    fn output_text_exact_json_complete_unauthorized_reference_stays_literal() {
         let store = DlpTokenStore::new();
         let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
         let mut owner = store
@@ -2045,13 +2056,10 @@ mod output_text_exact_tests {
             format!("前🔒{header}{}", refs.as_slice()[0]),
         ] {
             let response = text_response(&text);
-            assert!(
-                matches!(
-                    stage_json_response(&response, false, &lease, &budget),
-                    Err(RestoreError::FailedBecause(RestoreReason::TokenContext))
-                ),
-                "complete unauthorized references must retain context refusal"
-            );
+            let staged =
+                stage_json_response(&response, false, &lease, &budget).expect("literal response");
+            assert!(staged.as_value() == &response, "foreign_literal_changed");
+            assert!(lease.is_empty(), "foreign_literal_granted_authority");
         }
     }
 
@@ -2071,7 +2079,7 @@ mod output_text_exact_tests {
     }
 
     #[test]
-    fn output_text_exact_json_other_carriers_remain_strict() {
+    fn output_text_exact_json_other_carriers_preserve_literals() {
         let store = DlpTokenStore::new();
         let budget = PayloadBudget::with_limit(4 * 1024 * 1024);
         let lease = store
@@ -2081,20 +2089,26 @@ mod output_text_exact_tests {
         for mut response in [text_response("safe"), text_response("safe")] {
             response["output"][0]["content"][0]["annotations"] = json!([{"text":malformed}]);
             assert!(
-                stage_json_response(&response, false, &lease, &budget).is_err(),
-                "annotations remain strict"
+                stage_json_response(&response, false, &lease, &budget)
+                    .map(|staged| staged.as_value() == &response)
+                    .unwrap_or(false),
+                "literal_carrier_changed"
             );
         }
         let mut response = text_response(&malformed);
         response["output"][0]["content"][0] = json!({"type":"refusal","refusal":malformed});
         assert!(
-            stage_json_response(&response, false, &lease, &budget).is_err(),
-            "refusal remains strict"
+            stage_json_response(&response, false, &lease, &budget)
+                .map(|staged| staged.as_value() == &response)
+                .unwrap_or(false),
+            "literal_carrier_changed"
         );
         response["output"][0] = json!({"type":"function_call","id":"synthetic-tool","call_id":"synthetic-call","name":"nonexecuting_fixture","arguments":serde_json::to_string(&json!({"text":malformed})).expect("synthetic JSON"),"status":"completed"});
         assert!(
-            stage_json_response(&response, false, &lease, &budget).is_err(),
-            "tool arguments remain strict"
+            stage_json_response(&response, false, &lease, &budget)
+                .map(|staged| staged.as_value() == &response)
+                .unwrap_or(false),
+            "literal_carrier_changed"
         );
     }
 }
@@ -2201,10 +2215,25 @@ fn reference_format_migration_sse_every_category_split_preserves_barrier_authori
                         "split reference must restore exactly once"
                     );
                 } else {
-                    assert!(
-                        result.is_err(),
-                        "unknown reference must prevent barrier publication"
-                    );
+                    let frames = result.expect("unknown literal with valid completion");
+                    let mut delivered = String::new();
+                    for bytes in frames {
+                        let raw = std::str::from_utf8(&bytes).expect("synthetic UTF-8");
+                        for data in raw.lines().filter_map(|line| line.strip_prefix("data: ")) {
+                            let event: Value = serde_json::from_str(data).expect("synthetic JSON");
+                            if event["type"] == "response.output_text.delta" {
+                                delivered.push_str(event["delta"].as_str().unwrap_or(""));
+                            }
+                            if event["type"] == "response.completed" {
+                                assert!(
+                                    event["response"]["output"][0]["content"][0]["text"]
+                                        == candidate,
+                                    "foreign_snapshot_changed"
+                                );
+                            }
+                        }
+                    }
+                    assert!(delivered == candidate, "foreign_literal_changed");
                 }
             }
         }
@@ -2212,7 +2241,7 @@ fn reference_format_migration_sse_every_category_split_preserves_barrier_authori
 }
 
 #[test]
-fn reference_format_legacy_output_rejects_complete_and_checks_nested_candidates() {
+fn reference_format_legacy_output_preserves_literals_and_checks_nested_candidates() {
     use super::{response_restoration::stage_json_response, restore_diagnostics::RestoreReason};
     fn frame(event: &Value) -> String {
         format!(
@@ -2252,9 +2281,9 @@ fn reference_format_legacy_output_rejects_complete_and_checks_nested_candidates(
         )
         .expect("synthetic binding");
     for (text, rejected) in [
-        (legacy.clone(), true),
-        (format!("{legacy}{reference}"), true),
-        (format!("vary_cu_broken {legacy}"), true),
+        (legacy.clone(), false),
+        (format!("{legacy}{reference}"), false),
+        (format!("vary_cu_broken {legacy}"), false),
         ("vary_cu_broken".to_owned(), false),
         (format!("vary_cu_{reference}"), false),
         (format!("vary_cu_bad {reference} vary_ph_"), false),
@@ -2375,7 +2404,7 @@ fn reference_format_strict_partial_headers_match_json_and_native_sse(
         for length in 1..=header.len() {
             let text = &header[..length];
             for reasoning in [false, true] {
-                let rejected = !reasoning && length == header.len();
+                let rejected = false;
                 for with_done in [false, true] {
                     let (lease, binding, budget) = reference_format_strict_fixture()?;
                     let item = if reasoning {
@@ -2386,7 +2415,7 @@ fn reference_format_strict_partial_headers_match_json_and_native_sse(
                     let response = json!({"id":"synthetic-strict-response","status":"completed","output":[item]});
                     assert!(
                         stage_json_response(&response, false, &lease, &budget).is_err() == rejected,
-                        "refusal stays strict and supported reasoning remains unprocessed"
+                        "partial_literals_remain_unchanged"
                     );
                     let mut state = SseRestorationState::new(
                         lease,
@@ -2426,7 +2455,7 @@ fn reference_format_strict_partial_headers_match_json_and_native_sse(
                     })();
                     assert!(
                         result.is_err() == rejected,
-                        "SSE must preserve reasoning and strict refusal boundaries"
+                        "partial_literals_survive_legal_completion"
                     );
                     if let Ok(frames) = result {
                         let mut joined = String::new();
@@ -2541,8 +2570,10 @@ fn reasoning_passthrough_json_preserves_supported_leaves_and_strict_siblings(
             let response =
                 json!({"id":"synthetic-strict-response","status":"completed","output":[item]});
             assert!(
-                stage_json_response(&response, false, &lease, &budget).is_err(),
-                "nonreasoning carriers must stay strict"
+                stage_json_response(&response, false, &lease, &budget)
+                    .map(|staged| staged.as_value() == &response)
+                    .unwrap_or(false),
+                "literal_siblings_changed"
             );
         }
     }
@@ -2731,9 +2762,17 @@ async fn reasoning_pair_sse_rejects_unsupported_parts_and_strict_siblings() {
             }
         }
         let delivered = reasoning_pair_delivered(events).await;
+        if (3..=6).contains(&case) {
+            assert!(
+                delivered.contains("event: response.completed\n")
+                    && !delivered.contains("event: response.failed\n"),
+                "literal_siblings_rejected"
+            );
+            continue;
+        }
         assert!(
             !delivered.contains("event: response.completed\n"),
-            "unknown reasoning shape or strict sibling must withhold completion"
+            "invalid_reasoning_shape_must_withhold_completion"
         );
         assert!(
             delivered.contains("event: response.failed\n"),
@@ -2857,14 +2896,14 @@ async fn reasoning_pair_sse_double_arrays_preserve_tool_commit_barrier() {
             ]);
             let delivered = reasoning_pair_delivered(events).await;
             assert!(
-                delivered.contains("event: response.completed\n") == (case == 0),
+                delivered.contains("event: response.completed\n") == !matches!(case, 1 | 2),
                 "only matching reasoning arrays and strict tools may release completion"
             );
             assert!(
-                delivered.contains("event: response.failed\n") == (case != 0),
+                delivered.contains("event: response.failed\n") == matches!(case, 1 | 2),
                 "invalid reasoning snapshots or tool neighbors must fail safely"
             );
-            if case != 0 {
+            if matches!(case, 1 | 2) {
                 assert!(
                     !delivered.contains("event: response.function_call_arguments.")
                         && !delivered.contains("\"type\":\"function_call\""),

@@ -3934,6 +3934,7 @@ async fn reversible_restore_diagnostic_stages_are_fixed_and_keep_tool_barrier() 
             "output_index": 0, "delta": private_marker
         }),
     );
+    let (_, capacity_reference) = chat_carrier_fixture();
     let cases = vec![
         ("sse_read", vec![Err(std::io::Error::other(private_marker))]),
         ("sse_frame", vec![Ok(Bytes::from_static(b"data: \xff\n\n"))]),
@@ -3961,7 +3962,7 @@ async fn reversible_restore_diagnostic_stages_are_fixed_and_keep_tool_barrier() 
             vec![Ok(Bytes::from(event(
                 "response.output_text.delta",
                 json!({
-                    "delta": "rredact-custom-00000000000000000000-ai"
+                    "delta": capacity_reference.repeat(4097)
                 }),
             )))],
         ),
@@ -4076,7 +4077,7 @@ async fn reversible_restore_diagnostic_reasons_are_fixed_and_survive_http_sse() 
         payload_metadata::PayloadVec,
         response_restoration::{
             failed_sse_frame_at, restore_json_arguments_string, restore_text_with_lease,
-            split_safe_prefix_and_tail, RestoreError,
+            RestoreError,
         },
         restore_diagnostics::RestoreStage,
     };
@@ -4089,18 +4090,19 @@ async fn reversible_restore_diagnostic_reasons_are_fixed_and_survive_http_sse() 
     let mut references = PayloadVec::new(budget.clone()).unwrap();
     let mut occurrences = 0;
     let mut cases = Vec::new();
+    // Strict internal scanners retain format failures; response literals do not.
+    let strict_error =
+        super::tokenization::visit_token_references("rredact-custom-invalid", |_| Ok(()))
+            .expect_err("strict internal scan must reject malformed syntax");
+    assert!(matches!(
+        strict_error,
+        super::tokenization::TokenError::ContextUnavailable
+    ));
     cases.push((
         "token_format",
-        split_safe_prefix_and_tail("rredact-custom-invalid").unwrap_err(),
+        RestoreError::FailedBecause(super::restore_diagnostics::RestoreReason::TokenFormat),
     ));
-    for (text, reason) in [
-        ("rredact-custom-invalid".to_string(), "token_format"),
-        (
-            "rredact-custom-00000000000000000000-ai".to_string(),
-            "token_context",
-        ),
-        (token.repeat(4097), "restore_capacity"),
-    ] {
+    for (text, reason) in [(token.repeat(4097), "restore_capacity")] {
         let err =
             restore_text_with_lease(&text, &lease, &budget, &mut references, &mut occurrences)
                 .err()
@@ -4138,6 +4140,19 @@ async fn reversible_restore_diagnostic_reasons_are_fixed_and_survive_http_sse() 
         .unwrap();
         cases.push((reason, err));
     }
+    // A current authorized reference in an immutable key produces a real context failure.
+    let immutable_args = json!({token.clone(): "synthetic immutable value"}).to_string();
+    let err = restore_json_arguments_string(
+        &immutable_args,
+        &lease,
+        &budget,
+        &mut references,
+        &mut occurrences,
+    )
+    .err()
+    .expect("authorized immutable key must be refused");
+    cases.push(("token_context", err));
+    let restoring_args = json!({"value": token}).to_string();
     // Fault injection uses existing allocation hooks; no live payloads or providers.
     {
         use super::payload_json::test_support::{self, Action, Phase};
@@ -4148,10 +4163,15 @@ async fn reversible_restore_diagnostic_reasons_are_fixed_and_survive_http_sse() 
                 Action::Continue
             }
         });
-        let err =
-            restore_json_arguments_string("{}", &lease, &budget, &mut references, &mut occurrences)
-                .err()
-                .unwrap();
+        let err = restore_json_arguments_string(
+            &restoring_args,
+            &lease,
+            &budget,
+            &mut references,
+            &mut occurrences,
+        )
+        .err()
+        .unwrap();
         cases.push(("arguments_rebuild", err));
     }
     {
@@ -4163,10 +4183,15 @@ async fn reversible_restore_diagnostic_reasons_are_fixed_and_survive_http_sse() 
                 Action::Continue
             }
         });
-        let err =
-            restore_json_arguments_string("{}", &lease, &budget, &mut references, &mut occurrences)
-                .err()
-                .unwrap();
+        let err = restore_json_arguments_string(
+            &restoring_args,
+            &lease,
+            &budget,
+            &mut references,
+            &mut occurrences,
+        )
+        .err()
+        .unwrap();
         cases.push(("arguments_serialize", err));
     }
     {
@@ -4178,10 +4203,15 @@ async fn reversible_restore_diagnostic_reasons_are_fixed_and_survive_http_sse() 
                 Action::Continue
             }
         });
-        let err =
-            restore_json_arguments_string("{}", &lease, &budget, &mut references, &mut occurrences)
-                .err()
-                .unwrap();
+        let err = restore_json_arguments_string(
+            &restoring_args,
+            &lease,
+            &budget,
+            &mut references,
+            &mut occurrences,
+        )
+        .err()
+        .unwrap();
         cases.push(("restore_capacity", err));
     }
     cases.push(("unknown", RestoreError::RestoreFailed));
@@ -4215,17 +4245,18 @@ async fn reversible_restore_diagnostic_reasons_are_fixed_and_survive_http_sse() 
             "client restoration failure must retain its fixed terminal status"
         );
     }
-    // Authorized references in object keys remain unsupported, not a restore failure.
-    let args = json!({token: private_marker}).to_string();
-    let err =
+    // An unknown key preserves literal bytes and acquires no restoration authority.
+    let args =
+        json!({"rredact-custom-00000000000000000000-ai": "synthetic literal value"}).to_string();
+    let before = occurrences;
+    let restored =
         restore_json_arguments_string(&args, &lease, &budget, &mut references, &mut occurrences)
-            .err()
-            .unwrap();
-    assert_eq!(err, RestoreError::RestoreUnsupported);
-    let frame = failed_sse_frame_at(err, RestoreStage::TokenRestore);
-    let text = std::str::from_utf8(&frame).unwrap();
-    assert!(text.contains("dlp_restore_unsupported"));
-    assert!(!text.contains("reason="));
+            .expect("immutable key literal");
+    assert!(
+        restored.as_str() == args,
+        "immutable key bytes must remain unchanged"
+    );
+    assert_eq!(occurrences, before);
 }
 
 #[test]
@@ -4237,7 +4268,7 @@ fn reversible_restore_diagnostic_reason_stays_sticky_behind_tool_barrier() {
         },
     };
     use serde_json::json;
-    let (lease, _) = chat_carrier_fixture();
+    let (lease, reference) = chat_carrier_fixture();
     let binding = lease
         .bind_actual_attempt(
             "synthetic-provider",
@@ -4272,7 +4303,7 @@ fn reversible_restore_diagnostic_reason_stays_sticky_behind_tool_barrier() {
                 "name": "synthetic_tool", "arguments": "{}", "status": "completed"
             }, {
                 "id": "synthetic-message", "type": "message", "role": "assistant",
-                "status": "completed", "content": [{"type": "refusal", "refusal": "rredact-custom-invalid"}]
+                "status": "completed", "content": [{"type": "refusal", "refusal": reference.repeat(4097)}]
             }]
         }}),
     )).unwrap().is_empty());
@@ -4285,7 +4316,7 @@ fn reversible_restore_diagnostic_reason_stays_sticky_behind_tool_barrier() {
     assert_eq!(state.failure_stage(), stage);
     let frame = failed_sse_frame_at(failure, stage);
     let text = std::str::from_utf8(&frame).unwrap();
-    assert!(text.contains("[stage=token_restore reason=token_format]"));
+    assert!(text.contains("[stage=token_restore reason=restore_capacity]"));
     assert!(!text.contains("event: response.function_call_arguments"));
     assert!(!text.contains("event: response.completed"));
 }
@@ -4387,7 +4418,7 @@ mod text_fallback_stream_tests {
                         .push(json!({"type":"function_call"}));
                 }
                 6 => {
-                    input[0]["metadata"] = json!("rredact-custom-damaged");
+                    input[0]["delta"] = json!(42);
                 }
                 7 => {
                     input[4]["response"]["status"] = json!("incomplete");
@@ -4479,7 +4510,7 @@ mod text_fallback_stream_tests {
     }
 
     #[test]
-    fn text_fallback_sse_unexpected_carrier_cannot_hide_unauthorized() {
+    fn text_fallback_sse_unexpected_carrier_preserves_unauthorized_literal() {
         let (store, mut stream, _budget) = fixture();
         let mut other = store
             .admit("codex", Some("unexpected-carrier"), 1)
@@ -4504,8 +4535,33 @@ mod text_fallback_stream_tests {
             .push(json!({"type":"output_text","text":"rredact-custom-damaged"}));
         let final_item = input.last().expect("terminal")["response"]["output"][0].clone();
         input[3]["item"] = final_item;
-        let accepted = input.iter().all(|event| push(&mut stream, event));
-        assert!(!accepted || stream.finish(true).is_err());
+        for event in &input {
+            assert!(push(&mut stream, event));
+        }
+        let frames = stream.finish(true).expect("synthetic literal projection");
+        let first = std::str::from_utf8(&frames.as_slice()[0]).expect("synthetic UTF-8");
+        let value: Value = serde_json::from_str(
+            first
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("synthetic data"),
+        )
+        .expect("synthetic event JSON");
+        assert!(
+            value["part"] == input[0]["part"],
+            "immutable carrier must remain unchanged"
+        );
+        assert!(
+            other.resolve(&reference).is_ok(),
+            "only the original lease owns the mapping"
+        );
+        let observer = store
+            .admit("codex", Some("projection-stream"), 1)
+            .expect("synthetic observer");
+        assert!(
+            observer.resolve(&reference).is_err(),
+            "literal must not import foreign authority"
+        );
     }
     #[test]
     fn text_fallback_sse_created_carrier_and_response_identity_refuse() {
@@ -4923,6 +4979,7 @@ mod token_format_diagnostic_sink_tests {
         payload_budget::PayloadBudget,
         response_restoration::{ArgumentNormalizationMode, RestoreError, SseRestorationState},
         restore_diagnostics::{RestoreReason, RestoreStage},
+        token_format_diagnostics::{Carrier, Site, TokenFormatDiagnosticState},
     };
     use serde_json::{json, Value};
     use std::sync::Mutex;
@@ -4972,19 +5029,23 @@ mod token_format_diagnostic_sink_tests {
     fn completed(items: Value) -> String {
         event(
             "response.completed",
-            json!({"response":{"id":"SYNTHETIC_PRIVATE_RESPONSE", "status":"completed", "output":items}}),
+            json!({"response":{"id":"SYNTHETIC_PRIVATE_RESPONSE", "object":"response", "status":"completed", "output":items}}),
         )
     }
     fn count() -> usize {
         RECORDS.lock().unwrap().len()
     }
-    fn format_error(result: Result<Vec<bytes::Bytes>, RestoreError>) {
+    fn sticky_error(state: &mut SseRestorationState, expected: RestoreError) {
         assert!(
-            matches!(
-                result,
-                Err(RestoreError::FailedBecause(RestoreReason::TokenFormat))
-            ),
-            "strict carrier must reject malformed token syntax"
+            state.process_sse_block(&event(
+                "response.refusal.delta",
+                json!({"delta":"SYNTHETIC_PRIVATE_LATE"}),
+            )) == Err(expected),
+            "a real failure must remain sticky on later input"
+        );
+        assert!(
+            state.finalize_and_flush(true) == Err(expected),
+            "a real failure must remain sticky at completion"
         );
     }
 
@@ -5011,270 +5072,389 @@ mod token_format_diagnostic_sink_tests {
             "rredact-custom-0000000000000000000G-ai SYNTHETIC_PRIVATE_BODY",
             "rredact-custom-00000000000000000000-ax SYNTHETIC_PRIVATE_BODY",
         ];
-        for bad in malformed {
-            for kind in ["response.refusal.delta"] {
+        // Exercise the real sink independently: literal syntax no longer causes SSE format errors.
+        for text in malformed {
+            for (kind, carrier, site, carrier_label, site_label, pending) in [
+                (
+                    "response.refusal.delta",
+                    Carrier::Refusal,
+                    Site::DeltaSplit,
+                    "refusal",
+                    "delta_split",
+                    14,
+                ),
+                (
+                    "response.refusal.delta",
+                    Carrier::Refusal,
+                    Site::DeltaRestore,
+                    "refusal",
+                    "delta_restore",
+                    0,
+                ),
+                (
+                    "response.refusal.done",
+                    Carrier::Refusal,
+                    Site::DoneRestore,
+                    "refusal",
+                    "done_restore",
+                    0,
+                ),
+                (
+                    "response.output_item.added",
+                    Carrier::Refusal,
+                    Site::SnapshotRestore,
+                    "refusal",
+                    "snapshot_restore",
+                    0,
+                ),
+                (
+                    "response.content_part.added",
+                    Carrier::Reasoning,
+                    Site::SnapshotRestore,
+                    "reasoning",
+                    "snapshot_restore",
+                    0,
+                ),
+                (
+                    "response.content_part.done",
+                    Carrier::Refusal,
+                    Site::SnapshotRestore,
+                    "refusal",
+                    "snapshot_restore",
+                    0,
+                ),
+                (
+                    "response.completed",
+                    Carrier::Refusal,
+                    Site::FinalTextRestore,
+                    "refusal",
+                    "final_text_restore",
+                    0,
+                ),
+                (
+                    "response.completed",
+                    Carrier::FunctionArguments,
+                    Site::FinalToolRestore,
+                    "function_arguments",
+                    "final_tool_restore",
+                    0,
+                ),
+                (
+                    "response.completed",
+                    Carrier::CustomInput,
+                    Site::FinalToolRestore,
+                    "custom_input",
+                    "final_tool_restore",
+                    0,
+                ),
+                (
+                    "SYNTHETIC_PRIVATE_EVENT",
+                    Carrier::Other,
+                    Site::Unknown,
+                    "other",
+                    "unknown",
+                    0,
+                ),
+            ] {
+                let mut diagnostic = TokenFormatDiagnosticState::default();
+                let before = count();
+                diagnostic.emit_once();
+                assert_eq!(count(), before, "unobserved state must not log");
+                for _ in 0..300 {
+                    diagnostic.record_event(kind, true, text.len());
+                    diagnostic.record_delta_structure(pending, pending, text.len());
+                }
+                diagnostic.observe(text, pending, carrier, site, pending != 0);
+                diagnostic.emit_once();
+                assert_eq!(count(), before + 1, "first observation must log once");
+                let first = RECORDS
+                    .lock()
+                    .map_err(|_| "synthetic sink capture poisoned")?
+                    .last()
+                    .cloned()
+                    .ok_or("synthetic sink record missing")?;
+                assert!(first.contains(&format!("carrier={carrier_label}")));
+                assert!(first.contains(&format!("site={site_label}")));
+                assert!(first.contains("seq=255"), "event sequence must saturate");
+                assert_eq!(
+                    first.matches("event=").count(),
+                    4,
+                    "recent events are bounded"
+                );
+                if pending != 0 {
+                    assert!(first.contains("boundary_known=true cross=true"));
+                }
+                if kind == "SYNTHETIC_PRIVATE_EVENT" {
+                    assert!(first.contains("event=other"));
+                }
+                diagnostic.record_event("SYNTHETIC_PRIVATE_LATE", false, usize::MAX);
+                diagnostic.observe(
+                    "SYNTHETIC_PRIVATE_LATE",
+                    0,
+                    Carrier::Other,
+                    Site::Unknown,
+                    false,
+                );
+                diagnostic.emit_once();
+                assert_eq!(
+                    count(),
+                    before + 1,
+                    "repeated observations must not duplicate logs"
+                );
+                assert!(
+                    RECORDS
+                        .lock()
+                        .map_err(|_| "synthetic sink capture poisoned")?
+                        .last()
+                        == Some(&first)
+                );
+            }
+        }
+        // Both ordinary output and refusal literals retain their bytes without diagnostics.
+        for text in malformed.into_iter().chain(["rredact-custom-"]) {
+            for refusal in [false, true] {
                 let (mut state, _, budget) = state();
                 let before = count();
-                format_error(state.process_sse_block(&event(kind, json!({"delta":bad}))));
-                assert_eq!(state.failure_stage(), RestoreStage::TokenRestore);
-                assert_eq!(
-                    count(),
-                    before + 1,
-                    "first format failure must emit one structural log"
-                );
-                format_error(
+                let (delta, done, field) = if refusal {
+                    ("response.refusal.delta", "response.refusal.done", "refusal")
+                } else {
+                    (
+                        "response.output_text.delta",
+                        "response.output_text.done",
+                        "text",
+                    )
+                };
+                let mut frames = state
+                    .process_sse_block(&event(delta, json!({"delta":text})))
+                    .map_err(|_| "synthetic SSE operation unexpectedly refused")?;
+                let mut snapshot = json!({});
+                snapshot[field] = json!(text);
+                frames.extend(
                     state
-                        .process_sse_block(&event(kind, json!({"delta":"SYNTHETIC_PRIVATE_LATE"}))),
+                        .process_sse_block(&event(done, snapshot))
+                        .map_err(|_| "synthetic SSE operation unexpectedly refused")?,
                 );
-                format_error(state.finalize_and_flush(true));
+                let item = if refusal {
+                    message(text)
+                } else {
+                    json!({"id":"SYNTHETIC_PRIVATE_MESSAGE", "type":"message", "role":"assistant", "status":"completed", "content":[{"type":"output_text", "text":text}]})
+                };
+                frames.extend(
+                    state
+                        .process_sse_block(&completed(json!([item])))
+                        .map_err(|_| "synthetic SSE operation unexpectedly refused")?,
+                );
+                frames.extend(
+                    state
+                        .finalize_and_flush(true)
+                        .map_err(|_| "synthetic SSE operation unexpectedly refused")?,
+                );
+                let mut final_seen = false;
+                for frame in &frames {
+                    let raw = std::str::from_utf8(frame)?;
+                    let Some(data) = raw.lines().find_map(|line| line.strip_prefix("data: "))
+                    else {
+                        continue;
+                    };
+                    let data: Value = serde_json::from_str(data)?;
+                    if data["type"] == "response.completed" {
+                        assert!(
+                            data["response"]["output"][0]["content"][0][field] == text,
+                            "literal final text must be preserved"
+                        );
+                        final_seen = true;
+                    }
+                }
+                assert!(final_seen, "literal completion must still be emitted");
+                assert_eq!(state.restored_occurrences(), 0);
                 assert_eq!(
                     count(),
-                    before + 1,
-                    "sticky errors must not duplicate the diagnostic"
+                    before,
+                    "literal text must not emit format diagnostics"
                 );
+                drop(frames);
                 drop(state);
                 assert_eq!(budget.used(), 0);
             }
         }
-        // Ordinary output-text nonmatches are preserved without a format diagnostic.
-        for bad in malformed {
+        // Supported reasoning is not a token-format diagnostic source.
+        for text in malformed {
             let (mut state, _, budget) = state();
             let before = count();
             state
-                .process_sse_block(&event("response.output_text.delta", json!({"delta":bad})))
-                .map_err(|_| "ordinary nonmatch delta rejected")?;
+                .process_sse_block(&event(
+                    "response.reasoning_summary_text.delta",
+                    json!({"delta":text}),
+                ))
+                .map_err(|_| "synthetic SSE operation unexpectedly refused")?;
             state
-                .process_sse_block(&event("response.output_text.done", json!({"text":bad})))
-                .map_err(|_| "ordinary nonmatch snapshot rejected")?;
-            assert_eq!(
-                count(),
-                before,
-                "ordinary nonmatches must not emit format diagnostics"
-            );
+                .process_sse_block(&event(
+                    "response.reasoning_summary_text.done",
+                    json!({"text":text}),
+                ))
+                .map_err(|_| "synthetic SSE operation unexpectedly refused")?;
+            assert_eq!(count(), before, "reasoning must emit no format diagnostic");
             drop(state);
             assert_eq!(budget.used(), 0);
         }
-        // Supported reasoning is not a token-format diagnostic source.
-        for bad in malformed {
-            let (mut state, _, budget) = state();
-            let before = count();
-            assert!(
-                state
-                    .process_sse_block(&event(
-                        "response.reasoning_summary_text.delta",
-                        json!({"delta":bad})
-                    ))
-                    .is_ok(),
-                "reasoning delta must be unprocessed"
-            );
-            assert!(
-                state
-                    .process_sse_block(&event(
-                        "response.reasoning_summary_text.done",
-                        json!({"text":bad})
-                    ))
-                    .is_ok(),
-                "reasoning done must be unprocessed"
-            );
-            assert!(
-                count() == before,
-                "reasoning must emit no format diagnostic"
-            );
-            drop(state);
-            assert!(budget.used() == 0, "reasoning buffers must release budget");
-        }
-        // A valid boundary-spanning reference still restores; no diagnostic is emitted.
-        for split in 0..=(32 + "custom".len()) {
+        // Every authorized reference split still restores without a diagnostic.
+        let (_, reference, _) = state();
+        for split in 0..=reference.len() {
             let (mut state, token, budget) = state();
             let before = count();
             for delta in [&token[..split], &token[split..]] {
                 state
                     .process_sse_block(&event("response.output_text.delta", json!({"delta":delta})))
-                    .unwrap();
+                    .map_err(|_| "synthetic SSE operation unexpectedly refused")?;
             }
             assert_eq!(state.restored_occurrences(), 1);
             assert_eq!(count(), before);
             drop(state);
             assert_eq!(budget.used(), 0);
         }
-        let (mut crossing, _, _) = state();
+        let (mut crossing, _, budget) = state();
+        let before = count();
+        for delta in ["rredact-custom-", "`"] {
+            crossing
+                .process_sse_block(&event("response.refusal.delta", json!({"delta":delta})))
+                .map_err(|_| "synthetic SSE operation unexpectedly refused")?;
+        }
         crossing
             .process_sse_block(&event(
-                "response.refusal.delta",
-                json!({"delta":"rredact-custom-"}),
+                "response.refusal.done",
+                json!({"refusal":"rredact-custom-`"}),
             ))
-            .unwrap();
-        let before = count();
-        format_error(
-            crossing.process_sse_block(&event("response.refusal.delta", json!({"delta":"`"}))),
-        );
-        assert_eq!(count(), before + 1);
-        // Done and final snapshots observe the actual failing restore branch.
-        for kind in ["response.refusal.done"] {
-            let (mut state, _, _) = state();
+            .map_err(|_| "synthetic SSE operation unexpectedly refused")?;
+        assert_eq!(count(), before, "cross-delta nonmatch must remain literal");
+        drop(crossing);
+        assert_eq!(budget.used(), 0);
+
+        // Real snapshot contradictions remain sticky without a format diagnostic.
+        for refusal in [false, true] {
+            let (mut state, _, budget) = state();
             let before = count();
-            let field = if kind == "response.refusal.done" {
-                "refusal"
+            let (delta, done, field) = if refusal {
+                ("response.refusal.delta", "response.refusal.done", "refusal")
             } else {
-                "text"
+                (
+                    "response.output_text.delta",
+                    "response.output_text.done",
+                    "text",
+                )
             };
-            let mut data = json!({});
-            data[field] = json!(malformed[0]);
-            format_error(state.process_sse_block(&event(kind, data)));
-            assert_eq!(count(), before + 1);
+            state
+                .process_sse_block(&event(delta, json!({"delta":"safe"})))
+                .map_err(|_| "synthetic SSE operation unexpectedly refused")?;
+            let mut snapshot = json!({});
+            snapshot[field] = json!(malformed[0]);
+            assert!(
+                state.process_sse_block(&event(done, snapshot)) == Err(RestoreError::RestoreFailed)
+            );
+            assert_eq!(state.failure_stage(), RestoreStage::SseSnapshot);
+            sticky_error(&mut state, RestoreError::RestoreFailed);
+            assert_eq!(count(), before);
+            drop(state);
+            assert_eq!(budget.used(), 0);
         }
+        // An authorized reference in an unsupported field is a real context refusal.
+        let (mut unsupported, token, budget) = state();
+        let before = count();
+        let context_error = RestoreError::FailedBecause(RestoreReason::TokenContext);
+        assert!(
+            unsupported.process_sse_block(&event(
+                "response.output_text.delta",
+                json!({"delta":"safe", "item_id":token}),
+            )) == Err(context_error)
+        );
+        sticky_error(&mut unsupported, context_error);
+        assert_eq!(
+            count(),
+            before,
+            "context refusals must not be relabeled format failures"
+        );
+        drop(unsupported);
+        assert_eq!(budget.used(), 0);
+
         for barrier in [false, true] {
             let (mut state, _, budget) = state();
+            let before = count();
+            let mut items = vec![];
+            let output_index = u64::from(barrier);
             if barrier {
                 assert!(state
                     .process_sse_block(&event(
                         "response.function_call_arguments.delta",
                         json!({"output_index":0,"delta":"{}"})
                     ))
-                    .unwrap()
+                    .map_err(|_| "synthetic SSE operation unexpectedly refused")?
                     .is_empty());
-            }
-            let mut items = vec![];
-            if barrier {
                 items.push(json!({"id":"SYNTHETIC_PRIVATE_TOOL", "type":"function_call", "call_id":"SYNTHETIC_PRIVATE_CALL", "name":"non_executing_fixture", "arguments":"{}", "status":"completed"}));
             }
+            state
+                .process_sse_block(&event(
+                    "response.refusal.delta",
+                    json!({"output_index":output_index,"delta":"safe"}),
+                ))
+                .map_err(|_| "synthetic SSE operation unexpectedly refused")?;
             items.push(message(malformed[0]));
-            let before = count();
             assert!(state
                 .process_sse_block(&completed(json!(items)))
-                .unwrap()
+                .map_err(|_| "synthetic SSE operation unexpectedly refused")?
                 .is_empty());
             assert_eq!(
                 count(),
                 before,
-                "buffered events must not emit speculative failures"
+                "buffering must not emit speculative failures"
             );
-            format_error(state.finalize_and_flush(true));
-            assert_eq!(count(), before + 1);
-            format_error(state.finalize_and_flush(true));
-            assert_eq!(count(), before + 1);
+            assert!(state.finalize_and_flush(true) == Err(RestoreError::RestoreFailed));
+            sticky_error(&mut state, RestoreError::RestoreFailed);
+            assert_eq!(count(), before);
             drop(state);
             assert_eq!(budget.used(), 0);
         }
-        // Snapshot precedence, unfinished tails, capacity and cancellation retain their original errors.
-        let (mut mismatch, _, _) = state();
-        mismatch
-            .process_sse_block(&event(
-                "response.output_text.delta",
-                json!({"delta":"safe"}),
-            ))
-            .unwrap();
+        // JSON validation, independent completion evidence and frame limits still fail closed.
+        let (mut invalid_json, _, budget) = state();
         let before = count();
-        assert_eq!(
-            mismatch
-                .process_sse_block(&event(
-                    "response.output_text.done",
-                    json!({"text":malformed[0]})
-                ))
-                .unwrap_err(),
-            RestoreError::RestoreFailed
+        invalid_json.process_sse_block(&completed(json!([{
+            "id":"SYNTHETIC_PRIVATE_TOOL", "type":"function_call", "call_id":"SYNTHETIC_PRIVATE_CALL",
+            "name":"non_executing_fixture", "arguments":"{invalid", "status":"completed"
+        }]))).map_err(|_| "synthetic SSE operation unexpectedly refused")?;
+        let json_error = RestoreError::FailedBecause(RestoreReason::ArgumentsJson);
+        assert!(invalid_json.finalize_and_flush(true) == Err(json_error));
+        sticky_error(&mut invalid_json, json_error);
+        assert_eq!(count(), before);
+        drop(invalid_json);
+        assert_eq!(budget.used(), 0);
+        for completed_seen in [false, true] {
+            let (mut state, _, budget) = state();
+            let before = count();
+            if completed_seen {
+                state
+                    .process_sse_block(&completed(json!([])))
+                    .map_err(|_| "synthetic SSE operation unexpectedly refused")?;
+            }
+            assert!(state.finalize_and_flush(false) == Err(RestoreError::RestoreFailed));
+            assert_eq!(state.failure_stage(), RestoreStage::CompletionEvidence);
+            sticky_error(&mut state, RestoreError::RestoreFailed);
+            assert_eq!(count(), before);
+            drop(state);
+            assert_eq!(budget.used(), 0);
+        }
+        let (mut capacity, _, budget) = state();
+        let before = count();
+        assert!(
+            capacity.process_sse_block(&" ".repeat(1024 * 1024 + 1))
+                == Err(RestoreError::RestoreFailed)
         );
-        assert_eq!(mismatch.failure_stage(), RestoreStage::SseSnapshot);
-        let (mut unfinished, _, _) = state();
-        unfinished
-            .process_sse_block(&event(
-                "response.refusal.delta",
-                json!({"delta":"rredact-custom-"}),
-            ))
-            .unwrap();
-        assert_eq!(
-            unfinished
-                .process_sse_block(&event(
-                    "response.refusal.done",
-                    json!({"refusal":"rredact-custom-"})
-                ))
-                .unwrap_err(),
-            RestoreError::RestoreFailed
-        );
-        let (mut cancelled, _, _) = state();
-        assert_eq!(
-            cancelled.finalize_and_flush(false).unwrap_err(),
-            RestoreError::RestoreFailed
-        );
-        let (mut capacity, _, _) = state();
-        assert_eq!(
-            capacity
-                .process_sse_block(&" ".repeat(1024 * 1024 + 1))
-                .unwrap_err(),
-            RestoreError::RestoreFailed
-        );
+        sticky_error(&mut capacity, RestoreError::RestoreFailed);
         assert_eq!(
             count(),
             before,
-            "non-format failures must not emit a structural format log"
+            "non-format failures must not emit structural format logs"
         );
-        // Event whitelisting and each observable carrier/site are checked at the real sink.
-        let (mut unknown, _, _) = state();
-        unknown
-            .process_sse_block(&event("SYNTHETIC_PRIVATE_EVENT", json!({})))
-            .unwrap();
-        format_error(unknown.process_sse_block(&event(
-            "response.refusal.delta",
-            json!({"delta":malformed[0]}),
-        )));
-        assert!(RECORDS
-            .lock()
-            .unwrap()
-            .last()
-            .unwrap()
-            .contains("event=other"));
-        for (kind, data, carrier) in [
-            (
-                "response.output_item.added",
-                json!({"output_index":0,"item":message(malformed[0])}),
-                "refusal",
-            ),
-            (
-                "response.content_part.added",
-                json!({"part":{"type":"refusal","refusal":malformed[0]}}),
-                "refusal",
-            ),
-            (
-                "response.content_part.added",
-                json!({"part":{"type":"summary_text","text":malformed[0]}}),
-                "reasoning",
-            ),
-            (
-                "response.content_part.done",
-                json!({"part":{"type":"refusal","refusal":malformed[0]}}),
-                "refusal",
-            ),
-        ] {
-            let (mut state, _, _) = state();
-            let before = count();
-            format_error(state.process_sse_block(&event(kind, data)));
-            assert_eq!(count(), before + 1);
-            let records = RECORDS.lock().unwrap();
-            let record = records.last().unwrap();
-            assert!(record.contains("site=snapshot_restore"));
-            assert!(
-                record.contains(&format!("carrier={carrier}")),
-                "snapshot carrier must reflect its supported field"
-            );
-        }
-        for custom in [false, true] {
-            let (mut state, _, _) = state();
-            let item = if custom {
-                json!({"id":"SYNTHETIC_PRIVATE_TOOL", "type":"custom_tool_call", "call_id":"SYNTHETIC_PRIVATE_CALL", "name":"non_executing_fixture", "input":malformed[0], "status":"completed"})
-            } else {
-                json!({"id":"SYNTHETIC_PRIVATE_TOOL", "type":"function_call", "call_id":"SYNTHETIC_PRIVATE_CALL", "name":"non_executing_fixture", "arguments":json!({"value":malformed[0]}).to_string(), "status":"completed"})
-            };
-            state.process_sse_block(&completed(json!([item]))).unwrap();
-            let before = count();
-            format_error(state.finalize_and_flush(true));
-            assert_eq!(count(), before + 1);
-            assert!(RECORDS
-                .lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .contains("site=final_tool_restore"));
-        }
+        drop(capacity);
+        assert_eq!(budget.used(), 0);
+
         let records = RECORDS.lock().unwrap();
         assert!(!records.is_empty());
         for record in records.iter() {
@@ -5483,37 +5663,45 @@ mod output_text_exact_stream_tests {
                     }
                     let item = json!({"id":"synthetic-message","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":text}]});
                     assert!(state.process_sse_block(&frame(&json!({"type":"response.completed","response":{"id":"synthetic-response","status":"completed","output":[item,tool]}}))).expect("synthetic completion").is_empty());
-                    let frames = state.finalize_and_flush(true);
-                    if authorized {
-                        assert!(
-                            frames.is_ok(),
-                            "authorized references spanning the tool barrier must restore"
-                        );
-                        let frames = frames.expect("synthetic released frames");
-                        delivered.push_str(&text_deltas(&frames));
-                        assert!(delivered == "前🔒synthetic-restoration-value synthetic-restoration-value", "barrier replay must restore once without duplicating an already released prefix");
-                        assert!(
-                            frames
-                                .iter()
-                                .any(|frame| std::str::from_utf8(frame)
-                                    .is_ok_and(|text| text
-                                        .starts_with("event: response.output_item.added"))),
-                            "validated inert tool is released only at final commit"
-                        );
+                    let frames = state
+                        .finalize_and_flush(true)
+                        .expect("synthetic committed frames");
+                    delivered.push_str(&text_deltas(&frames));
+                    let expected_tail = if authorized {
+                        "synthetic-restoration-value"
                     } else {
-                        assert!(matches!(frames, Err(super::super::response_restoration::RestoreError::FailedBecause(super::super::restore_diagnostics::RestoreReason::TokenContext))), "foreign references spanning the barrier retain context refusal");
+                        candidate.as_str()
+                    };
+                    assert!(
+                        delivered == format!("前🔒synthetic-restoration-value {expected_tail}"),
+                        "barrier replay must restore authorized matches and preserve foreign literals exactly once"
+                    );
+                    assert!(
+                        frames
+                            .iter()
+                            .any(|frame| std::str::from_utf8(frame).is_ok_and(
+                                |text| text.starts_with("event: response.output_item.added")
+                            )),
+                        "validated inert tool is released only at final commit"
+                    );
+                    assert!(
+                        observer
+                            .resume_completed_context(
+                                &binding,
+                                Some("synthetic-response"),
+                                &[],
+                                &[]
+                            )
+                            .is_err(),
+                        "replay alone must not bypass the independent completion publication witness"
+                    );
+                    if !authorized {
                         assert!(
-                            observer
-                                .resume_completed_context(
-                                    &binding,
-                                    Some("synthetic-response"),
-                                    &[],
-                                    &[]
-                                )
-                                .is_err(),
-                            "failed barrier commit must not publish cursor authority"
+                            observer.resolve(&candidate).is_err(),
+                            "literal must not gain restoration authority"
                         );
                     }
+                    drop(frames);
                     drop(released);
                     drop(state);
                     assert_eq!(budget.used(), 0);

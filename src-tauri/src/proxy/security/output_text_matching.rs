@@ -1,4 +1,4 @@
-//! Exact recognition for ordinary response output text only.
+//! Exact placeholder recognition; syntax alone never grants authority.
 //! Nonmatches remain text; a match never grants restoration authority.
 use std::ops::Range;
 

@@ -197,7 +197,8 @@ fn literal_collision_rejects_atomically_before_any_candidate_commit() -> Result<
 }
 
 #[test]
-fn malformed_and_unknown_exact_tokens_fail_without_issuing_a_mapping() -> Result<(), PlanError> {
+fn malformed_and_unknown_exact_tokens_stay_literal_without_issuing_a_mapping(
+) -> Result<(), PlanError> {
     let store = DlpTokenStore::new();
     let mut lease = store.admit("codex", None, 1)?;
     for text in [
@@ -214,12 +215,16 @@ fn malformed_and_unknown_exact_tokens_fail_without_issuing_a_mapping() -> Result
                 matches: &[],
             }],
             &[],
-            |_, _| Ok(()),
+            |_, proof| {
+                assert!(proof.is_empty(), "literal_granted_proof");
+                Ok(())
+            },
+        )?;
+        assert!(
+            result.fields.as_slice()[0].as_str() == text,
+            "literal_bytes_changed"
         );
-        assert_eq!(
-            result.err(),
-            Some(PlanError::Token(TokenError::ContextUnavailable))
-        );
+        assert!(lease.is_empty(), "literal_granted_authority");
     }
     assert_eq!(store.stats()?.entries, 0);
     Ok(())
