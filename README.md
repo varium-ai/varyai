@@ -118,7 +118,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-`pnpm dev` starts the Vite renderer and the native Tauri application. Exit an existing Vary AI instance before starting a separate development instance; the single-instance handler can bring an existing window to the foreground.
+`pnpm dev` starts the Vite renderer and the native Tauri application. It automatically selects an available renderer port starting at 3001 and passes the actual URL to Tauri. Closing the command or a failed Tauri startup also shuts down its renderer. Exit an existing Vary AI instance before starting a separate development instance; the single-instance handler can bring an existing window to the foreground.
 
 For frontend work, use `pnpm dev:renderer`. It serves the renderer at `http://localhost:3001`; native commands and the Rust gateway require the desktop runtime.
 

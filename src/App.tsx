@@ -56,7 +56,7 @@ import {
 import { isTextEditableTarget } from "@/utils/domUtils";
 import { cn } from "@/lib/utils";
 import {
-  isWindows,
+  isMac,
   isLinux,
   DRAG_REGION_ATTR,
   DRAG_REGION_STYLE,
@@ -64,6 +64,7 @@ import {
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { GlobalStatusBar } from "@/components/layout/GlobalStatusBar";
 import { HomeDashboard } from "@/components/home/HomeDashboard";
+import { windowLayout } from "@/lib/windowLayout";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
 import { SecurityCenterPage } from "@/components/security/SecurityCenterPage";
 import { StatisticsPage } from "@/components/statistics/StatisticsPage";
@@ -132,7 +133,6 @@ interface SyncStatusUpdatedPayload {
   error?: string;
 }
 
-const DEFAULT_DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
 const HEADER_HEIGHT = 64; // px
 
 const STORAGE_KEY = "cc-switch-last-app";
@@ -185,15 +185,17 @@ function App() {
   }, [settingsData?.language, i18n]);
   const useAppWindowControls =
     isLinux() && (settingsData?.useAppWindowControls ?? false);
-  const dragBarHeight = useAppWindowControls ? 32 : DEFAULT_DRAG_BAR_HEIGHT;
   const showSecondaryHeader = ![
     "providers",
     "security",
     "stats",
     "settings",
   ].includes(currentView);
-  const pageTopOffset =
-    dragBarHeight + HEADER_HEIGHT + (showSecondaryHeader ? HEADER_HEIGHT : 0);
+  const {
+    dragBarHeight,
+    contentTop: pageTopOffset,
+    macTitlebar,
+  } = windowLayout(isMac(), useAppWindowControls, showSecondaryHeader);
   const visibleApps = useMemo<VisibleApps>(
     () => ({
       ...DEFAULT_VISIBLE_APPS,
@@ -1111,18 +1113,25 @@ function App() {
           activeTab={activePrimaryTab}
           onSelect={selectPrimaryTab}
           disabled={managementBusy}
+          macTitlebar={macTitlebar}
           actions={
             <>
               <UpdateBadge />
               <SecurityAuditToggle appType={activeApp} />
               {activeApp !== "doubaowork" && (
                 <Button
-                  onClick={() => setIsAddOpen(true)}
+                  onClick={() => {
+                    setIsAddOpen(true);
+                  }}
                   size="sm"
+                  aria-label={t("provider.addNewProvider")}
+                  title={t("provider.addNewProvider")}
                   className="h-9 rounded-xl bg-blue-600 px-3.5 text-xs font-semibold text-white shadow-sm shadow-blue-500/20 hover:bg-blue-700"
                 >
-                  <Plus className="mr-1.5 h-4 w-4" />
-                  {t("provider.addNewProvider")}
+                  <Plus className="h-4 w-4 xl:mr-1.5" />
+                  <span className="hidden xl:inline">
+                    {t("provider.addNewProvider")}
+                  </span>
                 </Button>
               )}
             </>
