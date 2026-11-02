@@ -331,6 +331,13 @@ fn validate_claude_desktop_gateway_auth(
             "Claude Desktop gateway token 无效".to_string(),
         ));
     }
+    if !crate::claude_desktop_config::routing_enabled(state.db.as_ref())
+        .map_err(|e| ProxyError::DatabaseError(e.to_string()))?
+    {
+        return Err(ProxyError::ConfigError(
+            "Claude Desktop local routing is disabled. Enable it in Vary AI.".into(),
+        ));
+    }
     Ok(())
 }
 

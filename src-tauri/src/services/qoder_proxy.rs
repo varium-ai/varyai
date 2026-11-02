@@ -364,7 +364,7 @@ impl Manager {
     async fn obtain_certificate(&self) -> Result<super::qoder_certificate::Certificate, String> {
         self.ensure_certificate_creation_allowed()?;
         if let Some(saved) = self.saved_certificate()? {
-            let root = crate::config::get_app_config_dir().join("qoder-certificates");
+            let root = crate::config::get_device_config_dir().join("qoder-certificates");
             if saved.directory.parent() != Some(root.as_path()) {
                 return Err("Qoder saved certificate directory is invalid".into());
             }

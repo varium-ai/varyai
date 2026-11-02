@@ -796,6 +796,8 @@ async fn claude_converted_tool_calls_reach_history_from_native_responses() {
                     .post(format!("http://127.0.0.1:{}{path}", info.port))
                     .json(&request);
                 if app == "claude-desktop" {
+                    db.set_setting(crate::claude_desktop_config::ROUTING_ENABLED_KEY, "true")
+                        .unwrap();
                     call = call.bearer_auth(
                         crate::claude_desktop_config::get_or_create_gateway_token(&db).unwrap(),
                     );

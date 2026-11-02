@@ -8,6 +8,8 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProxyPanel } from "@/components/proxy/ProxyPanel";
 import { toast } from "sonner";
+import i18n from "i18next";
+import zh from "@/i18n/locales/zh.json";
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -46,6 +48,7 @@ vi.mock("@/hooks/useProxyStatus", () => ({
     isRunning: true,
     takeoverStatus: state.takeoverStatus,
     stopProxyServer,
+    setTakeoverForApp: setTakeover,
     isPending: false,
     isInitialStatusPending: false,
   }),
@@ -83,11 +86,15 @@ describe("ProxyPanel routing applications", () => {
     const desktop = within(routing).getByRole("switch", {
       name: "Claude Desktop 本地路由",
     });
-    expect(desktop).toBeChecked();
+    expect(desktop).not.toBeChecked();
     fireEvent.click(desktop);
-    await waitFor(() => expect(stopProxyServer).toHaveBeenCalledOnce());
-    expect(setTakeover).not.toHaveBeenCalled();
-    expect(screen.getByText(/Claude Desktop 需先启用/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(setTakeover).toHaveBeenCalledWith({
+        appType: "claude-desktop",
+        enabled: true,
+      }),
+    );
+    expect(stopProxyServer).not.toHaveBeenCalled();
   });
 
   it.each([false, true])(
@@ -157,5 +164,27 @@ describe("ProxyPanel routing applications", () => {
     expect(
       screen.getByRole("switch", { name: "Claude Desktop 本地路由" }),
     ).toBeDisabled();
+  });
+
+  it("explains how to initialize a client when enabling routing fails", async () => {
+    i18n.addResourceBundle(
+      "zh",
+      "translation",
+      { proxy: { takeover: zh.proxy.takeover } },
+      true,
+      true,
+    );
+    setTakeover.mockRejectedValue("proxy.takeover.setupRequired");
+    render(<ProxyPanel onToggleProxy={vi.fn()} isProxyPending={false} />);
+    fireEvent.click(
+      within(screen.getByText("Codex").parentElement!).getByRole("switch"),
+    );
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringContaining("Codex 配置尚未初始化"),
+      ),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+    i18n.removeResourceBundle("zh", "translation");
   });
 });

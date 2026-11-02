@@ -524,7 +524,7 @@ impl Manager {
 }
 
 pub(crate) fn settings_path() -> PathBuf {
-    crate::config::get_app_config_dir().join("pi-routing.json")
+    crate::config::get_device_config_dir().join("pi-routing.json")
 }
 
 #[cfg(test)]

@@ -11,11 +11,19 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-`pnpm dev` owns the renderer and Tauri processes together. Vite selects an available port starting at 3000, and the launcher passes its actual URL to Tauri without starting a second renderer. An occupied port, including one held by an older development process, is skipped without stopping the existing listener. `Ctrl+C`, termination, or a failed Tauri startup closes the launcher's renderer and Tauri process group. Additional Tauri options can be passed directly, for example `pnpm dev --no-watch`.
+`pnpm dev` owns the renderer and Tauri processes together. Vite selects an available port starting at 3001, and the launcher passes its actual URL to Tauri without starting a second renderer. An occupied port, including one held by an older development process, is skipped without stopping the existing listener. `Ctrl+C`, termination, or a failed Tauri startup closes the launcher's renderer and Tauri process group. Additional Tauri options can be passed directly, for example `pnpm dev --no-watch`.
 
-`pnpm dev:renderer` starts only the browser renderer on port 3000 and requires that port to be available. Native commands, the proxy and database operations require the Tauri runtime. Exit an existing app before starting a separate development instance.
+`pnpm dev:renderer` starts only the browser renderer on port 3001 and requires that port to be available. Native commands, the proxy and database operations require the Tauri runtime. Exit an existing app before starting a separate development instance.
+
+For manual acceptance on the normal installation paths, run `pnpm dev` without `CC_SWITCH_TEST_HOME` or a test Tauri configuration. VaryAI uses its normal application identity and independent storage, while existing native client directories remain in place. Installer replacement acceptance uses the normal packaged application: install the selected older build, then replace it with the new package and verify storage ownership, native configuration and route recovery. Do not clear user data to simulate an installation.
+
+The renderer and Tauri development URL use `http://localhost:3001`. The application gateway defaults to `127.0.0.1:15722`. A separate application identifier and temporary home isolate storage for acceptance tests, but additional instances still need distinct ports when their listeners run concurrently.
+
+Console and file logs display application module targets as `vary_ai_lib` or `vary_ai`, including their module paths. Internal crate names remain compatible. Third-party targets, message text, timestamps and runtime level filtering retain their existing behavior.
 
 The optional `setup.sh` changes the host environment: it can install system packages, activate global tools and select a Rust toolchain. Review it before running it. Manual setup is sufficient for contribution checks; this guide does not claim that every installer path has been validated.
+
+A temporary test home also redirects native client paths. An empty test home represents a machine without configured clients, not just a fresh VaryAI installation. To verify an existing-client installation, prepare private client configuration copies or synthetic existing-client fixtures inside that home. Do not copy rotating OAuth sessions into parallel test clients; use a test API-key provider or a separate authorization. Changing the VaryAI application data root must leave native client paths unchanged. Do not create empty production client files as a substitute for setup, and do not grant OS trust or connection authorization as part of routine checks.
 
 ## Checks
 

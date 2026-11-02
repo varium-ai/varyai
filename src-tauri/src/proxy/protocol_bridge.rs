@@ -140,7 +140,45 @@ impl Bridge {
     }
     pub fn request(self, body: Value, endpoint: &str) -> Result<Value, ProxyError> {
         match self.input {
-            Protocol::Chat => chat_request(body),
+            Protocol::Chat => {
+                let mut body = body;
+                let fields = body
+                    .as_object_mut()
+                    .ok_or_else(|| invalid("Invalid Chat request"))?;
+                let effort = fields.remove("reasoning_effort").filter(|v| !v.is_null());
+                let summary = fields.remove("reasoning_summary").filter(|v| !v.is_null());
+                let verbosity = fields.remove("verbosity").filter(|v| !v.is_null());
+                if [&effort, &summary, &verbosity]
+                    .into_iter()
+                    .flatten()
+                    .any(|v| !v.is_string())
+                {
+                    return Err(invalid("Invalid Chat reasoning or verbosity setting"));
+                }
+                let mut body = chat_request(body)?;
+                if self.output == Protocol::Responses {
+                    if let Some(effort) = effort {
+                        body["reasoning"]["effort"] = effort;
+                    }
+                    if let Some(summary) = summary {
+                        body["reasoning"]["summary"] = summary;
+                    }
+                    if let Some(verbosity) = verbosity {
+                        body["text"]["verbosity"] = verbosity;
+                    }
+                } else if effort.is_some() || summary.is_some() || verbosity.is_some() {
+                    // With reasoning disabled, an automatic summary has no content to summarize.
+                    if effort.as_ref().is_some_and(|v| v == "none")
+                        && summary.as_ref().is_none_or(|v| v == "auto")
+                        && verbosity.is_none()
+                    {
+                        body["thinking"] = json!({"type":"disabled"});
+                    } else {
+                        return Err(invalid("Chat reasoning or verbosity settings cannot be represented in the selected protocol"));
+                    }
+                }
+                Ok(body)
+            }
             Protocol::Responses => {
                 providers::transform_codex_anthropic::responses_request_to_anthropic(body, 8192)
             }
@@ -1205,6 +1243,72 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn workbuddy_reasoning_controls_survive_chat_to_responses_conversion() {
+        let bridge = Bridge {
+            input: Protocol::Chat,
+            output: Protocol::Responses,
+        };
+        for effort in ["none", "medium"] {
+            let converted = bridge
+                .request(
+                    json!({
+                        "model":"synthetic-model", "stream":true,
+                        "messages":[{"role":"user","content":"Synthetic prompt"}],
+                        "reasoning_effort":effort, "reasoning_summary":"auto", "verbosity":"high"
+                    }),
+                    "/v1/chat/completions",
+                )
+                .expect("WorkBuddy request");
+            let outbound = providers::transform_responses::anthropic_to_responses(
+                converted, None, false, false,
+            )
+            .expect("Responses request");
+            assert_eq!(
+                outbound["reasoning"],
+                json!({"effort":effort,"summary":"auto"})
+            );
+            assert_eq!(outbound["text"]["verbosity"], "high");
+            assert!(outbound["input"].to_string().contains("Synthetic prompt"));
+        }
+    }
+
+    #[test]
+    fn workbuddy_disabled_reasoning_crosses_into_anthropic_and_gemini() {
+        for output in [Protocol::Anthropic, Protocol::Gemini] {
+            let converted = Bridge { input: Protocol::Chat, output }.request(
+                json!({"model":"synthetic-model","messages":[{"role":"user","content":"Synthetic prompt"}],"reasoning_effort":"none","reasoning_summary":"auto"}),
+                "/v1/chat/completions",
+            ).expect("disabled reasoning is representable");
+            assert_eq!(converted["thinking"], json!({"type":"disabled"}));
+        }
+    }
+
+    #[test]
+    fn chat_bridge_rejects_invalid_reasoning_settings_without_echoing_values() {
+        for field in ["reasoning_effort", "reasoning_summary", "verbosity"] {
+            let mut body = json!({"model":"synthetic-model","messages":[]});
+            body[field] = json!({"value":"synthetic-sensitive-value"});
+            let error = Bridge {
+                input: Protocol::Chat,
+                output: Protocol::Responses,
+            }
+            .request(body, "/v1/chat/completions")
+            .expect_err("invalid setting");
+            assert!(!error.to_string().contains("synthetic-sensitive-value"));
+        }
+        let error = Bridge {
+            input: Protocol::Chat,
+            output: Protocol::Anthropic,
+        }
+        .request(
+            json!({"messages":[],"reasoning_effort":"high","verbosity":"high"}),
+            "/v1/chat/completions",
+        )
+        .expect_err("unsupported controls must not disappear");
+        assert!(error.to_string().contains("cannot be represented"));
     }
 
     #[test]

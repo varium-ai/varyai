@@ -361,7 +361,7 @@ mod tests {
                 for (stream, failure) in [(false, false), (true, false), (false, true)] {
                     status.store(if failure { 503 } else { 200 }, Ordering::SeqCst);
                     let schema = json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]});
-                    let body = match protocol {
+                    let mut body = match protocol {
                         "anthropic" => {
                             json!({"model":"fixture","max_tokens":128,"stream":stream,"messages":[{"role":"user","content":"fixture-question"}],"tools":[{"name":"read_file","input_schema":schema}]})
                         }
@@ -372,6 +372,14 @@ mod tests {
                             json!({"model":"fixture","stream":stream,"messages":[{"role":"user","content":"fixture-question"}],"tools":[{"type":"function","function":{"name":"read_file","parameters":schema}}]})
                         }
                     };
+                    if app == "workbuddy" {
+                        body["messages"][0]["agent"] = json!("synthetic-agent");
+                        body["messages"][0]["conversationRequestId"] =
+                            json!("synthetic-conversation");
+                        body["messages"][0]["startsNewUserRequest"] = json!(true);
+                        body["reasoning_effort"] = json!("none");
+                        body["reasoning_summary"] = json!("auto");
+                    }
                     let response = client
                         .post(&url)
                         .header("authorization", "Bearer varyai-local")

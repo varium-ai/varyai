@@ -5,6 +5,7 @@ import {
 } from "./shared/UpstreamProtocolSelect";
 import type { ClaudeApiFormat } from "@/types";
 import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
+import { ProviderConfigDetection } from "./ProviderConfigDetection";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useForm } from "react-hook-form";
@@ -57,6 +58,9 @@ export function WorkBuddyProviderForm({
   const [upstreamFormat, setUpstreamFormat] = useState<ClaudeApiFormat>(
     initialData?.meta?.apiFormat ?? nativeUpstreamFormat(text("protocol")),
   );
+  const [editingCredentials, setEditingCredentials] = useState(false);
+  const [protocolManuallySelected, setProtocolManuallySelected] =
+    useState(false);
   function selectUpstream(format: ClaudeApiFormat) {
     setUpstreamFormat(format);
     if (desktopClient === "qoder" && format !== "gemini_native")
@@ -69,6 +73,8 @@ export function WorkBuddyProviderForm({
       );
   }
   const [modelId, setModelId] = useState(text("id"));
+  const latestModelId = useRef(modelId);
+  latestModelId.current = modelId;
   const [additionalModels, setAdditionalModels] = useState<string[]>(() =>
     Array.isArray(native.models)
       ? native.models
@@ -182,18 +188,26 @@ export function WorkBuddyProviderForm({
     const baseUrl = `${endpoint.origin}${path}`;
     const sequence = ++modelFetchSequence.current;
     setIsFetchingModels(true);
-    setFetchedModels([]);
     try {
-      const models = await fetchModelsForConfig(
-        baseUrl,
-        apiKey.trim(),
-        undefined,
-        undefined,
-        undefined,
-        { apiFormat: upstreamFormat },
-      );
+      const models = fetchedModels.length
+        ? fetchedModels
+        : await fetchModelsForConfig(
+            baseUrl,
+            apiKey.trim(),
+            undefined,
+            undefined,
+            undefined,
+            { apiFormat: upstreamFormat },
+          );
       if (sequence !== modelFetchSequence.current) return;
       setFetchedModels(models);
+      const ids = models.map(({ id }) => id.trim()).filter(Boolean);
+      if (ids.length && !ids.includes(latestModelId.current.trim())) {
+        setModelId(ids[0]);
+        setAdditionalModels((current) =>
+          current.filter((id) => id.trim() !== ids[0]),
+        );
+      }
       if (models.length === 0) {
         toast.info(t("providerForm.fetchModelsEmpty"));
       } else {
@@ -387,6 +401,14 @@ export function WorkBuddyProviderForm({
     <Form {...form}>
       <form
         id="provider-form"
+        onFocusCapture={(event) => {
+          if (["workbuddy-url", "workbuddy-api-key"].includes(event.target.id))
+            setEditingCredentials(true);
+        }}
+        onBlurCapture={(event) => {
+          if (["workbuddy-url", "workbuddy-api-key"].includes(event.target.id))
+            setEditingCredentials(false);
+        }}
         className="space-y-6 glass rounded-xl p-6"
         onSubmit={form.handleSubmit(save)}
       >
@@ -438,7 +460,22 @@ export function WorkBuddyProviderForm({
             </p>
             <UpstreamProtocolSelect
               value={upstreamFormat}
-              onChange={selectUpstream}
+              onChange={(format) => {
+                setProtocolManuallySelected(true);
+                selectUpstream(format);
+              }}
+            />
+            <ProviderConfigDetection
+              baseUrl={url.replace(/\/chat\/completions\/?$/, "")}
+              apiKey={apiKey}
+              model={modelId}
+              apiFormat={upstreamFormat}
+              editingCredentials={editingCredentials}
+              autoSelectFormat={!initialData && !protocolManuallySelected}
+              onManualFormatSelect={() => setProtocolManuallySelected(true)}
+              onApiFormatChange={selectUpstream}
+              catalogModels={fetchedModels}
+              onCatalogModelsChange={setFetchedModels}
             />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">

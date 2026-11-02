@@ -135,7 +135,7 @@ describe("Codex model mapping actions", () => {
     );
   });
 
-  it("fetches candidates without changing mappings or the default model", async () => {
+  it("fetches candidates and fixes a missing default without importing mappings", async () => {
     const { props } = renderForm({ codexModel: "" });
     fireEvent.click(
       screen.getByRole("button", { name: "providerForm.fetchModels" }),
@@ -145,7 +145,7 @@ describe("Codex model mapping actions", () => {
       expect(screen.getByRole("button", { name: "一键设置" })).toBeEnabled(),
     );
     expect(props.onCatalogModelsChange).not.toHaveBeenCalled();
-    expect(props.onModelChange).not.toHaveBeenCalled();
+    expect(props.onModelChange).toHaveBeenCalledWith(catalog[0].id);
     expect(
       screen.queryAllByRole("textbox", { name: "实际请求模型" }),
     ).toHaveLength(0);
@@ -180,6 +180,13 @@ describe("Codex model mapping actions", () => {
       screen.getAllByRole("textbox", { name: "实际请求模型" }),
     ).toHaveLength(15);
     expect(fetchModelsForConfig).toHaveBeenCalledOnce();
+    expect(props.onModelChange).toHaveBeenLastCalledWith(catalog[0].id);
+  });
+
+  it("preserves a default model that the fetched catalog contains", async () => {
+    const { props } = renderForm({ codexModel: catalog[1].id });
+    fireEvent.click(screen.getByRole("button", { name: "一键设置" }));
+    await waitFor(() => expect(props.onCatalogModelsChange).toHaveBeenCalled());
     expect(props.onModelChange).not.toHaveBeenCalled();
   });
 

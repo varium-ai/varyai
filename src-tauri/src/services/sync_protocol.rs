@@ -24,8 +24,8 @@ pub(crate) use super::webdav_sync::archive::{
 // ─── Protocol constants ──────────────────────────────────────
 
 /// Wire-format identifier stored in remote manifests.
-/// Retains historic "webdav" naming for backward compatibility with existing remotes.
-pub(crate) const PROTOCOL_FORMAT: &str = "cc-switch-webdav-sync";
+/// Product identity is separate from other applications' synchronization formats.
+pub(crate) const PROTOCOL_FORMAT: &str = "varyai-sync";
 pub(crate) const PROTOCOL_VERSION: u32 = 2;
 pub(crate) const DB_COMPAT_VERSION: u32 = 6;
 pub(crate) const LEGACY_DB_COMPAT_VERSION: u32 = 5;

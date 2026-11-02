@@ -112,7 +112,7 @@ describe("LocalProxySettings", () => {
         screen.getByText(enabled ? "Enable routing" : "Disable routing"),
       );
 
-      await waitFor(() => expect(setTakeoverForApp).toHaveBeenCalledTimes(11));
+      await waitFor(() => expect(setTakeoverForApp).toHaveBeenCalledTimes(12));
       expect(
         setTakeoverForApp.mock.calls.map(([variables]) => variables),
       ).toEqual([
@@ -120,6 +120,7 @@ describe("LocalProxySettings", () => {
         { appType: "codex", enabled },
         { appType: "gemini", enabled },
         { appType: "grokbuild", enabled },
+        { appType: "claude-desktop", enabled },
         { appType: "workbuddy", enabled },
         { appType: "qoder", enabled },
         { appType: "trae", enabled },
@@ -136,6 +137,7 @@ describe("LocalProxySettings", () => {
               "codex",
               "gemini",
               "grokbuild",
+              "claude-desktop",
               "workbuddy",
               "qoder",
               "trae",
@@ -149,6 +151,7 @@ describe("LocalProxySettings", () => {
               "codex",
               "gemini",
               "grokbuild",
+              "claude-desktop",
               "workbuddy",
               "qoder",
               "trae",
@@ -177,7 +180,7 @@ describe("LocalProxySettings", () => {
     expect(startProxyServer).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText("Confirm routing"));
 
-    await waitFor(() => expect(setTakeoverForApp).toHaveBeenCalledTimes(11));
+    await waitFor(() => expect(setTakeoverForApp).toHaveBeenCalledTimes(12));
     expect(onAutoSave).toHaveBeenCalledWith({ proxyConfirmed: true });
     expect(startProxyServer).toHaveBeenCalledOnce();
   });
@@ -198,7 +201,7 @@ describe("LocalProxySettings", () => {
       />,
     );
     fireEvent.click(screen.getByText("Enable routing"));
-    await waitFor(() => expect(setTakeoverForApp).toHaveBeenCalledTimes(11));
+    await waitFor(() => expect(setTakeoverForApp).toHaveBeenCalledTimes(12));
     expect(screen.getByText("Enable routing")).toBeDisabled();
     expect(screen.getByText("Disable routing")).toBeDisabled();
     await act(async () => finishLastApp());

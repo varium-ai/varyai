@@ -4,7 +4,7 @@ Use synthetic examples when reporting a problem. Logs, provider configuration, c
 
 ## CC Switch rejects a shared database as too new
 
-The compatibility baseline is the official CC Switch release, not upstream `main`. CC Switch v4.0.21 supports shared schema v23. VaryAI must leave that file at v23; its portable monolithic export version and independently versioned `vary-ai.db` are different formats.
+This section concerns historical shared-storage builds. Current VaryAI uses an independent native database pair and keeps its files separate from CC Switch. The historical compatibility baseline was CC Switch v4.0.21 shared schema v23; its portable monolithic export and extension formats are distinct.
 
 An earlier compatibility development build mistakenly added two default-valued `enabled_dsh` columns and advanced the shared file to unreleased v24. Do not delete the file, blindly change `user_version`, or overwrite it with an older backup: that can hide unsupported data or discard newer edits.
 
@@ -19,21 +19,57 @@ python3 -B scripts/recover-shared-v23.py \
 
 Only after validation succeeds, repeat with `--apply`. The tool backs up the current file, verifies the complete reversed schema against the reference, checks that the new columns contain only defaults, and uses an exclusive transaction with integrity checks. It retains current data rather than restoring old rows. A failure stops or rolls back the change; preserve the recovery backup. Rebuild VaryAI with the released-v23 fix before starting it again, or an old development build can repeat the unwanted upgrade. Recovery is not applicable to other future schemas or databases with v24-specific data.
 
+## Independent storage recovery cannot complete
+
+New VaryAI installations create independent empty storage. Configure providers and resources in VaryAI or restore a VaryAI backup. There is no old VaryAI installation-upgrade workflow.
+
+Historical files named `cc-switch.db` or `vary-ai.db` inside the actual default `~/.varyai` directory are retained. They do not require deletion, renaming or a directory change: VaryAI opens its own `varyai.db` / `varyai-ext.db` pair beside them without converting their contents. Actual CC Switch source directories and aliases remain invalid native destinations.
+
+A missing configured native data directory opens recovery: reconnect it, choose another native directory, use the default root or explicitly create empty storage. Device settings and accounts remain under `~/.varyai`. Native pair mismatch requires a matching pair or a portable restore, not an arbitrary extension file. See [storage and recovery](architecture/storage.md).
+
+Configure cloud accounts and the initial sync direction independently. VaryAI uses its own remote namespace and does not transfer old application credentials or remote state.
+
+## A new installation cannot enable client routing
+
+Existing native client configuration remains in its original directory after VaryAI data separation. If a previously working client suddenly appears unconfigured in a development test, check the resolved client directory first. `CC_SWITCH_TEST_HOME` redirects client paths as well as VaryAI data; an empty temporary home will hide the original client files. Use private copies or existing-client fixtures instead of interpreting this as a production migration requirement.
+
+For a genuinely absent client configuration, add or import a provider and apply it on Home, or initialize the client before enabling routing.
+
+Claude, Codex, Gemini and Grok Build show setup guidance when native configuration is missing, without starting the gateway or creating a live backup. Other integrations also require supported models, native product configuration, connection consent or certificate trust. Follow the [per-agent prerequisites](guides/provider-routing.md#routing-prerequisites-on-a-new-installation). Empty synthetic files used in isolated tests are not installed for ordinary users.
+
+## WorkBuddy reports an unsupported cross-protocol field
+
+A `400 Unsupported field in cross-protocol request` from local routing means the request could not be converted before contacting the provider. WorkBuddy sends Chat Completions requests, including local conversation markers and optional reasoning controls. Use a build that handles these markers during conversion and preserves explicit reasoning and verbosity controls for a Responses upstream. An explicit `reasoning_effort: "none"` also disables reasoning when converting to Anthropic or Gemini.
+
+Reload the updated VaryAI backend, leave WorkBuddy routing enabled, and retry the message. Ordinary Chat forwarding and official WorkBuddy traffic retain their native payloads. Unsupported protocol semantics still produce an explicit error rather than silently dropping model settings or tool data.
+
 ## Local proxy port conflicts
 
-The local proxy normally listens on `127.0.0.1:15721`. An existing application instance can cause `address already in use` errors. A second launch can also foreground the existing instance and exit because the application uses a single-instance plugin.
+The local proxy normally listens on `127.0.0.1:15722`. An existing application instance can cause `address already in use` errors. A second launch can also foreground the existing instance and exit because the application uses a single-instance plugin.
 
 On macOS or Linux, identify the listener:
 
 ```bash
-lsof -nP -iTCP:15721 -sTCP:LISTEN
+lsof -nP -iTCP:15722 -sTCP:LISTEN
 ```
 
 Quit Vary AI normally from its tray menu before restarting. Confirm which process owns the port before stopping anything. For automated tests, use temporary configuration directories and dynamic ports instead of interfering with a running application.
 
+## Gemini routing is enabled but no requests reach the gateway
+
+VaryAI writes Gemini routing variables to `~/.gemini/.env`. Gemini CLI 0.66 loads a single environment file: a nearer project `.env` can prevent the global Gemini file from loading, even when the project file contains no Gemini variables. Environment variables inherited from the shell also take precedence. Restart the CLI after changing its routing configuration.
+
+With Gemini API-key authentication selected and the default VaryAI listener running, exit the existing Gemini session and test from the same project with explicit routing variables:
+
+```bash
+GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:15722 GEMINI_API_KEY=PROXY_MANAGED gemini
+```
+
+Use the configured listener address if it differs. `PROXY_MANAGED` is the local takeover placeholder; the gateway obtains the upstream credential from the selected provider. This command applies only to the new process and does not overwrite the project's `.env`. Send a small synthetic prompt and verify that a Gemini request appears in VaryAI. A successful direct gateway probe establishes forwarding, but does not establish that the CLI loaded its routing configuration.
+
 ## Proxy request errors
 
-Inspect the relevant status code and sanitized logs. The historical log directory may still be under `~/.cc-switch/logs/`; use the application's diagnostics to locate the active file rather than assuming a new branding-specific directory.
+Inspect the relevant status code and sanitized logs. Current logs use `~/.varyai/logs/`; historical logs may remain in `~/.cc-switch/logs/`. Use the application's diagnostics to locate the active file.
 
 For a generic Gemini `INVALID_ARGUMENT`, compare the `GeminiRequestShape` entries for the affected clients. These entries record message and function counts, parameter formats, and output-token ranges without model names, prompts, tool names, schemas, or argument values. The summary helps identify request differences; it does not establish which field the upstream rejected.
 
@@ -243,7 +279,7 @@ Gateway key budget exhaustion is a permanent policy rejection until the budget r
 
 For Gemini, save the selected provider again after changing its model, then restart the CLI. Active proxy takeover now refreshes both the model environment and native model selection while retaining the local routing address. Custom models are registered in the dynamic `/model` registry supported by current Gemini CLI versions. A CLI `--model` argument or an inherited `GEMINI_MODEL` can still override the saved default.
 
-In the Gemini provider editor, **Default model** controls the startup selection. The separate **Selectable models** section contains menu entries, with distinct display-name and request-model column headers. **Fetch model list** only loads candidates. **One-click setup** imports all fetched models into the saved model list, skipping duplicate and empty IDs. Existing model metadata and the configured default remain intact; an empty default uses the first imported model. Save the provider and restart Gemini CLI, then open `/model`, select **Manual** and press Enter to see the imported models. The list uses Gemini's native `modelConfigs.modelDefinitions` with dynamic model configuration enabled. Changing the endpoint, API key or protocol clears fetched candidates so a later import cannot reuse another connection's model list.
+In the Gemini provider editor, **Default model** controls the startup selection. The separate **Selectable models** section contains menu entries, with distinct display-name and request-model column headers. **Fetch model list** loads candidates and checks the current default. An empty default or a default absent from the fetched catalog is replaced with its first valid model; an advertised default is preserved. **One-click setup** applies the same check and imports all fetched models into the saved model list, skipping duplicate and empty IDs while preserving existing model metadata. Codex, Grok Build, WorkBuddy and Qoder follow the same default-model rule; Claude Code checks its role defaults, and Claude Desktop checks its model-mapping roles. Save the provider and restart Gemini CLI, then open `/model`, select **Manual** and press Enter to see the imported models. The list uses Gemini's native `modelConfigs.modelDefinitions` with dynamic model configuration enabled. Changing the endpoint or API key clears fetched candidates so a later fill action cannot reuse another connection's model list.
 
 Qwen distinguishes models by their effective API protocol, model ID and endpoint, as described in its [model-provider documentation](https://qwenlm.github.io/qwen-code-docs/en/users/configuration/model-providers/). Chat Completions and Responses can use the same model ID, and another endpoint can expose the same ID. Switching between saved Vary AI suppliers with the same protocol, ID and endpoint replaces the conflicting supplier's entire managed model group and credential environment entry before inserting the target. Both saved suppliers remain available for subsequent switches. Unrelated model groups, manual entries and MCP settings remain intact. Conflicting manual models or externally changed credentials and endpoints still require resolution. Vary AI retains the selected endpoint through takeover and recovery, and keeps model routes stable when the native list is reordered.
 
@@ -258,7 +294,7 @@ Common configuration locations include:
 | Codex       | `~/.codex/config.toml`, `~/.codex/auth.json` |
 | Claude Code | `~/.claude/settings.json`                    |
 
-Local proxy configuration can refer to `http://127.0.0.1:15721` or its `/v1` endpoint. If a client still points at that endpoint after an abnormal exit, review the application's takeover state and recovery options. A normal disable/exit path can restore the saved configuration; inspect the relevant backup before manual recovery. Back up the current files before editing them and preserve unrelated client settings. Do not publish authentication files or entire backups in an issue.
+Local proxy configuration can refer to `http://127.0.0.1:15722` or its `/v1` endpoint. If a client still points at that endpoint after an abnormal exit, review the application's takeover state and recovery options. A normal disable/exit path can restore the saved configuration; inspect the relevant backup before manual recovery. Back up the current files before editing them and preserve unrelated client settings. Do not publish authentication files or entire backups in an issue.
 
 ### Codex Official login asks to sign in again after switching
 

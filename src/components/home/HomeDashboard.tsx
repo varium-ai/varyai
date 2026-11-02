@@ -24,8 +24,7 @@ import { QoderCertificatePanel } from "@/components/QoderCertificatePanel";
 import { DoubaoWorkPanel } from "@/components/DoubaoWorkPanel";
 import { ProviderList } from "@/components/providers/ProviderList";
 import { ManagedAppTabs } from "@/components/home/ManagedAppTabs";
-
-const LOCAL_PROXY_PORT = 15721;
+import { DEFAULT_PROXY_PORT } from "@/types/proxy";
 
 interface HomeDashboardProps {
   activeApp: AppId;
@@ -503,7 +502,7 @@ export function HomeDashboard({
                       })}
                     </h2>
                     <span className="shrink-0 font-mono text-xs text-slate-400 dark:text-muted-foreground">
-                      {t("homeAudit.gatewayPort", { port: LOCAL_PROXY_PORT })}
+                      {t("homeAudit.gatewayPort", { port: DEFAULT_PROXY_PORT })}
                     </span>
                   </div>
                   <div className="relative overflow-hidden rounded-2xl border-2 border-blue-600 bg-white p-5 shadow-sm shadow-blue-500/10 transition-all dark:bg-card sm:p-6">

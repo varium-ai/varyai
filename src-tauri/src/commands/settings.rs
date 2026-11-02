@@ -291,8 +291,7 @@ pub async fn check_app_update_available(app: AppHandle) -> Result<Option<String>
 /// 获取 app_config_dir 覆盖配置 (从 Store)
 #[tauri::command]
 pub async fn get_app_config_dir_override(app: AppHandle) -> Result<Option<String>, String> {
-    Ok(crate::app_store::refresh_app_config_dir_override(&app)
-        .map(|p| p.to_string_lossy().to_string()))
+    Ok(crate::app_store::read_override_from_store(&app).map(|p| p.to_string_lossy().to_string()))
 }
 
 /// 设置 app_config_dir 覆盖配置 (到 Store)

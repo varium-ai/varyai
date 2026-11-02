@@ -1,9 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { APP_DISPLAY_NAME } from "@/config/brand";
 import { useSecurityProtection } from "@/hooks/useSecurityProtection";
-import type { ProxyStatus } from "@/types/proxy";
-
-const DEFAULT_PROXY_PORT = 15721;
+import { DEFAULT_PROXY_PORT, type ProxyStatus } from "@/types/proxy";
 
 type AuditState = "running" | "disabled" | "notConnected" | "unavailable";
 type GatewayState = "running" | "stopped" | "unavailable";

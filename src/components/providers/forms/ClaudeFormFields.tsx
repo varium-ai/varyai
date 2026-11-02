@@ -300,7 +300,7 @@ export function ClaudeFormFields({
     return () => {
       modelCatalogRequest.current += 1;
     };
-  }, [baseUrl, apiKey, isFullUrl, customUserAgent, apiFormat]);
+  }, [baseUrl, apiKey, isFullUrl, customUserAgent]);
 
   const showModelFetchResult = useCallback(
     (count: number) => {
@@ -332,16 +332,22 @@ export function ClaudeFormFields({
 
       const request = ++modelCatalogRequest.current;
       setIsFetchingModels(true);
-      return fetchModelsForConfig(
-        baseUrl,
-        apiKey,
-        isFullUrl,
-        modelsUrl,
-        customUserAgent,
-        {
-          apiFormat:
-            apiFormat === "gemini_native" ? "google-generative-ai" : undefined,
-        },
+      return (
+        fetchedModels.length
+          ? Promise.resolve(fetchedModels)
+          : fetchModelsForConfig(
+              baseUrl,
+              apiKey,
+              isFullUrl,
+              modelsUrl,
+              customUserAgent,
+              {
+                apiFormat:
+                  apiFormat === "gemini_native"
+                    ? "google-generative-ai"
+                    : undefined,
+              },
+            )
       )
         .then((models) => {
           if (request !== modelCatalogRequest.current) return;
@@ -364,6 +370,7 @@ export function ClaudeFormFields({
       isFullUrl,
       customUserAgent,
       apiFormat,
+      fetchedModels,
       showModelFetchResult,
       t,
     ],
@@ -688,6 +695,8 @@ export function ClaudeFormFields({
       supportsOneM: true,
     },
   ];
+  const latestModelSelection = useRef({ claudeModel, modelRoleRows });
+  latestModelSelection.current = { claudeModel, modelRoleRows };
 
   const handleRoleModelChange = (row: ModelRoleRow, value: string) => {
     const oldModelBase = stripClaudeOneMMarker(row.model).trim();
@@ -732,6 +741,25 @@ export function ClaudeFormFields({
         ? isXaiOauthAuthenticated
         : Boolean(baseUrl.trim() && apiKey.trim());
 
+  const syncDefaultModels = (models: ReadonlyArray<{ id: string }>) => {
+    const ids = [...new Set(models.map(({ id }) => id.trim()).filter(Boolean))];
+    if (!ids.length) return;
+    const current = latestModelSelection.current;
+    const available = new Set(ids);
+    if (!available.has(stripClaudeOneMMarker(current.claudeModel).trim()))
+      onModelChange("ANTHROPIC_MODEL", ids[0]);
+    for (const row of current.modelRoleRows) {
+      if (row.role === "subagent" && row.model.trim() === "inherit") continue;
+      if (!available.has(stripClaudeOneMMarker(row.model).trim()))
+        handleRoleModelChange(row, ids[0]);
+    }
+  };
+
+  const handleFetchAndSyncDefaults = async () => {
+    const models = await handleModelFetchClick();
+    if (models) syncDefaultModels(models);
+  };
+
   const handleQuickSet = async () => {
     setImportingModels(true);
     try {
@@ -739,19 +767,22 @@ export function ClaudeFormFields({
         ? availableModels
         : await handleModelFetchClick(true);
       if (!models) return;
-      const options = [...latestModelPickerOptions.current];
-      const known = new Set(options.map((option) => option.model.trim()));
-      for (const { id } of models) {
-        const model = id.trim();
-        if (!model || known.has(model)) continue;
-        known.add(model);
-        options.push({ model, label: model });
-      }
-      if (!models.length) {
+      const ids = [
+        ...new Set(models.map(({ id }) => id.trim()).filter(Boolean)),
+      ];
+      if (!ids.length) {
         toast.info(t("providerForm.fetchModelsEmpty"));
         return;
       }
+      const options = [...latestModelPickerOptions.current];
+      const known = new Set(options.map((option) => option.model.trim()));
+      for (const model of ids) {
+        if (known.has(model)) continue;
+        known.add(model);
+        options.push({ model, label: model });
+      }
       onModelPickerOptionsChange(options);
+      syncDefaultModels(models);
       setAdvancedExpanded(true);
       toast.success(
         t("providerForm.quickSetSuccess", { count: options.length }),
@@ -1030,7 +1061,7 @@ export function ClaudeFormFields({
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => handleModelFetchClick()}
+                    onClick={handleFetchAndSyncDefaults}
                     disabled={modelFetchLoading}
                     className="h-7 gap-1"
                   >
@@ -1269,7 +1300,6 @@ export function ClaudeFormFields({
           model={detectionModel}
           apiFormat={apiFormat}
           anthropicAuthField={apiKeyField}
-          onModelChange={(model) => onModelChange("ANTHROPIC_MODEL", model)}
           onApiFormatChange={
             configurationDetection.onApiFormatChange ?? onApiFormatChange
           }

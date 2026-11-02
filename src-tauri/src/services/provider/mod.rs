@@ -2324,6 +2324,8 @@ requires_openai_auth = true
 
         // Claude Desktop keeps backup state from takeover startup; this sentinel only
         // marks takeover as active so provider updates rewrite the 3P profile.
+        db.set_setting(crate::claude_desktop_config::ROUTING_ENABLED_KEY, "true")
+            .expect("enable Desktop routing");
         db.save_live_backup("claude-desktop", "{}")
             .await
             .expect("seed live backup");

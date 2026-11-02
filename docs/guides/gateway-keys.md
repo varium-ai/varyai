@@ -20,21 +20,21 @@ To permanently remove a key, revoke it first and remove all of its bindings in *
 
 In **Local agents**, choose a key for the agent. Agents sharing a key share its budget. Client credentials and provider settings remain unchanged: the gateway identifies managed requests by their existing route and applies the binding before forwarding. The secret is needed only by external clients, not by this local binding.
 
-Enable the agent's local route below the key panel and restart the client when its integration requires it. **Start local gateway** starts the listener without rewriting every agent's configuration. The panel distinguishes binding from route activation. Direct traffic bypassing VaryAI is outside the policy. Claude Desktop must have an applied provider in model-mapping/proxy mode; starting the shared listener alone does not connect Desktop.
+Enable the agent's local route below the key panel and restart the client when its integration requires it. **Start local gateway** starts the listener without rewriting every agent's configuration. The panel distinguishes binding from route activation. Direct traffic bypassing VaryAI is outside the policy. Claude Desktop needs its own routing switch enabled and a provider with configured models; starting the shared listener alone does not connect Desktop. Disabling Desktop routing also rejects requests from cached Desktop gateway connections while other agents can keep using the listener.
 
-| Agent | Coverage |
-| --- | --- |
-| Claude Code | Routed Messages requests |
-| Claude Desktop | Dedicated Desktop Messages route; existing Desktop authentication remains required |
-| Codex | Routed Chat, Responses and compact requests |
-| Gemini CLI | Routed generateContent and streamGenerateContent requests; model ID comes from the URL |
-| Grok Build | Dedicated Responses and compact routes |
-| Pi | Provider-scoped Chat, Responses, Messages and Gemini routes |
-| WorkBuddy | Routed official/custom Chat requests |
-| Qoder | Routed custom models and the intercepted official model endpoint |
-| Doubao Work, Kimi, Qwen, ZCode | Existing native custom-provider routes |
-| TRAE | Custom-provider routes; official traffic observed only through the audit bridge cannot be blocked |
-| OpenCode, OpenClaw, Hermes | Current provider configuration is direct. No automatic binding; the UI states this explicitly. A manually configured supported external gateway connection can use a key. |
+| Agent                          | Coverage                                                                                                                                                                  |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code                    | Routed Messages requests                                                                                                                                                  |
+| Claude Desktop                 | Dedicated Desktop Messages route; existing Desktop authentication remains required                                                                                        |
+| Codex                          | Routed Chat, Responses and compact requests                                                                                                                               |
+| Gemini CLI                     | Routed generateContent and streamGenerateContent requests; model ID comes from the URL                                                                                    |
+| Grok Build                     | Dedicated Responses and compact routes                                                                                                                                    |
+| Pi                             | Provider-scoped Chat, Responses, Messages and Gemini routes                                                                                                               |
+| WorkBuddy                      | Routed official/custom Chat requests                                                                                                                                      |
+| Qoder                          | Routed custom models and the intercepted official model endpoint                                                                                                          |
+| Doubao Work, Kimi, Qwen, ZCode | Existing native custom-provider routes                                                                                                                                    |
+| TRAE                           | Custom-provider routes; official traffic observed only through the audit bridge cannot be blocked                                                                         |
+| OpenCode, OpenClaw, Hermes     | Current provider configuration is direct. No automatic binding; the UI states this explicitly. A manually configured supported external gateway connection can use a key. |
 
 Budget policies do not turn an observational audit bridge into a forwarding gateway. Non-chat image/search operations on a bound Codex route are refused as `gateway_operation_not_supported` rather than escaping the policy without accounting. Model-list and token-count probes do not consume the generation budget.
 
@@ -42,15 +42,15 @@ Budget policies do not turn an observational audit bridge into a forwarding gate
 
 The **Connect** tab generates a request example using the chosen key's model policy and selected client protocol. Replace `YOUR_GATEWAY_KEY` with the saved secret and `MODEL_ID` with a permitted request model. It does not change a provider or agent configuration.
 
-The default local origin is `http://127.0.0.1:15721` (use the configured port). Supported POST endpoints:
+The default local origin is `http://127.0.0.1:15722` (use the configured port). Supported POST endpoints:
 
-| Endpoint | Provider namespace |
-| --- | --- |
-| `/gateway/v1/messages` | Claude |
-| `/gateway/v1/chat/completions` | Codex |
-| `/gateway/v1/responses` | Codex |
-| `/gateway/v1beta/models/<model>:generateContent` | Gemini |
-| `/gateway/v1beta/models/<model>:streamGenerateContent?alt=sse` | Gemini |
+| Endpoint                                                       | Provider namespace |
+| -------------------------------------------------------------- | ------------------ |
+| `/gateway/v1/messages`                                         | Claude             |
+| `/gateway/v1/chat/completions`                                 | Codex              |
+| `/gateway/v1/responses`                                        | Codex              |
+| `/gateway/v1beta/models/<model>:generateContent`               | Gemini             |
+| `/gateway/v1beta/models/<model>:streamGenerateContent?alt=sse` | Gemini             |
 
 Use `Authorization: Bearer <key>`, `x-api-key: <key>` or `x-goog-api-key: <key>`. Gateway authentication headers are removed before existing provider routing supplies upstream credentials. No supplier credential is needed in the script. This namespace always requires a gateway key. Existing local client routes retain their native authentication behavior and are limited only when bound to a policy. The listener stays loopback-only.
 

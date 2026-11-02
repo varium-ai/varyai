@@ -43,7 +43,6 @@ const success = <T>(payload: T) => HttpResponse.json(payload as any);
 export const handlers = [
   http.post(`${TAURI_ENDPOINT}/list_connection_presets`, () => success([])),
   http.get(MODELS_DEV_API_URL, () => success({})),
-  http.post(`${TAURI_ENDPOINT}/get_migration_result`, () => success(false)),
   http.post(`${TAURI_ENDPOINT}/get_skills_migration_result`, () =>
     success(null),
   ),
@@ -280,6 +279,9 @@ export const handlers = [
     },
   ),
 
+  http.post(`${TAURI_ENDPOINT}/get_default_app_data_dir`, () =>
+    HttpResponse.json("/home/mock/.varyai"),
+  ),
   http.post(`${TAURI_ENDPOINT}/get_app_config_dir_override`, () =>
     success(getAppConfigDirOverride()),
   ),

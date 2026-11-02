@@ -59,6 +59,8 @@ export function ConnectionPresetPicker({
   > | null>(null);
   const [testModel, setTestModel] = useState("");
   const [editingCredentials, setEditingCredentials] = useState(false);
+  const [protocolManuallySelected, setProtocolManuallySelected] =
+    useState(false);
   const [draft, setDraft] = useState<ConnectionPreset>({
     id: "",
     name: "",
@@ -85,6 +87,7 @@ export function ConnectionPresetPicker({
   }, []);
 
   const startNew = (fromCurrent = false) => {
+    setProtocolManuallySelected(false);
     setDraft({
       id: crypto.randomUUID(),
       name: fromCurrent ? (current?.name ?? "") : "",
@@ -426,6 +429,7 @@ export function ConnectionPresetPicker({
                   value={draft.apiFormat ?? ""}
                   disabled={pending}
                   onChange={(event) => {
+                    setProtocolManuallySelected(true);
                     const { apiFormat: _previous, ...rest } = draft;
                     setDraft(
                       event.target.value
@@ -470,8 +474,12 @@ export function ConnectionPresetPicker({
                   model={testModel}
                   apiFormat={draft.apiFormat}
                   editingCredentials={editingCredentials}
-                  autoSelectFormat={false}
-                  onModelChange={setTestModel}
+                  autoSelectFormat={
+                    !presets.some((preset) => preset.id === draft.id) &&
+                    !protocolManuallySelected
+                  }
+                  onManualFormatSelect={() => setProtocolManuallySelected(true)}
+                  onProbeModelChange={setTestModel}
                   onApiFormatChange={(apiFormat) =>
                     setDraft((previous) => ({ ...previous, apiFormat }))
                   }
