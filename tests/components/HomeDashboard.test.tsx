@@ -35,7 +35,7 @@ vi.mock("@/hooks/useSecurityProtection", () => ({
     waiting: protection.waiting,
     settings: { enabled: protection.enabled },
     isUpdating: protection.busy,
-    supported: isRoutingAppId(app) || app === "claude-desktop",
+    supported: isRoutingAppId(app),
     setAppEnabled: protection.setAppEnabled,
     setEnabled: vi.fn(),
   }),
@@ -172,7 +172,7 @@ describe("HomeDashboard current provider", () => {
       ).toBeInTheDocument();
     },
   );
-  it.each([...TAKEOVER_APP_IDS, "claude-desktop", "pi"] as const)(
+  it.each([...TAKEOVER_APP_IDS, "pi"] as const)(
     "enables %s protection when its route is already connected",
     (app) => {
       protection.connected = true;
@@ -194,11 +194,12 @@ describe("HomeDashboard current provider", () => {
       screen.getByRole("button", { name: "启用本地路由" }),
     ).toBeInTheDocument();
   });
-  it("offers Desktop routing configuration when its route is disconnected", () => {
+  it("enables Desktop routing from the same home control as other agents", () => {
     renderDashboard({ activeApp: "claude-desktop" });
-    expect(
-      screen.getByRole("button", { name: zh.homeAudit.configureRouting }),
-    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: zh.homeAudit.enableRouting }),
+    );
+    expect(protection.setAppEnabled).toHaveBeenCalledWith(true);
   });
   it("explains TRAE IDE and Agent coverage and its managed launch requirement", () => {
     renderDashboard({ activeApp: "trae" });
@@ -224,7 +225,7 @@ describe("HomeDashboard current provider", () => {
       screen.queryByRole("note", { name: "TRAE 防护说明" }),
     ).not.toBeInTheDocument();
   });
-  it.each(["claude-desktop", "opencode", "openclaw", "hermes", "pi"] as const)(
+  it.each(["opencode", "openclaw", "hermes", "pi"] as const)(
     "opens routing settings from the %s home row",
     (app) => {
       protection.enabled = true;
@@ -285,6 +286,11 @@ describe("HomeDashboard current provider", () => {
     expect(
       screen.getByText(zh.globalStatus.auditStates.running),
     ).toBeInTheDocument();
+  });
+
+  it("shows the independent VaryAI gateway port before status is available", () => {
+    render(<GlobalStatusBar activeApp="claude" isProxyRunning={false} />);
+    expect(screen.getByText(/127\.0\.0\.1:15722/)).toBeInTheDocument();
   });
   it.each(APP_IDS)(
     "shows %s as unrouted in the footer even when detection is off",

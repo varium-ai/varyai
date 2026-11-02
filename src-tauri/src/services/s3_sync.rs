@@ -207,18 +207,18 @@ async fn download_and_verify(
 
 /// Build the S3 object key for a given artifact.
 ///
-/// Format: `{remote_root}/v{PROTOCOL_VERSION}/db-v{DB_COMPAT_VERSION}/{profile}/{artifact}`
-/// Example: `cc-switch-sync/v2/db-v6/default/manifest.json`
+/// Format: `{remote_root}/varyai/v{PROTOCOL_VERSION}/db-v{DB_COMPAT_VERSION}/{profile}/{artifact}`
+/// Example: `cc-switch-sync/varyai/v2/db-v6/default/manifest.json`
 fn s3_key(settings: &S3SyncSettings, artifact: &str) -> String {
     format!(
-        "{}/v{}/db-v{}/{}/{}",
+        "{}/varyai/v{}/db-v{}/{}/{}",
         settings.remote_root, PROTOCOL_VERSION, DB_COMPAT_VERSION, settings.profile, artifact
     )
 }
 
 fn s3_dir_display(settings: &S3SyncSettings) -> String {
     format!(
-        "{}/v{}/db-v{}/{}",
+        "{}/varyai/v{}/db-v{}/{}",
         settings.remote_root, PROTOCOL_VERSION, DB_COMPAT_VERSION, settings.profile
     )
 }
@@ -251,7 +251,7 @@ mod tests {
     fn s3_key_uses_v2_and_correct_format() {
         let settings = test_settings();
         let key = s3_key(&settings, "manifest.json");
-        assert_eq!(key, "cc-switch-sync/v2/db-v6/default/manifest.json");
+        assert_eq!(key, "cc-switch-sync/varyai/v2/db-v6/default/manifest.json");
     }
 
     #[test]
@@ -261,21 +261,25 @@ mod tests {
             profile: "work".to_string(),
             ..S3SyncSettings::default()
         };
-        assert_eq!(s3_key(&settings, "db.sql"), "my-root/v2/db-v6/work/db.sql");
+        assert_eq!(
+            s3_key(&settings, "db.sql"),
+            "my-root/varyai/v2/db-v6/work/db.sql"
+        );
     }
 
     #[test]
     fn s3_key_matches_expected_pattern() {
         let settings = test_settings();
         let key = s3_key(&settings, "skills.zip");
-        // Should follow {remote_root}/v{version}/db-v{db}/{profile}/{artifact}
-        let parts: Vec<&str> = key.splitn(5, '/').collect();
-        assert_eq!(parts.len(), 5);
+        // The product segment is mandatory even with a legacy custom root.
+        let parts: Vec<&str> = key.splitn(6, '/').collect();
+        assert_eq!(parts.len(), 6);
         assert_eq!(parts[0], "cc-switch-sync");
-        assert_eq!(parts[1], "v2");
-        assert_eq!(parts[2], "db-v6");
-        assert_eq!(parts[3], "default");
-        assert_eq!(parts[4], "skills.zip");
+        assert_eq!(parts[1], "varyai");
+        assert_eq!(parts[2], "v2");
+        assert_eq!(parts[3], "db-v6");
+        assert_eq!(parts[4], "default");
+        assert_eq!(parts[5], "skills.zip");
     }
 
     #[test]

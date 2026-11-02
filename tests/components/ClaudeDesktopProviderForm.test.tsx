@@ -1,4 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { ComponentProps } from "react";
@@ -6,6 +13,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeDesktopProviderForm } from "@/components/providers/forms/ClaudeDesktopProviderForm";
 import { createTestQueryClient } from "../utils/testQueryClient";
 import { fetchModelsForConfig } from "@/lib/api/model-fetch";
+import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
+import { providersApi } from "@/lib/api/providers";
+
+vi.mock("@/lib/api/provider-protocol-detection", () => ({
+  detectProviderProtocols: vi.fn().mockResolvedValue([]),
+}));
 
 vi.mock("@/lib/api/model-fetch", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api/model-fetch")>()),
@@ -68,7 +81,7 @@ vi.mock("@/components/providers/forms/XaiOAuthSection", () => ({
 
 vi.mock("@/lib/api/providers", () => ({
   providersApi: {
-    getClaudeDesktopDefaultRoutes: () => Promise.resolve([]),
+    getClaudeDesktopDefaultRoutes: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -118,6 +131,133 @@ describe("ClaudeDesktopProviderForm", () => {
 
   beforeEach(() => {
     authState.codexReauthRequired = false;
+    vi.mocked(fetchModelsForConfig).mockResolvedValue([]);
+    vi.mocked(detectProviderProtocols).mockReset().mockResolvedValue([]);
+    vi.mocked(providersApi.getClaudeDesktopDefaultRoutes).mockResolvedValue([]);
+  });
+
+  it("keeps automatic protocol selection enabled after switching model mapping", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    vi.mocked(fetchModelsForConfig).mockResolvedValue([
+      { id: "synthetic-glm", ownedBy: null },
+    ]);
+    vi.mocked(detectProviderProtocols).mockResolvedValue([
+      {
+        format: "openai_chat",
+        text: { status: "verified" },
+        stream: { status: "verified" },
+      },
+      {
+        format: "anthropic",
+        text: { status: "verified" },
+        stream: { status: "verified" },
+      },
+    ]);
+    const view = renderForm(undefined);
+    fireEvent.change(view.container.querySelector("#baseUrl")!, {
+      target: { value: "https://fixture.example/v1" },
+    });
+    fireEvent.change(view.container.querySelector("#apiKey")!, {
+      target: { value: "synthetic-key" },
+    });
+    await waitFor(
+      () => {
+        expect(detectProviderProtocols).toHaveBeenCalledWith(
+          expect.objectContaining({ model: "synthetic-glm" }),
+        );
+        expect(
+          screen
+            .getAllByRole("combobox")
+            .some((element) =>
+              element.textContent?.includes("OpenAI Chat Completions"),
+            ),
+        ).toBe(true);
+      },
+      { timeout: 3500 },
+    );
+  });
+
+  it("keeps the chosen detection model without filling the saved model mappings", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const user = userEvent.setup();
+    vi.mocked(providersApi.getClaudeDesktopDefaultRoutes).mockResolvedValue([
+      {
+        routeId: "claude-sonnet-5",
+        envKey: "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        supports1m: false,
+      },
+      {
+        routeId: "claude-opus-5",
+        envKey: "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        supports1m: false,
+      },
+    ]);
+    vi.mocked(fetchModelsForConfig).mockResolvedValue([
+      { id: "qwen-unavailable", ownedBy: null },
+      { id: "glm-working", ownedBy: null },
+    ]);
+    vi.mocked(detectProviderProtocols).mockImplementation(async ({ model }) =>
+      model === "glm-working"
+        ? [
+            {
+              format: "openai_chat",
+              text: { status: "verified" },
+              stream: { status: "verified" },
+            },
+          ]
+        : [],
+    );
+    const view = renderForm(undefined);
+    fireEvent.change(view.container.querySelector("#baseUrl")!, {
+      target: { value: "https://fixture.example/v1" },
+    });
+    fireEvent.change(view.container.querySelector("#apiKey")!, {
+      target: { value: "synthetic-key" },
+    });
+    await waitFor(
+      () =>
+        expect(detectProviderProtocols).toHaveBeenCalledWith(
+          expect.objectContaining({ model: "qwen-unavailable" }),
+        ),
+      { timeout: 3500 },
+    );
+    const detection = view.container.querySelector("section")!;
+    await user.click(
+      within(detection).getByRole("button", { name: "Select detection model" }),
+    );
+    await user.click(
+      await screen.findByRole("option", { name: "glm-working" }),
+    );
+    await waitFor(
+      () => {
+        expect(detectProviderProtocols).toHaveBeenCalledWith(
+          expect.objectContaining({ model: "glm-working" }),
+        );
+        expect(
+          screen.queryByRole("combobox", { name: "接入方式" }),
+        ).not.toBeInTheDocument();
+      },
+      { timeout: 3500 },
+    );
+    expect(
+      screen.getAllByRole("textbox", { name: "实际请求模型" })[0],
+    ).toHaveValue("");
+    expect(
+      screen.getAllByRole("textbox", { name: "菜单显示名" })[0],
+    ).toHaveValue("");
+    expect(
+      screen.getAllByRole("textbox", { name: "菜单显示名" })[1],
+    ).toHaveValue("");
+    fireEvent.click(
+      within(detection).getByRole("button", {
+        name: "providerDetection.check",
+      }),
+    );
+    await waitFor(() =>
+      expect(detectProviderProtocols).toHaveBeenLastCalledWith(
+        expect.objectContaining({ model: "glm-working" }),
+      ),
+    );
   });
 
   it.each(["github_copilot", "codex_oauth", "xai_oauth"])(
@@ -141,22 +281,18 @@ describe("ClaudeDesktopProviderForm", () => {
         },
       });
 
-      const modelModePicker = screen.getByRole("combobox", {
-        name: "接入方式",
-      });
-      expect(modelModePicker).toHaveTextContent("模型映射");
-      expect(modelModePicker).toBeDisabled();
+      expect(
+        screen.queryByRole("combobox", { name: "接入方式" }),
+      ).not.toBeInTheDocument();
     },
   );
 
-  it("新建自定义供应商默认使用直连并显示模型列表", () => {
+  it("uses one model editor and leaves routing to the external controls", () => {
     renderForm(undefined);
-
     expect(
-      screen.getByRole("combobox", { name: "接入方式" }),
-    ).toHaveTextContent("直连");
-    expect(screen.getByText("模型列表")).toBeInTheDocument();
-    expect(screen.queryByText("模型角色")).not.toBeInTheDocument();
+      screen.queryByRole("combobox", { name: "接入方式" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("模型角色")).toBeInTheDocument();
   });
 
   it("已添加的第三方直连供应商仍可编辑模型列表", async () => {
@@ -198,19 +334,18 @@ describe("ClaudeDesktopProviderForm", () => {
     ).toMatchObject({
       "claude-opus-5": { model: "claude-opus-5" },
       "claude-haiku-4-5": { model: "claude-haiku-4-5" },
-      "claude-sonnet-5-custom": { model: "claude-sonnet-5-custom" },
+      "claude-sonnet-5": { model: "claude-sonnet-5-custom" },
     });
     expect(
       onSubmit.mock.calls[0][0].meta.claudeDesktopModelRoutes,
-    ).not.toHaveProperty("claude-sonnet-5");
+    ).not.toHaveProperty("claude-sonnet-5-custom");
   });
 
-  it("直连与模型映射分别保留自己的模型列表", async () => {
+  it("preserves saved model mappings in the unified editor", async () => {
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
       value: vi.fn(),
     });
-    const user = userEvent.setup();
     renderForm({
       name: "Proxy Provider",
       settingsConfig: {
@@ -230,22 +365,9 @@ describe("ClaudeDesktopProviderForm", () => {
     });
 
     expect(screen.getByDisplayValue("upstream-sonnet")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("combobox", { name: "接入方式" }));
-    await user.click(await screen.findByRole("option", { name: "直连" }));
-
-    expect(screen.getByText("模型列表")).toBeInTheDocument();
     expect(
-      screen.queryByPlaceholderText("claude-sonnet-4-6"),
+      screen.queryByRole("combobox", { name: "接入方式" }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.queryByDisplayValue("claude-sonnet-5"),
-    ).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("combobox", { name: "接入方式" }));
-    await user.click(await screen.findByRole("option", { name: "模型映射" }));
-
-    expect(screen.getByDisplayValue("upstream-sonnet")).toBeInTheDocument();
   });
 
   it("编辑模型映射的菜单显示名时保持输入框焦点", () => {
@@ -267,7 +389,6 @@ describe("ClaudeDesktopProviderForm", () => {
       },
     });
 
-    // 固定四档（Sonnet / Opus / Fable / Haiku）下有四个菜单显示名输入，取 Sonnet（首个）。
     const input = screen.getAllByPlaceholderText(
       "DeepSeek V4 Pro",
     )[0] as HTMLInputElement;
@@ -301,21 +422,21 @@ describe("ClaudeDesktopProviderForm", () => {
       },
     });
 
-    const input = screen.getByPlaceholderText(
-      "claude-sonnet-4-6",
-    ) as HTMLInputElement;
+    const input = screen.getByRole("textbox", {
+      name: "实际请求模型",
+    }) as HTMLInputElement;
     input.focus();
 
     fireEvent.change(input, { target: { value: "claude-12345" } });
 
-    const currentInput = screen.getByPlaceholderText(
-      "claude-sonnet-4-6",
-    ) as HTMLInputElement;
+    const currentInput = screen.getByRole("textbox", {
+      name: "实际请求模型",
+    }) as HTMLInputElement;
     expect(currentInput).toHaveValue("claude-12345");
     expect(document.activeElement).toBe(currentInput);
   });
 
-  it("代理模式始终渲染 Sonnet / Opus / Fable / Haiku 四档（即使只配了一档）", () => {
+  it("only renders the saved proxy mappings without adding empty tiers", () => {
     renderForm({
       name: "Proxy Provider",
       settingsConfig: {
@@ -332,18 +453,292 @@ describe("ClaudeDesktopProviderForm", () => {
       },
     });
 
-    // 固定四档：每档各一个「菜单显示名」输入框，无论初始只配了几档。
-    // Haiku 档的占位示例是 "DeepSeek V4 Flash"、其余三档是 "DeepSeek V4 Pro"
-    // （见组件的 role-consistent 占位逻辑），故用正则同时匹配两种占位、数满四档。
     expect(
       screen.getAllByPlaceholderText(/DeepSeek V4 (Pro|Flash)/),
-    ).toHaveLength(4);
+    ).toHaveLength(1);
   });
 
+  it("preserves seven mappings and repeated roles through mode changes, saving and reopening", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const mappings = Object.fromEntries(
+      [
+        "claude-sonnet-5",
+        "claude-opus-5",
+        "claude-fable-5",
+        "claude-haiku-4-5",
+        "claude-sonnet-5-r2",
+        "claude-sonnet-4-6",
+        "claude-opus-5-r2",
+      ].map((route, index) => [
+        route,
+        {
+          model: `model-${index}`,
+          labelOverride: `GLM ${index}`,
+          supports1m: true,
+        },
+      ]),
+    );
+    const initialData = {
+      name: "Seven models",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: "https://fixture.example/v1",
+          ANTHROPIC_AUTH_TOKEN: "synthetic-key",
+        },
+      },
+      meta: {
+        claudeDesktopMode: "proxy" as const,
+        claudeDesktopModelRoutes: mappings,
+      },
+    };
+    const view = renderForm(initialData);
+    expect(
+      screen.getAllByRole("textbox", { name: "实际请求模型" }),
+    ).toHaveLength(7);
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(view.onSubmit).toHaveBeenCalledOnce());
+    const saved = view.onSubmit.mock.calls[0][0];
+    expect(saved.meta.claudeDesktopModelRoutes).toEqual(mappings);
+    view.unmount();
+    renderForm({ ...initialData, meta: saved.meta });
+    expect(
+      screen.getAllByRole("textbox", { name: "实际请求模型" }),
+    ).toHaveLength(7);
+    expect(screen.getByDisplayValue("GLM 6")).toBeInTheDocument();
+  });
+
+  it("adds more than four mappings, changes roles without collisions and deletes one mapping", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const user = userEvent.setup();
+    const view = renderForm({
+      name: "Multiple models",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: "https://fixture.example/v1",
+          ANTHROPIC_AUTH_TOKEN: "synthetic-key",
+        },
+      },
+      meta: { claudeDesktopMode: "proxy", claudeDesktopModelRoutes: {} },
+    });
+    for (let index = 0; index < 6; index += 1) {
+      fireEvent.click(screen.getByRole("button", { name: "添加模型" }));
+      fireEvent.change(
+        screen.getAllByRole("textbox", { name: "实际请求模型" })[index],
+        {
+          target: { value: `upstream-${index}` },
+        },
+      );
+    }
+    await user.click(screen.getAllByRole("combobox", { name: "模型角色" })[5]);
+    await user.click(await screen.findByRole("option", { name: "Opus" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[1]);
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(view.onSubmit).toHaveBeenCalledOnce());
+    const mappings = view.onSubmit.mock.calls[0][0].meta
+      .claudeDesktopModelRoutes as Record<string, { model: string }>;
+    expect(Object.keys(mappings)).toHaveLength(5);
+    expect(mappings["claude-opus-5-r2"].model).toBe("upstream-5");
+    expect(Object.values(mappings).map((row) => row.model)).toEqual([
+      "upstream-0",
+      "upstream-2",
+      "upstream-3",
+      "upstream-4",
+      "upstream-5",
+    ]);
+  });
+
+  describe("importing all models", () => {
+    const initialData = {
+      name: "Import fixture",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: "https://fixture.example/v1",
+          ANTHROPIC_AUTH_TOKEN: "synthetic-key",
+        },
+      },
+      meta: {
+        claudeDesktopMode: "proxy" as const,
+        claudeDesktopModelRoutes: {
+          "claude-sonnet-5": {
+            model: "existing-model",
+            labelOverride: "Custom label",
+            supports1m: true,
+          },
+          "claude-haiku-4-5": { model: "", supports1m: true },
+        },
+      },
+    };
+    const catalog = Array.from({ length: 7 }, (_, index) => ({
+      id: `catalog-model-${index}`,
+      ownedBy: null,
+    }));
+
+    it("fetches and imports the full catalog while preserving existing mappings and skipping duplicates", async () => {
+      vi.mocked(fetchModelsForConfig).mockResolvedValue([
+        ...catalog,
+        { id: " catalog-model-0 ", ownedBy: null },
+        { id: " ", ownedBy: null },
+      ]);
+      const view = renderForm(initialData);
+      fireEvent.click(screen.getByRole("button", { name: "一键导入所有模型" }));
+      await waitFor(() =>
+        expect(
+          screen.getAllByRole("textbox", { name: "实际请求模型" }),
+        ).toHaveLength(8),
+      );
+      expect(screen.getByDisplayValue("Custom label")).toBeInTheDocument();
+      vi.mocked(fetchModelsForConfig).mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "一键导入所有模型" }));
+      expect(fetchModelsForConfig).not.toHaveBeenCalled();
+      expect(
+        screen.getAllByRole("textbox", { name: "实际请求模型" }),
+      ).toHaveLength(8);
+      fireEvent.click(screen.getByRole("button", { name: "保存" }));
+      await waitFor(() => expect(view.onSubmit).toHaveBeenCalledOnce());
+      const mappings = view.onSubmit.mock.calls[0][0].meta
+        .claudeDesktopModelRoutes as Record<
+        string,
+        { model: string; labelOverride: string; supports1m?: boolean }
+      >;
+      expect(
+        Object.values(mappings)
+          .map((row) => row.model)
+          .sort(),
+      ).toEqual([...catalog.map(({ id }) => id), "existing-model"].sort());
+      expect(mappings["claude-sonnet-5"]).toEqual(
+        initialData.meta.claudeDesktopModelRoutes["claude-sonnet-5"],
+      );
+      expect(mappings["claude-haiku-4-5"]).toMatchObject({
+        model: "catalog-model-0",
+        labelOverride: "catalog-model-0",
+      });
+      expect(mappings["claude-haiku-4-5"].supports1m).toBeUndefined();
+      expect(
+        Object.keys(mappings).every((route) =>
+          /^claude-(sonnet|opus|fable|haiku)-/.test(route),
+        ),
+      ).toBe(true);
+    });
+
+    it("reuses a fetched catalog instead of requesting it again", async () => {
+      vi.mocked(fetchModelsForConfig).mockResolvedValue(catalog);
+      renderForm(initialData);
+      fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "获取模型" })).toBeEnabled(),
+      );
+      vi.mocked(fetchModelsForConfig).mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "一键导入所有模型" }));
+      await waitFor(() =>
+        expect(
+          screen.getAllByRole("textbox", { name: "实际请求模型" }),
+        ).toHaveLength(8),
+      );
+      expect(fetchModelsForConfig).not.toHaveBeenCalled();
+    });
+
+    it("preserves mappings after a failed fetch and allows retrying the import", async () => {
+      vi.mocked(fetchModelsForConfig).mockRejectedValueOnce(
+        new Error("synthetic fetch failure"),
+      );
+      renderForm(initialData);
+      fireEvent.click(screen.getByRole("button", { name: "一键导入所有模型" }));
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "一键导入所有模型" }),
+        ).toBeEnabled(),
+      );
+      expect(screen.getByDisplayValue("existing-model")).toBeInTheDocument();
+      expect(screen.getByDisplayValue("Custom label")).toBeInTheDocument();
+      expect(
+        screen.getAllByRole("textbox", { name: "实际请求模型" }),
+      ).toHaveLength(2);
+      vi.mocked(fetchModelsForConfig).mockResolvedValue(catalog);
+      fireEvent.click(screen.getByRole("button", { name: "一键导入所有模型" }));
+      await waitFor(() =>
+        expect(
+          screen.getAllByRole("textbox", { name: "实际请求模型" }),
+        ).toHaveLength(8),
+      );
+    });
+
+    it("discards an import response after the endpoint changes", async () => {
+      let resolve!: (models: typeof catalog) => void;
+      vi.mocked(fetchModelsForConfig).mockReturnValueOnce(
+        new Promise((done) => {
+          resolve = done;
+        }),
+      );
+      const view = renderForm(initialData);
+      fireEvent.click(screen.getByRole("button", { name: "一键导入所有模型" }));
+      fireEvent.change(view.container.querySelector("#baseUrl")!, {
+        target: { value: "https://other.example/v1" },
+      });
+      await act(async () => {
+        resolve(catalog);
+      });
+      expect(
+        screen.getAllByRole("textbox", { name: "实际请求模型" }),
+      ).toHaveLength(2);
+      expect(
+        screen.queryByDisplayValue("catalog-model-0"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByDisplayValue("Custom label")).toBeInTheDocument();
+    });
+  });
+
+  it.each(["mapping", "detection"])(
+    "applies only the mapping dropdown to the saved model and display name (%s)",
+    async (picker) => {
+      Element.prototype.scrollIntoView = vi.fn();
+      const user = userEvent.setup();
+      vi.mocked(fetchModelsForConfig).mockResolvedValue([
+        { id: "old-model", ownedBy: null },
+        { id: "new-model", ownedBy: null },
+      ]);
+      const view = renderForm({
+        name: "Dropdown fixture",
+        settingsConfig: {
+          env: {
+            ANTHROPIC_BASE_URL: "https://fixture.example/v1",
+            ANTHROPIC_AUTH_TOKEN: "synthetic-key",
+          },
+        },
+        meta: {
+          claudeDesktopMode: "proxy",
+          claudeDesktopModelRoutes: {
+            "claude-sonnet-5": {
+              model: "old-model",
+              labelOverride: "Old label",
+            },
+          },
+        },
+      });
+      let scope: HTMLElement;
+      if (picker === "mapping") {
+        fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
+        scope = screen.getByDisplayValue("Old label").parentElement!;
+      } else {
+        scope = view.container.querySelector("section")!;
+      }
+      const trigger = await within(scope).findByRole("button", {
+        name: picker === "mapping" ? "Select model" : "Select detection model",
+      });
+      await user.click(trigger);
+      await user.click(
+        await screen.findByRole("option", { name: "new-model" }),
+      );
+      expect(screen.getByRole("textbox", { name: "菜单显示名" })).toHaveValue(
+        picker === "mapping" ? "new-model" : "Old label",
+      );
+      expect(screen.getByRole("textbox", { name: "实际请求模型" })).toHaveValue(
+        picker === "mapping" ? "new-model" : "old-model",
+      );
+    },
+  );
+
   it("代理模式初始无路由且默认路由未就绪时不渲染空四档", () => {
-    // mock 的 getClaudeDesktopDefaultRoutes 返回 []，模拟默认路由尚未就绪。
-    // 修复前：normalizeProxyRows([]) 会渲染空行并把 routes.length 撑起来，
-    // 永久挡住 seed effect 的默认路由回填。修复后应保持空、等待 seed。
+    // The default-route query is still empty, so leave the list ready for seeding.
     renderForm({
       name: "Proxy Provider",
       settingsConfig: {
@@ -422,11 +817,11 @@ describe("ClaudeDesktopProviderForm", () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     const routes = onSubmit.mock.calls[0][0].meta.claudeDesktopModelRoutes;
-    expect(routes["claude-sonnet-5"]).toMatchObject({
+    expect(routes["claude-sonnet-4-6"]).toMatchObject({
       model: "deepseek-v4-pro",
       supports1m: true,
     });
-    expect(Object.keys(routes)).toEqual(["claude-sonnet-5"]);
+    expect(Object.keys(routes)).toEqual(["claude-sonnet-4-6"]);
   });
 
   it("keeps three menu mappings after clearing the fourth model", async () => {
@@ -497,7 +892,7 @@ describe("ClaudeDesktopProviderForm", () => {
     const submitted = onSubmit.mock.calls[0][0];
     expect(submitted.meta.claudeDesktopModelRoutes).toMatchObject({
       "claude-sonnet-5": {
-        model: "claude-sonnet-5",
+        model: "claude-old",
       },
     });
   });

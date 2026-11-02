@@ -15,6 +15,7 @@ import { FullScreenPanel } from "@/components/common/FullScreenPanel";
 import { ConnectionPresetPicker } from "@/components/providers/forms/ConnectionPresetPicker";
 import { connectionPresetsApi } from "@/lib/api/connection-presets";
 import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
+import { fetchModelsForConfig } from "@/lib/api/model-fetch";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -37,6 +38,53 @@ const fixture = {
 };
 
 describe("reusable connection presets", () => {
+  it("automatically detects and saves a new preset without copying its test model", async () => {
+    vi.mocked(fetchModelsForConfig).mockResolvedValueOnce([
+      { id: "synthetic-model", ownedBy: null },
+    ]);
+    vi.mocked(detectProviderProtocols).mockResolvedValueOnce([
+      {
+        format: "openai_chat",
+        text: { status: "verified" },
+        stream: { status: "verified" },
+      },
+    ]);
+    const apply = vi.fn();
+    render(<ConnectionPresetPicker onApply={apply} current={fixture} />);
+    await screen.findByRole("option", { name: fixture.name });
+    fireEvent.click(
+      screen.getByRole("button", { name: "connectionPresets.manage" }),
+    );
+    fireEvent.change(screen.getByLabelText("connectionPresets.name"), {
+      target: { value: "New fixture" },
+    });
+    await waitFor(
+      () =>
+        expect(screen.getByLabelText("providerForm.apiFormat")).toHaveValue(
+          "openai_chat",
+        ),
+      { timeout: 3500 },
+    );
+    expect(detectProviderProtocols).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "synthetic-model" }),
+    );
+    expect(screen.getByLabelText("connectionPresets.testModel")).toHaveValue(
+      "",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "connectionPresets.save" }),
+    );
+    await waitFor(() =>
+      expect(connectionPresetsApi.save).toHaveBeenCalledWith({
+        ...fixture,
+        id: expect.any(String),
+        name: "New fixture",
+        apiFormat: "openai_chat",
+      }),
+    );
+    expect(apply).not.toHaveBeenCalled();
+  });
+
   it("rejects duplicate preset names before saving and keeps the draft", async () => {
     render(
       <ConnectionPresetPicker
@@ -158,7 +206,7 @@ describe("reusable connection presets", () => {
     );
   });
 
-  it("detects only on request and saves the chosen result without changing the agent model", async () => {
+  it("selects the verified protocol on request and saves it without changing the agent model", async () => {
     vi.mocked(detectProviderProtocols).mockResolvedValue([
       {
         format: "openai_chat",
@@ -197,8 +245,8 @@ describe("reusable connection presets", () => {
         model: "fixture-model",
       }),
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: "providerDetection.use" }),
+    expect(screen.getByLabelText("providerForm.apiFormat")).toHaveValue(
+      "openai_chat",
     );
     fireEvent.click(
       screen.getByRole("button", { name: "connectionPresets.save" }),

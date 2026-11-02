@@ -155,6 +155,47 @@ describe("ClaudeFormFields", () => {
     );
   });
 
+  it.each(["", "unavailable-model", "available-model"])(
+    "validates the default %s when fetching models without importing rows",
+    async (currentDefault) => {
+      modelFetchApiMock.fetchModelsForConfig.mockResolvedValue([
+        { id: "available-model", ownedBy: null },
+      ]);
+      const onModelChange = vi.fn();
+      const onModelPickerOptionsChange = vi.fn();
+      renderCopilotForm({
+        isCopilotPreset: false,
+        category: "third_party",
+        apiKey: "fixture-key",
+        baseUrl: "https://fixture.example/v1",
+        claudeModel: currentDefault,
+        defaultSonnetModel: "available-model",
+        defaultHaikuModel: "available-model",
+        defaultOpusModel: "available-model",
+        defaultFableModel: "available-model",
+        subagentModel: "inherit",
+        onModelChange,
+        onModelPickerOptionsChange,
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: "providerForm.fetchModels" }),
+      );
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "providerForm.fetchModels" }),
+        ).toBeEnabled(),
+      );
+      if (currentDefault === "available-model")
+        expect(onModelChange).not.toHaveBeenCalled();
+      else
+        expect(onModelChange).toHaveBeenCalledExactlyOnceWith(
+          "ANTHROPIC_MODEL",
+          "available-model",
+        );
+      expect(onModelPickerOptionsChange).not.toHaveBeenCalled();
+    },
+  );
+
   it("shares discovered models with every role selector", async () => {
     Element.prototype.scrollIntoView = vi.fn();
     modelFetchApiMock.fetchModelsForConfig.mockResolvedValue([
@@ -184,9 +225,12 @@ describe("ClaudeFormFields", () => {
       () =>
         expect(
           screen.getAllByRole("button", { name: "Select model" }),
-        ).toHaveLength(7),
+        ).toHaveLength(6),
       { timeout: 2000 },
     );
+    expect(
+      screen.getByRole("button", { name: "Select detection model" }),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: "Select model" })[0]);
     expect(screen.getByRole("option", { name: "fixture-fast" })).toBeVisible();
     expect(screen.getByRole("option", { name: "fixture-large" })).toBeVisible();
@@ -303,7 +347,32 @@ describe("ClaudeFormFields", () => {
     });
   });
 
-  it("one-click imports every unique model as a row without overwriting roles", async () => {
+  it("preserves available Claude defaults, context markers and subagent inheritance", async () => {
+    modelFetchApiMock.fetchModelsForConfig.mockResolvedValue([
+      { id: "available-model", ownedBy: null },
+    ]);
+    const onModelChange = vi.fn();
+    const onModelPickerOptionsChange = vi.fn();
+    renderCopilotForm({
+      isCopilotPreset: false,
+      category: "third_party",
+      apiKey: "fixture-key",
+      baseUrl: "https://fixture.example/v1",
+      claudeModel: "available-model",
+      defaultSonnetModel: "available-model[1m]",
+      defaultHaikuModel: "available-model",
+      defaultOpusModel: "available-model",
+      defaultFableModel: "available-model",
+      subagentModel: "inherit",
+      onModelChange,
+      onModelPickerOptionsChange,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "一键设置" }));
+    await waitFor(() => expect(onModelPickerOptionsChange).toHaveBeenCalled());
+    expect(onModelChange).not.toHaveBeenCalled();
+  });
+
+  it("one-click imports every unique model and fills missing defaults from the catalog", async () => {
     const models = Array.from({ length: 7 }, (_, i) => ({
       id: `fixture-${i}`,
       ownedBy: null,
@@ -340,7 +409,11 @@ describe("ClaudeFormFields", () => {
       { model: "fixture-0", label: "Keep my name", description: "Keep this" },
       ...models.slice(1).map(({ id }) => ({ model: id, label: id })),
     ]);
-    expect(onModelChange).not.toHaveBeenCalled();
+    expect(onModelChange).toHaveBeenCalledWith("ANTHROPIC_MODEL", "fixture-0");
+    expect(onModelChange).toHaveBeenCalledWith(
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "fixture-0",
+    );
     view.rerender(
       <FormShell>
         <ClaudeFormFields {...view.props} modelPickerOptions={imported} />

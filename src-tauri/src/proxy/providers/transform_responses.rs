@@ -1837,13 +1837,18 @@ pub fn anthropic_to_responses(
         result["stream"] = v.clone();
     }
 
-    // Map Anthropic thinking → OpenAI Responses reasoning.effort
-    if let Some(model_name) = body.get("model").and_then(|m| m.as_str()) {
+    // Preserve explicit OpenAI controls when Chat requests cross the Anthropic bridge.
+    if let Some(reasoning) = body.get("reasoning") {
+        result["reasoning"] = reasoning.clone();
+    } else if let Some(model_name) = body.get("model").and_then(|m| m.as_str()) {
         if super::transform::supports_reasoning_effort(model_name) {
             if let Some(effort) = super::transform::resolve_reasoning_effort(&body) {
                 result["reasoning"] = json!({ "effort": effort });
             }
         }
+    }
+    if let Some(text) = body.get("text") {
+        result["text"] = text.clone();
     }
 
     // stop_sequences → 丢弃 (Responses API 不支持)

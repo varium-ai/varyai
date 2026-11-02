@@ -8,7 +8,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useProxyStatusQuery } from "@/lib/query/proxy";
 import { proxyApi } from "@/lib/api/proxy";
-import { providersApi, type ClaudeDesktopStatus } from "@/lib/api/providers";
+import { providersApi } from "@/lib/api/providers";
 import { securityApi } from "@/lib/api/security";
 import {
   APP_IDS,
@@ -24,18 +24,6 @@ function needsQwenSetup(app: string, error: unknown) {
   return app === "qwen" && extractErrorMessage(error) === "homeAudit.qwenSetup";
 }
 
-function desktopConfigured(s: ClaudeDesktopStatus) {
-  return (
-    s.supported &&
-    s.configured &&
-    s.mode === "proxy" &&
-    !!s.expectedBaseUrl &&
-    s.actualBaseUrl === s.expectedBaseUrl &&
-    s.gatewayTokenConfigured &&
-    !s.missingRouteMappings &&
-    !s.staleRawModels
-  );
-}
 async function routeState(
   app: string,
 ): Promise<{ connected: boolean; waiting: boolean }> {
@@ -47,13 +35,6 @@ async function routeState(
         status.configured &&
         status.running &&
         !status.errorCode,
-      waiting: false,
-    };
-  }
-  if (app === "claude-desktop") {
-    const status = await providersApi.getClaudeDesktopStatus();
-    return {
-      connected: desktopConfigured(status) && status.proxyRunning,
       waiting: false,
     };
   }
@@ -73,15 +54,9 @@ async function routeReady(app: string) {
   return (await routeState(app)).connected;
 }
 export async function ensureSecurityRoute(app: string) {
-  if (app === "claude-desktop") {
-    const status = await providersApi.getClaudeDesktopStatus();
-    if (!desktopConfigured(status)) throw new Error("homeAudit.desktopSetup");
-    if (!status.proxyRunning) await proxyApi.startProxyServer();
-  } else {
-    if (!isRoutingAppId(app)) throw new Error("homeAudit.unsupported");
-    if (!(await routeReady(app)))
-      await proxyApi.setProxyTakeoverForApp(app, true);
-  }
+  if (!isRoutingAppId(app)) throw new Error("homeAudit.unsupported");
+  if (!(await routeReady(app)))
+    await proxyApi.setProxyTakeoverForApp(app, true);
   const state = await routeState(app);
   if (!state.connected && !state.waiting)
     throw new Error("homeAudit.routeFailed");
@@ -99,15 +74,9 @@ export async function ensureAddedSecurityRoutes() {
   };
   for (const app of APP_IDS) {
     if (!added[app] || !installed[app]) continue;
-    if (app !== "claude-desktop" && !isRoutingAppId(app)) continue;
+    if (!isRoutingAppId(app)) continue;
     try {
-      if (app === "claude-desktop") {
-        // Installing Desktop does not imply the user configured its gateway mapping.
-        if (!desktopConfigured(await providersApi.getClaudeDesktopStatus())) {
-          result.skipped.push(app);
-          continue;
-        }
-      } else if (app === "pi") {
+      if (app === "pi") {
         // Pi routes explicit saved models; it has no Vary-owned native default selection.
         const providers = await providersApi.getAll("pi");
         if (!Object.keys(providers).some((id) => id !== "vary")) {
@@ -134,8 +103,7 @@ export async function ensureAddedSecurityRoutes() {
   return result;
 }
 export async function setCurrentAppProtection(app: string, enabled: boolean) {
-  if (!isRoutingAppId(app) && !(app === "claude-desktop" && enabled))
-    throw new Error("homeAudit.unsupported");
+  if (!isRoutingAppId(app)) throw new Error("homeAudit.unsupported");
   if (enabled) {
     await ensureSecurityRoute(app);
     const settings = await securityApi.getSettings();
@@ -286,7 +254,7 @@ export function useSecurityProtection(app: string) {
     waiting: route.data?.waiting === true && !route.isError,
     isLoading: isLoading || route.isPending || proxyStatus.isPending,
     isUpdating: busy || routeBusy,
-    supported: isRoutingAppId(app) || app === "claude-desktop",
+    supported: isRoutingAppId(app),
     setEnabled: mutation.mutateAsync,
     setAppEnabled: routeMutation.mutateAsync,
   };

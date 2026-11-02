@@ -1177,7 +1177,7 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
     std::env::set_var("CC_SWITCH_TEST_HOME", short_home.path());
     let state = seed();
     let home = std::path::PathBuf::from(std::env::var("CC_SWITCH_TEST_HOME").unwrap());
-    let dir = home.join(".cc-switch/trae-bridge");
+    let dir = home.join(".varyai/trae-bridge");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("bridge-agent-profile.sock");
     let listener = UnixListener::bind(&path).unwrap();
@@ -1514,7 +1514,7 @@ fn undo_restores_an_instruction_file_symlink_and_its_existing_target() {
     let _guard = test_guard();
     let state = seed();
     let home = support::ensure_test_home();
-    let target = home.join(".cc-switch/shared-instructions.md");
+    let target = home.join(".varyai/shared-instructions.md");
     let path = home.join(".claude/CLAUDE.md");
     std::fs::write(&target, "Saved instructions").unwrap();
     std::os::unix::fs::symlink(&target, &path).unwrap();

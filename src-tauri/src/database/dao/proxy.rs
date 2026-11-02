@@ -86,7 +86,7 @@ impl Database {
                 Ok(GlobalProxyConfig {
                     proxy_enabled: false,
                     listen_address: "127.0.0.1".to_string(),
-                    listen_port: 15721,
+                    listen_port: DEFAULT_PROXY_PORT,
                     enable_logging: true,
                 })
             }
@@ -339,8 +339,8 @@ impl Database {
                 app_type, max_retries,
                 streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
-                circuit_error_rate_threshold, circuit_min_requests
-            ) VALUES (?1, ?2, ?3, ?4, 600, ?5, ?6, ?7, ?8, ?9)",
+                circuit_error_rate_threshold, circuit_min_requests, listen_port
+            ) VALUES (?1, ?2, ?3, ?4, 600, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 app_type,
                 retries,
@@ -350,7 +350,8 @@ impl Database {
                 cb_succ,
                 cb_timeout,
                 cb_rate,
-                cb_min
+                cb_min,
+                DEFAULT_PROXY_PORT
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -368,48 +369,48 @@ impl Database {
         // claude: 更激进的重试和超时配置
         conn.execute(
             "INSERT OR IGNORE INTO proxy_config (
-                app_type, max_retries,
+                app_type, max_retries, listen_port,
                 streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests
-            ) VALUES ('claude', 6, 90, 180, 600, 8, 3, 90, 0.7, 15)",
-            [],
+            ) VALUES ('claude', 6, ?1, 90, 180, 600, 8, 3, 90, 0.7, 15)",
+            [DEFAULT_PROXY_PORT],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         // codex: 默认配置
         conn.execute(
             "INSERT OR IGNORE INTO proxy_config (
-                app_type, max_retries,
+                app_type, max_retries, listen_port,
                 streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests
-            ) VALUES ('codex', 3, 60, 120, 600, 4, 2, 60, 0.6, 10)",
-            [],
+            ) VALUES ('codex', 3, ?1, 60, 120, 600, 4, 2, 60, 0.6, 10)",
+            [DEFAULT_PROXY_PORT],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         // gemini: 稍高的重试次数
         conn.execute(
             "INSERT OR IGNORE INTO proxy_config (
-                app_type, max_retries,
+                app_type, max_retries, listen_port,
                 streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests
-            ) VALUES ('gemini', 5, 60, 120, 600, 4, 2, 60, 0.6, 10)",
-            [],
+            ) VALUES ('gemini', 5, ?1, 60, 120, 600, 4, 2, 60, 0.6, 10)",
+            [DEFAULT_PROXY_PORT],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         // grokbuild: Responses protocol, same timeout defaults as Codex.
         conn.execute(
             "INSERT OR IGNORE INTO proxy_config (
-                app_type, max_retries,
+                app_type, max_retries, listen_port,
                 streaming_first_byte_timeout, streaming_idle_timeout, non_streaming_timeout,
                 circuit_failure_threshold, circuit_success_threshold, circuit_timeout_seconds,
                 circuit_error_rate_threshold, circuit_min_requests
-            ) VALUES ('grokbuild', 3, 60, 120, 600, 4, 2, 60, 0.6, 10)",
-            [],
+            ) VALUES ('grokbuild', 3, ?1, 60, 120, 600, 4, 2, 60, 0.6, 10)",
+            [DEFAULT_PROXY_PORT],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 

@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import type { FetchedModelCatalog } from "./shared/fetchedModelCatalog";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { FormLabel } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -154,6 +155,7 @@ function ModelOptionKeyInput({
 }
 
 interface OpenCodeFormFieldsProps {
+  fetchedModelCatalog?: FetchedModelCatalog;
   // NPM Package
   npm: string;
   onNpmChange: (value: string) => void;
@@ -185,6 +187,7 @@ interface OpenCodeFormFieldsProps {
 }
 
 export function OpenCodeFormFields({
+  fetchedModelCatalog,
   npm,
   onNpmChange,
   apiKey,
@@ -205,8 +208,19 @@ export function OpenCodeFormFields({
 }: OpenCodeFormFieldsProps) {
   const { t } = useTranslation();
 
-  const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
+  const localModelCatalog = useState<FetchedModel[]>([]);
+  const [fetchedModels, setFetchedModels] =
+    fetchedModelCatalog ?? localModelCatalog;
   const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const modelFetchSequence = useRef(0);
+  useEffect(() => {
+    modelFetchSequence.current += 1;
+    setFetchedModels([]);
+    setIsFetchingModels(false);
+    return () => {
+      modelFetchSequence.current += 1;
+    };
+  }, [baseUrl, apiKey, setFetchedModels, headers]);
 
   const handleFetchModels = useCallback(() => {
     if (!baseUrl || !apiKey) {
@@ -216,9 +230,14 @@ export function OpenCodeFormFields({
       });
       return;
     }
+    const sequence = ++modelFetchSequence.current;
     setIsFetchingModels(true);
-    fetchModelsForConfig(baseUrl, apiKey)
+    (fetchedModels.length
+      ? Promise.resolve(fetchedModels)
+      : fetchModelsForConfig(baseUrl, apiKey)
+    )
       .then((models) => {
+        if (sequence !== modelFetchSequence.current) return;
         setFetchedModels(models);
         if (models.length === 0) {
           toast.info(t("providerForm.fetchModelsEmpty"));
@@ -229,11 +248,14 @@ export function OpenCodeFormFields({
         }
       })
       .catch((err) => {
+        if (sequence !== modelFetchSequence.current) return;
         console.warn("[ModelFetch] Failed:", err);
         showFetchModelsError(err, t);
       })
-      .finally(() => setIsFetchingModels(false));
-  }, [baseUrl, apiKey, t]);
+      .finally(() => {
+        if (sequence === modelFetchSequence.current) setIsFetchingModels(false);
+      });
+  }, [baseUrl, apiKey, fetchedModels, setFetchedModels, t]);
 
   // Track which models have expanded options panel
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());

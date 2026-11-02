@@ -29,7 +29,7 @@ export interface DetectionConfig {
   anthropicAuthField?: ClaudeApiKeyField;
 }
 
-/** Explicit inference requests; never call this during background discovery. */
+/** Bounded inference probes after credentials settle or on an explicit retry. */
 export function detectProviderProtocols(
   config: DetectionConfig,
 ): Promise<ProtocolDetection[]> {

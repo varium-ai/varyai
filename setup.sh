@@ -230,7 +230,7 @@ print_summary() {
     echo ""
     echo -e "Development commands:"
     echo -e "  ${CYAN}pnpm dev${NC}             - Start the desktop application with frontend hot reload"
-    echo -e "  ${CYAN}pnpm dev:renderer${NC}    - Start only the Vite server at http://localhost:3000"
+    echo -e "  ${CYAN}pnpm dev:renderer${NC}    - Start only the Vite server at http://localhost:3001"
     echo -e "  ${CYAN}pnpm test:unit${NC}       - Run frontend Vitest tests"
     echo -e "  ${CYAN}cargo test --lib --manifest-path src-tauri/Cargo.toml${NC} - Run Rust library tests"
     echo -e "  ${CYAN}pnpm build${NC}           - Build desktop artifacts for the configured host/target"

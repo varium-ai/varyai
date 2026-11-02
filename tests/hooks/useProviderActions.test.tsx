@@ -398,35 +398,57 @@ describe("useProviderActions", () => {
     expect(switchProviderMutateAsync).toHaveBeenCalledWith(provider.id);
   });
 
-  it("uses proxy process readiness for Claude Desktop routing", async () => {
+  it("requires Desktop takeover even when another agent runs the gateway", async () => {
     switchProviderMutateAsync.mockResolvedValue(undefined);
     const { wrapper } = createWrapper();
     const provider = createProvider({
       category: "custom",
-      meta: { claudeDesktopMode: "proxy" },
+      meta: { apiFormat: "openai_chat" },
     });
 
     const { result, rerender } = renderHook(
-      ({ isProxyRunning }) =>
-        useProviderActions("claude-desktop", isProxyRunning, false),
-      { initialProps: { isProxyRunning: true }, wrapper },
+      ({ takenOver }) => useProviderActions("claude-desktop", true, takenOver),
+      { initialProps: { takenOver: false }, wrapper },
     );
 
     await act(async () => {
       await result.current.switchProvider(provider);
     });
-    expect(toastWarningMock).not.toHaveBeenCalled();
+    expect(toastWarningMock).toHaveBeenCalledTimes(1);
 
-    rerender({ isProxyRunning: false });
+    rerender({ takenOver: true });
     await act(async () => {
       await result.current.switchProvider(provider);
     });
 
     expect(toastWarningMock).toHaveBeenCalledTimes(1);
     expect(toastWarningMock).toHaveBeenCalledWith(
-      expect.stringContaining("Claude Desktop 本地路由模式"),
+      expect.stringContaining("Claude Desktop"),
     );
   });
+
+  it.each([true, false])(
+    "uses Desktop takeover state %s for the restart notice",
+    async (takenOver) => {
+      switchProviderMutateAsync.mockResolvedValue(undefined);
+      const { wrapper } = createWrapper();
+      const provider = createProvider({
+        category: "custom",
+        meta: { claudeDesktopMode: takenOver ? "direct" : "proxy" },
+      });
+      const { result } = renderHook(
+        () => useProviderActions("claude-desktop", true, takenOver),
+        { wrapper },
+      );
+      await act(async () => {
+        await result.current.switchProvider(provider);
+      });
+      expect(toastWarningMock).not.toHaveBeenCalled();
+      const message = toastSuccessMock.mock.calls.at(-1)?.[0];
+      expect(message).toContain("重启 Claude Desktop");
+      expect(message.includes("保持 Vary AI 运行")).toBe(takenOver);
+    },
+  );
 
   it("allows the native Codex official provider during takeover", async () => {
     switchProviderMutateAsync.mockResolvedValueOnce(undefined);

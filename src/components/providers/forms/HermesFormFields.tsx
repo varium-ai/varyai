@@ -1,7 +1,8 @@
+import type { FetchedModelCatalog } from "./shared/fetchedModelCatalog";
 import { UpstreamProtocolSelect } from "./shared/UpstreamProtocolSelect";
 import type { ClaudeApiFormat } from "@/types";
 import { useTranslation } from "react-i18next";
-import { useState, useRef, useCallback, useMemo } from "react";
+import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { FormLabel } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -30,6 +31,7 @@ import {
 import type { ProviderCategory } from "@/types";
 
 interface HermesFormFieldsProps {
+  fetchedModelCatalog?: FetchedModelCatalog;
   baseUrl: string;
   onBaseUrlChange: (value: string) => void;
   apiKey: string;
@@ -81,6 +83,7 @@ function validateBaseUrl(raw: string): BaseUrlErrorCode | null {
 }
 
 export function HermesFormFields({
+  fetchedModelCatalog,
   baseUrl,
   onBaseUrlChange,
   apiKey,
@@ -103,8 +106,19 @@ export function HermesFormFields({
   const [expandedModelKeys, setExpandedModelKeys] = useState<Set<string>>(
     new Set(),
   );
-  const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
+  const localModelCatalog = useState<FetchedModel[]>([]);
+  const [fetchedModels, setFetchedModels] =
+    fetchedModelCatalog ?? localModelCatalog;
   const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const modelFetchSequence = useRef(0);
+  useEffect(() => {
+    modelFetchSequence.current += 1;
+    setFetchedModels([]);
+    setIsFetchingModels(false);
+    return () => {
+      modelFetchSequence.current += 1;
+    };
+  }, [baseUrl, apiKey, setFetchedModels]);
   const [baseUrlTouched, setBaseUrlTouched] = useState(false);
 
   const baseUrlErrorCode = useMemo(() => validateBaseUrl(baseUrl), [baseUrl]);
@@ -149,11 +163,16 @@ export function HermesFormFields({
       });
       return;
     }
+    const sequence = ++modelFetchSequence.current;
     setIsFetchingModels(true);
-    fetchModelsForConfig(baseUrl, apiKey, undefined, undefined, undefined, {
-      apiFormat,
-    })
+    (fetchedModels.length
+      ? Promise.resolve(fetchedModels)
+      : fetchModelsForConfig(baseUrl, apiKey, undefined, undefined, undefined, {
+          apiFormat,
+        })
+    )
       .then((fetched) => {
+        if (sequence !== modelFetchSequence.current) return;
         setFetchedModels(fetched);
         if (fetched.length === 0) {
           toast.info(t("providerForm.fetchModelsEmpty"));
@@ -164,11 +183,14 @@ export function HermesFormFields({
         }
       })
       .catch((err) => {
+        if (sequence !== modelFetchSequence.current) return;
         console.warn("[ModelFetch] Failed:", err);
         showFetchModelsError(err, t);
       })
-      .finally(() => setIsFetchingModels(false));
-  }, [baseUrl, apiKey, apiFormat, t]);
+      .finally(() => {
+        if (sequence === modelFetchSequence.current) setIsFetchingModels(false);
+      });
+  }, [baseUrl, apiKey, apiFormat, fetchedModels, setFetchedModels, t]);
 
   const handleRemoveModel = (index: number) => {
     const removedKey = modelKeysRef.current[index];

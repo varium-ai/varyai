@@ -138,7 +138,7 @@ pub(crate) async fn create() -> Result<Certificate, String> {
     }
     tokio::task::spawn_blocking(|| {
         create_at_with_lifetime(
-            crate::config::get_app_config_dir()
+            crate::config::get_device_config_dir()
                 .join("qoder-certificates")
                 .join(uuid::Uuid::new_v4().to_string()),
             lifetime_seconds(
@@ -395,7 +395,7 @@ pub(crate) async fn remove(
     app: Option<&tauri::AppHandle>,
 ) -> Result<(), String> {
     use std::ffi::OsStr;
-    let root = crate::config::get_app_config_dir().join("qoder-certificates");
+    let root = crate::config::get_device_config_dir().join("qoder-certificates");
     if directory.parent() != Some(root.as_path())
         || sha1.len() != 40
         || !sha1.chars().all(|c| c.is_ascii_hexdigit())

@@ -149,14 +149,20 @@ export function useProxyStatus() {
       queryClient.invalidateQueries({ queryKey: proxyKeys.status });
       queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus });
     },
-    onError: (error: Error) => {
+    onError: (error: Error, variables) => {
       const detail =
         extractErrorMessage(error) ||
         t("common.unknown", { defaultValue: "未知错误" });
+      const message = /^[a-zA-Z]\w*(?:\.\w+)+$/.test(detail)
+        ? t(detail, {
+            app: getAppLabel(variables.appType),
+            defaultValue: detail,
+          })
+        : detail;
       toast.error(
         t("proxy.takeover.failed", {
-          detail: detail.startsWith("piRouting.") ? t(detail) : detail,
-          defaultValue: `操作失败: ${detail}`,
+          detail: message,
+          defaultValue: `操作失败: ${message}`,
         }),
       );
     },

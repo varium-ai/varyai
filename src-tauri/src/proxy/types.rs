@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_PROXY_PORT: u16 = 15722;
+
 /// The unauthenticated gateway is restricted to this machine.
 /// Do not resolve hostnames: only literal loopback IP addresses are accepted.
 pub(crate) fn loopback_listener_ip(address: &str) -> Result<std::net::IpAddr, String> {
@@ -55,7 +57,7 @@ impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
             listen_address: "127.0.0.1".to_string(),
-            listen_port: 15721, // 使用较少占用的高位端口
+            listen_port: DEFAULT_PROXY_PORT,
             max_retries: 3,
             request_timeout: 600,
             enable_logging: true,
@@ -122,6 +124,8 @@ pub struct ProxyServerInfo {
 /// 各应用的接管状态（是否改写该应用的 Live 配置指向本地代理）
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProxyTakeoverStatus {
+    #[serde(default, rename = "claude-desktop")]
+    pub claude_desktop: bool,
     #[serde(default)]
     pub kimi: bool,
     #[serde(default)]
@@ -148,6 +152,28 @@ pub struct ProxyTakeoverStatus {
     pub grokbuild: bool,
     pub opencode: bool,
     pub openclaw: bool,
+}
+
+impl ProxyTakeoverStatus {
+    pub fn has_active_routes(&self) -> bool {
+        self.claude_desktop
+            || self.claude
+            || self.codex
+            || self.gemini
+            || self.grokbuild
+            || self.opencode
+            || self.openclaw
+            || self.workbuddy
+            || self.qoder
+            || self.kimi
+            || self.qwen
+            || self.zcode
+            || self.pi
+            || self.trae
+            || self.trae_waiting
+            || self.doubaowork
+            || self.doubaowork_waiting
+    }
 }
 
 /// Provider健康状态
@@ -403,6 +429,29 @@ impl LogConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_gateway_stop_guard_includes_native_and_waiting_routes() {
+        assert!(!ProxyTakeoverStatus::default().has_active_routes());
+        for field in [
+            "claude-desktop",
+            "zcode",
+            "kimi",
+            "qwen",
+            "pi",
+            "trae",
+            "trae_waiting",
+            "doubaowork_waiting",
+        ] {
+            let mut value = serde_json::to_value(ProxyTakeoverStatus::default()).unwrap();
+            value[field] = serde_json::Value::Bool(true);
+            let status: ProxyTakeoverStatus = serde_json::from_value(value).unwrap();
+            assert!(
+                status.has_active_routes(),
+                "{field} must protect the shared gateway"
+            );
+        }
+    }
 
     #[test]
     fn test_rectifier_config_default_enabled() {

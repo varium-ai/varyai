@@ -5,7 +5,8 @@ import {
 } from "./shared/UpstreamProtocolSelect";
 import type { ClaudeApiFormat } from "@/types";
 import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
-import { useEffect, useState, type FormEvent } from "react";
+import { ProviderConfigDetection } from "./ProviderConfigDetection";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   fetchModelsForConfig,
   showFetchModelsError,
+  type FetchedModel,
 } from "@/lib/api/model-fetch";
 import type { ProviderFormProps } from "./ProviderForm";
 
@@ -39,6 +41,9 @@ export function ManagedAgentProviderForm({
   const [upstreamFormat, setUpstreamFormat] = useState<ClaudeApiFormat>(
     initialData?.meta?.apiFormat ?? nativeUpstreamFormat(config.protocol),
   );
+  const [editingCredentials, setEditingCredentials] = useState(false);
+  const [protocolManuallySelected, setProtocolManuallySelected] =
+    useState(false);
   function selectUpstream(format: ClaudeApiFormat) {
     setUpstreamFormat(format);
     if (format !== "gemini_native")
@@ -57,6 +62,16 @@ export function ManagedAgentProviderForm({
   );
   const [saving, setSaving] = useState(false);
   const [fetching, setFetching] = useState(false);
+  const [catalogModels, setCatalogModels] = useState<FetchedModel[]>([]);
+  const catalogSequence = useRef(0);
+  useEffect(() => {
+    setCatalogModels([]);
+    setFetching(false);
+    catalogSequence.current += 1;
+    return () => {
+      catalogSequence.current += 1;
+    };
+  }, [baseUrl, apiKey]);
   useEffect(() => {
     onSubmitReadyChange?.(true);
     return () => onSubmitReadyChange?.(false);
@@ -142,16 +157,21 @@ export function ManagedAgentProviderForm({
     }
   }
   async function fetchModels() {
+    const sequence = ++catalogSequence.current;
     setFetching(true);
     try {
-      const fetched = await fetchModelsForConfig(
-        baseUrl.trim(),
-        apiKey.trim(),
-        undefined,
-        undefined,
-        undefined,
-        { apiFormat: upstreamFormat },
-      );
+      const fetched = catalogModels.length
+        ? catalogModels
+        : await fetchModelsForConfig(
+            baseUrl.trim(),
+            apiKey.trim(),
+            undefined,
+            undefined,
+            undefined,
+            { apiFormat: upstreamFormat },
+          );
+      if (sequence !== catalogSequence.current) return;
+      setCatalogModels(fetched);
       setModels(
         [
           ...new Set([
@@ -161,12 +181,13 @@ export function ManagedAgentProviderForm({
         ].join("\n"),
       );
     } catch (error) {
+      if (sequence !== catalogSequence.current) return;
       showFetchModelsError(error, t, {
         hasBaseUrl: !!baseUrl.trim(),
         hasApiKey: !!apiKey.trim(),
       });
     } finally {
-      setFetching(false);
+      if (sequence === catalogSequence.current) setFetching(false);
     }
   }
   return (
@@ -174,6 +195,14 @@ export function ManagedAgentProviderForm({
       id="provider-form"
       className="space-y-5 rounded-xl p-6"
       onSubmit={save}
+      onFocusCapture={(event) => {
+        if (["agent-base", "agent-key"].includes(event.target.id))
+          setEditingCredentials(true);
+      }}
+      onBlurCapture={(event) => {
+        if (["agent-base", "agent-key"].includes(event.target.id))
+          setEditingCredentials(false);
+      }}
     >
       <p className="text-sm text-muted-foreground">
         {t("managedAgent.description", { app: t(`apps.${appId}`) })}
@@ -232,8 +261,25 @@ export function ManagedAgentProviderForm({
       </div>
       <UpstreamProtocolSelect
         value={upstreamFormat}
-        onChange={selectUpstream}
+        onChange={(format) => {
+          setProtocolManuallySelected(true);
+          selectUpstream(format);
+        }}
       />
+      {!official && (
+        <ProviderConfigDetection
+          baseUrl={baseUrl}
+          apiKey={apiKey}
+          model={models.split(/[\n,]+/).find((model) => model.trim()) ?? ""}
+          apiFormat={upstreamFormat}
+          editingCredentials={editingCredentials}
+          autoSelectFormat={!initialData && !protocolManuallySelected}
+          onManualFormatSelect={() => setProtocolManuallySelected(true)}
+          onApiFormatChange={selectUpstream}
+          catalogModels={catalogModels}
+          onCatalogModelsChange={setCatalogModels}
+        />
+      )}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <Label htmlFor="agent-models">{t("managedAgent.models")}</Label>

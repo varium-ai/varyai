@@ -362,13 +362,48 @@ describe("providerNeedsRouting", () => {
   });
 
   describe("Claude Desktop 路由判定", () => {
-    it("proxy 模式需要路由", () => {
+    it("requires routing for protocol conversion", () => {
       expect(
         providerNeedsRouting(
           "claude-desktop",
-          mkProvider({ meta: { claudeDesktopMode: "proxy" } }),
+          mkProvider({ meta: { apiFormat: "openai_chat" } }),
         ),
       ).toBe(true);
+    });
+
+    it("requires routing for model mapping even with the Anthropic protocol", () => {
+      expect(
+        providerNeedsRouting(
+          "claude-desktop",
+          mkProvider({
+            meta: {
+              apiFormat: "anthropic",
+              claudeDesktopMode: "direct",
+              claudeDesktopModelRoutes: {
+                "claude-sonnet-5": { model: "synthetic-model" },
+              },
+            },
+          }),
+        ),
+      ).toBe(true);
+    });
+
+    it("does not require routing for native models because of a saved mode", () => {
+      expect(
+        providerNeedsRouting(
+          "claude-desktop",
+          mkProvider({
+            settingsConfig: { env: { ANTHROPIC_AUTH_TOKEN: "synthetic" } },
+            meta: {
+              apiFormat: "anthropic",
+              claudeDesktopMode: "proxy",
+              claudeDesktopModelRoutes: {
+                "claude-sonnet-5": { model: "claude-sonnet-5" },
+              },
+            },
+          }),
+        ),
+      ).toBe(false);
     });
 
     it.each(["github_copilot", "codex_oauth", "xai_oauth"])(

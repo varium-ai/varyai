@@ -115,7 +115,7 @@ impl Database {
                 }
             }
         }
-        let ext_path = parent.join("vary-ai.db");
+        let ext_path = Self::extension_path(path);
         // Inspect before any shared schema writes. Unknown extension formats are
         // preserved for a newer application to read.
         let extension_needs_upgrade = if ext_path.exists() {
@@ -200,7 +200,7 @@ impl Database {
         })
     }
 
-    fn check_extension_version(conn: &Connection) -> Result<(), AppError> {
+    pub(super) fn check_extension_version(conn: &Connection) -> Result<(), AppError> {
         let version = Self::get_user_version(conn)?;
         if version > EXTENSION_SCHEMA_VERSION {
             return Err(AppError::Database(format!("Vary 扩展数据库版本过新（{version}），当前支持 {EXTENSION_SCHEMA_VERSION}，请升级应用。")));
@@ -208,7 +208,7 @@ impl Database {
         Ok(())
     }
 
-    fn validate_extension_schema(conn: &Connection) -> Result<(), AppError> {
+    pub(super) fn validate_extension_schema(conn: &Connection) -> Result<(), AppError> {
         let template = Connection::open_in_memory()?;
         Self::create_extension_tables_on_conn(&template)?;
         let mut stmt = conn.prepare(
@@ -218,6 +218,9 @@ impl Database {
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         for table in &tables {
+            if table == "varyai_extension_identity" && Self::is_native_connection(conn)? {
+                continue;
+            }
             if !EXTENSION_TABLES.contains(&table.as_str())
                 || Self::column_signature(conn, table)? != Self::column_signature(&template, table)?
             {
@@ -283,7 +286,7 @@ impl Database {
         Ok(columns)
     }
 
-    fn validate_shared_columns(conn: &Connection) -> Result<(), AppError> {
+    pub(super) fn validate_shared_columns(conn: &Connection) -> Result<(), AppError> {
         let template = Connection::open_in_memory()?;
         Self::create_shared_tables_on_conn(&template)?;
         Self::ensure_upstream_shared_columns(&template)?;
@@ -493,7 +496,10 @@ impl Database {
         let path = conn
             .path()
             .ok_or_else(|| AppError::Database("数据库文件路径不可用".into()))?;
-        let ext_path = Path::new(path).with_file_name("vary-ai.db");
+        let native_id = Self::is_native_connection(conn)?
+            .then(|| Self::native_storage_id(conn))
+            .transpose()?;
+        let ext_path = Self::extension_path(Path::new(path));
         Self::attach_extension(conn, &ext_path)?;
         let result = (|| {
             conn.execute(
@@ -533,6 +539,14 @@ impl Database {
                 rows
             };
             for (kind, name, table, sql) in objects {
+                if native_id.is_none()
+                    && matches!(
+                        table.as_str(),
+                        "varyai_import_origins" | "varyai_import_operations"
+                    )
+                {
+                    continue;
+                }
                 let target = if EXTENSION_TABLES.contains(&table.as_str()) {
                     "vary"
                 } else {
@@ -544,6 +558,9 @@ impl Database {
                 }
             }
             tx.execute_batch(&format!("PRAGMA main.user_version={SHARED_SCHEMA_VERSION}; PRAGMA vary.user_version={EXTENSION_SCHEMA_VERSION};"))?;
+            if let Some(id) = native_id.as_deref() {
+                Self::write_native_identity(&tx, id)?;
+            }
             Self::validate_attached_integrity(&tx)?;
             tx.commit()?;
             Ok::<_, AppError>(())

@@ -1,3 +1,4 @@
+import type { FetchedModel } from "@/lib/api/model-fetch";
 import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useForm } from "react-hook-form";
@@ -88,6 +89,10 @@ import { GrokBuildProviderForm } from "./GrokBuildProviderForm";
 import { CodexFormFields } from "./CodexFormFields";
 import { GeminiFormFields } from "./GeminiFormFields";
 import { ProviderConfigDetection } from "./ProviderConfigDetection";
+import {
+  NATIVE_API_FORMATS,
+  nativeUpstreamFormat,
+} from "./shared/UpstreamProtocolSelect";
 import { ManagedAgentProviderForm } from "./ManagedAgentProviderForm";
 import { QoderProviderForm } from "./QoderProviderForm";
 import { WorkBuddyProviderForm } from "./WorkBuddyProviderForm";
@@ -320,6 +325,10 @@ function ProviderFormFull({
   const { t } = useTranslation();
   const isEditMode = Boolean(initialData);
   const [editingCredentials, setEditingCredentials] = useState(false);
+  const fetchedModelCatalog = useState<FetchedModel[]>([]);
+  useEffect(() => {
+    fetchedModelCatalog[1]([]);
+  }, [appId]);
   const [protocolManuallySelected, setProtocolManuallySelected] =
     useState(false);
 
@@ -2193,18 +2202,30 @@ function ProviderFormFull({
           onSubmit={form.handleSubmit(handleSubmit)}
           onFocusCapture={(event) => {
             if (
-              ["apiKey", "baseUrl", "codexApiKey", "codexBaseUrl"].includes(
-                event.target.id,
-              )
+              [
+                "apiKey",
+                "baseUrl",
+                "codexApiKey",
+                "codexBaseUrl",
+                "opencode-baseurl",
+                "openclaw-baseurl",
+                "hermes-baseurl",
+              ].includes(event.target.id)
             ) {
               setEditingCredentials(true);
             }
           }}
           onBlurCapture={(event) => {
             if (
-              ["apiKey", "baseUrl", "codexApiKey", "codexBaseUrl"].includes(
-                event.target.id,
-              )
+              [
+                "apiKey",
+                "baseUrl",
+                "codexApiKey",
+                "codexBaseUrl",
+                "opencode-baseurl",
+                "openclaw-baseurl",
+                "hermes-baseurl",
+              ].includes(event.target.id)
             ) {
               setEditingCredentials(false);
             }
@@ -2620,9 +2641,7 @@ function ProviderFormFull({
                   ? {
                       editingCredentials,
                       autoSelectFormat:
-                        !isEditMode &&
-                        selectedPresetId === "custom" &&
-                        !protocolManuallySelected,
+                        !isEditMode && !protocolManuallySelected,
                       onManualFormatSelect: () =>
                         setProtocolManuallySelected(true),
                       onApiFormatChange: handleApiFormatChange,
@@ -2650,6 +2669,7 @@ function ProviderFormFull({
 
           {appId === "codex" && (
             <CodexFormFields
+              fetchedModelCatalog={fetchedModelCatalog}
               providerId={providerId}
               isXaiOauthPreset={
                 presetProviderType === "xai_oauth" ||
@@ -2728,6 +2748,7 @@ function ProviderFormFull({
 
           {appId === "gemini" && (
             <GeminiFormFields
+              fetchedModelCatalog={fetchedModelCatalog}
               apiFormat={localGeminiApiFormat}
               onApiFormatChange={(format) => {
                 setProtocolManuallySelected(true);
@@ -2764,8 +2785,12 @@ function ProviderFormFull({
 
           {appId === "opencode" && !isAnyOmoCategory && (
             <OpenCodeFormFields
+              fetchedModelCatalog={fetchedModelCatalog}
               npm={opencodeForm.opencodeNpm}
-              onNpmChange={opencodeForm.handleOpencodeNpmChange}
+              onNpmChange={(npm) => {
+                setProtocolManuallySelected(true);
+                opencodeForm.handleOpencodeNpmChange(npm);
+              }}
               apiKey={opencodeForm.opencodeApiKey}
               onApiKeyChange={opencodeForm.handleOpencodeApiKeyChange}
               category={category}
@@ -2809,6 +2834,7 @@ function ProviderFormFull({
           {/* OpenClaw 专属字段 */}
           {appId === "openclaw" && (
             <OpenClawFormFields
+              fetchedModelCatalog={fetchedModelCatalog}
               baseUrl={openclawForm.openclawBaseUrl}
               onBaseUrlChange={openclawForm.handleOpenclawBaseUrlChange}
               apiKey={openclawForm.openclawApiKey}
@@ -2819,7 +2845,10 @@ function ProviderFormFull({
               isPartner={isOpenclawPartner}
               partnerPromotionKey={openclawPartnerPromotionKey}
               api={openclawForm.openclawApi}
-              onApiChange={openclawForm.handleOpenclawApiChange}
+              onApiChange={(api) => {
+                setProtocolManuallySelected(true);
+                openclawForm.handleOpenclawApiChange(api);
+              }}
               models={openclawForm.openclawModels}
               onModelsChange={openclawForm.handleOpenclawModelsChange}
               userAgent={openclawForm.openclawUserAgent}
@@ -2830,6 +2859,7 @@ function ProviderFormFull({
           {/* Hermes 专属字段 */}
           {appId === "hermes" && (
             <HermesFormFields
+              fetchedModelCatalog={fetchedModelCatalog}
               baseUrl={hermesForm.hermesBaseUrl}
               onBaseUrlChange={hermesForm.handleHermesBaseUrlChange}
               apiKey={hermesForm.hermesApiKey}
@@ -2840,9 +2870,15 @@ function ProviderFormFull({
               isPartner={isHermesPartner}
               partnerPromotionKey={hermesPartnerPromotionKey}
               apiFormat={localHermesApiFormat}
-              onApiFormatChange={setLocalHermesApiFormat}
+              onApiFormatChange={(format) => {
+                setProtocolManuallySelected(true);
+                setLocalHermesApiFormat(format);
+              }}
               apiMode={hermesForm.hermesApiMode}
-              onApiModeChange={hermesForm.handleHermesApiModeChange}
+              onApiModeChange={(mode) => {
+                setProtocolManuallySelected(true);
+                hermesForm.handleHermesApiModeChange(mode);
+              }}
               models={hermesForm.hermesModels}
               onModelsChange={hermesForm.handleHermesModelsChange}
               rateLimitDelay={hermesForm.hermesRateLimitDelay}
@@ -2852,6 +2888,68 @@ function ProviderFormFull({
             />
           )}
 
+          {appId === "opencode" &&
+            !isAnyOmoCategory &&
+            opencodeForm.opencodeNpm !== "@ai-sdk/amazon-bedrock" && (
+              <ProviderConfigDetection
+                catalogModels={fetchedModelCatalog[0]}
+                onCatalogModelsChange={fetchedModelCatalog[1]}
+                baseUrl={opencodeForm.opencodeBaseUrl}
+                apiKey={opencodeForm.opencodeApiKey}
+                model={Object.keys(opencodeForm.opencodeModels)[0] ?? ""}
+                apiFormat={nativeUpstreamFormat(opencodeForm.opencodeNpm)}
+                editingCredentials={editingCredentials}
+                autoSelectFormat={!isEditMode && !protocolManuallySelected}
+                onManualFormatSelect={() => setProtocolManuallySelected(true)}
+                onApiFormatChange={(format) =>
+                  opencodeForm.handleOpencodeNpmChange(
+                    {
+                      anthropic: "@ai-sdk/anthropic",
+                      openai_chat: "@ai-sdk/openai-compatible",
+                      openai_responses: "@ai-sdk/openai",
+                      gemini_native: "@ai-sdk/google",
+                    }[format],
+                  )
+                }
+              />
+            )}
+
+          {appId === "openclaw" &&
+            openclawForm.openclawApi !== "bedrock-converse-stream" && (
+              <ProviderConfigDetection
+                catalogModels={fetchedModelCatalog[0]}
+                onCatalogModelsChange={fetchedModelCatalog[1]}
+                baseUrl={openclawForm.openclawBaseUrl}
+                apiKey={openclawForm.openclawApiKey}
+                model={openclawForm.openclawModels[0]?.id ?? ""}
+                apiFormat={nativeUpstreamFormat(openclawForm.openclawApi)}
+                editingCredentials={editingCredentials}
+                autoSelectFormat={!isEditMode && !protocolManuallySelected}
+                onManualFormatSelect={() => setProtocolManuallySelected(true)}
+                onApiFormatChange={(format) =>
+                  openclawForm.handleOpenclawApiChange(
+                    NATIVE_API_FORMATS[format],
+                  )
+                }
+              />
+            )}
+
+          {appId === "hermes" &&
+            hermesForm.hermesApiMode !== "bedrock_converse" && (
+              <ProviderConfigDetection
+                catalogModels={fetchedModelCatalog[0]}
+                onCatalogModelsChange={fetchedModelCatalog[1]}
+                baseUrl={hermesForm.hermesBaseUrl}
+                apiKey={hermesForm.hermesApiKey}
+                model={hermesForm.hermesModels[0]?.id ?? ""}
+                apiFormat={localHermesApiFormat}
+                editingCredentials={editingCredentials}
+                autoSelectFormat={!isEditMode && !protocolManuallySelected}
+                onManualFormatSelect={() => setProtocolManuallySelected(true)}
+                onApiFormatChange={setLocalHermesApiFormat}
+              />
+            )}
+
           {(appId === "codex" || appId === "gemini") &&
             category !== "official" &&
             category !== "cloud_provider" &&
@@ -2860,6 +2958,8 @@ function ProviderFormFull({
             geminiPartnerPromotionKey?.toLowerCase() !== "google-official" &&
             (appId === "gemini" || !localIsFullUrl) && (
               <ProviderConfigDetection
+                catalogModels={fetchedModelCatalog[0]}
+                onCatalogModelsChange={fetchedModelCatalog[1]}
                 key={`${appId}:${selectedPresetId}`}
                 baseUrl={appId === "codex" ? codexBaseUrl : geminiBaseUrl}
                 apiKey={appId === "codex" ? codexApiKey : geminiApiKey}
@@ -2871,16 +2971,7 @@ function ProviderFormFull({
                   appId === "codex" ? localCodexAnthropicAuthField : undefined
                 }
                 editingCredentials={editingCredentials}
-                autoSelectFormat={
-                  !isEditMode &&
-                  selectedPresetId === "custom" &&
-                  !protocolManuallySelected
-                }
-                onModelChange={
-                  appId === "codex"
-                    ? handleCodexModelChange
-                    : handleGeminiModelChange
-                }
+                autoSelectFormat={!isEditMode && !protocolManuallySelected}
                 onManualFormatSelect={() => setProtocolManuallySelected(true)}
                 onApiFormatChange={
                   appId === "codex"
