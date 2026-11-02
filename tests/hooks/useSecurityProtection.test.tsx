@@ -58,6 +58,12 @@ vi.mock("@/lib/api/providers", () => ({
 describe("current app protection", () => {
   beforeEach(() => vi.resetAllMocks());
   it("enables detection for a configured Desktop route", async () => {
+    vi.mocked(proxyApi.getProxyStatus).mockResolvedValue({
+      running: true,
+    } as any);
+    vi.mocked(proxyApi.getProxyTakeoverStatus).mockResolvedValue({
+      "claude-desktop": true,
+    } as any);
     vi.mocked(providersApi.getClaudeDesktopStatus).mockResolvedValue({
       supported: true,
       configured: true,
@@ -174,6 +180,12 @@ describe("ensureSecurityRoute", () => {
     expect(proxyApi.setProxyTakeoverForApp).not.toHaveBeenCalled();
   });
   it("does not claim Desktop direct mode is protected", async () => {
+    vi.mocked(proxyApi.getProxyStatus).mockResolvedValue({
+      running: true,
+    } as any);
+    vi.mocked(proxyApi.getProxyTakeoverStatus).mockResolvedValue({
+      "claude-desktop": false,
+    } as any);
     vi.mocked(providersApi.getClaudeDesktopStatus).mockResolvedValue({
       configured: true,
       mode: "direct",

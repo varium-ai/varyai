@@ -8,6 +8,10 @@ Select a client, add a provider, review its endpoint, credentials and models, th
 
 Use your own credentials. A preset is a configuration starting point, not an endorsement, subscription or guarantee of access. See [provider setup and routing](guides/provider-routing.md) for API-format selection and verification.
 
+## Start with independent storage
+
+New installations start with independent empty storage. Add providers and resources in VaryAI, then apply them to the intended clients. Use the database backup and restore controls for VaryAI backups. Old VaryAI installation upgrades are not part of this flow. See [storage and backups](architecture/storage.md).
+
 ## Routing and security
 
 Local routing applies only to enabled, supported integrations. Enable the master listener and the relevant client routing switch when conversion or inspection is required. Back up client settings before first takeover and use the application's disable/recovery controls when restoring direct access.
@@ -40,7 +44,7 @@ Workspace and client-specific configuration panels operate on local files. Revie
 
 The statistics view summarizes recorded usage; coverage depends on the observed traffic and available usage fields. It is not the provider's billing ledger. Security event counts likewise depend on enabled rules and successful event collection.
 
-Backups and synchronization can include credentials and private client configuration. Keep them private and use the existing restore/import workflow rather than manually replacing one database file. Vary AI uses a shared `cc-switch.db` and an extension `vary-ai.db`; see [storage and recovery](architecture/storage.md).
+Backups and synchronization can include credentials and private client configuration. Keep them private and use the existing restore/import workflow rather than manually replacing one database file. Vary AI uses the independent `varyai.db` and `varyai-ext.db` pair; see [storage and recovery](architecture/storage.md).
 
 The application retains its configured update feed. A locally built package is distinct from an accepted official installer. See [release distribution](guides/release-distribution.md) and [data/network behavior](data-and-network.md) before distributing a fork or changing update configuration.
 

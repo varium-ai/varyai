@@ -444,6 +444,7 @@ async fn desktop_native_route_uses_bound_policy_and_keeps_desktop_auth(
     db.save_provider("claude-desktop", &provider)?;
     db.set_current_provider("claude-desktop", &provider.id)?;
     db.set_setting("claude_desktop_gateway_token", "synthetic-native")?;
+    db.set_setting(crate::claude_desktop_config::ROUTING_ENABLED_KEY, "true")?;
     let key = db.create_gateway_key(KeyPolicy {
         name: "Desktop budget".into(),
         models: vec!["claude-sonnet-fixture".into()],

@@ -6,13 +6,19 @@ Vary AI routes configured AI traffic through a local gateway. This document dist
 
 | Behavior                  | Default                                                                                                                      | Control and implementation                                                                                                                                                                                                       |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Local gateway             | Listens on `127.0.0.1:15721`; non-loopback bind addresses are rejected.                                                      | Configure a loopback address and port in Settings. See [local routing](guides/provider-routing.md), [`proxy/server.rs`](../src-tauri/src/proxy/server.rs) and [`proxy/types.rs`](../src-tauri/src/proxy/types.rs).               |
+| Local gateway             | Listens on `127.0.0.1:15722`; non-loopback bind addresses are rejected.                                                      | Configure a loopback address and port in Settings. See [local routing](guides/provider-routing.md), [`proxy/server.rs`](../src-tauri/src/proxy/server.rs) and [`proxy/types.rs`](../src-tauri/src/proxy/types.rs).               |
 | AI provider requests      | Requests use the endpoints and credentials selected by the user.                                                             | Provider and client routing settings determine the destination. Inspect those settings before sending sensitive content.                                                                                                         |
 | Installation statistics   | Off. A fresh installation creates no statistics identifier. Builds without a statistics destination cannot enable reporting. | Settings → General → Privacy provides an explicit switch. See [`PrivacySettings.tsx`](../src/components/settings/PrivacySettings.tsx) and [`telemetry.rs`](../src-tauri/src/telemetry.rs).                                       |
 | Remote page analytics     | The renderer includes no Google Analytics loader or page-tracking bootstrap.                                                 | See [`src/index.html`](../src/index.html) and the content security policy in [`tauri.conf.json`](../src-tauri/tauri.conf.json).                                                                                                  |
 | Application update checks | The application checks the configured updater feed shortly after startup.                                                    | Manual checks and user-triggered installation are available. Dismissing an update notice does not disable future checks. See [`UpdateContext.tsx`](../src/contexts/UpdateContext.tsx) and [`updater.ts`](../src/lib/updater.ts). |
 
 Local audit storage and redaction do not prevent a configured provider from receiving the content that remains in a forwarded request. Review detection rules, handling methods and client coverage for your workflow. The gateway is a local application service, not an authenticated network service for other machines.
+
+## Storage and optional synchronization
+
+Application data uses an independent `varyai.db` / `varyai-ext.db` pair under `~/.varyai` or the selected data directory. Device settings, account files, gateway secret copies, certificates and local runtime files stay under `~/.varyai`. Client-native configuration and an explicitly selected `~/.agents/skills` directory can still be shared with other tools.
+
+New installations create independent empty storage. VaryAI manages configuration independently; old VaryAI installation upgrades are outside this flow. Portable exports and cloud snapshots can contain provider credentials and private configuration; device account files are outside their payloads. WebDAV/S3 use a reserved `varyai` path segment and the `varyai-sync` manifest. Configure cloud accounts and initial sync direction independently. See [storage ownership and recovery](architecture/storage.md) for exact boundaries.
 
 ## Optional installation statistics
 
@@ -42,6 +48,8 @@ The updater contacts the feed configured in [`tauri.conf.json`](../src-tauri/tau
 [`tauri.no-updater.conf.json`](../src-tauri/tauri.no-updater.conf.json) disables updater artifact generation. Combined with `--no-bundle`, the README build command compiles without release bundles or updater artifacts; it does not remove the updater plugin or disable runtime update checks. Fork distributors should review [release distribution and update compatibility](guides/release-distribution.md).
 
 ## Client integrations
+
+New API-key provider and connection-preset forms automatically discover models after URL/key editing ends, then send bounded inference probes to the configured supplier to select a verified protocol. Each check can send up to eight small requests and may incur supplier charges. Existing configurations and manual protocol selections require an explicit detection action. See [provider setup](guides/provider-routing.md#reuse-a-named-connection) for model selection and verification limits.
 
 Client configuration, local bridges, model catalogs, endpoint tests and user-requested downloads can involve additional files or network requests. The table above is not a complete network allowlist. Refer to the [integration guides](README.md), especially the explicit launch and debugging-port boundaries for [Doubao Work](guides/doubao-work.md) and the captured configuration in [profiles](guides/profiles.md).
 

@@ -40,6 +40,7 @@ mod services;
 pub use services::profile_bundle::ProfileBundleService;
 mod session_manager;
 mod settings;
+mod storage_setup;
 mod store;
 mod telemetry;
 mod tool_risk_events;
@@ -246,6 +247,21 @@ fn runtime_log_level_allows(level: log::Level, max_level: log::LevelFilter) -> b
     max_level.to_level().is_some_and(|maximum| level <= maximum)
 }
 
+fn display_log_target(target: &str) -> std::borrow::Cow<'_, str> {
+    for (legacy, current) in [("cc_switch_lib", "vary_ai_lib"), ("cc_switch", "vary_ai")] {
+        if target == legacy {
+            return std::borrow::Cow::Borrowed(current);
+        }
+        if let Some(module) = target
+            .strip_prefix(legacy)
+            .and_then(|suffix| suffix.strip_prefix("::"))
+        {
+            return std::borrow::Cow::Owned(format!("{current}::{module}"));
+        }
+    }
+    std::borrow::Cow::Borrowed(target)
+}
+
 ///
 /// - 解析 URL
 /// - 向前端发射 `deeplink-import` / `deeplink-error` 事件
@@ -345,7 +361,7 @@ pub fn run() {
         // Notification setup is auxiliary; never prevent the gateway starting.
         eprintln!("Development notification app setup failed: {error}");
     }
-    // 设置 panic hook，在应用崩溃时记录日志到 <app_config_dir>/crash.log（默认 ~/.cc-switch/crash.log）
+    // Record crashes in the VaryAI device root.
     panic_hook::setup_panic_hook();
 
     let mut builder = tauri::Builder::default();
@@ -421,9 +437,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // 数据库版本过新的恢复模式下没有托盘可唤回，关闭即退出，避免应用隐身后台
-                let in_db_recovery = crate::init_status::get_init_error()
-                    .map(|p| p.kind.as_deref() == Some("db_version_too_new"))
-                    .unwrap_or(false);
+                let in_db_recovery = crate::init_status::get_init_error().is_some();
                 if in_db_recovery {
                     api.prevent_close();
                     window.app_handle().exit(0);
@@ -464,11 +478,16 @@ pub fn run() {
         .setup(|app| {
             let _ = rustls::crypto::ring::default_provider().install_default();
 
+            // Resolve native storage before any settings cache, logger or worker can write.
+            if !storage_setup::gate_startup(app.handle())? {
+                return Ok(());
+            }
+
             // 预先刷新 Store 覆盖配置，确保后续路径读取正确（日志/数据库等）
             app_store::refresh_app_config_dir_override(app.handle());
-            panic_hook::init_app_config_dir(crate::config::get_app_config_dir());
+            panic_hook::init_app_config_dir(crate::config::get_device_config_dir());
 
-            // 初始化日志（输出到 <app_config_dir>/logs/cc-switch.log）
+            // Initialize logging in the private device root.
             {
                 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
 
@@ -493,7 +512,7 @@ pub fn run() {
                             Target::new(TargetKind::Stdout),
                             Target::new(TargetKind::Folder {
                                 path: log_dir,
-                                file_name: Some("cc-switch".into()),
+                                file_name: Some("varyai".into()),
                             }),
                         ])
                         // KeepSome(4) 保留 4 个轮转归档，加上当前文件最多约 100 MiB。
@@ -501,6 +520,15 @@ pub fn run() {
                         .rotation_strategy(RotationStrategy::KeepSome(4))
                         .max_file_size(20 * 1024 * 1024)
                         .timezone_strategy(TimezoneStrategy::UseLocal)
+                        // Apply after timezone_strategy, which resets the formatter.
+                        .format(|out, message, record| {
+                            let now = TimezoneStrategy::UseLocal.get_now();
+                            out.finish(format_args!(
+                                "[{}][{:02}:{:02}:{:02}][{}][{}] {}",
+                                now.date(), now.hour(), now.minute(), now.second(),
+                                record.level(), display_log_target(record.target()), message
+                            ));
+                        })
                         .build(),
                 )?;
 
@@ -537,50 +565,8 @@ pub fn run() {
 
             // 初始化数据库
             let app_config_dir = crate::config::get_app_config_dir();
-            let db_path = app_config_dir.join("cc-switch.db");
-            let json_path = app_config_dir.join("config.json");
-
-            // 检查是否需要从 config.json 迁移到 SQLite
-            let has_json = json_path.exists();
-            let has_db = db_path.exists();
-
-            // 如果需要迁移，先验证 config.json 是否可以加载（在创建数据库之前）
-            // 这样如果加载失败用户选择退出，数据库文件还没被创建，下次可以正常重试
-            let migration_config = if !has_db && has_json {
-                log::info!("检测到旧版配置文件，验证配置文件...");
-
-                // 循环：支持用户重试加载配置文件
-                loop {
-                    match crate::app_config::MultiAppConfig::load() {
-                        Ok(config) => {
-                            log::info!("✓ 配置文件加载成功");
-                            break Some(config);
-                        }
-                        Err(e) => {
-                            log::error!("加载旧配置文件失败: {e}");
-                            // 弹出系统对话框让用户选择
-                            if !show_migration_error_dialog(app.handle(), &e.to_string()) {
-                                // 用户选择退出（此时数据库还没创建，下次启动可以重试）
-                                log::info!("用户选择退出程序");
-                                std::process::exit(1);
-                            }
-                            // 用户选择重试，继续循环
-                            log::info!("用户选择重试加载配置文件");
-                        }
-                    }
-                }
-            } else {
-                None
-            };
-
-            // 现在创建数据库（包含 Schema 迁移）
-            //
-            // 说明：从 v3.8.* 升级的用户通常会走到这里的 SQLite schema 迁移，
-            // 若迁移失败（数据库损坏/权限不足/user_version 过新等），需要给用户明确提示，
-            // 否则表现可能只是“应用打不开/闪退”。
-            //
-            // 预检：数据库版本过新时，必须先于任何 schema 写操作（create_tables 内含
-            // DROP/ALTER 等 DDL）进入恢复界面，避免旧应用对读不懂的更新版 DB 落写。
+            let db_path = app_config_dir.join("varyai.db");
+            // Check native versions before schema writes and expose recoverable failures.
             match crate::database::Database::stored_user_version_exceeds_supported(&db_path) {
                 Ok(Some(stored)) => {
                     let version = stored.version;
@@ -665,30 +651,6 @@ pub fn run() {
                 }
             }
 
-            // 如果有预加载的配置，执行迁移
-            if let Some(config) = migration_config {
-                log::info!("开始执行数据迁移...");
-
-                match db.migrate_from_json(&config) {
-                    Ok(_) => {
-                        log::info!("✓ 配置迁移成功");
-                        // 标记迁移成功，供前端显示 Toast
-                        crate::init_status::set_migration_success();
-                        // 归档旧配置文件（重命名而非删除，便于用户恢复）
-                        let archive_path = json_path.with_extension("json.migrated");
-                        if let Err(e) = std::fs::rename(&json_path, &archive_path) {
-                            log::warn!("归档旧配置文件失败: {e}");
-                        } else {
-                            log::info!("✓ 旧配置已归档为 config.json.migrated");
-                        }
-                    }
-                    Err(e) => {
-                        // 配置加载成功但迁移失败的情况极少（磁盘满等），仅记录日志
-                        log::error!("配置迁移失败: {e}，将从现有配置导入");
-                    }
-                }
-            }
-
             let app_state = AppState::new(db);
             if let Err(error) = initialize_optional_agent_visibility(&app_state.db) {
                 log::warn!("初始化可选 Agent 列表失败: {error}");
@@ -768,6 +730,7 @@ pub fn run() {
             for app_type in
                 crate::app_config::AppType::all().filter(|t| !t.is_additive_mode())
             {
+                if !app_state.db.owns_native_client(&app_type).unwrap_or(false) { continue; }
                 if !crate::services::provider::should_import_default_config_on_startup(
                     &app_state,
                     &app_type,
@@ -886,6 +849,7 @@ pub fn run() {
             //
             // 底层 read_*_config 在文件不存在时返回默认空配置，因此新装且无
             // live 文件的用户走 Ok(0) 路径，不会产生错误日志噪音。
+            if app_state.db.owns_native_client(&AppType::OpenCode).unwrap_or(false) {
             match crate::services::provider::import_opencode_providers_from_live(&app_state) {
                 Ok(count) if count > 0 => {
                     log::info!("✓ Synced {count} OpenCode provider(s) from live config");
@@ -893,6 +857,8 @@ pub fn run() {
                 Ok(_) => log::debug!("○ No OpenCode provider changes from live config"),
                 Err(e) => log::warn!("✗ Failed to import OpenCode providers: {e}"),
             }
+            }
+            if app_state.db.owns_native_client(&AppType::OpenClaw).unwrap_or(false) {
             match crate::services::provider::import_openclaw_providers_from_live(&app_state) {
                 Ok(count) if count > 0 => {
                     log::info!("✓ Synced {count} OpenClaw provider(s) from live config");
@@ -900,6 +866,8 @@ pub fn run() {
                 Ok(_) => log::debug!("○ No OpenClaw provider changes from live config"),
                 Err(e) => log::warn!("✗ Failed to import OpenClaw providers: {e}"),
             }
+            }
+            if app_state.db.owns_native_client(&AppType::Hermes).unwrap_or(false) {
             match crate::services::provider::import_hermes_providers_from_live(&app_state) {
                 Ok(count) if count > 0 => {
                     log::info!("✓ Synced {count} Hermes provider(s) from live config");
@@ -907,12 +875,15 @@ pub fn run() {
                 Ok(_) => log::debug!("○ No Hermes provider changes from live config"),
                 Err(e) => log::warn!("✗ Failed to import Hermes providers: {e}"),
             }
+            }
+            if app_state.db.owns_native_client(&AppType::Pi).unwrap_or(false) {
             match crate::services::provider::import_pi_providers_from_live(&app_state) {
                 Ok(count) if count > 0 => {
                     log::info!("✓ Synced {count} Pi provider(s) from native config");
                 }
                 Ok(_) => log::debug!("○ No Pi provider changes from native config"),
                 Err(e) => log::warn!("✗ Failed to import Pi providers: {e}"),
+            }
             }
 
             // 2. OMO 配置导入（当数据库中无 OMO provider 时，从本地文件导入）
@@ -922,7 +893,7 @@ pub fn run() {
                     .get_all_providers("opencode")
                     .map(|providers| providers.values().any(|p| p.category.as_deref() == Some("omo")))
                     .unwrap_or(false);
-                if !has_omo {
+                if !has_omo && app_state.db.owns_native_client(&AppType::OpenCode).unwrap_or(false) {
                     match crate::services::OmoService::import_from_local(&app_state, &crate::services::omo::STANDARD) {
                         Ok(provider) => {
                             log::info!("✓ Imported OMO config from local as provider '{}'", provider.name);
@@ -948,7 +919,7 @@ pub fn run() {
                             .any(|p| p.category.as_deref() == Some("omo-slim"))
                     })
                     .unwrap_or(false);
-                if !has_omo_slim {
+                if !has_omo_slim && app_state.db.owns_native_client(&AppType::OpenCode).unwrap_or(false) {
                     match crate::services::OmoService::import_from_local(&app_state, &crate::services::omo::SLIM) {
                         Ok(provider) => {
                             log::info!(
@@ -967,7 +938,7 @@ pub fn run() {
             }
 
             // 3. 导入 MCP 服务器配置（表空时触发）
-            if app_state.db.is_mcp_table_empty().unwrap_or(false) {
+            if !app_state.db.is_native_storage().unwrap_or(true) && app_state.db.is_mcp_table_empty().unwrap_or(false) {
                 log::info!("MCP table empty, importing from live configurations...");
 
                 match crate::services::mcp::McpService::import_from_claude(&app_state) {
@@ -1020,7 +991,7 @@ pub fn run() {
             }
 
             // 4. 导入提示词文件（表空时触发）
-            if app_state.db.is_prompts_table_empty().unwrap_or(false) {
+            if !app_state.db.is_native_storage().unwrap_or(true) && app_state.db.is_prompts_table_empty().unwrap_or(false) {
                 log::info!("Prompts table empty, importing from live configurations...");
 
                 for app in [
@@ -1044,11 +1015,6 @@ pub fn run() {
                         Err(e) => log::warn!("✗ Failed to import prompt for {}: {e}", app.as_str()),
                     }
                 }
-            }
-
-            // 迁移旧的 app_config_dir 配置到 Store
-            if let Err(e) = app_store::migrate_app_config_dir_from_settings(app.handle()) {
-                log::warn!("迁移 app_config_dir 失败: {e}");
             }
 
             // 启动阶段不再无条件保存,避免意外覆盖用户配置。
@@ -1206,7 +1172,7 @@ pub fn run() {
                 use commands::CopilotAuthState;
                 use tokio::sync::RwLock;
 
-                let app_config_dir = crate::config::get_app_config_dir();
+                let app_config_dir = crate::config::get_device_config_dir();
                 let copilot_auth_manager = CopilotAuthManager::new(app_config_dir);
                 app.manage(CopilotAuthState(Arc::new(RwLock::new(copilot_auth_manager))));
                 log::info!("✓ CopilotAuthManager initialized");
@@ -1228,7 +1194,7 @@ pub fn run() {
                 use commands::XaiOAuthState;
                 use tokio::sync::RwLock;
 
-                let app_config_dir = crate::config::get_app_config_dir();
+                let app_config_dir = crate::config::get_device_config_dir();
                 let xai_oauth_manager = XaiOAuthManager::new(app_config_dir);
                 app.manage(XaiOAuthState(Arc::new(RwLock::new(xai_oauth_manager))));
                 log::info!("✓ XaiOAuthManager initialized");
@@ -1281,7 +1247,8 @@ pub fn run() {
                 // 检查 Live 配置是否仍处于被接管状态（包含占位符）
                 let live_taken_over = state.proxy_service.detect_takeover_in_live_configs();
 
-                if has_backups || live_taken_over {
+                let own_routing = state.db.is_live_takeover_active().await.unwrap_or(false);
+                if has_backups || own_routing && live_taken_over {
                     log::warn!("检测到上次异常退出（存在接管残留），正在恢复 Live 配置...");
                     if let Err(e) = state.proxy_service.recover_from_crash().await {
                         log::error!("恢复 Live 配置失败: {e}");
@@ -1482,9 +1449,11 @@ pub fn run() {
             commands::send_system_notification,
             commands::open_external,
             commands::get_init_error,
-            commands::get_migration_result,
+            storage_setup::get_storage_setup,
+            storage_setup::complete_storage_setup,
             commands::get_skills_migration_result,
             commands::get_app_config_path,
+            commands::get_default_app_data_dir,
             commands::open_app_config_folder,
             commands::get_claude_common_config_snippet,
             commands::set_claude_common_config_snippet,
@@ -2134,6 +2103,12 @@ fn startup_agent_eligible(app: &str, visible: &settings::VisibleApps, installed:
 
 async fn enabled_proxy_apps_on_startup(db: &database::Database) -> Vec<&'static str> {
     let mut apps = Vec::new();
+    if db
+        .get_bool_flag(crate::claude_desktop_config::ROUTING_ENABLED_KEY)
+        .unwrap_or(false)
+    {
+        apps.push("claude-desktop");
+    }
     for app_type in PROXY_STARTUP_APP_TYPES {
         if db
             .get_proxy_config_for_app(app_type)
@@ -2179,6 +2154,11 @@ async fn enabled_proxy_apps_on_startup(db: &database::Database) -> Vec<&'static 
 }
 
 async fn restore_proxy_state_on_startup(state: &store::AppState) {
+    if !claude_desktop_config::routing_enabled(&state.db).unwrap_or(false) {
+        if let Err(error) = claude_desktop_config::suspend_routing(&state.db) {
+            log::warn!("Claude Desktop routing recovery failed: {error}");
+        }
+    }
     // 收集需要恢复接管的应用列表（从 proxy_config.enabled 读取）
     let apps_to_restore = enabled_proxy_apps_on_startup(&state.db).await;
 
@@ -2228,6 +2208,9 @@ fn initialize_common_config_snippets(state: &store::AppState) {
     // This must run before proxy takeover is restored on startup, otherwise we'd read
     // proxy-placeholder configs instead of the user's actual live settings.
     for app_type in crate::app_config::AppType::all() {
+        if !state.db.owns_native_client(&app_type).unwrap_or(false) {
+            continue;
+        }
         if !state
             .db
             .should_auto_extract_config_snippet(app_type.as_str())
@@ -2303,7 +2286,7 @@ fn initialize_common_config_snippets(state: &store::AppState) {
 }
 
 // ============================================================
-// 迁移错误对话框辅助函数
+// Database initialization recovery dialogs
 // ============================================================
 
 /// 检测是否为中文环境
@@ -2315,59 +2298,6 @@ fn is_chinese_locale() -> bool {
         .unwrap_or(false)
 }
 
-/// 显示迁移错误对话框
-/// 返回 true 表示用户选择重试，false 表示用户选择退出
-fn show_migration_error_dialog(app: &tauri::AppHandle, error: &str) -> bool {
-    let title = if is_chinese_locale() {
-        "配置迁移失败"
-    } else {
-        "Migration Failed"
-    };
-
-    let message = if is_chinese_locale() {
-        format!(
-            "从旧版本迁移配置时发生错误：\n\n{error}\n\n\
-            您的数据尚未丢失，旧配置文件仍然保留。\n\
-            建议回退到旧版本 Vary AI 以保护数据。\n\n\
-            点击「重试」重新尝试迁移\n\
-            点击「退出」关闭程序（可回退版本后重新打开）"
-        )
-    } else {
-        format!(
-            "An error occurred while migrating configuration:\n\n{error}\n\n\
-            Your data is NOT lost - the old config file is still preserved.\n\
-            Consider rolling back to an older Vary AI version.\n\n\
-            Click 'Retry' to attempt migration again\n\
-            Click 'Exit' to close the program"
-        )
-    };
-
-    let retry_text = if is_chinese_locale() {
-        "重试"
-    } else {
-        "Retry"
-    };
-    let exit_text = if is_chinese_locale() {
-        "退出"
-    } else {
-        "Exit"
-    };
-
-    // 使用 blocking_show 同步等待用户响应
-    // OkCancelCustom: 第一个按钮（重试）返回 true，第二个按钮（退出）返回 false
-    app.dialog()
-        .message(&message)
-        .title(title)
-        .kind(MessageDialogKind::Error)
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            retry_text.to_string(),
-            exit_text.to_string(),
-        ))
-        .blocking_show()
-}
-
-/// 显示数据库初始化/Schema 迁移失败对话框
-/// 返回 true 表示用户选择重试，false 表示用户选择退出
 fn show_database_init_error_dialog(
     app: &tauri::AppHandle,
     db_path: &std::path::Path,
@@ -2386,7 +2316,7 @@ fn show_database_init_error_dialog(
             您的数据尚未丢失，应用不会自动删除数据库文件。\n\
             常见原因包括：数据库版本过新、文件损坏、权限不足、磁盘空间不足等。\n\n\
             建议：\n\
-            1) 先备份整个配置目录（包含 cc-switch.db）\n\
+            1) 先备份整个配置目录（包含 varyai.db 和 varyai-ext.db）\n\
             2) 如果提示“数据库版本过新”，请升级到更新版本\n\
             3) 如果刚升级出现异常，可回退旧版本导出/备份后再升级\n\n\
             点击「重试」重新尝试初始化\n\
@@ -2400,7 +2330,7 @@ fn show_database_init_error_dialog(
             Your data is NOT lost - the app will not delete the database automatically.\n\
             Common causes include: newer database version, corrupted file, permission issues, or low disk space.\n\n\
             Suggestions:\n\
-            1) Back up the entire config directory (including cc-switch.db)\n\
+            1) Back up the entire config directory (including varyai.db and varyai-ext.db)\n\
             2) If you see “database version is newer”, please upgrade Vary AI\n\
             3) If this happened right after upgrading, consider rolling back to export/backup then upgrade again\n\n\
             Click 'Retry' to attempt initialization again\n\
@@ -2628,6 +2558,27 @@ mod tests {
     }
 
     #[test]
+    fn application_log_targets_use_vary_ai_branding() {
+        for (target, expected) in [
+            ("cc_switch_lib", "vary_ai_lib"),
+            ("cc_switch_lib::app_store", "vary_ai_lib::app_store"),
+            (
+                "cc_switch_lib::proxy::http_client",
+                "vary_ai_lib::proxy::http_client",
+            ),
+            ("cc_switch", "vary_ai"),
+            ("cc_switch::startup", "vary_ai::startup"),
+            ("vary_ai_lib::app_store", "vary_ai_lib::app_store"),
+            ("webview:reportFrontendError", "webview:reportFrontendError"),
+            ("cc_switch_library", "cc_switch_library"),
+            ("external::cc_switch_lib", "external::cc_switch_lib"),
+            ("", ""),
+        ] {
+            assert_eq!(super::display_log_target(target), expected);
+        }
+    }
+
+    #[test]
     fn no_code_keeps_app_alive_in_tray() {
         assert_eq!(classify_exit_request(None), ExitRequestAction::StayInTray);
     }
@@ -2667,6 +2618,17 @@ mod tests {
         let apps = enabled_proxy_apps_on_startup(&db).await;
 
         assert_eq!(apps, vec!["grokbuild"]);
+    }
+
+    #[tokio::test]
+    async fn startup_restore_includes_enabled_claude_desktop_route() {
+        let db = Database::memory().expect("db");
+        db.set_setting(crate::claude_desktop_config::ROUTING_ENABLED_KEY, "true")
+            .expect("enable Desktop routing");
+        assert_eq!(
+            enabled_proxy_apps_on_startup(&db).await,
+            vec!["claude-desktop"]
+        );
     }
 
     #[tokio::test]

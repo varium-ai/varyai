@@ -1,3 +1,5 @@
+export const DEFAULT_PROXY_PORT = 15722;
+
 export interface ProxyStatus {
   running: boolean;
   address: string;

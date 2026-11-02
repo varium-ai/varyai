@@ -28,7 +28,8 @@
 
 - [DLP architecture](architecture/security-audit.md)
 - [Tool observations and risk evaluation](architecture/tool-risk.md)
-- [Shared and extension storage](architecture/storage.md)
+- [Independent storage, recovery and backups](architecture/storage.md)
+- [Storage isolation design and shared-file inventory](design/varyai-storage-isolation.md)
 - [Upstream provenance](upstream-provenance.md)
 - [Security policy](../SECURITY.md)
 

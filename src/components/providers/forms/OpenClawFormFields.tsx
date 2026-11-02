@@ -1,5 +1,6 @@
+import type { FetchedModelCatalog } from "./shared/fetchedModelCatalog";
 import { useTranslation } from "react-i18next";
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { FormLabel } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { ImeSafeInput } from "@/components/ui/ime-safe-input";
@@ -25,6 +26,7 @@ import { openclawApiProtocols } from "@/config/openclawProviderPresets";
 import type { ProviderCategory, OpenClawModel } from "@/types";
 
 interface OpenClawFormFieldsProps {
+  fetchedModelCatalog?: FetchedModelCatalog;
   // Base URL
   baseUrl: string;
   onBaseUrlChange: (value: string) => void;
@@ -52,6 +54,7 @@ interface OpenClawFormFieldsProps {
 }
 
 export function OpenClawFormFields({
+  fetchedModelCatalog,
   baseUrl,
   onBaseUrlChange,
   apiKey,
@@ -70,8 +73,19 @@ export function OpenClawFormFields({
 }: OpenClawFormFieldsProps) {
   const { t } = useTranslation();
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
-  const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
+  const localModelCatalog = useState<FetchedModel[]>([]);
+  const [fetchedModels, setFetchedModels] =
+    fetchedModelCatalog ?? localModelCatalog;
   const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const modelFetchSequence = useRef(0);
+  useEffect(() => {
+    modelFetchSequence.current += 1;
+    setFetchedModels([]);
+    setIsFetchingModels(false);
+    return () => {
+      modelFetchSequence.current += 1;
+    };
+  }, [baseUrl, apiKey, setFetchedModels]);
 
   // Stable key tracking for models list
   const modelKeysRef = useRef<string[]>([]);
@@ -126,9 +140,14 @@ export function OpenClawFormFields({
       });
       return;
     }
+    const sequence = ++modelFetchSequence.current;
     setIsFetchingModels(true);
-    fetchModelsForConfig(baseUrl, apiKey)
+    (fetchedModels.length
+      ? Promise.resolve(fetchedModels)
+      : fetchModelsForConfig(baseUrl, apiKey)
+    )
       .then((models) => {
+        if (sequence !== modelFetchSequence.current) return;
         setFetchedModels(models);
         if (models.length === 0) {
           toast.info(t("providerForm.fetchModelsEmpty"));
@@ -139,11 +158,14 @@ export function OpenClawFormFields({
         }
       })
       .catch((err) => {
+        if (sequence !== modelFetchSequence.current) return;
         console.warn("[ModelFetch] Failed:", err);
         showFetchModelsError(err, t);
       })
-      .finally(() => setIsFetchingModels(false));
-  }, [baseUrl, apiKey, t]);
+      .finally(() => {
+        if (sequence === modelFetchSequence.current) setIsFetchingModels(false);
+      });
+  }, [baseUrl, apiKey, fetchedModels, setFetchedModels, t]);
 
   // Remove a model entry
   const handleRemoveModel = (index: number) => {

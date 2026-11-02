@@ -26,7 +26,7 @@ pub fn get_app_config_dir_override() -> Option<PathBuf> {
     override_cache().read().ok()?.clone()
 }
 
-fn read_override_from_store(app: &tauri::AppHandle) -> Option<PathBuf> {
+pub(crate) fn read_override_from_store(app: &tauri::AppHandle) -> Option<PathBuf> {
     let store = match app.store_builder("app_paths.json").build() {
         Ok(store) => store,
         Err(e) => {
@@ -46,10 +46,8 @@ fn read_override_from_store(app: &tauri::AppHandle) -> Option<PathBuf> {
 
             if !path.exists() {
                 log::warn!(
-                    "Store 中配置的 app_config_dir 不存在: {path:?}\n\
-                     将使用默认路径。"
+                    "Configured VaryAI data directory is unavailable; startup recovery is required."
                 );
-                return None;
             }
 
             log::info!("使用 Store 中的 app_config_dir: {path:?}");
@@ -84,6 +82,7 @@ pub fn set_app_config_dir_to_store(
         Some(p) => {
             let trimmed = p.trim();
             if !trimmed.is_empty() {
+                crate::config::validate_independent_data_dir(&resolve_path(trimmed))?;
                 store.set(STORE_KEY_APP_CONFIG_DIR, Value::String(trimmed.to_string()));
                 log::info!("已将 app_config_dir 写入 Store: {trimmed}");
             } else {
@@ -101,7 +100,23 @@ pub fn set_app_config_dir_to_store(
         .save()
         .map_err(|e| AppError::Message(format!("保存 Store 失败: {e}")))?;
 
-    refresh_app_config_dir_override(app);
+    // Apply the pointer at startup; existing connections retain their data root.
+    Ok(())
+}
+
+pub(crate) fn validate_paths_store(app: &tauri::AppHandle) -> Result<(), AppError> {
+    let store = app
+        .store_builder("app_paths.json")
+        .build()
+        .map_err(|_| AppError::Message("storage.invalidSettings".into()))?;
+    if let Some(value) = store.get(STORE_KEY_APP_CONFIG_DIR) {
+        let raw = value
+            .as_str()
+            .ok_or_else(|| AppError::Message("storage.invalidSettings".into()))?;
+        if !raw.trim().is_empty() && !resolve_path(raw).is_absolute() {
+            return Err(AppError::Message("storage.invalidTarget".into()));
+        }
+    }
     Ok(())
 }
 
@@ -124,12 +139,38 @@ fn resolve_path(raw: &str) -> PathBuf {
     PathBuf::from(raw)
 }
 
-/// 从旧的 settings.json 迁移 app_config_dir 到 Store
-pub fn migrate_app_config_dir_from_settings(app: &tauri::AppHandle) -> Result<(), AppError> {
-    // app_config_dir 已从 settings.json 移除，此函数保留但不再执行迁移
-    // 如果用户在旧版本设置过 app_config_dir，需要在 Store 中手动配置
-    log::info!("app_config_dir 迁移功能已移除，请在设置中重新配置");
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let _ = refresh_app_config_dir_override(app);
-    Ok(())
+    #[test]
+    #[serial_test::serial]
+    fn changing_application_data_root_preserves_native_client_directories() {
+        struct Restore(Option<PathBuf>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                update_cached_override(self.0.take());
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let _restore = Restore(get_app_config_dir_override());
+        let clients_before = (
+            crate::config::get_claude_config_dir(),
+            crate::codex_config::get_codex_config_dir(),
+            crate::gemini_config::get_gemini_dir(),
+        );
+        let device_before = crate::config::get_device_config_dir();
+        let target = temp.path().join("independent-varyai-data");
+        update_cached_override(Some(target.clone()));
+        assert_eq!(crate::config::get_app_config_dir(), target);
+        assert!(device_before == crate::config::get_device_config_dir());
+        assert!(
+            clients_before
+                == (
+                    crate::config::get_claude_config_dir(),
+                    crate::codex_config::get_codex_config_dir(),
+                    crate::gemini_config::get_gemini_dir(),
+                )
+        );
+    }
 }

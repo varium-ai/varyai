@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { DatabaseUpgrade } from "./components/DatabaseUpgrade";
+import { StorageSetup } from "./components/StorageSetup";
 import "./index.css";
 // 导入国际化配置
 import i18n from "./i18n";
@@ -57,7 +58,7 @@ interface ConfigLoadErrorPayload {
 async function handleConfigLoadError(
   payload: ConfigLoadErrorPayload | null,
 ): Promise<void> {
-  const path = payload?.path ?? "~/.cc-switch/config.json";
+  const path = payload?.path ?? "~/.varyai/varyai.db";
   const detail = payload?.error ?? "Unknown error";
 
   await message(
@@ -94,13 +95,21 @@ async function bootstrap() {
     const initError = (await invoke(
       "get_init_error",
     )) as ConfigLoadErrorPayload | null;
-    if (initError && initError.kind === "db_version_too_new") {
+    if (
+      initError &&
+      (initError.kind === "db_version_too_new" ||
+        initError.kind === "storage_setup")
+    ) {
       // 数据库版本过新：渲染应用内「升级应用」恢复界面，不进入正常 App
       ReactDOM.createRoot(document.getElementById("root")!).render(
         <React.StrictMode>
           <FrontendErrorBoundary>
             <ThemeProvider defaultTheme="system" storageKey="cc-switch-theme">
-              <DatabaseUpgrade payload={initError} />
+              {initError.kind === "storage_setup" ? (
+                <StorageSetup errorKey={initError.error} />
+              ) : (
+                <DatabaseUpgrade payload={initError} />
+              )}
               <Toaster />
             </ThemeProvider>
           </FrontendErrorBoundary>

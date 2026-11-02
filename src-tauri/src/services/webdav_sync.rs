@@ -267,6 +267,7 @@ async fn download_and_verify(
 fn remote_dir_segments(settings: &WebDavSyncSettings, layout: RemoteLayout) -> Vec<String> {
     let mut segs = Vec::new();
     segs.extend(path_segments(&settings.remote_root).map(str::to_string));
+    segs.push("varyai".to_string());
     segs.push(format!("v{PROTOCOL_VERSION}"));
     if layout == RemoteLayout::Current {
         segs.push(format!("db-v{DB_COMPAT_VERSION}"));
@@ -308,7 +309,10 @@ mod tests {
             ..WebDavSyncSettings::default()
         };
         let segs = remote_dir_segments(&settings, RemoteLayout::Current);
-        assert_eq!(segs, vec!["cc-switch-sync", "v2", "db-v6", "default"]);
+        assert_eq!(
+            segs,
+            vec!["cc-switch-sync", "varyai", "v2", "db-v6", "default"]
+        );
     }
 
     #[test]
@@ -319,6 +323,6 @@ mod tests {
             ..WebDavSyncSettings::default()
         };
         let segs = remote_dir_segments(&settings, RemoteLayout::Legacy);
-        assert_eq!(segs, vec!["cc-switch-sync", "v2", "default"]);
+        assert_eq!(segs, vec!["cc-switch-sync", "varyai", "v2", "default"]);
     }
 }

@@ -34,11 +34,14 @@
     "newDraft": "New preset draft ready. Enter its details and click Save."
   },
   "providerDetection": {
+    "selectModel": "Select detection model",
+    "probeHint": "The detection model only tests protocol compatibility. Configure saved models separately or fill them from the discovered model list.",
     "title": "Detect configuration",
     "discovering": "Retrieving models…",
     "modelsFound": "{{count}} models found",
     "manualModelHint": "You can enter a model manually if no list is available.",
     "selectedModel": "Model to test: {{model}}",
+    "autoHint": "After URL and key entry, detection selects the first protocol with verified text and streaming, using an available model without changing your default.",
     "costHint": "Detection sends up to 8 small inference requests using your key and may incur charges. Nothing is sent while you type.",
     "check": "Detect configuration",
     "checking": "Detecting…",
@@ -566,6 +569,7 @@
     "accountLoading": "Loading account…"
   },
   "claudeDesktop": {
+    "modelRoutingHint": "Configure models and the upstream protocol here. Control local routing with the Claude Desktop switch on Home or in Settings. Model mapping and protocol conversion require routing.",
     "modelConfigTitle": "Model Configuration",
     "modelModeLabel": "Connection Mode",
     "modelModeDirect": "Direct",
@@ -575,10 +579,10 @@
     "modeDirect": "Direct",
     "modeProxy": "Requires routing",
     "modelMappingToggle": "Needs model mapping",
-    "modelMappingOffHint": "Direct mode works only when the provider accepts Claude Desktop's three role IDs (claude-sonnet-* / claude-opus-* / claude-haiku-*); for any other model name (including legacy IDs like claude-3-5-sonnet-…), select Model Mapping.",
-    "modelMappingOnHint": "Claude Desktop only accepts the three role IDs claude-sonnet-* / claude-opus-* / claude-haiku-*. In Model Mapping mode, Vary AI maps these roles to your provider's actual models and keeps local routing running while in use.",
+    "modelMappingOffHint": "Use direct mode only when the provider accepts model IDs recognized by Claude Desktop. For other model IDs, use Model Mapping.",
+    "modelMappingOnHint": "Sonnet, Opus, Fable and Haiku are compatibility roles, not a model-count limit. Add multiple models under the same role and choose any menu display name. Vary AI maps each entry to the upstream model through local routing.",
     "routeMapTitle": "Model mapping",
-    "routeMapHint": "Only roles with an actual request model appear in Desktop's menu. Clear the model to remove a menu entry. Unconfigured Haiku sub-agent requests fall back internally to Sonnet or the first configured model. Declare 1M only when supported by the upstream.",
+    "routeMapHint": "Add or delete mappings freely; roles may repeat. Selecting a model updates its menu display name, which you can then customize. Only rows with an actual request model appear in Desktop. Unconfigured Haiku sub-agent requests use Sonnet or the first configured model. Declare 1M only when supported by the upstream.",
     "routeModelLabel": "Model role",
     "routeRoleSonnet": "Sonnet",
     "routeRoleOpus": "Opus",
@@ -593,6 +597,7 @@
     "directModelListHint": "Configure the Sonnet, Opus, and Haiku models available to Claude Desktop. Leave this empty to let Claude Desktop fetch /v1/models automatically. Checking 1M declares 1M context support.",
     "directModelInvalid": "Direct models must use Claude Desktop-recognized Sonnet / Opus / Haiku model IDs",
     "addModel": "Add model",
+    "importAllModels": "Import all models",
     "addRoute": "Add model",
     "routeInvalid": "Choose a model role and enter the requested model",
     "routesRequired": "At least one model mapping is required",
@@ -603,13 +608,16 @@
     "statusGatewayTokenMissing": "The local routing token has not been generated yet. Switching to this provider again will write a new local token.",
     "statusBaseUrlMismatch": "The Claude Desktop profile points to a different URL than the current provider. Current: {{actual}}; expected: {{expected}}. Switch to the current provider again to repair it.",
     "route": {
+      "officialBlocked": "Disable Claude Desktop routing before switching to official login.",
       "ariaLabel": "Claude Desktop local routing",
-      "settingsHint": "For Claude Desktop, first activate a provider with model mapping enabled. This switch controls the shared routing service and cannot be turned off while another app uses takeover.",
+      "settingsHint": "The switch controls routing for Claude Desktop. Model mapping and protocol conversion require it to be enabled. Restart Claude Desktop after changing routing.",
       "tooltip": {
         "active": "Claude Desktop local routing is running - {{address}}:{{port}}",
         "inactive": "Turn on Claude Desktop local routing for providers that need model mapping or format conversion. Configured address: {{address}}:{{port}}"
       },
-      "stopBlockedByTakeover": "Another app is using proxy takeover. Please disable that app's takeover in settings before stopping local routing."
+      "stopBlockedByTakeover": "Another app is using proxy takeover. Please disable that app's takeover in settings before stopping local routing.",
+      "sharedGateway": "Shared gateway",
+      "sharedGatewayInUse": "The shared gateway is in use by {{apps}}. Turn off their routing before stopping the gateway."
     }
   },
   "notifications": {
@@ -662,7 +670,7 @@
     "windowControlFailed": "Window control failed: {{error}}",
     "officialBlockedByProxy": "Cannot switch to official provider while local routing is active. Using routing with official APIs may cause account bans.",
     "proxyOfficialWarning": "Current provider {{name}} is official. Consider switching to a third-party provider before using local routing.",
-    "proxyReasonClaudeDesktop": "Using Claude Desktop local routing mode"
+    "proxyReasonClaudeDesktop": "Claude Desktop model mapping or protocol conversion"
   },
   "confirm": {
     "deleteProvider": "Delete Provider",
@@ -868,8 +876,8 @@
     "themeLight": "Light",
     "themeDark": "Dark",
     "themeSystem": "System",
-    "importExport": "SQL Import/Export",
-    "importExportHint": "Import or export database SQL backups for migration or restore (import supports only backups exported by Vary AI).",
+    "importExport": "Database backup and restore",
+    "importExportHint": "Export or restore a database SQL backup. Restore replaces database contents and may reapply client configuration. Device settings, login files and Skills content are not included.",
     "exportConfig": "Export SQL Backup",
     "selectConfigFile": "Select SQL File",
     "noFileSelected": "No configuration file selected.",
@@ -1190,8 +1198,8 @@
     },
     "configDirectoryOverride": "Configuration Directory Override (Advanced)",
     "configDirectoryDescription": "When using Claude Code or Codex in environments like WSL, you can manually specify the configuration directory to the one in WSL to keep provider data consistent with the main environment.",
-    "appConfigDir": "Vary AI Configuration Directory",
-    "appConfigDirDescription": "Customize the storage location for Vary AI configuration (point to cloud sync folder to enable config sync)",
+    "appConfigDir": "VaryAI application data directory",
+    "appConfigDirDescription": "Choose an independent directory for databases, Skills and data backups. Device settings and login material stay local. Restart to apply.",
     "browsePlaceholderApp": "e.g., C:\\Users\\Administrator\\.cc-switch",
     "claudeConfigDir": "Claude Code Configuration Directory",
     "claudeConfigDirDescription": "Override Claude configuration directory (settings.json). Custom directories store .claude.json (MCP) inside the directory; the default ~/.claude directory keeps Claude Code's split ~/.claude.json path.",
@@ -1793,7 +1801,7 @@
     "fallbackModelHint": "A fallback for requests that don't clearly map to Sonnet, Opus, Fable, or Haiku. Recommended for third-party/relay endpoints—otherwise such requests (including Haiku background subtasks) are forwarded under their original Claude model name and may fail if the upstream doesn't host it. Safe to leave blank for official endpoints.",
     "quickSetModels": "Quick Set",
     "quickSetSuccess": "Imported {{count}} models into model mapping",
-    "importModelsHint": "One-click setup imports every model below. Claude Code 2.1.242+ displays these entries in /model; restart Claude Code after saving. Role defaults below are configured separately.",
+    "importModelsHint": "Fetch models replaces empty or unlisted primary and role defaults with the first fetched model, while preserving available defaults and custom labels. Quick Set also imports all selectable models. Restart Claude Code 2.1.242+ after saving to load /model.",
     "importModelName": "Display name",
     "importModelId": "Request model",
     "removeImportedModel": "Remove model",
@@ -1971,7 +1979,7 @@
     "pricingModelSourceHint": "Choose whether to match pricing by request model or response model"
   },
   "codexConfig": {
-    "importModelsHint": "Fetch Models loads candidates without changing the mapping. One-click Setup imports every model below and skips duplicates.",
+    "importModelsHint": "Fetch Models loads candidates and replaces an empty or unlisted default with the first fetched model. Quick Set also imports all models and skips duplicates.",
     "authJson": "auth.json (JSON) *",
     "authJsonPlaceholder": "{\n  \"OPENAI_API_KEY\": \"sk-your-api-key-here\"\n}",
     "authJsonHint": "Codex auth.json configuration content",
@@ -2059,7 +2067,7 @@
     "defaultModel": "Default model",
     "defaultModelHint": "Gemini CLI starts with this model by default. You can switch models during a session with /model.",
     "selectableModels": "Selectable models",
-    "importModelsHint": "Fetch loads candidates only. One-click setup adds every model below and skips duplicates while preserving the current default. Save and restart Gemini CLI, then open /model and press Enter on Manual to see the model list.",
+    "importModelsHint": "Fetch loads candidates and replaces an empty or unlisted default with the first fetched model. Quick Set also imports all selectable models, preserving existing model settings. Save and restart Gemini CLI, then open /model and press Enter on Manual to see the list.",
     "modelsConfigInvalid": "Fix the model configuration in the JSON below before importing models.",
     "envFile": "Environment Variables (.env)",
     "envFileHint": "Configure Gemini environment variables in .env format",
@@ -3332,7 +3340,6 @@
     "clickToSelect": "Click to select icon"
   },
   "migration": {
-    "success": "Configuration migrated successfully",
     "skillsSuccess": "Automatically imported {{count}} skill(s) into unified management",
     "skillsFailed": "Failed to auto import skills",
     "skillsFailedDescription": "Open the Skills page and click \"Import Existing\" to import manually (or restart and try again)."
@@ -3404,7 +3411,7 @@
         },
         "listenPort": {
           "label": "Listen Port",
-          "placeholder": "15721",
+          "placeholder": "15722",
           "description": "Port number the routing server listens on (1024 ~ 65535)"
         },
         "maxRetries": {
@@ -3470,7 +3477,9 @@
         "active": "{{appLabel}} is routing - {{address}}:{{port}}\nSwitch provider for hot switching",
         "broken": "{{appLabel}} is routing, but routing service is not running",
         "inactive": "Route {{appLabel}}'s requests through local routing"
-      }
+      },
+      "setupRequired": "{{app}} configuration has not been initialized. Apply an added or imported provider from Home, or initialize the client, then enable routing again.",
+      "prerequisitesHint": "Routing requires a configured client. Kimi, Qwen, ZCode and Pi need supported models; WorkBuddy needs its native product configuration. Qoder, TRAE and Doubao Work also require their connection or certificate authorization."
     },
     "failover": {
       "proxyRequired": "Routing service must be started to configure failover",
@@ -3893,7 +3902,7 @@
     "activate": "Activate protection",
     "enableRouting": "Enable local routing",
     "unsupported": "This app does not support local routing",
-    "desktopSetup": "Configure a valid local proxy profile for Claude Desktop first",
+    "desktopSetup": "Add and select a Claude Desktop provider with available models first.",
     "routeFailed": "Route takeover is not effective; audit was not enabled",
     "enableFailed": "Security audit operation failed",
     "targetApp": "Linked app",
@@ -4621,5 +4630,24 @@
     "serviceStats": "Service activity across all routes; per-key token usage is in Gateway keys → Usage.",
     "usagePeriod": "Accounting period starts: {{time}}",
     "startRouting": "Start local gateway"
+  },
+  "storage": {
+    "title": "Recover VaryAI storage",
+    "description": "The configured VaryAI data directory is unavailable or invalid. Reconnect it, choose another native directory, or explicitly create empty storage.",
+    "destination": "Configured data directory",
+    "startEmpty": "Start with empty storage",
+    "useExisting": "Choose another data directory",
+    "working": "Preparing storage…",
+    "setupRequired": "The configured VaryAI data directory is unavailable.",
+    "readFailed": "Cannot read the selected source. Check its location and permissions.",
+    "writeFailed": "Storage could not be prepared. Original files are preserved. Check free space and permissions, then retry.",
+    "destinationChanged": "The storage location changed. Reload recovery or select an independent directory.",
+    "invalidTarget": "Choose an independent VaryAI data directory outside the source directory.",
+    "invalidSettings": "The data-directory setting is invalid. Select an independent VaryAI data directory.",
+    "unsupportedSource": "This database format is unsupported or incomplete. Select a supported backup; do not delete or lower the version of the source database.",
+    "invalidRecovery": "Recovery information is incomplete or changed. Select a verified backup.",
+    "restartRequired": "Restart VaryAI before preparing a different storage location.",
+    "useDefault": "Use the default data directory",
+    "setupReadFailed": "Cannot read the VaryAI storage location. Check the data-directory setting and permissions."
   }
 }

@@ -293,8 +293,7 @@ function App() {
     status: proxyStatus,
   } = useProxyStatus();
   const proxyAppId = isProxyAppId(activeApp) ? activeApp : null;
-  const currentAppUsesProxy =
-    isTakeoverAppId(activeApp) || activeApp === "claude-desktop";
+  const currentAppUsesProxy = isTakeoverAppId(activeApp);
   const isCurrentAppTakeoverActive = isTakeoverAppId(activeApp)
     ? takeoverStatus?.[activeApp] || false
     : false;
@@ -562,24 +561,6 @@ function App() {
 
     checkEnvOnStartup();
   }, []);
-
-  useEffect(() => {
-    const checkMigration = async () => {
-      try {
-        const migrated = await invoke<boolean>("get_migration_result");
-        if (migrated) {
-          toast.success(
-            t("migration.success", { defaultValue: "配置迁移成功" }),
-            { closeButton: true },
-          );
-        }
-      } catch (error) {
-        console.error("[App] Failed to check migration result:", error);
-      }
-    };
-
-    checkMigration();
-  }, [t]);
 
   useEffect(() => {
     const checkSkillsMigration = async () => {

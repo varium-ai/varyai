@@ -21,7 +21,7 @@ fn unavailable() -> AppError {
     )
 }
 fn directory() -> Result<PathBuf, AppError> {
-    Ok(crate::config::get_home_dir().join(".cc-switch/trae-bridge"))
+    Ok(crate::config::get_device_config_dir().join("trae-bridge"))
 }
 #[cfg(unix)]
 fn request_socket(path: &std::path::Path, command: &Value) -> Result<Value, AppError> {

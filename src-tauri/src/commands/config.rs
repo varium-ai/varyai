@@ -297,6 +297,13 @@ pub async fn get_app_config_path() -> Result<String, String> {
 }
 
 #[tauri::command]
+pub async fn get_default_app_data_dir() -> Result<String, String> {
+    Ok(config::get_device_config_dir()
+        .to_string_lossy()
+        .into_owned())
+}
+
+#[tauri::command]
 pub async fn open_app_config_folder(handle: AppHandle) -> Result<bool, String> {
     let config_dir = config::get_app_config_dir();
 

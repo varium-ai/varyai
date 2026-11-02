@@ -1,3 +1,4 @@
+import type { FetchedModelCatalog } from "./shared/fetchedModelCatalog";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FormLabel } from "@/components/ui/form";
@@ -56,6 +57,7 @@ function parseModelConfig(value: string): GeminiModelConfig | null {
 }
 
 interface GeminiFormFieldsProps {
+  fetchedModelCatalog?: FetchedModelCatalog;
   apiFormat?: ClaudeApiFormat;
   onApiFormatChange?: (format: ClaudeApiFormat) => void;
   providerId?: string;
@@ -91,6 +93,7 @@ interface GeminiFormFieldsProps {
 }
 
 export function GeminiFormFields({
+  fetchedModelCatalog,
   apiFormat = "gemini_native",
   onApiFormatChange,
   providerId,
@@ -119,7 +122,9 @@ export function GeminiFormFields({
 }: GeminiFormFieldsProps) {
   const { t } = useTranslation();
 
-  const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
+  const localModelCatalog = useState<FetchedModel[]>([]);
+  const [fetchedModels, setFetchedModels] =
+    fetchedModelCatalog ?? localModelCatalog;
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const [importingModels, setImportingModels] = useState(false);
   const fetchSequence = useRef(0);
@@ -144,7 +149,7 @@ export function GeminiFormFields({
     return () => {
       fetchSequence.current += 1;
     };
-  }, [baseUrl, apiKey, apiFormat]);
+  }, [baseUrl, apiKey, setFetchedModels]);
 
   const handleFetchModels = useCallback(
     async (importModels = false) => {
@@ -158,19 +163,21 @@ export function GeminiFormFields({
       const sequence = ++fetchSequence.current;
       setIsFetchingModels(true);
       try {
-        const models = await fetchModelsForConfig(
-          baseUrl,
-          apiKey,
-          undefined,
-          undefined,
-          undefined,
-          {
-            apiFormat:
-              apiFormat === "gemini_native"
-                ? "google-generative-ai"
-                : undefined,
-          },
-        );
+        const models = fetchedModels.length
+          ? fetchedModels
+          : await fetchModelsForConfig(
+              baseUrl,
+              apiKey,
+              undefined,
+              undefined,
+              undefined,
+              {
+                apiFormat:
+                  apiFormat === "gemini_native"
+                    ? "google-generative-ai"
+                    : undefined,
+              },
+            );
         if (sequence !== fetchSequence.current) return;
         setFetchedModels(models);
         if (!importModels && models.length === 0) {
@@ -187,8 +194,19 @@ export function GeminiFormFields({
         if (sequence === fetchSequence.current) setIsFetchingModels(false);
       }
     },
-    [baseUrl, apiKey, apiFormat, t],
+    [baseUrl, apiKey, apiFormat, fetchedModels, setFetchedModels, t],
   );
+
+  function syncDefaultModel(models: FetchedModel[]) {
+    const ids = [...new Set(models.map(({ id }) => id.trim()).filter(Boolean))];
+    if (ids.length && !ids.includes(latest.current.model.trim()))
+      onModelChange(ids[0]);
+  }
+
+  async function handleFetchAndSyncDefault() {
+    const models = await handleFetchModels();
+    if (models) syncDefaultModel(models);
+  }
 
   async function handleQuickSet() {
     setImportingModels(true);
@@ -228,7 +246,7 @@ export function GeminiFormFields({
           2,
         ),
       );
-      if (!latest.current.model.trim()) onModelChange(ids[0]);
+      syncDefaultModel(models);
       toast.success(
         t("providerForm.quickSetSuccess", { count: Object.keys(next).length }),
       );
@@ -393,7 +411,7 @@ export function GeminiFormFields({
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => handleFetchModels()}
+                onClick={handleFetchAndSyncDefault}
                 disabled={isFetchingModels || importingModels}
                 className="h-7 gap-1"
               >

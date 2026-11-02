@@ -26,8 +26,13 @@
 pub(crate) mod backup;
 mod dao;
 mod migration;
+mod native;
+mod native_recovery;
 mod schema;
 mod storage;
+
+#[cfg(test)]
+mod native_tests;
 
 #[cfg(test)]
 mod split_storage_tests;
@@ -85,6 +90,8 @@ pub(crate) const SCHEMA_VERSION: i32 = 24;
 /// Released CC Switch v4.0.21 schema; never follow unreleased main migrations.
 pub(crate) const SHARED_SCHEMA_VERSION: i32 = 23;
 pub(crate) const EXTENSION_SCHEMA_VERSION: i32 = 5;
+pub(crate) const NATIVE_MAIN_SCHEMA_VERSION: i32 = 24;
+pub(crate) const NATIVE_EXTENSION_SCHEMA_VERSION: i32 = 6;
 
 /// 安全地序列化 JSON，避免 unwrap panic
 pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError> {
@@ -136,10 +143,10 @@ fn register_db_change_hook(conn: &Connection) {
 impl Database {
     /// 初始化数据库连接并创建表
     ///
-    /// 数据库文件位于 `~/.cc-switch/cc-switch.db`
+    /// Native files live under the independent VaryAI data root.
     pub fn init() -> Result<Self, AppError> {
-        let db_path = get_app_config_dir().join("cc-switch.db");
-        let db = Self::init_at(&db_path)?;
+        let db_path = get_app_config_dir().join("varyai.db");
+        let db = Self::init_native_at(&db_path)?;
         if let Err(e) = db.ensure_incremental_auto_vacuum() {
             log::warn!("Failed to ensure incremental auto-vacuum: {e}");
         }
@@ -175,26 +182,36 @@ impl Database {
             let conn =
                 Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
             let version = Self::get_user_version(&conn)?;
-            if version > SHARED_SCHEMA_VERSION && !Self::is_legacy_vary_database(&conn)? {
+            let supported = if Self::is_native_connection(&conn)? {
+                NATIVE_MAIN_SCHEMA_VERSION
+            } else {
+                SHARED_SCHEMA_VERSION
+            };
+            if version > supported && !Self::is_legacy_vary_database(&conn)? {
                 return Ok(Some(UnsupportedDatabaseVersion {
                     path: db_path.to_path_buf(),
                     version,
-                    supported_version: SHARED_SCHEMA_VERSION,
+                    supported_version: supported,
                 }));
             }
         }
-        let extension_path = db_path.with_file_name("vary-ai.db");
+        let extension_path = Self::extension_path(db_path);
         if extension_path.exists() {
             let conn = Connection::open_with_flags(
                 &extension_path,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             )?;
             let version = Self::get_user_version(&conn)?;
-            if version > EXTENSION_SCHEMA_VERSION {
+            let supported = if Self::is_native_connection(&conn)? {
+                NATIVE_EXTENSION_SCHEMA_VERSION
+            } else {
+                EXTENSION_SCHEMA_VERSION
+            };
+            if version > supported {
                 return Ok(Some(UnsupportedDatabaseVersion {
                     path: extension_path,
                     version,
-                    supported_version: EXTENSION_SCHEMA_VERSION,
+                    supported_version: supported,
                 }));
             }
         }
@@ -202,7 +219,7 @@ impl Database {
     }
 
     /// Historical monolithic in-memory fixture for existing migration/DAO tests.
-    /// Production storage and its migration tests use init_at with temporary files.
+    /// Production uses native storage; legacy adapters use init_at on staged files.
     pub fn memory() -> Result<Self, AppError> {
         let conn = Connection::open_in_memory().map_err(|e| AppError::Database(e.to_string()))?;
 

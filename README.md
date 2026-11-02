@@ -87,9 +87,9 @@ Inspection covers traffic and fields handled by the enabled integration. Tool-ri
 | Feature                   | Description                                                                                                                                                          |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Provider management       | Manage endpoints, credentials, and model settings for supported coding tools.                                                                                        |
-| Local gateway             | Route supported clients through a local HTTP proxy with streaming, protocol adaptation, retries, and configured failover. The default listener is `127.0.0.1:15721`. |
+| Local gateway             | Route supported clients through a local HTTP proxy with streaming, protocol adaptation, retries, and configured failover. The default listener is `127.0.0.1:15722`. |
 | Protocol adaptation       | Adapters for Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, and Gemini. Available routes and conversion behavior depend on the client and provider.  |
-| Protocol matrix           | [Four-protocol routing and verification](docs/design/protocol-bridge.md) |
+| Protocol matrix           | [Four-protocol routing and verification](docs/design/protocol-bridge.md)                                                                                             |
 | Sensitive-data inspection | Inspect supported outbound text fields with built-in and custom rules. Configure redaction, audit logging, or forwarding without inspection for each rule.           |
 | Security center           | Review detected events by time, session, information type, risk level, and handling result.                                                                          |
 | Tool-risk observations    | Record and flag supported tool calls covered by enabled risk rules.                                                                                                  |
@@ -118,9 +118,9 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-`pnpm dev` starts the Vite renderer and the native Tauri application. It automatically selects an available renderer port starting at 3000 and passes the actual URL to Tauri. Closing the command or a failed Tauri startup also shuts down its renderer. Exit an existing Vary AI instance before starting a separate development instance; the single-instance handler can bring an existing window to the foreground.
+`pnpm dev` starts the Vite renderer and the native Tauri application. It automatically selects an available renderer port starting at 3001 and passes the actual URL to Tauri. Closing the command or a failed Tauri startup also shuts down its renderer. Exit an existing Vary AI instance before starting a separate development instance; the single-instance handler can bring an existing window to the foreground.
 
-For frontend work, use `pnpm dev:renderer`. It serves the renderer at `http://localhost:3000`; native commands and the Rust gateway require the desktop runtime.
+For frontend work, use `pnpm dev:renderer`. It serves the renderer at `http://localhost:3001`; native commands and the Rust gateway require the desktop runtime.
 
 ### Configure a client
 
@@ -163,7 +163,7 @@ See the [macOS](docs/guides/local-macos-build.md), [Windows](docs/guides/local-w
 
 ## Data and network behavior
 
-Vary AI stores local configuration under `~/.cc-switch/` for compatibility with CC Switch. Shared configuration uses `cc-switch.db`; Vary AI audit and tool-risk records use `vary-ai.db`. Installations using the same directory can share data. See the [storage documentation](docs/architecture/storage.md) before migrating or modifying these files.
+Vary AI stores independent configuration under `~/.varyai/`, using `varyai.db` and `varyai-ext.db`. Native backup/restore and cloud synchronization use VaryAI storage; old VaryAI installation upgrades are outside this flow. Client-native configuration can still be shared with other managers. See the [storage documentation](docs/architecture/storage.md) for ownership and backup boundaries.
 
 Installation statistics are optional and off by default. Builds without a configured statistics destination do not send reports. Settings provides a separate local consent control; turning it off removes the reporting ID and stops pending reports and retries. The desktop renderer does not load Google Analytics. Startup update checks and requests to your selected providers are separate network behaviors. See [Data and network behavior](docs/data-and-network.md) for details.
 

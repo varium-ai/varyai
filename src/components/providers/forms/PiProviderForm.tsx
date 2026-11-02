@@ -1,4 +1,9 @@
 import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
+import { ProviderConfigDetection } from "./ProviderConfigDetection";
+import {
+  NATIVE_API_FORMATS,
+  nativeUpstreamFormat,
+} from "./shared/UpstreamProtocolSelect";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -452,6 +457,9 @@ export function PiProviderForm({
   );
   const includeModelsRef = useRef(!isEdit || hasOwn(initialConfig, "models"));
   const [apiKey, setApiKey] = useState(optionalText(initialConfig.apiKey));
+  const [editingCredentials, setEditingCredentials] = useState(false);
+  const [protocolManuallySelected, setProtocolManuallySelected] =
+    useState(false);
   const initialHeaders = useMemo(
     () => asObject(initialConfig.headers),
     [initialConfig.headers],
@@ -626,8 +634,6 @@ export function PiProviderForm({
       const requestConfigChanged =
         !previousConfig ||
         optionalText(previousConfig.baseUrl) !== optionalText(config.baseUrl) ||
-        (optionalText(previousConfig.api) || "openai-completions") !==
-          (optionalText(config.api) || "openai-completions") ||
         optionalText(previousConfig.apiKey) !== optionalText(config.apiKey) ||
         !jsonValuesEqual(
           stringRecord(asObject(previousConfig.headers)),
@@ -952,18 +958,20 @@ export function PiProviderForm({
     );
 
     const requestGeneration = ++modelFetchGenerationRef.current;
-    setFetchedModels([]);
     setIsFetchingModels(true);
-    fetchModelsForConfig(
-      endpoint,
-      apiKey,
-      undefined,
-      undefined,
-      customUserAgent,
-      {
-        apiFormat: api,
-        requestHeaders,
-      },
+    (fetchedModels.length
+      ? Promise.resolve(fetchedModels)
+      : fetchModelsForConfig(
+          endpoint,
+          apiKey,
+          undefined,
+          undefined,
+          customUserAgent,
+          {
+            apiFormat: api,
+            requestHeaders,
+          },
+        )
     )
       .then((result) => {
         if (modelFetchGenerationRef.current !== requestGeneration) return;
@@ -986,7 +994,7 @@ export function PiProviderForm({
           setIsFetchingModels(false);
         }
       });
-  }, [api, apiKey, baseUrl, providerHeaders, t]);
+  }, [api, apiKey, baseUrl, providerHeaders, fetchedModels, t]);
 
   const handleApiChange = useCallback(
     (value: string) => {
@@ -994,11 +1002,12 @@ export function PiProviderForm({
         config.api = value;
       });
       if (!applied) return;
-      invalidateFetchedModels();
+      modelFetchGenerationRef.current += 1;
+      setIsFetchingModels(false);
       setApi(value);
       setIncludeApi(true);
     },
-    [invalidateFetchedModels, updateSettingsConfig],
+    [updateSettingsConfig],
   );
 
   const handleApiKeyChange = useCallback(
@@ -1309,6 +1318,14 @@ export function PiProviderForm({
         id="provider-form"
         onSubmit={form.handleSubmit(submit)}
         noValidate
+        onFocusCapture={(event) => {
+          if (["pi-api-key", "pi-provider-base-url"].includes(event.target.id))
+            setEditingCredentials(true);
+        }}
+        onBlurCapture={(event) => {
+          if (["pi-api-key", "pi-provider-base-url"].includes(event.target.id))
+            setEditingCredentials(false);
+        }}
         onChangeCapture={() => {
           if (formError) setFormError(null);
         }}
@@ -1411,7 +1428,13 @@ export function PiProviderForm({
               })}
               htmlFor="pi-provider-api-select"
             >
-              <Select value={api} onValueChange={handleApiChange}>
+              <Select
+                value={api}
+                onValueChange={(value) => {
+                  setProtocolManuallySelected(true);
+                  handleApiChange(value);
+                }}
+              >
                 <SelectTrigger id="pi-provider-api-select" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
@@ -1459,6 +1482,33 @@ export function PiProviderForm({
                 })}
               </p>
             </div>
+
+            {isKnownApiFormat && api !== "bedrock-converse-stream" && (
+              <ProviderConfigDetection
+                catalogModels={
+                  Object.keys(providerHeaders).length
+                    ? undefined
+                    : fetchedModels
+                }
+                onCatalogModelsChange={
+                  Object.keys(providerHeaders).length
+                    ? undefined
+                    : setFetchedModels
+                }
+                baseUrl={baseUrl}
+                apiKey={apiKey}
+                model={models[0]?.id ?? ""}
+                apiFormat={nativeUpstreamFormat(api)}
+                editingCredentials={editingCredentials}
+                autoSelectFormat={
+                  !isEdit && isSettingsConfigValid && !protocolManuallySelected
+                }
+                onManualFormatSelect={() => setProtocolManuallySelected(true)}
+                onApiFormatChange={(format) =>
+                  handleApiChange(NATIVE_API_FORMATS[format])
+                }
+              />
+            )}
 
             <RequestHeadersEditor
               headers={providerHeaders}

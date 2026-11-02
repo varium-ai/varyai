@@ -85,6 +85,9 @@ fn import_authorizer(context: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hoo
 
 /// Tables whose data rows are skipped when exporting for WebDAV sync.
 const SYNC_SKIP_TABLES: &[&str] = &[
+    // Retired development import receipts remain local when present.
+    "varyai_import_origins",
+    "varyai_import_operations",
     "proxy_request_logs",
     "stream_check_logs",
     "provider_health",
@@ -103,6 +106,9 @@ const SYNC_SKIP_TABLES: &[&str] = &[
 /// Tables whose local data is preserved from the live database during WebDAV import.
 /// Excludes ephemeral tables like provider_health that can safely rebuild at runtime.
 const SYNC_PRESERVE_TABLES: &[&str] = &[
+    // Preserve optional receipts from development databases during synchronization.
+    "varyai_import_origins",
+    "varyai_import_operations",
     "proxy_request_logs",
     "stream_check_logs",
     "proxy_live_backup",
@@ -294,6 +300,10 @@ impl Database {
             Self::create_extension_tables_on_conn(&snapshot)?;
             Self::restore_tables(extension, &snapshot, super::storage::EXTENSION_TABLES)?;
             Self::set_user_version(&snapshot, super::SCHEMA_VERSION)?;
+            // Storage identity belongs to the installation, never to a portable restore.
+            snapshot.execute_batch(
+                "DROP TABLE IF EXISTS varyai_storage_identity; PRAGMA application_id=0;",
+            )?;
         }
         Ok(snapshot)
     }
@@ -559,7 +569,7 @@ impl Database {
     {
         let db_path = db_path
             .map(Path::to_path_buf)
-            .unwrap_or_else(|| get_app_config_dir().join("cc-switch.db"));
+            .unwrap_or_else(|| get_app_config_dir().join("varyai.db"));
         if !db_path.exists() {
             return Ok(None);
         }
@@ -1259,13 +1269,13 @@ mod tests {
             let temp_dir = tempfile::tempdir().expect("create isolated test home");
             let previous_test_home = std::env::var_os("CC_SWITCH_TEST_HOME");
             std::env::set_var("CC_SWITCH_TEST_HOME", temp_dir.path());
-            // Prevent the Windows legacy-HOME fallback without mutating HOME:
-            // an existing default DB keeps get_app_config_dir() anchored under
-            // CC_SWITCH_TEST_HOME and makes import exercise its safety backup.
-            let config_dir = temp_dir.path().join(".cc-switch");
+            // Keep backup tests under an isolated native data root.
+            let config_dir = temp_dir.path().join(".varyai");
             std::fs::create_dir_all(&config_dir).expect("create isolated config directory");
-            std::fs::File::create(config_dir.join("cc-switch.db"))
-                .expect("create isolated database sentinel");
+            drop(
+                Database::init_native_at(&config_dir.join("varyai.db"))
+                    .expect("create native fixture"),
+            );
             let guard = Self {
                 previous_test_home,
                 temp_dir,
