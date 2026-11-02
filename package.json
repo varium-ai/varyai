@@ -4,7 +4,7 @@
   "description": "All-in-One Assistant for Claude Code, Codex & Gemini CLI",
   "type": "module",
   "scripts": {
-    "dev": "pnpm tauri dev",
+    "dev": "node scripts/dev.mjs",
     "build": "pnpm tauri build",
     "build:desktop": "node scripts/build-desktop.mjs",
     "build:windows": "node scripts/build-windows-cross.mjs",
@@ -18,6 +18,7 @@
     "format": "prettier --write \"src/**/*.{js,jsx,ts,tsx,css,json}\"",
     "format:check": "prettier --check \"src/**/*.{js,jsx,ts,tsx,css,json}\"",
     "test:unit": "vitest run",
+    "test:dev": "node --test scripts/tests/dev.node.mjs",
     "test:trae-bridge": "node --test src-tauri/resources/trae-bridge/*.node.cjs",
     "test:qoder-codec": "node --test scripts/tests/qoder-codec.node.cjs",
     "test:unit:watch": "vitest watch"
