@@ -117,7 +117,11 @@ fn prepare_payload(
             rule.action = AuditAction::Redact;
         }
     }
-    let rules: Vec<_> = group.rules.iter().filter(|r| r.enabled).collect();
+    let rules: Vec<_> = group
+        .rules
+        .iter()
+        .filter(|r| r.enabled && !r.description.is_empty())
+        .collect();
     let mut inspection = json!({"messages": [{"role":"user","content":text}]});
     for rule in &rules {
         inspection["messages"]
@@ -216,12 +220,20 @@ pub(crate) async fn trial(
     text: String,
 ) -> Result<TrialResult, String> {
     group.validate()?;
+    trial_prepared(group, provider, text).await
+}
+
+pub(crate) async fn trial_prepared(
+    group: RoutingGroup,
+    provider: Provider,
+    text: String,
+) -> Result<TrialResult, String> {
     if bounded_text(&text).is_none() {
         return Err("intentRouting.invalid".into());
     }
     if group.routing == super::RoutingStrategy::Manual {
         return Ok(TrialResult {
-            plan: group.preview(None)?,
+            plan: group.plan_prepared(None)?,
             intent_id: None,
             outcome: "manual",
         });
@@ -246,7 +258,11 @@ async fn trial_with_runtime(
 ) -> Result<TrialResult, String> {
     let outcome = async {
         let _permit = TRIAL_SLOTS.acquire().await.map_err(|_| "unavailable")?;
-        if !group.rules.iter().any(|r| r.enabled) {
+        if !group
+            .rules
+            .iter()
+            .any(|r| r.enabled && !r.description.is_empty())
+        {
             return Ok((None, "no_rules"));
         }
         let text = extract_user_text(&json!({"input":text})).ok_or("input_limit")?;
@@ -282,7 +298,7 @@ async fn trial_with_runtime(
         Ok(Err(reason)) => (None, reason),
         Err(_) => (None, "timeout"),
     };
-    let plan = group.preview(intent_id.as_deref())?;
+    let plan = group.plan_prepared(intent_id.as_deref())?;
     Ok(TrialResult {
         plan,
         intent_id,

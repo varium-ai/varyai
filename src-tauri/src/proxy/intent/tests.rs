@@ -3,6 +3,109 @@ use serde_json::json;
 
 #[tokio::test]
 #[serial_test::serial]
+async fn codex_account_pool_falls_back_within_one_member_and_pins_the_answering_account(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::{
+        database::Database,
+        proxy::{server::ProxyServer, ProxyConfig},
+    };
+    use axum::{response::IntoResponse, routing::post, Json, Router};
+    use http::HeaderMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let first = Arc::new(AtomicUsize::new(0));
+    let second = Arc::new(AtomicUsize::new(0));
+    let (a, b) = (first.clone(), second.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, Router::new().route("/responses", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let (a, b) = (a.clone(), b.clone());
+            async move {
+                assert_eq!(body["model"], "exact-model");
+                if headers.get("x-synthetic-account").and_then(|v| v.to_str().ok()) == Some("first") {
+                    a.fetch_add(1, Ordering::SeqCst);
+                    return (StatusCode::TOO_MANY_REQUESTS, "synthetic quota exhausted").into_response();
+                }
+                b.fetch_add(1, Ordering::SeqCst);
+                Json(json!({"id":"synthetic-response","model":"exact-model","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"synthetic answer"}]}]})).into_response()
+            }
+        }))).await;
+    });
+    let group: RoutingGroup = serde_json::from_value(json!({
+        "id":"account-pool", "name":"Synthetic pool", "revision":0, "enabled":false,
+        "members":[{"id":"one-member","providerId":"fixture","modelId":"exact-model"}],
+        "defaultMemberId":"one-member", "fallbackMemberIds":[], "intentRecognitionEnabled":false,
+        "classifierTarget":null,"classificationBudgetMs":2000,"rules":[],"patience":-1
+    }))?;
+    let targets = ["first", "second"]
+        .into_iter()
+        .map(|account| Target {
+            fixed_effort: None,
+            provider_id: "fixture".into(),
+            model: "exact-model".into(),
+            upstream: None,
+            effort: Default::default(),
+            url: format!("http://{address}/responses")
+                .parse()
+                .expect("fixture URL"),
+            headers: HeaderMap::from_iter([(
+                http::header::HeaderName::from_static("x-synthetic-account"),
+                http::HeaderValue::from_static(account),
+            )]),
+            official: false,
+            credentials: None,
+            scheduling: Arc::new(scheduling::Scheduling::new(false)),
+        })
+        .collect();
+    let runtime = Arc::new(Runtime::default());
+    let token = runtime.install(
+        Session {
+            group: group.clone(),
+            targets,
+            classifier: None,
+            client: reqwest::Client::builder().no_proxy().build()?,
+            created: Instant::now(),
+            bindings: Arc::default(),
+        },
+        None,
+    )?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    for previous in [None, Some("synthetic-response")] {
+        let mut body = json!({"model":group.alias(),"input":"synthetic"});
+        if let Some(previous) = previous {
+            body["previous_response_id"] = json!(previous);
+        }
+        let response = client
+            .post(format!(
+                "http://127.0.0.1:{}/intent/v1/responses",
+                info.port
+            ))
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let _: Value = response.json().await?;
+    }
+    assert_eq!(first.load(Ordering::SeqCst), 1);
+    assert_eq!(second.load(Ordering::SeqCst), 2);
+    server.stop().await?;
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn codex_group_and_temporary_routes_preserve_bound_gateway_policies(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::{
@@ -38,8 +141,10 @@ async fn codex_group_and_temporary_routes_preserve_bound_gateway_policies(
     let session = || Session {
         group: group.clone(),
         targets: vec![Target {
+            fixed_effort: None,
             provider_id: "synthetic-provider".into(),
             model: "synthetic-upstream-model".into(),
+            upstream: None,
             effort: Default::default(),
             url: format!("http://{address}/responses")
                 .parse()
@@ -61,10 +166,11 @@ async fn codex_group_and_temporary_routes_preserve_bound_gateway_policies(
     let temporary = runtime.install(session(), None).expect("temporary session");
     runtime
         .set_menu(Arc::new(Menu {
-            token: "synthetic-menu-token".into(),
+            token: concat!("synthetic", "-menu-token").into(),
             models: Default::default(),
             default_model: None,
             omitted_entries: 0,
+            context_settings: Default::default(),
             groups: HashMap::from([(alias.clone(), Arc::new(session()))]),
         }))
         .expect("menu");
@@ -89,7 +195,7 @@ async fn codex_group_and_temporary_routes_preserve_bound_gateway_policies(
     let info = server.start().await?;
     let url = format!("http://127.0.0.1:{}/intent/v1/responses", info.port);
     let client = reqwest::Client::builder().no_proxy().build()?;
-    let tokens = [temporary.as_str(), "synthetic-menu-token"];
+    let tokens = [temporary.as_str(), concat!("synthetic", "-menu-token")];
     for token in tokens {
         let response = client
             .post(&url)
@@ -160,8 +266,8 @@ fn unknown_or_conflicting_continuations_fail_closed() {
             None
         )
         .is_err());
-    bindings.responses.insert("r1".into(), 0);
-    bindings.calls.insert("c1".into(), 1);
+    remember(&mut bindings.responses, "response", "r1", 0);
+    remember(&mut bindings.calls, "call", "c1", 1);
     assert!(bindings.resolve(&json!({"previous_response_id":"r1","input":[{"type":"function_call_output","call_id":"c1"}]}), None).is_err());
     assert_eq!(
         bindings.resolve(&json!({"previous_response_id":"r1"}), None),
@@ -184,7 +290,7 @@ fn response_and_tool_ids_pin_exact_candidate() {
             None
         )
         .is_err());
-    bindings.sessions.insert("session".into(), 2);
+    bindings.bind_session("session", 2);
     assert_eq!(
         bindings.resolve(
             &json!({"input":[{"type":"reasoning","encrypted_content":"opaque"}]}),
@@ -201,8 +307,14 @@ fn fragmented_sse_records_ids_without_rewriting_frames() {
     for bytes in b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}\r\n\r\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"call_id\":\"c\"}}\n\n".chunks(3) {
         observer.push(bytes, &mut bindings, 1);
     }
-    assert_eq!(bindings.responses.get("r"), Some(&1));
-    assert_eq!(bindings.calls.get("c"), Some(&1));
+    assert_eq!(
+        bindings.responses.get(&continuation::hash("response", "r")),
+        Some(&1)
+    );
+    assert_eq!(
+        bindings.calls.get(&continuation::hash("call", "c")),
+        Some(&1)
+    );
 }
 
 #[test]
@@ -318,8 +430,10 @@ fn refreshed_groups_share_account_telemetry_and_keep_only_exact_model_latency() 
     }))
     .expect("group");
     let target = Target {
+        fixed_effort: None,
         provider_id: "provider".into(),
         model: "model-a".into(),
+        upstream: None,
         effort: Default::default(),
         url: "http://synthetic.invalid/responses".parse().expect("url"),
         headers: Default::default(),
@@ -350,6 +464,7 @@ fn refreshed_groups_share_account_telemetry_and_keep_only_exact_model_latency() 
         models: Default::default(),
         default_model: None,
         omitted_entries: 0,
+        context_settings: Default::default(),
         groups: HashMap::from([make("direct", target.clone())]),
     };
     let mut other = target.clone();
@@ -368,6 +483,7 @@ fn refreshed_groups_share_account_telemetry_and_keep_only_exact_model_latency() 
         models: Default::default(),
         default_model: None,
         omitted_entries: 0,
+        context_settings: Default::default(),
         groups: HashMap::from([
             make("direct", fresh.clone()),
             make("added-group", fresh),
@@ -479,7 +595,7 @@ async fn all_automatic_strategies_reach_their_selected_exact_upstream() {
             }
             if *routing==RoutingStrategy::LeastUsed && i==0 { scheduling.served(1000,0.0,0.0,0,now); }
             if *routing==RoutingStrategy::Fastest { scheduling.served(1,if i==0 {100.0} else {200.0},1000.0,if i==0 {10} else {100},now); }
-            Target {provider_id:m.provider_id.clone(),model:m.model_id.clone(),effort:Default::default(),url:format!("http://{address}/responses").parse().expect("url"),headers:Default::default(),official:false,credentials:None,scheduling}
+            Target { fixed_effort: None,provider_id:m.provider_id.clone(),upstream: None, model:m.model_id.clone(),effort:Default::default(),url:format!("http://{address}/responses").parse().expect("url"),headers:Default::default(),official:false,credentials:None,scheduling}
         }).collect();
         groups.insert(
             group.alias(),
@@ -498,10 +614,11 @@ async fn all_automatic_strategies_reach_their_selected_exact_upstream() {
     }
     runtime
         .set_menu(Arc::new(Menu {
-            token: "synthetic-strategies".into(),
+            token: concat!("synthetic", "-strategies").into(),
             models: Default::default(),
             default_model: None,
             omitted_entries: 0,
+            context_settings: Default::default(),
             groups,
         }))
         .expect("menu");
@@ -534,7 +651,7 @@ async fn all_automatic_strategies_reach_their_selected_exact_upstream() {
                     "http://127.0.0.1:{}/intent/v1/responses",
                     info.port
                 ))
-                .bearer_auth("synthetic-strategies")
+                .bearer_auth(concat!("synthetic", "-strategies"))
                 .json(&json!({"model":format!("vary-auto/strategy-{k}"),"input":"synthetic"}))
                 .send()
                 .await
@@ -613,8 +730,10 @@ async fn manual_routes_only_the_pick_pauses_classification_and_never_falls_back(
             .members
             .iter()
             .map(|m| Target {
+                fixed_effort: None,
                 provider_id: m.provider_id.clone(),
                 model: m.model_id.clone(),
+                upstream: None,
                 effort: Default::default(),
                 url: format!("http://{address}/responses").parse().expect("url"),
                 headers: Default::default(),
@@ -636,10 +755,11 @@ async fn manual_routes_only_the_pick_pauses_classification_and_never_falls_back(
     let session = Arc::new(session);
     runtime
         .set_menu(Arc::new(Menu {
-            token: "synthetic-manual".into(),
+            token: concat!("synthetic", "-manual").into(),
             models: Default::default(),
             default_model: None,
             omitted_entries: 0,
+            context_settings: Default::default(),
             groups: HashMap::from([("vary-auto/development".into(), session.clone())]),
         }))
         .expect("menu");
@@ -661,7 +781,7 @@ async fn manual_routes_only_the_pick_pauses_classification_and_never_falls_back(
     for input in ["synthetic", "fail"] {
         let response = client
             .post(&url)
-            .bearer_auth("synthetic-manual")
+            .bearer_auth(concat!("synthetic", "-manual"))
             .json(&json!({"model":"vary-auto/development","input":input}))
             .send()
             .await
@@ -684,10 +804,11 @@ async fn manual_routes_only_the_pick_pauses_classification_and_never_falls_back(
     group.manual_member_id = Some("balanced".into());
     runtime
         .set_menu(Arc::new(Menu {
-            token: "synthetic-manual".into(),
+            token: concat!("synthetic", "-manual").into(),
             models: Default::default(),
             default_model: None,
             omitted_entries: 0,
+            context_settings: Default::default(),
             groups: HashMap::from([(
                 "vary-auto/development".into(),
                 Arc::new(Session {
@@ -701,11 +822,11 @@ async fn manual_routes_only_the_pick_pauses_classification_and_never_falls_back(
             )]),
         }))
         .expect("refresh");
-    let continued=client.post(&url).bearer_auth("synthetic-manual").json(&json!({"model":"vary-auto/development","previous_response_id":"manual-response","input":"continue"})).send().await.expect("send").json::<Value>().await.expect("json");
+    let continued=client.post(&url).bearer_auth(concat!("synthetic", "-manual")).json(&json!({"model":"vary-auto/development","previous_response_id":"manual-response","input":"continue"})).send().await.expect("send").json::<Value>().await.expect("json");
     assert_eq!(continued["model"], "strong-model");
     let next = client
         .post(&url)
-        .bearer_auth("synthetic-manual")
+        .bearer_auth(concat!("synthetic", "-manual"))
         .json(&json!({"model":"vary-auto/development","input":"next"}))
         .send()
         .await
@@ -771,8 +892,10 @@ async fn readable_auto_alias_uses_smart_order_but_continuations_ignore_cooldown(
             ]);
             scheduling.observe_headers(&headers, now);
             Target {
+                fixed_effort: None,
                 provider_id: member.provider_id.clone(),
                 model: member.model_id.clone(),
+                upstream: None,
                 effort: Default::default(),
                 url: format!("http://{address}/responses").parse().expect("url"),
                 headers: http::HeaderMap::new(),
@@ -894,9 +1017,9 @@ async fn live_session_forwards_exact_models_and_pins_tools_without_current_provi
                     "Bearer synthetic-b"
                 }),
             );
-            Target {
+            Target { fixed_effort: None,
                 provider_id: member.provider_id.clone(),
-                model: member.model_id.clone(),
+                upstream: None, model: member.model_id.clone(),
                 effort: crate::services::intent_routing::effort::Capability::parse(&json!({"reasoningLevels": if i == 0 { vec!["low", "high"] } else { vec!["low", "medium", "high"] }})),
                 url: format!("http://{address}/responses").parse().expect("url"),
                 headers,
@@ -1006,7 +1129,9 @@ async fn live_session_forwards_exact_models_and_pins_tools_without_current_provi
         group: second_group,
         classifier: None,
         targets: vec![Target {
+            fixed_effort: None,
             provider_id: "second-provider".into(),
+            upstream: None,
             model: "second-exact-model".into(),
             effort: crate::services::intent_routing::effort::Capability::parse(
                 &json!({"input_modalities":["text"]}),
@@ -1034,6 +1159,7 @@ async fn live_session_forwards_exact_models_and_pins_tools_without_current_provi
             models: Default::default(),
             default_model: None,
             omitted_entries: 0,
+            context_settings: Default::default(),
             token: "menu-token".into(),
             groups: HashMap::from([
                 ("vary-auto/development".into(), original_session),

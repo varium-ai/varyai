@@ -6,6 +6,84 @@ use rusqlite::{params, OptionalExtension};
 const FAILED: &str = "intentRouting.failed";
 
 impl Database {
+    pub(crate) fn routing_context_settings(
+        &self,
+    ) -> Result<crate::services::intent_routing::context::Settings, String> {
+        let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM intent_routing_preferences WHERE key='context_settings'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|_| FAILED)?;
+        let settings: crate::services::intent_routing::context::Settings = value
+            .map(|text| serde_json::from_str(&text).map_err(|_| FAILED))
+            .transpose()?
+            .unwrap_or_default();
+        if !settings.valid() {
+            return Err(FAILED.into());
+        }
+        Ok(settings)
+    }
+
+    pub(crate) fn set_routing_context_settings(
+        &self,
+        settings: &crate::services::intent_routing::context::Settings,
+    ) -> Result<(), String> {
+        if !settings.valid() {
+            return Err("intentRouting.invalid".into());
+        }
+        let value = serde_json::to_string(settings).map_err(|_| FAILED)?;
+        let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        conn.execute("INSERT INTO intent_routing_preferences(key,value) VALUES ('context_settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [value]).map_err(|_| FAILED)?;
+        drop(conn);
+        self.invalidate_routing_resources();
+        Ok(())
+    }
+
+    pub(crate) fn routing_auto_group_skip(&self) -> Result<Vec<String>, String> {
+        let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM intent_routing_preferences WHERE key='auto_group_skip'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|_| FAILED)?;
+        let ids: Vec<String> = value
+            .map(|text| serde_json::from_str(&text).map_err(|_| FAILED))
+            .transpose()?
+            .unwrap_or_default();
+        if ids.len() > 256
+            || ids
+                .iter()
+                .any(|id| !crate::services::routing_upstreams::valid_identity(id))
+        {
+            return Err(FAILED.into());
+        }
+        Ok(ids)
+    }
+
+    pub(crate) fn set_routing_auto_group_skip(&self, ids: Vec<String>) -> Result<(), String> {
+        if ids.len() > 256
+            || ids
+                .iter()
+                .any(|id| !crate::services::routing_upstreams::valid_identity(id))
+        {
+            return Err("intentRouting.invalid".into());
+        }
+        let ids = ids.into_iter().collect::<std::collections::BTreeSet<_>>();
+        let value = serde_json::to_string(&ids).map_err(|_| FAILED)?;
+        let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        conn.execute("INSERT INTO intent_routing_preferences(key,value) VALUES ('auto_group_skip',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [value]).map_err(|_| FAILED)?;
+        drop(conn);
+        self.invalidate_routing_resources();
+        Ok(())
+    }
+
     pub(crate) fn set_intent_routing_auto_create(&self, enabled: bool) -> Result<(), String> {
         let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
         conn.execute(
@@ -14,6 +92,8 @@ impl Database {
             [if enabled { "true" } else { "false" }],
         )
         .map_err(|_| FAILED)?;
+        drop(conn);
+        self.invalidate_routing_resources();
         Ok(())
     }
 
@@ -38,49 +118,208 @@ impl Database {
                 .optional()
                 .map_err(|_| FAILED)?;
             let mut stmt = conn
-                .prepare("SELECT key FROM intent_routing_preferences WHERE key LIKE 'hidden:%'")
+                .prepare(
+                    "SELECT key,value FROM intent_routing_preferences WHERE key LIKE 'hidden:%'",
+                )
                 .map_err(|_| FAILED)?;
             let hidden = stmt
-                .query_map([], |r| r.get::<_, String>(0))
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
                 .map_err(|_| FAILED)?
-                .collect::<Result<std::collections::HashSet<_>, _>>()
+                .collect::<Result<std::collections::BTreeMap<_, _>, _>>()
                 .map_err(|_| FAILED)?;
-            (enabled.as_deref() == Some("true"), hidden)
+            (enabled.as_deref() != Some("false"), hidden)
         };
         let mut omitted_groups = 0;
-        if auto_create {
+        let providers = match providers {
+            Some(providers) => providers,
+            None => self.routing_providers().map_err(|_| FAILED)?,
+        };
+        let active = providers
+            .iter()
+            .map(|provider| provider.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let mut discovery = providers.clone();
+        // Disabled resources remain in discovered groups, but never in execution snapshots.
+        discovery.extend(
+            self.routing_catalog_providers(true)
+                .map_err(|_| FAILED)?
+                .into_iter()
+                .filter(|provider| !active.contains(provider.id.as_str())),
+        );
+        let skipped = self.routing_auto_group_skip()?;
+        let stand_in_sources = discovery.clone();
+        discovery.retain(|provider| !skipped.contains(&provider.id));
+        let mut removed_groups = hidden
+            .iter()
+            .filter_map(|(key, value)| {
+                let id = key.strip_prefix("hidden:")?;
+                let record: crate::services::intent_routing::RemovedGroup =
+                    serde_json::from_str(value).unwrap_or_else(|_| {
+                        crate::services::intent_routing::RemovedGroup {
+                            id: id.into(),
+                            name: id.into(),
+                        }
+                    });
+                (record.id == id
+                    && valid_id(id)
+                    && crate::services::intent_routing::valid_text(&record.name, 80))
+                .then_some(record)
+            })
+            .collect::<Vec<_>>();
+        let mut stand_ins = Vec::new();
+        {
             // No extension lock is held while reading the shared provider database.
-            let providers = match providers {
-                Some(p) => p,
-                None => self
-                    .get_all_providers("codex")
-                    .map_err(|_| FAILED)?
-                    .into_values()
-                    .collect(),
+            let found = if auto_create {
+                discover_groups(discovery)
+            } else {
+                crate::services::intent_routing::discover_stand_ins(discovery)
             };
-            for group in discover_groups(providers) {
+            for mut group in found {
                 let legacy = crate::services::intent_routing::legacy_ids(&group);
                 if groups.iter().any(|g| g.id == group.id)
-                    || hidden.contains(&format!("hidden:{}", group.id))
-                    || legacy.iter().any(|id| {
-                        groups.iter().any(|g| &g.id == id)
-                            || hidden.contains(&format!("hidden:{id}"))
-                    })
+                    || legacy.iter().any(|id| groups.iter().any(|g| &g.id == id))
                 {
                     continue;
                 }
-                if groups.len() >= MAX_GROUPS || group.members.len() > 16 {
+                if auto_create
+                    && (hidden.contains_key(&format!("hidden:{}", group.id))
+                        || legacy
+                            .iter()
+                            .any(|id| hidden.contains_key(&format!("hidden:{id}"))))
+                {
+                    removed_groups.retain(|record| !legacy.contains(&record.id));
+                    if !removed_groups.iter().any(|record| record.id == group.id) {
+                        removed_groups.push(crate::services::intent_routing::RemovedGroup {
+                            id: group.id,
+                            name: group.name,
+                        });
+                    } else if let Some(record) = removed_groups
+                        .iter_mut()
+                        .find(|record| record.id == group.id && record.name == group.id)
+                    {
+                        record.name = group.name;
+                    }
+                    continue;
+                }
+                group.off = group
+                    .members
+                    .iter()
+                    .filter(|member| !active.contains(member.provider_id.as_str()))
+                    .map(|member| member.id.clone())
+                    .collect();
+                if !auto_create {
+                    if let Some(member) = group
+                        .members
+                        .iter()
+                        .find(|member| active.contains(member.provider_id.as_str()))
+                        .cloned()
+                    {
+                        group.members = vec![member.clone()];
+                        group.default_member_id = member.id;
+                        group.fallback_member_ids.clear();
+                        group.off.clear();
+                        stand_ins.push(group);
+                    }
+                    continue;
+                }
+                if groups.len() >= MAX_GROUPS || group.members.len() > 256 {
                     omitted_groups += 1;
                     continue;
                 }
                 groups.push(group);
             }
         }
+        if auto_create && !skipped.is_empty() {
+            for mut group in crate::services::intent_routing::discover_stand_ins(stand_in_sources) {
+                if groups.iter().any(|current| current.id == group.id)
+                    || hidden.contains_key(&format!("hidden:{}", group.id))
+                {
+                    continue;
+                }
+                if let Some(member) = group
+                    .members
+                    .iter()
+                    .find(|member| {
+                        active.contains(member.provider_id.as_str())
+                            && !skipped.contains(&member.provider_id)
+                    })
+                    .or_else(|| {
+                        group
+                            .members
+                            .iter()
+                            .find(|member| active.contains(member.provider_id.as_str()))
+                    })
+                    .cloned()
+                {
+                    group.members = vec![member.clone()];
+                    group.default_member_id = member.id;
+                    group.fallback_member_ids.clear();
+                    group.off.clear();
+                    stand_ins.push(group);
+                }
+            }
+        }
+        self.apply_routing_group_order(&mut groups)?;
+        let mut matched_members = std::collections::BTreeMap::new();
+        for group in &groups {
+            if group.matches.is_empty() {
+                continue;
+            }
+            match crate::services::intent_routing::membership::resolve(group.clone(), &providers) {
+                Ok(resolved) => {
+                    matched_members.insert(
+                        group.id.clone(),
+                        resolved
+                            .members
+                            .into_iter()
+                            .filter(|member| resolved.matched.contains(&member.id))
+                            .collect(),
+                    );
+                }
+                Err(_) => omitted_groups += 1,
+            }
+        }
         Ok(RoutingCatalog {
             groups,
+            removed_groups,
+            stand_ins,
+            matched_members,
             auto_create,
             omitted_groups,
+            context_settings: self.routing_context_settings()?,
         })
+    }
+
+    pub(crate) fn restore_discovered_routing_group(&self, id: &str) -> Result<(), String> {
+        if !valid_id(id) || !id.starts_with("auto-") {
+            return Err("intentRouting.invalid".into());
+        }
+        let providers = self.routing_catalog_providers(true).map_err(|_| FAILED)?;
+        let skipped = self.routing_auto_group_skip()?;
+        let found = discover_groups(
+            providers
+                .into_iter()
+                .filter(|provider| !skipped.contains(&provider.id)),
+        )
+        .into_iter()
+        .find(|group| group.id == id);
+        let mut keys = vec![format!("hidden:{id}")];
+        if let Some(group) = found {
+            keys.extend(
+                crate::services::intent_routing::legacy_ids(&group)
+                    .into_iter()
+                    .map(|id| format!("hidden:{id}")),
+            );
+        }
+        let mut conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        let tx = conn.transaction().map_err(|_| FAILED)?;
+        for key in keys {
+            tx.execute("DELETE FROM intent_routing_preferences WHERE key=?1", [key])
+                .map_err(|_| FAILED)?;
+        }
+        tx.commit().map_err(|_| FAILED)?;
+        self.invalidate_routing_resources();
+        Ok(())
     }
 
     pub(crate) fn normalize_imported_intent_routing(
@@ -102,13 +341,14 @@ impl Database {
         if rows.len() > MAX_GROUPS {
             return Err(invalid());
         }
+        let mut aliases = std::collections::HashSet::new();
         for (id, revision, config) in rows {
             if config.len() > 65536 {
                 return Err(invalid());
             }
             let mut group: RoutingGroup = serde_json::from_str(&config).map_err(|_| invalid())?;
             group.validate().map_err(|_| invalid())?;
-            if group.id != id || group.revision != revision {
+            if group.id != id || group.revision != revision || !aliases.insert(group.alias()) {
                 return Err(invalid());
             }
             group.enabled = false;
@@ -139,7 +379,7 @@ impl Database {
         let rows = stmt
             .query_map([], |r| r.get::<_, String>(0))
             .map_err(|_| FAILED)?;
-        let groups: Vec<RoutingGroup> = rows
+        let mut groups: Vec<RoutingGroup> = rows
             .map(|r| {
                 let json = r.map_err(|_| FAILED)?;
                 if json.len() > 65536 {
@@ -150,10 +390,88 @@ impl Database {
                 Ok(group)
             })
             .collect::<Result<_, String>>()?;
-        if groups.len() > MAX_GROUPS {
+        let mut aliases = std::collections::HashSet::new();
+        if groups.len() > MAX_GROUPS || groups.iter().any(|g| !aliases.insert(g.alias())) {
             return Err(FAILED.into());
         }
+        drop(stmt);
+        drop(conn);
+        self.apply_routing_group_order(&mut groups)?;
         Ok(groups)
+    }
+
+    fn apply_routing_group_order(&self, groups: &mut [RoutingGroup]) -> Result<(), String> {
+        let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM intent_routing_preferences WHERE key='group_order'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| FAILED)?;
+        if let Some(value) = value {
+            if value.len() > 16384 {
+                return Err(FAILED.into());
+            }
+            let order: Vec<String> = serde_json::from_str(&value).map_err(|_| FAILED)?;
+            if order.len() > MAX_GROUPS
+                || order.iter().any(|id| !valid_id(id))
+                || order.iter().collect::<std::collections::HashSet<_>>().len() != order.len()
+            {
+                return Err(FAILED.into());
+            }
+            groups.sort_by_key(|group| {
+                order
+                    .iter()
+                    .position(|id| id == &group.id)
+                    .unwrap_or(usize::MAX)
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_routing_group_order(
+        &self,
+        order: Vec<String>,
+        providers: Option<Vec<crate::provider::Provider>>,
+    ) -> Result<(), String> {
+        let catalog = self.intent_routing_catalog_with_providers(providers)?;
+        let ids = order.iter().collect::<std::collections::HashSet<_>>();
+        if order.len() > MAX_GROUPS
+            || ids.len() != order.len()
+            || order.len() != catalog.groups.len()
+            || catalog.groups.iter().any(|group| !ids.contains(&group.id))
+        {
+            return Err("intentRouting.conflict".into());
+        }
+        let value = serde_json::to_string(&order).map_err(|_| FAILED)?;
+        let mut conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        let tx = conn.transaction().map_err(|_| FAILED)?;
+        {
+            let mut stmt = tx
+                .prepare("SELECT id FROM intent_routing_groups")
+                .map_err(|_| FAILED)?;
+            let saved = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|_| FAILED)?;
+            let actual = saved
+                .collect::<Result<std::collections::HashSet<_>, _>>()
+                .map_err(|_| FAILED)?;
+            let expected = catalog
+                .groups
+                .iter()
+                .filter(|group| !group.auto_generated)
+                .map(|group| group.id.clone())
+                .collect();
+            if actual != expected {
+                return Err("intentRouting.conflict".into());
+            }
+        }
+        tx.execute("INSERT INTO intent_routing_preferences(key,value) VALUES ('group_order',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [value]).map_err(|_| FAILED)?;
+        tx.commit().map_err(|_| FAILED)?;
+        self.invalidate_routing_resources();
+        Ok(())
     }
 
     pub(crate) fn validate_intent_routing_providers(
@@ -169,14 +487,29 @@ impl Database {
         require_task_transport: bool,
     ) -> Result<(), String> {
         // Resolve shared providers before acquiring the extension connection.
-        let providers = self.get_all_providers("codex").map_err(|_| FAILED)?;
+        let identities: std::collections::HashSet<_> = self
+            .list_routing_upstreams()
+            .map_err(|_| FAILED)?
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        let providers: std::collections::HashMap<_, _> = self
+            .routing_providers()
+            .map_err(|_| FAILED)?
+            .into_iter()
+            .map(|p| (p.id.clone(), p))
+            .collect();
         if group.members.iter().any(|m| {
             if require_task_transport && !group.includes_in_menu(m) {
                 return false;
             }
-            !providers
-                .get(&m.provider_id)
-                .is_some_and(|p| !require_task_transport || eligible_provider(p, false))
+            if require_task_transport {
+                !providers
+                    .get(&m.provider_id)
+                    .is_some_and(|p| eligible_provider(p, false))
+            } else {
+                !identities.contains(&m.provider_id)
+            }
         }) || (group.routing != crate::services::intent_routing::RoutingStrategy::Manual
             && group.classifier_target.as_ref().is_some_and(|t| {
                 !providers
@@ -193,12 +526,10 @@ impl Database {
         &self,
         mut group: RoutingGroup,
     ) -> Result<RoutingGroup, String> {
+        group = crate::services::intent_routing::membership::definition(group);
         group.validate()?;
-        // Draft-only until continuity, privacy and exact-model forwarding are integrated.
-        if group.enabled {
-            return Err("intentRouting.notReady".into());
-        }
-        // Draft membership requires an existing provider, not a supported transport.
+        group.client = "global".into();
+        // Resource edits do not activate any client configuration.
         self.validate_intent_routing_provider_references(&group, false)?;
         group.auto_generated = false;
         let mut conn = self.extension_connection().lock().map_err(|_| FAILED)?;
@@ -224,6 +555,21 @@ impl Database {
                 return Err("intentRouting.limit".into());
             }
         }
+        {
+            let mut stmt = tx
+                .prepare("SELECT config FROM intent_routing_groups WHERE id != ?1 LIMIT 33")
+                .map_err(|_| FAILED)?;
+            let rows = stmt
+                .query_map([&group.id], |r| r.get::<_, String>(0))
+                .map_err(|_| FAILED)?;
+            for row in rows {
+                let config = row.map_err(|_| FAILED)?;
+                let existing: RoutingGroup = serde_json::from_str(&config).map_err(|_| FAILED)?;
+                if existing.alias() == group.alias() {
+                    return Err("intentRouting.invalid".into());
+                }
+            }
+        }
         group.revision = group.revision.checked_add(1).ok_or(FAILED)?;
         let config = serde_json::to_string(&group).map_err(|_| FAILED)?;
         if config.len() > 65536 {
@@ -235,7 +581,19 @@ impl Database {
             params![group.id, group.revision, config],
         )
         .map_err(|_| FAILED)?;
+        if group.id.starts_with("auto-") {
+            for id in std::iter::once(group.id.clone())
+                .chain(crate::services::intent_routing::legacy_ids(&group))
+            {
+                tx.execute(
+                    "DELETE FROM intent_routing_preferences WHERE key=?1",
+                    [format!("hidden:{id}")],
+                )
+                .map_err(|_| FAILED)?;
+            }
+        }
         tx.commit().map_err(|_| FAILED)?;
+        self.invalidate_routing_resources();
         Ok(group)
     }
 
@@ -257,13 +615,12 @@ impl Database {
         if !valid_id(id) {
             return Err("intentRouting.invalid".into());
         }
-        if revision == 0
-            && !self
-                .intent_routing_catalog_with_providers(providers)?
-                .groups
-                .iter()
-                .any(|g| g.id == id && g.auto_generated)
-        {
+        let group = self
+            .intent_routing_catalog_with_providers(providers)?
+            .groups
+            .into_iter()
+            .find(|g| g.id == id);
+        if revision == 0 && !group.as_ref().is_some_and(|g| g.auto_generated) {
             return Err("intentRouting.conflict".into());
         }
         let mut conn = self.extension_connection().lock().map_err(|_| FAILED)?;
@@ -290,13 +647,24 @@ impl Database {
             return Err("intentRouting.conflict".into());
         }
         if id.starts_with("auto-") {
+            let value = group
+                .map(|group| {
+                    serde_json::to_string(&crate::services::intent_routing::RemovedGroup {
+                        id: group.id,
+                        name: group.name,
+                    })
+                })
+                .transpose()
+                .map_err(|_| FAILED)?
+                .unwrap_or_else(|| "true".into());
             tx.execute(
-                "INSERT OR REPLACE INTO intent_routing_preferences(key,value) VALUES (?1,'true')",
-                [format!("hidden:{id}")],
+                "INSERT OR REPLACE INTO intent_routing_preferences(key,value) VALUES (?1,?2)",
+                [format!("hidden:{id}"), value],
             )
             .map_err(|_| FAILED)?;
         }
         tx.commit().map_err(|_| FAILED)?;
+        self.invalidate_routing_resources();
         Ok(())
     }
 }

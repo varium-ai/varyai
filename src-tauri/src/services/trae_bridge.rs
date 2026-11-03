@@ -118,6 +118,11 @@ pub(crate) fn active() -> bool {
             .ok()
             .is_some_and(|v| v["enabled"] == true)
 }
+pub(crate) fn ready() -> bool {
+    request(&json!({"op":"health"}), false)
+        .ok()
+        .is_some_and(|value| value["ready"] == true)
+}
 fn reconnect_in(directory: &std::path::Path, origin: &str, token: &str) -> bool {
     let mut connected = false;
     let mut protected = true;
@@ -372,6 +377,20 @@ pub(crate) fn enable(origin: &str) -> Result<(), AppError> {
     )?;
     Ok(())
 }
+/// Prepare only after explicit consent. Never launch the UI or enable audit hooks.
+pub(crate) fn prepare_shared() -> Result<(), AppError> {
+    if ready() {
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    let _ = installed_executable()?;
+    prepare_connection(&directory()?, &argv_path()?)?;
+    let _ = ensure_ready();
+    Ok(())
+}
+pub(crate) fn restore_shared() -> Result<(), AppError> {
+    restore_connection(&directory()?, &argv_path()?)
+}
 pub(crate) fn disable() -> Result<(), AppError> {
     // Invalidate first; missed/closed windows release their hooks on the heartbeat.
     *AUDIT_TOKEN.lock().map_err(|_| unavailable())? = None;
@@ -389,6 +408,14 @@ pub(crate) fn apply_connected(provider: &Provider) -> Result<(), AppError> {
         false,
     )?;
     Ok(())
+}
+pub(crate) fn shared_matches(provider: &Provider) -> bool {
+    request(
+        &json!({"op":"matches","id":provider.id,"config":provider.settings_config}),
+        false,
+    )
+    .ok()
+    .is_some_and(|value| value == true)
 }
 /// Return false when delivery must wait for a connected client.
 pub(crate) fn switch_provider(target: &Provider, previous: &[Provider]) -> Result<bool, AppError> {

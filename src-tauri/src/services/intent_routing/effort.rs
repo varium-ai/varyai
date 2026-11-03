@@ -6,17 +6,126 @@ const LEVELS: &[&str] = &[
     "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 ];
 
+pub(crate) fn valid_member_level(level: &str) -> bool {
+    LEVELS.contains(&level) && level != "ultra"
+}
+
+/// Fixed seats affect the request, never the destination's declared capability.
+pub(crate) fn adapt_member_wire(
+    raw: &[u8],
+    format: &str,
+    capability: &Capability,
+    fixed: Option<&str>,
+) -> Result<Vec<u8>, &'static str> {
+    let Some(fixed) = fixed.filter(|_| !capability.quiet && !capability.levels.is_empty()) else {
+        return adapt_wire(raw, format, capability);
+    };
+    if !valid_member_level(fixed) {
+        return Err("routing_invalid_reasoning");
+    }
+    let (path, uppercase) = effort_path(format)?;
+    let fitted = capability.fit(fixed).ok_or("routing_invalid_reasoning")?;
+    replace_effort(
+        raw,
+        path,
+        &if uppercase {
+            fitted.to_ascii_uppercase()
+        } else {
+            fitted
+        },
+    )
+}
+
+fn effort_path(format: &str) -> Result<(&'static [&'static str], bool), &'static str> {
+    match format {
+        "openai_responses" => Ok((&["reasoning", "effort"], false)),
+        "openai_chat" => Ok((&["reasoning_effort"], false)),
+        "anthropic" => Ok((&["output_config", "effort"], false)),
+        "gemini_native" => Ok((
+            &["generationConfig", "thinkingConfig", "thinkingLevel"],
+            true,
+        )),
+        _ => Err("routing_invalid_reasoning"),
+    }
+}
+
+fn replace_effort(raw: &[u8], path: &[&str], value: &str) -> Result<Vec<u8>, &'static str> {
+    use serde_json::value::RawValue;
+    use std::collections::BTreeMap;
+    const INVALID: &str = "routing_invalid_reasoning";
+    let mut fields: BTreeMap<String, Box<RawValue>> =
+        serde_json::from_slice(raw).map_err(|_| INVALID)?;
+    let Some((key, rest)) = path.split_first() else {
+        return Err(INVALID);
+    };
+    let replacement = if rest.is_empty() {
+        serde_json::value::to_raw_value(value).map_err(|_| INVALID)?
+    } else {
+        let child = fields
+            .get(*key)
+            .map(|v| v.get())
+            .filter(|v| *v != "null")
+            .unwrap_or("{}");
+        let bytes = replace_effort(child.as_bytes(), rest, value)?;
+        RawValue::from_string(String::from_utf8(bytes).map_err(|_| INVALID)?)
+            .map_err(|_| INVALID)?
+    };
+    fields.insert((*key).into(), replacement);
+    serde_json::to_vec(&fields).map_err(|_| INVALID)
+}
+
+pub(super) fn valid_levels(levels: &[String]) -> bool {
+    let mut previous = None;
+    levels.iter().all(|level| {
+        let Some(rank) = LEVELS
+            .iter()
+            .position(|known| *known == level && *known != "ultra")
+        else {
+            return false;
+        };
+        if previous.is_some_and(|last| last >= rank) {
+            return false;
+        }
+        previous = Some(rank);
+        true
+    })
+}
+
+pub(crate) fn offered<'a>(
+    group: &super::RoutingGroup,
+    members: impl Iterator<Item = &'a Capability>,
+) -> Vec<String> {
+    if group.levels.is_empty() {
+        shared(members)
+    } else {
+        group.levels.clone()
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Capability {
     pub levels: Vec<String>,
     pub quiet: bool,
     #[serde(default)]
+    pub reasonless: bool,
+    #[serde(default)]
     pub images: Option<bool>,
     #[serde(default)]
     pub free: Option<bool>,
+    #[serde(default)]
+    pub context: super::context::Metadata,
+    #[serde(default)]
+    pub typed_window: bool,
 }
 impl Capability {
     pub fn parse(entry: &Value) -> Self {
+        let reasonless = super::model_preferences::valid(entry)
+            && entry
+                .pointer("/modelPreferences/reasoningLevels")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty);
+        let effective = super::model_preferences::effective(entry);
+        let entry = effective.as_ref();
         let listed = entry
             .get("reasoningLevels")
             .or_else(|| entry.get("reasoning_levels"))
@@ -75,7 +184,10 @@ impl Capability {
         Self {
             levels,
             quiet,
+            reasonless,
             images,
+            context: super::context::Metadata::parse(entry),
+            typed_window: false,
             free: if listed_free == Some(true) || priced_free == Some(true) {
                 Some(true)
             } else {
@@ -145,6 +257,9 @@ pub(crate) fn advertise(model: &mut Value, levels: &[String], chosen: &str) {
 
 /// Patch only the effort leaf; retain opaque JSON numbers and all unrelated fields.
 pub(crate) fn adapt(raw: &[u8], capability: &Capability) -> Result<Vec<u8>, &'static str> {
+    if capability.reasonless {
+        return remove_wire_fields(raw, &[("reasoning", &[])]);
+    }
     use serde_json::value::RawValue;
     use std::collections::BTreeMap;
     const INVALID: &str = "routing_invalid_reasoning";
@@ -184,9 +299,290 @@ pub(crate) fn adapt(raw: &[u8], capability: &Capability) -> Result<Vec<u8>, &'st
     serde_json::to_vec(&root).map_err(|_| INVALID)
 }
 
+/// Fit explicit wire-level effort fields without re-encoding unrelated values.
+pub(crate) fn adapt_wire(
+    raw: &[u8],
+    format: &str,
+    capability: &Capability,
+) -> Result<Vec<u8>, &'static str> {
+    if capability.reasonless {
+        return match format {
+            "openai_responses" => remove_wire_fields(raw, &[("reasoning", &[])]),
+            "openai_chat" => remove_wire_fields(raw, &[("reasoning_effort", &[])]),
+            "anthropic" => {
+                remove_wire_fields(raw, &[("thinking", &[]), ("output_config", &["effort"])])
+            }
+            "gemini_native" => {
+                remove_wire_fields(raw, &[("generationConfig", &["thinkingConfig"])])
+            }
+            _ => Err("routing_invalid_reasoning"),
+        };
+    }
+    if format == "openai_responses" {
+        return adapt(raw, capability);
+    }
+    let (path, uppercase) = effort_path(format)?;
+    patch_effort(raw, path, uppercase, capability)
+}
+
+fn remove_wire_fields(raw: &[u8], paths: &[(&str, &[&str])]) -> Result<Vec<u8>, &'static str> {
+    use serde_json::value::RawValue;
+    use std::collections::BTreeMap;
+    const INVALID: &str = "routing_invalid_reasoning";
+    fn remove(raw: &[u8], key: &str, rest: &[&str]) -> Result<Vec<u8>, &'static str> {
+        if raw == b"null" {
+            return Ok(raw.to_vec());
+        }
+        let mut fields: BTreeMap<String, Box<RawValue>> =
+            serde_json::from_slice(raw).map_err(|_| INVALID)?;
+        let Some(value) = fields.get(key) else {
+            return Ok(raw.to_vec());
+        };
+        if let Some((next, tail)) = rest.split_first() {
+            let child = remove(value.get().as_bytes(), next, tail)?;
+            if child == value.get().as_bytes() {
+                return Ok(raw.to_vec());
+            }
+            fields.insert(
+                key.into(),
+                RawValue::from_string(String::from_utf8(child).map_err(|_| INVALID)?)
+                    .map_err(|_| INVALID)?,
+            );
+        } else {
+            fields.remove(key);
+        }
+        serde_json::to_vec(&fields).map_err(|_| INVALID)
+    }
+    let mut bytes = raw.to_vec();
+    for (key, rest) in paths {
+        bytes = remove(&bytes, key, rest)?;
+    }
+    Ok(bytes)
+}
+
+fn patch_effort(
+    raw: &[u8],
+    path: &[&str],
+    uppercase: bool,
+    capability: &Capability,
+) -> Result<Vec<u8>, &'static str> {
+    use serde_json::value::RawValue;
+    use std::collections::BTreeMap;
+    const INVALID: &str = "routing_invalid_reasoning";
+    if raw == b"null" {
+        return Ok(raw.to_vec());
+    }
+    let mut fields: BTreeMap<String, Box<RawValue>> =
+        serde_json::from_slice(raw).map_err(|_| INVALID)?;
+    let Some((key, rest)) = path.split_first() else {
+        return Err(INVALID);
+    };
+    let Some(value) = fields.get(*key) else {
+        return Ok(raw.to_vec());
+    };
+    if value.get() == "null" {
+        return Ok(raw.to_vec());
+    }
+    if rest.is_empty() {
+        let want: String = serde_json::from_str(value.get()).map_err(|_| INVALID)?;
+        let fitted = capability.fit(&if uppercase {
+            want.to_ascii_lowercase()
+        } else {
+            want.clone()
+        });
+        match fitted.map(|value| {
+            if uppercase {
+                value.to_ascii_uppercase()
+            } else {
+                value
+            }
+        }) {
+            Some(fitted) if fitted == want => return Ok(raw.to_vec()),
+            Some(fitted) => {
+                fields.insert(
+                    (*key).to_owned(),
+                    serde_json::value::to_raw_value(&fitted).map_err(|_| INVALID)?,
+                );
+            }
+            None => {
+                fields.remove(*key);
+            }
+        }
+    } else {
+        let patched = patch_effort(value.get().as_bytes(), rest, uppercase, capability)?;
+        if patched == value.get().as_bytes() {
+            return Ok(raw.to_vec());
+        }
+        fields.insert(
+            (*key).to_owned(),
+            RawValue::from_string(String::from_utf8(patched).map_err(|_| INVALID)?)
+                .map_err(|_| INVALID)?,
+        );
+    }
+    serde_json::to_vec(&fields).map_err(|_| INVALID)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn explicit_no_reasoning_removes_protocol_thinking_without_touching_other_json() {
+        let capability = super::Capability::parse(
+            &serde_json::json!({"modelPreferences":{"reasoningLevels":[]}}),
+        );
+        for (format, raw, removed, kept) in [
+            (
+                "openai_responses",
+                r#"{"reasoning":{"effort":"high","summary":"auto"},"input":[],"vendor":1.000000000000000001}"#,
+                "reasoning",
+                "vendor",
+            ),
+            (
+                "openai_chat",
+                r#"{"reasoning_effort":"high","messages":[],"vendor":1.000000000000000001}"#,
+                "reasoning_effort",
+                "vendor",
+            ),
+            (
+                "anthropic",
+                r#"{"thinking":{"type":"enabled","budget_tokens":1234},"output_config":{"effort":"high","vendor":1.000000000000000001},"messages":[]}"#,
+                "thinking",
+                "output_config",
+            ),
+            (
+                "gemini_native",
+                r#"{"generationConfig":{"thinkingConfig":{"thinkingLevel":"HIGH","includeThoughts":true},"vendor":1.000000000000000001},"contents":[]}"#,
+                "generationConfig/thinkingConfig",
+                "generationConfig",
+            ),
+        ] {
+            let bytes = super::adapt_wire(raw.as_bytes(), format, &capability)
+                .expect("synthetic adaptation");
+            assert!(std::str::from_utf8(&bytes)
+                .expect("utf8")
+                .contains("1.000000000000000001"));
+            let value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+            assert!(value.pointer(&format!("/{removed}")).is_none());
+            assert!(value.get(kept).is_some());
+            if format == "anthropic" {
+                assert!(value["output_config"].get("effort").is_none());
+            }
+        }
+    }
     use super::*;
+    #[test]
+    fn fixed_member_effort_is_fitted_and_inserted_without_touching_opaque_fields() {
+        let capability = Capability::parse(&json!({"reasoningLevels":["low", "high"]}));
+        for (format, raw, path) in [
+            (
+                "openai_responses",
+                r#"{"reasoning":{"effort":"low","summary":"auto"},"vendor":123456789012345678901234567890}"#,
+                "/reasoning/effort",
+            ),
+            (
+                "openai_chat",
+                r#"{"messages":[],"vendor":123456789012345678901234567890}"#,
+                "/reasoning_effort",
+            ),
+            (
+                "anthropic",
+                r#"{"output_config":{"format":{"type":"json_schema"}},"vendor":123456789012345678901234567890}"#,
+                "/output_config/effort",
+            ),
+            (
+                "gemini_native",
+                r#"{"generationConfig":{"thinkingConfig":{"includeThoughts":true}},"vendor":123456789012345678901234567890}"#,
+                "/generationConfig/thinkingConfig/thinkingLevel",
+            ),
+        ] {
+            let bytes = adapt_member_wire(raw.as_bytes(), format, &capability, Some("max"))
+                .expect("fixed effort");
+            let text = String::from_utf8(bytes).expect("json");
+            assert!(text.contains("123456789012345678901234567890"));
+            let value: Value = serde_json::from_str(&text).expect("value");
+            assert_eq!(
+                value.pointer(path).and_then(Value::as_str),
+                Some(if format == "gemini_native" {
+                    "HIGH"
+                } else {
+                    "high"
+                })
+            );
+            if format == "openai_responses" {
+                assert_eq!(value["reasoning"]["summary"], "auto");
+            }
+            if format == "gemini_native" {
+                assert_eq!(
+                    value["generationConfig"]["thinkingConfig"]["includeThoughts"],
+                    true
+                );
+            }
+            if format == "anthropic" {
+                assert_eq!(value["output_config"]["format"]["type"], "json_schema");
+            }
+        }
+        let raw = br#"{"input":"synthetic"}"#;
+        assert_eq!(
+            adapt_member_wire(raw, "openai_responses", &Capability::default(), Some("max"))
+                .expect("unknown capability"),
+            raw
+        );
+    }
+    #[test]
+    fn named_group_levels_override_only_the_menu_not_the_models_capability() {
+        let model = Capability::parse(&json!({"reasoningLevels":["low", "high"]}));
+        let mut group = super::super::tests::fixture();
+        assert_eq!(offered(&group, [&model].into_iter()), ["low", "high"]);
+        group.levels = vec!["medium".into(), "max".into()];
+        assert_eq!(offered(&group, [&model].into_iter()), ["medium", "max"]);
+        assert_eq!(model.fit("medium").as_deref(), Some("high"));
+        assert_eq!(model.fit("max").as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn wire_effort_fits_explicit_fields_without_editing_opaque_siblings() {
+        let capability = Capability::parse(&json!({"reasoningLevels":["low", "high"]}));
+        for (protocol, raw, path) in [
+            (
+                "openai_chat",
+                r#"{"reasoning_effort":"medium","vendor":123456789012345678901234567890,"messages":[]}"#,
+                "/reasoning_effort",
+            ),
+            (
+                "anthropic",
+                r#"{"output_config":{"effort":"medium","vendor":123456789012345678901234567890},"messages":[]}"#,
+                "/output_config/effort",
+            ),
+            (
+                "gemini_native",
+                r#"{"generationConfig":{"thinkingConfig":{"thinkingLevel":"MEDIUM","vendor":123456789012345678901234567890}},"contents":[]}"#,
+                "/generationConfig/thinkingConfig/thinkingLevel",
+            ),
+            (
+                "openai_responses",
+                r#"{"reasoning":{"effort":"medium","vendor":123456789012345678901234567890},"input":[]}"#,
+                "/reasoning/effort",
+            ),
+        ] {
+            let bytes = adapt_wire(raw.as_bytes(), protocol, &capability).expect("fit effort");
+            assert!(std::str::from_utf8(&bytes)
+                .expect("json")
+                .contains("123456789012345678901234567890"));
+            let value: Value = serde_json::from_slice(&bytes).expect("json");
+            let expected = if protocol == "gemini_native" {
+                "HIGH"
+            } else {
+                "high"
+            };
+            assert_eq!(value.pointer(path).and_then(Value::as_str), Some(expected));
+            let quiet = Capability {
+                quiet: true,
+                ..Default::default()
+            };
+            let bytes = adapt_wire(raw.as_bytes(), protocol, &quiet).expect("quiet");
+            let value: Value = serde_json::from_slice(&bytes).expect("json");
+            assert!(value.pointer(path).is_none());
+        }
+    }
     #[test]
     fn cost_metadata_keeps_unknown_distinct_from_explicit_free_or_paid() {
         assert_eq!(Capability::parse(&json!({"model":"free-model"})).free, None);

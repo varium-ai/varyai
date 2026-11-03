@@ -27,7 +27,7 @@ const DialogOverlay = React.forwardRef<
     <DialogPrimitive.Overlay
       ref={ref}
       className={cn(
-        "fixed inset-0 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+        "vary-dialog-backdrop-motion fixed inset-0 bg-black/50 backdrop-blur-sm",
         zIndexMap[zIndex],
         className,
       )}
@@ -65,7 +65,7 @@ const DialogContent = React.forwardRef<
 
     const variantClass = {
       default:
-        "fixed left-1/2 top-1/2 flex flex-col w-full max-w-lg max-h-[90vh] overflow-hidden translate-x-[-50%] translate-y-[-50%] border border-border-default bg-background text-foreground shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
+        "fixed left-1/2 top-1/2 flex flex-col w-full max-w-lg max-h-[90vh] overflow-hidden translate-x-[-50%] translate-y-[-50%] border border-border-default bg-background text-foreground shadow-lg sm:rounded-lg",
       fullscreen:
         "fixed inset-0 flex flex-col w-screen h-screen translate-x-0 translate-y-0 bg-background text-foreground p-0 sm:rounded-none shadow-none",
     }[variant];
@@ -75,7 +75,12 @@ const DialogContent = React.forwardRef<
         <DialogOverlay zIndex={zIndex} className={overlayClassName} />
         <DialogPrimitive.Content
           ref={ref}
-          className={cn(variantClass, zIndexMap[zIndex], className)}
+          className={cn(
+            "vary-dialog-motion",
+            variantClass,
+            zIndexMap[zIndex],
+            className,
+          )}
           {...props}
         >
           {children}

@@ -126,6 +126,7 @@ pub async fn get_xai_oauth_models(
         .data
         .into_iter()
         .map(|model| FetchedModel {
+            context: Default::default(),
             id: model.id,
             owned_by: model.owned_by,
         })

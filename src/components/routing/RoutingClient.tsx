@@ -15,17 +15,32 @@ export function RoutingClient({ disabled = false }: { disabled?: boolean }) {
     queryFn: intentRoutingClientApi.status,
     refetchInterval: 10000,
   });
-  const [confirm, setConfirm] = useState(false);
+  const [confirm, setConfirm] = useState<"enable" | "cleanup" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const active = !!(status.data?.enabled || status.data?.providerEnabled);
-  async function apply(enabled: boolean) {
+  const native = status.data?.nativeCompatibility;
+  const nativeMessage = native
+    ? {
+        disabled: null,
+        pending: "intentRouting.nativePending",
+        active: "intentRouting.nativeActive",
+        unsupported: "intentRouting.nativeUnsupported",
+        revoked: "intentRouting.nativeRevoked",
+        reconnect_required: "intentRouting.nativeRevoked",
+        recovery_pending: "intentRouting.nativeRecovery",
+      }[native]
+    : null;
+  const showError =
+    error &&
+    !(error === "intentRouting.clientConflict" && status.data?.recoveryPending);
+  async function apply(action: "enable" | "disable" | "cleanup") {
     setBusy(true);
     setError(null);
     try {
-      if (enabled) await intentRoutingClientApi.connect(true);
+      if (action === "enable") await intentRoutingClientApi.connect(true);
+      else if (action === "cleanup") await intentRoutingClientApi.cleanup();
       else await intentRoutingClientApi.disconnect();
-      setConfirm(false);
     } catch (cause) {
       const code =
         typeof cause === "string" ? cause.replace(/^intentRouting\./, "") : "";
@@ -40,6 +55,7 @@ export function RoutingClient({ disabled = false }: { disabled?: boolean }) {
           : "intentRouting.clientFailed",
       );
     } finally {
+      setConfirm(null);
       await Promise.all([
         client.invalidateQueries({ queryKey: ["intent-routing-client"] }),
         client.invalidateQueries({ queryKey: proxyKeys.status }),
@@ -54,32 +70,85 @@ export function RoutingClient({ disabled = false }: { disabled?: boolean }) {
       <Switch
         aria-label="Codex"
         checked={active}
-        disabled={disabled || busy || status.isPending || status.isError}
+        disabled={
+          disabled ||
+          busy ||
+          status.isPending ||
+          status.isError ||
+          (status.data?.recoveryPending && !status.data.orphanedConfig)
+        }
         onCheckedChange={(enabled) =>
-          enabled ? setConfirm(true) : void apply(false)
+          enabled ? setConfirm("enable") : void apply("disable")
         }
       />
       {status.data?.recoveryPending && (
         <>
-          <p role="alert" className="text-xs text-destructive">
-            {t("intentRouting.clientRecovery")}
+          <p
+            role={status.data.orphanedConfig ? "status" : "alert"}
+            className={
+              status.data.orphanedConfig
+                ? "text-xs text-muted-foreground"
+                : "text-xs text-destructive"
+            }
+          >
+            {t(
+              status.data.orphanedConfig
+                ? status.data.orphanCleanupAvailable
+                  ? "intentRouting.clientOrphanRecovery"
+                  : "intentRouting.clientOrphanUnsafe"
+                : "intentRouting.clientRecovery",
+            )}
           </p>
+          {(!status.data.orphanedConfig ||
+            status.data.orphanCleanupAvailable) && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={busy || disabled}
+              onClick={() =>
+                status.data.orphanedConfig
+                  ? setConfirm("cleanup")
+                  : void apply("disable")
+              }
+            >
+              {t(
+                status.data.orphanedConfig
+                  ? "intentRouting.clientCleanup"
+                  : "intentRouting.clientDisconnect",
+              )}
+            </Button>
+          )}
+        </>
+      )}
+      {(showError || status.isError) && (
+        <p role="alert" className="text-xs text-destructive">
+          {t(error ?? "intentRouting.clientFailed")}
+        </p>
+      )}
+      {status.data?.enabled && !status.data.recoveryPending && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {t("intentRouting.clientRestart")}
+        </p>
+      )}
+      {active && nativeMessage && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {t(nativeMessage)}
+        </p>
+      )}
+      {active &&
+        !status.data?.recoveryPending &&
+        (native === "revoked" || native === "reconnect_required") && (
           <Button
             type="button"
             size="sm"
             variant="outline"
             disabled={busy || disabled}
-            onClick={() => void apply(false)}
+            onClick={() => setConfirm("enable")}
           >
-            {t("intentRouting.clientDisconnect")}
+            {t("intentRouting.nativeReconnect")}
           </Button>
-        </>
-      )}
-      {(error || status.isError) && (
-        <p role="alert" className="text-xs text-destructive">
-          {t(error ?? "intentRouting.clientFailed")}
-        </p>
-      )}
+        )}
       {!!status.data?.omittedEntries && (
         <p role="status" className="text-xs text-muted-foreground">
           {t("intentRouting.clientOmitted", {
@@ -88,14 +157,30 @@ export function RoutingClient({ disabled = false }: { disabled?: boolean }) {
         </p>
       )}
       <ConfirmDialog
-        isOpen={confirm}
+        isOpen={confirm !== null}
         variant="info"
-        title={t("intentRouting.clientUnifiedTitle")}
-        message={t("intentRouting.clientUnifiedConsent")}
-        confirmText={t("common.enable")}
+        title={t(
+          confirm === "cleanup"
+            ? "intentRouting.clientCleanupTitle"
+            : "intentRouting.clientUnifiedTitle",
+        )}
+        message={
+          confirm === "cleanup"
+            ? t("intentRouting.clientCleanupConsent")
+            : `${t("intentRouting.clientUnifiedConsent")} ${t("intentRouting.nativeConsent")}${
+                status.data?.orphanedConfig
+                  ? ` ${t("intentRouting.clientOrphanReconnectConsent")}`
+                  : ""
+              }`
+        }
+        confirmText={t(
+          confirm === "cleanup"
+            ? "intentRouting.clientCleanup"
+            : "common.enable",
+        )}
         pending={busy}
-        onConfirm={() => void apply(true)}
-        onCancel={() => setConfirm(false)}
+        onConfirm={() => confirm && void apply(confirm)}
+        onCancel={() => setConfirm(null)}
       />
     </>
   );

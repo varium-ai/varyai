@@ -4,9 +4,19 @@ Provider, MCP, prompt, skill, proxy configuration and usage data remain in `cc-s
 
 ## Version boundaries
 
-The shared database follows the **released** upstream schema chain. The current shared version is 23, matching CC Switch **v4.0.21**; the extension version is independently 5. Never advance the shared file to an unreleased migration found on upstream `main`: installed CC Switch releases reject a higher version even if the new columns appear harmless. Version 2 added hashed local gateway credentials and per-key token counters (`gateway_keys`, `gateway_usage`). The gateway branch used version 3 for local agent policy bindings and usage aggregates by agent/model (`gateway_agent_bindings`, `gateway_usage_details`) and version 4 for `gateway_usage_models` to distinguish the original client model from the resolved outbound model at request time. New observations use that table; reads include legacy detail rows with an unknown outbound model. Existing credentials, counters and historical aggregates remain intact. Historical VaryAI single-database version 24 remains the compatibility/export format, not the live shared version. VaryAI security and tool-risk tables identify that historical format. Inspect schema structure as well as version because historical VaryAI databases reused some upstream version numbers.
+The shared database follows the **released** upstream schema chain. The current shared version is 23, matching CC Switch **v4.0.21**; the extension version is independently 7. Never advance the shared file to an unreleased migration found on upstream `main`: installed CC Switch releases reject a higher version even if the new columns appear harmless. Version 2 added hashed local gateway credentials and per-key token counters (`gateway_keys`, `gateway_usage`). The gateway branch used version 3 for local agent policy bindings and usage aggregates by agent/model (`gateway_agent_bindings`, `gateway_usage_details`) and version 4 for `gateway_usage_models` to distinguish the original client model from the resolved outbound model at request time. New observations use that table; reads include legacy detail rows with an unknown outbound model. Existing credentials, counters and historical aggregates remain intact. Historical VaryAI single-database version 24 remains the compatibility/export format, not the live shared version. VaryAI security and tool-risk tables identify that historical format. Inspect schema structure as well as version because historical VaryAI databases reused some upstream version numbers.
 
 Extension version 5 reconciles two development branches that independently used versions 3 and 4. The intent-routing branch used those versions for `intent_routing_groups` and `intent_routing_preferences` rather than the gateway additions. Startup recognizes the complete known table/column layouts, backs up both files before upgrading, and adds the missing tables transactionally. Routing rows, gateway credentials/counters, and security/tool-risk state remain intact through startup and full backup/restore. Keeping the intent-routing tables does not enable that branch's runtime or UI. Malformed, partial, and unknown layouts still stop before schema writes; do not delete the extension database or lower its version to bypass validation. Older branches that only support extension v4 cannot reopen the upgraded v5 file.
+
+Extension version 7 introduces the native global provider contract in
+`routing_upstreams`. Upgrading an older extension discards its global providers,
+routing groups and routing preferences once, and drops `routing_upstream_origins`;
+there is no migration or compatibility path for that retired provider contract.
+Shared client configurations, account stores, security policy and observations
+are retained. Shared version 23 is unchanged. Native providers receive independent
+identities and revision checks; explicit imports copy supported source data
+instead of retaining live references. Catalog reads, startup, routing validation
+and proxy refresh never import client configurations automatically.
 
 The supported upstream additions are:
 
@@ -34,10 +44,28 @@ An earlier compatibility development build incorrectly advanced released shared 
 
 ## Locking, backup and sync
 
-Public DAOs use the shared connection and security/tool-risk and gateway-key DAOs use the extension connection. Gateway admission reads run on blocking workers; gateway usage persistence runs through an asynchronous queue. Operations needing both always lock shared before extension. Audit persistence remains asynchronous and must not hold database locks in request forwarding.
+Public provider DAOs use the shared connection; routing-registry, security/tool-risk and gateway-key DAOs use the extension connection. Routing resolution reads shared provider snapshots before locking the extension connection and runs on the control plane, not during forwarding. Successful routing/source mutations and full imports/restores invalidate the in-process routing snapshot generation; the runtime must publish a refreshed snapshot before using changed resources. Gateway admission reads run on blocking workers; gateway usage persistence runs through an asynchronous queue. Operations needing both always lock shared before extension. Audit persistence remains asynchronous and must not hold database locks in request forwarding.
 
 Gateway authentication still stores only SHA-256 hashes in the extension database. Newly created gateway secrets also have device-local copies under `gateway-secrets/<key UUID>` in the application configuration directory, outside both databases and their export/sync payloads. Private atomic writes use `0600` on Unix; these files are not encrypted. The separate reveal command validates a saved copy against an active key's hash before returning it. Lists contain only an availability flag. Missing copies leave authentication and local agent policies intact. Old hash-only credentials cannot be reconstructed. Failed secret-file writes roll back key creation; deleting a revoked, unbound key removes its local copy.
 
-Portable SQL/binary exports combine the two files into the compatibility format. Import validates and migrates staged data, creates current safety backups, then writes the two current files transactionally. Preserve local tool-risk settings, rules, lists, events and change history according to the existing synchronization rules.
+Native API providers store their primary key, backup keys and private headers
+in the extension record. The registry does not encrypt these values. List,
+editor, save and import responses redact credentials and headers. Omitted keys
+retain stored values only at their original trusted destinations; private
+backup keys are matched by stable IDs. Import previews expose only safe metadata
+and source fingerprints, then re-read the source for explicit confirmation.
+Imported Codex subscriptions use the separate managed OAuth account file and native
+Codex provider policies. No OAuth token is stored in an API-key field. Source
+applications and native client sign-ins are not rewritten. Treat both database
+files, private account files and portable exports as sensitive. See
+[external imports](shared-catalog.md#external-provider-imports).
+
+Portable SQL/binary exports combine the two files into the compatibility format, including routing records, origin tombstones and API keys. Import validates record sizes, revisions, protocols and origin consistency in staging, normalizes registry status fields, and disables imported routing groups and automatic group creation. It then creates current safety backups and writes the two current files transactionally. Older exports without a registry remain importable. Preserve local tool-risk settings, rules, lists, events and change history according to the existing synchronization rules.
+
+## Local continuation ownership
+
+Normal Codex-menu/native and authenticated gateway routing can save observed continuation ownership in `intent-routing-continuations.json` beside the existing native checkpoint key. Its separate `intent-routing-continuations.key` authenticates and encrypts each record, including its timestamp, with the existing checkpoint codec. Only domain-separated hashes of consumers, aliases, conversation/response/tool/item/opaque identifiers and exact destination fingerprints are persisted. Prompts, raw opaque content, tool arguments, tokens, endpoint plaintext and provider configuration are not written to this store. Unix files are private (`0600`); unsafe, malformed or oversized files are refused, not repaired or replaced on load.
+
+The store is separate from both databases and their portable export/sync payloads; no schema version changes. Queued aggregate snapshots use a blocking worker for encryption and atomic file replacement, never a forwarding-path transaction or file write. Normal disconnect/stop flushes observed generations; abrupt termination can lose queued observations. The store retains at most 512 conversations for 24 hours, with 128 KiB per encrypted plaintext snapshot, 4096 identifier mappings per snapshot and a 16 MiB file budget. Overflow invalidates the affected snapshot rather than saving a partial owner map. Eviction, corruption, missing keys and destination changes make recovery unavailable instead of guessing another account. See [routing recovery and limits](../guides/intent-routing.md#continuation-recovery-after-restart).
 
 See [storage implementation](../../src-tauri/src/database/storage.rs), [schema](../../src-tauri/src/database/schema.rs), [file-level regression tests](../../src-tauri/src/database/split_storage_tests.rs), and [upstream compatibility tests](../../src-tauri/src/database/upstream_compat_tests.rs). Unit tests do not prove compatibility with every future upstream schema.

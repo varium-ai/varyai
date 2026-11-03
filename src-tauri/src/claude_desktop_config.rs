@@ -14,6 +14,9 @@ use crate::provider::{ClaudeDesktopMode, Provider};
 pub const PROFILE_ID: &str = "00000000-0000-4000-8000-000000157210";
 pub const PROFILE_NAME: &str = "Vary AI";
 
+#[cfg(test)]
+mod shared_recovery_tests;
+
 #[cfg(any(target_os = "macos", windows, test))]
 const CONFIG_FILE: &str = "claude_desktop_config.json";
 #[cfg(any(target_os = "macos", windows, test))]
@@ -1359,8 +1362,177 @@ mod tests {
         )
     }
 
+    #[test]
+    fn shared_connection_snapshots_legacy_desktop_profiles_without_writing() -> Result<(), String> {
+        let temp = TempDir::new().map_err(|_| "fixture")?;
+        let paths = test_paths(temp.path());
+        let write = |path: &Path, value: Value| -> Result<(), String> {
+            write_json_file(path, &value).map_err(|_| "fixture".into())
+        };
+        write(&paths.normal_config_path, json!({"deploymentMode":"3p"}))?;
+        write(&paths.threep_config_path, json!({"deploymentMode":"3p"}))?;
+        write(&paths.profile_path, json!({"inferenceProvider":"gateway"}))?;
+        write(
+            &paths.meta_path,
+            json!({"entries":[{"id":PROFILE_ID}],"appliedId":"synthetic-other-profile"}),
+        )?;
+        let original = fs::read(&paths.meta_path).map_err(|_| "fixture")?;
+        let prepare = || {
+            shared_catalog_edits_at(
+                paths.clone(),
+                "http://127.0.0.1:1",
+                concat!("synthetic", "-local"),
+                &[],
+            )
+        };
+        assert!(prepare().is_ok());
+        assert_eq!(fs::read(&paths.meta_path).map_err(|_| "fixture")?, original);
+
+        write(&paths.meta_path, json!({"entries":[{"id":PROFILE_ID}]}))?;
+        assert!(prepare().is_ok());
+        write(&paths.meta_path, json!({"appliedId":PROFILE_ID}))?;
+        assert!(prepare().is_ok());
+        write(
+            &paths.normal_config_path,
+            json!({"deploymentMode":"consumer"}),
+        )?;
+        write(
+            &paths.threep_config_path,
+            json!({"deploymentMode":"consumer"}),
+        )?;
+        assert!(prepare().is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn shared_connection_preparation_rejects_unreadable_configuration() -> Result<(), String> {
+        let temp = TempDir::new().map_err(|_| "fixture")?;
+        let paths = test_paths(temp.path());
+        let prepare = || {
+            shared_catalog_edits_at(
+                paths.clone(),
+                "http://127.0.0.1:1",
+                concat!("synthetic", "-local"),
+                &[],
+            )
+        };
+        assert!(prepare().is_ok());
+        fs::create_dir_all(&paths.config_library_path).map_err(|_| "fixture")?;
+        for invalid in ["{", "[]", "null"] {
+            fs::write(&paths.meta_path, invalid).map_err(|_| "fixture")?;
+            assert!(prepare().is_err());
+        }
+        fs::write(&paths.meta_path, " ".repeat(4 * 1024 * 1024 + 1)).map_err(|_| "fixture")?;
+        assert!(prepare().is_err());
+        #[cfg(unix)]
+        {
+            fs::remove_file(&paths.meta_path).map_err(|_| "fixture")?;
+            let target = temp.path().join("external.json");
+            fs::write(&target, "{}").map_err(|_| "fixture")?;
+            std::os::unix::fs::symlink(&target, &paths.meta_path).map_err(|_| "fixture")?;
+            assert!(prepare().is_err());
+            assert_eq!(fs::read_to_string(&target).map_err(|_| "fixture")?, "{}");
+        }
+        Ok(())
+    }
+
     fn test_db() -> Database {
         Database::memory().expect("memory db")
+    }
+
+    #[test]
+    fn shared_desktop_model_names_pass_the_native_role_validator() {
+        let first = shared_model_name("synthetic-provider/first");
+        assert!(is_claude_safe_model_id(&first));
+        assert!(first.starts_with("claude-sonnet-4-6-"));
+        assert_eq!(first, shared_model_name("synthetic-provider/first"));
+        assert_ne!(first, shared_model_name("synthetic-provider/second"));
+        assert!(!first.contains("synthetic-provider"));
+    }
+
+    #[test]
+    fn shared_desktop_connection_journals_inactive_legacy_files_and_restores_them(
+    ) -> Result<(), String> {
+        use crate::services::agent_connections::{Manager, Model, Receipt};
+        let temp = TempDir::new().map_err(|_| "fixture")?;
+        let paths = test_paths(temp.path());
+        for (path, value) in [
+            (
+                &paths.normal_config_path,
+                json!({"deploymentMode":"3p","theme":"dark"}),
+            ),
+            (
+                &paths.threep_config_path,
+                json!({"deploymentMode":"3p","locale":"en"}),
+            ),
+            (
+                &paths.profile_path,
+                json!({"inferenceProvider":"gateway","syntheticSetting":true}),
+            ),
+            (
+                &paths.meta_path,
+                json!({"entries":[{"id":PROFILE_ID,"name":"Old Vary"},{"id":"synthetic-other-profile","name":"Other"}],"appliedId":"synthetic-other-profile"}),
+            ),
+        ] {
+            write_json_file(path, &value).map_err(|_| "fixture")?;
+        }
+        let baseline = [
+            &paths.normal_config_path,
+            &paths.threep_config_path,
+            &paths.profile_path,
+            &paths.meta_path,
+        ]
+        .into_iter()
+        .map(|path| Ok((path.clone(), fs::read(path).map_err(|_| "fixture")?)))
+        .collect::<Result<Vec<_>, String>>()?;
+        let model = Model {
+            icon: None,
+            compact_at: None,
+            id: "synthetic-provider/first".into(),
+            name: "Synthetic model".into(),
+            context_window: Some(1_000_000),
+            group: "Synthetic provider".into(),
+            reasoning_levels: vec![],
+            images: true,
+        };
+        let wire = shared_model_name(&model.id);
+        let (files, mapping) = shared_catalog_edits_at(
+            paths.clone(),
+            "http://127.0.0.1:1/connections/claude-desktop",
+            concat!("synthetic", "-local-token"),
+            std::slice::from_ref(&model),
+        )?;
+        assert_eq!(mapping.get(&wire), Some(&model.id));
+        let manager = Manager {
+            root: temp.path().join("receipts"),
+        };
+        manager.install(Receipt {
+            app: "claude-desktop".into(),
+            token: concat!("synthetic", "-local-token").into(),
+            model: model.id,
+            model_map: mapping,
+            visible_models: None,
+            files,
+            suspended: false,
+            applied_at_ms: None,
+        })?;
+        assert!(manager.status("claude-desktop")?.configured);
+        let profile: Value = read_json_file(&paths.profile_path).map_err(|_| "fixture")?;
+        assert_eq!(profile["inferenceModels"][0]["name"], wire);
+        assert_eq!(
+            profile["inferenceModels"][0]["labelOverride"],
+            "Synthetic model"
+        );
+        assert_eq!(profile["inferenceModels"][0]["supports1m"], true);
+        let meta: Value = read_json_file(&paths.meta_path).map_err(|_| "fixture")?;
+        assert_eq!(meta["appliedId"], PROFILE_ID);
+        assert_eq!(meta["entries"].as_array().map(Vec::len), Some(2));
+        manager.disconnect("claude-desktop")?;
+        for (path, original) in baseline {
+            assert!(fs::read(path).map_err(|_| "fixture")? == original);
+        }
+        assert!(!manager.status("claude-desktop")?.enabled);
+        Ok(())
     }
 
     fn set_proxy_port(db: &Database, port: u16) {
@@ -2289,4 +2461,117 @@ mod tests {
         );
         assert!(!is_compatible_direct_provider(&missing_bearer));
     }
+}
+
+pub(crate) fn shared_model_name(id: &str) -> String {
+    let legacy = legacy_shared_model_name(id);
+    format!(
+        "claude-sonnet-4-6-vary-{}",
+        legacy.trim_start_matches("claude-vary-")
+    )
+}
+
+pub(crate) fn legacy_shared_model_name(id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("claude-vary-{:x}", Sha256::digest(id.as_bytes()))
+}
+
+/// Publish the visible shared menu through Desktop's native gateway profile.
+pub(crate) fn shared_catalog_edits(
+    base: &str,
+    token: &str,
+    models: &[crate::services::agent_connections::Model],
+) -> Result<
+    (
+        Vec<crate::services::agent_connections::FileEdit>,
+        std::collections::BTreeMap<String, String>,
+    ),
+    String,
+> {
+    use crate::services::agent_connections::FAILED;
+    let paths = current_platform_paths().map_err(|_| FAILED)?;
+    shared_catalog_edits_at(paths, base, token, models)
+}
+
+fn shared_catalog_edits_at(
+    paths: ClaudeDesktopPaths,
+    base: &str,
+    token: &str,
+    models: &[crate::services::agent_connections::Model],
+) -> Result<
+    (
+        Vec<crate::services::agent_connections::FileEdit>,
+        std::collections::BTreeMap<String, String>,
+    ),
+    String,
+> {
+    use crate::services::agent_connections::{
+        desktop_config::{key_matches, Kind},
+        FileEdit,
+    };
+    let mut mapping = std::collections::BTreeMap::new();
+    let specs = models
+        .iter()
+        .map(|model| {
+            let name = shared_model_name(&model.id);
+            mapping.insert(name.clone(), model.id.clone());
+            InferenceModelSpec {
+                name,
+                label_override: Some(model.name.clone()),
+                supports_1m: model.context_window.is_some_and(|n| n >= 1_000_000),
+            }
+        })
+        .collect::<Vec<_>>();
+    let profile = build_gateway_profile(base, token, Some(&specs));
+    let mut files = vec![];
+    for path in [paths.normal_config_path, paths.threep_config_path] {
+        files.push(
+            FileEdit::prepare(path, |value| {
+                value["deploymentMode"] = json!("3p");
+                Ok(())
+            })?
+            .for_desktop(Kind::Mode),
+        );
+    }
+    files.push(
+        FileEdit::prepare(paths.profile_path, |value| {
+            let preserve_key = value["inferenceProvider"] == "gateway"
+                && value["inferenceGatewayBaseUrl"] == base
+                && value
+                    .get("inferenceGatewayApiKey")
+                    .is_some_and(|key| key_matches(key, &json!(token)));
+            for (key, next) in profile
+                .as_object()
+                .ok_or(crate::services::agent_connections::FAILED)?
+            {
+                if (key == "inferenceGatewayApiKey" && preserve_key)
+                    || (["coworkEgressAllowedHosts", "disableDeploymentModeChooser"]
+                        .contains(&key.as_str())
+                        && value.get(key).is_some())
+                {
+                    continue;
+                }
+                value[key] = next.clone();
+            }
+            Ok(())
+        })?
+        .for_desktop(Kind::Profile),
+    );
+    files.push(
+        FileEdit::prepare(paths.meta_path, |value| {
+            let mut entries = match value.get("entries") {
+                None => vec![],
+                Some(Value::Array(entries)) => entries.clone(),
+                _ => return Err(crate::services::agent_connections::FAILED.into()),
+            };
+            if !entries.iter().any(|entry| entry["id"] == PROFILE_ID) {
+                entries.push(json!({"id":PROFILE_ID,"name":PROFILE_NAME}));
+            }
+            value["entries"] = json!(entries);
+            value["appliedId"] = json!(PROFILE_ID);
+            Ok(())
+        })?
+        .for_desktop(Kind::Meta),
+    );
+    Ok((files, mapping))
 }

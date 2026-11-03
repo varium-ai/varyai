@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useDialogSnapshot } from "@/hooks/useDialogSnapshot";
 import { useTranslation } from "react-i18next";
 import {
   Check,
@@ -81,6 +82,8 @@ export function ProfileSwitcher({
   const [undoing, setUndoing] = useState(false);
   const [bundlePreview, setBundlePreview] = useState<Profile | null>(null);
   const [legacyPreview, setLegacyPreview] = useState<Profile | null>(null);
+  const bundleDialog = useDialogSnapshot(bundlePreview);
+  const legacyDialog = useDialogSnapshot(legacyPreview);
   const queryClient = useQueryClient();
 
   const { data } = useProfilesQuery();
@@ -452,18 +455,22 @@ export function ProfileSwitcher({
         isOpen={isManageOpen}
         onClose={() => setIsManageOpen(false)}
       />
-      {bundlePreview && (
+      {bundleDialog.snapshot && (
         <ProfileBundleDialog
-          profile={bundlePreview}
+          open={!!bundlePreview}
+          profile={bundleDialog.snapshot}
+          onExited={bundleDialog.onExited}
           onClose={() => setBundlePreview(null)}
           onChanged={() => {
             void queryClient.invalidateQueries({ queryKey: ["profiles"] });
           }}
         />
       )}
-      {legacyPreview && scope && (
+      {legacyDialog.snapshot && scope && (
         <ProfileLegacyDialog
-          profile={legacyPreview}
+          open={!!legacyPreview}
+          profile={legacyDialog.snapshot}
+          onExited={legacyDialog.onExited}
           scope={scope}
           onClose={() => setLegacyPreview(null)}
         />

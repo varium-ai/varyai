@@ -1,22 +1,22 @@
-# Magpie protocol implementation comparison
+# Reference protocol implementation comparison
 
-Reviewed on 2026-10-22 against Magpie commit `c4551dfcacf67536180291da402ded1d1316a2d8`. The review did not run Magpie or contact real providers.
+Reviewed on 2026-10-22 against the reference implementation commit `c4551dfcacf67536180291da402ded1d1316a2d8`. The review did not run the reference implementation or contact real providers.
 
 ## Architecture and sources
 
-Magpie parses four protocols into shared Request/Message/Part objects and builds upstream requests with protocol-specific builders. Decoders map upstream streams to shared Events; encoders produce the client protocol. Text, reasoning, images, files, calls, and results have separate representations. Matching protocols usually pass through, with compatibility exceptions.
+The reference implementation parses four protocols into shared Request/Message/Part objects and builds upstream requests with protocol-specific builders. Decoders map upstream streams to shared Events; encoders produce the client protocol. Text, reasoning, images, files, calls, and results have separate representations. Matching protocols usually pass through, with compatibility exceptions.
 
 Pinned sources:
 
-- [ir.go: requests, parts, events, and results](https://github.com/yetone/magpie/blob/c4551dfcacf67536180291da402ded1d1316a2d8/internal/gateway/ir.go)
-- [gateway.go: routing, conversion, completion, and errors](https://github.com/yetone/magpie/blob/c4551dfcacf67536180291da402ded1d1316a2d8/internal/gateway/gateway.go)
-- [gemini.go: messages, tool results, and images](https://github.com/yetone/magpie/blob/c4551dfcacf67536180291da402ded1d1316a2d8/internal/gateway/gemini.go)
-- [translate_severed_test.go: interrupted streams](https://github.com/yetone/magpie/blob/c4551dfcacf67536180291da402ded1d1316a2d8/internal/gateway/translate_severed_test.go)
-- [gemini_function_parts_test.go: tool images and roles](https://github.com/yetone/magpie/blob/c4551dfcacf67536180291da402ded1d1316a2d8/internal/gateway/gemini_function_parts_test.go)
+- [ir.go: requests, parts, events, and results](../../third_party/routing-reference/NOTICE.md)
+- [gateway.go: routing, conversion, completion, and errors](../../third_party/routing-reference/NOTICE.md)
+- [gemini.go: messages, tool results, and images](../../third_party/routing-reference/NOTICE.md)
+- [translate_severed_test.go: interrupted streams](../../third_party/routing-reference/NOTICE.md)
+- [gemini_function_parts_test.go: tool images and roles](../../third_party/routing-reference/NOTICE.md)
 
 ## Adapted behavior and exclusions
 
-| Area | Magpie | Vary AI |
+| Area | Reference implementation | Vary AI |
 | --- | --- | --- |
 | Conversion architecture | Shared request/part/event model | Compose existing Anthropic adapters without replacing gateway or storage |
 | Gemini result roles | functionResponse belongs to user; split mixed content in order | Adapted: accept model/assistant labels, move results to user, preserve surrounding text and call IDs |
@@ -33,4 +33,4 @@ Two failing tests first reproduced assistant-labeled tool results and rejected f
 
 ## License
 
-Gemini tool-result role and image handling are adapted from Magpie, Copyright (c) 2026 yetone, under the MIT License. The complete notice is retained in [third_party/magpie/LICENSE](../../third_party/magpie/LICENSE).
+Gemini tool-result role and image handling are adapted from the reference implementation, Copyright (c) 2026 yetone, under the MIT License. The complete notice is retained in [third_party/routing-reference/LICENSE](../../third_party/routing-reference/LICENSE).

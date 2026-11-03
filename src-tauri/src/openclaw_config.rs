@@ -233,6 +233,41 @@ struct OpenClawConfigDocument {
     text: RtJSONText,
 }
 
+pub(crate) fn patch_document(
+    source: &str,
+    before: &Value,
+    after: &Value,
+) -> Result<String, AppError> {
+    let mut document = OpenClawConfigDocument {
+        path: PathBuf::new(),
+        original_source: None,
+        text: rt_from_str(source).map_err(|_| AppError::Config("Invalid JSON5 document".into()))?,
+    };
+    let a = before
+        .as_object()
+        .ok_or_else(|| AppError::Config("Invalid JSON5 document".into()))?;
+    let b = after
+        .as_object()
+        .ok_or_else(|| AppError::Config("Invalid JSON5 document".into()))?;
+    for (key, value) in b {
+        if a.get(key) != Some(value) {
+            document.set_root_section(key, value)?;
+        }
+    }
+    if let RtJSONValue::JSONObject {
+        key_value_pairs, ..
+    } = &mut document.text.value
+    {
+        key_value_pairs
+            .retain(|pair| json5_key_name(&pair.key).is_none_or(|key| b.contains_key(key)));
+    }
+    let next = document.text.to_string();
+    if json5::from_str::<Value>(&next).ok().as_ref() != Some(after) {
+        return Err(AppError::Config("Invalid JSON5 projection".into()));
+    }
+    Ok(next)
+}
+
 impl OpenClawConfigDocument {
     fn load() -> Result<Self, AppError> {
         let path = get_openclaw_config_path();

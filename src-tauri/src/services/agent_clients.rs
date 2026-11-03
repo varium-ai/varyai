@@ -953,7 +953,11 @@ impl Document {
     }
 }
 use sha2::Digest;
-fn patch_toml(item: &mut toml_edit::Item, before: &Value, after: &Value) -> Result<(), AppError> {
+pub(crate) fn patch_toml(
+    item: &mut toml_edit::Item,
+    before: &Value,
+    after: &Value,
+) -> Result<(), AppError> {
     if before == after {
         return Ok(());
     }

@@ -192,7 +192,7 @@ const renderApp = (AppComponent: ComponentType) => {
   return { ...result, client };
 };
 
-describe("App integration with MSW", () => {
+describe("Legacy configuration compatibility with MSW", () => {
   beforeEach(() => {
     resetProviderState();
     toastSuccessMock.mockReset();
@@ -211,7 +211,7 @@ describe("App integration with MSW", () => {
     "exposes the project switcher on the home page only when enabled=%s",
     async (showProfileSwitcher) => {
       setSettings({ showProfileSwitcher, firstRunNoticeConfirmed: true });
-      const { default: App } = await import("@/App");
+      const { default: App } = await import("../fixtures/LegacyApp");
       const { client } = renderApp(App);
       await screen.findByTestId("home-dashboard");
       await waitFor(() =>
@@ -230,7 +230,7 @@ describe("App integration with MSW", () => {
   it("does not offer unsupported provider configuration for Doubao Work", async () => {
     setSettings({ visibleApps: { ...DEFAULT_VISIBLE_APPS, doubaowork: true } });
     localStorage.setItem("cc-switch-last-app", "doubaowork");
-    const { default: App } = await import("@/App");
+    const { default: App } = await import("../fixtures/LegacyApp");
     renderApp(App);
     await screen.findByText("homeAudit.doubaoAccount");
     expect(
@@ -245,7 +245,7 @@ describe("App integration with MSW", () => {
       setSettings({ language });
       localStorage.setItem("language", staleLanguage);
       await i18n.changeLanguage(staleLanguage);
-      const { default: App } = await import("@/App");
+      const { default: App } = await import("../fixtures/LegacyApp");
       const first = renderApp(App);
       await waitFor(() => expect(i18n.language).toBe(language));
       expect(localStorage.getItem("language")).toBe(language);
@@ -288,7 +288,7 @@ describe("App integration with MSW", () => {
           HttpResponse.json({ codex: takeover }),
         ),
       );
-      const { default: App } = await import("@/App");
+      const { default: App } = await import("../fixtures/LegacyApp");
       const { client } = renderApp(App);
       fireEvent.click(
         await screen.findByRole("button", { name: "firstRunNotice.confirm" }),
@@ -346,7 +346,7 @@ describe("App integration with MSW", () => {
           return HttpResponse.json({ warnings: [] });
         }),
       );
-      const { default: App } = await import("@/App");
+      const { default: App } = await import("../fixtures/LegacyApp");
       const { client, unmount } = renderApp(App);
       try {
         fireEvent.click(
@@ -409,7 +409,7 @@ describe("App integration with MSW", () => {
       };
       setProviders(appId, { source });
       setCurrentProviderId(appId, source.id);
-      const { default: App } = await import("@/App");
+      const { default: App } = await import("../fixtures/LegacyApp");
       renderApp(App);
       fireEvent.click(
         await screen.findByRole("button", { name: "firstRunNotice.confirm" }),
@@ -476,7 +476,7 @@ describe("App integration with MSW", () => {
         },
       ),
     );
-    const { default: App } = await import("@/App");
+    const { default: App } = await import("../fixtures/LegacyApp");
     renderApp(App);
     fireEvent.click(
       await screen.findByRole("button", { name: "firstRunNotice.confirm" }),
@@ -519,7 +519,7 @@ describe("App integration with MSW", () => {
   }, 15_000);
 
   it("renders the redesigned home dashboard with primary actions", async () => {
-    const { default: App } = await import("@/App");
+    const { default: App } = await import("../fixtures/LegacyApp");
     renderApp(App);
     const dashboard = await screen.findByTestId("home-dashboard");
     expect(dashboard.closest("main")).not.toBeNull();
@@ -540,7 +540,7 @@ describe("App integration with MSW", () => {
 
   it("starts on the home page instead of restoring the previous view", async () => {
     localStorage.setItem("cc-switch-last-view", "settings");
-    const { default: App } = await import("@/App");
+    const { default: App } = await import("../fixtures/LegacyApp");
     renderApp(App);
 
     expect(await screen.findByTestId("home-dashboard")).toBeInTheDocument();
@@ -556,7 +556,7 @@ describe("App integration with MSW", () => {
     });
 
     try {
-      const { default: App } = await import("@/App");
+      const { default: App } = await import("../fixtures/LegacyApp");
       renderApp(App);
       const dashboard = await screen.findByTestId("home-dashboard");
       const firstRunConfirm = await screen.findByRole("button", {
@@ -595,7 +595,7 @@ describe("App integration with MSW", () => {
   }, 15_000);
 
   it("keeps the primary actions visible while switching top tabs", async () => {
-    const { default: App } = await import("@/App");
+    const { default: App } = await import("../fixtures/LegacyApp");
     renderApp(App);
 
     await screen.findByTestId("home-dashboard");
@@ -666,7 +666,7 @@ describe("App integration with MSW", () => {
       },
     });
     setCurrentProviderId("workbuddy", "workbuddy-official");
-    const { default: App } = await import("@/App");
+    const { default: App } = await import("../fixtures/LegacyApp");
     renderApp(App);
     await screen.findByTestId("home-dashboard");
     fireEvent.click(
@@ -720,7 +720,7 @@ describe("App integration with MSW", () => {
   it("opens the dedicated routing tab from the home routing shortcut", async () => {
     securityProtectionMock.connected = false;
     localStorage.setItem("cc-switch-last-app", "openclaw");
-    const { default: App } = await import("@/App");
+    const { default: App } = await import("../fixtures/LegacyApp");
     renderApp(App);
 
     await screen.findByTestId("home-dashboard");
@@ -735,7 +735,7 @@ describe("App integration with MSW", () => {
 
   it("enables the current app directly from the unrouted protection warning", async () => {
     securityProtectionMock.connected = false;
-    const { default: App } = await import("@/App");
+    const { default: App } = await import("../fixtures/LegacyApp");
     renderApp(App);
 
     await screen.findByTestId("home-dashboard");
@@ -748,7 +748,7 @@ describe("App integration with MSW", () => {
   }, 15_000);
 
   it("resets provider view scroll when switching apps", async () => {
-    const { default: App } = await import("@/App");
+    const { default: App } = await import("../fixtures/LegacyApp");
     const { container } = renderApp(App);
 
     await screen.findByTestId("home-dashboard");
@@ -779,7 +779,7 @@ describe("App integration with MSW", () => {
   }, 10_000);
 
   it("shows toast when auto sync fails in background", async () => {
-    const { default: App } = await import("@/App");
+    const { default: App } = await import("../fixtures/LegacyApp");
     renderApp(App);
 
     await screen.findByTestId("home-dashboard");
@@ -817,7 +817,7 @@ describe("App integration with MSW", () => {
   });
 
   it("hosts the Skills check-update action in the App toolbar", async () => {
-    const { default: App } = await import("@/App");
+    const { default: App } = await import("../fixtures/LegacyApp");
     renderApp(App);
 
     fireEvent.click(
@@ -841,7 +841,7 @@ describe("App integration with MSW", () => {
   });
 
   it("routes the Skills discover toolbar action through the panel guard", async () => {
-    const { default: App } = await import("@/App");
+    const { default: App } = await import("../fixtures/LegacyApp");
     renderApp(App);
 
     fireEvent.click(

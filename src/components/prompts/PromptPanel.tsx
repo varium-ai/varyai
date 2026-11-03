@@ -1,3 +1,4 @@
+import { useDialogSnapshot } from "@/hooks/useDialogSnapshot";
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { type AppId } from "@/lib/api";
@@ -48,6 +49,7 @@ const StandardPromptPanel = React.forwardRef<
       messageParams?: Record<string, unknown>;
       onConfirm: () => void;
     } | null>(null);
+    const { snapshot: confirmation, onExited: onConfirmationExited } = useDialogSnapshot(confirmDialog);
     const [writePending, setWritePending] = useState(false);
     const [reloadPending, setReloadPending] = useState(false);
     const writeLockRef = React.useRef(false);
@@ -291,13 +293,14 @@ const StandardPromptPanel = React.forwardRef<
           />
         )}
 
-        {confirmDialog && (
+        {confirmation && (
           <ConfirmDialog
-            isOpen={confirmDialog.isOpen}
-            title={t(confirmDialog.titleKey)}
-            message={t(confirmDialog.messageKey, confirmDialog.messageParams)}
+            isOpen={confirmDialog?.isOpen ?? false}
+          onExited={onConfirmationExited}
+            title={t(confirmation.titleKey)}
+            message={t(confirmation.messageKey, confirmation.messageParams)}
             pending={writePending}
-            onConfirm={confirmDialog.onConfirm}
+            onConfirm={confirmation.onConfirm}
             onCancel={() => {
               if (!writeLockRef.current) {
                 overlayOpenRef.current = false;

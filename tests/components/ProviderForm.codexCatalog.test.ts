@@ -3,6 +3,27 @@ import { normalizeCodexCatalogModelsForSave } from "@/components/providers/forms
 import { mapCodexCatalogModelForForm } from "@/components/providers/forms/hooks/useCodexConfigState";
 
 describe("ProviderForm Codex catalog helpers", () => {
+  it("round-trips independent capacity and compaction metadata", () => {
+    expect(
+      normalizeCodexCatalogModelsForSave([
+        mapCodexCatalogModelForForm({
+          model: "fixture",
+          context_window: 1000000,
+          max_context_window: 1200000,
+          effective_context_window_percent: 95,
+          auto_compact_token_limit: 272000,
+        }),
+      ]),
+    ).toEqual([
+      {
+        model: "fixture",
+        contextWindow: 1000000,
+        maxContextWindow: 1200000,
+        effectiveContextWindowPercent: 95,
+        autoCompactTokenLimit: 272000,
+      },
+    ]);
+  });
   it("retains explicit free and paid metadata without guessing missing values", () => {
     expect(
       normalizeCodexCatalogModelsForSave(

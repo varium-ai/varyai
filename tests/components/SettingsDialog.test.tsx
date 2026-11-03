@@ -334,12 +334,21 @@ describe("SettingsPage Component", () => {
     expect(screen.getByTestId("local-proxy-settings")).toBeInTheDocument();
     expect(screen.getByTestId("intent-routing-panel")).toBeInTheDocument();
     expect(
+      screen.queryByTestId("routing-upstreams-panel"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("local-proxy-settings").nextElementSibling).toBe(
+      screen.getByTestId("intent-routing-panel"),
+    );
+    expect(
       screen.queryByRole("button", { name: "common.save" }),
     ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "settings.tabAdvanced" }));
     expect(
       screen.queryByTestId("intent-routing-panel"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("routing-upstreams-panel"),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByTestId("local-proxy-settings"),

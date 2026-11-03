@@ -16,6 +16,8 @@ use std::time::Duration;
 pub struct FetchedModel {
     pub id: String,
     pub owned_by: Option<String>,
+    #[serde(flatten, default)]
+    pub(crate) context: crate::services::intent_routing::context::Metadata,
 }
 
 /// 模型列表响应的兼容格式。
@@ -32,31 +34,37 @@ struct ModelsResponse {
 struct ModelEntry {
     id: String,
     owned_by: Option<String>,
+    #[serde(flatten)]
+    facts: serde_json::Value,
 }
 
+#[cfg(test)]
 fn catalog_model_ids(models: Option<serde_json::Value>) -> Vec<String> {
     let Some(serde_json::Value::Array(entries)) = models else {
         return Vec::new();
     };
     entries
         .iter()
-        .filter_map(|entry| {
-            ["slug", "id"]
-                .iter()
-                .find_map(|key| entry.get(key)?.as_str().filter(|id| !id.is_empty()))
-                .or_else(|| {
-                    entry
-                        .get("name")?
-                        .as_str()?
-                        .strip_prefix("models/")
-                        .filter(|id| !id.is_empty())
-                })
-        })
+        .filter_map(catalog_model_id)
         .map(str::to_string)
         .collect()
 }
 
+fn catalog_model_id(entry: &serde_json::Value) -> Option<&str> {
+    ["slug", "id"]
+        .iter()
+        .find_map(|key| entry.get(key)?.as_str().filter(|id| !id.is_empty()))
+        .or_else(|| {
+            entry
+                .get("name")?
+                .as_str()?
+                .strip_prefix("models/")
+                .filter(|id| !id.is_empty())
+        })
+}
+
 const FETCH_TIMEOUT_SECS: u64 = 15;
+const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MODEL_PAGES: usize = 100;
 const MAX_REQUEST_HEADERS: usize = 64;
 const MAX_HEADER_NAME_BYTES: usize = 256;
@@ -103,7 +111,8 @@ pub async fn fetch_models(
     };
     let headers =
         build_model_fetch_headers(api_key, api_format, user_agent.as_ref(), request_headers)?;
-    let client = crate::proxy::http_client::get();
+    let client = crate::proxy::http_client::get_without_redirects()
+        .map_err(|_| "Model discovery client unavailable".to_string())?;
     let mut last_err: Option<String> = None;
     let mut known_secrets = vec![api_key.to_string()];
     if let Some(request_headers) = request_headers {
@@ -140,22 +149,33 @@ pub async fn fetch_models(
             let status = response.status();
 
             if status.is_success() {
-                let resp: ModelsResponse = response
-                    .json()
-                    .await
-                    .map_err(|e| format!("Failed to parse response: {e}"))?;
+                let resp = read_models_response(response).await?;
 
                 let page_models: Vec<FetchedModel> = if let Some(data) = resp.data {
                     data.into_iter()
                         .map(|m| FetchedModel {
                             id: m.id,
                             owned_by: m.owned_by,
+                            context: crate::services::intent_routing::context::Metadata::parse(
+                                &m.facts,
+                            ),
                         })
                         .collect()
                 } else {
-                    catalog_model_ids(resp.models)
+                    resp.models
+                        .as_ref()
+                        .and_then(|v| v.as_array())
                         .into_iter()
-                        .map(|id| FetchedModel { id, owned_by: None })
+                        .flatten()
+                        .filter_map(|entry| {
+                            Some(FetchedModel {
+                                id: catalog_model_id(entry)?.to_owned(),
+                                owned_by: None,
+                                context: crate::services::intent_routing::context::Metadata::parse(
+                                    entry,
+                                ),
+                            })
+                        })
                         .collect()
                 };
 
@@ -210,6 +230,21 @@ pub async fn fetch_models(
         "All candidates failed: {}",
         last_err.unwrap_or_else(|| "no candidates".to_string())
     ))
+}
+
+async fn read_models_response(mut response: reqwest::Response) -> Result<ModelsResponse, String> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "Model discovery read failed")?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err("Model discovery response too large".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| "Invalid model discovery response".into())
 }
 
 fn build_gemini_models_url(
@@ -420,6 +455,123 @@ fn ends_with_version_segment(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn discovery_bounds_success_bodies_and_does_not_follow_redirects(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use axum::{routing::get, Json, Router};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let app = Router::new()
+            .route(
+                "/oversized",
+                get(|| async { "x".repeat(MAX_RESPONSE_BYTES + 1) }),
+            )
+            .route(
+                "/invalid",
+                get(|| async { "synthetic-private-invalid-body" }),
+            )
+            .route(
+                "/redirect",
+                get(|| async { axum::response::Redirect::temporary("/target") }),
+            )
+            .route(
+                "/target",
+                get(move || {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    async { Json(serde_json::json!({"data":[]})) }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        for (path, expected) in [
+            ("oversized", "Model discovery response too large"),
+            ("invalid", "Invalid model discovery response"),
+        ] {
+            let result = fetch_models(
+                &base,
+                "synthetic-key",
+                false,
+                Some(&format!("{base}/{path}")),
+                None,
+                None,
+                None,
+            )
+            .await;
+            assert_eq!(result.expect_err("invalid discovery"), expected);
+        }
+        assert!(fetch_models(
+            &base,
+            "synthetic-key",
+            false,
+            Some(&format!("{base}/redirect")),
+            None,
+            None,
+            None
+        )
+        .await
+        .is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_preserves_validated_capacity_without_arbitrary_vendor_metadata(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use axum::{routing::get, Json, Router};
+        let app = Router::new()
+            .route(
+                "/openai",
+                get(|| async {
+                    Json(serde_json::json!({"data":[{
+                        "id":"fixture","context_length":1000000,"auto_compact_token_limit":272000,
+                        "private_extension":"not-retained"
+                    }]}))
+                }),
+            )
+            .route(
+                "/gemini",
+                get(|| async {
+                    Json(serde_json::json!({"models":[{
+                        "name":"models/fixture","inputTokenLimit":1000000
+                    }]}))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        for path in ["openai", "gemini"] {
+            let result = fetch_models(
+                &base,
+                "synthetic-key",
+                false,
+                Some(&format!("{base}/{path}")),
+                None,
+                None,
+                None,
+            )
+            .await?;
+            assert_eq!(result.len(), 1);
+            let value = serde_json::to_value(&result[0])?;
+            assert_eq!(value["context_window"], 1000000);
+            assert!(value.get("private_extension").is_none());
+            if path == "openai" {
+                assert_eq!(value["auto_compact_token_limit"], 272000);
+            }
+        }
+        task.abort();
+        Ok(())
+    }
 
     #[test]
     fn gemini_catalog_reads_resource_names() {

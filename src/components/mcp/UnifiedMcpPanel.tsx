@@ -1,3 +1,4 @@
+import { useDialogSnapshot } from "@/hooks/useDialogSnapshot";
 import React, { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Edit3, ExternalLink, Search, Server, Trash2 } from "lucide-react";
@@ -76,6 +77,7 @@ const UnifiedMcpPanel = React.forwardRef<
     message: string;
     onConfirm: () => void;
   } | null>(null);
+  const { snapshot: confirmation, onExited: onConfirmationExited } = useDialogSnapshot(confirmDialog);
 
   const { data: serversMap, isLoading } = useAllMcpServers();
   const toggleAppMutation = useToggleMcpApp();
@@ -352,13 +354,14 @@ const UnifiedMcpPanel = React.forwardRef<
         />
       )}
 
-      {confirmDialog && (
+      {confirmation && (
         <ConfirmDialog
-          isOpen={confirmDialog.isOpen}
-          title={confirmDialog.title}
-          message={confirmDialog.message}
+          isOpen={confirmDialog?.isOpen ?? false}
+        onExited={onConfirmationExited}
+          title={confirmation.title}
+          message={confirmation.message}
           pending={writePending}
-          onConfirm={confirmDialog.onConfirm}
+          onConfirm={confirmation.onConfirm}
           onCancel={() => setConfirmDialog(null)}
         />
       )}

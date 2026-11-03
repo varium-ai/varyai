@@ -31,6 +31,8 @@ use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use super::copilot_auth::{GitHubAccount, GitHubDeviceCodeResponse};
+mod provider_import;
+pub(crate) use provider_import::imported_identity;
 
 /// OpenAI OAuth 客户端 ID（OpenCode 使用，与官方 Codex CLI 相同）
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -1346,12 +1348,104 @@ impl CodexOAuthManager {
         })
     }
 
+    /// Stable continuation provenance, read coherently without renewing credentials.
+    pub(crate) async fn continuation_identity(&self, account_id: &str) -> Option<String> {
+        let accounts = self.accounts.read().await;
+        let account = accounts.get(account_id)?;
+        let user = crate::codex_config::extract_codex_id_token_user_identity(
+            account.id_token.as_deref()?,
+        )?;
+        let workspace = account.chatgpt_account_id.as_deref()?;
+        let bytes = serde_json::to_vec(&(
+            "managed-continuation-v1",
+            account_id,
+            account.authenticated_at,
+            user,
+            workspace,
+        ))
+        .ok()?;
+        use sha2::Digest;
+        Some(format!("{:x}", sha2::Sha256::digest(bytes)))
+    }
+
     // ==================== 多账号管理 ====================
 
     pub async fn list_accounts(&self) -> Vec<GitHubAccount> {
         let accounts = self.accounts.read().await.clone();
         let default_id = self.resolve_default_account_id().await;
         Self::sorted_accounts(&accounts, default_id.as_deref())
+    }
+
+    pub(crate) async fn editor_plan(&self, account_id: &str) -> Option<String> {
+        let accounts = self.accounts.read().await;
+        let token = accounts.get(account_id)?.id_token.as_deref()?;
+        let payload = token.split('.').nth(1)?;
+        let claims: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).ok()?).ok()?;
+        match claims
+            .pointer("/https:~1~1api.openai.com~1auth/chatgpt_plan_type")
+            .and_then(serde_json::Value::as_str)?
+        {
+            "plus" => Some("ChatGPT Plus".into()),
+            "pro" => Some("ChatGPT Pro".into()),
+            "team" | "business" => Some("ChatGPT Business".into()),
+            "enterprise" => Some("ChatGPT Enterprise".into()),
+            "free" => Some("ChatGPT Free".into()),
+            _ => None,
+        }
+    }
+
+    /// Explicit file import, never a native-login overwrite or network operation.
+    pub(crate) async fn import_editor_account(
+        &self,
+        value: serde_json::Value,
+    ) -> Result<GitHubAccount, CodexOAuthError> {
+        let tokens = value
+            .get("tokens")
+            .ok_or_else(|| CodexOAuthError::ParseError("Invalid account file".into()))?;
+        let field = |name: &str| {
+            tokens
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .filter(|v| {
+                    !v.trim().is_empty() && v.len() <= 32768 && !v.chars().any(char::is_control)
+                })
+                .map(str::to_owned)
+        };
+        let refresh = field("refresh_token")
+            .ok_or_else(|| CodexOAuthError::ParseError("Invalid account file".into()))?;
+        let id_token = field("id_token")
+            .ok_or_else(|| CodexOAuthError::ParseError("Invalid account file".into()))?;
+        if crate::codex_config::extract_codex_id_token_user_identity(&id_token).is_none() {
+            return Err(CodexOAuthError::ParseError(
+                "Invalid account identity".into(),
+            ));
+        }
+        let claims = parse_jwt_claims(&id_token)
+            .ok_or_else(|| CodexOAuthError::ParseError("Invalid account identity".into()))?;
+        let workspace = claims
+            .chatgpt_account_id
+            .or_else(|| claims.openai_auth.and_then(|a| a.chatgpt_account_id))
+            .ok_or_else(|| CodexOAuthError::ParseError("Missing account workspace".into()))?;
+        if field("account_id").is_some_and(|id| id != workspace) {
+            return Err(CodexOAuthError::ParseError(
+                "Account workspace mismatch".into(),
+            ));
+        }
+        // Do not reuse an unverifiable access token from an imported document.
+        self.add_account_internal(
+            workspace,
+            refresh,
+            claims.email,
+            Some(id_token),
+            None,
+            AccountLoginContext {
+                target_account_id: None,
+                target_generation: None,
+                pending_device_code: None,
+            },
+        )
+        .await
     }
 
     pub async fn remove_account(&self, account_id: &str) -> Result<(), CodexOAuthError> {
@@ -2057,6 +2151,78 @@ fn extract_account_metadata_from_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn codex_editor_import_is_bounded_to_a_proven_user_and_workspace(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manager = CodexOAuthManager::new(dir.path().to_owned());
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
+        let payload=URL_SAFE_NO_PAD.encode(br#"{"sub":"synthetic-user","email":"person@example.test","https://api.openai.com/auth":{"chatgpt_account_id":"synthetic-workspace","chatgpt_plan_type":"plus"}}"#);
+        let token = format!("{header}.{payload}.");
+        let value = serde_json::json!({"tokens":{"id_token":token,"refresh_token":"synthetic-refresh","account_id":"synthetic-workspace"}});
+        let account = manager.import_editor_account(value.clone()).await?;
+        assert_eq!(account.login, "person@example.test");
+        assert_eq!(
+            manager.editor_plan(&account.id).await.as_deref(),
+            Some("ChatGPT Plus")
+        );
+        assert!(matches!(
+            manager.import_editor_account(value.clone()).await,
+            Err(CodexOAuthError::DuplicateAccount)
+        ));
+        let mut invalid = value;
+        invalid["tokens"]["account_id"] = serde_json::json!("wrong-workspace");
+        assert!(manager.import_editor_account(invalid).await.is_err());
+        assert_eq!(manager.list_accounts().await.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn durable_identity_survives_token_rotation_but_not_account_replacement(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manager = CodexOAuthManager::new(dir.path().to_owned());
+        manager
+            .add_test_account_with_user_identity("account", "synthetic-access", "user")
+            .await?;
+        let original = manager
+            .continuation_identity("account")
+            .await
+            .ok_or("missing identity")?;
+        {
+            let mut accounts = manager.accounts.write().await;
+            let account = accounts.get_mut("account").ok_or("missing account")?;
+            account.refresh_token = "synthetic-rotated-refresh".into();
+            account.token_updated_at_ms += 1;
+        }
+        assert_eq!(
+            manager.continuation_identity("account").await.as_deref(),
+            Some(original.as_str())
+        );
+        {
+            let mut accounts = manager.accounts.write().await;
+            let account = accounts.get_mut("account").ok_or("missing account")?;
+            account.authenticated_at += 1;
+        }
+        assert_ne!(
+            manager.continuation_identity("account").await.as_deref(),
+            Some(original.as_str())
+        );
+        manager
+            .add_test_account_with_user_identity("account", "synthetic-access", "other-user")
+            .await?;
+        assert_ne!(
+            manager.continuation_identity("account").await.as_deref(),
+            Some(original.as_str())
+        );
+        manager
+            .add_test_account_with_access_token("unproven", "synthetic-access", None)
+            .await?;
+        assert!(manager.continuation_identity("unproven").await.is_none());
+        assert!(manager.continuation_identity("missing").await.is_none());
+        Ok(())
+    }
 
     #[test]
     fn test_parse_interval_number() {

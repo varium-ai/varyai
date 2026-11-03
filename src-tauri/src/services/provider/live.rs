@@ -727,6 +727,15 @@ pub(crate) fn write_live_with_common_config_for_state(
     app_type: &AppType,
     provider: &Provider,
 ) -> Result<(), AppError> {
+    if state
+        .proxy_service
+        .agent_connections
+        .owns(app_type.as_str())
+    {
+        return Err(AppError::Message(
+            crate::services::agent_connections::CONFLICT.into(),
+        ));
+    }
     write_live_with_common_config_for_codex_oauth_manager(
         state.db.as_ref(),
         app_type,
@@ -1586,6 +1595,13 @@ pub(crate) fn sync_current_provider_for_app_to_live(
     state: &AppState,
     app_type: &AppType,
 ) -> Result<(), AppError> {
+    if state
+        .proxy_service
+        .agent_connections
+        .owns(app_type.as_str())
+    {
+        return Ok(());
+    }
     if app_type.is_additive_mode() {
         sync_all_providers_to_live(state, app_type)?;
     } else {
@@ -1776,6 +1792,13 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
 
     // Sync providers based on mode
     for app_type in AppType::all() {
+        if state
+            .proxy_service
+            .agent_connections
+            .owns(app_type.as_str())
+        {
+            continue;
+        }
         if matches!(
             app_type,
             AppType::Pi
@@ -1958,6 +1981,15 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
 /// Returns `Ok(true)` if a provider was actually imported,
 /// `Ok(false)` if skipped (providers already exist for this app).
 pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<bool, AppError> {
+    if state
+        .proxy_service
+        .agent_connections
+        .owns(app_type.as_str())
+    {
+        return Err(AppError::Message(
+            crate::services::agent_connections::CONFLICT.into(),
+        ));
+    }
     if app_type == AppType::DoubaoWork {
         return Ok(false);
     }
@@ -2148,6 +2180,13 @@ pub fn should_import_default_config_on_startup(
     state: &AppState,
     app_type: &AppType,
 ) -> Result<bool, AppError> {
+    if state
+        .proxy_service
+        .agent_connections
+        .owns(app_type.as_str())
+    {
+        return Ok(false);
+    }
     if app_type.is_additive_mode() {
         return Ok(false);
     }
@@ -2297,6 +2336,9 @@ pub fn import_opencode_providers_from_live(state: &AppState) -> Result<usize, Ap
     let existing_ids = state.db.get_provider_ids("opencode")?;
 
     for (id, config) in providers {
+        if id == "varyai" && state.proxy_service.agent_connections.owns("opencode") {
+            continue;
+        }
         // Convert to Value for settings_config
         let settings_config = match serde_json::to_value(&config) {
             Ok(v) => v,

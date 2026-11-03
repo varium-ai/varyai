@@ -1,15 +1,21 @@
-//! Codex intent-routing configuration and deterministic planning.
+//! Global routing-group configuration and deterministic planning.
 
 pub(crate) mod catalog;
 pub(crate) mod classifier;
 pub(crate) mod client;
+pub(crate) mod context;
 mod discovery;
 pub(crate) mod effort;
 pub(crate) mod execution;
+pub(crate) mod folders;
+pub(crate) mod membership;
 pub(crate) mod menu;
+mod model_context;
+pub(crate) mod model_preferences;
+pub(crate) mod rules;
 
 use crate::{app_config::AppType, provider::Provider};
-pub(crate) use discovery::{discover_groups, legacy_ids};
+pub(crate) use discovery::{discover_groups, discover_stand_ins, legacy_ids};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -34,6 +40,12 @@ pub(crate) enum RoutingStrategy {
 fn default_weight() -> u16 {
     1
 }
+fn global_scope() -> String {
+    "global".into()
+}
+fn legacy_patience() -> i16 {
+    -1
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Target {
@@ -52,6 +64,8 @@ pub(crate) struct Member {
     /// Explicit override; absence uses the provider's model catalog.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +76,14 @@ pub(crate) struct Rule {
     pub description: String,
     pub enabled: bool,
     pub target_member_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_member_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<rules::Conditions>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub use_effort: String,
+    #[serde(default)]
+    pub pause: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +92,8 @@ pub(crate) struct RoutingGroup {
     pub id: String,
     pub name: String,
     pub revision: u32,
+    /// Legacy clients remain readable; new definitions have no owning agent.
+    #[serde(default = "global_scope")]
     pub client: String,
     pub enabled: bool,
     pub members: Vec<Member>,
@@ -87,14 +111,48 @@ pub(crate) struct RoutingGroup {
     pub model_alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_member_id: Option<String>,
+    /// None/zero follows the largest member; -1 follows the smallest known member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<i64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub affinity: String,
+    #[serde(default)]
+    pub first_token: u32,
+    #[serde(default = "legacy_patience")]
+    pub patience: i16,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub off: Vec<String>,
+    #[serde(default, rename = "match", skip_serializing_if = "Vec::is_empty")]
+    pub matches: Vec<String>,
+    #[serde(skip)]
+    pub matched: Vec<String>,
+    #[serde(default)]
+    pub unlists: bool,
+    #[serde(default)]
+    pub sink: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub levels: Vec<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RoutingCatalog {
     pub groups: Vec<RoutingGroup>,
+    pub removed_groups: Vec<RemovedGroup>,
+    #[serde(skip)]
+    pub stand_ins: Vec<RoutingGroup>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub matched_members: std::collections::BTreeMap<String, Vec<Member>>,
     pub auto_create: bool,
     pub omitted_groups: usize,
+    pub context_settings: context::Settings,
+}
+
+#[derive(serde::Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RemovedGroup {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Serialize)]
@@ -115,7 +173,7 @@ pub(crate) fn valid_id(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
 }
 
-fn valid_text(value: &str, max: usize) -> bool {
+pub(crate) fn valid_text(value: &str, max: usize) -> bool {
     !value.trim().is_empty()
         && value.chars().count() <= max
         && !value.chars().any(|c| c.is_control() && c != '\n')
@@ -128,6 +186,13 @@ fn valid_target(provider_id: &str, model_id: &str) -> bool {
         && !model_id.chars().any(char::is_control)
         && !model_id.starts_with("vary-auto/")
         && !model_id.starts_with("vary-provider/")
+        && !model_id.starts_with("auto/")
+}
+
+fn matched_id(value: &str) -> bool {
+    value.strip_prefix("match-").is_some_and(|digest| {
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
 }
 
 impl RoutingGroup {
@@ -136,12 +201,13 @@ impl RoutingGroup {
     }
 
     pub(crate) fn includes_in_menu(&self, member: &Member) -> bool {
-        self.routing != RoutingStrategy::Manual
-            || &member.id
-                == self
-                    .manual_member_id
-                    .as_ref()
-                    .unwrap_or(&self.default_member_id)
+        !self.off.contains(&member.id)
+            && (self.routing != RoutingStrategy::Manual
+                || &member.id
+                    == self
+                        .manual_member_id
+                        .as_ref()
+                        .unwrap_or(&self.default_member_id))
     }
 
     pub(crate) fn alias(&self) -> String {
@@ -153,12 +219,25 @@ impl RoutingGroup {
     pub fn validate(&self) -> Result<(), &'static str> {
         if !valid_id(&self.id)
             || !valid_text(&self.name, 80)
-            || self.client != "codex"
-            || self.members.is_empty()
-            || self.members.len() > 16
+            || !matches!(self.client.as_str(), "codex" | "global")
+            || (self.members.is_empty() && self.matches.is_empty())
+            || self.members.len() > 256
+            || self.matches.len() > 32
+            || self
+                .matches
+                .iter()
+                .any(|pattern| membership::compile(pattern).is_err())
             || self.rules.len() > 16
-            || self.fallback_member_ids.len() > 16
+            || self.fallback_member_ids.len() > 256
             || !(500..=5000).contains(&self.classification_budget_ms)
+            || !context::Metadata::valid_group_window(self.context_window)
+            || !matches!(
+                self.affinity.as_str(),
+                "" | "session" | "turn" | "off" | "strict"
+            )
+            || self.first_token > 3600
+            || !effort::valid_levels(&self.levels)
+            || !(-1..=240).contains(&self.patience)
             || self
                 .model_alias
                 .as_ref()
@@ -172,17 +251,28 @@ impl RoutingGroup {
             if !valid_id(&member.id)
                 || !valid_target(&member.provider_id, &member.model_id)
                 || !ids.insert(member.id.as_str())
-                || !targets.insert((&member.provider_id, &member.model_id))
+                || !targets.insert((&member.provider_id, &member.model_id, &member.effort))
+                || member
+                    .effort
+                    .as_ref()
+                    .is_some_and(|level| !effort::valid_member_level(level))
                 || !(1..=1000).contains(&member.weight)
             {
                 return Err(INVALID);
             }
         }
-        if !ids.contains(self.default_member_id.as_str())
-            || self
-                .manual_member_id
-                .as_ref()
-                .is_some_and(|id| !ids.contains(id.as_str()))
+        if (!ids.contains(self.default_member_id.as_str())
+            && !(self.members.is_empty()
+                && !self.matches.is_empty()
+                && self.default_member_id.is_empty()))
+            || self.off.len() > 256
+            || self.off.iter().any(|id| {
+                !ids.contains(id.as_str()) && (self.matches.is_empty() || !matched_id(id))
+            })
+            || self.off.iter().collect::<HashSet<_>>().len() != self.off.len()
+            || self.manual_member_id.as_ref().is_some_and(|id| {
+                !ids.contains(id.as_str()) && (self.matches.is_empty() || !matched_id(id))
+            })
             || self
                 .fallback_member_ids
                 .iter()
@@ -201,8 +291,39 @@ impl RoutingGroup {
             if !valid_id(&rule.id)
                 || !rule_ids.insert(&rule.id)
                 || !valid_text(&rule.name, 80)
-                || !valid_text(&rule.description, 500)
+                || (!rule.description.is_empty() && !valid_text(&rule.description, 500))
+                || (rule.description.is_empty() && rule.conditions.is_none())
+                || rule
+                    .conditions
+                    .as_ref()
+                    .is_some_and(|conditions| !conditions.valid())
+                || (!rule.use_effort.is_empty()
+                    && !matches!(
+                        rule.use_effort.as_str(),
+                        "low" | "medium" | "high" | "xhigh" | "max"
+                    ))
                 || !ids.contains(rule.target_member_id.as_str())
+                || (rule.pause
+                    && (!rule.description.is_empty()
+                        || !rule.use_effort.is_empty()
+                        || !rule.fallback_member_ids.is_empty()
+                        || rule.conditions.as_ref().is_none_or(|conditions| {
+                            conditions.tokens > 0
+                                || conditions.images
+                                || !conditions.effort.is_empty()
+                                || conditions.compact
+                        })))
+                || rule.fallback_member_ids.len() > 256
+                || rule
+                    .fallback_member_ids
+                    .iter()
+                    .any(|id| !ids.contains(id.as_str()) || id == &rule.target_member_id)
+                || rule
+                    .fallback_member_ids
+                    .iter()
+                    .collect::<HashSet<_>>()
+                    .len()
+                    != rule.fallback_member_ids.len()
             {
                 return Err(INVALID);
             }
@@ -242,6 +363,14 @@ impl RoutingGroup {
     /// No network calls, configuration writes or production turn-state changes.
     pub fn preview(&self, intent_id: Option<&str>) -> Result<PlanPreview, &'static str> {
         self.validate()?;
+        self.plan_prepared(intent_id)
+    }
+
+    /// Execution snapshots are validated before publication, not on each request.
+    pub(crate) fn plan_prepared(
+        &self,
+        intent_id: Option<&str>,
+    ) -> Result<PlanPreview, &'static str> {
         if self.routing == RoutingStrategy::Manual {
             let selected = self
                 .manual_member_id
@@ -250,7 +379,7 @@ impl RoutingGroup {
             let member = self
                 .members
                 .iter()
-                .find(|m| &m.id == selected)
+                .find(|m| &m.id == selected && !self.off.contains(&m.id))
                 .ok_or(INVALID)?;
             return Ok(PlanPreview {
                 group_id: self.id.clone(),
@@ -260,24 +389,28 @@ impl RoutingGroup {
                 live: false,
             });
         }
-        let preferred = match intent_id {
-            Some(id) => {
-                &self
-                    .rules
+        let rule = match intent_id {
+            Some(id) => Some(
+                self.rules
                     .iter()
                     .find(|r| r.enabled && r.id == id)
-                    .ok_or("invalid_output")?
-                    .target_member_id
-            }
-            None => &self.default_member_id,
+                    .ok_or("invalid_output")?,
+            ),
+            None => None,
         };
+        let preferred = rule.map_or(&self.default_member_id, |rule| &rule.target_member_id);
         let mut seen = HashSet::new();
         let mut candidates = Vec::new();
         for id in std::iter::once(preferred)
+            .chain(
+                rule.into_iter()
+                    .flat_map(|rule| rule.fallback_member_ids.iter()),
+            )
             .chain(self.fallback_member_ids.iter())
             .chain(std::iter::once(&self.default_member_id))
+            .chain(self.members.iter().map(|member| &member.id))
         {
-            if seen.insert(id) {
+            if !self.off.contains(id) && seen.insert(id) {
                 let member = self.members.iter().find(|m| &m.id == id).ok_or(INVALID)?;
                 candidates.push(member.clone());
             }
@@ -324,14 +457,14 @@ pub(crate) fn eligible_provider(provider: &Provider, classifier: bool) -> bool {
                 .get("apiFormat")
                 .and_then(|v| v.as_str())
         });
-    // Require an explicit format until the live transport adapter is integrated.
-    if format
-        != Some(if classifier {
-            "openai_chat"
-        } else {
-            "openai_responses"
-        })
-    {
+    if if classifier {
+        format != Some("openai_chat")
+    } else {
+        !matches!(
+            format,
+            Some("openai_chat" | "openai_responses" | "anthropic" | "gemini_native")
+        )
+    } {
         return false;
     }
     let (endpoint, key) = provider.resolve_usage_credentials(&AppType::Codex);

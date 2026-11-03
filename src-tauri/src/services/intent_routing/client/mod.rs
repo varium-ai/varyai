@@ -29,10 +29,14 @@ pub(crate) struct Manager {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Status {
     pub enabled: bool,
+    pub configuration_owned: bool,
     pub provider_enabled: bool,
     pub recovery_pending: bool,
+    pub orphaned_config: bool,
+    pub orphan_cleanup_available: bool,
     pub group_ids: Vec<String>,
     pub omitted_entries: usize,
+    pub native_compatibility: String,
 }
 #[derive(Serialize, Deserialize)]
 struct Receipt {
@@ -49,6 +53,69 @@ struct Receipt {
     model_aliases: Vec<String>,
     #[serde(default)]
     previous_model_aliases: Vec<String>,
+    #[serde(default)]
+    native: Option<NativeOwnership>,
+    #[serde(default)]
+    pre_write: Option<ConfigSnapshot>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct NativeOwnership {
+    // A present baseline proves explicit acquisition, even when the file was absent.
+    #[serde(default)]
+    acquisition_baseline: Option<String>,
+    #[serde(default)]
+    installed: Option<String>,
+    #[serde(default)]
+    previous_owned: Option<String>,
+}
+#[derive(Serialize, Deserialize)]
+struct ConfigSnapshot {
+    text: Option<String>,
+}
+fn valid_native_url(value: &str) -> bool {
+    let Some(authority) = value
+        .strip_prefix("http://")
+        .and_then(|rest| rest.strip_suffix("/backend-api/codex"))
+    else {
+        return false;
+    };
+    if authority.is_empty()
+        || authority.contains(['@', '/', '?', '#', '\\'])
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+    {
+        return false;
+    }
+    url::Url::parse(value).ok().is_some_and(|url| {
+        url.scheme() == "http"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+            && url.port().is_some()
+            && url.path() == "/backend-api/codex"
+            && url.query().is_none()
+            && url.fragment().is_none()
+    })
+}
+impl Receipt {
+    fn native_ownership(&self) -> Option<&NativeOwnership> {
+        let native = self.native.as_ref().filter(|_| self.version == 2)?;
+        let baseline: toml::Value = native.acquisition_baseline.as_ref()?.parse().ok()?;
+        let installed: toml::Value = self.installed.parse().ok()?;
+        let url = native.installed.as_deref()?;
+        (baseline.get("openai_base_url").is_none()
+            && valid_native_url(url)
+            && installed
+                .get("openai_base_url")
+                .and_then(toml::Value::as_str)
+                == Some(url)
+            && native
+                .previous_owned
+                .as_deref()
+                .is_none_or(valid_native_url))
+        .then_some(native)
+    }
 }
 fn read(path: &Path) -> Result<Option<String>, String> {
     match fs::symlink_metadata(path) {
@@ -58,6 +125,33 @@ fn read(path: &Path) -> Result<Option<String>, String> {
             .map_err(|_| FAILED.into()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(_) => Err(FAILED.into()),
+    }
+}
+fn requires_openai_auth(config: &Path, doc: &DocumentMut) -> bool {
+    use crate::codex_config::{codex_config_auth_store_mode, CodexAuthStoreMode};
+
+    match codex_config_auth_store_mode(&doc.to_string()) {
+        CodexAuthStoreMode::File => config
+            .parent()
+            .and_then(|parent| read(&parent.join("auth.json")).ok().flatten())
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .is_some_and(|auth| {
+                auth["OPENAI_API_KEY"].as_str() != Some("PROXY_MANAGED")
+                    && crate::codex_config::codex_auth_has_openai_account_material(&auth)
+            }),
+        CodexAuthStoreMode::Ephemeral => false,
+        CodexAuthStoreMode::Keyring | CodexAuthStoreMode::Auto | CodexAuthStoreMode::Unknown => {
+            // Disk cannot establish keyring login state; preserve the active provider's policy.
+            let provider = doc
+                .get("model_provider")
+                .and_then(|value| value.as_str())
+                .unwrap_or("openai");
+            doc.get("model_providers")
+                .and_then(|providers| providers.get(provider))
+                .and_then(|provider| provider.get("requires_openai_auth"))
+                .and_then(|value| value.as_bool())
+                .unwrap_or(provider == "openai")
+        }
     }
 }
 /// Install through a no-clobber hard link. A concurrent editor's replacement wins.
@@ -126,8 +220,7 @@ pub(crate) fn catalog(
             model["description"] = json!("VaryAI routing group");
             model["priority"] = json!(index);
             // Never infer capability from an alias or a model-family name.
-            model["context_window"] = json!(32768);
-            model["max_context_window"] = json!(32768);
+            super::context::Metadata::shared(std::iter::empty()).write(&mut model);
             model["input_modalities"] = if images.get(&group.id).copied().unwrap_or(false) {
                 json!(["text", "image"])
             } else {
@@ -136,16 +229,74 @@ pub(crate) fn catalog(
             model["supports_parallel_tool_calls"] = json!(false);
             super::effort::advertise(
                 &mut model,
-                efforts
-                    .get(&group.id)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default(),
+                if !group.levels.is_empty() {
+                    &group.levels
+                } else {
+                    efforts
+                        .get(&group.id)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default()
+                },
                 chosen,
             );
             model
         })
         .collect::<Vec<_>>();
     Ok(json!({"models":models}))
+}
+pub(crate) fn menu_catalog(
+    menu: &crate::proxy::intent::Menu,
+    chosen: &str,
+) -> Result<Value, String> {
+    let mut groups = menu
+        .groups
+        .values()
+        .filter(|session| menu.models.is_empty() || menu.models.contains_key(&session.group.id))
+        .map(|session| session.group.clone())
+        .collect::<Vec<_>>();
+    groups.sort_by_key(|group| {
+        (
+            menu.models
+                .get(&group.id)
+                .map_or(usize::MAX, |entry| entry.order),
+            group.id.clone(),
+        )
+    });
+    let efforts = menu
+        .groups
+        .values()
+        .map(|session| (session.group.id.clone(), session.offered_levels()))
+        .collect();
+    let images = menu
+        .groups
+        .values()
+        .map(|session| {
+            (
+                session.group.id.clone(),
+                session
+                    .menu_targets()
+                    .any(|target| target.effort.images != Some(false)),
+            )
+        })
+        .collect();
+    let mut projection = catalog(&groups, &efforts, chosen, &images)?;
+    if let Some(models) = projection["models"].as_array_mut() {
+        for (model, group) in models.iter_mut().zip(&groups) {
+            if let Some(session) = menu.groups.values().find(|s| s.group.id == group.id) {
+                let metadata = super::context::Metadata::for_session(session);
+                let typed = super::context::Metadata::session_typed_window(session);
+                let vendor =
+                    !session.targets.is_empty() && session.targets.iter().all(|t| t.official);
+                metadata.publish(&menu.context_settings, typed, vendor, model);
+            }
+            if let Some(entry) = menu.models.get(&group.id) {
+                model["slug"] = json!(entry.alias);
+                model["display_name"] = json!(entry.label);
+                model["description"] = json!(entry.description);
+            }
+        }
+    }
+    Ok(projection)
 }
 impl Manager {
     pub fn new(config: PathBuf, receipt: PathBuf, runtime: Arc<Runtime>) -> Self {
@@ -160,7 +311,7 @@ impl Manager {
             return Ok(None);
         };
         let receipt: Receipt = serde_json::from_str(&text).map_err(|_| FAILED)?;
-        if receipt.version != 1 || receipt.config != self.config {
+        if !matches!(receipt.version, 1 | 2) || receipt.config != self.config {
             return Err(CONFLICT.into());
         }
         Ok(Some(receipt))
@@ -168,6 +319,11 @@ impl Manager {
     pub fn status(&self) -> Result<Status, String> {
         let receipt = self.load()?;
         let live = self.runtime.menu_active();
+        let orphan = if receipt.is_none() {
+            orphan_state(read(&self.config)?.as_deref())?
+        } else {
+            (false, false)
+        };
         let owned = receipt.as_ref().is_some_and(|r| {
             read(&self.config)
                 .ok()
@@ -175,47 +331,176 @@ impl Manager {
                 .is_some_and(|s| projection_owned(&s, &r.installed))
         });
         Ok(Status {
+            native_compatibility: self.runtime.native.status().into(),
             enabled: live && owned,
+            configuration_owned: owned,
             provider_enabled: false,
             omitted_entries: self
                 .runtime
                 .menu_snapshot()?
                 .map_or(0, |m| m.omitted_entries),
-            recovery_pending: receipt.is_some() && !(live && owned),
+            recovery_pending: receipt.is_some() && !(live && owned) || orphan.0,
+            orphaned_config: orphan.0,
+            orphan_cleanup_available: orphan.1 && !live,
             group_ids: receipt.map(|r| r.group_ids).unwrap_or_default(),
         })
     }
     pub fn active_or_pending(&self) -> bool {
         self.receipt.exists()
     }
+    pub(crate) fn cleanup_orphan(&self, consent: bool) -> Result<(), String> {
+        if !consent {
+            return Err("intentRouting.invalid".into());
+        }
+        if self.runtime.menu_active() || self.load()?.is_some() {
+            return Err(CONFLICT.into());
+        }
+        let current = read(&self.config)?.ok_or(CONFLICT)?;
+        if !orphan_state(Some(&current))?.1 {
+            return Err(CONFLICT.into());
+        }
+        let mut doc: DocumentMut = current.parse().map_err(|_| CONFLICT)?;
+        doc.get_mut("model_providers")
+            .and_then(|v| v.as_table_like_mut())
+            .ok_or(CONFLICT)?
+            .remove(PROVIDER);
+        // With no receipt, keep a private full backup and touch only an inactive
+        // recognized provider table. Never guess the original model or account.
+        self.backup_orphan(&current)?;
+        if self.receipt.exists() {
+            return Err(CONFLICT.into());
+        }
+        replace_checked(&self.config, Some(&current), Some(&doc.to_string()))
+    }
+    fn backup_orphan(&self, current: &str) -> Result<(), String> {
+        let backup = self.receipt.parent().ok_or(FAILED)?.join(format!(
+            "vary-routing-orphan-backup-{}.toml",
+            uuid::Uuid::new_v4().simple()
+        ));
+        crate::config::atomic_write_private(&backup, current.as_bytes()).map_err(|_| FAILED.into())
+    }
+    pub(crate) fn config_path(&self) -> &Path {
+        &self.config
+    }
     pub(crate) fn config_snapshot(&self) -> Result<Option<String>, String> {
         read(&self.config)
     }
+    pub(crate) fn selected_model(&self) -> Result<Option<String>, String> {
+        let Some(text) = read(&self.config)? else {
+            return Ok(None);
+        };
+        let doc: toml::Value = text.parse().map_err(|_| FAILED)?;
+        let Some(receipt) = self.load()? else {
+            return Ok(None);
+        };
+        Ok(doc
+            .get("model")
+            .and_then(toml::Value::as_str)
+            .filter(|alias| receipt.model_aliases.iter().any(|id| id == alias))
+            .map(str::to_owned))
+    }
+    pub(crate) fn native_owned_url(&self) -> Result<Option<String>, String> {
+        let Some(receipt) = self.load()? else {
+            return Ok(None);
+        };
+        let Some(native) = receipt.native_ownership() else {
+            return Ok(None);
+        };
+        let Some(current) = read(&self.config)? else {
+            return Ok(None);
+        };
+        let doc: toml::Value = current.parse().map_err(|_| FAILED)?;
+        Ok(native
+            .installed
+            .as_ref()
+            .filter(|url| {
+                doc.get("openai_base_url").and_then(toml::Value::as_str) == Some(url.as_str())
+            })
+            .cloned())
+    }
+    #[cfg(test)]
     pub(crate) fn activate_menu(
         &self,
         menu: Arc<crate::proxy::intent::Menu>,
         base: &str,
     ) -> Result<(), String> {
+        self.activate_menu_with_native(menu, base, None, false)
+    }
+    #[cfg(test)]
+    pub(crate) fn activate_menu_with_native(
+        &self,
+        menu: Arc<crate::proxy::intent::Menu>,
+        base: &str,
+        native_url: Option<&str>,
+        reconnect: bool,
+    ) -> Result<(), String> {
+        self.activate_menu_with_selection(menu, base, native_url, reconnect, None)
+    }
+    pub(crate) fn activate_menu_with_selection(
+        &self,
+        menu: Arc<crate::proxy::intent::Menu>,
+        base: &str,
+        native_url: Option<&str>,
+        reconnect: bool,
+        selected: Option<&str>,
+    ) -> Result<(), String> {
+        if selected.is_some_and(|alias| !menu.groups.contains_key(alias)) {
+            return Err("agentConnections.noModels".into());
+        }
         let mut groups = menu
             .groups
             .values()
             .map(|session| session.group.clone())
             .collect::<Vec<_>>();
-        groups.sort_by(|a, b| a.id.cmp(&b.id));
+        groups.sort_by_key(|group| {
+            (
+                menu.models
+                    .get(&group.id)
+                    .map_or(usize::MAX, |entry| entry.order),
+                group.id.clone(),
+            )
+        });
         let token = menu.token.clone();
         let previous = self.runtime.set_menu(menu)?;
-        if let Err(error) = self.write_projection(&groups, &token, base) {
+        if let Err(error) =
+            self.write_projection_inner(&groups, &token, base, native_url, reconnect, selected)
+        {
             self.runtime.restore_menu(previous);
             return Err(error);
         }
         Ok(())
     }
+    #[cfg(test)]
     pub fn write_projection(
         &self,
         groups: &[RoutingGroup],
         token: &str,
         base: &str,
     ) -> Result<(), String> {
+        self.write_projection_with_native(groups, token, base, None)
+    }
+    #[cfg(test)]
+    pub(crate) fn write_projection_with_native(
+        &self,
+        groups: &[RoutingGroup],
+        token: &str,
+        base: &str,
+        native_url: Option<&str>,
+    ) -> Result<(), String> {
+        self.write_projection_inner(groups, token, base, native_url, false, None)
+    }
+    fn write_projection_inner(
+        &self,
+        groups: &[RoutingGroup],
+        token: &str,
+        base: &str,
+        native_url: Option<&str>,
+        reconnect: bool,
+        selected: Option<&str>,
+    ) -> Result<(), String> {
+        if native_url.is_some_and(|url| !valid_native_url(url)) {
+            return Err("intentRouting.invalid".into());
+        }
         if groups.is_empty() || groups.len() > super::menu::MAX_MENU_ENTRIES {
             return Err("intentRouting.invalid".into());
         }
@@ -237,32 +522,61 @@ impl Manager {
             .unwrap_or("")
             .parse()
             .map_err(|_| FAILED)?;
-        if old.is_none()
+        let orphan = old.is_none()
             && doc
                 .get("model_providers")
                 .and_then(|v| v.get(PROVIDER))
-                .is_some()
-        {
+                .is_some();
+        if orphan && !reconnect {
             return Err(CONFLICT.into());
         }
-        let efforts = self.runtime.menu_efforts(token)?;
-        let images = self.runtime.menu_images(token)?;
+        let previous_native = old
+            .as_ref()
+            .and_then(Receipt::native_ownership)
+            .filter(|native| {
+                doc.get("openai_base_url").and_then(|value| value.as_str())
+                    == native.installed.as_deref()
+            });
+        let native = if let Some(url) = native_url {
+            if doc.get("openai_base_url").is_some() && previous_native.is_none() {
+                return Err("intentRouting.nativeConflict".into());
+            }
+            let ownership = NativeOwnership {
+                acquisition_baseline: Some(
+                    previous_native
+                        .and_then(|native| native.acquisition_baseline.clone())
+                        .unwrap_or_else(|| current.clone().unwrap_or_default()),
+                ),
+                installed: Some(url.into()),
+                previous_owned: previous_native.and_then(|native| native.installed.clone()),
+            };
+            doc["openai_base_url"] = toml_edit::value(url);
+            Some(ownership)
+        } else {
+            // Menu-only refresh neither acquires a URL nor relinquishes a still-owned one.
+            previous_native.cloned()
+        };
         let chosen = doc
             .get("model_reasoning_effort")
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let menu = self.runtime.menu_snapshot()?.filter(|m| m.token == token);
-        let mut projection = catalog(groups, &efforts, chosen, &images)?;
-        if let Some(menu) = &menu {
-            if let Some(models) = projection["models"].as_array_mut() {
-                for (model, group) in models.iter_mut().zip(groups) {
-                    if let Some(entry) = menu.models.get(&group.id) {
-                        model["slug"] = json!(entry.alias);
-                        model["display_name"] = json!(entry.label);
-                    }
-                }
+        let projection = if let Some(menu) = &menu {
+            let mut ids = groups.iter().map(|group| &group.id).collect::<Vec<_>>();
+            ids.sort();
+            let mut menu_ids = menu
+                .groups
+                .values()
+                .map(|session| &session.group.id)
+                .collect::<Vec<_>>();
+            menu_ids.sort();
+            if ids != menu_ids {
+                return Err(CONFLICT.into());
             }
-        }
+            menu_catalog(menu, chosen)?
+        } else {
+            catalog(groups, &Default::default(), chosen, &Default::default())?
+        };
         let aliases = projection["models"]
             .as_array()
             .ok_or(FAILED)?
@@ -270,7 +584,13 @@ impl Manager {
             .filter_map(|model| model["slug"].as_str())
             .map(str::to_owned)
             .collect::<Vec<_>>();
+        let first_alias = aliases.first().ok_or("agentConnections.noModels")?;
         let catalog_bytes = serde_json::to_vec_pretty(&projection).map_err(|_| FAILED)?;
+        if orphan {
+            // Explicit reconnect replaces the reserved section, not the restored baseline.
+            // Background refresh must never acquire receiptless configuration.
+            self.backup_orphan(current.as_deref().ok_or(CONFLICT)?)?;
+        }
         let reusable = old.as_ref().and_then(|r| r.catalogs.last()).filter(|path| {
             path.parent() == self.receipt.parent()
                 && read(path)
@@ -293,14 +613,24 @@ impl Manager {
             path
         };
         let current_model = doc.get("model").and_then(|v| v.as_str()).unwrap_or("");
-        if !aliases.iter().any(|alias| alias == current_model) {
-            let default = menu
-                .as_ref()
-                .and_then(|m| m.default_model.as_ref())
-                .filter(|alias| aliases.contains(alias))
-                .unwrap_or(&aliases[0]);
-            doc["model"] = toml_edit::value(default.clone());
+        if let Some(selected) = selected {
+            if !aliases.iter().any(|alias| alias == selected) {
+                return Err("agentConnections.noModels".into());
+            }
+            doc["model"] = toml_edit::value(selected);
+        } else if !aliases.iter().any(|alias| alias == current_model) {
+            let stand_in = menu.as_ref().and_then(|m| m.stand_in_direct(current_model));
+            let default = stand_in
+                .or_else(|| {
+                    menu.as_ref()
+                        .and_then(|m| m.default_model.as_ref())
+                        .filter(|alias| aliases.contains(alias))
+                        .map(String::as_str)
+                })
+                .unwrap_or(first_alias);
+            doc["model"] = toml_edit::value(default);
         }
+        let keep_login = requires_openai_auth(&self.config, &doc);
         doc["model_provider"] = toml_edit::value(PROVIDER);
         doc["model_catalog_json"] = toml_edit::value(catalog_path.to_string_lossy().as_ref());
         doc["web_search"] = toml_edit::value("disabled");
@@ -308,7 +638,8 @@ impl Manager {
         provider["name"] = toml_edit::value("VaryAI models and routing groups");
         provider["base_url"] = toml_edit::value(base);
         provider["wire_api"] = toml_edit::value("responses");
-        provider["requires_openai_auth"] = toml_edit::value(false);
+        // Keep account discovery alive; the local bearer token still owns request authentication.
+        provider["requires_openai_auth"] = toml_edit::value(keep_login);
         provider["experimental_bearer_token"] = toml_edit::value(token);
         provider["supports_websockets"] = toml_edit::value(false);
         provider["supports_standalone_web_search"] = toml_edit::value(false);
@@ -322,7 +653,7 @@ impl Manager {
             catalogs.push(catalog_path);
         }
         let receipt = Receipt {
-            version: 1,
+            version: 2,
             config: self.config.clone(),
             original: old
                 .as_ref()
@@ -349,6 +680,10 @@ impl Manager {
                 .as_ref()
                 .map(|r| r.model_aliases.clone())
                 .unwrap_or_default(),
+            native,
+            pre_write: Some(ConfigSnapshot {
+                text: current.clone(),
+            }),
         };
         if crate::config::atomic_write_private(
             &self.receipt,
@@ -361,9 +696,18 @@ impl Manager {
             }
             return Err(FAILED.into());
         }
-        replace_checked(&self.config, current.as_deref(), Some(&receipt.installed))
+        replace_checked(&self.config, current.as_deref(), Some(&receipt.installed))?;
+        if let Some(menu) = menu {
+            self.runtime
+                .native
+                .publish_menu(menu, projection)
+                .map_err(|_| FAILED)?;
+        }
+        Ok(())
     }
     pub fn restore(&self) -> Result<(), String> {
+        // Revoke before fallible recovery, including missing or unreadable receipts.
+        self.runtime.native.revoke();
         let Some(receipt) = self.load()? else {
             self.runtime.clear_menu();
             return Ok(());
@@ -386,6 +730,84 @@ impl Manager {
         Ok(())
     }
 }
+fn orphan_state(current: Option<&str>) -> Result<(bool, bool), String> {
+    let Some(current) = current else {
+        return Ok((false, false));
+    };
+    let doc: toml::Value = current.parse().map_err(|_| FAILED)?;
+    let Some(provider) = doc.get("model_providers").and_then(|p| p.get(PROVIDER)) else {
+        return Ok((false, false));
+    };
+    let known = provider.as_table().is_some_and(|table| {
+        table.len() == 7
+            && matches!(
+                table.get("name").and_then(toml::Value::as_str),
+                Some("VaryAI models and routing groups" | "VaryAI routing groups")
+            )
+            && table.get("wire_api").and_then(toml::Value::as_str) == Some("responses")
+            && table
+                .get("requires_openai_auth")
+                .and_then(toml::Value::as_bool)
+                .is_some()
+            && ["supports_websockets", "supports_standalone_web_search"]
+                .iter()
+                .all(|k| table.get(*k).and_then(toml::Value::as_bool) == Some(false))
+            && table
+                .get("experimental_bearer_token")
+                .and_then(toml::Value::as_str)
+                .is_some_and(|token| {
+                    token.len() >= 16
+                        && token.len() <= 256
+                        && token
+                            .bytes()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+                })
+            && table
+                .get("base_url")
+                .and_then(toml::Value::as_str)
+                .and_then(|url| url::Url::parse(url).ok())
+                .is_some_and(|url| {
+                    url.scheme() == "http"
+                        && url.username().is_empty()
+                        && url.password().is_none()
+                        && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+                        && url.port().is_some()
+                        && url.path() == "/intent/v1"
+                        && url.query().is_none()
+                        && url.fragment().is_none()
+                })
+    });
+    Ok((true, known && !references_projection(&doc)))
+}
+fn references_projection(value: &toml::Value) -> bool {
+    match value {
+        toml::Value::Table(table) => {
+            table
+                .iter()
+                .any(|(key, value)| match (key.as_str(), value.as_str()) {
+                    ("model_provider", Some(PROVIDER)) => true,
+                    ("model", Some(model))
+                        if model.starts_with("vary-auto/")
+                            || model.starts_with("vary-provider/")
+                            || model.starts_with("auto/") =>
+                    {
+                        true
+                    }
+                    ("model_catalog_json", Some(path))
+                        if Path::new(path)
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .is_some_and(|s| s.starts_with("vary-routing-catalog-")) =>
+                    {
+                        true
+                    }
+                    _ => references_projection(value),
+                })
+        }
+        toml::Value::Array(values) => values.iter().any(references_projection),
+        _ => false,
+    }
+}
 fn projection_owned(current: &str, installed: &str) -> bool {
     let (Ok(current), Ok(installed)) = (
         current.parse::<toml::Value>(),
@@ -402,12 +824,31 @@ fn projection_owned(current: &str, installed: &str) -> bool {
 }
 fn restore_text(current: Option<&str>, receipt: &Receipt) -> Result<Option<String>, String> {
     let Some(current) = current else {
-        // A crash may occur between quarantining config.toml and linking its replacement.
+        // Recover the actual pre-write document, not the first takeover's baseline.
+        if receipt.version == 2 {
+            if let Some(snapshot) = &receipt.pre_write {
+                return match snapshot.text.as_deref() {
+                    Some(text) => restore_text(Some(text), receipt),
+                    None => Ok(None),
+                };
+            }
+        }
+        // Legacy journals cannot disambiguate an unowned URL changed during refresh.
+        let original: toml::Value = receipt
+            .original
+            .as_deref()
+            .unwrap_or("")
+            .parse()
+            .map_err(|_| FAILED)?;
+        for text in std::iter::once(&receipt.installed).chain(receipt.previous.iter()) {
+            let doc: toml::Value = text.parse().map_err(|_| FAILED)?;
+            if doc.get("openai_base_url") != original.get("openai_base_url") {
+                return Err(CONFLICT.into());
+            }
+        }
         return Ok(receipt.original.clone());
     };
-    if current == receipt.installed || receipt.previous.as_deref() == Some(current) {
-        return Ok(receipt.original.clone());
-    }
+    // Even an exact installed/previous document can contain an unowned user URL.
     let mut doc: DocumentMut = current.parse().map_err(|_| CONFLICT)?;
     let original: DocumentMut = receipt
         .original
@@ -448,6 +889,28 @@ fn restore_text(current: Option<&str>, receipt: &Receipt) -> Result<Option<Strin
             }
         }
     }
+    if let Some(native) = receipt.native_ownership() {
+        let current_url = current_value
+            .get("openai_base_url")
+            .and_then(toml::Value::as_str);
+        if current_url.is_some()
+            && (current_url == native.installed.as_deref()
+                || current_url == native.previous_owned.as_deref())
+        {
+            // Ownership begins at acquisition, which can be later than takeover.
+            let baseline: DocumentMut = native
+                .acquisition_baseline
+                .as_deref()
+                .ok_or(FAILED)?
+                .parse()
+                .map_err(|_| FAILED)?;
+            if let Some(value) = baseline.get("openai_base_url") {
+                doc["openai_base_url"] = value.clone();
+            } else {
+                doc.as_table_mut().remove("openai_base_url");
+            }
+        }
+    }
     let current_provider = current_value
         .get("model_providers")
         .and_then(|v| v.get(PROVIDER));
@@ -463,13 +926,25 @@ fn restore_text(current: Option<&str>, receipt: &Receipt) -> Result<Option<Strin
             .get_mut("model_providers")
             .and_then(|v| v.as_table_like_mut())
         {
-            table.remove(PROVIDER);
+            if let Some(provider) = original
+                .get("model_providers")
+                .and_then(|v| v.get(PROVIDER))
+            {
+                table.insert(PROVIDER, provider.clone());
+            } else {
+                table.remove(PROVIDER);
+            }
             if table.is_empty() && original.get("model_providers").is_none() {
                 doc.as_table_mut().remove("model_providers");
             }
         }
     }
-    Ok(Some(doc.to_string()))
+    let restored = doc.to_string();
+    if receipt.original.is_none() && restored.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(restored))
+    }
 }
 #[cfg(test)]
 mod tests;

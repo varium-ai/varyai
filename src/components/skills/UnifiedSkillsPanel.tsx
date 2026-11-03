@@ -1,3 +1,4 @@
+import { useDialogSnapshot } from "@/hooks/useDialogSnapshot";
 import React, { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -99,6 +100,7 @@ const UnifiedSkillsPanel = React.forwardRef<
     variant?: "destructive" | "info";
     onConfirm: () => void;
   } | null>(null);
+  const { snapshot: confirmation, onExited: onConfirmationExited } = useDialogSnapshot(confirmDialog);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -729,16 +731,17 @@ const UnifiedSkillsPanel = React.forwardRef<
         </div>
       </ScrollArea>
 
-      {confirmDialog && (
+      {confirmation && (
         <ConfirmDialog
-          isOpen={confirmDialog.isOpen}
-          title={confirmDialog.title}
-          message={confirmDialog.message}
-          confirmText={confirmDialog.confirmText}
-          variant={confirmDialog.variant}
+          isOpen={confirmDialog?.isOpen ?? false}
+        onExited={onConfirmationExited}
+          title={confirmation.title}
+          message={confirmation.message}
+          confirmText={confirmation.confirmText}
+          variant={confirmation.variant}
           zIndex="top"
           pending={writePending}
-          onConfirm={confirmDialog.onConfirm}
+          onConfirm={confirmation.onConfirm}
           onCancel={() => setConfirmDialog(null)}
         />
       )}

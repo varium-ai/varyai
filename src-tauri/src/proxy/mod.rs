@@ -12,8 +12,10 @@ pub mod error;
 pub mod error_mapper;
 pub(crate) mod failover_switch;
 mod forwarder;
+pub(crate) use forwarder::is_protected_local_proxy_override_header;
 pub(crate) mod gateway;
 pub mod gemini_url;
+pub(crate) mod group_forward;
 pub mod handler_config;
 pub mod handler_context;
 mod handlers;
@@ -70,3 +72,5 @@ pub(crate) mod pi;
 
 #[cfg(test)]
 mod protocol_matrix_tests;
+
+pub(crate) mod connections;

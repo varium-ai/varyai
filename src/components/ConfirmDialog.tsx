@@ -20,12 +20,14 @@ interface ConfirmDialogProps {
   cancelText?: string;
   variant?: "destructive" | "info";
   zIndex?: "base" | "nested" | "alert" | "top";
+  className?: string;
   /** 可选勾选项：提供 label 即显示，勾选状态经 onConfirm 参数回传 */
   checkboxLabel?: string;
   checkboxDefaultChecked?: boolean;
   pending?: boolean;
   onConfirm: (checkboxChecked: boolean) => void;
   onCancel: () => void;
+  onExited?: () => void;
 }
 
 export function ConfirmDialog({
@@ -36,11 +38,13 @@ export function ConfirmDialog({
   cancelText,
   variant = "destructive",
   zIndex = "alert",
+  className,
   checkboxLabel,
   checkboxDefaultChecked = false,
   pending = false,
   onConfirm,
   onCancel,
+  onExited,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
   const [checkboxChecked, setCheckboxChecked] = useState(
@@ -66,7 +70,7 @@ export function ConfirmDialog({
         }
       }}
     >
-      <DialogContent className="max-w-sm" zIndex={zIndex}>
+      <DialogContent className={`max-w-sm ${className ?? ""}`} zIndex={zIndex} onCloseAutoFocus={onExited}>
         <DialogHeader className="space-y-3 border-b-0 bg-transparent pb-0">
           <DialogTitle className="flex items-center gap-2 text-lg font-semibold">
             <IconComponent className={iconClass} />

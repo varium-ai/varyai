@@ -22,7 +22,9 @@ fn require_proxy_app(app_type: &str) -> Result<crate::app_config::AppType, Strin
 pub async fn start_proxy_server(
     state: tauri::State<'_, AppState>,
 ) -> Result<ProxyServerInfo, String> {
-    state.proxy_service.start().await
+    let info = state.proxy_service.start().await?;
+    state.proxy_service.sync_shared_agent_catalogs().await;
+    Ok(info)
 }
 
 /// 停止代理服务器（仅停止服务，不恢复/清理 Live 接管状态）
@@ -138,7 +140,10 @@ pub(crate) async fn ensure_qoder_consent(
         .map_err(|e| e.to_string())
 }
 
-async fn ensure_trae_consent(app: &tauri::AppHandle, state: &AppState) -> Result<(), String> {
+pub(crate) async fn ensure_trae_consent(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<(), String> {
     if state
         .db
         .get_bool_flag(crate::services::trae_bridge::CONSENT_KEY)

@@ -111,6 +111,30 @@ export const mapCodexCatalogModelForForm = (item: any): CodexCatalogModel => {
       : {}),
     ...(inputModalities ? { inputModalities } : {}),
     ...(free === undefined ? {} : { free }),
+    ...(item?.contextSource === "vendor" || item?.contextSource === "user"
+      ? { contextSource: item.contextSource }
+      : {}),
+    ...(typeof (item?.maxContextWindow ?? item?.max_context_window) === "number"
+      ? { maxContextWindow: item.maxContextWindow ?? item.max_context_window }
+      : {}),
+    ...(typeof (
+      item?.effectiveContextWindowPercent ??
+      item?.effective_context_window_percent
+    ) === "number"
+      ? {
+          effectiveContextWindowPercent:
+            item.effectiveContextWindowPercent ??
+            item.effective_context_window_percent,
+        }
+      : {}),
+    ...(typeof (
+      item?.autoCompactTokenLimit ?? item?.auto_compact_token_limit
+    ) === "number"
+      ? {
+          autoCompactTokenLimit:
+            item.autoCompactTokenLimit ?? item.auto_compact_token_limit,
+        }
+      : {}),
     ...(baseInstructions ? { baseInstructions } : {}),
     ...(reasoningLevels && reasoningLevels.length > 0
       ? { reasoningLevels }

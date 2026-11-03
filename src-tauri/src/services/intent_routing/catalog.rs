@@ -21,6 +21,33 @@ pub(crate) struct ModelCache {
     pub names: std::collections::BTreeMap<String, String>,
 }
 impl ModelCache {
+    fn from_catalog(value: Value, fetched_at: i64) -> Option<Self> {
+        use crate::services::codex_oauth_models::{parse_models, picker_visible};
+        let entries = ["data", "models", "items"]
+            .iter()
+            .find_map(|key| value.get(*key).and_then(Value::as_array))
+            .or_else(|| value.as_array());
+        let model_map = value.get("models").and_then(Value::as_object);
+        if entries.is_none() && model_map.is_none() {
+            return None;
+        }
+        let models = parse_models(value.clone());
+        // Empty lists and all-hidden catalogs are authoritative; malformed visible entries are not.
+        if models.is_empty()
+            && (entries.is_some_and(|entries| entries.iter().any(picker_visible))
+                || model_map.is_some_and(|entries| entries.values().any(picker_visible)))
+        {
+            return None;
+        }
+        let cache = Self {
+            fetched_at,
+            models: models.into_iter().map(|model| model.id).collect(),
+            reasoning: discovery_capabilities(&value),
+            names: discovery_names(&value),
+        };
+        cache.valid_at(fetched_at).then_some(cache)
+    }
+
     fn valid_at(&self, now: i64) -> bool {
         now.checked_sub(self.fetched_at)
             .is_some_and(|age| (0..=CACHE_TTL).contains(&age))
@@ -34,7 +61,7 @@ impl ModelCache {
             && self
                 .reasoning
                 .iter()
-                .all(|(id, c)| self.models.contains(id) && c.levels.len() <= 8)
+                .all(|(id, c)| self.models.contains(id) && c.levels.len() <= 8 && c.context.valid())
             && self
                 .models
                 .iter()
@@ -48,11 +75,14 @@ pub(crate) struct CatalogStatus {
     pub provider_id: String,
     pub status: &'static str,
     pub model_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
 }
 
 fn cache_key(source: &str, account: &str, identity: &str) -> String {
     let mut hash = Sha256::new();
-    for part in [source, account, identity] {
+    // Older caches lack picker visibility and cannot be safely filtered in place.
+    for part in ["picker-visible-v1", source, account, identity] {
         hash.update(part.len().to_be_bytes());
         hash.update(part.as_bytes());
     }
@@ -109,6 +139,45 @@ fn read_native() -> Option<(String, String)> {
         return None;
     }
     native_credentials(&serde_json::from_str::<Value>(&read_bounded(&get_codex_auth_path())?).ok()?)
+}
+
+pub(crate) fn native_editor_info() -> Option<(String, Option<String>)> {
+    use base64::Engine as _;
+    read_native()?;
+    let auth: Value =
+        serde_json::from_str(&read_bounded(&crate::codex_config::get_codex_auth_path())?).ok()?;
+    let Some(token) = auth.pointer("/tokens/id_token").and_then(Value::as_str) else {
+        return Some(("Codex".into(), None));
+    };
+    let claims = token
+        .split('.')
+        .nth(1)
+        .and_then(|payload| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload)
+                .ok()
+        })
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    let Some(claims) = claims else {
+        return Some(("Codex".into(), None));
+    };
+    let login = claims["email"]
+        .as_str()
+        .filter(|s| s.len() <= 256 && !s.chars().any(char::is_control))
+        .unwrap_or("Codex")
+        .to_owned();
+    let plan = match claims
+        .pointer("/https:~1~1api.openai.com~1auth/chatgpt_plan_type")
+        .and_then(Value::as_str)
+    {
+        Some("plus") => Some("ChatGPT Plus".into()),
+        Some("pro") => Some("ChatGPT Pro".into()),
+        Some("free") => Some("ChatGPT Free".into()),
+        Some("team" | "business") => Some("ChatGPT Business".into()),
+        Some("enterprise") => Some("ChatGPT Enterprise".into()),
+        _ => None,
+    };
+    Some((login, plan))
 }
 
 pub(crate) fn official_source(provider: &Provider) -> bool {
@@ -194,36 +263,152 @@ pub(crate) async fn prepare_providers(
 ) -> Result<(Vec<Provider>, Vec<CatalogStatus>), String> {
     use futures::{stream, StreamExt};
     let read_db = db.clone();
-    let providers =
-        tauri::async_runtime::spawn_blocking(move || read_db.get_all_providers("codex"))
-            .await
-            .map_err(|_| FAILED)?
-            .map_err(|_| FAILED)?;
+    let providers = tauri::async_runtime::spawn_blocking(move || {
+        read_db.routing_providers().map(|providers| {
+            providers
+                .into_iter()
+                .map(|p| (p.id.clone(), p))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        })
+    })
+    .await
+    .map_err(|_| FAILED)?
+    .map_err(|_| FAILED)?;
     let results = stream::iter(providers.into_values())
-        .map(|provider| prepare_provider(db.clone(), manager.clone(), provider, refresh))
+        .map(|provider| prepare_editor_pool(db.clone(), manager.clone(), provider, refresh))
         .buffered(4)
         .collect::<Vec<_>>()
         .await;
     let mut providers = Vec::new();
     let mut statuses = Vec::new();
     for result in results {
-        let (provider, status) = result?;
+        let (mut provider, status) = result?;
+        crate::services::codex_provider::filter_models(&mut provider);
+        crate::services::routing_upstreams::filter_models(&mut provider);
         providers.push(provider);
         if let Some(status) = status {
             statuses.push(status);
         }
     }
+    super::model_context::prepare(&mut providers, refresh).await;
     Ok((providers, statuses))
 }
 
-async fn prepare_provider(
+/// Discover missing menus only when the routing UI asks; never on forwarding.
+pub(crate) async fn prepare_missing_catalogs(
+    db: Arc<Database>,
+    manager: Arc<CodexOAuthManager>,
+) -> Result<Vec<CatalogStatus>, String> {
+    use futures::{stream, StreamExt};
+    let (providers, _) = prepare_providers(db.clone(), manager.clone(), false).await?;
+    let missing = providers
+        .into_iter()
+        .filter(|provider| {
+            if provider
+                .settings_config
+                .get(crate::services::routing_upstreams::MODEL_POLICY)
+                .is_some_and(|policy| matches!(policy["mode"].as_str(), Some("picked" | "usage")))
+            {
+                return false;
+            }
+            if provider
+                .settings_config
+                .get(crate::services::codex_provider::POLICY)
+                .is_some()
+            {
+                let policy = crate::services::codex_provider::Settings::from_provider(provider);
+                if policy.mode == crate::services::codex_provider::ModelMode::Usage
+                    || policy.accounts.is_empty()
+                {
+                    return false;
+                }
+            }
+            provider
+                .settings_config
+                .pointer("/modelCatalog/models")
+                .and_then(Value::as_array)
+                .is_none_or(Vec::is_empty)
+        })
+        .map(|provider| provider.id)
+        .collect::<std::collections::HashSet<_>>();
+    let read_db = db.clone();
+    // Cache keys must use the stored connection, not hydrated publication metadata.
+    let missing = tokio::task::spawn_blocking(move || read_db.routing_providers())
+        .await
+        .map_err(|_| FAILED)??
+        .into_iter()
+        .filter(|provider| missing.contains(&provider.id));
+    let results = stream::iter(missing)
+        .map(|provider| prepare_editor_pool(db.clone(), manager.clone(), provider, true))
+        .buffered(4)
+        .collect::<Vec<_>>()
+        .await;
+    results
+        .into_iter()
+        .map(|result| result.map(|(_, status)| status))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|statuses| statuses.into_iter().flatten().collect())
+}
+
+async fn prepare_editor_pool(
+    db: Arc<Database>,
+    manager: Arc<CodexOAuthManager>,
+    mut provider: Provider,
+    refresh: bool,
+) -> Result<(Provider, Option<CatalogStatus>), String> {
+    use crate::services::codex_provider::{self, CATALOGS, POLICY};
+    if !official_source(&provider) || provider.settings_config.get(POLICY).is_none() {
+        return prepare_provider(db, manager, provider, refresh).await;
+    }
+    let mut catalogs = serde_json::Map::new();
+    let mut models = std::collections::BTreeMap::new();
+    let mut latest = None;
+    for mut variant in codex_provider::variants(&provider) {
+        // Never hydrate another identity from an already prepared account catalog.
+        variant
+            .settings_config
+            .as_object_mut()
+            .map(|o| o.remove(CATALOGS));
+        let account = variant
+            .meta
+            .as_ref()
+            .and_then(|m| m.managed_account_id_for("codex_oauth"))
+            .unwrap_or_else(|| "native".into());
+        let (prepared, status) =
+            prepare_provider(db.clone(), manager.clone(), variant, refresh).await?;
+        let rows = prepared
+            .settings_config
+            .pointer("/modelCatalog/models")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if status.as_ref().is_some_and(|s| s.status != "unavailable") {
+            catalogs.insert(account, json!(rows));
+        }
+        for row in rows {
+            if let Some(id) = row["model"].as_str() {
+                models.entry(id.to_owned()).or_insert(row);
+            }
+        }
+        latest = status;
+    }
+    if !catalogs.is_empty() {
+        provider.settings_config[CATALOGS] = Value::Object(catalogs);
+    }
+    provider.settings_config["modelCatalog"] =
+        json!({"models": models.into_values().collect::<Vec<_>>()});
+    Ok((provider, latest))
+}
+
+pub(crate) async fn prepare_provider(
     db: Arc<Database>,
     manager: Arc<CodexOAuthManager>,
     mut provider: Provider,
     refresh: bool,
 ) -> Result<(Provider, Option<CatalogStatus>), String> {
     if !official_source(&provider) {
-        return Ok((provider, None));
+        let status = prepare_static_context(db, &mut provider, refresh).await;
+        return Ok((provider, Some(status)));
     }
     let Some(identity) = source(&provider, &manager).await else {
         // Explicit user catalogs remain independent of the discovery cache.
@@ -231,6 +416,7 @@ async fn prepare_provider(
             provider_id: provider.id.clone(),
             status: "unavailable",
             model_count: 0,
+            reason: Some("notSignedIn"),
         };
         return Ok((provider, Some(status)));
     };
@@ -264,23 +450,9 @@ async fn prepare_provider(
             .await
             .ok()
             .flatten();
-        let result = result.map(|value| {
-            let models = crate::services::codex_oauth_models::parse_models(value.clone());
-            (
-                models,
-                discovery_capabilities(&value),
-                discovery_names(&value),
-            )
-        });
-        if let Some((models, reasoning, names)) = result.filter(|(m, _, _)| {
-            !m.is_empty() && m.len() <= 2048 && m.iter().all(|m| m.id.len() <= 256)
-        }) {
-            let next = ModelCache {
-                fetched_at: chrono::Utc::now().timestamp(),
-                reasoning,
-                names,
-                models: models.into_iter().map(|m| m.id).collect(),
-            };
+        if let Some(next) =
+            result.and_then(|value| ModelCache::from_catalog(value, chrono::Utc::now().timestamp()))
+        {
             // Persist only to the resolved identity, never to the mutable provider configuration.
             let write_db = db.clone();
             let key = identity.key.clone();
@@ -311,14 +483,173 @@ async fn prepare_provider(
         provider_id: provider.id.clone(),
         status,
         model_count,
+        reason: if status == "unavailable" {
+            Some("requestFailed")
+        } else if model_count == 0 {
+            Some("empty")
+        } else {
+            None
+        },
     };
     Ok((provider, Some(status)))
+}
+
+async fn prepare_static_context(
+    db: Arc<Database>,
+    provider: &mut Provider,
+    refresh: bool,
+) -> CatalogStatus {
+    use crate::proxy::providers::{ClaudeAdapter, ProviderAdapter};
+    let mut status = CatalogStatus {
+        provider_id: provider.id.clone(),
+        status: "unavailable",
+        model_count: 0,
+        reason: Some("requestFailed"),
+    };
+    if !super::eligible_provider(provider, false) {
+        return status;
+    }
+    let adapter = ClaudeAdapter::new();
+    let (legacy_base, token) =
+        provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
+    let base = adapter.extract_base_url(provider).unwrap_or(legacy_base);
+    let Ok(identity) = serde_json::to_string(&provider.settings_config) else {
+        return status;
+    };
+    let key = cache_key("static-context-v1", &provider.id, &identity);
+    let cache_db = db.clone();
+    let read_key = key.clone();
+    let now = chrono::Utc::now().timestamp();
+    let mut cache = tokio::task::spawn_blocking(move || cache_db.routing_model_cache(&read_key))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()
+        .filter(|c| c.valid_at(now));
+    if let Some(cache) = &cache {
+        status.status = "cached";
+        status.model_count = cache.models.len();
+        status.reason = None;
+    }
+    if refresh {
+        let format = provider
+            .meta
+            .as_ref()
+            .and_then(|m| m.api_format.as_deref())
+            .or_else(|| provider.settings_config["apiFormat"].as_str())
+            .or_else(|| provider.settings_config["api_format"].as_str());
+        let format = if format == Some("anthropic")
+            && (provider.settings_config["authType"] == "api-key"
+                || provider.claude_uses_api_key_field())
+        {
+            Some("anthropic-messages")
+        } else {
+            format
+        };
+        let models_url = provider.settings_config["modelsUrl"].as_str();
+        let user_agent = provider
+            .meta
+            .as_ref()
+            .and_then(|m| m.custom_user_agent_header().ok().flatten());
+        let request = crate::services::model_fetch::fetch_models(
+            &base,
+            &token,
+            provider
+                .meta
+                .as_ref()
+                .and_then(|m| m.is_full_url)
+                .unwrap_or(false),
+            models_url,
+            user_agent,
+            format,
+            None,
+        );
+        if let Ok(Ok(models)) =
+            tokio::time::timeout(std::time::Duration::from_secs(20), request).await
+        {
+            let next = ModelCache {
+                fetched_at: now,
+                models: models.iter().map(|m| m.id.clone()).collect(),
+                reasoning: models
+                    .into_iter()
+                    .map(|m| {
+                        (
+                            m.id,
+                            super::effort::Capability {
+                                context: m.context,
+                                ..Default::default()
+                            },
+                        )
+                    })
+                    .collect(),
+                names: Default::default(),
+            };
+            if next.valid_at(now) {
+                let cache_db = db;
+                if let Ok(next) = tokio::task::spawn_blocking(move || {
+                    let _ = cache_db.save_routing_model_cache(&key, &next);
+                    next
+                })
+                .await
+                {
+                    status.status = "updated";
+                    status.model_count = next.models.len();
+                    status.reason = next.models.is_empty().then_some("empty");
+                    cache = Some(next);
+                }
+            }
+        }
+    }
+    if let Some(cache) = cache {
+        if provider
+            .settings_config
+            .get(crate::services::routing_upstreams::MODEL_POLICY)
+            .is_some()
+        {
+            provider.settings_config["routingVendorCatalog"] = json!(cache
+                .models
+                .iter()
+                .map(|id| json!({"model":id}))
+                .collect::<Vec<_>>());
+        }
+        // Empty API selections follow the vendor list. Saved nonempty selections
+        // remain authoritative; discovery never edits provider storage.
+        if provider
+            .settings_config
+            .pointer("/modelCatalog/models")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty)
+        {
+            let models = cache
+                .models
+                .iter()
+                .filter(|id| super::valid_target(&provider.id, id))
+                .map(|id| json!({"model":id}))
+                .collect::<Vec<_>>();
+            provider.settings_config["modelCatalog"] = json!({"models":models});
+        }
+        provider.settings_config["routingContext"] = json!({"vendor": cache.reasoning.into_iter()
+            .map(|(id, c)| (id, json!(c.context))).collect::<serde_json::Map<_,_>>()});
+    }
+    status
 }
 
 fn apply_cache(provider: &mut Provider, cache: ModelCache) {
     if !provider.settings_config.is_object() {
         return;
     }
+    let saved = provider
+        .settings_config
+        .pointer("/modelCatalog/models")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    provider.settings_config["routingContext"] = json!({
+        "typed": saved.iter().filter(|row| row["contextSource"] != "vendor" && super::context::Metadata::parse(row).context_window.is_some())
+            .filter_map(|row| row["model"].as_str()).collect::<Vec<_>>(),
+        "vendor": cache.reasoning.iter().map(|(id, capability)| (id.clone(), json!(capability.context)))
+            .collect::<serde_json::Map<_,_>>()
+    });
     provider.settings_config["modelCatalog"] = json!({"models": cache.models.into_iter().map(|model| {
         let mut entry = json!({"model":model});
         if let Some(name) = cache.names.get(&model) {
@@ -329,6 +660,17 @@ fn apply_cache(provider: &mut Provider, cache: ModelCache) {
             if let Some(images) = capability.images { entry["input_modalities"] = if images { json!(["text", "image"]) } else { json!(["text"]) }; }
             if capability.quiet { entry["reasoning"] = json!(false); }
             if let Some(free) = capability.free { entry["free"] = json!(free); }
+            capability.context.write(&mut entry);
+        }
+        // Saved exact-model overrides win only for models still visible in this account.
+        if let Some(saved) = saved.iter().find(|e| e["model"].as_str().is_some_and(|id| id.trim() == model)) {
+            super::context::Metadata::parse(saved)
+                .with_fallback(super::context::Metadata::parse(&entry)).write(&mut entry);
+            if super::model_preferences::valid(saved) {
+                if let Some(prefs) = saved.get("modelPreferences") {
+                    entry["modelPreferences"] = prefs.clone();
+                }
+            }
         }
         entry
     }).collect::<Vec<_>>()});
@@ -345,6 +687,9 @@ fn discovery_capabilities(
         .or_else(|| value.as_array());
     let mut result = std::collections::BTreeMap::new();
     let mut add = |entry: &Value, fallback: Option<&str>| {
+        if !crate::services::codex_oauth_models::picker_visible(entry) {
+            return;
+        }
         let id = ["slug", "id", "model", "name"]
             .iter()
             .filter_map(|key| entry.get(*key).and_then(Value::as_str))
@@ -374,6 +719,9 @@ fn discovery_capabilities(
 fn discovery_names(value: &Value) -> std::collections::BTreeMap<String, String> {
     let mut names = std::collections::BTreeMap::new();
     let mut add = |entry: &Value, fallback: Option<&str>| {
+        if !crate::services::codex_oauth_models::picker_visible(entry) {
+            return;
+        }
         let id = ["slug", "id", "model", "name"]
             .iter()
             .find_map(|k| entry.get(*k).and_then(Value::as_str))
@@ -413,7 +761,231 @@ fn discovery_names(value: &Value) -> std::collections::BTreeMap<String, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn missing_catalog_discovery_reuses_stored_connection_cache_without_changing_selections(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::services::routing_upstreams::{RoutingUpstream, UpstreamSource};
+        use axum::{routing::get, Json, Router};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = requests.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}/v1", listener.local_addr()?);
+        let task = tokio::spawn(async move {
+            let app = Router::new().route(
+                "/v1/models",
+                get(move || {
+                    let observed = observed.clone();
+                    async move {
+                        observed.fetch_add(1, Ordering::Relaxed);
+                        Json(json!({"data":[{"id":"shared-model"}]}))
+                    }
+                }),
+            );
+            let _ = axum::serve(listener, app).await;
+        });
+        let db = Arc::new(Database::memory()?);
+        let dir = tempfile::tempdir()?;
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let mut saved = Vec::new();
+        for models in [vec![], vec![], vec![json!({"model":"selected-model"})]] {
+            saved.push(db.save_routing_upstream(RoutingUpstream {
+                transport: None,
+                schema_version: 1,
+                id: String::new(),
+                name: "Synthetic relay".into(),
+                revision: 0,
+                enabled: true,
+                has_api_key: false,
+                preset_id: None,
+                region: None,
+                codex_settings: None,
+                source: UpstreamSource::Api {
+                    catalog: vec![],
+                    mode: if models.is_empty() {
+                        crate::services::codex_provider::ModelMode::Vendor
+                    } else {
+                        crate::services::codex_provider::ModelMode::Picked
+                    },
+                    groups_only: false,
+                    base_url: base.clone(),
+                    api_key: Some("synthetic-test-key".into()),
+                    api_format: "openai_responses".into(),
+                    models,
+                    auth_type: None,
+                },
+            })?);
+        }
+        let statuses = prepare_missing_catalogs(db.clone(), manager.clone()).await?;
+        assert_eq!(statuses.len(), 2);
+        assert!(statuses
+            .iter()
+            .all(|status| status.status == "updated" && status.model_count == 1));
+        assert_eq!(requests.load(Ordering::Relaxed), 2);
+        let (providers, _) = prepare_providers(db.clone(), manager.clone(), false).await?;
+        let catalog = db.intent_routing_catalog_with_providers(Some(providers))?;
+        assert_eq!(catalog.groups.len(), 1);
+        assert_eq!(catalog.groups[0].alias(), "auto/shared-model");
+        assert!(prepare_missing_catalogs(db.clone(), manager)
+            .await?
+            .is_empty());
+        assert_eq!(requests.load(Ordering::Relaxed), 2);
+        for upstream in saved {
+            let stored = db.routing_upstream_editor(&upstream.id, upstream.revision)?;
+            assert!(serde_json::to_value(&stored)? == serde_json::to_value(upstream)?);
+        }
+        task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_catalog_refresh_populates_missing_models_and_reuses_cache_for_groups(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use axum::{routing::get, Json, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}/v1", listener.local_addr()?);
+        let task = tokio::spawn(async move {
+            let app = Router::new().route(
+                "/v1/models",
+                get(|| async {
+                    Json(json!({"data":[{"id":"shared-model","context_length":1000000}]}))
+                }),
+            );
+            let _ = axum::serve(listener, app).await;
+        });
+        let db = Arc::new(Database::memory()?);
+        let mut providers = Vec::new();
+        for id in ["relay-a", "relay-b"] {
+            let saved = json!({
+                "apiFormat":"openai_responses",
+                "env":{"ANTHROPIC_BASE_URL":base,"ANTHROPIC_AUTH_TOKEN":"synthetic-discovery-key"},
+                "auth":{"OPENAI_API_KEY":"synthetic-discovery-key"},
+                "config":format!("model_provider='fixture'\n[model_providers.fixture]\nbase_url='{base}'\nwire_api='responses'"),
+                "modelCatalog":{"models":[]}
+            });
+            let mut provider =
+                Provider::with_id(id.into(), "Synthetic relay".into(), saved.clone(), None);
+            db.save_provider("codex", &provider)?;
+            prepare_static_context(db.clone(), &mut provider, true).await;
+            assert_eq!(
+                provider.settings_config["modelCatalog"]["models"][0]["model"],
+                "shared-model"
+            );
+            assert_eq!(db.get_all_providers("codex")?[id].settings_config, saved);
+            providers.push(provider);
+        }
+        task.abort();
+        assert_eq!(super::super::discover_groups(providers).len(), 1);
+        for (_, mut provider) in db.get_all_providers("codex")? {
+            prepare_static_context(db.clone(), &mut provider, false).await;
+            assert_eq!(
+                provider.settings_config["modelCatalog"]["models"][0]["model"],
+                "shared-model"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_refresh_caches_capacity_without_replacing_saved_models_or_overrides(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use axum::{routing::get, Json, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}/v1", listener.local_addr()?);
+        let task = tokio::spawn(async move {
+            let app = Router::new().route(
+                "/v1/models",
+                get(|| async {
+                    Json(json!({"data":[{"id":"fixture","context_length":1000000},
+                    {"id":"only-upstream","context_length":500000}]}))
+                }),
+            );
+            let _ = axum::serve(listener, app).await;
+        });
+        let db = Arc::new(Database::memory()?);
+        let mut provider = Provider::with_id(
+            "fixture".into(),
+            "Fixture".into(),
+            json!({
+                "apiFormat":"openai_responses", "env":{"ANTHROPIC_BASE_URL":base,"ANTHROPIC_AUTH_TOKEN":"synthetic-key"},
+                "config":format!("model_provider='fixture'\n[model_providers.fixture]\nbase_url='{base}'\nwire_api='responses'"),
+                "auth":{"OPENAI_API_KEY":"synthetic-key"}, "modelCatalog":{"models":[{"model":"fixture"}]}
+            }),
+            None,
+        );
+        let saved = provider.settings_config.clone();
+        prepare_static_context(db.clone(), &mut provider, true).await;
+        assert_eq!(
+            super::super::context::Metadata::for_provider(&provider.settings_config, "fixture")
+                .context_window,
+            Some(1000000)
+        );
+        assert_eq!(
+            provider.settings_config["modelCatalog"],
+            saved["modelCatalog"]
+        );
+        assert!(!super::super::context::Metadata::typed_window(
+            &provider.settings_config,
+            "fixture"
+        ));
+        task.abort();
+        provider.settings_config = saved.clone();
+        prepare_static_context(db, &mut provider, false).await;
+        assert_eq!(
+            super::super::context::Metadata::for_provider(&provider.settings_config, "fixture")
+                .context_window,
+            Some(1000000)
+        );
+        provider.settings_config["modelCatalog"]["models"][0]["contextWindow"] = json!(1500000);
+        assert_eq!(
+            super::super::context::Metadata::for_provider(&provider.settings_config, "fixture")
+                .context_window,
+            Some(1500000)
+        );
+        Ok(())
+    }
     use serde_json::json;
+
+    #[tokio::test]
+    async fn frozen_managed_recovery_identity_is_stable_and_account_specific(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        manager
+            .add_test_account_with_user_identity("account-a", "synthetic-access-a", "user-a")
+            .await?;
+        manager
+            .add_test_account_with_user_identity("account-b", "synthetic-access-b", "user-b")
+            .await?;
+        let mut provider =
+            Provider::with_id("official".into(), "Synthetic".into(), json!({}), None);
+        provider.meta = Some(crate::provider::ProviderMeta {
+            provider_type: Some("codex_oauth".into()),
+            ..Default::default()
+        });
+        let first = freeze_execution(&provider, manager.clone())
+            .await
+            .ok_or("missing credentials")?;
+        let original = first
+            .continuation_identity()
+            .ok_or("missing provenance")?
+            .to_owned();
+        assert_eq!(
+            freeze_execution(&provider, manager.clone())
+                .await
+                .and_then(|c| c.continuation),
+            Some(original.clone())
+        );
+        manager.set_default_account("account-b").await?;
+        let second = freeze_execution(&provider, manager)
+            .await
+            .ok_or("missing other credentials")?;
+        assert_ne!(second.continuation_identity(), Some(original.as_str()));
+        assert_eq!(first.continuation_identity(), Some(original.as_str()));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn task_status_distinguishes_supported_api_config_from_missing_managed_identity() {
@@ -431,12 +1003,140 @@ mod tests {
         );
         assert!(task_configured(&api, &manager).await);
         api.settings_config["apiFormat"] = json!("openai_chat");
+        assert!(task_configured(&api, &manager).await);
+        api.settings_config["apiFormat"] = json!("unsupported");
         assert!(!task_configured(&api, &manager).await);
+        api.settings_config["apiFormat"] = json!("openai_responses");
         api.meta = Some(crate::provider::ProviderMeta {
             provider_type: Some("codex_oauth".into()),
             ..Default::default()
         });
         assert!(!task_configured(&api, &manager).await);
+    }
+
+    #[test]
+    fn official_visibility_filters_cached_metadata_and_preserves_exact_model_ids() {
+        let value = json!({"models":[
+            {"slug":"vendor/Model_1.2-20261029", "visibility":"list", "supported_in_api":false,
+             "display_name":"Visible model", "reasoningLevels":["low","high"], "private_extension":"discard"},
+            {"slug":"hidden-model", "visibility":"hide", "display_name":"Hidden model", "reasoningLevels":["high"]},
+            {"slug":"unlisted-model", "visibility":"none", "display_name":"Unlisted model", "reasoningLevels":["high"]},
+            {"slug":"vendor/Model_1.2-20261029", "visibility":"hide", "display_name":"Hidden duplicate", "reasoningLevels":["xhigh"]}
+        ]});
+        assert_eq!(discovery_names(&value).len(), 1);
+        assert_eq!(discovery_capabilities(&value).len(), 1);
+        let cache = ModelCache::from_catalog(value, 100).expect("visible catalog");
+        assert_eq!(cache.models, ["vendor/Model_1.2-20261029"]);
+        assert_eq!(cache.names[&cache.models[0]], "Visible model");
+        assert_eq!(cache.reasoning[&cache.models[0]].levels, ["low", "high"]);
+        let serialized = serde_json::to_string(&cache).expect("cache json");
+        assert!(!serialized.contains("hidden-model"));
+        assert!(!serialized.contains("private_extension"));
+        let restored: ModelCache = serde_json::from_str(&serialized).expect("cache round trip");
+        assert!(restored.valid_at(101));
+    }
+
+    #[test]
+    fn official_visibility_empty_refresh_replaces_previous_discovery_without_changing_saved_data() {
+        let db = Database::memory().expect("database");
+        let mut provider = Provider::with_id(
+            "official".into(),
+            "Official".into(),
+            json!({
+                "config":"model='user-selected-model'",
+                "modelCatalog":{"models":[{"model":"user-catalog-model"}]}
+            }),
+            None,
+        );
+        provider.category = Some("official".into());
+        db.save_provider("codex", &provider).expect("save provider");
+        db.register_routing_fixture("codex", &provider.id)
+            .expect("explicit import");
+        let mut saved = super::super::tests::fixture();
+        for member in &mut saved.members {
+            member.provider_id = provider.id.clone();
+        }
+        let saved = db.save_intent_routing_group(saved).expect("save group");
+        let key = cache_key("native", "fixture-account", "fixture-identity");
+        let previous = ModelCache::from_catalog(json!({"models":[{"slug":"old-visible"}]}), 100)
+            .expect("old catalog");
+        db.save_routing_model_cache(&key, &previous)
+            .expect("save old cache");
+        for value in [
+            json!({"models":[{"slug":"old-visible", "visibility":"hide", "display_name":"Old", "reasoningLevels":["high"]}]}),
+            json!({"models":[]}),
+            json!({"models":{}}),
+        ] {
+            let next = ModelCache::from_catalog(value, 101).expect("authoritative empty catalog");
+            assert!(next.valid_at(102));
+            assert!(next.models.is_empty() && next.names.is_empty() && next.reasoning.is_empty());
+            db.save_routing_model_cache(&key, &next)
+                .expect("replace cache");
+            let cache = db
+                .routing_model_cache(&key)
+                .expect("read cache")
+                .expect("cache");
+            apply_cache(&mut provider, cache);
+            assert_eq!(
+                provider.settings_config["modelCatalog"]["models"],
+                json!([])
+            );
+            assert_eq!(
+                provider.settings_config["config"],
+                "model='user-selected-model'"
+            );
+        }
+        for value in [
+            json!({"error":"synthetic failure"}),
+            json!({"models":null}),
+            json!({"models":"invalid"}),
+            json!({"models":[null, {}, 42]}),
+            json!([{}]),
+        ] {
+            assert!(ModelCache::from_catalog(value, 102).is_none());
+        }
+        let stored = db.get_all_providers("codex").expect("providers");
+        assert_eq!(
+            stored["official"].settings_config["modelCatalog"]["models"][0]["model"],
+            "user-catalog-model"
+        );
+        assert_eq!(
+            stored["official"].settings_config["config"],
+            "model='user-selected-model'"
+        );
+        assert_eq!(
+            db.list_intent_routing_groups().expect("groups"),
+            vec![saved]
+        );
+    }
+
+    #[test]
+    fn official_visibility_policy_does_not_reuse_legacy_unfiltered_cache() {
+        let db = Database::memory().expect("database");
+        let mut legacy = Sha256::new();
+        for part in ["native", "fixture-account", "fixture-identity"] {
+            legacy.update(part.len().to_be_bytes());
+            legacy.update(part.as_bytes());
+        }
+        let old_key = format!("{:x}", legacy.finalize());
+        let old = ModelCache {
+            fetched_at: 100,
+            models: vec!["previously-hidden".into()],
+            reasoning: Default::default(),
+            names: Default::default(),
+        };
+        db.save_routing_model_cache(&old_key, &old)
+            .expect("legacy cache");
+        let key = cache_key("native", "fixture-account", "fixture-identity");
+        assert_ne!(key, old_key);
+        assert!(db
+            .routing_model_cache(&key)
+            .expect("current lookup")
+            .is_none());
+        assert!(db
+            .routing_model_cache(&old_key)
+            .expect("legacy retained")
+            .is_some());
     }
 
     #[test]
@@ -460,6 +1160,37 @@ mod tests {
             .settings_config
             .to_string()
             .contains("private_extension"));
+    }
+
+    #[test]
+    fn account_refresh_preserves_overrides_only_for_still_visible_models() {
+        let mut provider = Provider::with_id(
+            "fixture".into(),
+            "Synthetic".into(),
+            json!({"modelCatalog":{"models":[
+                {"model":"visible", "modelPreferences":{"name":"Custom", "reasoningLevels":[], "images":false}},
+                {"model":"hidden", "modelPreferences":{"name":"Hidden"}}
+            ]}}),
+            None,
+        );
+        apply_cache(
+            &mut provider,
+            ModelCache {
+                fetched_at: 100,
+                models: vec!["visible".into()],
+                reasoning: Default::default(),
+                names: Default::default(),
+            },
+        );
+        let entries = provider.settings_config["modelCatalog"]["models"]
+            .as_array()
+            .expect("fixture");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            super::super::model_preferences::name(&entries[0]),
+            Some("Custom")
+        );
+        assert!(super::super::effort::Capability::parse(&entries[0]).quiet);
     }
 
     #[test]
@@ -500,6 +1231,59 @@ mod tests {
             serde_json::from_value(json!({"fetched_at":100,"models":["synthetic-model"]})).unwrap();
         assert!(old.reasoning.is_empty());
         assert!(old.valid_at(101));
+    }
+
+    #[test]
+    fn context_discovery_cache_round_trips_only_supported_fields_and_saved_overrides() {
+        for catalog in [
+            json!({"models":[{"slug":"exact-model","context_window":1000000,"max_context_window":1200000,
+                "effective_context_window_percent":90,"auto_compact_token_limit":200000,"private_extension":"not-persisted"}]}),
+            json!({"models":{"exact-model":{"contextWindow":"1000000","maxContextWindow":1200000,
+                "effectiveContextWindowPercent":90,"autoCompactTokenLimit":200000,"private_extension":"not-persisted"}}}),
+        ] {
+            let cache = ModelCache::from_catalog(catalog, 100).expect("cache");
+            let serialized = serde_json::to_string(&cache).expect("serialize");
+            assert!(!serialized.contains("private_extension"));
+            let restored: ModelCache = serde_json::from_str(&serialized).expect("restore");
+            assert!(restored.valid_at(101));
+            let mut provider =
+                Provider::with_id("fixture".into(), "Fixture".into(), json!({}), None);
+            apply_cache(&mut provider, restored);
+            let metadata = super::super::context::Metadata::for_provider(
+                &provider.settings_config,
+                "exact-model",
+            );
+            assert_eq!(metadata.context_window, Some(1000000));
+            assert_eq!(metadata.max_context_window, Some(1200000));
+            assert_eq!(metadata.effective_context_window_percent, Some(90));
+            assert_eq!(metadata.auto_compact_token_limit, Some(200000));
+            provider.settings_config["modelCatalog"]["models"][0]["contextWindow"] = json!(500000);
+            provider.settings_config["modelCatalog"]["models"][0]["autoCompactTokenLimit"] =
+                json!(100000);
+            let restored: ModelCache = serde_json::from_str(&serialized).expect("restore");
+            apply_cache(&mut provider, restored);
+            let metadata = super::super::context::Metadata::for_provider(
+                &provider.settings_config,
+                "exact-model",
+            );
+            assert_eq!(metadata.context_window, Some(500000));
+            assert_eq!(metadata.auto_compact_token_limit, Some(100000));
+            assert_eq!(metadata.max_context_window, Some(1200000));
+            let mut invalid: Value = serde_json::from_str(&serialized).expect("json");
+            invalid["reasoning"]["exact-model"]["context"]["effective_context_window_percent"] =
+                json!(101);
+            assert!(!serde_json::from_value::<ModelCache>(invalid)
+                .expect("cache shape")
+                .valid_at(101));
+            apply_cache(
+                &mut provider,
+                ModelCache::from_catalog(json!({"models":[]}), 101).expect("empty"),
+            );
+            assert!(provider.settings_config["modelCatalog"]["models"]
+                .as_array()
+                .expect("models")
+                .is_empty());
+        }
     }
 
     #[test]
@@ -703,8 +1487,27 @@ pub(crate) struct ExecutionCredentials {
     provider: Provider,
     key: String,
     pub workspace: String,
+    continuation: Option<String>,
 }
 impl ExecutionCredentials {
+    pub(crate) fn serves_model(&self, model: &str) -> bool {
+        crate::services::codex_provider::account_serves(&self.provider, model)
+    }
+    pub(crate) fn provider_name(&self) -> &str {
+        &self.provider.name
+    }
+
+    pub(crate) fn continuation_identity(&self) -> Option<&str> {
+        self.continuation.as_deref()
+    }
+    pub(crate) fn fingerprint(&self) -> Vec<u8> {
+        let mut hash = Sha256::new();
+        for value in [&self.key, &self.workspace] {
+            hash.update(value.len().to_be_bytes());
+            hash.update(value.as_bytes());
+        }
+        hash.finalize().to_vec()
+    }
     pub(crate) fn same_identity(&self, other: &Self) -> bool {
         self.key == other.key && self.workspace == other.workspace
     }
@@ -725,6 +1528,31 @@ pub(crate) async fn freeze_execution(
     manager: Arc<CodexOAuthManager>,
 ) -> Option<ExecutionCredentials> {
     let identity = source(provider, &manager).await?;
+    // Durable ownership is independent of access-token-sensitive discovery caching.
+    let continuation = if let Some(id) = identity.managed_id.as_deref() {
+        manager.continuation_identity(id).await
+    } else {
+        tauri::async_runtime::spawn_blocking(|| {
+            let auth: Value =
+                serde_json::from_str(&read_bounded(&crate::codex_config::get_codex_auth_path())?)
+                    .ok()?;
+            let user = crate::codex_config::extract_codex_id_token_user_identity(
+                auth.pointer("/tokens/id_token")?.as_str()?,
+            )?;
+            let (_, workspace) = native_credentials(&auth)?;
+            let digest = Sha256::digest(
+                serde_json::to_vec(&("native-continuation-v1", user, workspace)).ok()?,
+            );
+            Some(format!("{digest:x}"))
+        })
+        .await
+        .ok()
+        .flatten()
+    };
+    let after = source(provider, &manager).await?;
+    if after.key != identity.key || after.workspace != identity.workspace {
+        return None;
+    }
     let mut provider = provider.clone();
     if let Some(id) = identity.managed_id {
         provider
@@ -741,5 +1569,6 @@ pub(crate) async fn freeze_execution(
         provider,
         key: identity.key,
         workspace: identity.workspace,
+        continuation,
     })
 }

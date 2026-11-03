@@ -42,6 +42,9 @@ pub fn get_workbuddy_live_provider_ids(state: &AppState) -> Result<Vec<String>, 
 }
 
 pub fn import_pi_providers_from_live(state: &AppState) -> Result<usize, AppError> {
+    if state.proxy_service.agent_connections.owns("pi") {
+        return Ok(0);
+    }
     pi::import_from_live(state)
 }
 
@@ -4877,6 +4880,13 @@ impl ProviderService {
         state: &AppState,
         app_type: AppType,
     ) -> Result<IndexMap<String, Provider>, AppError> {
+        if state
+            .proxy_service
+            .agent_connections
+            .owns(app_type.as_str())
+        {
+            return state.db.get_all_providers(app_type.as_str());
+        }
         if agent_clients::is_agent(&app_type) {
             return agent_clients::list(state, app_type.as_str());
         }
@@ -5051,6 +5061,29 @@ impl ProviderService {
         original_id: Option<&str>,
         provider: Provider,
     ) -> Result<bool, AppError> {
+        let shared = state
+            .proxy_service
+            .agent_connections
+            .owns(app_type.as_str())
+            || (app_type == AppType::Codex
+                && state.proxy_service.intent_client.active_or_pending());
+        if shared {
+            let mut provider = provider;
+            if original_id.is_some_and(|id| id != provider.id) {
+                return Err(AppError::Message(
+                    crate::services::agent_connections::CONFLICT.into(),
+                ));
+            }
+            Self::validate_provider_settings(&app_type, &provider)?;
+            Self::normalize_provider_if_claude(&app_type, &mut provider);
+            normalize_provider_common_config_for_storage(
+                state.db.as_ref(),
+                &app_type,
+                &mut provider,
+            )?;
+            state.db.save_provider(app_type.as_str(), &provider)?;
+            return Ok(true);
+        }
         if agent_clients::is_agent(&app_type) {
             return agent_clients::update(state, app_type.as_str(), provider);
         }
@@ -5620,6 +5653,15 @@ impl ProviderService {
         id: &str,
         lock_held: bool,
     ) -> Result<SwitchResult, AppError> {
+        if state
+            .proxy_service
+            .agent_connections
+            .owns(app_type.as_str())
+        {
+            return Err(AppError::Message(
+                crate::services::agent_connections::CONFLICT.into(),
+            ));
+        }
         if agent_clients::is_agent(&app_type) {
             return if lock_held {
                 agent_clients::enable_with_lock(state, app_type.as_str(), id, true)

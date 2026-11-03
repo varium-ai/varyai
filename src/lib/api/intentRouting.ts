@@ -6,6 +6,7 @@ export interface RoutingMember {
   modelId: string;
   weight?: number;
   free?: boolean | null;
+  effort?: string | null;
 }
 export interface IntentRule {
   id: string;
@@ -13,13 +14,33 @@ export interface IntentRule {
   description: string;
   enabled: boolean;
   targetMemberId: string;
+  fallbackMemberIds?: string[];
+  conditions?: RoutingConditions | null;
+  useEffort?: string;
+  pause?: boolean;
+}
+export interface RoutingConditions {
+  tokens?: number;
+  images?: boolean;
+  effort?: string;
+  agents?: string[];
+  compact?: boolean;
+  time?: RoutingTimeWindow | null;
+  folders?: string[];
+  exceptFolders?: string[];
+}
+export interface RoutingTimeWindow {
+  from: string;
+  to: string;
+  days?: string[];
+  zone?: string;
 }
 export interface RoutingGroup {
   id: string;
   name: string;
   revision: number;
-  client: "codex";
-  enabled: false;
+  client: "global" | "codex";
+  enabled: boolean;
   members: RoutingMember[];
   defaultMemberId: string;
   fallbackMemberIds: string[];
@@ -40,17 +61,46 @@ export interface RoutingGroup {
     | "manual";
   manualMemberId?: string;
   modelAlias?: string;
+  contextWindow?: number;
+  affinity?: "" | "session" | "turn" | "off" | "strict";
+  firstToken?: number;
+  patience?: number;
+  off?: string[];
+  match?: string[];
+  unlists?: boolean;
+  sink?: boolean;
+  levels?: string[];
+}
+export interface RoutingContextSettings {
+  fullWindow: boolean;
+  compactAt?: number;
 }
 export interface RoutingCatalog {
   groups: RoutingGroup[];
+  removedGroups?: Array<{ id: string; name: string }>;
+  matchedMembers?: Record<string, RoutingMember[]>;
   autoCreate: boolean;
   omittedGroups: number;
+  contextSettings?: RoutingContextSettings;
 }
 export interface RoutingProviderOption {
   id: string;
   name: string;
+  icon?: string | null;
+  appType?: string;
   taskEligible: boolean;
   classifierEligible: boolean;
+  models?: Array<{
+    id: string;
+    name: string;
+    contextWindow?: number | null;
+    outputPrice?: number | null;
+    maker?: boolean;
+    released?: string;
+    images?: boolean | null;
+    reasoning?: boolean | null;
+    reasoningLevels?: string[];
+  }>;
 }
 export interface RoutingPlanPreview {
   groupId: string;
@@ -78,17 +128,35 @@ export interface RoutingCatalogStatus {
   providerId: string;
   status: "updated" | "cached" | "unavailable";
   modelCount: number;
+  reason?: "notSignedIn" | "requestFailed" | "empty";
 }
 export const intentRoutingApi = {
+  discoverCatalogs: () =>
+    invoke<RoutingCatalogStatus[]>("refresh_intent_routing_catalogs", {
+      missingOnly: true,
+    }),
   refreshCatalogs: () =>
     invoke<RoutingCatalogStatus[]>("refresh_intent_routing_catalogs"),
   list: () => invoke<RoutingCatalog>("list_intent_routing_groups"),
   setAutoCreate: (enabled: boolean) =>
     invoke<void>("set_intent_routing_auto_create", { enabled }),
+  autoGroupSkip: () => invoke<string[]>("get_routing_auto_group_skip"),
+  setAutoGroupSkip: (ids: string[]) =>
+    invoke<void>("set_routing_auto_group_skip", { ids }),
+  restore: (id: string) =>
+    invoke<void>("restore_discovered_routing_group", { id }),
+  setContextSettings: (settings: RoutingContextSettings) =>
+    invoke<void>("set_routing_context_settings", { settings }),
+  contextSettings: () =>
+    invoke<RoutingContextSettings>("get_routing_context_settings"),
   providers: () =>
     invoke<RoutingProviderOption[]>("list_intent_routing_providers"),
+  matchedMembers: (group: RoutingGroup) =>
+    invoke<RoutingMember[]>("resolve_routing_group_matches", { group }),
   save: (group: RoutingGroup) =>
     invoke<RoutingGroup>("save_intent_routing_group", { group }),
+  arrange: (order: string[]) =>
+    invoke<void>("arrange_routing_groups", { order }),
   remove: (id: string, revision: number) =>
     invoke<void>("delete_intent_routing_group", { id, revision }),
   trial: (group: RoutingGroup, text: string, consent: boolean) =>
@@ -124,8 +192,18 @@ export const routingExecutionApi = {
 export interface RoutingClientStatus {
   enabled: boolean;
   recoveryPending: boolean;
+  orphanedConfig?: boolean;
+  orphanCleanupAvailable?: boolean;
   providerEnabled?: boolean;
   omittedEntries?: number;
+  nativeCompatibility?:
+    | "disabled"
+    | "pending"
+    | "active"
+    | "unsupported"
+    | "revoked"
+    | "reconnect_required"
+    | "recovery_pending";
   groupIds: string[];
 }
 export const intentRoutingClientApi = {
@@ -133,4 +211,6 @@ export const intentRoutingClientApi = {
   connect: (consent: boolean) =>
     invoke<RoutingClientStatus>("connect_intent_routing_client", { consent }),
   disconnect: () => invoke<void>("disconnect_intent_routing_client"),
+  cleanup: () =>
+    invoke<void>("cleanup_intent_routing_orphan", { consent: true }),
 };

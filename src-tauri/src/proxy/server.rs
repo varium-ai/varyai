@@ -242,6 +242,7 @@ impl ProxyServer {
     }
 
     pub async fn stop(&self) -> Result<(), ProxyError> {
+        self.state.intent_runtime.flush_continuations().await;
         // 1. 发送关闭信号
         if let Some(tx) = self.shutdown_tx.write().await.take() {
             let _ = tx.send(());
@@ -315,8 +316,13 @@ impl ProxyServer {
         Router::new()
             // 健康检查
             .route("/intent/*path", any(super::intent::handle))
+            .route("/connections/*path", any(super::connections::handle))
+            .route(
+                "/backend-api/codex/*path",
+                any(super::intent::native::handle),
+            )
             .route("/health", get(handlers::health_check))
-            .route("/gateway/*path", post(super::gateway::handle))
+            .route("/gateway/*path", any(super::gateway::handle))
             .route("/private/trae/audit", post(super::trae::audit))
             .route("/pi/*path", any(super::pi::handle))
             .route(
@@ -450,6 +456,10 @@ impl ProxyServer {
             .layer(axum::middleware::from_fn_with_state(
                 self.state.clone(),
                 super::gateway::enforce_agent,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                self.state.clone(),
+                super::intent::native::admission,
             ))
             .with_state(self.state.clone())
     }

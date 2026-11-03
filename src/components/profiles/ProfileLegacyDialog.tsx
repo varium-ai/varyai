@@ -15,13 +15,17 @@ import {
 import { hasScopeSnapshot } from "./scope";
 
 export function ProfileLegacyDialog({
+  open = true,
   profile,
   scope,
   onClose,
+  onExited,
 }: {
+  open?: boolean;
   profile: Profile;
   scope: ProfileScope;
   onClose: () => void;
+  onExited?: () => void;
 }) {
   const { t } = useTranslation();
   const apply = useApplyProfileMutation();
@@ -57,12 +61,12 @@ export function ProfileLegacyDialog({
   ];
   return (
     <Dialog
-      open
+      open={open}
       onOpenChange={(open) => {
         if (!open && !apply.isPending) onClose();
       }}
     >
-      <DialogContent className="max-w-xl" zIndex="top">
+      <DialogContent className="max-w-xl" zIndex="top" onCloseAutoFocus={onExited}>
         <DialogHeader>
           <DialogTitle className="line-clamp-2 break-all" title={profile.name}>
             {t("profiles.bundle.previewTitle", { name: profile.name })}

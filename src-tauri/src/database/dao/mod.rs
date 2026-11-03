@@ -11,6 +11,7 @@ pub mod prompts;
 pub mod providers;
 pub mod providers_seed;
 pub mod proxy;
+pub(crate) mod routing_upstreams;
 pub mod security;
 pub mod security_events;
 pub mod settings;

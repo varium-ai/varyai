@@ -1,14 +1,19 @@
-//! Magpie-compatible pool strategies and bounded, account/model-scoped telemetry.
-//! Adapted from Magpie routes/strategies.go, fastest.go and round.go (MIT;
-//! attribution in third_party/magpie/LICENSE). Strategies only order approved routes.
+//! Reference-compatible pool strategies and bounded, account/model-scoped telemetry.
+//! Adapted from the reference implementation routes/strategies.go, fastest.go and round.go (MIT;
+//! attribution in third_party/routing-reference/LICENSE). Strategies only order approved routes.
 use crate::services::intent_routing::RoutingStrategy;
 use http::HeaderMap;
 use serde_json::Value;
 use std::{
     cmp::Ordering,
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+        Arc, Mutex,
+    },
 };
+
+static SINK_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
 pub(crate) struct Window {
@@ -30,6 +35,8 @@ pub(crate) struct Health {
     tps: f64,
     pub free: bool,
     pub weight: u16,
+    sunk: u64,
+    sunk_at: i64,
 }
 #[derive(Default)]
 struct Average {
@@ -70,6 +77,37 @@ fn decay(value: f64, age: i64, half_life: f64) -> f64 {
     value * (-age.max(0) as f64 / half_life).exp2()
 }
 impl Scheduling {
+    pub(super) fn exhausted(&self, now: i64) -> bool {
+        self.account.try_lock().is_ok_and(|state| {
+            state
+                .windows
+                .iter()
+                .any(|w| w.used >= 100.0 && w.reset > now && now.saturating_sub(w.sampled) <= 300)
+        })
+    }
+    pub(crate) fn trace_account(&self) -> Option<super::trace::Telemetry> {
+        let now = chrono::Utc::now().timestamp();
+        let state = self.account.try_lock().ok()?;
+        let speed = self.speed.try_lock().ok()?;
+        Some(super::trace::Telemetry {
+            rest_until: speed.rest_until,
+            sunk_at: (state.sunk > 0).then_some(state.sunk_at),
+            windows: state
+                .windows
+                .iter()
+                .filter(|w| w.reset > now && now.saturating_sub(w.sampled) <= 300)
+                .map(|w| super::trace::Allowance {
+                    used_percent: w.used,
+                    window_seconds: w.seconds,
+                    resets_at: w.reset,
+                })
+                .collect(),
+            first_token_ms: (speed.ttft.recent(now) > 0.0).then_some(speed.ttft.recent(now)),
+            output_tokens_per_second: (speed.tps.recent(now) > 0.0)
+                .then_some(speed.tps.recent(now)),
+        })
+    }
+
     pub fn new(account: bool) -> Self {
         Self {
             account: Arc::new(Mutex::new(Health {
@@ -269,6 +307,22 @@ impl Scheduling {
             state.rest_until = 0;
         }
     }
+    pub(crate) fn rate_limited(&self, now: i64) {
+        if let Ok(mut state) = self.account.try_lock() {
+            let exhausted = state.windows.iter().any(|window| {
+                window.used >= 100.0
+                    && window.reset > now
+                    && now.saturating_sub(window.sampled) <= 300
+            });
+            if !exhausted {
+                state.sunk = SINK_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+                state.sunk_at = now;
+            }
+        }
+    }
+    pub(super) fn rest_until(&self) -> i64 {
+        self.snapshot().rest_until
+    }
     pub(crate) fn served(
         &self,
         tokens: u64,
@@ -291,6 +345,7 @@ impl Scheduling {
             }
         }
     }
+    #[cfg(not(test))]
     pub(crate) async fn prime(&self, client: &reqwest::Client, headers: &HeaderMap) {
         let mut request = client
             .get("https://chatgpt.com/backend-api/wham/usage")
@@ -454,6 +509,27 @@ fn smart(a: &Seat, b: &Seat) -> Ordering {
                 .unwrap_or(Ordering::Equal),
         })
 }
+
+/// Sink persists past cooldown and success; already-resting seats remain last.
+pub(crate) fn sink_last(
+    strategy: RoutingStrategy,
+    candidates: &mut [usize],
+    states: &[Health],
+    now: i64,
+) {
+    if matches!(
+        strategy,
+        RoutingStrategy::RoundRobin | RoutingStrategy::Weighted | RoutingStrategy::Manual
+    ) {
+        return;
+    }
+    candidates.sort_by_key(|index| {
+        states
+            .get(*index)
+            .map(|state| (state.rest_until > now, state.sunk))
+            .unwrap_or_default()
+    });
+}
 /// New selections use this pool. Bound continuations retain their exact destination.
 pub(crate) fn arrange(
     strategy: RoutingStrategy,
@@ -582,7 +658,7 @@ pub(crate) fn arrange(
             );
         }
     }
-    // Gateway cooldown applies outside the strategy, as in Magpie's ready/rest partition.
+    // Gateway cooldown applies outside the strategy, as in the reference implementation's ready/rest partition.
     order.sort_by_key(|i| seats[*i].resting);
     order
         .into_iter()
@@ -613,6 +689,93 @@ fn order(
 mod tests {
     use super::*;
     use crate::services::intent_routing::RoutingStrategy;
+
+    #[test]
+    fn trace_observation_never_waits_for_scheduler_locks() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let scheduling = Scheduling::new(false);
+        let account = scheduling
+            .account
+            .lock()
+            .map_err(|_| "synthetic account lock")?;
+        assert!(scheduling.trace_account().is_none());
+        drop(account);
+        let speed = scheduling
+            .speed
+            .lock()
+            .map_err(|_| "synthetic speed lock")?;
+        assert!(scheduling.trace_account().is_none());
+        drop(speed);
+        assert!(scheduling.trace_account().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn sinking_survives_success_and_rest_but_does_not_apply_to_exhausted_quota() {
+        let a = Scheduling::new(false);
+        let b = Scheduling::new(false);
+        a.rate_limited(100);
+        a.succeeded();
+        let mut candidates = vec![0, 1];
+        sink_last(
+            RoutingStrategy::Ordered,
+            &mut candidates,
+            &[a.snapshot_at(200), b.snapshot_at(200)],
+            200,
+        );
+        assert_eq!(candidates, [1, 0]);
+        b.rate_limited(200);
+        sink_last(
+            RoutingStrategy::Ordered,
+            &mut candidates,
+            &[a.snapshot_at(200), b.snapshot_at(200)],
+            200,
+        );
+        assert_eq!(candidates, [0, 1]);
+        assert_eq!(a.snapshot_at(200).sunk, a.for_model().snapshot_at(200).sunk);
+        let exhausted = Scheduling::new(true);
+        exhausted.update(
+            vec![Window {
+                used: 100.0,
+                seconds: 3600,
+                reset: 1000,
+                sampled: 100,
+            }],
+            100,
+        );
+        exhausted.rate_limited(100);
+        assert_eq!(exhausted.snapshot_at(100).sunk, 0);
+        let states = [a.snapshot_at(200), Health::default()];
+        for strategy in [
+            RoutingStrategy::RoundRobin,
+            RoutingStrategy::Weighted,
+            RoutingStrategy::Manual,
+        ] {
+            let mut order = vec![0, 1];
+            sink_last(strategy, &mut order, &states, 200);
+            assert_eq!(order, [0, 1]);
+        }
+        let mut resting = Health {
+            rest_until: 300,
+            ..Default::default()
+        };
+        candidates = vec![0, 1];
+        sink_last(
+            RoutingStrategy::Ordered,
+            &mut candidates,
+            &[states[0].clone(), resting.clone()],
+            200,
+        );
+        assert_eq!(candidates, [0, 1]);
+        resting.rest_until = 0;
+        sink_last(
+            RoutingStrategy::Ordered,
+            &mut candidates,
+            &[states[0].clone(), resting],
+            200,
+        );
+        assert_eq!(candidates, [1, 0]);
+    }
 
     #[test]
     fn refreshed_quota_updates_without_erasing_usage_speed_or_cooldown() {

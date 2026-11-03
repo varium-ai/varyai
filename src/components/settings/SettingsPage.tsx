@@ -53,16 +53,21 @@ import { BackupListSection } from "@/components/settings/BackupListSection";
 import { WebdavSyncSection } from "@/components/settings/WebdavSyncSection";
 import { AboutSection } from "@/components/settings/AboutSection";
 import { LocalProxySettings } from "@/components/settings/LocalProxySettings";
+import { LongConversationFallback } from "@/components/settings/LongConversationFallback";
+import { GatewayKeysPanel } from "@/components/proxy/GatewayKeysPanel";
 import { IntentRoutingPanel } from "@/components/routing/IntentRoutingPanel";
 import { ConnectivityCheckConfigPanel } from "@/components/usage/ConnectivityCheckConfigPanel";
 import { LogConfigPanel } from "@/components/settings/LogConfigPanel";
 import { useSettings } from "@/hooks/useSettings";
 import { useImportExport } from "@/hooks/useImportExport";
 import { cn } from "@/lib/utils";
+import { useQuery } from "@tanstack/react-query";
+import { proxyApi } from "@/lib/api/proxy";
 import { useTranslation } from "react-i18next";
 import type { SettingsFormState } from "@/hooks/useSettings";
 
 interface SettingsDialogProps {
+  globalResourcesOnly?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onImportSuccess?: () => void | Promise<void>;
@@ -128,6 +133,7 @@ export function SettingsPage({
   onOpenChange,
   onImportSuccess,
   initialTab = "general",
+  globalResourcesOnly = false,
 }: SettingsDialogProps) {
   const { t } = useTranslation();
   const {
@@ -270,7 +276,10 @@ export function SettingsPage({
 
   const tabItems = [
     { value: "general", label: t("settings.tabGeneral") },
-    { value: "routing", label: t("settings.tabProxy") },
+    {
+      value: "routing",
+      label: t(globalResourcesOnly ? "gatewayKeys.title" : "settings.tabProxy"),
+    },
     { value: "advanced", label: t("settings.tabAdvanced") },
     { value: "about", label: t("common.about") },
   ];
@@ -348,18 +357,22 @@ export function SettingsPage({
                       <PrivacySettings />
                     </SettingsPanel>
 
-                    <SettingsPanel
-                      icon={Server}
-                      title={t("settings.appVisibility.title")}
-                      description={t("settings.appVisibility.description")}
-                    >
-                      <div className="space-y-6">
-                        <AppVisibilitySettings
-                          settings={settings}
-                          onChange={handleAutoSave}
-                        />
-                      </div>
-                    </SettingsPanel>
+                    <LongConversationFallback />
+
+                    {!globalResourcesOnly && (
+                      <SettingsPanel
+                        icon={Server}
+                        title={t("settings.appVisibility.title")}
+                        description={t("settings.appVisibility.description")}
+                      >
+                        <div className="space-y-6">
+                          <AppVisibilitySettings
+                            settings={settings}
+                            onChange={handleAutoSave}
+                          />
+                        </div>
+                      </SettingsPanel>
+                    )}
 
                     <SettingsPanel
                       icon={Bell}
@@ -395,11 +408,17 @@ export function SettingsPage({
               <TabsContent value="routing" className="mt-0 pb-4">
                 {settings ? (
                   <div className="space-y-4">
-                    <LocalProxySettings
-                      settings={settings}
-                      onAutoSave={handleAutoSave}
-                    />
-                    <IntentRoutingPanel />
+                    {globalResourcesOnly ? (
+                      <SharedGatewaySettings />
+                    ) : (
+                      <>
+                        <LocalProxySettings
+                          settings={settings}
+                          onAutoSave={handleAutoSave}
+                        />
+                        <IntentRoutingPanel />
+                      </>
+                    )}
                   </div>
                 ) : null}
               </TabsContent>
@@ -670,5 +689,18 @@ export function SettingsPage({
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function SharedGatewaySettings() {
+  const { data } = useQuery({
+    queryKey: ["proxyStatus"],
+    queryFn: proxyApi.getProxyStatus,
+  });
+  return (
+    <GatewayKeysPanel
+      port={String(data?.port ?? 15721)}
+      running={data?.running}
+    />
   );
 }

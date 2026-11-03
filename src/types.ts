@@ -266,6 +266,10 @@ export interface CodexCatalogModel {
   model: string;
   displayName?: string;
   contextWindow?: string | number;
+  contextSource?: "vendor" | "user";
+  maxContextWindow?: number;
+  effectiveContextWindowPercent?: number;
+  autoCompactTokenLimit?: number;
   // Hidden provider capability metadata for the generated model catalog.
   // supportsParallelToolCalls is native-profile-only; inputModalities wins over
   // automatic text-only model detection for every profile.

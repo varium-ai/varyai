@@ -1,6 +1,6 @@
 import { Component, createRef, type ReactNode } from "react";
 
-// Adapted from Magpie's spring/slot motion; see third_party/magpie/LICENSE.
+// Adapted from the reference implementation's spring/slot motion; see third_party/routing-reference/LICENSE.
 // Response .42 s, damping .8, settled at 570 ms.
 const SPRING =
   "linear(0, 0.0203, 0.0723, 0.1448, 0.2292, 0.3188, 0.4086, 0.4951, 0.576, 0.6498, 0.7157, 0.7735, 0.8232, 0.8654, 0.9005, 0.9293, 0.9525, 0.9708, 0.9849, 0.9956, 1.0033, 1.0087, 1.0122, 1.0142, 1.015, 1.0151, 1.0146, 1.0136, 1.0124, 1.0111, 1.0097, 1.0084, 1.0071, 1.0059, 1.0049, 1.0039, 1.0031, 1.0024, 1.0018, 1.0013, 1)";

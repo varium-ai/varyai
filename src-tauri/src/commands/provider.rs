@@ -44,7 +44,10 @@ pub async fn add_provider(
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
     let add_to_live = addToLive.unwrap_or(true);
-    tauri::async_runtime::spawn_blocking(move || {
+    let service = app_handle
+        .try_state::<AppState>()
+        .map(|s| s.proxy_service.clone());
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle
             .try_state::<AppState>()
             .ok_or_else(|| "应用状态不可用".to_string())?;
@@ -52,7 +55,13 @@ pub async fn add_provider(
             .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| format!("供应商添加任务执行失败: {e}"))?
+    .map_err(|e| format!("供应商添加任务执行失败: {e}"))?;
+    if result.is_ok() {
+        if let Some(service) = service {
+            crate::services::intent_routing::menu::refresh_active(&service).await;
+        }
+    }
+    result
 }
 
 #[tauri::command]
@@ -63,14 +72,23 @@ pub async fn duplicate_provider(
     name: String,
 ) -> Result<Provider, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let service = app_handle
+        .try_state::<AppState>()
+        .map(|s| s.proxy_service.clone());
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle
             .try_state::<AppState>()
             .ok_or_else(|| "应用状态不可用".to_string())?;
         ProviderService::duplicate(state.inner(), app_type, &id, &name).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| format!("供应商复制任务执行失败: {e}"))?
+    .map_err(|e| format!("供应商复制任务执行失败: {e}"))?;
+    if result.is_ok() {
+        if let Some(service) = service {
+            crate::services::intent_routing::menu::refresh_active(&service).await;
+        }
+    }
+    result
 }
 
 #[tauri::command]
@@ -81,7 +99,10 @@ pub async fn update_provider(
     #[allow(non_snake_case)] originalId: Option<String>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let service = app_handle
+        .try_state::<AppState>()
+        .map(|s| s.proxy_service.clone());
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle
             .try_state::<AppState>()
             .ok_or_else(|| "应用状态不可用".to_string())?;
@@ -89,19 +110,29 @@ pub async fn update_provider(
             .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| format!("供应商更新任务执行失败: {e}"))?
+    .map_err(|e| format!("供应商更新任务执行失败: {e}"))?;
+    if result.is_ok() {
+        if let Some(service) = service {
+            crate::services::intent_routing::menu::refresh_active(&service).await;
+        }
+    }
+    result
 }
 
 #[tauri::command]
-pub fn delete_provider(
+pub async fn delete_provider(
     state: State<'_, AppState>,
     app: String,
     id: String,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
-    ProviderService::delete(state.inner(), app_type, &id)
-        .map(|_| true)
-        .map_err(|e| e.to_string())
+    let app_state = state.inner().clone();
+    tokio::task::spawn_blocking(move || ProviderService::delete(&app_state, app_type, &id))
+        .await
+        .map_err(|_| "Provider deletion task failed".to_string())?
+        .map_err(|e| e.to_string())?;
+    crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -172,14 +203,23 @@ pub async fn switch_provider(
                 .await?;
         }
     }
-    tauri::async_runtime::spawn_blocking(move || {
+    let service = app_handle
+        .try_state::<AppState>()
+        .map(|s| s.proxy_service.clone());
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle
             .try_state::<AppState>()
             .ok_or_else(|| "应用状态不可用".to_string())?;
         switch_provider_internal(state.inner(), app_type, &id).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| format!("供应商切换任务执行失败: {e}"))?
+    .map_err(|e| format!("供应商切换任务执行失败: {e}"))?;
+    if result.is_ok() {
+        if let Some(service) = service {
+            crate::services::intent_routing::menu::refresh_active(&service).await;
+        }
+    }
+    result
 }
 
 fn import_default_config_internal(state: &AppState, app_type: AppType) -> Result<bool, AppError> {

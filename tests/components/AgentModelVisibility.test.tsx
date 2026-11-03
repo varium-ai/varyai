@@ -1,0 +1,302 @@
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { beforeEach, expect, it, vi } from "vitest";
+import { AgentModelVisibility } from "@/components/agents/AgentModelVisibility";
+import {
+  agentConnectionsApi,
+  type AgentModelVisibility as Visibility,
+} from "@/lib/api/agentConnections";
+
+vi.mock("@/lib/api/agentConnections", () => ({
+  agentConnectionsApi: {
+    modelVisibility: vi.fn(),
+    setModelVisibility: vi.fn(),
+  },
+}));
+
+const models = [
+  {
+    id: "route",
+    name: "Smart · routing group",
+    group: "routing",
+    contextWindow: 1_000_000,
+  },
+  {
+    id: "a",
+    name: "Alpha · Vendor one",
+    group: "Vendor one",
+    contextWindow: 200_000,
+  },
+  {
+    id: "b",
+    name: "Beta · Vendor one",
+    group: "Vendor one",
+    contextWindow: null,
+  },
+  {
+    id: "c",
+    name: "Gamma · Vendor two",
+    group: "Vendor two",
+    contextWindow: null,
+  },
+];
+const busy = vi.fn();
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(agentConnectionsApi.modelVisibility).mockResolvedValue({
+    only: false,
+    ids: [],
+  });
+  vi.mocked(agentConnectionsApi.setModelVisibility).mockResolvedValue();
+});
+
+async function open() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={client}>
+      <AgentModelVisibility
+        app="claude-desktop"
+        name="Desktop"
+        connected
+        models={models}
+        disabled={false}
+        onBusyChange={busy}
+      />
+      <button>Outside</button>
+    </QueryClientProvider>,
+  );
+  const trigger = screen.getByRole("button", {
+    name: "agentConnections.modelList Desktop",
+  });
+  await waitFor(() => expect(trigger).toBeEnabled());
+  fireEvent.click(trigger);
+  return { trigger, client, dialog: await screen.findByRole("dialog") };
+}
+
+it("uses the reference implementation's compact immediate-save model list without form actions or repeated provider suffixes", async () => {
+  const { dialog, trigger } = await open();
+  expect(dialog).toHaveClass("mp-model-picker-popover");
+  expect(dialog.querySelector(".mp-shared-picker .mp-am-body")).not.toBeNull();
+  expect(
+    within(dialog).queryByRole("button", { name: "common.save" }),
+  ).not.toBeInTheDocument();
+  expect(
+    within(dialog).queryByRole("button", { name: "common.cancel" }),
+  ).not.toBeInTheDocument();
+  const alpha = within(dialog).getByRole("menuitemcheckbox", { name: "Alpha" });
+  expect(alpha).toHaveAttribute("aria-checked", "true");
+  expect(
+    within(dialog).getByRole("button", {
+      name: "agentConnections.modelViewShown",
+    }),
+  ).toBeInTheDocument();
+  expect(
+    within(dialog).getByRole("button", {
+      name: "agentConnections.modelViewOrder",
+    }),
+  ).toBeInTheDocument();
+  fireEvent.click(alpha);
+  await waitFor(() =>
+    expect(agentConnectionsApi.setModelVisibility).toHaveBeenCalledWith(
+      "claude-desktop",
+      { only: false, ids: ["a"] },
+    ),
+  );
+  expect(alpha).toHaveAttribute("aria-checked", "false");
+  expect(dialog).toBeInTheDocument();
+  expect(trigger).toHaveTextContent("agentConnections.shownModels");
+  fireEvent.change(within(dialog).getByRole("searchbox"), {
+    target: { value: "Alpha" },
+  });
+  fireEvent.keyDown(within(dialog).getByRole("searchbox"), { key: "Escape" });
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+});
+
+it("searches all providers even after choosing one on the rail and retains just-hidden rows in Shown", async () => {
+  const { dialog } = await open();
+  fireEvent.click(
+    within(within(dialog).getByRole("navigation")).getByRole("button", {
+      name: "Vendor one",
+    }),
+  );
+  expect(
+    within(dialog).queryByRole("menuitemcheckbox", { name: "Gamma" }),
+  ).not.toBeInTheDocument();
+  fireEvent.change(within(dialog).getByRole("searchbox"), {
+    target: { value: "Gamma" },
+  });
+  expect(
+    within(dialog).getByRole("menuitemcheckbox", { name: "Gamma" }),
+  ).toBeInTheDocument();
+  fireEvent.change(within(dialog).getByRole("searchbox"), {
+    target: { value: "" },
+  });
+  fireEvent.click(
+    within(dialog).getByRole("button", {
+      name: "agentConnections.modelViewShown",
+    }),
+  );
+  fireEvent.click(
+    within(dialog).getByRole("menuitemcheckbox", { name: "Alpha" }),
+  );
+  expect(
+    within(dialog).getByRole("menuitemcheckbox", { name: "Alpha" }),
+  ).toHaveAttribute("aria-checked", "false");
+  fireEvent.click(
+    within(dialog).getByRole("button", {
+      name: "agentConnections.modelViewAll",
+    }),
+  );
+  fireEvent.click(
+    within(dialog).getByRole("button", {
+      name: "agentConnections.modelViewShown",
+    }),
+  );
+  expect(
+    within(dialog).queryByRole("menuitemcheckbox", { name: "Alpha" }),
+  ).not.toBeInTheDocument();
+});
+
+it("requires a second click for a global bulk action and saves only-picked without changing the subset", async () => {
+  const { dialog } = await open();
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "agentConnections.hideAll" }),
+  );
+  expect(agentConnectionsApi.setModelVisibility).not.toHaveBeenCalled();
+  fireEvent.click(
+    within(dialog).getByRole("button", {
+      name: "agentConnections.confirmHideAll",
+    }),
+  );
+  await waitFor(() =>
+    expect(agentConnectionsApi.setModelVisibility).toHaveBeenLastCalledWith(
+      "claude-desktop",
+      { only: false, ids: ["route", "a", "b", "c"] },
+    ),
+  );
+  fireEvent.click(
+    within(dialog).getByRole("switch", { name: "agentConnections.onlyPicked" }),
+  );
+  await waitFor(() =>
+    expect(agentConnectionsApi.setModelVisibility).toHaveBeenLastCalledWith(
+      "claude-desktop",
+      { only: true, ids: [] },
+    ),
+  );
+});
+
+it("serializes rapid choices and restores the latest saved state on failure without leaking errors", async () => {
+  let finish!: () => void;
+  vi.mocked(agentConnectionsApi.setModelVisibility)
+    .mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockRejectedValueOnce("synthetic-private-error");
+  const { dialog, client } = await open();
+  fireEvent.click(
+    within(dialog).getByRole("menuitemcheckbox", { name: "Alpha" }),
+  );
+  fireEvent.click(
+    within(dialog).getByRole("menuitemcheckbox", { name: "Beta" }),
+  );
+  await waitFor(() =>
+    expect(agentConnectionsApi.setModelVisibility).toHaveBeenCalledTimes(1),
+  );
+  await act(async () => finish());
+  await waitFor(() =>
+    expect(agentConnectionsApi.setModelVisibility).toHaveBeenCalledTimes(2),
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "agentConnections.failed",
+  );
+  expect(
+    within(dialog).getByRole("menuitemcheckbox", { name: "Alpha" }),
+  ).toHaveAttribute("aria-checked", "false");
+  expect(
+    within(dialog).getByRole("menuitemcheckbox", { name: "Beta" }),
+  ).toHaveAttribute("aria-checked", "true");
+  expect(
+    client.getQueryData<Visibility>([
+      "agent-model-visibility",
+      "claude-desktop",
+    ]),
+  ).toEqual({ only: false, ids: ["a"] });
+  expect(dialog).not.toHaveTextContent("synthetic-private-error");
+});
+
+it("saves keyboard model ordering and restores the default order", async () => {
+  const { dialog } = await open();
+  fireEvent.click(
+    within(dialog).getByRole("button", {
+      name: "agentConnections.modelViewOrder",
+    }),
+  );
+  const alpha = within(dialog).getByRole("listitem", { name: "Alpha" });
+  fireEvent.keyDown(alpha, { altKey: true, key: "ArrowUp" });
+  await waitFor(() =>
+    expect(agentConnectionsApi.setModelVisibility).toHaveBeenLastCalledWith(
+      "claude-desktop",
+      { only: false, ids: [], order: ["a", "route", "b", "c"] },
+    ),
+  );
+  expect(within(dialog).getAllByRole("listitem")[0]).toHaveAccessibleName(
+    "Alpha",
+  );
+  fireEvent.click(
+    within(dialog).getByRole("button", {
+      name: "agentConnections.defaultModelOrder",
+    }),
+  );
+  await waitFor(() =>
+    expect(agentConnectionsApi.setModelVisibility).toHaveBeenLastCalledWith(
+      "claude-desktop",
+      { only: false, ids: [] },
+    ),
+  );
+});
+
+it("supports keyboard model choices and closes on outside scrolling without discarding queued saves", async () => {
+  const { dialog, trigger } = await open();
+  fireEvent.keyDown(within(dialog).getByRole("searchbox"), {
+    key: "ArrowDown",
+  });
+  expect(
+    within(dialog).getByRole("menuitemcheckbox", { name: "Smart" }),
+  ).toHaveFocus();
+  fireEvent.scroll(
+    within(dialog).getByRole("menuitemcheckbox", { name: "Smart" }),
+  );
+  expect(dialog).toBeInTheDocument();
+  fireEvent.click(
+    within(dialog).getByRole("menuitemcheckbox", { name: "Alpha" }),
+  );
+  fireEvent.scroll(document);
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  await waitFor(() =>
+    expect(agentConnectionsApi.setModelVisibility).toHaveBeenCalledWith(
+      "claude-desktop",
+      { only: false, ids: ["a"] },
+    ),
+  );
+  fireEvent.click(trigger);
+  const reopened = await screen.findByRole("dialog");
+  expect(
+    within(reopened).getByRole("menuitemcheckbox", { name: "Alpha" }),
+  ).toHaveAttribute("aria-checked", "false");
+});

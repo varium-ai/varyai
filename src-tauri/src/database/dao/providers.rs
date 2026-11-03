@@ -274,6 +274,7 @@ impl Database {
         }
 
         tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+        self.invalidate_routing_resources();
         Ok(())
     }
 
@@ -373,6 +374,7 @@ impl Database {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+        self.invalidate_routing_resources();
         Ok(())
     }
 
@@ -383,6 +385,7 @@ impl Database {
             params![id, app_type],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+        self.invalidate_routing_resources();
         Ok(())
     }
 
@@ -436,7 +439,9 @@ impl Database {
             params![provider_id],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
-        tx.commit().map_err(|e| AppError::Database(e.to_string()))
+        tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+        self.invalidate_routing_resources();
+        Ok(())
     }
 
     pub fn update_provider_settings_config(
@@ -457,6 +462,7 @@ impl Database {
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+        self.invalidate_routing_resources();
         Ok(())
     }
 
@@ -494,6 +500,9 @@ impl Database {
             "UPDATE providers SET settings_config = ?1 WHERE id = ?2 AND app_type = ?3 AND settings_config = ?4",
             params![replacement, provider_id, app_type, stored],
         ).map_err(|e| AppError::Database(e.to_string()))?;
+        if updated == 1 {
+            self.invalidate_routing_resources();
+        }
         Ok(updated == 1)
     }
 
@@ -567,6 +576,7 @@ impl Database {
             )));
         }
         tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+        self.invalidate_routing_resources();
         Ok(())
     }
 

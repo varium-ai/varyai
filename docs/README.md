@@ -4,6 +4,8 @@
 
 - [Usage guide](usage.md)
 - [Provider setup and local routing](guides/provider-routing.md)
+- [Global upstreams and routing groups](guides/intent-routing.md)
+- [Routing page and live observations](architecture/routing-observations.md)
 - [Codex model catalogs](guides/codex-model-catalog.md)
 - [Qoder integration](guides/qoder.md)
 - [WorkBuddy integration](guides/workbuddy.md)
@@ -34,9 +36,9 @@
 
 ## Proposed designs
 
-- [Intent-routing configuration](guides/intent-routing.md) — implemented draft
-  editor, persistence and offline plan validation; live forwarding is not enabled.
 - [Intent recognition and model routing](design/intent-routing.md) — target
   architecture, interaction flow, safety boundaries, and remaining implementation stages.
 
 Unless explicitly marked as proposed designs, these documents describe the current Vary AI source. Historical CC Switch manuals and release notes remain available in the retained upstream Git history. They are not Vary AI release or support promises. Runtime localization remains available independently of documentation language.
+
+- [Shared catalog and Agent connections](architecture/shared-catalog.md)

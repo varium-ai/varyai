@@ -74,6 +74,16 @@ pub(crate) fn legacy_ids(group: &RoutingGroup) -> Vec<String> {
 }
 
 pub(crate) fn discover_groups(providers: impl IntoIterator<Item = Provider>) -> Vec<RoutingGroup> {
+    discover(providers, 2)
+}
+
+pub(crate) fn discover_stand_ins(
+    providers: impl IntoIterator<Item = Provider>,
+) -> Vec<RoutingGroup> {
+    discover(providers, 1)
+}
+
+fn discover(providers: impl IntoIterator<Item = Provider>, minimum: usize) -> Vec<RoutingGroup> {
     let mut providers: Vec<_> = providers.into_iter().collect();
     providers.sort_by(|a, b| {
         (a.sort_index.unwrap_or(usize::MAX), a.created_at, &a.id).cmp(&(
@@ -83,26 +93,43 @@ pub(crate) fn discover_groups(providers: impl IntoIterator<Item = Provider>) -> 
         ))
     });
     let mut found: BTreeMap<String, (String, String, Vec<Member>)> = BTreeMap::new();
+    let mut order = Vec::new();
     for provider in providers {
-        let Some(entries) = provider
+        let mut entries = provider
             .settings_config
             .pointer("/modelCatalog/models")
             .and_then(|v| v.as_array())
-        else {
-            continue;
-        };
-        for entry in entries {
-            let Some(model) = entry["model"].as_str().map(str::trim) else {
+            .cloned()
+            .unwrap_or_default();
+        // Imported static Codex connections can name their only model in TOML.
+        // Account catalogs stay authoritative, including an empty list.
+        if !super::catalog::official_source(&provider) {
+            if let Some(model) = provider.settings_config["config"]
+                .as_str()
+                .and_then(|text| text.parse::<toml::Value>().ok())
+                .and_then(|doc| doc.get("model")?.as_str().map(str::to_owned))
+            {
+                if !entries
+                    .iter()
+                    .any(|entry| model_id(entry) == Some(model.trim()))
+                {
+                    entries.push(serde_json::json!({"model":model}));
+                }
+            }
+        }
+        for entry in &entries {
+            let Some(model) = model_id(entry) else {
                 continue;
             };
             if !valid_target(&provider.id, model) {
                 continue;
             }
-            let key = same_model(model);
+            let equivalent = super::model_preferences::same_as(entry).unwrap_or(model);
+            let key = same_model(equivalent);
             if key.is_empty() {
                 continue;
             }
-            let alias_leaf = model
+            let alias_leaf = equivalent
                 .rsplit('/')
                 .next()
                 .unwrap_or(model)
@@ -134,9 +161,10 @@ pub(crate) fn discover_groups(providers: impl IntoIterator<Item = Provider>) -> 
                 })
                 .unwrap_or(model)
                 .to_owned();
-            let group = found
-                .entry(key)
-                .or_insert_with(|| (name.clone(), alias.clone(), Vec::new()));
+            let group = found.entry(key.clone()).or_insert_with(|| {
+                order.push(key);
+                (name.clone(), alias.clone(), Vec::new())
+            });
             if group.2.iter().any(|m| m.provider_id == provider.id) {
                 continue;
             }
@@ -155,6 +183,7 @@ pub(crate) fn discover_groups(providers: impl IntoIterator<Item = Provider>) -> 
                 group.1 = alias;
             }
             group.2.push(Member {
+                effort: None,
                 id: format!("m-{:x}", Sha256::digest(provider.id.as_bytes())),
                 provider_id: provider.id.clone(),
                 model_id: model.into(),
@@ -163,18 +192,19 @@ pub(crate) fn discover_groups(providers: impl IntoIterator<Item = Provider>) -> 
             });
         }
     }
-    found
+    order
         .into_iter()
-        .filter_map(|(key, (name, alias, members))| {
-            if members.len() < 2 {
+        .filter_map(|key| {
+            let (name, alias, members) = found.remove(&key)?;
+            if members.len() < minimum {
                 return None;
             }
             Some(RoutingGroup {
                 id: format!("auto-{:x}", Sha256::digest(key.as_bytes())),
                 name: name.chars().take(80).collect(),
                 revision: 0,
-                client: "codex".into(),
-                enabled: false,
+                client: "global".into(),
+                enabled: true,
                 default_member_id: members[0].id.clone(),
                 fallback_member_ids: members.iter().skip(1).map(|m| m.id.clone()).collect(),
                 members,
@@ -186,14 +216,69 @@ pub(crate) fn discover_groups(providers: impl IntoIterator<Item = Provider>) -> 
                 routing: RoutingStrategy::Smart,
                 model_alias: Some(alias),
                 manual_member_id: None,
+                context_window: None,
+                affinity: String::new(),
+                first_token: 0,
+                patience: 0,
+                off: vec![],
+                matches: vec![],
+                matched: vec![],
+                unlists: false,
+                sink: false,
+                levels: vec![],
             })
         })
         .collect()
 }
 
+fn model_id(entry: &serde_json::Value) -> Option<&str> {
+    entry
+        .as_str()
+        .or_else(|| entry["model"].as_str())
+        .or_else(|| entry["id"].as_str())
+        .map(str::trim)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn explicit_equivalence_merges_only_distinct_providers_without_rewriting_wire_ids() {
+        let make = |id: &str, models| {
+            Provider::with_id(
+                id.into(),
+                id.into(),
+                json!({"modelCatalog":{"models":models}}),
+                None,
+            )
+        };
+        let mut a = make(
+            "a",
+            json!([
+                {"model":"z-model"}, {"model":"a-model"},
+                {"model":"relay-exact","modelPreferences":{"sameAs":"lab/canonical"}},
+                {"model":"relay-other","modelPreferences":{"sameAs":"canonical"}},
+                {"model":"canonical-thinking"}
+            ]),
+        );
+        a.sort_index = Some(0);
+        let b = make(
+            "b",
+            json!([{"model":"canonical"},{"model":"a-model"},{"model":"z-model"}]),
+        );
+        let groups = discover_groups(vec![b, a]);
+        assert_eq!(
+            groups.iter().map(RoutingGroup::alias).collect::<Vec<_>>(),
+            ["auto/z-model", "auto/a-model", "auto/canonical"]
+        );
+        let group = &groups[2];
+        assert_eq!(group.members.len(), 2);
+        assert_eq!(group.members[0].model_id, "relay-exact");
+        assert_eq!(group.members[1].model_id, "canonical");
+        assert!(group.enabled);
+    }
     #[test]
     fn spelling_rules_keep_real_variants_and_pinned_openai_dates_distinct() {
         for (input, expected) in [

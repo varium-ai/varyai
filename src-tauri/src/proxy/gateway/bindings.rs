@@ -26,6 +26,7 @@ pub fn supports_binding(app: &str) -> bool {
             | "grokbuild"
             | "pi"
             | "workbuddy"
+            | "opencode"
             | "qoder"
             | "hermes"
             | "doubaowork"
@@ -196,7 +197,12 @@ impl Database {
 
 // Resolve the agent from its route, never from a caller-controlled header.
 fn route_agent(path: &str) -> Option<&str> {
-    if path == "/intent/v1/responses" {
+    if matches!(
+        path,
+        "/intent/v1/responses"
+            | "/backend-api/codex/responses"
+            | "/backend-api/codex/responses/compact"
+    ) {
         return Some("codex");
     }
     if path.starts_with("/images/")
@@ -425,5 +431,49 @@ pub fn catalog(db: &Database) -> Result<GatewayCatalog, AppError> {
             }));
         }
     }
+    models.extend(
+        db.list_intent_routing_groups()
+            .map_err(|_| AppError::Config("Routing catalog unavailable".into()))?
+            .into_iter()
+            .filter(|group| group.enabled)
+            .map(|group| GatewayModel {
+                agent: "global".into(),
+                provider: group.name.clone(),
+                model: group.alias(),
+            }),
+    );
     Ok(GatewayCatalog { agents, models })
+}
+
+#[cfg(test)]
+mod global_catalog_tests {
+    use super::*;
+    #[test]
+    fn policy_picker_includes_enabled_global_aliases_not_disabled_drafts() {
+        let db = Database::memory().unwrap();
+        let provider = crate::provider::Provider::with_id(
+            "fixture".into(),
+            "Synthetic".into(),
+            serde_json::json!({"auth":{"OPENAI_API_KEY":concat!("synthetic","-source")},"apiFormat":"openai_responses","config":"model='exact'\nmodel_provider='fixture'\n[model_providers.fixture]\nbase_url='https://synthetic.invalid/v1'\nwire_api='responses'"}),
+            None,
+        );
+        db.save_provider("codex", &provider).unwrap();
+        db.register_routing_fixture("codex", &provider.id).unwrap();
+        let group:crate::services::intent_routing::RoutingGroup=serde_json::from_value(serde_json::json!({
+            "id":"global-picker","name":"Synthetic group","revision":0,"client":"global","enabled":false,
+            "members":[{"id":"a","providerId":"fixture","modelId":"exact"}],"defaultMemberId":"a","fallbackMemberIds":[],"intentRecognitionEnabled":false,"classifierTarget":null,"classificationBudgetMs":2000,"rules":[]
+        })).unwrap();
+        let mut group = db.save_intent_routing_group(group).unwrap();
+        assert!(!catalog(&db)
+            .unwrap()
+            .models
+            .iter()
+            .any(|m| m.agent == "global"));
+        group.enabled = true;
+        db.save_intent_routing_group(group).unwrap();
+        let models = catalog(&db).unwrap().models;
+        assert!(models.iter().any(|m| m.agent == "global"
+            && m.model == "vary-auto/global-picker"
+            && m.provider == "Synthetic group"));
+    }
 }

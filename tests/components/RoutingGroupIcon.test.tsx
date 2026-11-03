@@ -3,6 +3,22 @@ import { describe, expect, it } from "vitest";
 import { RoutingGroupIcon } from "@/components/routing/RoutingGroupIcon";
 
 describe("RoutingGroupIcon", () => {
+  it("stacks unique provider icons with a compact overflow count", () => {
+    const { container } = render(
+      <RoutingGroupIcon
+        icons={[
+          { icon: "openai", name: "OpenAI" },
+          { icon: "claude", name: "Claude" },
+          { icon: "gemini", name: "Gemini" },
+          { icon: "deepseek", name: "DeepSeek" },
+          { icon: "openai", name: "Second OpenAI" },
+        ]}
+      />,
+    );
+    expect(container.querySelectorAll(".mp-icon-disc")).toHaveLength(4);
+    expect(screen.getByText("+1")).toBeInTheDocument();
+    expect(container.querySelector(".lucide-box")).toBeNull();
+  });
   it.each(["codex", "claude", "gemini"])(
     "uses the registered icon for %s",
     (client) => {

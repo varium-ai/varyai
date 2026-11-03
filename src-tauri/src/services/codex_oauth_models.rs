@@ -107,11 +107,23 @@ pub(crate) fn parse_models(value: Value) -> Vec<FetchedModel> {
     models
 }
 
+pub(crate) fn picker_visible(entry: &Value) -> bool {
+    entry.get("hidden").and_then(Value::as_bool) != Some(true)
+        && entry.get("show_in_picker").and_then(Value::as_bool) != Some(false)
+        && entry
+            .get("visibility")
+            .is_none_or(|visibility| visibility.as_str() == Some("list"))
+}
+
 fn push_model_entry(models: &mut Vec<FetchedModel>, entry: &Value, fallback_id: Option<&str>) {
+    if !picker_visible(entry) {
+        return;
+    }
     if let Some(id) = entry.as_str().map(str::trim).filter(|id| !id.is_empty()) {
         models.push(FetchedModel {
             id: id.to_string(),
             owned_by: Some("Codex".to_string()),
+            context: Default::default(),
         });
         return;
     }
@@ -121,6 +133,7 @@ fn push_model_entry(models: &mut Vec<FetchedModel>, entry: &Value, fallback_id: 
             models.push(FetchedModel {
                 id: id.to_string(),
                 owned_by: Some("Codex".to_string()),
+                context: Default::default(),
             });
         }
         return;
@@ -142,7 +155,11 @@ fn push_model_entry(models: &mut Vec<FetchedModel>, entry: &Value, fallback_id: 
     )
     .or_else(|| Some("Codex".to_string()));
 
-    models.push(FetchedModel { id, owned_by });
+    models.push(FetchedModel {
+        id,
+        owned_by,
+        context: crate::services::intent_routing::context::Metadata::parse(entry),
+    });
 }
 
 fn string_field(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
@@ -288,6 +305,59 @@ mod tests {
 
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "gpt-5.4");
+    }
+
+    #[test]
+    fn official_catalog_only_lists_picker_visible_models_without_rewriting_ids() {
+        let models = parse_models(json!({"models": [
+            {"slug":"vendor/Model_1.2-20261029", "visibility":"list", "supported_in_api":false},
+            {"slug":"hidden-model", "visibility":"hide"},
+            {"slug":"unlisted-model", "visibility":"none"},
+            {"slug":"future-visibility", "visibility":"internal"},
+            {"slug":"explicitly-hidden", "visibility":"list", "hidden":true},
+            {"slug":"not-in-picker", "show_in_picker":false},
+            {"slug":"legacy-model"},
+            "legacy-string",
+            {"slug":"duplicate", "visibility":"hide"},
+            {"slug":"duplicate", "visibility":"list"}
+        ]}));
+        assert_eq!(
+            models.into_iter().map(|model| model.id).collect::<Vec<_>>(),
+            vec![
+                "duplicate",
+                "legacy-model",
+                "legacy-string",
+                "vendor/Model_1.2-20261029"
+            ]
+        );
+    }
+
+    #[test]
+    fn official_visibility_applies_to_all_supported_catalog_shapes() {
+        let entries = json!([
+            {"id":"visible", "visibility":"list"},
+            {"id":"hidden", "visibility":"hide"},
+            {"id":"unlisted", "visibility":"none"}
+        ]);
+        for value in [
+            entries.clone(),
+            json!({"data":entries}),
+            json!({"items":entries}),
+            json!({"models": {
+                "visible":{"visibility":"list"},
+                "hidden":{"visibility":"hide"},
+                "unlisted":{"visibility":"none"}
+            }}),
+        ] {
+            let ids = parse_models(value)
+                .into_iter()
+                .map(|model| model.id)
+                .collect::<Vec<_>>();
+            assert_eq!(ids, vec!["visible"]);
+        }
+        assert!(
+            parse_models(json!({"models":[{"slug":"hidden", "visibility":"hide"}]})).is_empty()
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 状态：目标方案；已实现草稿配置与离线计划校验，尚未接通真实分类及转发  
 日期：2026-10-26  
 代码基线：`1b7189f2`  
-参考实现：Magpie `e5dd86965b56a8a176790e2c1ade09f9ef554208`
+Reference implementation: see the [pinned source notice](../../third_party/routing-reference/NOTICE.md), revision `e5dd86965b56a8a176790e2c1ade09f9ef554208`.
 
 ## 1. 核心方案
 
@@ -524,7 +524,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 5. 是否接受保留和导出默认值：本地保留 7 天、最多 10,000 条、不同步历史、默认不复用上一轮意图？
 6. 在已确认的“设置 → 路由”入口内，是否接受多个 Codex 扁平路由组、组内意图规则，以及先配置和测试、后启用的流程？组嵌套和跨客户端组暂不支持。
 
-## 16. Magpie 借鉴与参考
+## 16. Reference implementation and attribution
 
 借鉴分类、确定性规则、轮次内路由和正常转发的分层设计，以及有界上下文、上一轮意图、缓存、并发去重和可解释回退。
 
@@ -532,11 +532,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 参考源码固定到本次调研版本：
 
-- [Magpie 轮次规则](https://github.com/yetone/magpie/blob/e5dd86965b56a8a176790e2c1ade09f9ef554208/internal/gateway/rules.go)
-- [Magpie 分类及上下文处理](https://github.com/yetone/magpie/blob/e5dd86965b56a8a176790e2c1ade09f9ef554208/internal/gateway/classify.go)
-- [Magpie 候选资格判断](https://github.com/yetone/magpie/blob/e5dd86965b56a8a176790e2c1ade09f9ef554208/internal/provider/grouprule.go)
-- [Magpie 决策模型适配器](https://github.com/yetone/magpie/blob/e5dd86965b56a8a176790e2c1ade09f9ef554208/internal/gateway/decide.go)
-- [Magpie MIT 许可证](https://github.com/yetone/magpie/blob/e5dd86965b56a8a176790e2c1ade09f9ef554208/LICENSE)
+- [Pinned turn rules, classification/context handling, target eligibility, decision adapter, and MIT attribution](../../third_party/routing-reference/NOTICE.md)
 - [现有供应商路由说明](../guides/provider-routing.md)
 - [DLP 架构](../architecture/security-audit.md)
 - [存储边界](../architecture/storage.md)

@@ -100,7 +100,7 @@ describe("RoutingGroupSlot", () => {
     act(() => heightAnimation().onfinish?.());
   }
 
-  it("uses Magpie's damped spring and immediately releases the editor on fold", () => {
+  it("uses the reference implementation's damped spring and immediately releases the editor on fold", () => {
     const complete = vi.fn();
     const panel = render(slot(false, complete));
     heights(80, 420);

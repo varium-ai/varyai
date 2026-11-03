@@ -1,6 +1,6 @@
 # Provider setup and local routing
 
-Select the target client before adding or editing a provider. Provider credentials, endpoint formats and model catalogs belong to that client configuration; a preset does not establish account access or model availability.
+Select the target client before adding or editing an existing per-agent provider. Its settings remain client-specific; a preset does not establish account access or model availability. **Settings → Routing → Routing groups** automatically uses the saved provider lists from all agents, without a separate upstream list or import. Manage each connection in its source agent's provider editor; see [shared providers and routing groups](intent-routing.md).
 
 ## Configure a provider
 
@@ -93,7 +93,7 @@ from its provider catalog. Official ChatGPT/OAuth discovery retains the normaliz
 capabilities in the existing account-scoped, 24-hour cache, not just model IDs.
 Older ID-only cache entries remain readable but need a model-list refresh.
 
-Like Magpie, the automatic group menu intersects the levels of members with
+The automatic group menu intersects the levels of members with
 known selectable levels. Unknown and explicitly non-reasoning members do not
 remove other members' levels. If no member supplies levels, or the intersection
 is empty, the group advertises no selectable levels rather than inventing them
@@ -104,8 +104,8 @@ prefers `medium`, then `high`, then the first available level.
 Each forwarding attempt adapts the original requested effort independently to
 that target's known levels. Equal-distance choices prefer the higher level;
 `none` is never chosen as an implicit fallback. `ultra` is sent as `max` (or the
-nearest supported level), and unknown-level `xhigh` is capped at `high`, matching
-Magpie's gateway fitting behavior. Explicitly non-reasoning targets have the
+nearest supported level), and unknown-level `xhigh` is capped at `high`, following
+the reference gateway fitting behavior. Explicitly non-reasoning targets have the
 effort field removed. Absent/null effort is left alone. Unrelated reasoning
 options, opaque input and vendor number representations are preserved. This is
 capability-based adaptation, not evidence that every advertised model can be
@@ -114,7 +114,7 @@ called successfully with the current account.
 After upgrading, reload the routing model catalogs and enable the Codex routing
 switch, then reopen Codex if it retains the previous catalog. Catalog reloads and
 group changes synchronize automatically while routing is enabled. The gateway must remain running. This implementation covers automatic
-capability-derived levels and per-target fitting; Magpie's manual group-level
+capability-derived levels and per-target fitting; reference manual group-level
 overrides and per-member fixed-effort editor are not included.
 
 Menu synchronization actively refreshes official account capabilities and uses

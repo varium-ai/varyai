@@ -260,6 +260,7 @@ impl Database {
                     .map_err(|e| AppError::Database(e.to_string()))?;
                 Self::complete_backup(&backup, "替换主数据库")?;
             }
+            self.invalidate_routing_resources();
             backup_path
         };
 
@@ -1140,6 +1141,7 @@ impl Database {
                     .map_err(|e| AppError::Database(e.to_string()))?;
                 Self::complete_backup(&backup, "恢复主数据库")?;
             }
+            self.invalidate_routing_resources();
             safety_backup
         };
         let safety_id = safety_backup
@@ -1321,6 +1323,7 @@ mod tests {
         std::fs::create_dir_all(&backup_dir).map_err(|e| AppError::io(&backup_dir, e))?;
         for local in [false, true] {
             let source = Database {
+                routing_generation: std::sync::atomic::AtomicU64::new(0),
                 extension_conn: None,
                 conn: std::sync::Mutex::new(
                     crate::database::migration_v22_tests::historical_fixture(21, local)?,

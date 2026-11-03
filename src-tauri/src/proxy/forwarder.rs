@@ -39,6 +39,13 @@ use tokio::sync::RwLock;
 
 const PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 
+/// Internal wire-execution mode, never a consumer identity or routing decision.
+/// Only explicit group bridge execution can insert this extension.
+#[derive(Clone)]
+struct ExactBridge {
+    output: super::protocol_bridge::Protocol,
+}
+
 fn codex_bearer_access_token(headers: &http::HeaderMap) -> Option<&str> {
     let authorization = headers
         .get(http::header::AUTHORIZATION)?
@@ -1209,64 +1216,126 @@ impl RequestForwarder {
         adapter: &dyn ProviderAdapter,
     ) -> Result<ForwardResponse, ProxyError> {
         if let Some(bridge) = super::protocol_bridge::Bridge::route(app_type, endpoint, provider) {
-            let mut body = body.clone();
-            if bridge.input == super::protocol_bridge::Protocol::Responses {
-                self.codex_chat_history.enrich_request(&mut body).await;
-            }
-            let tool_context =
-                super::providers::transform_codex_chat::build_codex_tool_context_from_request(
-                    &body,
-                );
-            let body = bridge.request(body, endpoint)?;
-            let bridge_context = super::protocol_bridge::BridgeContext {
-                tool_context,
-                shadow: self.gemini_shadow.clone(),
-                history: self.codex_chat_history.clone(),
-                provider_id: provider.id.clone(),
-                session_id: self
-                    .session_client_provided
-                    .then(|| self.session_id.clone()),
-                hints: super::providers::transform_gemini::extract_anthropic_tool_schema_hints(
-                    &body,
-                ),
-            };
-            let streaming = body["stream"].as_bool().unwrap_or(false);
-            let bridged_provider = bridge.provider(provider);
-            let bridged_adapter = super::protocol_bridge::BridgeAdapter {
-                original: adapter,
-                output: bridge.output,
-            };
-            let bridge_endpoint = bridge.endpoint(endpoint);
-            let (response, format, model, _) = self
-                .forward_native(
-                    app_type,
-                    method,
-                    &bridged_provider,
-                    &bridge_endpoint,
-                    &body,
-                    headers,
-                    extensions,
-                    &bridged_adapter,
+            return self
+                .forward_bridged(
+                    app_type, bridge, method, provider, endpoint, body, headers, extensions,
+                    adapter,
                 )
-                .await?;
-            return Ok((
-                bridge
-                    .response(
-                        response,
-                        streaming,
-                        self.non_streaming_timeout,
-                        bridge_context,
-                    )
-                    .await?,
-                format,
-                model,
-                Arc::new(Vec::new()),
-            ));
+                .await;
         }
         self.forward_native(
             app_type, method, provider, endpoint, body, headers, extensions, adapter,
         )
         .await
+    }
+
+    /// Execute an explicit cross-protocol plan without app routing, model aliases,
+    /// retries, current-provider changes, or usage/status attribution.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn forward_bridge(
+        &self,
+        bridge: super::protocol_bridge::Bridge,
+        method: &http::Method,
+        provider: &Provider,
+        endpoint: &str,
+        body: &Value,
+        headers: &http::HeaderMap,
+        extensions: &Extensions,
+    ) -> Result<ForwardResponse, ProxyError> {
+        let mut extensions = extensions.clone();
+        extensions.insert(ExactBridge {
+            output: bridge.output,
+        });
+        // The intermediate request is Messages-shaped. This is wire context only,
+        // not the actual app identity; the caller owns security and attribution.
+        self.forward_bridged(
+            &AppType::Claude,
+            bridge,
+            method,
+            provider,
+            endpoint,
+            body,
+            headers,
+            &extensions,
+            &super::providers::ClaudeAdapter::new(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn forward_bridged(
+        &self,
+        app_type: &AppType,
+        bridge: super::protocol_bridge::Bridge,
+        method: &http::Method,
+        provider: &Provider,
+        endpoint: &str,
+        body: &Value,
+        headers: &http::HeaderMap,
+        extensions: &Extensions,
+        adapter: &dyn ProviderAdapter,
+    ) -> Result<ForwardResponse, ProxyError> {
+        let exact = extensions.get::<ExactBridge>().is_some();
+        let mut body = body.clone();
+        let target_model = exact.then(|| body.get("model").cloned()).flatten();
+        if exact && bridge.input == super::protocol_bridge::Protocol::Gemini {
+            // Gemini native selects the source model in its URL, while the group
+            // runtime passes the independently selected target in body.model.
+            if let Some(object) = body.as_object_mut() {
+                object.remove("model");
+            }
+        }
+        if bridge.input == super::protocol_bridge::Protocol::Responses {
+            self.codex_chat_history.enrich_request(&mut body).await;
+        }
+        let tool_context =
+            super::providers::transform_codex_chat::build_codex_tool_context_from_request(&body);
+        let mut body = bridge.request(body, endpoint)?;
+        if let Some(model) = target_model {
+            body["model"] = model;
+        }
+        let bridge_context = super::protocol_bridge::BridgeContext {
+            tool_context,
+            shadow: self.gemini_shadow.clone(),
+            history: self.codex_chat_history.clone(),
+            provider_id: provider.id.clone(),
+            session_id: self
+                .session_client_provided
+                .then(|| self.session_id.clone()),
+            hints: super::providers::transform_gemini::extract_anthropic_tool_schema_hints(&body),
+        };
+        let streaming = body["stream"].as_bool().unwrap_or(false);
+        let bridged_provider = bridge.provider(provider);
+        let bridged_adapter = super::protocol_bridge::BridgeAdapter {
+            original: adapter,
+            output: bridge.output,
+        };
+        let bridge_endpoint = bridge.endpoint(endpoint);
+        let (response, format, model, _) = self
+            .forward_native(
+                app_type,
+                method,
+                &bridged_provider,
+                &bridge_endpoint,
+                &body,
+                headers,
+                extensions,
+                &bridged_adapter,
+            )
+            .await?;
+        Ok((
+            bridge
+                .response(
+                    response,
+                    streaming,
+                    self.non_streaming_timeout,
+                    bridge_context,
+                )
+                .await?,
+            format,
+            model,
+            Arc::new(Vec::new()),
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1281,6 +1350,8 @@ impl RequestForwarder {
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
     ) -> Result<ForwardResponse, ProxyError> {
+        let exact_bridge = extensions.get::<ExactBridge>();
+        let exact = exact_bridge.is_some();
         // 使用适配器提取 base_url
         let mut base_url = adapter.extract_base_url(provider)?;
 
@@ -1293,12 +1364,13 @@ impl RequestForwarder {
             && !provider.is_xai_oauth();
 
         // GitHub Copilot API 使用 /chat/completions（无 /v1 前缀）
-        let is_copilot = provider
-            .meta
-            .as_ref()
-            .and_then(|m| m.provider_type.as_deref())
-            == Some("github_copilot")
-            || base_url.contains("githubcopilot.com");
+        let is_copilot = !exact
+            && (provider
+                .meta
+                .as_ref()
+                .and_then(|m| m.provider_type.as_deref())
+                == Some("github_copilot")
+                || base_url.contains("githubcopilot.com"));
 
         // Codex upstream conversion mode — computed early because the [1m]-suffix strip
         // below must be skipped on the Anthropic path (the marker has to survive to
@@ -1355,7 +1427,9 @@ impl RequestForwarder {
         // 应用模型映射（独立于格式转换）
         // Claude Desktop proxy 模式必须先把 Desktop 可见的 claude-* route
         // 映射成真实上游模型名，并且未知 route 要直接报错，不能使用默认模型兜底。
-        let mapped_body = if matches!(app_type, AppType::ClaudeDesktop) {
+        let mapped_body = if exact {
+            body.clone()
+        } else if matches!(app_type, AppType::ClaudeDesktop) {
             crate::claude_desktop_config::map_proxy_request_model(body.clone(), provider)
                 .map_err(|e| ProxyError::InvalidRequest(e.to_string()))?
         } else {
@@ -1365,7 +1439,11 @@ impl RequestForwarder {
         };
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
-        let mut mapped_body = normalize_thinking_type(mapped_body);
+        let mut mapped_body = if exact {
+            mapped_body
+        } else {
+            normalize_thinking_type(mapped_body)
+        };
 
         // Grok Build exposes a stable client-side model profile in config.toml.
         // Route requests to the provider's real upstream model before applying
@@ -1388,7 +1466,7 @@ impl RequestForwarder {
             // variants pass through unchanged.
             mapped_body =
                 super::model_mapper::strip_one_m_suffix_for_upstream_from_body(mapped_body);
-        } else if !codex_responses_to_anthropic {
+        } else if !exact && !codex_responses_to_anthropic {
             // Skip on the Codex→Anthropic path: stripping [1m] here would break both the
             // model-catalog match (apply_codex_upstream_model) and the transform's own
             // strip+`context-1m` beta detection. The marker is stripped later, on the
@@ -1528,7 +1606,9 @@ impl RequestForwarder {
                 }
             }
         }
-        let resolved_claude_api_format = if adapter.name() == "Claude" {
+        let resolved_claude_api_format = if let Some(bridge) = exact_bridge {
+            Some(bridge.output.format().to_string())
+        } else if adapter.name() == "Claude" {
             Some(
                 self.resolve_claude_api_format(provider, &mapped_body, is_copilot)
                     .await,
@@ -1536,7 +1616,7 @@ impl RequestForwarder {
         } else {
             None
         };
-        if adapter.name() == "Claude" {
+        if !exact && adapter.name() == "Claude" {
             if let Some(api_format) = resolved_claude_api_format.as_deref() {
                 super::providers::normalize_anthropic_messages_for_provider(
                     &mut mapped_body,
@@ -1562,7 +1642,27 @@ impl RequestForwarder {
                 .as_ref()
                 .and_then(|meta| meta.impersonate_claude_code)
                 == Some(true);
-        let (effective_endpoint, passthrough_query) = if codex_responses_to_chat {
+        let (effective_endpoint, passthrough_query) = if let Some(bridge) =
+            exact_bridge.filter(|bridge| {
+                matches!(
+                    bridge.output,
+                    super::protocol_bridge::Protocol::Chat
+                        | super::protocol_bridge::Protocol::Responses
+                )
+            }) {
+            // Normalized OpenAI bases already include their version/custom prefix.
+            // Do not invent /v1 on a source configured at e.g. /relay.
+            let (_, query) = split_endpoint_and_query(endpoint);
+            let path = if bridge.output == super::protocol_bridge::Protocol::Chat {
+                "/chat/completions"
+            } else {
+                "/responses"
+            };
+            (
+                append_query_to_full_url(path, query),
+                query.map(str::to_owned),
+            )
+        } else if codex_responses_to_chat {
             rewrite_codex_responses_endpoint_to_chat(endpoint)
         } else if codex_responses_to_anthropic {
             rewrite_codex_responses_endpoint_to_anthropic(endpoint)
@@ -1796,8 +1896,14 @@ impl RequestForwarder {
 
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
-        let mut filtered_body = prepare_upstream_request_body(request_body);
-        if !is_copilot {
+        // Explicit bridge input is public protocol data, not an app's annotated
+        // request. Recursive private filtering would corrupt tool argument keys.
+        let mut filtered_body = if exact {
+            request_body
+        } else {
+            prepare_upstream_request_body(request_body)
+        };
+        if !exact && !is_copilot {
             if let Some(overrides) = provider
                 .meta
                 .as_ref()
@@ -2113,19 +2219,26 @@ impl RequestForwarder {
         // 预计算 anthropic-beta 值（仅 Claude）
         let anthropic_beta_value = if should_send_anthropic_headers {
             const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
-            Some(if let Some(beta) = headers.get("anthropic-beta") {
-                if let Ok(beta_str) = beta.to_str() {
-                    if beta_str.contains(CLAUDE_CODE_BETA) {
-                        beta_str.to_string()
+            if exact {
+                headers
+                    .get("anthropic-beta")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned)
+            } else {
+                Some(if let Some(beta) = headers.get("anthropic-beta") {
+                    if let Ok(beta_str) = beta.to_str() {
+                        if beta_str.contains(CLAUDE_CODE_BETA) {
+                            beta_str.to_string()
+                        } else {
+                            format!("{CLAUDE_CODE_BETA},{beta_str}")
+                        }
                     } else {
-                        format!("{CLAUDE_CODE_BETA},{beta_str}")
+                        CLAUDE_CODE_BETA.to_string()
                     }
                 } else {
                     CLAUDE_CODE_BETA.to_string()
-                }
-            } else {
-                CLAUDE_CODE_BETA.to_string()
-            })
+                })
+            }
         } else if codex_impersonate_claude_code || codex_anthropic_one_m {
             // Codex→Anthropic: emulation injects the claude-code marker; a [1m]
             // model injects the context-1m marker.
@@ -2154,6 +2267,17 @@ impl RequestForwarder {
 
         for (key, value) in headers {
             let key_str = key.as_str();
+
+            // Converted JSON has no caller content coding. Browser/proxy
+            // credentials are not source-provider authentication.
+            if exact
+                && matches!(
+                    key_str,
+                    "content-encoding" | "cookie" | "proxy-authorization"
+                )
+            {
+                continue;
+            }
 
             // Desktop client metadata is not part of Messages protocol versioning.
             // Third-party gateways may reject it even when they accept Messages.
@@ -2386,7 +2510,8 @@ impl RequestForwarder {
             ordered_headers.insert(name, value);
         }
 
-        let upstream_tool_schemas = if needs_transform
+        let upstream_tool_schemas = if !exact
+            && needs_transform
             && matches!(app_type, AppType::Claude | AppType::ClaudeDesktop)
             && crate::services::tool_risk::runtime::collection_enabled()
         {
@@ -3832,7 +3957,7 @@ fn apply_local_proxy_header_overrides(
     }
 }
 
-fn is_protected_local_proxy_override_header(name: &http::HeaderName) -> bool {
+pub(crate) fn is_protected_local_proxy_override_header(name: &http::HeaderName) -> bool {
     matches!(
         name.as_str(),
         "host"
