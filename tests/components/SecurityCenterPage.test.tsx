@@ -282,6 +282,14 @@ vi.mock("@/lib/api", () => ({
 }));
 
 describe("SecurityCenterPage", () => {
+  it("mounts the unified event panel without removing the existing rule editor", () => {
+    render(<SecurityCenterPage />);
+    expect(
+      screen.getByRole("tabpanel", { name: "security.tabRecords" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "security.tabRules" }));
+    expect(screen.getByText("security.ruleHeading")).toBeInTheDocument();
+  });
   it("shows refresh progress until requests finish without a success toast", async () => {
     let finish!: () => void;
     auditRows.refetchByAction.audit.mockReturnValueOnce(
@@ -524,10 +532,11 @@ describe("SecurityCenterPage", () => {
     expect(
       within(customRuleRow)
         .getAllByRole("button")
-        .slice(0, 3)
+        .slice(0, 4)
         .map((button) => button.textContent),
     ).toEqual([
       "security.ruleActionRedact",
+      "security.ruleActionRedactRestore",
       "security.ruleActionAlert",
       "security.ruleActionAllow",
     ]);
@@ -579,6 +588,7 @@ describe("SecurityCenterPage", () => {
       screen.getAllByRole("option").map((option) => option.textContent),
     ).toEqual([
       "security.dialogActionRedact",
+      "security.dialogActionRedactRestore",
       "security.dialogActionAudit",
       "security.dialogActionAllow",
     ]);
@@ -673,7 +683,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("offers hide and send for the generic sk rule without selecting it by default", () => {
+it("keeps allow selected for the generic sk rule and permits switching only to audit", () => {
   extraRules.items = [
     {
       id: "catalog:generic-sk-key-notice",
@@ -691,12 +701,23 @@ it("offers hide and send for the generic sk rule without selecting it by default
   expect(
     within(row).getByRole("button", { name: "security.ruleActionAllow" }),
   ).toHaveAttribute("aria-pressed", "true");
+  expect(
+    within(row).queryByRole("button", { name: "security.ruleActionRedact" }),
+  ).not.toBeInTheDocument();
+  expect(
+    within(row).queryByRole("button", {
+      name: "security.ruleActionRedactRestore",
+    }),
+  ).not.toBeInTheDocument();
+  expect(
+    within(row).queryByRole("button", { name: "security.ruleActionBlock" }),
+  ).not.toBeInTheDocument();
   fireEvent.click(
-    within(row).getByRole("button", { name: "security.ruleActionRedact" }),
+    within(row).getByRole("button", { name: "security.ruleActionAlert" }),
   );
   expect(updateBuiltinAction).toHaveBeenCalledWith(
     "catalog:generic-sk-key-notice",
-    "redact",
+    "audit",
   );
 });
 
@@ -1181,5 +1202,110 @@ describe("real tool-event rule seed navigation", () => {
     expect(editor.innerHTML).not.toContain(boundedSummary);
     expect(within(editor).getByTestId("tool-risk-save")).toBeDisabled();
     expect(toolRiskFlow.saveRule).not.toHaveBeenCalled();
+  });
+});
+
+describe("redact_restore public rule controls", () => {
+  it("selects restoration inline and explains scope and tool risks", () => {
+    render(<SecurityCenterPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "security.tabRules" }));
+    const row = screen.getByTestId("security-rule-rule-1");
+    fireEvent.click(
+      within(row).getByRole("button", {
+        name: "security.ruleActionRedactRestore",
+      }),
+    );
+    expect(updateCustomAction).toHaveBeenCalledWith("rule-1", "redact_restore");
+    expect(screen.getByText("security.redactRestoreScope")).toBeInTheDocument();
+    expect(screen.getByText("security.redactRestoreRisk")).toBeInTheDocument();
+  });
+
+  it("saves restoration from the editor without changing the default", () => {
+    render(<SecurityCenterPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "security.tabRules" }));
+    fireEvent.click(
+      within(screen.getByTestId("security-rule-rule-1")).getByRole("button", {
+        name: "common.edit",
+      }),
+    );
+    const dialog = screen.getByRole("dialog");
+    const field = within(dialog).getByText(
+      "security.dialogAction",
+    ).parentElement!;
+    fireEvent.click(within(field).getByRole("combobox"));
+    fireEvent.click(
+      screen.getByRole("option", {
+        name: "security.dialogActionRedactRestore",
+      }),
+    );
+    expect(
+      within(dialog).getByText("security.redactRestoreScope"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("security.redactRestoreRisk"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "security.saveRule" }),
+    );
+    expect(saveRule).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "rule-1", action: "redact_restore" }),
+    );
+  });
+
+  it.each([
+    ["en", en],
+    ["zh", zh],
+    ["ja", ja],
+    ["zh-TW", zhTW],
+  ] as const)("has explicit restoration copy in %s", (_, locale) => {
+    const copy = locale.security;
+    for (const key of [
+      "ruleActionRedactRestore",
+      "dialogActionRedactRestore",
+      "resultRedactRestore",
+      "redactRestoreScope",
+      "redactRestoreRisk",
+      "notifyRedactRestoreTitle",
+      "notifyRedactRestoreBody",
+    ] as const) {
+      expect(copy[key]).toBeTruthy();
+      expect(copy[key]).not.toBe(key);
+    }
+    expect(copy.redactRestoreScope).toContain("Codex");
+    expect(copy.redactRestoreScope).toContain("HTTP");
+    expect(copy.redactRestoreRisk).toContain("JSON");
+    expect(copy.redactRestoreRisk).toContain("SQL");
+  });
+});
+
+describe("generic sk notice action restrictions", () => {
+  it("offers only audit and allow while other built-ins can select restoration", () => {
+    extraRules.items = [
+      {
+        id: "catalog:generic-sk-key-notice",
+        name: "Generic key",
+        category: "api_token",
+        riskLevel: "MEDIUM",
+        action: "audit",
+        enabled: true,
+        isBuiltin: true,
+      },
+    ];
+    render(<SecurityCenterPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "security.tabRules" }));
+    const generic = screen.getByTestId(
+      "security-rule-catalog:generic-sk-key-notice",
+    );
+    expect(
+      within(generic)
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["security.ruleActionAlert", "security.ruleActionAllow"]);
+    const builtin = screen.getByTestId("security-rule-builtin-token");
+    expect(
+      within(builtin).getByRole("button", {
+        name: "security.ruleActionRedactRestore",
+      }),
+    ).toBeInTheDocument();
   });
 });

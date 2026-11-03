@@ -55,7 +55,7 @@ describe("unified security event contract", () => {
       SecurityEventDlpRecord["actionTaken"]
     >().toEqualTypeOf<string>();
     expectTypeOf<AuditLogRecord["actionTaken"]>().toEqualTypeOf<
-      "block" | "audit" | "redact" | "allow"
+      "block" | "audit" | "redact" | "redact_restore" | "allow"
     >();
     expectTypeOf<
       Extract<SecurityEvent, { eventType: "tool_risk" }>["record"]

@@ -25,8 +25,7 @@ pub(crate) fn canonical_json_string(value: &Value) -> String {
         Value::Null => "null".to_string(),
         Value::Bool(value) => value.to_string(),
         Value::Number(value) => value.to_string(),
-        Value::String(value) => serde_json::to_string(value)
-            .expect("serializing a JSON string for canonical output should not fail"),
+        Value::String(_) => value.to_string(),
         Value::Array(values) => {
             let parts = values.iter().map(canonical_json_string).collect::<Vec<_>>();
             format!("[{}]", parts.join(","))
@@ -37,9 +36,7 @@ pub(crate) fn canonical_json_string(value: &Value) -> String {
             let parts = entries
                 .into_iter()
                 .map(|(key, value)| {
-                    let key = serde_json::to_string(key).expect(
-                        "serializing a JSON object key for canonical output should not fail",
-                    );
+                    let key = Value::String(key.clone()).to_string();
                     format!("{key}:{}", canonical_json_string(value))
                 })
                 .collect::<Vec<_>>();
@@ -107,6 +104,76 @@ pub(crate) fn short_sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn baseline_proxy_production_sources_do_not_unwrap_or_expect() {
+        let sources = [
+            ("json_canonical.rs", include_str!("json_canonical.rs")),
+            ("provider_router.rs", include_str!("provider_router.rs")),
+            ("providers/claude.rs", include_str!("providers/claude.rs")),
+            ("providers/codex.rs", include_str!("providers/codex.rs")),
+            (
+                "providers/transform_codex_anthropic.rs",
+                include_str!("providers/transform_codex_anthropic.rs"),
+            ),
+            ("usage/logger.rs", include_str!("usage/logger.rs")),
+        ];
+        // Each inspected file ends with one test module; item-level test cfgs must
+        // not truncate the production source included in this guard.
+        let boundary = "\n#[cfg(test)]\nmod tests {";
+        let forbidden = regex::Regex::new(r"\.\s*(?:unwrap|expect)\s*\(").unwrap();
+        let mut violations = Vec::new();
+        for (path, source) in sources {
+            assert_eq!(source.matches(boundary).count(), 1, "{path}: test boundary");
+            let (production, _) = source.split_once(boundary).unwrap();
+            for call in forbidden.find_iter(production) {
+                let line = production[..call.start()]
+                    .bytes()
+                    .filter(|b| *b == b'\n')
+                    .count()
+                    + 1;
+                violations.push(format!("{path}:{line}"));
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "production panic calls ({}): {}",
+            violations.len(),
+            violations.join(", ")
+        );
+    }
+
+    #[test]
+    fn canonical_json_string_preserves_serde_string_and_key_bytes() {
+        let controls: String = (0..=0x1f)
+            .map(|code| char::from_u32(code).unwrap())
+            .collect();
+        for text in [
+            String::new(),
+            "synthetic \"quote\" \\ /\n\r\t\u{8}\u{c}".to_string(),
+            controls,
+            "synthetic é 中文 🦀 \u{2028}\u{2029}\u{10ffff}".to_string(),
+        ] {
+            let encoded = serde_json::to_string(&text).unwrap();
+            assert_eq!(canonical_json_string(&json!(&text)), encoded);
+            assert_eq!(
+                canonical_json_string(&json!({text: "synthetic"})),
+                format!("{{{encoded}:\"synthetic\"}}")
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_json_string_preserves_mixed_value_bytes() {
+        let value = json!({
+            "z": [null, true, false, -1, u64::MAX, 1.25, "synthetic\n"],
+            "a": {"b": "\\", "a": "\""}
+        });
+        assert_eq!(
+            canonical_json_string(&value),
+            r#"{"a":{"a":"\"","b":"\\"},"z":[null,true,false,-1,18446744073709551615,1.25,"synthetic\n"]}"#
+        );
+    }
 
     #[test]
     fn canonical_json_string_sorts_nested_object_keys() {

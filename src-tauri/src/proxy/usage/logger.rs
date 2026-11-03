@@ -39,7 +39,7 @@ impl UsageSemantic {
         }
     }
 
-    fn sha256(&self) -> String {
+    fn sha256(&self) -> Result<String, AppError> {
         let encoded = serde_json::to_vec(&(
             &self.app_type,
             &self.provider_id,
@@ -51,11 +51,11 @@ impl UsageSemantic {
             self.cache_creation_tokens,
             self.status_code,
         ))
-        .expect("usage semantic tuple is serializable");
-        Sha256::digest(encoded)
+        .map_err(|_| AppError::Message("Failed to serialize usage fingerprint".to_string()))?;
+        Ok(Sha256::digest(encoded)
             .iter()
             .map(|byte| format!("{byte:02x}"))
-            .collect()
+            .collect())
     }
 }
 
@@ -144,7 +144,7 @@ impl<'a> UsageLogger<'a> {
                 return Ok(());
             }
             Some(_) => {
-                let fallback = format!("{}:collision:{}", log.request_id, semantic.sha256());
+                let fallback = format!("{}:collision:{}", log.request_id, semantic.sha256()?);
                 if let Some((data_source, existing_semantic)) =
                     Self::load_existing_semantic(&conn, &fallback)?
                 {
@@ -635,6 +635,62 @@ mod tests {
         assert!(rows[1].0.starts_with("shared-id:collision:"));
         assert_eq!(rows[1].1, 20);
         assert_eq!(crate::usage_events::take_test_notify_count(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_collision_fingerprints_preserve_tuple_json_bytes() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let logger = UsageLogger::new(&db);
+        for (index, text) in [
+            "",
+            "synthetic",
+            "synthetic \" \\ /\n\r\t\u{0}\u{8}\u{c}",
+            "synthetic é 中文 🦀 \u{2028}\u{2029}",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let request_id = format!("synthetic-fingerprint-{index}");
+            logger.log_request(&request_log(&request_id, 1))?;
+            let mut collision = request_log(&request_id, u32::MAX);
+            collision.provider_id = text.to_string();
+            collision.model = text.to_string();
+            collision.usage.output_tokens = u32::MAX;
+            collision.usage.cache_read_tokens = u32::MAX;
+            collision.usage.cache_creation_tokens = u32::MAX;
+            collision.status_code = u16::MAX;
+            if index % 2 == 0 {
+                collision.app_type = "claude".to_string();
+            }
+            let semantics = if collision.app_type == "codex" {
+                INPUT_TOKEN_SEMANTICS_TOTAL
+            } else {
+                INPUT_TOKEN_SEMANTICS_FRESH
+            };
+            let encoded = serde_json::to_vec(&(
+                &collision.app_type,
+                &collision.provider_id,
+                &collision.model,
+                semantics,
+                collision.usage.input_tokens,
+                collision.usage.output_tokens,
+                collision.usage.cache_read_tokens,
+                collision.usage.cache_creation_tokens,
+                collision.status_code,
+            ))
+            .unwrap();
+            let expected = format!("{request_id}:collision:{:x}", Sha256::digest(encoded));
+            logger.log_request(&collision)?;
+            logger.log_request(&collision)?;
+            let conn = crate::database::lock_conn!(db.conn);
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM proxy_request_logs WHERE request_id = ?1",
+                [expected],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 1);
+        }
         Ok(())
     }
 

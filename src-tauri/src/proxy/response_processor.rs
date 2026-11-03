@@ -111,7 +111,7 @@ pub(crate) async fn read_decoded_body(
     let mut decoded = false;
 
     if let Some(encoding) = get_content_encoding(&headers) {
-        log::debug!("[{tag}] 解压非流式响应: content-encoding={encoding}");
+        log::debug!("[{tag}] response decoding stage=content_encoding");
         match decompress_body_with_limit(&encoding, &raw_bytes, MAX_RESPONSE_BODY_BYTES) {
             Ok(Some(decompressed)) => {
                 // 解码器在预算耗尽处即截停，此处必然 ≤ MAX_RESPONSE_BODY_BYTES
@@ -124,8 +124,8 @@ pub(crate) async fn read_decoded_body(
             Err(DecompressError::TooLarge { .. }) => {
                 return Err(ProxyError::ResponseBodyTooLarge(MAX_RESPONSE_BODY_BYTES));
             }
-            Err(DecompressError::Io(e)) => {
-                log::warn!("[{tag}] 解压失败 ({encoding}): {e}，使用原始数据");
+            Err(DecompressError::Io(_)) => {
+                log::warn!("[{tag}] response decoding stage=decode_failed action=preserve_raw");
             }
         }
     }
@@ -163,10 +163,9 @@ pub async fn handle_streaming(
         format_headers(response.headers())
     );
     // 检查流式响应是否被压缩（SSE 通常不压缩，如果压缩则 SSE 解析会失败）
-    if let Some(encoding) = get_content_encoding(response.headers()) {
+    if get_content_encoding(response.headers()).is_some() {
         log::warn!(
-            "[{}] 流式响应含 content-encoding={encoding}，SSE 解析可能失败。\
-             上游在 accept-encoding 透传后压缩了 SSE 流。",
+            "[{}] response streaming stage=content_encoding_present",
             ctx.tag
         );
     }
@@ -361,6 +360,53 @@ pub async fn process_response(
     } else {
         handle_non_streaming(response, ctx, state, parser_config, connection_guard).await
     }
+}
+
+/// Isolate legacy decoding/conversion errors while a restoration lease is active.
+pub(super) fn isolate_codex_dlp_response_error(error: ProxyError, leased: bool) -> ProxyError {
+    if leased {
+        match error {
+            error @ ProxyError::SafeUpstream(_) => error,
+            ProxyError::DlpForward(
+                error @ (super::security::http_restoration::DlpForwardError::RestoreFailedAt(_)
+                | super::security::http_restoration::DlpForwardError::UpstreamStatus(_)),
+            ) => ProxyError::DlpForward(error),
+            _ => ProxyError::DlpForward(
+                super::security::http_restoration::DlpForwardError::RestoreFailedAt(
+                    super::security::restore_diagnostics::RestoreStage::ResponseProcessing,
+                ),
+            ),
+        }
+    } else {
+        error
+    }
+}
+
+/// Restore only at the final Codex client exit, after tokenized observations.
+pub(crate) async fn process_codex_response(
+    response: ProxyResponse,
+    ctx: &RequestContext,
+    state: &ProxyState,
+    parser_config: &UsageParserConfig,
+    connection_guard: Option<ActiveConnectionGuard>,
+    dlp_attempt: Option<super::security::http_restoration::DlpPreparedAttempt>,
+) -> Result<Response, ProxyError> {
+    let leased = dlp_attempt.is_some();
+    let response = process_response(response, ctx, state, parser_config, connection_guard)
+        .await
+        .map_err(|error| isolate_codex_dlp_response_error(error, leased))?;
+    Ok(match dlp_attempt {
+        Some(attempt) => {
+            attempt
+                .restore_client_http_response(
+                    response,
+                    super::security::response_restoration::ArgumentNormalizationMode::Exact,
+                    None,
+                )
+                .await
+        }
+        None => response,
+    })
 }
 
 // ============================================================================
@@ -838,53 +884,8 @@ pub fn create_logged_passthrough_stream(
     }
 }
 
-fn is_safe_diagnostic_header(name: &str) -> bool {
-    matches!(
-        name,
-        "content-type"
-            | "content-encoding"
-            | "content-length"
-            | "retry-after"
-            | "cf-ray"
-            | "x-request-id"
-            | "request-id"
-            | "x-correlation-id"
-    ) || name.starts_with("x-ratelimit-")
-        || name.starts_with("ratelimit-")
-}
-
-fn bounded_header_value(value: &axum::http::HeaderValue) -> Option<String> {
-    let value = value.to_str().ok()?;
-    let mut bounded = value.chars().take(160).collect::<String>();
-    if value.chars().count() > 160 {
-        bounded.push('…');
-    }
-    Some(bounded)
-}
-
 fn format_headers(headers: &HeaderMap) -> String {
-    let mut entries = headers
-        .keys()
-        .map(|key| {
-            let name = key.as_str();
-            if !is_safe_diagnostic_header(name) {
-                return name.to_string();
-            }
-
-            let values = headers
-                .get_all(key)
-                .iter()
-                .filter_map(bounded_header_value)
-                .collect::<Vec<_>>();
-            if values.is_empty() {
-                name.to_string()
-            } else {
-                format!("{name}={}", values.join("|"))
-            }
-        })
-        .collect::<Vec<_>>();
-    entries.sort();
-    format!("[{}]", entries.join(", "))
+    format!("[header_count={}]", headers.len())
 }
 
 #[cfg(test)]
@@ -904,6 +905,29 @@ mod tests {
     use std::str::FromStr;
     use std::sync::Arc;
     use tokio::sync::RwLock;
+
+    #[test]
+    fn codex_response_error_isolation_preserves_unleased_behavior() {
+        let ordinary = isolate_codex_dlp_response_error(
+            ProxyError::TransformError("synthetic conversion failure".into()),
+            false,
+        );
+        assert!(
+            matches!(ordinary, ProxyError::TransformError(message) if message == "synthetic conversion failure")
+        );
+        let leased = isolate_codex_dlp_response_error(
+            ProxyError::TransformError("synthetic conversion failure".into()),
+            true,
+        );
+        assert!(matches!(
+            leased,
+            ProxyError::DlpForward(
+                super::super::security::http_restoration::DlpForwardError::RestoreFailedAt(
+                    super::super::security::restore_diagnostics::RestoreStage::ResponseProcessing
+                )
+            )
+        ));
+    }
 
     #[tokio::test]
     #[serial_test::serial]
@@ -969,22 +993,108 @@ mod tests {
     }
 
     #[test]
-    fn format_headers_keeps_only_allowlisted_diagnostic_values() {
+    fn format_headers_contains_only_fixed_counts_not_upstream_names_or_values() {
         let mut headers = HeaderMap::new();
-        headers.insert("authorization", "Bearer super-secret".parse().unwrap());
-        headers.insert("set-cookie", "session=cookie-secret".parse().unwrap());
-        headers.insert("retry-after", "30".parse().unwrap());
-        headers.insert("x-ratelimit-remaining", "2".parse().unwrap());
-        headers.insert("cf-ray", "abc123-SJC".parse().unwrap());
-
+        headers.insert(
+            "authorization",
+            "Bearer synthetic-private-value".parse().unwrap(),
+        );
+        headers.insert(
+            "content-type",
+            "application/json; note=synthetic-private-value"
+                .parse()
+                .unwrap(),
+        );
+        headers.insert("retry-after", "synthetic-private-value".parse().unwrap());
+        headers.insert(
+            "x-synthetic-private-name",
+            "synthetic-private-value".parse().unwrap(),
+        );
+        let original = headers.clone();
         let formatted = format_headers(&headers);
-        assert!(formatted.contains("authorization"), "{formatted}");
-        assert!(formatted.contains("set-cookie"), "{formatted}");
-        assert!(formatted.contains("retry-after=30"), "{formatted}");
-        assert!(formatted.contains("x-ratelimit-remaining=2"), "{formatted}");
-        assert!(formatted.contains("cf-ray=abc123-SJC"), "{formatted}");
-        assert!(!formatted.contains("super-secret"), "{formatted}");
-        assert!(!formatted.contains("cookie-secret"), "{formatted}");
+        assert!(
+            formatted == "[header_count=4]",
+            "header diagnostics must contain only fixed counts"
+        );
+        assert!(
+            headers == original,
+            "diagnostics cannot alter forwarded headers"
+        );
+    }
+
+    #[tokio::test]
+    async fn response_diagnostics_never_echo_upstream_headers_or_decoder_errors(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        const CHILD: &str = "VARYAI_SYNTHETIC_RESPONSE_DIAGNOSTIC_TEST";
+        const SUCCESS: i32 = 87;
+        if std::env::var_os(CHILD).is_none() {
+            let mut child = tokio::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", "proxy::response_processor::tests::response_diagnostics_never_echo_upstream_headers_or_decoder_errors", "--test-threads=1"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                .kill_on_drop(true).spawn()?;
+            let status = tokio::time::timeout(Duration::from_secs(30), child.wait()).await??;
+            assert!(
+                status.code() == Some(SUCCESS),
+                "isolated response diagnostic check failed; output discarded"
+            );
+            return Ok(());
+        }
+        static FORBIDDEN: AtomicBool = AtomicBool::new(false);
+        static OBSERVED: AtomicUsize = AtomicUsize::new(0);
+        struct Logger;
+        impl log::Log for Logger {
+            fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+                metadata.target().ends_with("::proxy::response_processor")
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                if !self.enabled(record.metadata()) {
+                    return;
+                }
+                OBSERVED.fetch_add(1, Ordering::SeqCst);
+                let message = format!("{}", record.args());
+                if ["synthetic-private", "invalid gzip", "corrupt deflate"]
+                    .iter()
+                    .any(|marker| message.contains(marker))
+                {
+                    FORBIDDEN.store(true, Ordering::SeqCst);
+                }
+            }
+            fn flush(&self) {}
+        }
+        static LOGGER: Logger = Logger;
+        log::set_logger(&LOGGER).map_err(|_| "synthetic response observer unavailable")?;
+        log::set_max_level(log::LevelFilter::Debug);
+        for encoding in ["synthetic-private-encoding", "gzip"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "content-type",
+                "application/json; note=synthetic-private-value".parse()?,
+            );
+            headers.insert(
+                "x-synthetic-private-name",
+                "synthetic-private-value".parse()?,
+            );
+            headers.insert("content-encoding", encoding.parse()?);
+            let original_headers = headers.clone();
+            let bytes = Bytes::from_static(b"{\"output\":[]}");
+            let response = ProxyResponse::buffered(http::StatusCode::OK, headers, bytes.clone());
+            let (headers, status, output) =
+                read_decoded_body(response, "synthetic", Duration::ZERO).await?;
+            assert!(
+                status == http::StatusCode::OK && output == bytes && headers == original_headers,
+                "observations cannot alter fallback response semantics"
+            );
+        }
+        assert!(
+            OBSERVED.load(Ordering::SeqCst) > 0,
+            "observer must see the actual production path"
+        );
+        if FORBIDDEN.load(Ordering::SeqCst) {
+            std::process::exit(86);
+        }
+        std::process::exit(SUCCESS);
     }
 
     #[tokio::test]
@@ -1118,6 +1228,8 @@ mod tests {
 
     fn build_state(db: Arc<Database>) -> ProxyState {
         ProxyState {
+            restoration_gateway:
+                super::super::security::http_restoration::RestorationGateway::new_default(),
             pi_runtime: Arc::default(),
             db: db.clone(),
             config: Arc::new(RwLock::new(ProxyConfig::default())),

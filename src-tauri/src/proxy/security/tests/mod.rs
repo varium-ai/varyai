@@ -456,7 +456,7 @@ fn test_optional_password_rules_can_be_changed_to_redact_without_leaking_values(
 }
 
 #[test]
-fn generic_sk_rule_redacts_only_when_explicitly_selected() {
+fn generic_sk_rule_rejects_redaction_even_when_explicitly_selected() {
     let secret = "sk-synthetic-fixture";
     let original =
         json!({"messages": [{"role": "user", "content": format!("Token {secret} for testing")}]});
@@ -470,18 +470,15 @@ fn generic_sk_rule_redacts_only_when_explicitly_selected() {
     runtime
         .builtin_action_overrides
         .insert("catalog:generic-sk-key-notice".into(), AuditAction::Redact);
-    let mut body = original;
+    let mut body = original.clone();
     let result = SecurityAuditEngine::inspect_and_redact_with_runtime(&mut body, &runtime);
     assert!(!result.blocked);
-    assert_eq!(
-        body["messages"][0]["content"],
-        "Token [REDACTED] for testing"
-    );
+    assert_eq!(body, original);
     assert!(result
         .findings
         .iter()
         .any(|finding| finding.rule_id == "catalog:generic-sk-key-notice"
-            && finding.action == AuditAction::Redact));
+            && finding.action == AuditAction::Allow));
     assert!(result
         .findings
         .iter()
@@ -747,6 +744,11 @@ fn test_large_payload_fast_passthrough() {
         ]
     });
 
+    // Measure steady-state payload inspection, not process-wide lazy regex compilation.
+    let warmup = SecurityAuditEngine::inspect_request(&json!({"messages":[{
+        "role":"user", "content":"synthetic warmup"
+    }]}));
+    assert!(!warmup.blocked && warmup.findings.is_empty());
     let start = std::time::Instant::now();
     let res = SecurityAuditEngine::inspect_request(&body);
     let elapsed = start.elapsed();
@@ -1497,8 +1499,17 @@ fn test_custom_allow_passes_without_rewriting_or_blocking() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn test_mut_intercept_redacts_by_default() {
     use crate::app_config::AppType;
+    struct Restore(super::runtime::SecurityRuntimeConfig);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            super::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _restore = Restore((*super::runtime::get_security_runtime()).clone());
+    super::runtime::set_security_runtime_for_test(Default::default());
     let mut body = json!({"messages": [{"role":"user", "content":"ghp_111122223333444455556666777788889999"}]});
     let response =
         super::inspect_and_intercept_mut(&AppType::Claude, &mut body).expect("inspection");

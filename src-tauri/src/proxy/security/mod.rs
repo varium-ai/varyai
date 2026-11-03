@@ -6,15 +6,52 @@
 #![allow(dead_code)]
 
 mod aggregation;
+mod atomic_update;
 pub mod audit_logger;
 pub mod builtin_rules;
+pub(crate) mod chat_enrichment;
+mod completed_context;
+pub(crate) mod completion_evidence;
+pub(crate) mod completion_json;
+mod completion_tools;
 pub mod engine;
 pub mod extractor;
+pub(crate) mod history_provenance;
+pub(crate) mod http_restoration;
 mod identity;
+mod output_text_matching;
+mod payload_budget;
+mod payload_buffer;
+mod payload_json;
+mod payload_metadata;
+mod payload_text;
 pub mod pii;
+mod request_carriers;
+mod request_detection;
+mod request_plan;
+mod request_preparation;
+mod request_transaction;
 pub mod response;
+pub(crate) mod response_restoration;
+mod restoration_audit;
+mod restoration_policy;
+pub(crate) mod restore_diagnostics;
 pub mod runtime;
+mod token_format;
+mod token_format_diagnostics;
+mod token_store_owners;
+mod tokenization;
+pub(crate) mod upstream_error;
+mod upstream_guard;
+#[allow(unused_imports)]
+pub(crate) use upstream_guard::UpstreamPayloadOwner;
 pub mod types;
+#[allow(unused_imports)]
+pub(crate) use completed_context::ActualAttemptBinding;
+#[cfg(test)]
+pub(crate) use history_provenance::history_allocation_test_support;
+#[allow(unused_imports)]
+pub(crate) use tokenization::{DlpRequestLease, DlpTokenStore};
 
 #[allow(unused_imports)]
 pub use runtime::{get_security_runtime, reload_security_runtime, SecurityRuntimeConfig};
@@ -29,9 +66,82 @@ pub use response::build_blocked_response;
 pub use engine::SecurityAuditEngine;
 #[allow(unused_imports)]
 pub use types::*;
+#[cfg(test)]
+#[path = "tests/atomic_compat_tests.rs"]
+mod atomic_compat_tests;
+#[cfg(test)]
+#[path = "tests/atomic_update_tests.rs"]
+mod atomic_update_tests;
+#[cfg(test)]
+#[path = "tests/history_test_process.rs"]
+pub(super) mod history_test_process;
 
 #[cfg(test)]
+#[path = "tests/aggregation_tests.rs"]
 mod aggregation_tests;
+#[cfg(test)]
+#[path = "tests/history_provenance_tests.rs"]
+mod history_provenance_tests;
+#[cfg(test)]
+#[path = "tests/request_literal_tests.rs"]
+mod request_literal_tests;
+#[cfg(test)]
+#[path = "tests/response_literal_tests.rs"]
+mod response_literal_tests;
+#[cfg(test)]
+#[path = "tests/restoration_audit_tests.rs"]
+mod restoration_audit_tests;
+#[cfg(test)]
+#[path = "tests/reversible_buffer_tests.rs"]
+mod reversible_buffer_tests;
+#[cfg(test)]
+#[path = "tests/reversible_carrier_tests.rs"]
+mod reversible_carrier_tests;
+#[cfg(test)]
+#[path = "tests/reversible_completion_tests.rs"]
+mod reversible_completion_tests;
+#[cfg(test)]
+#[path = "tests/reversible_context_tests.rs"]
+mod reversible_context_tests;
+#[cfg(test)]
+#[path = "tests/reversible_detection_tests.rs"]
+mod reversible_detection_tests;
+#[cfg(test)]
+#[path = "tests/reversible_json_tests.rs"]
+mod reversible_json_tests;
+#[cfg(test)]
+#[path = "tests/reversible_metadata_tests.rs"]
+mod reversible_metadata_tests;
+#[cfg(test)]
+#[path = "tests/reversible_payload_tests.rs"]
+mod reversible_payload_tests;
+#[cfg(test)]
+#[path = "tests/reversible_plan_tests.rs"]
+mod reversible_plan_tests;
+#[cfg(test)]
+#[path = "tests/reversible_policy_tests.rs"]
+mod reversible_policy_tests;
+#[cfg(test)]
+#[path = "tests/reversible_preparation_tests.rs"]
+mod reversible_preparation_tests;
+#[cfg(test)]
+#[path = "tests/reversible_response_tests.rs"]
+mod reversible_response_tests;
+#[cfg(test)]
+#[path = "tests/reversible_runtime_tests.rs"]
+mod reversible_runtime_tests;
+#[cfg(test)]
+#[path = "tests/reversible_store_owner_tests.rs"]
+mod reversible_store_owner_tests;
+#[cfg(test)]
+#[path = "tests/reversible_tests.rs"]
+mod reversible_tests;
+#[cfg(test)]
+#[path = "tests/reversible_text_tests.rs"]
+mod reversible_text_tests;
+#[cfg(test)]
+#[path = "tests/reversible_transaction_tests.rs"]
+mod reversible_transaction_tests;
 #[cfg(test)]
 mod tests;
 
@@ -71,7 +181,11 @@ pub(crate) fn inspect_with_context(
         return Ok(None);
     }
     let session_id = audit_session_id(app_type, headers, body);
-    let runtime = get_security_runtime();
+    let admission = match runtime::admit_security_runtime() {
+        Ok(admission) => admission,
+        Err(_) => return response::build_unavailable_response(wire).map(Some),
+    };
+    let runtime = admission.runtime;
     let detected_at = std::time::Instant::now();
     let now = chrono::Utc::now().timestamp_millis();
     let current_turn = extractor::CurrentTurn::new(body);
@@ -157,7 +271,7 @@ pub fn inspect_and_intercept(
         || inspection
             .findings
             .iter()
-            .any(|f| f.action == AuditAction::Redact);
+            .any(|f| matches!(f.action, AuditAction::Redact | AuditAction::RedactRestore));
 
     // Enqueue audit events asynchronously.
     let current_turn = extractor::CurrentTurn::new(body);
@@ -256,3 +370,11 @@ pub(crate) fn audit_session_id(
         None
     }
 }
+
+#[cfg(test)]
+#[path = "tests/reversible_integration_tests.rs"]
+mod reversible_integration_tests;
+
+#[cfg(test)]
+#[path = "tests/upstream_error_tests.rs"]
+mod upstream_error_tests;

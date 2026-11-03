@@ -15,6 +15,10 @@ impl fmt::Debug for ContentFingerprint {
 static PROCESS_KEY: OnceLock<Option<[u8; 32]>> = OnceLock::new();
 
 pub fn fingerprint(text: &str) -> Option<ContentFingerprint> {
+    #[cfg(test)]
+    if test_support::audit_unavailable() {
+        return None;
+    }
     let key = PROCESS_KEY
         .get_or_init(|| {
             let mut key = [0u8; 32];
@@ -43,5 +47,23 @@ mod tests {
         assert_eq!(a, fingerprint_with_key("short-secret", &[1; 32]).unwrap());
         assert_ne!(a, fingerprint_with_key("short-secret", &[2; 32]).unwrap());
         assert_eq!(format!("{a:?}"), "ContentFingerprint(<redacted>)");
+    }
+}
+
+#[cfg(test)]
+pub(super) mod test_support {
+    use std::{cell::Cell, marker::PhantomData, rc::Rc};
+    thread_local! { static AUDIT_UNAVAILABLE: Cell<bool> = const { Cell::new(false) }; }
+    pub(super) fn audit_unavailable() -> bool {
+        AUDIT_UNAVAILABLE.get()
+    }
+    pub(crate) struct AuditFault(bool, PhantomData<Rc<()>>);
+    pub(crate) fn fail_audit_fingerprint() -> AuditFault {
+        AuditFault(AUDIT_UNAVAILABLE.replace(true), PhantomData)
+    }
+    impl Drop for AuditFault {
+        fn drop(&mut self) {
+            AUDIT_UNAVAILABLE.set(self.0);
+        }
     }
 }

@@ -983,12 +983,10 @@ impl ProxyService {
         if settings.enabled && !self.is_running().await {
             self.start().await?;
         }
-        self.db
-            .update_security_settings(settings)
-            .map_err(|e| e.to_string())?;
-        if let Err(e) = crate::proxy::security::reload_security_runtime(&self.db) {
-            log::warn!("[SecurityAudit] 热更新安全运行时配置失败: {e}");
-        }
+        crate::proxy::security::runtime::update_security_runtime(&self.db, |db| {
+            db.update_security_settings(settings)
+        })
+        .map_err(|e| e.to_string())?;
         if let Some(app) = self.app_handle.read().await.as_ref() {
             crate::tray::update_security_audit_icon(app, settings.enabled);
         }
@@ -5319,6 +5317,60 @@ mod tests {
         assert_eq!(env.get(key).and_then(|value| value.as_str()), expected);
     }
 
+    #[tokio::test]
+    #[serial]
+    async fn disabling_desktop_routing_clears_only_its_active_target_after_main_merge(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory()?);
+        let service = ProxyService::new(db.clone());
+        let server = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            db,
+            None,
+        )
+        .with_restoration_gateway(
+            crate::proxy::security::http_restoration::RestorationGateway::new_default(),
+        );
+        server
+            .set_active_target("claude-desktop", "synthetic-desktop", "Synthetic Desktop")
+            .await;
+        server
+            .set_active_target("codex", "synthetic-codex", "Synthetic Codex")
+            .await;
+        *service.server.write().await = Some(server);
+
+        assert!(
+            service
+                .set_takeover_for_app("claude-desktop", false)
+                .await
+                .is_ok(),
+            "desktop_disable_rejected"
+        );
+        assert!(
+            service
+                .set_takeover_for_app("claude-desktop", false)
+                .await
+                .is_ok(),
+            "desktop_disable_not_idempotent"
+        );
+        let guard = service.server.read().await;
+        let server = guard.as_ref().ok_or("synthetic_server_missing")?;
+        let status = server.get_status().await;
+        assert_eq!(status.active_targets.len(), 1, "active_target_count");
+        assert!(
+            status.active_targets.iter().all(|target| {
+                target.app_type == "codex" && target.provider_id == "synthetic-codex"
+            }),
+            "unrelated_target_changed"
+        );
+        assert!(!status.running, "fixture_started_listener");
+        Ok(())
+    }
+
     async fn use_ephemeral_proxy_port(db: &Arc<Database>) {
         let mut proxy_config = db.get_proxy_config().await.expect("get test proxy config");
         proxy_config.listen_port = 0;
@@ -5384,6 +5436,84 @@ mod tests {
                 });
             });
         }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn security_settings_save_requires_successful_policy_publication(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        struct Restore(crate::proxy::security::SecurityRuntimeConfig);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _restore = Restore((*crate::proxy::security::get_security_runtime()).clone());
+        let db = Arc::new(Database::memory()?);
+        crate::proxy::security::reload_security_runtime(&db)?;
+        db.extension_connection()
+            .lock()
+            .map_err(|_| "fixture lock")?
+            .execute_batch("DROP TABLE security_custom_rules")?;
+        let service = ProxyService::new(db.clone());
+        let result = service
+            .update_security_audit_settings(&crate::database::SecurityAuditSettings {
+                enabled: false,
+            })
+            .await;
+        assert_eq!(result, Err("dlp_unavailable".into()));
+        assert!(
+            !db.get_security_settings()?.enabled,
+            "save committed before source load failed"
+        );
+        let mut body = json!({"input":"synthetic harmless fixture"});
+        let response = crate::proxy::security::inspect_and_intercept_mut(
+            &crate::app_config::AppType::Codex,
+            &mut body,
+        )?;
+        assert_eq!(
+            response
+                .ok_or("failed publication must close HTTP admission")?
+                .status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn security_settings_persistence_failure_closes_policy_before_attempting_save(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        struct Restore(crate::proxy::security::SecurityRuntimeConfig);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _restore = Restore((*crate::proxy::security::get_security_runtime()).clone());
+        let db = Arc::new(Database::memory()?);
+        crate::proxy::security::reload_security_runtime(&db)?;
+        db.extension_connection().lock().map_err(|_| "fixture lock")?
+            .execute_batch("CREATE TRIGGER synthetic_settings_save_failure BEFORE INSERT ON security_settings BEGIN SELECT RAISE(ABORT, 'synthetic private persistence detail'); END")?;
+        let service = ProxyService::new(db);
+        let result = service
+            .update_security_audit_settings(&crate::database::SecurityAuditSettings {
+                enabled: false,
+            })
+            .await;
+        assert_eq!(result, Err("dlp_unavailable".into()));
+        let mut body = json!({"input":"synthetic harmless fixture"});
+        let response = crate::proxy::security::inspect_and_intercept_mut(
+            &crate::app_config::AppType::Codex,
+            &mut body,
+        )?;
+        assert_eq!(
+            response
+                .ok_or("save failure must leave admission closed")?
+                .status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        Ok(())
     }
 
     #[tokio::test]

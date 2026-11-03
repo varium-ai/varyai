@@ -15,7 +15,14 @@ vi.mock("@/hooks/useSecurityProtection", () => ({
 }));
 vi.mock("@/hooks/useSecurityEvents", () => ({
   useSecurityEventsSummary: vi.fn(() => ({
-    data: { protectiveBlocked: 2, redacted: 3, warnings: 4 },
+    data: {
+      total: 9,
+      dlpCount: 7,
+      toolRiskCount: 2,
+      redacted: 3,
+      warnings: 4,
+      protectiveBlocked: 2,
+    },
     isError: false,
     isLoading: false,
   })),

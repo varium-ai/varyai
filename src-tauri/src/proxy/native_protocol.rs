@@ -196,7 +196,7 @@ pub(super) async fn forward(
     } else {
         format!("{endpoint}?{query}")
     };
-    let (response, _, model, _) = forwarder
+    let (response, _, model, _, _) = forwarder
         .forward(
             &app,
             &parts.method,
