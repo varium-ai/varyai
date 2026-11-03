@@ -8,6 +8,7 @@
 - [Qoder integration](guides/qoder.md)
 - [WorkBuddy integration](guides/workbuddy.md)
 - [Doubao Work integration](guides/doubao-work.md)
+- [Daily rewards and account selection](guides/daily-checkin.md)
 - [Multi-client profiles](guides/profiles.md)
 - [Gateway keys and token budgets](guides/gateway-keys.md)
 - [Local gateway and VPN bypass](guides/proxy-configs/README.md)

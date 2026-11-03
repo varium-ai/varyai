@@ -8,6 +8,7 @@ mod config;
 mod connection_presets;
 mod copilot;
 mod deeplink;
+mod doubao_checkin;
 mod env;
 mod failover;
 mod gateway;
@@ -84,6 +85,7 @@ pub(crate) use telemetry::*;
 pub use tool_risk::*;
 pub use xai_oauth::*;
 
+pub(crate) use doubao_checkin::*;
 pub use lightweight::*;
 pub use s3_sync::*;
 pub use usage::*;

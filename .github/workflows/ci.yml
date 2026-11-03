@@ -141,6 +141,11 @@ jobs:
       - name: Client bridge tests
         run: pnpm test:trae-bridge
 
+      - name: WorkBuddy credential helper tests
+        run: pnpm test:workbuddy-checkin-auth
+      - name: Doubao Work check-in helper tests
+        run: pnpm test:doubao-checkin
+
       - name: Qoder codec tests
         run: pnpm test:qoder-codec
 

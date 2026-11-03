@@ -8,6 +8,7 @@ export type WorkBuddyCheckinOutcome =
   | "ineligible"
   | "own_app_required"
   | "sign_in_required"
+  | "credentials_protected"
   | "credentials_unavailable"
   | "failed";
 
@@ -21,9 +22,38 @@ export interface WorkBuddyCheckinStatus {
   creditDelayed: boolean;
 }
 
+export interface WorkBuddyCheckinAccount {
+  id: string;
+  label: string;
+  source: "native" | "browser";
+  status: WorkBuddyCheckinStatus;
+}
+
+export interface WorkBuddyCheckinAccounts {
+  accounts: WorkBuddyCheckinAccount[];
+  nativeStatus: WorkBuddyCheckinStatus;
+}
+
 export const workbuddyCheckinApi = {
   status: () => invoke<WorkBuddyCheckinStatus>("get_workbuddy_checkin_status"),
-  checkIn: () => invoke<WorkBuddyCheckinStatus>("check_in_workbuddy"),
-  setAutoEnabled: (enabled: boolean) =>
-    invoke<WorkBuddyCheckinStatus>("set_workbuddy_auto_checkin", { enabled }),
+  accounts: () =>
+    invoke<WorkBuddyCheckinAccounts>("get_workbuddy_checkin_accounts"),
+  checkIn: (accountId?: string) =>
+    invoke<WorkBuddyCheckinStatus>("check_in_workbuddy", { accountId }),
+  setAutoEnabled: (enabled: boolean, accountId?: string) =>
+    invoke<WorkBuddyCheckinStatus>("set_workbuddy_auto_checkin", {
+      enabled,
+      accountId,
+    }),
+  startLogin: () =>
+    invoke<{ loginId: string; url: string }>("start_workbuddy_checkin_login"),
+  pollLogin: (loginId: string) =>
+    invoke<{ complete: boolean; accountId: string | null }>(
+      "poll_workbuddy_checkin_login",
+      { loginId },
+    ),
+  cancelLogin: (loginId: string) =>
+    invoke<void>("cancel_workbuddy_checkin_login", { loginId }),
+  removeAccount: (accountId: string) =>
+    invoke<void>("remove_workbuddy_checkin_account", { accountId }),
 };

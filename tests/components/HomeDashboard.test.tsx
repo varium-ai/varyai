@@ -53,6 +53,9 @@ vi.mock("@/components/QoderCertificatePanel", () => ({
 vi.mock("@/components/DoubaoWorkPanel", () => ({
   DoubaoWorkPanel: () => null,
 }));
+vi.mock("@/components/DoubaoWorkCheckinPanel", () => ({
+  DoubaoWorkCheckinPanel: () => null,
+}));
 vi.mock("@/components/WorkBuddyCheckinPanel", () => ({
   WorkBuddyCheckinPanel: () => null,
 }));

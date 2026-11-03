@@ -4248,12 +4248,12 @@
   "workbuddy": {
     "checkin": {
       "title": "WorkBuddy 毎日チェックイン",
-      "description": "WorkBuddy 中国版でログイン中のアカウントの毎日クレジットを受け取ります。特典は公式キャンペーンによります。API キーと国際版 WorkBuddy AI は対象外です。",
+      "description": "WorkBuddy 中国版のアカウントを選択して公式の毎日の報酬を受け取ります。公式のブラウザログインで複数のアカウントを追加できます。",
       "checkNow": "今すぐチェックイン",
       "checking": "チェックイン中…",
-      "reload": "再読み込み",
+      "reload": "アカウントを更新",
       "autoLabel": "毎日自動チェックイン",
-      "autoHint": "初期設定はオフです。Vary AI の実行中に現在の公式アカウントでチェックインします。設定はこの端末だけに保存されます。",
+      "autoHint": "このアカウントのみに適用されます。VaryAI の実行中、有効な各アカウントで毎日チェックインします。",
       "reward": "クレジット：{{credit}}",
       "streak": "連続日数：{{count}} 日",
       "day": "北京時間の日付：{{day}}",
@@ -4269,9 +4269,18 @@
         "ineligible": "このアカウントはキャンペーンの対象外です。",
         "own_app_required": "公式サービスのクライアント認証が必要です。WorkBuddy 内でチェックインしてください。",
         "sign_in_required": "WorkBuddy を開いて再ログインしてから、もう一度お試しください。",
-        "credentials_unavailable": "読み取り可能な WorkBuddy 中国版のログイン情報がありません。公式クライアントでログインしてください。暗号化された認証情報は読み取れません。",
+        "credentials_protected": "インストール済みのクライアントを通じて、保護された WorkBuddy の認証情報を読み取れませんでした。",
+        "credentials_unavailable": "読み取り可能な WorkBuddy 中国版のログイン情報がありません。公式クライアントでログインしてください。",
         "failed": "チェックイン結果を確認できませんでした。後で再試行してください。特典の受領は未確認です。"
-      }
+      },
+      "account": "チェックインアカウント",
+      "selectAccount": "アカウントを選択",
+      "nativeAccount": "デスクトップの現在のログイン",
+      "addAccount": "アカウントを追加",
+      "removeAccount": "アカウントを削除",
+      "loginWaiting": "WorkBuddy の公式ページでログインを完了してください。",
+      "authError": "ログインを完了できませんでした。もう一度お試しください。",
+      "accountUnavailable": "このアカウントは利用できません。ログイン後に選択し直してください。"
     },
     "officialName": "WorkBuddy Official",
     "settings": {
@@ -4602,5 +4611,40 @@
     "restartRequired": "別のストレージを準備する前に VaryAI を再起動してください。",
     "useDefault": "既定のデータディレクトリを使用",
     "setupReadFailed": "VaryAI の保存先を読み取れません。データディレクトリの設定とアクセス権を確認してください。"
+  },
+  "doubaowork": {
+    "checkin": {
+      "title": "Doubao Work の毎日のチェックイン",
+      "description": "公式 Doubao Work クライアントのアカウントを表示します。追加のアカウントはクライアントでログイン後、一覧を更新してください。",
+      "account": "チェックインアカウント",
+      "selectAccount": "アカウントを選択",
+      "currentAccount": "現在のログイン",
+      "reload": "アカウントを更新",
+      "checkNow": "今すぐチェックイン",
+      "checking": "チェックイン中…",
+      "autoLabel": "毎日自動チェックイン",
+      "autoHint": "両方のアプリを起動し接続した状態で、有効なアカウントを順番にチェックインします。最後に処理したアカウントが選択されたままになります。",
+      "loadFailed": "チェックイン状態を取得できませんでした。",
+      "operationFailed": "操作を完了できませんでした。もう一度お試しください。",
+      "storageError": "チェックイン記録を読み書きできません。",
+      "accountUnavailable": "このアカウントは利用できません。ログイン後に更新してください。",
+      "reward": "クレジット：{{credit}}",
+      "streak": "連続日数：{{count}} 日",
+      "totalDays": "累計チェックイン：{{count}} 日",
+      "day": "北京の日付：{{day}}",
+      "outcomes": {
+        "not_checked": "このアカウントの本日の状態は未確認です。",
+        "claimed": "毎日の報酬を受け取りました。詳細は Doubao Work で確認してください。",
+        "already_checked": "本日はチェックイン済みです。",
+        "inactive": "現在、受け取れるチェックイン報酬はありません。",
+        "switch_required": "チェックイン中にアカウントが変更されました。更新して再試行してください。",
+        "sign_in_required": "公式 Doubao Work クライアントにログインしてください。",
+        "connection_required": "下の操作で Doubao Work に接続してください。",
+        "unsupported": "このクライアントのバージョンは対応するチェックインサービスを提供していません。",
+        "failed": "報酬の受け取りを確認できませんでした。もう一度お試しください。"
+      },
+      "switchAndCheckin": "切り替えてチェックイン",
+      "switchHint": "チェックイン時に Doubao Work をこのアカウントに切り替え、完了後もそのままにします。"
+    }
   }
 }

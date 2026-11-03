@@ -4322,12 +4322,12 @@
   "workbuddy": {
     "checkin": {
       "title": "WorkBuddy daily check-in",
-      "description": "Claim daily credits for the account signed in to WorkBuddy China. Available rewards depend on the official campaign; API keys and WorkBuddy AI are not supported.",
+      "description": "Select a WorkBuddy China account to claim its official daily reward. Add accounts through the official browser sign-in.",
       "checkNow": "Check in now",
       "checking": "Checking in…",
-      "reload": "Reload",
+      "reload": "Refresh accounts",
       "autoLabel": "Automatic daily check-in",
-      "autoHint": "Off by default. While Vary AI is running, check in with the current official account. Saved only on this computer.",
+      "autoHint": "Applies only to this account. While VaryAI is open, enabled accounts are checked separately each day.",
       "reward": "Credits: {{credit}}",
       "streak": "Consecutive days: {{count}}",
       "day": "Beijing date: {{day}}",
@@ -4343,9 +4343,18 @@
         "ineligible": "This account is not eligible for the campaign.",
         "own_app_required": "Complete check-in in WorkBuddy. The official service requires its client verification.",
         "sign_in_required": "Open WorkBuddy and sign in again, then retry here.",
-        "credentials_unavailable": "No readable WorkBuddy China login. Open and sign in to the official client. Protected credentials cannot be read.",
+        "credentials_protected": "Could not read protected WorkBuddy credentials through the installed client.",
+        "credentials_unavailable": "No readable WorkBuddy China login. Open and sign in to the official client.",
         "failed": "Check-in could not be confirmed. Retry later; no reward is assumed."
-      }
+      },
+      "account": "Check-in account",
+      "selectAccount": "Select an account",
+      "nativeAccount": "Current desktop login",
+      "addAccount": "Add account",
+      "removeAccount": "Remove account",
+      "loginWaiting": "Complete sign-in in the official WorkBuddy browser page.",
+      "authError": "Sign-in could not be completed. Please try again.",
+      "accountUnavailable": "This account is no longer available. Select it again after signing in."
     },
     "officialName": "WorkBuddy Official",
     "settings": {
@@ -4676,5 +4685,40 @@
     "restartRequired": "Restart VaryAI before preparing a different storage location.",
     "useDefault": "Use the default data directory",
     "setupReadFailed": "Cannot read the VaryAI storage location. Check the data-directory setting and permissions."
+  },
+  "doubaowork": {
+    "checkin": {
+      "title": "Doubao Work daily check-in",
+      "description": "Accounts come from the official Doubao Work client. Sign in to additional accounts there, then refresh this list.",
+      "account": "Check-in account",
+      "selectAccount": "Select an account",
+      "currentAccount": "Current login",
+      "reload": "Refresh accounts",
+      "checkNow": "Check in now",
+      "checking": "Checking in…",
+      "autoLabel": "Automatic daily check-in",
+      "autoHint": "Enabled accounts are checked in sequence while both applications remain open and connected. Doubao Work stays on the last processed account.",
+      "loadFailed": "Could not load check-in status.",
+      "operationFailed": "Could not complete the action. Please try again.",
+      "storageError": "Check-in records could not be read or saved.",
+      "accountUnavailable": "This account is unavailable. Refresh after signing in.",
+      "reward": "Credits: {{credit}}",
+      "streak": "Consecutive days: {{count}}",
+      "totalDays": "Total check-in days: {{count}}",
+      "day": "Beijing date: {{day}}",
+      "outcomes": {
+        "not_checked": "This account has not been checked today.",
+        "claimed": "Daily reward claimed. View reward details in Doubao Work.",
+        "already_checked": "Already checked in today.",
+        "inactive": "No check-in reward is currently available.",
+        "switch_required": "The active account changed during check-in. Refresh and try again.",
+        "sign_in_required": "Sign in to the official Doubao Work client.",
+        "connection_required": "Connect Doubao Work using the controls below.",
+        "unsupported": "This client version does not expose a supported check-in service.",
+        "failed": "The reward could not be confirmed. Please try again."
+      },
+      "switchAndCheckin": "Switch and check in",
+      "switchHint": "Check-in switches Doubao Work to this account and leaves it selected."
+    }
   }
 }

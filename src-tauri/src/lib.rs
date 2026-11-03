@@ -1168,6 +1168,12 @@ pub fn run() {
                 ));
                 app.manage(checkin.clone());
                 checkin.start_worker();
+                let doubao_checkin = Arc::new(services::doubao_checkin::Manager::new(
+                    directory.join("doubao-checkin.json"),
+                    app.state::<AppState>().db.clone(),
+                ));
+                app.manage(doubao_checkin.clone());
+                doubao_checkin.start_worker();
             }
 
             // 初始化 SkillService
@@ -1731,6 +1737,14 @@ pub fn run() {
             commands::get_workbuddy_checkin_status,
             commands::check_in_workbuddy,
             commands::set_workbuddy_auto_checkin,
+            commands::get_workbuddy_checkin_accounts,
+            commands::start_workbuddy_checkin_login,
+            commands::poll_workbuddy_checkin_login,
+            commands::cancel_workbuddy_checkin_login,
+            commands::remove_workbuddy_checkin_account,
+            commands::get_doubao_checkin_accounts,
+            commands::check_in_doubao,
+            commands::set_doubao_auto_checkin,
             commands::save_workbuddy_settings,
             commands::get_workbuddy_default_config_dir,
             // OpenClaw specific

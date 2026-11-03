@@ -10,6 +10,7 @@ struct Fixture {
     _dir: tempfile::TempDir,
     manager: Manager,
     calls: Arc<AtomicUsize>,
+    device_calls: Arc<AtomicUsize>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -26,8 +27,11 @@ fn session(uid: &str) -> Value {
 async fn fixture(status: Value, claim: Value, claim_status: u16, summary_status: u16) -> Fixture {
     let calls = Arc::new(AtomicUsize::new(0));
     let count = calls.clone();
+    let device_calls = Arc::new(AtomicUsize::new(0));
+    let device_count = device_calls.clone();
     let app = Router::new().fallback(move |req: Request| {
         let count = count.clone();
+        let device_count = device_count.clone();
         let status = status.clone();
         let claim = claim.clone();
         async move {
@@ -39,6 +43,10 @@ async fn fixture(status: Value, claim: Value, claim_status: u16, summary_status:
             );
             assert_eq!(req.headers()["x-user-id"], "synthetic-user");
             assert_eq!(req.headers()["x-domain"], "www.workbuddy.cn");
+            if let Some(token) = req.headers().get("x-device-token") {
+                assert_eq!(token, "synthetic-device-token");
+                device_count.fetch_add(1, Ordering::SeqCst);
+            }
             assert!(req.headers()["user-agent"]
                 .to_str()
                 .expect("UA")
@@ -76,6 +84,7 @@ async fn fixture(status: Value, claim: Value, claim_status: u16, summary_status:
         _dir: dir,
         manager,
         calls,
+        device_calls,
         task,
     }
 }
@@ -95,6 +104,7 @@ async fn status_is_read_only_and_manual_claim_is_cached_across_restarts() {
     assert!(!status.auto_enabled);
     assert_eq!(status.outcome, Outcome::NotChecked);
     assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(f.device_calls.load(Ordering::SeqCst), 0);
     let (a, b) = tokio::join!(f.manager.check_in(true), f.manager.check_in(true));
     let a = a.expect("claim");
     assert_eq!(a.outcome, Outcome::Claimed);
@@ -301,6 +311,90 @@ async fn automatic_checkin_requires_opt_in_and_obeys_backoff() {
 }
 
 #[tokio::test]
+async fn protected_credentials_without_a_native_runtime_are_reported_without_network_requests() {
+    let f = fixture(active(), reward(), 200, 200).await;
+    let mut protected = session("synthetic-user");
+    protected["auth"]["accessToken"] =
+        json!({"$wbEncrypted": 1, "envelope": "synthetic-encrypted-envelope"});
+    std::fs::write(&f.manager.auth_path, protected.to_string()).expect("protected session");
+    let original = std::fs::read(&f.manager.auth_path).expect("session");
+    let result = f.manager.status().await.expect("status");
+    assert_eq!(
+        serde_json::to_value(&result).expect("status JSON")["outcome"],
+        "credentials_protected"
+    );
+    f.manager.check_in(true).await.expect("manual check-in");
+    assert!(f.manager.set_auto_enabled(true).await.is_err());
+    f.manager.check_in(false).await.expect("automatic check-in");
+    assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        std::fs::read(&f.manager.auth_path).expect("session"),
+        original
+    );
+    let serialized = serde_json::to_string(&result).expect("status JSON");
+    assert!(!serialized.contains("synthetic-encrypted-envelope"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_runtime_resolves_protected_sessions_and_supplies_device_verification() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut f = fixture(active(), reward(), 200, 200).await;
+    let contents = f._dir.path().join("WorkBuddy.app/Contents");
+    let runtime = contents.join("MacOS/Electron");
+    let framework =
+        contents.join("Frameworks/Electron Framework.framework/Versions/A/Electron Framework");
+    std::fs::create_dir_all(runtime.parent().expect("runtime parent")).expect("runtime directory");
+    std::fs::create_dir_all(framework.parent().expect("framework parent"))
+        .expect("framework directory");
+    std::fs::write(
+        &framework,
+        b"synthetic-binary-dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX\x01\x081",
+    )
+    .expect("enabled Node fuse");
+    std::fs::write(&runtime, r##"#!/bin/sh
+test "$ELECTRON_RUN_AS_NODE" = 1 || exit 2
+if [ "$4" = request ]; then
+    printf '\nVARYAI_WORKBUDDY_AUTH:{"uid":"synthetic-user","accessToken":"synthetic-access-token","domain":"www.workbuddy.cn","clientVersion":"5.9.3","deviceToken":"synthetic-device-token"}'
+else
+    printf '\nVARYAI_WORKBUDDY_AUTH:{"uid":"synthetic-user","accessToken":"synthetic-access-token","domain":"www.workbuddy.cn","clientVersion":"5.9.3"}'
+fi
+"##).expect("fake runtime");
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).expect("executable");
+    f.manager.native_runtime = Some(runtime);
+    let mut protected = session("synthetic-user");
+    protected["auth"]["accessToken"] = json!({"$wbEncrypted":1,"envelope":"synthetic-envelope"});
+    std::fs::write(&f.manager.auth_path, protected.to_string()).expect("session");
+    let before = std::fs::read(&f.manager.auth_path).expect("session");
+    assert_eq!(
+        f.manager.status().await.expect("status").outcome,
+        Outcome::NotChecked
+    );
+    assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        f.manager.check_in(true).await.expect("claim").outcome,
+        Outcome::Claimed
+    );
+    assert_eq!(f.device_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        std::fs::read(&f.manager.auth_path).expect("session"),
+        before
+    );
+    let saved = std::fs::read_to_string(&f.manager.path).expect("record");
+    assert!(!saved.contains("synthetic-access-token"));
+    assert!(!saved.contains("synthetic-device-token"));
+    std::fs::write(
+        &framework,
+        b"synthetic-binary-dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX\x01\x080",
+    )
+    .expect("disabled Node fuse");
+    assert!(matches!(
+        f.manager.native_account("session").await,
+        Err(Outcome::CredentialsProtected)
+    ));
+}
+
+#[tokio::test]
 async fn unreadable_credentials_and_state_never_send_requests_or_overwrite_files() {
     let f = fixture(active(), reward(), 200, 200).await;
     for auth in [
@@ -378,4 +472,55 @@ fn beijing_day_boundary_and_retry_rules() {
     };
     assert!(!claimed.should_run(early + 1800, true));
     assert!(!claimed.should_run(early - 1, false));
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "Requires a signed-in macOS WorkBuddy client; reads campaign status without claiming credits"]
+async fn live_native_workbuddy_checkin_status() {
+    let dir = tempfile::tempdir().expect("temporary local records");
+    let manager = Manager::new(dir.path().join("checkin.json"));
+    let account = manager
+        .native_account("request")
+        .await
+        .expect("read native account");
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(20))
+        .build()
+        .expect("HTTP client");
+    let status = manager
+        .call(&client, &account, STATUS_PATH)
+        .await
+        .map_err(|_| "Official check-in status unavailable")
+        .expect("campaign status");
+    assert!(status.get("active").is_some_and(Value::is_boolean));
+    assert!(!manager.path.exists());
+}
+
+#[tokio::test]
+async fn saved_native_auto_preference_is_bound_once_and_does_not_follow_account_switches() {
+    let f = fixture(active(), reward(), 200, 200).await;
+    std::fs::write(
+        &f.manager.path,
+        json!({"autoEnabled":true,"records":{}}).to_string(),
+    )
+    .expect("old preference");
+    f.manager.run_auto().await.expect("migrate and claim");
+    let saved = f.manager.read_store().await.expect("migrated state");
+    assert!(!saved.auto_enabled);
+    std::fs::write(&f.manager.auth_path, session("different-user").to_string())
+        .expect("switch native account");
+    f.manager
+        .run_auto()
+        .await
+        .expect("new native account is opt-in");
+    assert_eq!(f.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(
+        !f.manager
+            .status()
+            .await
+            .expect("current status")
+            .auto_enabled
+    );
 }
