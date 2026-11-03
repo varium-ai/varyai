@@ -130,7 +130,7 @@ function providerSort(a: Provider, b: Provider): number {
   );
 }
 
-function SecurityStatusRow({
+export function SecurityStatusRow({
   appType,
   onOpenSecurity,
   onOpenRoutingSettings,

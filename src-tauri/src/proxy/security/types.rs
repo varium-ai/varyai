@@ -38,6 +38,9 @@ pub enum AuditAction {
     Audit,
     /// Redact sensitive text before forwarding.
     Redact,
+    /// Replace supported sensitive text with locally restorable references.
+    #[serde(rename = "redact_restore")]
+    RedactRestore,
     /// Forward unchanged without a security event or notification.
     Allow,
 }
@@ -48,6 +51,7 @@ impl AuditAction {
             Self::Block => "block",
             Self::Audit => "audit",
             Self::Redact => "redact",
+            Self::RedactRestore => "redact_restore",
             Self::Allow => "allow",
         }
     }
@@ -134,5 +138,26 @@ impl SecurityInspectionResult {
 
     pub fn is_blocked(&self) -> bool {
         self.blocked
+    }
+}
+
+#[cfg(test)]
+mod redact_restore_tests {
+    use super::*;
+
+    #[test]
+    fn redact_restore_has_exact_public_serde_spelling() -> Result<(), serde_json::Error> {
+        let action: AuditAction = serde_json::from_str("\"redact_restore\"")?;
+        assert_eq!(action.as_str(), "redact_restore");
+        assert_eq!(serde_json::to_string(&action)?, "\"redact_restore\"");
+        for invalid in [
+            "redactrestore",
+            "redact-restore",
+            "RedactRestore",
+            "restore",
+        ] {
+            assert!(serde_json::from_value::<AuditAction>(serde_json::json!(invalid)).is_err());
+        }
+        Ok(())
     }
 }

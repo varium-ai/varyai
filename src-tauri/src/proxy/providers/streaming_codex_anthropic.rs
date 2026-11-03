@@ -53,7 +53,7 @@ struct BlockState {
 
 struct AnthropicToResponsesState {
     response_started: bool,
-    completed: bool,
+    completion: crate::proxy::security::completion_evidence::SseCompletion,
     response_id: String,
     model: String,
     next_output_index: u32,
@@ -69,7 +69,7 @@ impl Default for AnthropicToResponsesState {
     fn default() -> Self {
         Self {
             response_started: false,
-            completed: false,
+            completion: crate::proxy::security::completion_evidence::SseCompletion::anthropic(),
             response_id: "resp_ccswitch".to_string(),
             model: String::new(),
             next_output_index: 0,
@@ -454,7 +454,7 @@ impl AnthropicToResponsesState {
     }
 
     fn finalize(&mut self) -> Vec<Bytes> {
-        if self.completed {
+        if self.completion.legacy_completed() {
             return Vec::new();
         }
         let mut events = self.ensure_response_started();
@@ -483,15 +483,15 @@ impl AnthropicToResponsesState {
         }
 
         events.push(sse::response_completed(&response));
-        self.completed = true;
+        self.completion.finish_legacy();
         events
     }
 
     fn failed_event(&mut self, message: String, error_type: Option<String>) -> Option<Bytes> {
-        if self.completed {
+        if self.completion.legacy_completed() {
             return None;
         }
-        self.completed = true;
+        self.completion.finish_legacy();
         let mut error = json!({ "message": message });
         if let Some(error_type) = error_type.filter(|value| !value.is_empty()) {
             error["type"] = json!(error_type);
@@ -527,7 +527,11 @@ fn extract_anthropic_sse_error(value: &Value) -> (String, Option<String>) {
 fn process_anthropic_sse_block(
     state: &mut AnthropicToResponsesState,
     block: &str,
+    observe: &mut impl for<'a> FnMut(
+        crate::proxy::security::completion_evidence::CompletionObservation<'a>,
+    ),
 ) -> (Vec<Bytes>, bool) {
+    observe(crate::proxy::security::completion_evidence::CompletionObservation::RawFrame(block));
     if block.trim().is_empty() {
         return (Vec::new(), false);
     }
@@ -545,8 +549,15 @@ fn process_anthropic_sse_block(
         return (Vec::new(), false);
     }
     let Ok(data) = serde_json::from_str::<Value>(&data_parts.join("\n")) else {
+        observe(crate::proxy::security::completion_evidence::CompletionObservation::InvalidJson);
         return (Vec::new(), false);
     };
+    observe(
+        crate::proxy::security::completion_evidence::CompletionObservation::AnthropicEvent {
+            event_name: event_name.as_deref(),
+            data: &data,
+        },
+    );
     let msg_type = data
         .get("type")
         .and_then(Value::as_str)
@@ -685,79 +696,104 @@ pub(crate) fn create_responses_sse_stream_from_anthropic_with_context<
     stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static,
     tool_context: CodexToolContext,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    create_responses_sse_stream_from_anthropic_observed(stream, tool_context, |_| {})
+}
+
+/// Inspect original borrowed events before automatic closure or JSON conversion.
+pub(crate) fn create_responses_sse_stream_from_anthropic_observed<
+    E: std::error::Error + Send + 'static,
+>(
+    stream: impl Stream<Item = Result<Bytes, E>> + Send + 'static,
+    tool_context: CodexToolContext,
+    mut observe: impl for<'a> FnMut(crate::proxy::security::completion_evidence::CompletionObservation<'a>)
+        + Send,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    use crate::proxy::security::completion_evidence::CompletionObservation;
     async_stream::stream! {
         let mut buffer = String::new();
         let mut utf8_remainder: Vec<u8> = Vec::new();
         let mut state = AnthropicToResponsesState::with_tool_context(tool_context);
-        let mut stream_failed = false;
+        let mut transport = crate::proxy::security::completion_evidence::CompletionTransport::default();
 
         tokio::pin!(stream);
 
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(bytes) => {
-                    crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
+                    if crate::proxy::sse::append_utf8_safe_observed(&mut buffer, &mut utf8_remainder, &bytes) {
+                        observe(CompletionObservation::InvalidUtf8);
+                    }
 
                     // A few compatible gateways ignore stream:true and return one
                     // JSON document. Hold that body intact (including pretty-printed
                     // blank lines) until EOF instead of discarding it as SSE blocks.
                     if json_document_candidate(&buffer).is_none() {
                         while let Some(block) = take_sse_block(&mut buffer) {
-                            let (events, failed) = process_anthropic_sse_block(&mut state, &block);
+                            let (events, failed) = process_anthropic_sse_block(&mut state, &block, &mut observe);
                             for event in events {
                                 yield Ok(event);
                             }
                             if failed {
-                                stream_failed = true;
+                                transport.abort();
                                 break;
                             }
                         }
                     }
 
-                    if stream_failed {
+                    if transport.legacy_failed() {
                         break;
                     }
                 }
                 Err(e) => {
+                    observe(CompletionObservation::IoFailure);
                     if let Some(event) = state.failed_event(
                         format!("Stream error: {e}"),
                         Some("stream_error".to_string()),
                     ) {
                         yield Ok(event);
                     }
-                    stream_failed = true;
+                    transport.abort();
                     break;
                 }
             }
         }
 
+        let entity_end = CompletionObservation::EntityEnd {
+            reached_eof: !transport.legacy_failed(),
+            unfinished_frame: !buffer.trim().is_empty(),
+            unfinished_utf8: !utf8_remainder.is_empty(),
+        };
+        transport.observe(&entity_end);
+        observe(entity_end);
         // Process a final event even when the upstream omitted the trailing blank
         // line. This is common with buffering reverse proxies and must not discard
         // the last delta or terminal message_stop.
-        if !stream_failed && !buffer.trim().is_empty() {
+        if !transport.legacy_failed() && !buffer.trim().is_empty() {
             if !state.response_started {
                 if let Some(candidate) = json_document_candidate(&buffer) {
+                    observe(CompletionObservation::RawJson(candidate));
                     if let Ok(body) = serde_json::from_str::<Value>(candidate) {
+                        observe(CompletionObservation::AnthropicJson(&body));
                         for event in responses_sse_events_from_anthropic_message(
                             &body,
                             state.tool_context.clone(),
                         ) {
                             yield Ok(event);
                         }
-                        state.completed = true;
+                        state.completion.finish_legacy();
                     }
                 }
             }
-            if !state.completed {
-                let (events, failed) = process_anthropic_sse_block(&mut state, &buffer);
+            if !state.completion.legacy_completed() {
+                let (events, failed) = process_anthropic_sse_block(&mut state, &buffer, &mut observe);
                 for event in events {
                     yield Ok(event);
                 }
-                stream_failed = failed;
+                if failed { transport.abort(); }
             }
         }
 
-        if !stream_failed && !state.completed {
+        if !transport.legacy_failed() && !state.completion.legacy_completed() {
             if state.stop_reason.is_some() {
                 // message_delta (stop_reason + final usage) arrived but the stream ended
                 // before message_stop; the turn is semantically complete, finalize normally.

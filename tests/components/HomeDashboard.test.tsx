@@ -40,9 +40,6 @@ vi.mock("@/hooks/useSecurityProtection", () => ({
     setEnabled: vi.fn(),
   }),
 }));
-vi.mock("@/hooks/useSecurityAudit", () => ({
-  useSecurityAuditLogs: () => ({ isLoading: false, logsResult: { total: 0 } }),
-}));
 vi.mock("@/components/providers/ProviderList", () => ({
   ProviderList: () => <div data-testid="pi-provider-list" />,
 }));

@@ -6,7 +6,7 @@ use axum::{
 use serde_json::json;
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Error)]
 pub enum ProxyError {
     #[error("上游响应体超过大小上限: {0} 字节")]
     ResponseBodyTooLarge(usize),
@@ -42,8 +42,11 @@ pub enum ProxyError {
     #[error("Provider不健康: {0}")]
     ProviderUnhealthy(String),
 
-    #[error("上游错误 (状态码 {status}): {body:?}")]
+    #[error("upstream_error HTTP {status}")]
     UpstreamError { status: u16, body: Option<String> },
+
+    #[error("{0}")]
+    SafeUpstream(super::security::upstream_error::SafeUpstreamError),
 
     #[error("超过最大重试次数")]
     MaxRetriesExceeded,
@@ -77,10 +80,32 @@ pub enum ProxyError {
     #[allow(dead_code)]
     #[error("内部错误: {0}")]
     Internal(String),
+
+    #[error("{}: {}", .0.failure_class(), .0.code())]
+    DlpForward(super::security::http_restoration::DlpForwardError),
+}
+
+impl std::fmt::Debug for ProxyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Error payloads are client-only, including legacy retry carriers.
+        if let Self::UpstreamError { status, .. } = self {
+            return f
+                .debug_struct("UpstreamError")
+                .field("status", status)
+                .finish();
+        }
+        std::fmt::Display::fmt(self, f)
+    }
 }
 
 impl IntoResponse for ProxyError {
     fn into_response(self) -> Response {
+        if let ProxyError::SafeUpstream(ref err) = self {
+            return err.to_response();
+        }
+        if let ProxyError::DlpForward(err) = self {
+            return err.into_codex_response();
+        }
         let (status, body) = match &self {
             ProxyError::UpstreamError {
                 status: upstream_status,
@@ -162,7 +187,9 @@ impl IntoResponse for ProxyError {
                     ProxyError::ResponseBodyTooLarge(_) => {
                         (StatusCode::BAD_GATEWAY, self.to_string())
                     }
-                    ProxyError::UpstreamError { .. } => unreachable!(),
+                    ProxyError::UpstreamError { .. }
+                    | ProxyError::DlpForward(_)
+                    | ProxyError::SafeUpstream(_) => unreachable!(),
                 };
 
                 let error_body = json!({

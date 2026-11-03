@@ -121,19 +121,11 @@ pub(crate) fn responses_reasoning_item_from_anthropic_block(
 pub(crate) fn map_anthropic_stop_reason_to_status(
     stop_reason: Option<&str>,
 ) -> (&'static str, Option<&'static str>) {
-    match stop_reason {
-        Some("max_tokens") => ("incomplete", Some("max_output_tokens")),
-        // Safety refusal: report as incomplete to avoid Codex treating it as a normally-completed empty reply.
-        Some("refusal") => ("incomplete", Some("content_filter")),
-        Some("model_context_window_exceeded") => ("incomplete", Some("max_output_tokens")),
-        // pause_turn is unreachable on this path (Codex requests do not declare Anthropic server-side tools);
-        // if it does occur, log a warning and treat it as completed.
-        Some("pause_turn") => {
-            log::warn!("[Codex] Received unexpected Anthropic stop_reason=pause_turn, treating it as completed");
-            ("completed", None)
-        }
-        _ => ("completed", None),
+    if stop_reason == Some("pause_turn") {
+        log::warn!("[Codex] Received unexpected Anthropic stop_reason=pause_turn, treating it as completed");
     }
+    crate::proxy::security::completion_evidence::AnthropicCompletionReason::new(stop_reason)
+        .legacy_status()
 }
 
 /// Builds Responses usage from Anthropic usage.
@@ -413,7 +405,12 @@ pub fn responses_request_to_anthropic(
                 // the caller's explicit tool constraint and disable thinking for this
                 // request instead of silently weakening `required`/named selection.
                 result["thinking"] = json!({ "type": "disabled" });
-                result.as_object_mut().unwrap().remove("output_config");
+                result
+                    .as_object_mut()
+                    .ok_or_else(|| {
+                        ProxyError::Internal("Anthropic request must be an object".to_string())
+                    })?
+                    .remove("output_config");
                 if let Some(value) = body.get("temperature") {
                     result["temperature"] = value.clone();
                 }
@@ -954,14 +951,16 @@ fn drop_incomplete_tool_turns(messages: &mut Vec<Value>) {
                 && unique_tool_results.len() == tool_result_ids.len()
                 && unique_tool_uses == unique_tool_results;
 
-            if complete {
-                sanitized.push(message.clone());
-                sanitized.push(paired_user.unwrap().clone());
-            } else if let Some(user) = paired_user {
-                let mut user = user.clone();
-                drop_tool_result_blocks(&mut user);
-                if message_has_content(&user) {
-                    sanitized.push(user);
+            if let Some(user) = paired_user {
+                if complete {
+                    sanitized.push(message.clone());
+                    sanitized.push(user.clone());
+                } else {
+                    let mut user = user.clone();
+                    drop_tool_result_blocks(&mut user);
+                    if message_has_content(&user) {
+                        sanitized.push(user);
+                    }
                 }
             }
 
@@ -2330,6 +2329,28 @@ mod tests {
         let result = responses_request_to_anthropic(input, 4096).unwrap();
         assert_eq!(result["thinking"]["type"], "disabled");
         assert_eq!(result["tool_choice"], json!({ "type": "any" }));
+    }
+
+    #[test]
+    fn test_forced_tool_choice_removes_adaptive_effort_and_restores_sampling() {
+        let input = json!({
+            "model": "claude-sonnet-4-6",
+            "reasoning": {"effort": "high"},
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "tools": [{"type": "function", "name": "synthetic", "parameters": {"type": "object"}}],
+            "tool_choice": {"type": "function", "name": "synthetic"},
+            "input": [{"role": "user", "content": "synthetic"}]
+        });
+        let result = responses_request_to_anthropic(input, 4096).unwrap();
+        assert_eq!(result["thinking"], json!({"type": "disabled"}));
+        assert!(result.get("output_config").is_none());
+        assert_eq!(
+            result["tool_choice"],
+            json!({"type": "tool", "name": "synthetic"})
+        );
+        assert_eq!(result["temperature"], 0.7);
+        assert_eq!(result["top_p"], 0.9);
     }
 
     #[test]

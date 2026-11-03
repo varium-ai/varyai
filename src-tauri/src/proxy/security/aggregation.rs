@@ -174,3 +174,60 @@ impl AggregateState {
         self.entries.values().map(|v| v.segments.len()).sum()
     }
 }
+
+#[cfg(test)]
+mod restore_action_tests {
+    use super::*;
+    use crate::database::{AuditBatchOutcome, Database};
+
+    #[test]
+    fn restoration_action_aggregates_without_merging_other_actions(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = Database::memory()?;
+        let mut state = AggregateState::new(100);
+        let at = Instant::now();
+        let actions = ["redact_restore", "redact", "block", "audit", "allow"];
+        let events: Vec<_> = actions
+            .iter()
+            .map(|action| PendingAuditEvent {
+                log: AuditLogEvent {
+                    timestamp: 1000,
+                    request_id: None,
+                    session_id: None,
+                    app_type: "codex".into(),
+                    provider_id: "synthetic-provider".into(),
+                    rule_id: "synthetic-rule".into(),
+                    rule_name: "Synthetic rule".into(),
+                    rule_category: "custom".into(),
+                    risk_level: "HIGH".into(),
+                    action_taken: (*action).into(),
+                    matched_snippet_masked: "[REDACTED]".into(),
+                    location: None,
+                },
+                identity: super::super::identity::fingerprint("synthetic-aggregation-marker"),
+                detected_at: at,
+                risk_epoch: 1,
+                config_revision: 1,
+            })
+            .collect();
+        for _ in 0..2 {
+            let plan = state.plan(&events);
+            let AuditBatchOutcome::Committed(receipts) = db.apply_audit_batch(&plan.writes) else {
+                return Err("synthetic audit batch failed".into());
+            };
+            state.commit(plan, &receipts);
+        }
+        let rows = db.get_security_audit_logs(&Default::default(), 1, 100)?;
+        assert_eq!(rows.total, actions.len() as u64);
+        for action in actions {
+            let matching: Vec<_> = rows
+                .items
+                .iter()
+                .filter(|row| row.action_taken == action)
+                .collect();
+            assert_eq!(matching.len(), 1);
+            assert_eq!(matching[0].trigger_count, 2);
+        }
+        Ok(())
+    }
+}
