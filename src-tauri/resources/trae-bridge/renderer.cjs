@@ -339,8 +339,31 @@ function createBridge(
     async enable() {
       if (undo) return;
       const client = await service._clientManagerService.getClient();
-      const proto = Object.getPrototypeOf(client),
-        original = proto.convertReqToRustPayload;
+      const proto = Object.getPrototypeOf(client);
+      let convertName = "convertReqToRustPayload";
+      let original = proto[convertName];
+      if (
+        typeof original !== "function" &&
+        typeof proto.request === "function"
+      ) {
+        // Newer clients minify private names; the request envelope retains its protocol keys.
+        const matches = [
+          ...Function.prototype.toString
+            .call(proto.request)
+            .matchAll(/\bpayload\s*:\s*await\s+this\.([A-Za-z_$][\w$]*)\s*\(/g),
+        ];
+        if (matches.length === 1) {
+          const name = matches[0][1];
+          const candidate = Object.getOwnPropertyDescriptor(proto, name)?.value;
+          if (typeof candidate === "function") {
+            const source = Function.prototype.toString.call(candidate);
+            if (/\bservice\s*:/.test(source) && /\bmethod\s*:/.test(source)) {
+              convertName = name;
+              original = candidate;
+            }
+          }
+        }
+      }
       if (typeof original !== "function")
         throw Error("unsupported_client_version");
       const wrapped = async function (request, ...args) {
@@ -413,8 +436,8 @@ function createBridge(
         return original.call(this, next, ...args);
       };
       const originalStream = proto.requestForStream;
-      const wrapStream = function (request) {
-        const stream = originalStream.call(this, request);
+      const wrapStream = function (request, ...args) {
+        const stream = originalStream.call(this, request, ...args);
         if (request.service !== "lite" || request.method !== "subscribe_events")
           return stream;
         const controller = stream.getController(),
@@ -496,12 +519,11 @@ function createBridge(
         controllers.add(restore);
         return stream;
       };
-      proto.convertReqToRustPayload = wrapped;
+      proto[convertName] = wrapped;
       if (typeof originalStream === "function")
         proto.requestForStream = wrapStream;
       undo = () => {
-        if (proto.convertReqToRustPayload === wrapped)
-          proto.convertReqToRustPayload = original;
+        if (proto[convertName] === wrapped) proto[convertName] = original;
         if (proto.requestForStream === wrapStream)
           proto.requestForStream = originalStream;
         for (const restore of controllers) restore();

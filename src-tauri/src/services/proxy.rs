@@ -1487,6 +1487,25 @@ impl ProxyService {
                         .await;
             }
         }
+        let pending = super::trae_bridge::selection::ROUTE_PENDING_KEY;
+        if self.db.get_bool_flag(pending).unwrap_or(false) {
+            let _guard = self.lock_switch_for_app("trae").await;
+            if self.db.get_bool_flag(pending).unwrap_or(false) {
+                let db = self.db.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    if super::trae_bridge::selection::sync_response_route(&db)
+                        && !db
+                            .get_bool_flag(super::trae_bridge::ENABLED_KEY)
+                            .unwrap_or(true)
+                    {
+                        // Preserve the existing connection setup until an offline
+                        // client's native endpoint has been restored.
+                        let _ = super::trae_bridge::finish_disconnect();
+                    }
+                })
+                .await;
+            }
+        }
     }
 
     pub async fn set_takeover_for_app(&self, app_type: &str, enabled: bool) -> Result<(), String> {
@@ -1590,7 +1609,7 @@ impl ProxyService {
                     .map_err(|_| "TRAE bridge unavailable".to_string())?
                     .map_err(|e| e.to_string())?;
             } else {
-                tokio::task::spawn_blocking(super::trae_bridge::disable)
+                tokio::task::spawn_blocking(super::trae_bridge::suspend_inspection)
                     .await
                     .map_err(|_| "TRAE bridge unavailable".to_string())?
                     .map_err(|e| e.to_string())?;
@@ -1601,6 +1620,11 @@ impl ProxyService {
                     if enabled { "true" } else { "false" },
                 )
                 .map_err(|e| e.to_string())?;
+            self.db
+                .set_setting(super::trae_bridge::selection::ROUTE_PENDING_KEY, "true")
+                .map_err(|e| e.to_string())?;
+            drop(_guard);
+            self.refresh_trae_takeover().await;
             return Ok(());
         }
         if super::agent_clients::supported(app_type) {
@@ -2865,7 +2889,19 @@ impl ProxyService {
         }
         {
             let _guard = self.lock_trae_audit().await;
-            match tokio::task::spawn_blocking(super::trae_bridge::disable).await {
+            let pending = self
+                .db
+                .get_bool_flag(super::trae_bridge::selection::ROUTE_PENDING_KEY)
+                .unwrap_or(true);
+            match tokio::task::spawn_blocking(move || {
+                if pending {
+                    super::trae_bridge::suspend_inspection()
+                } else {
+                    super::trae_bridge::disable()
+                }
+            })
+            .await
+            {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => errors.push(format!("TRAE bridge recovery: {error}")),
                 Err(error) => errors.push(format!("TRAE bridge recovery: {error}")),
@@ -5043,7 +5079,7 @@ mod tests {
                 let mut models = native_models.lock().unwrap();
                 let response = match request["op"].as_str().unwrap() {
                     "health" => {
-                        json!({"result":{"ready":true,"enabled":false,"revision":2,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
+                        json!({"result":{"ready":true,"enabled":false,"revision":4,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
                     }
                     "list" => json!({"result":[]}),
                     "remove" => {

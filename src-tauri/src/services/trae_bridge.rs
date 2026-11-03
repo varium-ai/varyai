@@ -12,6 +12,7 @@ use std::{
 use std::{path::PathBuf, sync::Mutex};
 pub(crate) const ENABLED_KEY: &str = "trae_audit_enabled";
 pub(crate) const CONSENT_KEY: &str = "trae_local_connection_consent";
+const HELPER_REVISION: u64 = 4;
 static AUDIT_TOKEN: Mutex<Option<String>> = Mutex::new(None);
 fn unavailable() -> AppError {
     AppError::localized(
@@ -101,15 +102,16 @@ fn socket_paths(directory: &std::path::Path, include_legacy: bool) -> Vec<PathBu
         })
         .collect();
     // Once installed, use the current helper instead of an older resident process.
+    let current_prefix = format!("bridge-agent-v{HELPER_REVISION}-");
     if !include_legacy
         && paths.iter().any(|path| {
             path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("bridge-agent-v2-"))
+                .is_some_and(|name| name.to_string_lossy().starts_with(&current_prefix))
         })
     {
         paths.retain(|path| {
             path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("bridge-agent-v2-"))
+                .is_some_and(|name| name.to_string_lossy().starts_with(&current_prefix))
         });
     }
     paths
@@ -326,7 +328,7 @@ fn argv_path() -> Result<PathBuf, AppError> {
 }
 fn ensure_ready() -> Result<(), AppError> {
     if let Ok(health) = request(&json!({"op":"health"}), false) {
-        if health["revision"] == 2 {
+        if health["revision"] == HELPER_REVISION {
             return if health["ready"] == true && health["modelReplacement"] == true {
                 Ok(())
             } else {
@@ -382,7 +384,9 @@ fn ensure_ready() -> Result<(), AppError> {
             if request(&json!({"op":"health"}), false)
                 .ok()
                 .is_some_and(|v| {
-                    v["ready"] == true && v["revision"] == 2 && v["modelReplacement"] == true
+                    v["ready"] == true
+                        && v["revision"] == HELPER_REVISION
+                        && v["modelReplacement"] == true
                 })
             {
                 return Ok(());
@@ -406,11 +410,18 @@ pub(crate) fn enable(origin: &str) -> Result<(), AppError> {
     )?;
     Ok(())
 }
-pub(crate) fn disable() -> Result<(), AppError> {
+pub(crate) fn suspend_inspection() -> Result<(), AppError> {
     // Invalidate first; missed/closed windows release their hooks on the heartbeat.
     *AUDIT_TOKEN.lock().map_err(|_| unavailable())? = None;
     let _ = request(&json!({"op":"disable"}), true);
+    Ok(())
+}
+pub(crate) fn finish_disconnect() -> Result<(), AppError> {
     restore_connection(&directory()?, &argv_path()?)
+}
+pub(crate) fn disable() -> Result<(), AppError> {
+    suspend_inspection()?;
+    finish_disconnect()
 }
 pub(crate) fn profile_models() -> Result<Value, AppError> {
     request(&json!({"op":"list"}), false)
@@ -443,7 +454,7 @@ pub(crate) fn model_replacement_ready() -> Result<(), AppError> {
     if health["ready"] != true {
         return Err(unavailable());
     }
-    if health["revision"] != 2 {
+    if health["revision"] != HELPER_REVISION {
         ensure_ready()?;
         health = request(&json!({"op":"health"}), false)?;
     }
@@ -586,10 +597,12 @@ mod tests {
             std::fs::write(dir.path().join(name), "").expect("fixture");
         }
         assert_eq!(socket_paths(dir.path(), false).len(), 1);
-        let current = dir.path().join("bridge-agent-v2-456.sock");
+        let previous = dir.path().join("bridge-agent-v3-456.sock");
+        std::fs::write(&previous, "").expect("previous helper");
+        let current = dir.path().join("bridge-agent-v4-789.sock");
         std::fs::write(&current, "").expect("current helper");
         assert_eq!(socket_paths(dir.path(), false), vec![current]);
-        assert_eq!(socket_paths(dir.path(), true).len(), 3);
+        assert_eq!(socket_paths(dir.path(), true).len(), 4);
     }
 
     #[test]

@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Portal as TooltipPortal } from "@radix-ui/react-tooltip";
 import { Check, Pencil, Trash2, X, RefreshCw } from "lucide-react";
 import {
   Dialog,
@@ -51,6 +52,7 @@ export function ProfileManageDialog({
   selectedApps,
 }: ProfileManageDialogProps) {
   const { t } = useTranslation();
+  const titleRef = useRef<HTMLHeadingElement>(null);
   const { data } = useProfilesQuery();
   const updateMutation = useUpdateProfileMutation();
   const deleteMutation = useDeleteProfileMutation();
@@ -111,7 +113,7 @@ export function ProfileManageDialog({
   };
 
   return (
-    <>
+    <TooltipProvider delayDuration={0}>
       <Dialog
         open={isOpen}
         onOpenChange={(open) => {
@@ -121,9 +123,17 @@ export function ProfileManageDialog({
           }
         }}
       >
-        <DialogContent className="max-w-md">
+        <DialogContent
+          className="max-w-md"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            titleRef.current?.focus();
+          }}
+        >
           <DialogHeader className="space-y-3 border-b-0 bg-transparent pb-0">
-            <DialogTitle>{t("profiles.manageTitle")}</DialogTitle>
+            <DialogTitle ref={titleRef} tabIndex={-1} className="outline-none">
+              {t("profiles.manageTitle")}
+            </DialogTitle>
             <DialogDescription>
               {t("profiles.manageDescription")}
             </DialogDescription>
@@ -185,52 +195,66 @@ export function ProfileManageDialog({
                       {profile.name}
                     </span>
                     {profile.payload.bundle && (
-                      <TooltipProvider delayDuration={0}>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7 shrink-0"
-                              aria-label={t("profiles.bundle.recapture")}
-                              onClick={() => void refreshBundle(profile)}
-                              disabled={refreshingId !== null}
-                              aria-busy={refreshingId === profile.id}
-                            >
-                              <RefreshCw
-                                className={`h-3.5 w-3.5 ${refreshingId === profile.id ? "animate-spin" : ""}`}
-                              />
-                            </Button>
-                          </TooltipTrigger>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0"
+                            aria-label={t("profiles.bundle.recapture")}
+                            onClick={() => void refreshBundle(profile)}
+                            disabled={refreshingId !== null}
+                            aria-busy={refreshingId === profile.id}
+                          >
+                            <RefreshCw
+                              className={`h-3.5 w-3.5 ${refreshingId === profile.id ? "animate-spin" : ""}`}
+                            />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipPortal>
                           <TooltipContent>
                             {t("profiles.bundle.recapture")}
                           </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
+                        </TooltipPortal>
+                      </Tooltip>
                     )}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 shrink-0"
-                      title={t("profiles.rename")}
-                      onClick={() => startRename(profile.id, profile.name)}
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 shrink-0"
-                      title={t("profiles.delete")}
-                      onClick={() =>
-                        setConfirm({
-                          id: profile.id,
-                          name: profile.name,
-                        })
-                      }
-                    >
-                      <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                    </Button>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 shrink-0"
+                          aria-label={t("profiles.rename")}
+                          onClick={() => startRename(profile.id, profile.name)}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipPortal>
+                        <TooltipContent>{t("profiles.rename")}</TooltipContent>
+                      </TooltipPortal>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 shrink-0"
+                          aria-label={t("profiles.delete")}
+                          onClick={() =>
+                            setConfirm({
+                              id: profile.id,
+                              name: profile.name,
+                            })
+                          }
+                        >
+                          <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipPortal>
+                        <TooltipContent>{t("profiles.delete")}</TooltipContent>
+                      </TooltipPortal>
+                    </Tooltip>
                   </>
                 )}
               </div>
@@ -266,6 +290,6 @@ export function ProfileManageDialog({
           onCancel={() => setConfirm(null)}
         />
       )}
-    </>
+    </TooltipProvider>
   );
 }

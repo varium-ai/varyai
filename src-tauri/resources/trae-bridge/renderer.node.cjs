@@ -123,6 +123,158 @@ test("block never forwards and audit failure releases the hook", async () => {
   assert.equal(f.calls.length, 1);
   assert.equal(c.enabled, false);
 });
+function minifiedFixture(method) {
+  const calls = [],
+    streams = [];
+  const Client = new Function(
+    "calls",
+    "streams",
+    `return class {
+    async ${method}(request, ...metadata) {
+      calls.push({request, metadata, client:this});
+      return {service:request.service, method:request.method, data:request.data};
+    }
+    async request(request, ...metadata) {
+      const envelope={payload:await this.${method}(request, ...metadata)};
+      return envelope.payload;
+    }
+    requestForStream(request, ...metadata) {
+      const controller={write(value){return value;}};
+      const stream={getController:()=>controller};
+      stream.done=(async()=>{
+        const envelope={payload:await this.${method}(request, ...metadata)};
+        return controller.write(envelope.payload);
+      })();
+      streams.push(stream);
+      return stream;
+    }
+  }`,
+  )(calls, streams);
+  const client = new Client();
+  return {
+    calls,
+    streams,
+    client,
+    proto: Client.prototype,
+    service: { _clientManagerService: { getClient: async () => client } },
+  };
+}
+test("named and minified converters inspect requests and streams without changing their native contracts", async () => {
+  for (const method of ["convertReqToRustPayload", "ib", "r7"]) {
+    const f = minifiedFixture(method),
+      original = f.proto[method];
+    let inspections = 0;
+    const bridge = createBridge(f.service, async (value) => {
+      inspections++;
+      return {
+        body: {
+          messages: [
+            {
+              content: value.body.messages[0].content.map((part) => ({
+                text: part.text.replaceAll("sensitive", "[REDACTED]"),
+              })),
+            },
+          ],
+        },
+      };
+    });
+    await bridge.enable();
+    await bridge.enable();
+    const metadata = { credential: "synthetic-key" };
+    const request = {
+      service: "chat",
+      method: "chat",
+      data: {
+        query: "sensitive",
+        content: [{ text_content: "sensitive", extra: true }],
+        custom_model: { ak: "synthetic-key" },
+      },
+      context: { keep: true },
+    };
+    const response = await f.client.request(
+      request,
+      metadata,
+      "synthetic-device",
+    );
+    assert.equal(response.data.query, "[REDACTED]");
+    const stream = f.client.requestForStream(
+      request,
+      metadata,
+      "synthetic-device",
+    );
+    assert.equal(stream, f.streams[0]);
+    assert.equal(
+      (await stream.done).data.content[0].text_content,
+      "[REDACTED]",
+    );
+    assert.equal(inspections, 2);
+    assert.equal(request.data.query, "sensitive");
+    for (const call of f.calls) {
+      assert.equal(call.client, f.client);
+      assert.equal(call.metadata[0], metadata);
+      assert.equal(call.metadata[1], "synthetic-device");
+      assert.equal(call.request.context, request.context);
+      assert.equal(call.request.data.custom_model, request.data.custom_model);
+      assert.equal(call.request.data.content[0].extra, true);
+    }
+    await f.client.request({
+      service: "model",
+      method: "model_list",
+      data: {},
+    });
+    assert.equal(inspections, 2);
+    bridge.disable();
+    assert.equal(f.proto[method], original);
+  }
+});
+test("minified converter blocks before forwarding and releases interception after audit failure", async () => {
+  const f = minifiedFixture("ib"),
+    original = f.proto.ib;
+  const request = {
+    service: "lite",
+    method: "send_message",
+    data: { query: "synthetic" },
+  };
+  let unavailable = false;
+  const bridge = createBridge(f.service, async () => {
+    if (unavailable) throw Error("synthetic outage");
+    return { blocked: true };
+  });
+  await bridge.enable();
+  await assert.rejects(f.client.request(request), /VaryAI/);
+  await assert.rejects(f.client.requestForStream(request).done, /VaryAI/);
+  assert.equal(f.calls.length, 0);
+  unavailable = true;
+  assert.equal((await f.client.request(request)).data, request.data);
+  assert.equal(f.proto.ib, original);
+  assert.equal(bridge.enabled, false);
+});
+test("unsupported converter layouts are rejected without patching a different method", async () => {
+  for (const layout of ["missing", "ambiguous", "different-protocol"]) {
+    const f = minifiedFixture("ib");
+    if (layout === "missing") {
+      f.proto.request = async function (request) {
+        return this.ib(request);
+      };
+    } else if (layout === "ambiguous") {
+      f.proto.request = async function (request) {
+        const first = { payload: await this.ib(request) };
+        return { first, payload: await this.ib(request) };
+      };
+    } else {
+      f.proto.ib = async function (request) {
+        return { service: request.service, data: request.data };
+      };
+    }
+    const original = f.proto.ib,
+      originalStream = f.proto.requestForStream;
+    const bridge = createBridge(f.service, async () => ({}));
+    await assert.rejects(bridge.enable(), /unsupported_client_version/);
+    assert.equal(f.proto.ib, original);
+    assert.equal(f.proto.requestForStream, originalStream);
+    assert.equal(bridge.enabled, false);
+  }
+});
 test("model management returns no credential and removes only owned models", async () => {
   const f = fixture();
   f.models.push({

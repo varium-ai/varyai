@@ -7,6 +7,7 @@ import {
 } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import userEvent from "@testing-library/user-event";
 import { ProfileManageDialog } from "@/components/profiles/ProfileManageDialog";
 import i18n from "i18next";
 import zh from "@/i18n/locales/zh.json";
@@ -71,7 +72,7 @@ it("explains explicit snapshot updates and edits a named bundle without applying
     </QueryClientProvider>,
   );
   expect(screen.getByText(/新建方案不会自动保存/)).toBeInTheDocument();
-  fireEvent.click(screen.getByTitle("重命名"));
+  fireEvent.click(screen.getByRole("button", { name: zh.profiles.rename }));
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "个人" } });
   fireEvent.click(screen.getByTitle("确定"));
   expect(
@@ -186,7 +187,9 @@ it("keeps the rename editor open and explains duplicate profile names", () => {
       />
     </QueryClientProvider>,
   );
-  fireEvent.click(screen.getAllByTitle("重命名")[0]);
+  fireEvent.click(
+    screen.getAllByRole("button", { name: zh.profiles.rename })[0],
+  );
   fireEvent.change(screen.getByRole("textbox"), {
     target: { value: " Personal " },
   });
@@ -214,7 +217,7 @@ it("keeps a long profile name identifiable and allows cancelling deletion", asyn
     </QueryClientProvider>,
   );
   expect(screen.getByTitle(name)).toBeInTheDocument();
-  fireEvent.click(screen.getByTitle("删除"));
+  fireEvent.click(screen.getByRole("button", { name: zh.profiles.delete }));
   expect(
     await screen.findByRole("dialog", { name: zh.profiles.deleteConfirmTitle }),
   ).toHaveTextContent(name);
@@ -243,3 +246,56 @@ it("shows the snapshot refresh hint on hover without the native tooltip delay", 
   ).toHaveTextContent(zh.profiles.bundle.recapture);
   expect(profilesApi.captureBundle).not.toHaveBeenCalled();
 });
+
+it("opens management without displaying an action tooltip and keeps keyboard hints", async () => {
+  const user = userEvent.setup();
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ProfileManageDialog
+        isOpen
+        onClose={vi.fn()}
+        selectedApps={["claude", "codex", "kimi"]}
+      />
+    </QueryClientProvider>,
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("heading", { name: zh.profiles.manageTitle }),
+    ).toHaveFocus(),
+  );
+  expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  await user.tab();
+  expect(
+    screen.getByRole("button", { name: zh.profiles.bundle.recapture }),
+  ).toHaveFocus();
+  expect(await screen.findByRole("tooltip")).toHaveTextContent(
+    zh.profiles.bundle.recapture,
+  );
+  for (const label of [zh.profiles.rename, zh.profiles.delete]) {
+    await user.tab();
+    expect(screen.getByRole("button", { name: label })).toHaveFocus();
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(label);
+  }
+});
+
+it.each([zh.profiles.rename, zh.profiles.delete])(
+  "shows the same immediate tooltip for %s",
+  async (label) => {
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ProfileManageDialog
+          isOpen
+          onClose={vi.fn()}
+          selectedApps={["claude", "codex", "kimi"]}
+        />
+      </QueryClientProvider>,
+    );
+    const action = screen.getByRole("button", { name: label });
+    expect(action).not.toHaveAttribute("title");
+    fireEvent.pointerMove(action, { pointerType: "mouse" });
+    expect(
+      await screen.findByRole("tooltip", {}, { timeout: 200 }),
+    ).toHaveTextContent(label);
+    expect(profilesApi.captureBundle).not.toHaveBeenCalled();
+  },
+);
