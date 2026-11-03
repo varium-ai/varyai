@@ -48,7 +48,8 @@ impl Protocol {
 pub(crate) fn supported_query(path: &str, query: Option<&str>) -> bool {
     query.is_none_or(|query| {
         query.is_empty()
-            || (path == "/v1/messages" && query == "beta=true")
+            || (matches!(path, "/v1/messages" | "/v1/messages/count_tokens")
+                && query == "beta=true")
             || (path.starts_with("/v1beta/models/")
                 && path.ends_with(":streamGenerateContent")
                 && query == "alt=sse")

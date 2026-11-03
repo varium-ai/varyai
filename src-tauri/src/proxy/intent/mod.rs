@@ -18,7 +18,7 @@ use crate::services::intent_routing::{classifier, RoutingGroup};
 use axum::{
     body::Body,
     extract::{Request, State},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use futures::StreamExt;
 use http::{header, StatusCode};
@@ -1183,7 +1183,10 @@ pub(crate) async fn handle_global(
         .map(|v| v.as_str())
         .unwrap_or(parts.uri.path())
         .to_owned();
-    let protocol = if parts.uri.path() == "/v1/messages" {
+    let protocol = if matches!(
+        parts.uri.path(),
+        "/v1/messages" | "/v1/messages/count_tokens"
+    ) {
         Protocol::Anthropic
     } else if parts.uri.path() == "/v1/chat/completions" {
         Protocol::Chat
@@ -1266,6 +1269,8 @@ async fn execute(
         started,
     );
     let compact = parts.extensions.get::<native::Compact>().copied();
+    let count_tokens =
+        protocol == Protocol::Anthropic && parts.uri.path() == "/v1/messages/count_tokens";
     trace.purpose(&parts.headers, compact.is_some());
     let fail = |status: StatusCode, code| {
         trace.finish(status.as_u16(), trace::State::Failed);
@@ -1275,12 +1280,13 @@ async fn execute(
     if native_lease.as_ref().is_some_and(|lease| !lease.valid()) {
         return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable");
     }
-    let streaming = original["stream"] == true
-        || (protocol == Protocol::Gemini
-            && endpoint
-                .split('?')
-                .next()
-                .is_some_and(|p| p.ends_with(":streamGenerateContent")));
+    let streaming = !count_tokens
+        && (original["stream"] == true
+            || (protocol == Protocol::Gemini
+                && endpoint
+                    .split('?')
+                    .next()
+                    .is_some_and(|p| p.ends_with(":streamGenerateContent"))));
     let projection = match super::group_forward::canonical_request(protocol, &original, &endpoint) {
         Ok(value) => match compact.filter(|c| c.native) {
             Some(compact) => match compaction::history(&value, compact.operation) {
@@ -1325,15 +1331,20 @@ async fn execute(
     } else {
         None
     };
-    let scoped = match state.intent_runtime.conversations.acquire_durable(
-        &consumer,
-        &session,
-        conversation.as_deref(),
-        &projection,
-        durable,
-    ) {
-        Ok(scoped) => scoped,
-        Err(code) => return fail(StatusCode::CONFLICT, code),
+    // Counting history must not claim or change its generation continuation.
+    let scoped = if count_tokens {
+        Arc::new(scopes::Conversation::default())
+    } else {
+        match state.intent_runtime.conversations.acquire_durable(
+            &consumer,
+            &session,
+            conversation.as_deref(),
+            &projection,
+            durable,
+        ) {
+            Ok(scoped) => scoped,
+            Err(code) => return fail(StatusCode::CONFLICT, code),
+        }
     };
     let mut bindings = match scoped.bindings.clone().try_lock_owned() {
         Ok(bindings) => bindings,
@@ -1342,7 +1353,9 @@ async fn execute(
     if bindings.full() {
         return fail(StatusCode::CONFLICT, "routing_session_capacity");
     }
-    let resolution = if protocol != Protocol::Responses {
+    let resolution = if count_tokens {
+        Ok(None)
+    } else if protocol != Protocol::Responses {
         let pinned = conversation
             .as_ref()
             .and_then(|name| bindings.session(name));
@@ -1500,6 +1513,7 @@ async fn execute(
     let classifier_candidates =
         crate::services::intent_routing::rules::classifier_candidates(&session.group, &facts);
     let classified = if inspected_projection["_group_projection_incomplete"] != true
+        && !count_tokens
         && pinned.is_none()
         && session.group.uses_classifier()
         && !classifier_candidates.is_empty()
@@ -1570,7 +1584,9 @@ async fn execute(
         })
         .collect::<Vec<_>>();
     let mut pool = session.bindings.lock().await;
-    let mut candidates = if pinned.is_none()
+    let mut candidates = if count_tokens {
+        approved
+    } else if pinned.is_none()
         || session.group.routing == crate::services::intent_routing::RoutingStrategy::Weighted
     {
         scheduling::arrange(
@@ -1795,6 +1811,19 @@ async fn execute(
             .and_then(|meta| meta.api_format.as_deref())
             .and_then(Protocol::from_format)
             .unwrap_or(Protocol::Responses);
+        if count_tokens && output != Protocol::Anthropic {
+            if generation.is_some_and(|generation| generation != state.db.routing_generation()) {
+                return fail(StatusCode::SERVICE_UNAVAILABLE, "routing_catalog_stale");
+            }
+            let Some(tokens) = estimated_tokens else {
+                return fail(
+                    StatusCode::BAD_REQUEST,
+                    "routing_token_estimate_unavailable",
+                );
+            };
+            trace.finish(200, trace::State::Completed);
+            return axum::Json(json!({"input_tokens":tokens})).into_response();
+        }
         if target.official && protocol != Protocol::Responses {
             return fail(
                 StatusCode::BAD_REQUEST,
@@ -1822,7 +1851,9 @@ async fn execute(
             Ok(payload) => payload,
             Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_unsafe_payload_edit"),
         };
-        let payload = {
+        let payload = if count_tokens {
+            payload
+        } else {
             let rule_effort = matched_rules
                 .iter()
                 .filter_map(|id| session.group.rules.iter().find(|rule| &rule.id == id))
@@ -1895,7 +1926,7 @@ async fn execute(
             return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable");
         }
         // Once dispatched, a named conversation cannot move after an ambiguous failure.
-        if let Some(key) = conversation.as_ref() {
+        if let Some(key) = conversation.as_ref().filter(|_| !count_tokens) {
             bindings.bind_session(key, index);
         }
         if let Some(selected) = parts.extensions.get::<native::SelectedTarget>() {
@@ -2017,7 +2048,15 @@ async fn execute(
             }
         } else {
             let mut url = target.url.clone();
+            if count_tokens {
+                let Some(base) = url.path().strip_suffix("/messages") else {
+                    return fail(StatusCode::BAD_REQUEST, "routing_token_count_unsupported");
+                };
+                let path = format!("{base}/messages/count_tokens");
+                url.set_path(&path);
+            }
             if protocol == Protocol::Anthropic
+                && !count_tokens
                 && parts.uri.query() == Some("beta=true")
                 && parts
                     .headers
@@ -2159,6 +2198,25 @@ async fn execute(
         }
         let response_headers = public_response_headers(response.headers());
         let mut upstream = Box::pin(response.bytes_stream());
+        if count_tokens {
+            let stream = async_stream::stream! {
+                while let Some(next) = upstream.next().await {
+                    match next {
+                        Ok(bytes) => yield Ok::<_, std::io::Error>(bytes),
+                        Err(_) => {
+                            trace.finish(502, trace::State::Failed);
+                            yield Err(std::io::Error::other("Routing upstream stream failed"));
+                            return;
+                        }
+                    }
+                }
+                trace.finish(status.as_u16(), trace::State::Completed);
+            };
+            let mut response = Response::new(Body::from_stream(stream));
+            *response.status_mut() = status;
+            *response.headers_mut() = response_headers;
+            return response;
+        }
         let mut buffered = Vec::new();
         let mut observed_first_content = None;
         if let Some(deadline) = first_content_deadline {

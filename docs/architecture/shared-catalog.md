@@ -41,6 +41,17 @@ though their transport deliberately has no static upstream configuration.
 Routing mutations invalidate the Agent model catalog as well as the gateway
 catalog, so opening a picker after a group edit does not reuse an obsolete list.
 
+Agent connections accept Anthropic SDK token-count requests at
+`/connections/{agent}/v1/messages/count_tokens`, including `?beta=true`.
+Authentication, catalog freshness, gateway policy and DLP inspection still apply.
+An Anthropic target uses its native count endpoint with the exact selected model
+and existing request fields; the SDK beta query is omitted for counting. Other
+target protocols return the local text-and-tool-schema estimate without sending
+a generation request or refreshing subscription credentials. Counting does not
+claim conversation continuations, run the intent classifier or record generation
+usage. Unsupported query options and inputs without an available local estimate
+return sanitized errors.
+
 ## Provider model selection
 
 New API providers start with an optional comma-separated model list. Editors
