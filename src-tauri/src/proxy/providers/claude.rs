@@ -14,7 +14,7 @@
 //! - **OpenRouter**: 已支持 Claude Code 兼容接口，默认透传
 //! - **GitHubCopilot**: GitHub Copilot (OAuth + Copilot Token)
 
-use super::codex_oauth_auth::{CODEX_OAUTH_CLIENT_VERSION, CODEX_OAUTH_ORIGINATOR};
+use super::codex_oauth_auth::CODEX_OAUTH_ORIGINATOR;
 use super::{AuthInfo, AuthStrategy, ProviderAdapter, ProviderType};
 use crate::provider::Provider;
 use crate::proxy::error::ProxyError;
@@ -909,7 +909,7 @@ impl ProviderAdapter for ClaudeAdapter {
                     ),
                     (
                         HeaderName::from_static("version"),
-                        HeaderValue::from_static(CODEX_OAUTH_CLIENT_VERSION),
+                        hv(&crate::codex_client::current_version())?,
                     ),
                 ]
             }
@@ -1141,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_oauth_generation_uses_gpt6_compatible_identity() {
+    fn codex_oauth_generation_uses_gpt61_compatible_identity() {
         let headers: http::HeaderMap = ClaudeAdapter::new()
             .get_auth_headers(&AuthInfo::new(
                 "test-token".into(),
@@ -1158,10 +1158,10 @@ mod tests {
             .split('.')
             .map(|part| part.parse().unwrap())
             .collect();
-        // Sol and Luna require a Codex client identity at or above 0.155.0.
+        // Keep generation at least as current as discovery of the 6.1 models.
         assert!(
-            version.as_slice() >= [0, 155, 0].as_slice(),
-            "gpt-6-sol and gpt-6-luna require Codex >= 0.155.0; sent {version:?}"
+            version.as_slice() >= [0, 164, 0].as_slice(),
+            "generation used an outdated client identity: {version:?}"
         );
     }
 

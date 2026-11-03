@@ -164,7 +164,10 @@ fn native_storage_uses_a_private_identified_pair() {
         .unwrap();
     assert_eq!(main_id, extension_id);
     assert_eq!(Database::get_user_version(&main).unwrap(), 24);
-    assert_eq!(Database::get_user_version(&extension).unwrap(), 6);
+    assert_eq!(
+        Database::get_user_version(&extension).unwrap(),
+        super::NATIVE_EXTENSION_SCHEMA_VERSION
+    );
     drop((main, extension));
     let reopened = Database::init_native_at(&path).unwrap();
     assert_eq!(
@@ -307,5 +310,34 @@ fn native_recovery_rejects_foreign_super_journal_paths() {
     assert_eq!(
         std::fs::read(dir.path().join("varyai.db-journal")).unwrap(),
         journal
+    );
+}
+
+#[test]
+fn native_v6_upgrade_adds_global_providers_without_losing_private_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("varyai.db");
+    let db = Database::init_native_at(&path).unwrap();
+    db.set_setting("synthetic-native-setting", "preserve")
+        .unwrap();
+    drop(db);
+    let extension = Connection::open(dir.path().join("varyai-ext.db")).unwrap();
+    extension
+        .execute_batch("DROP TABLE routing_upstreams; PRAGMA user_version=6;")
+        .unwrap();
+    drop(extension);
+    let db = Database::init_native_at(&path).unwrap();
+    assert_eq!(
+        db.get_setting("synthetic-native-setting")
+            .unwrap()
+            .as_deref(),
+        Some("preserve")
+    );
+    assert!(db.list_routing_upstreams().unwrap().is_empty());
+    drop(db);
+    let extension = Connection::open(dir.path().join("varyai-ext.db")).unwrap();
+    assert_eq!(
+        Database::get_user_version(&extension).unwrap(),
+        super::NATIVE_EXTENSION_SCHEMA_VERSION
     );
 }

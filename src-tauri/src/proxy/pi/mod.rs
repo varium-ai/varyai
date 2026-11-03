@@ -1,6 +1,6 @@
 //! Native Pi requests: a provider scope and original model select one upstream.
-mod json;
-mod usage;
+pub(crate) mod json;
+pub(crate) mod usage;
 use super::server::ProxyState;
 use crate::{
     app_config::AppType,
@@ -305,6 +305,7 @@ pub(crate) async fn handle(State(state): State<ProxyState>, req: Request) -> Res
     response_headers.remove("set-cookie");
     let streaming = gemini_stream || original["stream"].as_bool() == Some(true);
     let job = usage::Job {
+        app_type: "pi",
         db: state.db.clone(),
         provider_id: target.provider_id.clone(),
         request_model: target.model_id.clone(),

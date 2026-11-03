@@ -1,0 +1,65 @@
+.mp-long-conversations {
+  --long-border: var(--mp-line-2, hsl(var(--border)));
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--long-border);
+  font-size: 12px;
+}
+.mp-long-heading,
+.mp-long-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mp-long-heading > span,
+.mp-long-conversations > p {
+  color: var(--mp-muted, hsl(var(--muted-foreground)));
+  font-size: 11px;
+}
+.mp-long-controls {
+  margin: 8px 0;
+}
+.mp-long-segments {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--long-border);
+  border-radius: 7px;
+  background: var(--mp-pill, hsl(var(--muted)));
+}
+.mp-long-segments > button {
+  padding: 5px 9px;
+  border-radius: 4px;
+  color: var(--mp-muted, hsl(var(--muted-foreground)));
+}
+.mp-long-segments > button[aria-checked="true"] {
+  background: var(--mp-card, hsl(var(--background)));
+  color: var(--mp-fg, hsl(var(--foreground)));
+}
+.mp-long-segments > button:disabled,
+.mp-long-threshold:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.mp-long-segments > button:focus-visible,
+.mp-long-threshold:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+.mp-long-threshold {
+  width: 88px;
+  padding: 6px 8px;
+  border: 1px solid var(--long-border);
+  border-radius: 6px;
+  background: var(--mp-card, hsl(var(--background)));
+}
+.mp-long-conversations > p {
+  max-width: 640px;
+  line-height: 1.6;
+}
+.mp-long-conversations > p[role="alert"] {
+  margin-top: 6px;
+  color: hsl(var(--destructive));
+}

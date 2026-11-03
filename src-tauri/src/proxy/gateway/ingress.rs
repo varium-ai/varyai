@@ -54,13 +54,19 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
         .to_owned();
     let gemini = path.starts_with("/v1beta/models/")
         && (path.ends_with(":generateContent") || path.ends_with(":streamGenerateContent"));
-    if !gemini
+    let listing = request.method() == http::Method::GET
+        && matches!(path.as_str(), "/v1/models" | "/v1beta/models");
+    if !listing
+        && !gemini
         && !matches!(
             path.as_str(),
             "/v1/messages" | "/v1/responses" | "/v1/chat/completions"
         )
     {
         return StatusCode::NOT_FOUND.into_response();
+    }
+    if !listing && request.method() != http::Method::POST {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
     let (mut parts, body) = request.into_parts();
     let secret = parts
@@ -77,15 +83,54 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
         })
         .unwrap_or("")
         .to_owned();
+    if listing {
+        let db = state.db.clone();
+        let policy =
+            match tokio::task::spawn_blocking(move || db.gateway_catalog_policy(&secret)).await {
+                Ok(Ok(policy)) => policy,
+                Ok(Err(err)) => return error(err),
+                Err(_) => return error(GatewayError::Storage),
+            };
+        if !state
+            .intent_runtime
+            .global_current(state.db.routing_generation())
+        {
+            return crate::proxy::intent::catalog_stale();
+        }
+        let menu = match state.intent_runtime.global_snapshot() {
+            Ok(menu) => menu,
+            Err(_) => return error(GatewayError::Storage),
+        };
+        let aliases = menu
+            .iter()
+            .flat_map(|menu| menu.listed_aliases())
+            .filter(|alias| policy.all_models || policy.models.contains(alias))
+            .cloned()
+            .collect::<Vec<_>>();
+        let data = aliases
+            .into_iter()
+            .filter_map(|id| {
+                menu.as_ref()?
+                    .groups
+                    .get(&id)
+                    .map(|session| session.model_entry(&id))
+            })
+            .collect::<Vec<_>>();
+        if path == "/v1beta/models" {
+            return Json(json!({"models":data.into_iter().map(|model| json!({"name":format!("models/{}", model["id"].as_str().unwrap_or_default()),"displayName":model["id"],"supportedGenerationMethods":["generateContent","streamGenerateContent"]})).collect::<Vec<_>>()})).into_response();
+        }
+        return Json(json!({"object":"list","data":data})).into_response();
+    }
     let bytes = match to_bytes(body, 200 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
     };
     let model = super::bindings::path_model(&path).or_else(|| {
-        serde_json::from_slice::<Value>(&bytes)
+        crate::proxy::pi::json::parse(&bytes)
             .ok()
             .and_then(|v| v.get("model").and_then(Value::as_str).map(str::to_owned))
     });
+    let requested_model = model.clone().unwrap_or_default();
     let db = state.db.clone();
     let grant = match tokio::task::spawn_blocking(move || {
         db.authorize_gateway_key(
@@ -105,6 +150,8 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
         "x-api-key",
         "x-goog-api-key",
         "proxy-authorization",
+        "cookie",
+        "chatgpt-account-id",
     ] {
         parts.headers.remove(name);
     }
@@ -121,6 +168,28 @@ pub async fn handle(State(state): State<ProxyState>, request: Request) -> Respon
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
     let request = Request::from_parts(parts, Body::from(bytes));
+    let global = match state.intent_runtime.global_snapshot() {
+        Ok(menu) => menu.is_some_and(|menu| menu.groups.contains_key(&requested_model)),
+        Err(_) => return error(GatewayError::Storage),
+    };
+    let reserved = match state.intent_runtime.global_alias_reserved(&requested_model) {
+        Ok(reserved) => reserved,
+        Err(_) => return error(GatewayError::Storage),
+    };
+    if global || reserved {
+        let response = crate::proxy::intent::handle_global(
+            state.clone(),
+            request,
+            grant.id.clone(),
+            &requested_model,
+        )
+        .await;
+        return if response.status().is_success() {
+            meter(response, state.db, grant, path != "/v1/messages")
+        } else {
+            response
+        };
+    }
     let response = if gemini {
         crate::proxy::handlers::handle_gemini(State(state.clone()), request.uri().clone(), request)
             .await

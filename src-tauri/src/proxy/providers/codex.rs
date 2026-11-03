@@ -322,7 +322,7 @@ fn provider_is_xai_native_responses(provider: &Provider) -> bool {
         .is_some_and(|url| url.contains("api.x.ai"))
 }
 
-fn has_explicit_codex_third_party_upstream(provider: &Provider) -> bool {
+pub(crate) fn has_explicit_codex_third_party_upstream(provider: &Provider) -> bool {
     let non_empty_setting = |key: &str| {
         provider
             .settings_config

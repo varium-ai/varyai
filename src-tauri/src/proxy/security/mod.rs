@@ -177,10 +177,55 @@ pub(crate) fn inspect_with_context(
     body: &mut Value,
     headers: &HeaderMap,
 ) -> Result<Option<Response>, ProxyError> {
+    let session_id = audit_session_id(app_type, headers, body);
+    inspect_as(
+        app_type.as_str(),
+        wire,
+        provider_id,
+        request_id,
+        session_id,
+        body,
+    )
+}
+
+/// External credentials identify a consumer, not a particular agent application.
+pub(crate) fn inspect_external(
+    wire: &AppType,
+    consumer: &str,
+    body: &mut Value,
+    headers: &HeaderMap,
+) -> Result<Option<Response>, ProxyError> {
+    let session = external_session_id(wire, consumer, headers, body);
+    inspect_as("external", wire, "", None, session, body)
+}
+
+fn external_session_id(
+    wire: &AppType,
+    consumer: &str,
+    headers: &HeaderMap,
+    body: &Value,
+) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let session = audit_session_id(wire, headers, body)?;
+    let mut hash = Sha256::new();
+    for value in [consumer, session.as_str()] {
+        hash.update(value.len().to_be_bytes());
+        hash.update(value.as_bytes());
+    }
+    Some(format!("external_{:x}", hash.finalize()))
+}
+
+fn inspect_as(
+    actor: &str,
+    wire: &AppType,
+    provider_id: &str,
+    request_id: Option<&str>,
+    session_id: Option<String>,
+    body: &mut Value,
+) -> Result<Option<Response>, ProxyError> {
     if body.is_null() || !body.is_object() {
         return Ok(None);
     }
-    let session_id = audit_session_id(app_type, headers, body);
     let admission = match runtime::admit_security_runtime() {
         Ok(admission) => admission,
         Err(_) => return response::build_unavailable_response(wire).map(Some),
@@ -201,7 +246,7 @@ pub(crate) fn inspect_with_context(
                 timestamp: now,
                 request_id: request_id.map(str::to_owned),
                 session_id: session_id.clone(),
-                app_type: app_type.as_str().to_string(),
+                app_type: actor.to_string(),
                 provider_id: provider_id.into(),
                 rule_id: finding.rule_id.clone(),
                 rule_name: finding.rule_name.clone(),

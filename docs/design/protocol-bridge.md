@@ -73,9 +73,9 @@ A recorded 2026-10-21 case had a successful minimal Grok-Codex Responses probe b
 
 The legacy implementation first reproduced Chat-to-Anthropic requesting the Chat endpoint, then passed the matrix after restoration. Follow-up failing tests covered false Gemini completion, ignored Chat errors, authentication, usage tails, candidate truncation, signatures, and tool-result images.
 
-Legacy checks on 2026-10-22 passed typecheck, renderer build, 2168 frontend tests, 3801 backend library tests (12 ignored), and 28 Profile integration tests. Magpie follow-up passed 3803 library tests, including the updated matrix. These are historical results; migration validation is reported separately.
+Legacy checks on 2026-10-22 passed typecheck, renderer build, 2168 frontend tests, 3801 backend library tests (12 ignored), and 28 Profile integration tests. The reference follow-up passed 3803 library tests, including the updated matrix. These are historical results; migration validation is reported separately.
 
-Gemini tool-result role correction and image support adapt [Magpie's implementation](protocol-magpie-comparison.md), with its MIT notice retained.
+Gemini tool-result role correction and image support adapt [the reference implementation](protocol-reference-comparison.md), with its MIT notice retained.
 
 Protocol references: [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create), [Gemini generateContent](https://ai.google.dev/api/generate-content), and [Anthropic streaming](https://platform.claude.com/docs/en/build-with-claude/streaming).
 

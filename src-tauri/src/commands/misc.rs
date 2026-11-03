@@ -3777,7 +3777,8 @@ fn agent_installed_in(app: &str, desktop_roots: &[PathBuf], cli_dirs: &[PathBuf]
         return true;
     }
     let tool = match app {
-        "claude" | "codex" | "gemini" | "workbuddy" | "kimi" | "qwen" => app,
+        "claude" | "codex" | "gemini" | "workbuddy" | "kimi" | "qwen" | "opencode" | "pi"
+        | "openclaw" | "hermes" => app,
         "grokbuild" => "grok",
         _ => return false,
     };
@@ -3820,6 +3821,22 @@ pub async fn get_agent_versions() -> Result<HashMap<String, AgentVersion>, Strin
 #[cfg(test)]
 mod agent_installation_tests {
     use super::*;
+
+    #[test]
+    fn all_installable_cli_agents_are_detected_without_running_them() {
+        let root = tempfile::tempdir().unwrap();
+        for app in ["opencode", "pi", "openclaw", "hermes"] {
+            let binary = root.path().join(if cfg!(windows) {
+                format!("{app}.exe")
+            } else {
+                app.to_owned()
+            });
+            assert!(!agent_installed_in(app, &[], &[root.path().to_owned()]));
+            std::fs::write(&binary, "synthetic non-executable presence fixture").unwrap();
+            assert!(agent_installed_in(app, &[], &[root.path().to_owned()]));
+            std::fs::remove_file(&binary).unwrap();
+        }
+    }
     #[test]
     fn kimi_desktop_installation_is_detected_without_a_cli_on_path() {
         let dir = tempfile::tempdir().expect("dir");

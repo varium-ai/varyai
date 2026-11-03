@@ -1,4 +1,5 @@
 import { render, screen, fireEvent } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 
 import { PricingEditModal } from "@/components/usage/PricingEditModal";
@@ -7,7 +8,7 @@ import type { ModelPricing } from "@/types/usage";
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: string | { defaultValue?: string }) =>
-      typeof options === "string" ? options : options?.defaultValue ?? key,
+      typeof options === "string" ? options : (options?.defaultValue ?? key),
   }),
 }));
 
@@ -61,9 +62,12 @@ describe("PricingEditModal", () => {
     render(<PricingEditModal open model={model} onClose={() => {}} />);
 
     for (const { id } of PRICE_FIELDS) {
-      const input = screen.getByLabelText(/每百万 tokens/ as unknown as string, {
-        selector: `#${id}`,
-      }) as HTMLInputElement;
+      const input = screen.getByLabelText(
+        /每百万 tokens/ as unknown as string,
+        {
+          selector: `#${id}`,
+        },
+      ) as HTMLInputElement;
       expect(input).toHaveAttribute("step", "0.0001");
     }
   });
@@ -79,8 +83,13 @@ describe("PricingEditModal", () => {
   });
 
   it("allows user to input sub-cent prices via change event", () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     render(
-      <PricingEditModal open model={model} onClose={() => {}} isNew />,
+      <QueryClientProvider client={client}>
+        <PricingEditModal open model={model} onClose={() => {}} isNew />
+      </QueryClientProvider>,
     );
 
     const cacheReadInput = document.getElementById(

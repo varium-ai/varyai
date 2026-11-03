@@ -183,6 +183,7 @@ fn upstream_v23_survives_sql_import_and_binary_restore() -> Result<(), AppError>
     upstream_database(&path, version)?;
     // Model a genuine upstream export, with no Vary extension tables.
     let upstream = Database {
+        routing_generation: std::sync::atomic::AtomicU64::new(0),
         conn: std::sync::Mutex::new(Connection::open(&path)?),
         extension_conn: None,
     };

@@ -158,8 +158,19 @@ function createCatalogRow(seed?: Partial<CodexCatalogModel>): CodexCatalogRow {
   return {
     rowId: crypto.randomUUID(),
     model: seed?.model ?? "",
+    ...(typeof seed?.free === "boolean" ? { free: seed.free } : {}),
     displayName: seed?.displayName ?? "",
     contextWindow: seed?.contextWindow ?? "",
+    ...(seed?.contextSource ? { contextSource: seed.contextSource } : {}),
+    ...(seed?.maxContextWindow
+      ? { maxContextWindow: seed.maxContextWindow }
+      : {}),
+    ...(seed?.effectiveContextWindowPercent
+      ? { effectiveContextWindowPercent: seed.effectiveContextWindowPercent }
+      : {}),
+    ...(seed?.autoCompactTokenLimit
+      ? { autoCompactTokenLimit: seed.autoCompactTokenLimit }
+      : {}),
     // Carry native-profile overrides verbatim (not user-editable in the row UI,
     // but must survive load->save so the official catalog fidelity is kept).
     ...(seed?.supportsParallelToolCalls !== undefined
@@ -169,8 +180,9 @@ function createCatalogRow(seed?: Partial<CodexCatalogModel>): CodexCatalogRow {
     ...(seed?.baseInstructions
       ? { baseInstructions: seed.baseInstructions }
       : {}),
-    ...(seed?.reasoningLevels && seed.reasoningLevels.length > 0
-      ? { reasoningLevels: seed.reasoningLevels }
+    ...(seed?.reasoningLevels ? { reasoningLevels: seed.reasoningLevels } : {}),
+    ...(typeof seed?.reasoning === "boolean"
+      ? { reasoning: seed.reasoning }
       : {}),
     ...(seed?.defaultReasoningLevel
       ? { defaultReasoningLevel: seed.defaultReasoningLevel }
@@ -191,9 +203,16 @@ function catalogRowsMatchModels(
     const incoming = models[i];
     return (
       row.model === (incoming.model ?? "") &&
+      (row.free ?? null) === (incoming.free ?? null) &&
+      row.reasoning === incoming.reasoning &&
       (row.displayName ?? "") === (incoming.displayName ?? "") &&
       String(row.contextWindow ?? "") ===
         String(incoming.contextWindow ?? "") &&
+      row.maxContextWindow === incoming.maxContextWindow &&
+      row.contextSource === incoming.contextSource &&
+      row.effectiveContextWindowPercent ===
+        incoming.effectiveContextWindowPercent &&
+      row.autoCompactTokenLimit === incoming.autoCompactTokenLimit &&
       (row.supportsParallelToolCalls ?? null) ===
         (incoming.supportsParallelToolCalls ?? null) &&
       (row.baseInstructions ?? "") === (incoming.baseInstructions ?? "") &&
@@ -1402,6 +1421,7 @@ export function CodexFormFields({
                           value={row.contextWindow ?? ""}
                           onChange={(event) =>
                             handleUpdateCatalogRow(index, {
+                              contextSource: "user",
                               contextWindow: event.target.value.replace(
                                 /[^\d]/g,
                                 "",

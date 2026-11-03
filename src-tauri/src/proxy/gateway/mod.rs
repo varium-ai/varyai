@@ -12,7 +12,7 @@ pub use ingress::handle;
 pub(crate) use ingress::{error as policy_error, meter as meter_response};
 mod bindings;
 mod secrets;
-pub use bindings::{catalog, enforce_agent, GatewayCatalog, GatewayUsage};
+pub use bindings::{catalog, enforce_agent, GatewayCatalog, GatewayModel, GatewayUsage};
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -368,6 +368,26 @@ impl Database {
                 })
             })
             .collect()
+    }
+    /// Authenticate catalog access without charging or requiring inference budget.
+    pub(crate) fn gateway_catalog_policy(&self, secret: &str) -> Result<KeyPolicy, GatewayError> {
+        let conn = self
+            .extension_connection()
+            .lock()
+            .map_err(|_| GatewayError::Storage)?;
+        let row: Option<(String, bool)> = conn
+            .query_row(
+                "SELECT policy,revoked FROM gateway_keys WHERE secret_hash=?1",
+                [digest(secret)],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|_| GatewayError::Storage)?;
+        let (raw, revoked) = row.ok_or(GatewayError::Unauthorized)?;
+        if revoked {
+            return Err(GatewayError::Unauthorized);
+        }
+        serde_json::from_str(&raw).map_err(|_| GatewayError::Storage)
     }
     pub fn authorize_gateway_key(
         &self,

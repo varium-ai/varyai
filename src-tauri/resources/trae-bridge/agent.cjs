@@ -499,6 +499,8 @@ async function run(endpoint, directory) {
     const first = sessions.keys().next().value;
     if (!first) throw Error("no_chat_window");
     if (command.op === "list") return invoke(first, "list");
+    if (command.op === "matches")
+      return invoke(first, "matches", command.id, command.config);
     if (command.op === "apply")
       return invoke(first, "apply", command.id, command.name, command.config);
     if (command.op === "replace")

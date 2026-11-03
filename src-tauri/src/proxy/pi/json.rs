@@ -65,14 +65,14 @@ impl<'de> Deserialize<'de> for UniqueValue {
     }
 }
 
-pub(super) fn parse(bytes: &[u8]) -> Result<Value, serde_json::Error> {
+pub(crate) fn parse(bytes: &[u8]) -> Result<Value, serde_json::Error> {
     serde_json::from_slice::<UniqueValue>(bytes).map(|value| value.0)
 }
 
 /// Only encode edited text leaves. Opaque values keep their original lexemes,
 /// including integers beyond u64 and decimals beyond f64 precision. Refuse any
 /// unexpected structural edit instead of silently discarding protocol fields.
-pub(super) fn encode_redacted(
+pub(crate) fn encode_redacted(
     raw: &[u8],
     original: &Value,
     redacted: &Value,

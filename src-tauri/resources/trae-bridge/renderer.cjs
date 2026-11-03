@@ -94,9 +94,7 @@ function createBridge(
     saveOwned(id, []);
     await refreshModels();
   }
-  async function apply(id, name, config) {
-    if (!/^[\w-]+$/.test(id) || !Array.isArray(config.models))
-      throw Error("invalid_provider");
+  function endpoint(config) {
     const suffix = {
       openai: "/chat/completions",
       "openai-responses": "/responses",
@@ -109,6 +107,35 @@ function createBridge(
         config.protocol === "anthropic" && baseUrl.endsWith("/v1")
           ? "/messages"
           : suffix;
+    return baseUrl;
+  }
+  async function matches(id, config) {
+    if (!/^[\w-]+$/.test(id) || !Array.isArray(config.models)) return false;
+    await refreshModels();
+    const result = await service.getModelList();
+    if (!Array.isArray(result.model_list)) return false;
+    const owned = loadOwned(id),
+      baseUrl = endpoint(config);
+    return (
+      owned.length === config.models.length &&
+      config.models.every((wanted) => {
+        const owner = owned.find((row) => row.model === wanted.model);
+        const row =
+          owner &&
+          result.model_list.find((m) => m.custom_model_id === owner.id);
+        return (
+          row &&
+          (row.model_name ?? row.name) === wanted.model &&
+          row.base_url === baseUrl &&
+          row.ak === config.apiKey
+        );
+      })
+    );
+  }
+  async function apply(id, name, config) {
+    if (!/^[\w-]+$/.test(id) || !Array.isArray(config.models))
+      throw Error("invalid_provider");
+    const baseUrl = endpoint(config);
     let owned = loadOwned(id);
     // Native writes do not invalidate TRAE's model-list cache automatically.
     await refreshModels();
@@ -326,6 +353,7 @@ function createBridge(
   }
   const bridge = {
     list,
+    matches,
     apply,
     replace,
     remove,
@@ -532,7 +560,7 @@ customElements.define(tag,class extends HTMLElement{
   try{const bridge=await this.init();let result;
    switch(message.op){case'health':result={ready:true,enabled:bridge.enabled};break;
     case'enable':await bridge.enable();result=true;break;case'disable':bridge.disable();result=true;break;
-    case'list':result=await bridge.list();break;case'apply':result=await bridge.apply(message.id,message.name,message.config);break;
+    case'list':result=await bridge.list();break;case'matches':result=await bridge.matches(message.id,message.config);break;case'apply':result=await bridge.apply(message.id,message.name,message.config);break;
     case'replace':result=await bridge.replace(message.id,message.name,message.config);break;case'remove':await bridge.remove(message.id);result=true;break;default:throw Error('unsupported_operation')}
    this.send({reply:message.request,result});
   }catch{this.send({reply:message.request,error:'TRAE native bridge unavailable'})}

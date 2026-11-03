@@ -265,9 +265,14 @@ export type CodexApiFormat =
   | "gemini_native";
 
 export interface CodexCatalogModel {
+  free?: boolean;
   model: string;
   displayName?: string;
   contextWindow?: string | number;
+  contextSource?: "vendor" | "user";
+  maxContextWindow?: number;
+  effectiveContextWindowPercent?: number;
+  autoCompactTokenLimit?: number;
   // Hidden provider capability metadata for the generated model catalog.
   // supportsParallelToolCalls is native-profile-only; inputModalities wins over
   // automatic text-only model detection for every profile.
@@ -281,6 +286,7 @@ export interface CodexCatalogModel {
   // (e.g. ["none", "low", "medium", "high", "xhigh", "max"]). When omitted the
   // backend keeps the template's conservative none/high default.
   reasoningLevels?: string[];
+  reasoning?: boolean;
   // Per-model default reasoning effort. Only meaningful together with
   // reasoningLevels; when omitted the backend keeps the template default if it
   // is still in the list, otherwise the highest declared level.

@@ -2,6 +2,7 @@ use super::*;
 
 const AGENTS: &[&str] = &[
     "claude-desktop",
+    "codex",
     "workbuddy",
     "qoder",
     "doubaowork",
@@ -49,9 +50,15 @@ fn detect_in(
     cli_dirs: &[PathBuf],
     desktop_supported: bool,
 ) -> AgentVersion {
+    // ChatGPT's bundle is legacy installation evidence, not the Codex App's version.
+    let bundles = if app == "codex" {
+        &["Codex.app"][..]
+    } else {
+        agent_desktop_bundles(app)
+    };
     let cli_supported = matches!(app, "workbuddy" | "kimi" | "qwen");
     let mut result = AgentVersion {
-        supported: cli_supported || (desktop_supported && !agent_desktop_bundles(app).is_empty()),
+        supported: cli_supported || (desktop_supported && !bundles.is_empty()),
         installed: false,
         version: None,
         latest_version: None,
@@ -60,11 +67,7 @@ fn detect_in(
     if desktop_supported {
         if let Some(bundle) = roots
             .iter()
-            .flat_map(|root| {
-                agent_desktop_bundles(app)
-                    .iter()
-                    .map(move |name| root.join(name))
-            })
+            .flat_map(|root| bundles.iter().map(move |name| root.join(name)))
             .find(|path| path.is_dir())
         {
             result.installed = true;
@@ -162,6 +165,22 @@ pub(super) async fn get_versions() -> Result<HashMap<String, AgentVersion>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn codex_app_version_is_read_separately_and_chatgpt_is_not_codex() {
+        assert!(AGENTS.contains(&"codex"));
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("ChatGPT.app")).unwrap();
+        assert!(!detect_in("codex", &[root.path().to_owned()], &[], true).installed);
+        let contents = root.path().join("Codex.app/Contents");
+        std::fs::create_dir_all(&contents).unwrap();
+        std::fs::write(contents.join("Info.plist"), r#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>26.1000.100</string></dict></plist>"#).unwrap();
+        let info = detect_in("codex", &[root.path().to_owned()], &[], true);
+        assert_eq!(info.version.as_deref(), Some("26.1000.100"));
+        assert_eq!(info.source, Some("desktop"));
+        assert!(info.latest_version.is_none());
+    }
 
     #[test]
     #[cfg(target_os = "macos")]

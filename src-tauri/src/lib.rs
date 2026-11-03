@@ -4,6 +4,7 @@ mod auto_launch;
 mod claude_desktop_config;
 mod claude_mcp;
 mod claude_plugin;
+mod codex_client;
 mod codex_config;
 mod codex_history_migration;
 mod codex_state_db;
@@ -652,6 +653,9 @@ pub fn run() {
             }
 
             let app_state = AppState::new(db);
+            if app_state.proxy_service.intent_client.restore().is_err() {
+                log::warn!("[IntentRouting] client recovery requires attention");
+            }
             if let Err(error) = initialize_optional_agent_visibility(&app_state.db) {
                 log::warn!("初始化可选 Agent 列表失败: {error}");
             }
@@ -1412,7 +1416,52 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::list_agent_connections,
+            commands::get_agent_model_catalog,
+            commands::get_agent_native_models,
+            commands::get_agent_model_visibility,
+            commands::set_agent_model_visibility,
+            commands::set_agent_connection,
+            commands::reapply_agent_connection,
+            commands::restart_agent_connection,
             commands::list_gateway_keys,
+            commands::list_routing_upstreams,
+            commands::preview_provider_import,
+            commands::import_provider_sources,
+            commands::routing_upstream_editor,
+            commands::save_codex_provider,
+            commands::create_codex_provider,
+            commands::codex_provider_models,
+            commands::codex_provider_quota,
+            commands::import_codex_provider_account,
+            commands::test_codex_provider_model,
+            commands::discover_routing_upstream_models,
+            commands::probe_routing_upstream,
+            commands::save_routing_upstream,
+            commands::delete_routing_upstream,
+            commands::list_intent_routing_providers,
+            commands::routing_trace_snapshot,
+            commands::routing_trace_history,
+            commands::list_intent_routing_groups,
+            commands::refresh_intent_routing_catalogs,
+            commands::set_intent_routing_auto_create,
+            commands::restore_discovered_routing_group,
+            commands::set_routing_context_settings,
+            commands::get_routing_context_settings,
+            commands::get_routing_auto_group_skip,
+            commands::set_routing_auto_group_skip,
+            commands::save_intent_routing_group,
+            commands::arrange_routing_groups,
+            commands::delete_intent_routing_group,
+            commands::preview_intent_routing_plan,
+            commands::resolve_routing_group_matches,
+            commands::trial_intent_routing_classification,
+            commands::intent_routing_client_status,
+            commands::connect_intent_routing_client,
+            commands::disconnect_intent_routing_client,
+            commands::cleanup_intent_routing_orphan,
+            commands::start_intent_routing_session,
+            commands::stop_intent_routing_session,
             commands::get_gateway_catalog,
             commands::bind_gateway_agent,
             commands::list_gateway_usage,
@@ -2159,6 +2208,37 @@ async fn restore_proxy_state_on_startup(state: &store::AppState) {
             log::warn!("Claude Desktop routing recovery failed: {error}");
         }
     }
+    let manager = state.proxy_service.agent_connections.clone();
+    let shared = tokio::task::spawn_blocking(move || {
+        manager.bridge_enabled()
+            || crate::services::agent_connections::APPS
+                .iter()
+                .filter(|app| **app != "codex")
+                .any(|app| manager.status(app).is_ok_and(|status| status.enabled))
+    })
+    .await
+    .unwrap_or(false);
+    if shared {
+        if state.proxy_service.start().await.is_ok() {
+            state.proxy_service.sync_shared_agent_catalogs().await;
+        } else {
+            log::warn!("Shared Agent connections could not resume");
+        }
+    }
+    let manager = state.proxy_service.agent_connections.clone();
+    if let Ok(Ok(Some(selected))) =
+        tokio::task::spawn_blocking(move || manager.codex_intent()).await
+    {
+        if state.proxy_service.start().await.is_err()
+            || state
+                .proxy_service
+                .connect_codex_agent(true, false, selected)
+                .await
+                .is_err()
+        {
+            log::warn!("Codex shared connection could not resume; reconnect is required");
+        }
+    }
     // 收集需要恢复接管的应用列表（从 proxy_config.enabled 读取）
     let apps_to_restore = enabled_proxy_apps_on_startup(&state.db).await;
 
@@ -2172,6 +2252,9 @@ async fn restore_proxy_state_on_startup(state: &store::AppState) {
     // 逐个恢复接管状态
     let visible = settings::get_settings().visible_apps.unwrap_or_default();
     for app_type in apps_to_restore {
+        if state.proxy_service.agent_connections.owns(app_type) {
+            continue;
+        }
         if !startup_agent_eligible(app_type, &visible, commands::is_agent_installed(app_type)) {
             log::debug!("跳过未加入或未安装的 Agent: {app_type}");
             continue;
@@ -2208,7 +2291,12 @@ fn initialize_common_config_snippets(state: &store::AppState) {
     // This must run before proxy takeover is restored on startup, otherwise we'd read
     // proxy-placeholder configs instead of the user's actual live settings.
     for app_type in crate::app_config::AppType::all() {
-        if !state.db.owns_native_client(&app_type).unwrap_or(false) {
+        if state
+            .proxy_service
+            .agent_connections
+            .owns(app_type.as_str())
+            || !state.db.owns_native_client(&app_type).unwrap_or(false)
+        {
             continue;
         }
         if !state

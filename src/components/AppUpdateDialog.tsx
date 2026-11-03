@@ -45,7 +45,7 @@ export function AppUpdateDialog() {
   }, []);
 
   const isOpen = hasUpdate && Boolean(updateInfo) && !isDismissed;
-  if (!isOpen || isPortable === null || !updateInfo) return null;
+  if (isPortable === null || !updateInfo) return null;
 
   const handleInstall = async () => {
     try {

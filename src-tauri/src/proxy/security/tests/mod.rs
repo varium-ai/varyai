@@ -6,6 +6,31 @@ use super::runtime::SecurityRuntimeConfig;
 use super::types::{AuditAction, RiskLevel, RuleCategory};
 
 #[test]
+fn external_audit_sessions_are_consumer_scoped_and_do_not_expose_client_identity() {
+    use crate::app_config::AppType;
+    let headers = axum::http::HeaderMap::from_iter([(
+        axum::http::HeaderName::from_static("session-id"),
+        axum::http::HeaderValue::from_static("synthetic-conversation"),
+    )]);
+    let body = json!({"input":"synthetic"});
+    let a = super::external_session_id(&AppType::Codex, "consumer-a", &headers, &body);
+    let b = super::external_session_id(&AppType::Codex, "consumer-b", &headers, &body);
+    assert!(a.is_some());
+    assert_ne!(a, b);
+    assert_eq!(
+        a,
+        super::external_session_id(&AppType::Codex, "consumer-a", &headers, &body)
+    );
+    assert!(a
+        .as_deref()
+        .is_some_and(|id| id.starts_with("external_") && !id.contains("synthetic-conversation")));
+    assert_eq!(
+        super::external_session_id(&AppType::Codex, "consumer-a", &Default::default(), &body),
+        None
+    );
+}
+
+#[test]
 fn redis_password_without_username_is_detected_and_redacted() {
     let secret = "synthetic-redis-password";
     let mut body = json!({"messages": [{"role": "user", "content":

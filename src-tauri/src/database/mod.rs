@@ -44,6 +44,9 @@ mod upstream_compat_tests;
 mod extension_compat_tests;
 
 #[cfg(test)]
+mod routing_upstreams_compat_tests;
+
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]
@@ -80,7 +83,10 @@ use crate::config::get_app_config_dir;
 use crate::error::AppError;
 use rusqlite::{hooks::Action, Connection};
 use serde::Serialize;
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Mutex,
+};
 
 // DAO 方法通过 impl Database 提供，无需额外导出
 
@@ -89,9 +95,9 @@ use std::sync::Mutex;
 pub(crate) const SCHEMA_VERSION: i32 = 24;
 /// Released CC Switch v4.0.21 schema; never follow unreleased main migrations.
 pub(crate) const SHARED_SCHEMA_VERSION: i32 = 23;
-pub(crate) const EXTENSION_SCHEMA_VERSION: i32 = 5;
+pub(crate) const EXTENSION_SCHEMA_VERSION: i32 = 7;
 pub(crate) const NATIVE_MAIN_SCHEMA_VERSION: i32 = 24;
-pub(crate) const NATIVE_EXTENSION_SCHEMA_VERSION: i32 = 6;
+pub(crate) const NATIVE_EXTENSION_SCHEMA_VERSION: i32 = 7;
 
 /// 安全地序列化 JSON，避免 unwrap panic
 pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError> {
@@ -119,6 +125,8 @@ pub struct Database {
     pub(crate) conn: Mutex<Connection>,
     /// Absent only for historical in-memory fixtures. Live storage uses two files.
     pub(crate) extension_conn: Option<Mutex<Connection>>,
+    /// In-process epoch for immutable routing snapshots; not a storage schema field.
+    pub(crate) routing_generation: AtomicU64,
 }
 
 /// Startup recovery needs to distinguish public and Vary extension versions.
@@ -141,6 +149,14 @@ fn register_db_change_hook(conn: &Connection) {
 }
 
 impl Database {
+    pub(crate) fn routing_generation(&self) -> u64 {
+        self.routing_generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn invalidate_routing_resources(&self) {
+        self.routing_generation.fetch_add(1, Ordering::Release);
+    }
+
     /// 初始化数据库连接并创建表
     ///
     /// Native files live under the independent VaryAI data root.
@@ -233,6 +249,7 @@ impl Database {
         let db = Self {
             conn: Mutex::new(conn),
             extension_conn: None,
+            routing_generation: AtomicU64::new(0),
         };
         db.create_tables()?;
         db.ensure_model_pricing_seeded()?;

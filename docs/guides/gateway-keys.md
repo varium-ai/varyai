@@ -1,6 +1,6 @@
 # Gateway keys, agent policies and usage
 
-Open **Settings → Advanced → Local routing → Gateway keys**. The four tabs separate key management, local agent bindings, usage and connection examples. The service activity cards below this panel describe all local routes, not an individual key's token usage.
+Open **Settings → Routing → Local routing → Gateway keys**. The four tabs separate key management, local agent bindings, usage and connection examples. The service activity cards below this panel describe all local routes, not an individual key's token usage.
 
 ## Create and manage a key
 
@@ -8,7 +8,7 @@ The Keys tab lists existing keys. Select **Create key** to open its form. Give t
 
 New keys explicitly allow all models by default. To restrict a key, turn that option off and select request model IDs from the configured provider catalog, or enter exact case-sensitive IDs separated by commas. A restricted policy needs at least one ID. Older keys retain their original allowlists; they are never silently widened. Model policy checks the client request before provider model mappings, so Claude Desktop uses its Claude-safe route IDs rather than the mapped upstream model name.
 
-Set an optional token budget and reset period. An empty budget is unlimited; zero blocks immediately. The generated secret can be copied, hidden and revealed again with **View secret** on its key card, including after restarting VaryAI. Lists do not return secrets; revealing one is a separate local action. Only its SHA-256 hash is stored in `vary-ai.db`. New secrets have a separate device-local copy in the application configuration directory's `gateway-secrets/` folder, written atomically with Unix permissions `0600`. This is a private local file, not encryption or an OS keychain. Database exports, database backups and cloud database sync do not include this folder. Keep it private if backing up the entire configuration directory. Older hash-only keys and keys restored on a device without the local copy cannot be revealed; the UI explains this without changing existing bindings or usage. Create another key when an external client needs a lost secret.
+Set an optional token budget and reset period. An empty budget is unlimited; zero blocks immediately. The generated secret can be copied, hidden and revealed again with **View secret** on its key card, including after restarting VaryAI. Lists do not return secrets; revealing one is a separate local action. Only its SHA-256 hash is stored in `varyai-ext.db`. New secrets have a separate device-local copy in the application configuration directory's `gateway-secrets/` folder, written atomically with Unix permissions `0600`. This is a private local file, not encryption or an OS keychain. Database exports, database backups and cloud database sync do not include this folder. Keep it private if backing up the entire configuration directory. Older hash-only keys and keys restored on a device without the local copy cannot be revealed; the UI explains this without changing existing bindings or usage. Create another key when an external client needs a lost secret.
 
 Editing a policy does not replace its credential or clear consumption. Revocation permanently blocks that credential, including agents still bound to it, and prevents revealing its saved secret. Unbind the agent or select another key to restore its routed access. Already admitted requests can finish. Deleting an eligible key also removes its device-local secret copy.
 
@@ -26,7 +26,7 @@ Enable the agent's local route below the key panel and restart the client when i
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Claude Code                    | Routed Messages requests                                                                                                                                                  |
 | Claude Desktop                 | Dedicated Desktop Messages route; existing Desktop authentication remains required                                                                                        |
-| Codex                          | Routed Chat, Responses and compact requests                                                                                                                               |
+| Codex                          | Routed Chat, Responses and compact requests, including unified model-menu and temporary group Responses routes                                                            |
 | Gemini CLI                     | Routed generateContent and streamGenerateContent requests; model ID comes from the URL                                                                                    |
 | Grok Build                     | Dedicated Responses and compact routes                                                                                                                                    |
 | Pi                             | Provider-scoped Chat, Responses, Messages and Gemini routes                                                                                                               |
@@ -38,11 +38,17 @@ Enable the agent's local route below the key panel and restart the client when i
 
 Budget policies do not turn an observational audit bridge into a forwarding gateway. Non-chat image/search operations on a bound Codex route are refused as `gateway_operation_not_supported` rather than escaping the policy without accounting. Model-list and token-count probes do not consume the generation budget.
 
+Codex group and direct model-menu requests use their published alias as the policy's request model ID. Their usage records retain that alias and the exact selected upstream model separately. Temporary Codex group sessions use the same Codex binding; their session token does not bypass it.
+
 ## External client connection
 
 The **Connect** tab generates a request example using the chosen key's model policy and selected client protocol. Replace `YOUR_GATEWAY_KEY` with the saved secret and `MODEL_ID` with a permitted request model. It does not change a provider or agent configuration.
 
-The default local origin is `http://127.0.0.1:15722` (use the configured port). Supported POST endpoints:
+The default local origin is `http://127.0.0.1:15722` (use the configured port). First add a global provider in **Models / Providers**, or manually import a supported existing Agent configuration. Saved Agent configurations are never imported automatically. In **Plans / Routing**, create a group using these global providers, explicitly enable **Publish to gateway** on the group and save it. Add its public alias to a restricted key's request-model allowlist. An authenticated `GET /gateway/v1/models` returns only executable published group aliases permitted by that key, without charging a generation. This catalog is independent of Codex's routing switch; it does not enumerate every ordinary provider model.
+
+Use that group alias with any supported POST protocol. VaryAI selects the concrete upstream first, then preserves native wire semantics or validates an explicit conversion. Non-group request models retain the existing provider namespaces shown below. Other agents must be configured manually with this authenticated gateway base URL and key; saving a provider or group never rewrites every agent's configuration.
+
+Supported POST endpoints:
 
 | Endpoint                                                       | Provider namespace |
 | -------------------------------------------------------------- | ------------------ |
@@ -71,7 +77,7 @@ This remains a completed-usage admission limit, not prepaid reservation or a har
 - `401 invalid_gateway_key`: invalid/revoked external credential, or a revoked key still bound to an agent.
 - `403 model_not_allowed`: the request model is outside the key's allowlist.
 - `403 gateway_operation_not_supported`: the bound policy cannot account for this operation.
-- `429 gateway_budget_exhausted`: completed usage reached the limit. `error.resets_at` is a Unix timestamp or null for a never-reset budget.
+- `402 gateway_budget_exhausted`: completed usage reached the limit. `error.resets_at` is a Unix timestamp or null for a never-reset budget.
 - `503 gateway_policy_unavailable`: the policy store cannot be read; nothing is forwarded.
 
 Errors contain no credential, request content or supplier configuration.
