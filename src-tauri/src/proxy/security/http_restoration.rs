@@ -1775,10 +1775,9 @@ impl DlpHttpRequest {
             // Real references, explicit/opaque dependencies and cache contributions keep all witnesses.
             let per_call_readable_history = dependency_projection.is_some()
                 && token_refs.as_slice().is_empty()
-                && history.previous_response_id.is_none()
                 && opaque_refs.as_slice().is_empty()
                 && self.source_body.as_value().get("input") == enriched_body.get("input")
-                && super::request_preparation::is_fresh_readable_history(
+                && super::request_preparation::is_fresh_readable_history_for_call_selection(
                     self.source_body.as_value(),
                     &self.budget,
                 )
@@ -1828,8 +1827,9 @@ impl DlpHttpRequest {
             if requires_completed_context
                 || (per_call_readable_history && !call_specs.as_slice().is_empty())
             {
+                let mut resume_reason = None;
                 attempt_lease
-                    .resume_completed_context(
+                    .resume_completed_context_diagnosed(
                         &binding,
                         history
                             .previous_response_id
@@ -1837,10 +1837,18 @@ impl DlpHttpRequest {
                             .map(PayloadText::as_str),
                         call_specs.as_slice(),
                         opaque_refs.as_slice(),
+                        &mut resume_reason,
                     )
                     .map_err(|error| {
-                        DlpForwardError::from_token_error(error)
-                            .at_context_checkpoint(ContextCheckpoint::ContextResume)
+                        let error = DlpForwardError::from_token_error(error);
+                        if error == DlpForwardError::ContextUnavailable {
+                            super::restore_diagnostics::log_context_resume_failure(
+                                resume_reason.unwrap_or(
+                                    super::restore_diagnostics::ContextResumeReason::Unknown,
+                                ),
+                            );
+                        }
+                        error
                     })?;
 
                 attempt_lease

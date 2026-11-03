@@ -6146,6 +6146,114 @@ fn assert_history_literal_has_no_authority(
     Ok(())
 }
 
+#[tokio::test]
+#[serial_test::serial]
+async fn responses_valid_cursor_mixed_history_forwards_recorded_calls() -> TestResult {
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let captured = seen.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let upstream = Router::new().fallback(post(move |Json(body): Json<Value>| {
+        let seen = seen.clone();
+        async move {
+            let index = {
+                let mut requests = seen.lock().expect("synthetic cursor capture");
+                requests.push(body);
+                requests.len() - 1
+            };
+            if index == 0 {
+                Json(json!({"id":"resp_cursor_mixed","object":"response","status":"completed","model":"synthetic-model","output":[
+                    {"id":"fc_cursor_first","type":"function_call","call_id":"call_cursor_first","name":"synthetic_first","arguments":"{}","status":"completed"},
+                    {"id":"fc_cursor_second","type":"function_call","call_id":"call_cursor_second","name":"synthetic_second","arguments":"{}","status":"completed"}
+                ]}))
+            } else {
+                Json(json!({"id":format!("resp_cursor_followup_{index}"),"object":"response","status":"completed","model":"synthetic-model","output":[
+                    {"id":format!("msg_cursor_followup_{index}"),"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Synthetic continuation","annotations":[]}]}
+                ]}))
+            }
+        }
+    }));
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await });
+    let db = Arc::new(Database::memory()?);
+    let provider = Provider::with_id(
+        "synthetic-cursor-mixed".into(),
+        "Synthetic cursor mixed history".into(),
+        json!({"base_url":format!("http://{address}"),"api_key":"synthetic-cursor-key","api_format":"responses"}),
+        None,
+    );
+    db.save_provider("codex", &provider)?;
+    db.set_current_provider("codex", &provider.id)?;
+    let proxy = ProxyServer::new(ProxyConfig::default(), db, None).with_restoration_gateway(
+        RestorationGateway::with_test_rules(&["chinese_phone_number"], 64 * 1024 * 1024),
+    );
+    let mut router = proxy.build_router();
+    let initial = http::Request::builder()
+        .method("POST")
+        .uri("/v1/responses")
+        .header("content-type", "application/json")
+        .header("session-id", "synthetic-cursor-mixed-session")
+        .body(Body::from(
+            json!({"model":"synthetic-model","stream":false,"input":format!("Synthetic initial {FIXTURE_PHONE}")})
+                .to_string(),
+        ))?;
+    let response = router.call(initial).await?;
+    assert_eq!(response.status(), http::StatusCode::OK);
+    let completed: Value =
+        serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+    let continuation = json!({"model":"synthetic-model","stream":false,"previous_response_id":completed["id"],"input":[
+        {"type":"function_call","call_id":"call_cursor_prior","name":"synthetic_prior","arguments":"{}"},
+        {"type":"function_call_output","call_id":"call_cursor_prior","output":"Synthetic prior result"},
+        completed["output"][0].clone(),
+        {"type":"function_call_output","call_id":"call_cursor_first","output":"Synthetic first result"},
+        completed["output"][1].clone(),
+        {"type":"function_call_output","call_id":"call_cursor_second","output":"Synthetic second result"},
+        {"role":"user","content":format!("Synthetic continue {FIXTURE_PHONE}")}
+    ]});
+    for case in 0..3 {
+        let mut body = continuation.clone();
+        match case {
+            1 => {
+                body.as_object_mut()
+                    .ok_or("synthetic cursor body missing")?
+                    .remove("previous_response_id");
+            }
+            2 => body["previous_response_id"] = json!("resp_cursor_forged"),
+            _ => {}
+        }
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("/v1/responses")
+            .header("content-type", "application/json")
+            .header("session-id", "synthetic-cursor-mixed-session")
+            .body(Body::from(body.to_string()))?;
+        let response = router.call(request).await?;
+        assert_eq!(
+            response.status(),
+            if case == 2 {
+                http::StatusCode::BAD_REQUEST
+            } else {
+                http::StatusCode::OK
+            },
+            "cursor continuation boundary; case={case}"
+        );
+        let _ = response.into_body().collect().await?;
+    }
+    let requests = captured
+        .lock()
+        .map_err(|_| "synthetic cursor capture poisoned")?;
+    assert_eq!(requests.len(), 3, "forged cursor must not reach upstream");
+    for body in &requests[1..] {
+        assert_eq!(body["input"][2]["call_id"], "call_cursor_first");
+        assert_eq!(body["input"][4]["call_id"], "call_cursor_second");
+        assert!(!body.to_string().contains(FIXTURE_PHONE));
+    }
+    drop(requests);
+    server.abort();
+    Ok(())
+}
+
 async fn fresh_readable_history_fixture(
     protocol: &'static str,
     custom: bool,
@@ -8384,7 +8492,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         tokenization::{DlpTokenStore, TokenCategory},
     };
     use crate::app_config::AppType;
-    const CHECKPOINTS: [(&str, &str); 20] = [
+    const CHECKPOINTS: [(&str, &str); 21] = [
         (
             "reference_scan",
             concat!(
@@ -8474,6 +8582,13 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
             concat!(
                 "[DLP] context failure code=dlp_context_unavailable checkpoint=",
                 "attempt_history"
+            ),
+        ),
+        (
+            "context_resume_contexts_empty",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "context_resume reason=contexts_empty"
             ),
         ),
         (
@@ -8691,7 +8806,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         |_| Err(DlpForwardError::Blocked),
     );
     response_contract(result.err().ok_or("missing call context was accepted")?);
-    check("context_resume")?;
+    check("context_resume_contexts_empty")?;
 
     let mut orphan = json!({"model":"synthetic-model", "input":[
         {"type":"function_call_output","call_id":"synthetic-orphan-call","output":format!("Synthetic document sample {reference}")}

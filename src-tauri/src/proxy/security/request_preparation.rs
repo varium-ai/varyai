@@ -41,6 +41,17 @@ pub(super) fn is_fresh_readable_history(
     ))
 }
 
+/// Check readable input for per-call selection; the cursor is resumed separately.
+pub(super) fn is_fresh_readable_history_for_call_selection(
+    body: &Value,
+    budget: &PayloadBudget,
+) -> Result<bool, TokenError> {
+    Ok(matches!(
+        classify_request_history_impl(body, budget, None, false)?,
+        RequestHistoryClassification::FreshReadable
+    ))
+}
+
 #[cfg(test)]
 pub(super) fn is_fresh_readable_history_with_history(
     body: &Value,
@@ -58,6 +69,15 @@ pub(super) fn classify_request_history(
     body: &Value,
     budget: &PayloadBudget,
     projection: Option<&DlpHistoryProjection<'_>>,
+) -> Result<RequestHistoryClassification, TokenError> {
+    classify_request_history_impl(body, budget, projection, true)
+}
+
+fn classify_request_history_impl(
+    body: &Value,
+    budget: &PayloadBudget,
+    projection: Option<&DlpHistoryProjection<'_>>,
+    previous_response_id_is_dependency: bool,
 ) -> Result<RequestHistoryClassification, TokenError> {
     use super::completed_context::valid_external_id;
     fn encrypted_dependency(value: &Value, depth: usize) -> Result<bool, TokenError> {
@@ -170,9 +190,10 @@ pub(super) fn classify_request_history(
             allow_image,
         )
     }
-    if body
-        .get("previous_response_id")
-        .is_some_and(|v| !v.is_null())
+    if (previous_response_id_is_dependency
+        && body
+            .get("previous_response_id")
+            .is_some_and(|v| !v.is_null()))
         || prior_dependency(body, projection)?
     {
         return Ok(RequestHistoryClassification::ExplicitDependency);

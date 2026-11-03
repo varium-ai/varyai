@@ -1014,7 +1014,7 @@ fn mixed_readable_continuation_http_preserves_per_call_completion_boundaries() -
         "source": "Synthetic source\nrredact-custom-"
     }))?;
     for case in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 0, 13] {
-        let positive = matches!(case, 0 | 13);
+        let positive = matches!(case, 0 | 5 | 13);
         let mut body = json!({"input":[
             {"type":"function_call", "call_id":"synthetic-readable-prior", "name":"synthetic-prior-tool", "arguments":"{}"},
             {"type":"function_call_output", "call_id":"synthetic-readable-prior", "output":"Synthetic prior result"},
@@ -1097,6 +1097,117 @@ fn mixed_readable_continuation_http_preserves_per_call_completion_boundaries() -
         if case != 10 {
             assert!(body == original, "mixed_readable_admission_changed");
         }
+    }
+    Ok(())
+}
+
+#[test]
+#[serial_test::serial]
+fn mixed_readable_continuation_valid_cursor_preserves_per_call_completion() -> TestResult {
+    let _reset = Reset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    let (store, lease, binding, message, reference) = message_projection_fixture()?;
+    let first = json!({"id":"synthetic-cursor-first-item", "type":"function_call", "call_id":"synthetic-cursor-first-call", "name":"synthetic-first-tool", "arguments":"{}"});
+    let second = json!({"id":"synthetic-cursor-second-item", "type":"function_call", "call_id":"synthetic-cursor-second-call", "name":"synthetic-second-tool", "arguments":"{}"});
+    let response = json!({"id":"synthetic-cursor-completed", "object":"response", "status":"completed", "output":[message, first, second]});
+    let restored = super::response_restoration::restore_and_publish_json_response(
+        &response,
+        false,
+        &lease,
+        &binding,
+        &super::completed_context::CompletionWitness::from_verified_completion(true)?,
+        &PayloadBudget::default(),
+    )
+    .map_err(|_| "cursor_completion_publish_failed")?;
+    let pending = lease
+        .capture_delivered_history(&binding, restored.as_value())
+        .ok_or("cursor_capture_failed")?;
+    assert!(
+        lease.publish_delivered_history(&binding, pending),
+        "cursor_delivery_failed"
+    );
+    let gateway = RestorationGateway::with_test_store_and_rules(
+        store,
+        &["chinese_phone_number"],
+        PayloadBudget::default(),
+    );
+    let mut headers = http::HeaderMap::new();
+    headers.insert("session-id", "synthetic-message-projection".parse()?);
+    for case in 0..9 {
+        let positive = matches!(case, 0 | 1);
+        let mut body = json!({"input":[
+            {"type":"function_call", "call_id":"synthetic-cursor-prior", "name":"synthetic-prior-tool", "arguments":"{}"},
+            {"type":"function_call_output", "call_id":"synthetic-cursor-prior", "output":"Synthetic prior result"},
+            response["output"][1].clone(),
+            {"type":"function_call_output", "call_id":"synthetic-cursor-first-call", "output":"Synthetic first result"},
+            response["output"][2].clone(),
+            {"type":"function_call_output", "call_id":"synthetic-cursor-second-call", "output":"Synthetic second result"},
+            {"role":"user", "content":"Synthetic continue"}
+        ]});
+        if case >= 7 {
+            // A live message projection remains, but per-call selection produces no calls.
+            body["input"] = json!([
+                response["output"][0].clone(),
+                {"type":"function_call", "call_id":"synthetic-cursor-prior", "name":"synthetic-prior-tool", "arguments":"{}"},
+                {"type":"function_call_output", "call_id":"synthetic-cursor-prior", "output":"Synthetic prior result"},
+                {"role":"user", "content":"Synthetic continue"}
+            ]);
+        }
+        if case != 0 && case != 3 && case != 4 {
+            body["previous_response_id"] = json!("synthetic-cursor-completed");
+        }
+        match case {
+            2 | 7 => body["previous_response_id"] = json!("synthetic-forged-cursor"),
+            3 => body["input"][1]["output"] = json!(reference),
+            4 => body["input"][0]["encrypted_reasoning"] = json!("synthetic-unknown-opaque"),
+            5 => body["input"][2]["arguments"] = json!("{\"changed\":true}"),
+            _ => {}
+        }
+        let original = body.clone();
+        let request = match admit_http_request(
+            &gateway,
+            &AppType::Codex,
+            true,
+            false,
+            &mut body,
+            &headers,
+        )? {
+            RestorationAdmission::Admitted(request) => request,
+            _ => return Err("cursor_mixed_admission_failed".into()),
+        };
+        let transformed = std::cell::Cell::new(false);
+        let result = request.prepare_attempt(
+            if matches!(case, 6 | 8) {
+                "synthetic-other-provider"
+            } else {
+                "synthetic-provider"
+            },
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-principal"),
+            &mut body,
+            |candidate| {
+                transformed.set(true);
+                Ok(candidate.clone())
+            },
+        );
+        if positive {
+            assert!(
+                result.is_ok(),
+                "valid_cursor_mixed_history_rejected; case={case}"
+            );
+            assert!(transformed.get(), "valid_cursor_history_not_prepared");
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(super::http_restoration::DlpForwardError::ContextUnavailable)
+                ),
+                "cursor_mixed_dependency_bypassed; case={case}"
+            );
+            assert!(!transformed.get(), "cursor_unproven_history_transformed");
+        }
+        assert!(body == original, "cursor_mixed_source_changed");
     }
     Ok(())
 }
