@@ -1162,6 +1162,14 @@ pub fn run() {
             app.manage(telemetry.clone());
             telemetry.clone().start_worker();
 
+            if let Ok(directory) = app.path().app_local_data_dir() {
+                let checkin = Arc::new(services::workbuddy_checkin::Manager::new(
+                    directory.join("workbuddy-checkin.json"),
+                ));
+                app.manage(checkin.clone());
+                checkin.start_worker();
+            }
+
             // 初始化 SkillService
             let skill_service = SkillService::new();
             app.manage(commands::skill::SkillServiceState(Arc::new(skill_service)));
@@ -1720,6 +1728,9 @@ pub fn run() {
             commands::save_qoder_settings,
             commands::get_workbuddy_live_provider_ids,
             commands::get_workbuddy_settings,
+            commands::get_workbuddy_checkin_status,
+            commands::check_in_workbuddy,
+            commands::set_workbuddy_auto_checkin,
             commands::save_workbuddy_settings,
             commands::get_workbuddy_default_config_dir,
             // OpenClaw specific

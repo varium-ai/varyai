@@ -70,6 +70,9 @@ describe("WorkBuddy home configuration", () => {
       </QueryClientProvider>,
     );
     expect(screen.getByText("Handled 5, warned 4")).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "workbuddy.checkin.title" }),
+    ).toBeInTheDocument();
     expect(useSecurityEventsSummary).toHaveBeenCalledWith(
       expect.objectContaining({
         view: "security_events",

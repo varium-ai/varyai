@@ -41,6 +41,7 @@ pub mod usage_stats;
 pub mod webdav;
 pub mod webdav_auto_sync;
 pub mod webdav_sync;
+pub(crate) mod workbuddy_checkin;
 pub(crate) mod workbuddy_proxy;
 
 pub use config::ConfigService;

@@ -4246,6 +4246,33 @@
     }
   },
   "workbuddy": {
+    "checkin": {
+      "title": "WorkBuddy 毎日チェックイン",
+      "description": "WorkBuddy 中国版でログイン中のアカウントの毎日クレジットを受け取ります。特典は公式キャンペーンによります。API キーと国際版 WorkBuddy AI は対象外です。",
+      "checkNow": "今すぐチェックイン",
+      "checking": "チェックイン中…",
+      "reload": "再読み込み",
+      "autoLabel": "毎日自動チェックイン",
+      "autoHint": "初期設定はオフです。Vary AI の実行中に現在の公式アカウントでチェックインします。設定はこの端末だけに保存されます。",
+      "reward": "クレジット：{{credit}}",
+      "streak": "連続日数：{{count}} 日",
+      "day": "北京時間の日付：{{day}}",
+      "delayed": "WorkBuddy が受け付けました。クレジットの反映が遅れる場合があります。",
+      "loadFailed": "ローカルのチェックイン状態を読み取れません。再読み込みしてください。",
+      "operationFailed": "チェックインまたは保存が完了しませんでした。再読み込みして再試行してください。",
+      "storageError": "チェックインの保存先を利用できません。既存データは上書きしていません。",
+      "outcomes": {
+        "not_checked": "本日はまだチェックインしていません。",
+        "claimed": "本日の特典を受け取りました。",
+        "already_checked": "本日はチェックイン済みです。",
+        "inactive": "開催中のチェックインキャンペーンはありません。",
+        "ineligible": "このアカウントはキャンペーンの対象外です。",
+        "own_app_required": "公式サービスのクライアント認証が必要です。WorkBuddy 内でチェックインしてください。",
+        "sign_in_required": "WorkBuddy を開いて再ログインしてから、もう一度お試しください。",
+        "credentials_unavailable": "読み取り可能な WorkBuddy 中国版のログイン情報がありません。公式クライアントでログインしてください。暗号化された認証情報は読み取れません。",
+        "failed": "チェックイン結果を確認できませんでした。後で再試行してください。特典の受領は未確認です。"
+      }
+    },
     "officialName": "WorkBuddy Official",
     "settings": {
       "label": "WorkBuddy 設定ファイル（settings.json）",

@@ -43,6 +43,7 @@ mod lightweight;
 mod s3_sync;
 mod usage;
 mod webdav_sync;
+mod workbuddy_checkin;
 mod workspace;
 
 pub use auth::*;
@@ -87,4 +88,5 @@ pub use lightweight::*;
 pub use s3_sync::*;
 pub use usage::*;
 pub use webdav_sync::*;
+pub(crate) use workbuddy_checkin::*;
 pub use workspace::*;

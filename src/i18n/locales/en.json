@@ -4320,6 +4320,33 @@
     }
   },
   "workbuddy": {
+    "checkin": {
+      "title": "WorkBuddy daily check-in",
+      "description": "Claim daily credits for the account signed in to WorkBuddy China. Available rewards depend on the official campaign; API keys and WorkBuddy AI are not supported.",
+      "checkNow": "Check in now",
+      "checking": "Checking in…",
+      "reload": "Reload",
+      "autoLabel": "Automatic daily check-in",
+      "autoHint": "Off by default. While Vary AI is running, check in with the current official account. Saved only on this computer.",
+      "reward": "Credits: {{credit}}",
+      "streak": "Consecutive days: {{count}}",
+      "day": "Beijing date: {{day}}",
+      "delayed": "WorkBuddy accepted the claim; credits may arrive later.",
+      "loadFailed": "Could not read the local check-in status. Reload before trying again.",
+      "operationFailed": "Could not complete or save the check-in operation. Reload and try again.",
+      "storageError": "Check-in storage is unavailable. No stored data was overwritten.",
+      "outcomes": {
+        "not_checked": "Not checked in today.",
+        "claimed": "Daily check-in claimed.",
+        "already_checked": "Already checked in today.",
+        "inactive": "No active check-in campaign.",
+        "ineligible": "This account is not eligible for the campaign.",
+        "own_app_required": "Complete check-in in WorkBuddy. The official service requires its client verification.",
+        "sign_in_required": "Open WorkBuddy and sign in again, then retry here.",
+        "credentials_unavailable": "No readable WorkBuddy China login. Open and sign in to the official client. Protected credentials cannot be read.",
+        "failed": "Check-in could not be confirmed. Retry later; no reward is assumed."
+      }
+    },
     "officialName": "WorkBuddy Official",
     "settings": {
       "label": "WorkBuddy configuration file (settings.json)",

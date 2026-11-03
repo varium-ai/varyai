@@ -4320,6 +4320,33 @@
     }
   },
   "workbuddy": {
+    "checkin": {
+      "title": "WorkBuddy 每日签到",
+      "description": "为 WorkBuddy 国内版当前登录账号领取每日额度。奖励以官方活动为准，不支持 API Key 和 WorkBuddy AI 国际版。",
+      "checkNow": "立即签到",
+      "checking": "正在签到…",
+      "reload": "重新加载",
+      "autoLabel": "每日自动签到",
+      "autoHint": "默认关闭。Vary AI 运行期间为当前官方账号签到，仅在本机保存此设置。",
+      "reward": "领取额度：{{credit}}",
+      "streak": "连续签到：{{count}} 天",
+      "day": "北京时间日期：{{day}}",
+      "delayed": "WorkBuddy 已受理签到，奖励额度可能延迟到账。",
+      "loadFailed": "无法读取本机签到状态，请重新加载后重试。",
+      "operationFailed": "无法完成或保存签到操作，请重新加载后重试。",
+      "storageError": "签到存储不可用，未覆盖已有数据。",
+      "outcomes": {
+        "not_checked": "今日尚未签到。",
+        "claimed": "已领取今日签到奖励。",
+        "already_checked": "今日已签到。",
+        "inactive": "当前没有进行中的签到活动。",
+        "ineligible": "当前账号不符合活动条件。",
+        "own_app_required": "请在 WorkBuddy 内完成签到，官方服务要求客户端验证。",
+        "sign_in_required": "请打开 WorkBuddy 重新登录后，再在此重试。",
+        "credentials_unavailable": "未找到可读取的 WorkBuddy 国内版登录态，请打开官方客户端并登录；无法读取已加密保护的凭据。",
+        "failed": "未能确认签到结果，请稍后重试；尚未确认领取奖励。"
+      }
+    },
     "officialName": "WorkBuddy Official",
     "settings": {
       "label": "WorkBuddy 配置文件（settings.json）",
