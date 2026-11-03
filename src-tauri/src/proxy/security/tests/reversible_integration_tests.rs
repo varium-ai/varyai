@@ -1273,7 +1273,7 @@ async fn reversible_http_chat_enrichment_owner_survives_cache_replacement_during
     *candidate_state.lock().expect("synthetic observer") = Default::default();
     let request = http::Request::builder().method("POST").uri("/v1/responses")
         .header("content-type", "application/json").header("session-id", "synthetic-owner-session")
-        .body(Body::from(json!({"model":"synthetic-model","stream":false,"input":[
+        .body(Body::from(json!({"model":"synthetic-model","stream":false,"previous_response_id":"resp_chat_cache_owner","input":[
             {"role":"user","content":FIXTURE_PHONE},
             {"type":"function_call_output","call_id":"call_cache_owner","output":"synthetic result"}]}).to_string()))?;
     let response = handlers::handle_responses(State(proxy_state), request).await?;
@@ -1815,7 +1815,7 @@ async fn chat_enrichment_refusal_fixture(refusal: EnrichmentRefusal) -> TestResu
         &["chinese_phone_number"],
         budget.clone(),
     );
-    let mut body = json!({"model":"synthetic-model","input":[
+    let mut body = json!({"model":"synthetic-model","previous_response_id":"resp_enrichment_refusal","input":[
         {"role":"user","content":FIXTURE_PHONE},
         {"type":"function_call_output","call_id":"call_enrichment_refusal","output":"ok"}
     ]});
@@ -4152,7 +4152,7 @@ async fn run_p1_cache_authorization(mode: &str) -> TestResult {
         !initial_text.contains("rredact-cn_phone-"),
         "control must not expose references"
     );
-    let followup_body = json!({"model":"synthetic-model","stream":false,"input":[{
+    let followup_body = json!({"model":"synthetic-model","stream":false,"previous_response_id":"resp_chat_cache_owner","input":[{
         "type":"function_call_output","call_id":"call_cache_owner","output":"synthetic tool result"}]});
     assert!(
         !followup_body.to_string().contains("rredact-cn_phone-"),
@@ -6259,10 +6259,11 @@ async fn fresh_readable_history_fixture(
     let mut old = body.clone();
     old["input"][0]["content"] = json!(old_token);
     negative_bodies.push(old);
-    let mut literal_sends = 0;
+    let mut passthrough_sends = 0;
     for (case_index, negative) in negative_bodies.into_iter().enumerate() {
-        let literal_case = case_index == 8 && !unsupported_reasoning;
-        if literal_case {
+        let passthrough_case =
+            !matches!(case_index, 4 | 5) && (!unsupported_reasoning || case_index == 0);
+        if case_index == 8 && !unsupported_reasoning {
             assert_history_literal_has_no_authority(
                 &gateway,
                 &negative,
@@ -6282,36 +6283,42 @@ async fn fresh_readable_history_fixture(
             .await?;
         assert_eq!(
             response.status(),
-            if literal_case {
+            if passthrough_case {
                 http::StatusCode::OK
             } else {
                 http::StatusCode::BAD_REQUEST
             },
-            "fresh history outcome; case_index={case_index}"
+            "unknown history must pass while explicit dependencies stay strict; case_index={case_index}"
         );
         let bytes = response.into_body().collect().await?.to_bytes();
-        literal_sends += usize::from(literal_case);
+        passthrough_sends += usize::from(passthrough_case);
         let captured = seen
             .lock()
             .map_err(|_| "synthetic fresh capture poisoned")?;
         assert_eq!(
             captured.len(),
-            literal_sends,
-            "malformed/incomplete history must send nothing; case_index={case_index}"
+            passthrough_sends,
+            "only unknown history and literal passthrough may send; case_index={case_index}"
         );
-        if literal_case {
+        if passthrough_case {
             let outbound = captured
                 .last()
-                .ok_or("synthetic literal send missing")?
+                .ok_or("synthetic passthrough send missing")?
                 .to_string();
             assert!(
-                outbound.contains(&old_token) && !outbound.contains(FIXTURE_PHONE),
-                "unknown literal must survive while fresh PII stays tokenized"
+                !outbound.contains(FIXTURE_PHONE) && outbound.contains("rredact-cn_phone-"),
+                "known text must remain inspected during unknown-history passthrough"
             );
-            assert!(
-                !std::str::from_utf8(&bytes)?.contains("synthetic-old-generation-secret"),
-                "unknown literal must not resolve its foreign mapping"
-            );
+            if case_index == 8 {
+                assert!(
+                    outbound.contains(&old_token),
+                    "unknown literal must survive without acquiring authority"
+                );
+                assert!(
+                    !std::str::from_utf8(&bytes)?.contains("synthetic-old-generation-secret"),
+                    "unknown literal must not resolve its foreign mapping"
+                );
+            }
         }
     }
     let response = router
@@ -6331,12 +6338,12 @@ async fn fresh_readable_history_fixture(
         .map_err(|_| "synthetic fresh capture poisoned")?
         .len();
     if unsupported_reasoning {
-        assert!(status == http::StatusCode::BAD_REQUEST && sends == 0,
-            "unsupported call reasoning must not bypass fresh-input reinspection; status={status} sends={sends}");
+        assert!(status == http::StatusCode::BAD_REQUEST && sends == passthrough_sends,
+            "unsupported call reasoning must stay strict after unrelated unknown passthrough; status={status} sends={sends}");
         server.abort();
         return Ok(());
     }
-    assert!(status == http::StatusCode::OK && sends == literal_sends + 1,
+    assert!(status == http::StatusCode::OK && sends == passthrough_sends + 1,
         "complete original readable history must be reinspected as fresh input; status={status} sends={sends}");
     let response: Value = serde_json::from_slice(&bytes)?;
     let serialized = serde_json::to_string(&response)?;
@@ -6344,7 +6351,7 @@ async fn fresh_readable_history_fixture(
     let captured = seen
         .lock()
         .map_err(|_| "synthetic fresh capture poisoned")?;
-    let outbound = serde_json::to_string(&captured[literal_sends])?;
+    let outbound = serde_json::to_string(&captured[passthrough_sends])?;
     assert!(
         !outbound.contains(FIXTURE_PHONE) && outbound.contains("rredact-cn_phone-"),
         "all supported fresh history text must be tokenized before the only send"
@@ -6437,11 +6444,14 @@ async fn reversible_closure_req3_original_history_ignores_cached_completion() ->
     assert!(legacy_probe
         .to_string()
         .contains("synthetic-cache-only-reasoning"));
-    for negative in [
+    for (case_index, negative) in [
         json!({"model":"synthetic-model","stream":false,"input":[body["input"][1].clone()]}),
         json!({"model":"synthetic-model","stream":false,"input":[
             {"type":"function_call","call_id":"synthetic_provenance_call","name":"synthetic_lookup"},body["input"][1].clone()]}),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let response = handlers::handle_responses(
             State(proxy_state.clone()),
             http::Request::builder()
@@ -6452,13 +6462,17 @@ async fn reversible_closure_req3_original_history_ignores_cached_completion() ->
                 .body(Body::from(negative.to_string()))?,
         )
         .await?;
-        assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), http::StatusCode::OK);
         let _ = response.into_body().collect().await?;
-        assert_eq!(
-            seen.lock()
-                .map_err(|_| "synthetic cache capture poisoned")?
-                .len(),
-            0
+        let captured = seen
+            .lock()
+            .map_err(|_| "synthetic cache capture poisoned")?;
+        assert_eq!(captured.len(), case_index + 1);
+        assert!(
+            !captured[captured.len() - 1]
+                .to_string()
+                .contains("synthetic-cache-only-reasoning"),
+            "unknown history must not inherit cached data or recovery authority"
         );
     }
     let response = handlers::handle_responses(
@@ -6467,18 +6481,24 @@ async fn reversible_closure_req3_original_history_ignores_cached_completion() ->
             .method("POST")
             .uri("/v1/responses")
             .header("content-type", "application/json")
-            .header("session-id", "synthetic-new-cache-generation")
+            .header("session-id", "synthetic-original-cache-control")
             .body(Body::from(body.to_string()))?,
     )
     .await?;
-    assert_eq!(response.status(), http::StatusCode::OK);
+    let status = response.status();
     let bytes = response.into_body().collect().await?.to_bytes();
+    assert_eq!(
+        status,
+        http::StatusCode::OK,
+        "complete original history failed after unknown passthrough: {}",
+        std::str::from_utf8(&bytes)?
+    );
     assert!(std::str::from_utf8(&bytes)?.contains(FIXTURE_PHONE));
     let captured = seen
         .lock()
         .map_err(|_| "synthetic cache capture poisoned")?;
-    assert_eq!(captured.len(), 1);
-    let outbound = captured[0].to_string();
+    assert_eq!(captured.len(), 3);
+    let outbound = captured[2].to_string();
     assert!(
         !outbound.contains("synthetic-cache-only-reasoning")
             && !outbound.contains(FIXTURE_PHONE)
@@ -6616,17 +6636,38 @@ async fn fresh_history_boundary_fixture(boundary: &str) -> TestResult {
         }
         _ => return Err("unknown synthetic boundary".into()),
     }
-    let mut literal_sends = 0;
-    for (case_index, (case, negative)) in negatives.into_iter().enumerate() {
+    let mut passthrough_sends = 0;
+    for (case_index, (case, mut negative)) in negatives.into_iter().enumerate() {
         let literal_case =
             boundary == "escaped_argument_key" && case == "escaped_unknown_argument_key";
+        let unknown_case = matches!(
+            boundary,
+            "message_type"
+                | "reasoning_shape"
+                | "result_shape"
+                | "message_shape"
+                | "mixed_reasoning_shape"
+        );
+        let passthrough_case = literal_case || unknown_case;
+        let unknown_session = format!("synthetic-unknown-{boundary}-{case_index}");
         let session = if literal_case {
             "synthetic-unleased-boundary-session"
+        } else if unknown_case {
+            unknown_session.as_str()
         } else {
             "synthetic-boundary-session"
         };
         if literal_case {
             assert_history_literal_has_no_authority(&gateway, &negative, session, &token)?;
+        }
+        if unknown_case {
+            negative["input"]
+                .as_array_mut()
+                .ok_or("synthetic input missing")?
+                .insert(
+                    0,
+                    json!({"role":"user","content":"Synthetic passthrough continue"}),
+                );
         }
         let response = router
             .call(
@@ -6640,17 +6681,17 @@ async fn fresh_history_boundary_fixture(boundary: &str) -> TestResult {
             .await?;
         let status = response.status();
         let _ = response.into_body().collect().await?;
-        literal_sends += usize::from(literal_case);
+        passthrough_sends += usize::from(passthrough_case);
         let captured = seen
             .lock()
             .map_err(|_| "synthetic boundary capture poisoned")?;
-        let expected_status = if literal_case {
+        let expected_status = if passthrough_case {
             http::StatusCode::OK
         } else {
             http::StatusCode::BAD_REQUEST
         };
         assert!(
-            status == expected_status && captured.len() == 1 + literal_sends,
+            status == expected_status && captured.len() == 1 + passthrough_sends,
             "history authority boundary; case_index={case_index} case={case} status={status}"
         );
         if literal_case {
@@ -6658,6 +6699,15 @@ async fn fresh_history_boundary_fixture(boundary: &str) -> TestResult {
                 captured.last().ok_or("synthetic escaped send missing")?["input"][1]["arguments"]
                     == negative["input"][1]["arguments"],
                 "escaped unknown argument key must preserve encoded bytes"
+            );
+        } else if unknown_case {
+            assert!(
+                !captured
+                    .last()
+                    .ok_or("synthetic unknown send missing")?
+                    .to_string()
+                    .contains(FIXTURE_PHONE),
+                "known text must remain inspected during unknown-history passthrough"
             );
         }
     }
@@ -6705,7 +6755,7 @@ async fn fresh_history_boundary_fixture(boundary: &str) -> TestResult {
         seen.lock()
             .map_err(|_| "synthetic boundary capture poisoned")?
             .len(),
-        2 + literal_sends
+        2 + passthrough_sends
     );
     server.abort();
     Ok(())
@@ -6719,25 +6769,25 @@ async fn reversible_closure_req3_old_token_object_key_refused() -> TestResult {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn reversible_closure_req3_malformed_reasoning_part_refused() -> TestResult {
+async fn reversible_closure_req3_unknown_reasoning_part_passthrough() -> TestResult {
     fresh_history_boundary_fixture("reasoning_shape").await
 }
 
 #[tokio::test]
 #[serial_test::serial]
-async fn reversible_closure_req3_malformed_result_part_refused() -> TestResult {
+async fn reversible_closure_req3_unknown_result_part_passthrough() -> TestResult {
     fresh_history_boundary_fixture("result_shape").await
 }
 
 #[tokio::test]
 #[serial_test::serial]
-async fn reversible_closure_req3_malformed_message_part_refused() -> TestResult {
+async fn reversible_closure_req3_unknown_message_part_passthrough() -> TestResult {
     fresh_history_boundary_fixture("message_shape").await
 }
 
 #[tokio::test]
 #[serial_test::serial]
-async fn reversible_closure_req3_mixed_reasoning_shape_refused() -> TestResult {
+async fn reversible_closure_req3_unknown_mixed_reasoning_shape_passthrough() -> TestResult {
     fresh_history_boundary_fixture("mixed_reasoning_shape").await
 }
 
@@ -6829,7 +6879,7 @@ async fn reversible_closure_req3_escaped_argument_key_reference_refused() -> Tes
 
 #[tokio::test]
 #[serial_test::serial]
-async fn reversible_closure_req3_present_nonstring_message_type_refused() -> TestResult {
+async fn reversible_closure_req3_unknown_nonstring_message_type_passthrough() -> TestResult {
     fresh_history_boundary_fixture("message_type").await
 }
 
@@ -8665,8 +8715,11 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         &mut orphan,
         |_| Err(DlpForwardError::Blocked),
     );
-    response_contract(result.err().ok_or("orphan output was accepted")?);
-    check("output_call_ids")?;
+    assert!(
+        result.err() == Some(DlpForwardError::Blocked),
+        "orphan literal must pass through without authority and preserve explicit policy blocks"
+    );
+    no_context_log()?;
 
     validate_unleased_enriched_body(&json!({"input":reference}))
         .map_err(|_| "synthetic unleased literal validation unexpectedly refused")?;
@@ -10258,7 +10311,7 @@ async fn reversible_http_upstream_error_fixed_logging() -> TestResult {
     std::process::exit(87);
 }
 
-async fn image_history_http_fixture(custom: bool) -> TestResult {
+async fn image_history_http_fixture(custom: bool, protocol: &'static str) -> TestResult {
     let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
     runtime::set_security_runtime_for_test(Default::default());
     let transport = crate::proxy::forwarder::final_send_binding_test_support::install(|_, _| {});
@@ -10272,7 +10325,7 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
     let upstream = Router::new()
         .fallback(post(matrix_upstream))
         .with_state(MatrixFixture {
-            protocol: "native",
+            protocol,
             compact: false,
             streaming: false,
             complete: true,
@@ -10285,7 +10338,8 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
     let provider = Provider::with_id(
         "synthetic-image-history".into(),
         "Synthetic image history".into(),
-        json!({"base_url":format!("http://{address}"),"api_key":"synthetic-image-key","api_format":"responses"}),
+        json!({"base_url":format!("http://{address}"),"api_key":"synthetic-image-key",
+            "api_format":if protocol == "chat" {"chat_completions"} else {"responses"}}),
         None,
     );
     db.save_provider("codex", &provider)?;
@@ -10312,10 +10366,13 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
         .as_array_mut()
         .ok_or("synthetic input missing")?
         .push(json!({"role":"user","content":"Synthetic continue"}));
+    let mut tool_image_continued = continued.clone();
+    tool_image_continued["input"][2]["output"] = json!([image.clone()]);
     for body in [
         json!({"model":"synthetic-model","stream":false,"input":[message]}),
         paired.clone(),
         continued,
+        tool_image_continued,
     ] {
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -10330,9 +10387,11 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
         )
         .await
         .map_err(|_| "synthetic image router deadline exceeded")??;
+        let tool_image_case = body["input"][2]["output"].is_array();
+        let status = response.status();
         assert!(
-            response.status() == http::StatusCode::OK,
-            "supported user image history must reach upstream before and after paired tool results"
+            status == http::StatusCode::OK,
+            "image history must reach upstream; tool_image_case={tool_image_case} status={status}"
         );
         let bytes = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -10351,18 +10410,47 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
             .lock()
             .map_err(|_| "synthetic image capture poisoned")?;
         assert!(
-            captured.len() == 3,
+            captured.len() == 4,
             "each valid image history request must send exactly once"
         );
         for body in captured.iter() {
-            assert!(
-                body["input"][0]["content"][1] == image,
-                "opaque image fields must reach upstream unchanged"
-            );
+            if protocol == "chat" {
+                assert!(
+                    body["messages"][0]["content"][1]["image_url"]["url"] == image["image_url"],
+                    "Chat conversion must preserve the opaque user image"
+                );
+            } else {
+                assert!(
+                    body["input"][0]["content"][1] == image,
+                    "opaque image fields must reach upstream unchanged"
+                );
+            }
             let wire = body.to_string();
             assert!(
                 !wire.contains(FIXTURE_PHONE) && wire.contains("rredact-cn_phone-"),
                 "all readable image history text and tool input must remain inspected"
+            );
+        }
+        let delivered = captured.last().ok_or("synthetic tool image send missing")?;
+        if protocol == "chat" {
+            let marker = "[cc-switch: media output of tool call synthetic_image_call]";
+            assert!(
+                delivered["messages"].as_array().is_some_and(|messages| {
+                    messages.iter().any(|message| {
+                        message["content"].as_array().is_some_and(|parts| {
+                            parts.iter().any(|part| part["text"] == marker)
+                                && parts
+                                    .iter()
+                                    .any(|part| part["image_url"]["url"] == image["image_url"])
+                        })
+                    })
+                }),
+                "Chat conversion must retain the tool-result image in its synthetic user carrier"
+            );
+        } else {
+            assert!(
+                delivered["input"][2]["output"] == json!([image.clone()]),
+                "native forwarding must retain the tool-result image unchanged"
             );
         }
     }
@@ -10426,9 +10514,10 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
         }
         negatives.push(body);
     }
-    let mut expected_sends = 3;
+    let mut expected_sends = 4;
     for (case_index, body) in negatives.into_iter().enumerate() {
         let literal_case = case_index < 6;
+        let passthrough_case = !matches!(case_index, 12 | 13);
         for session in [
             "synthetic-unleased-image-session",
             "synthetic-image-session",
@@ -10451,7 +10540,7 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
             .map_err(|_| "synthetic image router deadline exceeded")??;
             assert_eq!(
                 response.status(),
-                if literal_case {
+                if passthrough_case {
                     http::StatusCode::OK
                 } else {
                     http::StatusCode::BAD_REQUEST
@@ -10465,40 +10554,35 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
             .await
             .map_err(|_| "synthetic image response deadline exceeded")??
             .to_bytes();
-            expected_sends += usize::from(literal_case);
+            expected_sends += usize::from(passthrough_case);
             let captured = seen
                 .lock()
                 .map_err(|_| "synthetic image capture poisoned")?;
             assert_eq!(captured.len(), expected_sends,
                 "rejected image history must send nothing; case_index={case_index} session={session}");
-            if literal_case {
+            if passthrough_case {
                 let outbound = captured
                     .last()
-                    .ok_or("synthetic literal image send missing")?;
-                let preserved = match case_index {
-                    0 => {
-                        outbound["input"][0]["content"][0]["text"]
-                            == body["input"][0]["content"][0]["text"]
-                    }
-                    1 => outbound["input"][0]["content"][1] == body["input"][0]["content"][1],
-                    2 => {
-                        outbound["input"][1][if custom { "input" } else { "arguments" }]
-                            == body["input"][1][if custom { "input" } else { "arguments" }]
-                    }
-                    3 => outbound["input"][2]["output"] == body["input"][2]["output"],
-                    4 => outbound["metadata"] == body["metadata"],
-                    _ => outbound["input"][0]["content"][0] == body["input"][0]["content"][0],
-                };
-                assert!(preserved && !outbound.to_string().contains(FIXTURE_PHONE),
-                    "literal bytes must survive independently of fresh PII inspection; case_index={case_index}");
+                    .ok_or("synthetic passthrough image send missing")?;
+                let wire = outbound.to_string();
                 assert!(
-                    !std::str::from_utf8(&bytes)?.contains("synthetic-foreign-image-secret"),
-                    "image literal must not resolve a foreign mapping; case_index={case_index}"
+                    !wire.contains(FIXTURE_PHONE),
+                    "known text must remain inspected during image passthrough; case_index={case_index}"
                 );
+                if literal_case {
+                    assert!(
+                        wire.contains(reference.as_str()),
+                        "literal bytes must survive protocol conversion; case_index={case_index}"
+                    );
+                    assert!(
+                        !std::str::from_utf8(&bytes)?.contains("synthetic-foreign-image-secret"),
+                        "image literal must not resolve a foreign mapping; case_index={case_index}"
+                    );
+                }
             } else {
                 let error: Value = serde_json::from_slice(&bytes)?;
                 assert!(error["error"]["code"] == "dlp_context_unavailable",
-                    "invalid image history must retain the fixed context error; case_index={case_index}");
+                    "explicit image dependencies must retain the fixed context error; case_index={case_index}");
             }
         }
     }
@@ -10513,13 +10597,25 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
 #[tokio::test]
 #[serial_test::serial]
 async fn image_history_http_function_before_results_and_continue() -> TestResult {
-    image_history_http_fixture(false).await
+    image_history_http_fixture(false, "native").await
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn image_history_http_custom_before_results_and_continue() -> TestResult {
-    image_history_http_fixture(true).await
+    image_history_http_fixture(true, "native").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn image_history_http_function_chat_before_results_and_continue() -> TestResult {
+    image_history_http_fixture(false, "chat").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn image_history_http_custom_chat_before_results_and_continue() -> TestResult {
+    image_history_http_fixture(true, "chat").await
 }
 
 async fn empty_lease_handler_json_fixture(protocol: &'static str) -> TestResult {

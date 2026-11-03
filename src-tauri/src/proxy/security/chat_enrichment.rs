@@ -14,6 +14,7 @@ use serde_json::Value;
 pub(crate) enum ChatHistoryProvenance {
     StrictResume,
     IndependentReadable,
+    UnknownPassthrough,
 }
 
 pub(crate) struct ChatEnrichmentBudget(PayloadBudget);

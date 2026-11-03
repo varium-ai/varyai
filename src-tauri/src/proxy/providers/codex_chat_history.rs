@@ -182,6 +182,7 @@ impl CodexChatHistoryStore {
         if matches!(
             provenance,
             crate::proxy::security::chat_enrichment::ChatHistoryProvenance::IndependentReadable
+                | crate::proxy::security::chat_enrichment::ChatHistoryProvenance::UnknownPassthrough
         ) {
             return Ok((0, None));
         }

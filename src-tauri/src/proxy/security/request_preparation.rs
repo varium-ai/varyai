@@ -22,20 +22,43 @@ use super::{
 const MAX_ITEMS: usize = 4096;
 const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
 
-/// Classify immutable client input before any tokenization or cache contribution.
-/// This is inspection provenance, never completed-context or execution authority.
+/// Inspection provenance for immutable client input, never restoration or execution authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RequestHistoryClassification {
+    FreshReadable,
+    ExplicitDependency,
+    UnknownPassthrough,
+}
+
+/// Preserve the boolean classifier for callers that only need fresh-input provenance.
 pub(super) fn is_fresh_readable_history(
     body: &Value,
     budget: &PayloadBudget,
 ) -> Result<bool, TokenError> {
-    is_fresh_readable_history_with_history(body, budget, None)
+    Ok(matches!(
+        classify_request_history(body, budget, None)?,
+        RequestHistoryClassification::FreshReadable
+    ))
 }
 
+#[cfg(test)]
 pub(super) fn is_fresh_readable_history_with_history(
     body: &Value,
     budget: &PayloadBudget,
     projection: Option<&DlpHistoryProjection<'_>>,
 ) -> Result<bool, TokenError> {
+    Ok(matches!(
+        classify_request_history(body, budget, projection)?,
+        RequestHistoryClassification::FreshReadable
+    ))
+}
+
+/// Unknown syntax has no recovery obligations; explicit dependencies remain strict.
+pub(super) fn classify_request_history(
+    body: &Value,
+    budget: &PayloadBudget,
+    projection: Option<&DlpHistoryProjection<'_>>,
+) -> Result<RequestHistoryClassification, TokenError> {
     use super::completed_context::valid_external_id;
     fn encrypted_dependency(value: &Value, depth: usize) -> Result<bool, TokenError> {
         if depth > 128 {
@@ -152,17 +175,16 @@ pub(super) fn is_fresh_readable_history_with_history(
         .is_some_and(|v| !v.is_null())
         || prior_dependency(body, projection)?
     {
-        return Ok(false);
+        return Ok(RequestHistoryClassification::ExplicitDependency);
     }
     let Some(items) = body.get("input").and_then(Value::as_array) else {
-        return Ok(false);
+        return Ok(RequestHistoryClassification::UnknownPassthrough);
     };
     if items.len() > MAX_ITEMS {
         return Err(TokenError::CapacityExceeded);
     }
     let mut calls = PayloadVec::new(budget.clone())?;
     let mut outputs = PayloadVec::new(budget.clone())?;
-    let mut has_recorded_call = false;
     let has_calls = items.iter().any(|item| {
         matches!(
             item.get("type").and_then(Value::as_str),
@@ -170,101 +192,124 @@ pub(super) fn is_fresh_readable_history_with_history(
         )
     });
     if !has_calls {
-        return Ok(false);
+        return Ok(RequestHistoryClassification::UnknownPassthrough);
     }
-    for item in items {
-        let kind = match item.get("type") {
-            None => None,
-            Some(Value::String(kind)) => Some(kind.as_str()),
-            Some(_) => return Err(TokenError::ContextUnavailable),
-        };
-        match kind {
-            Some("function_call" | "custom_tool_call") => {
-                let id = item
-                    .get("call_id")
-                    .and_then(Value::as_str)
-                    .filter(|s| valid_external_id(s))
-                    .ok_or(TokenError::ContextUnavailable)?;
-                if calls.as_slice().iter().any(|(known, _)| *known == id) {
-                    return Err(TokenError::ContextUnavailable);
+    // Scan all items before discarding unknown syntax so a live recorded call or
+    // plaintext call reasoning cannot lose its completion obligation.
+    let has_plaintext_call_reasoning = items.iter().any(|item| {
+        matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call" | "custom_tool_call")
+        ) && item.get("reasoning_content").is_some_and(Value::is_string)
+    });
+    let has_recorded_call = items
+        .iter()
+        .any(|item| projection.is_some_and(|p| p.has_recorded_call_identity(item)));
+    let readable = (|| -> Result<(), TokenError> {
+        for item in items {
+            let kind = match item.get("type") {
+                None => None,
+                Some(Value::String(kind)) => Some(kind.as_str()),
+                Some(_) => return Err(TokenError::ContextUnavailable),
+            };
+            match kind {
+                Some("function_call" | "custom_tool_call") => {
+                    let id = item
+                        .get("call_id")
+                        .and_then(Value::as_str)
+                        .filter(|s| valid_external_id(s))
+                        .ok_or(TokenError::ContextUnavailable)?;
+                    if calls.as_slice().iter().any(|(known, _)| *known == id) {
+                        return Err(TokenError::ContextUnavailable);
+                    }
+                    if !item
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(valid_external_id)
+                    {
+                        return Err(TokenError::ContextUnavailable);
+                    }
+                    let payload = item
+                        .get(if kind == Some("function_call") {
+                            "arguments"
+                        } else {
+                            "input"
+                        })
+                        .and_then(Value::as_str)
+                        .ok_or(TokenError::ContextUnavailable)?;
+                    if kind == Some("function_call") {
+                        let parsed =
+                            PayloadJson::try_from_str(payload, budget.clone(), budget.limit())?;
+                        // Decoded arguments are tool data, not protocol dependency envelopes.
+                        visit_request_references(parsed.as_value(), None, |_| Ok(()))?;
+                    }
+                    if item
+                        .get("reasoning_content")
+                        .is_some_and(|v| !v.is_null() && !v.is_string())
+                    {
+                        return Err(TokenError::ContextUnavailable);
+                    }
+                    calls.push((id, kind == Some("custom_tool_call")))?;
                 }
-                if !item
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .is_some_and(valid_external_id)
+                Some("function_call_output" | "custom_tool_call_output") => {
+                    let id = item
+                        .get("call_id")
+                        .and_then(Value::as_str)
+                        .ok_or(TokenError::ContextUnavailable)?;
+                    let custom = kind == Some("custom_tool_call_output");
+                    if !calls.as_slice().contains(&(id, custom)) || outputs.as_slice().contains(&id)
+                    {
+                        return Err(TokenError::ContextUnavailable);
+                    }
+                    readable_text(
+                        item.get("output").ok_or(TokenError::ContextUnavailable)?,
+                        false,
+                    )?;
+                    outputs.push(id)?;
+                }
+                Some("reasoning") => {
+                    let summary = item.get("summary").filter(|v| !v.is_null());
+                    let content = item.get("content").filter(|v| !v.is_null());
+                    if summary.is_none() && content.is_none() {
+                        return Err(TokenError::ContextUnavailable);
+                    }
+                    if let Some(summary) = summary {
+                        readable_parts(summary, &["summary_text", "reasoning_text"], false, false)?;
+                    }
+                    if let Some(content) = content {
+                        readable_parts(content, &["reasoning_text"], false, false)?;
+                    }
+                }
+                Some("message") | None
+                    if matches!(
+                        item.get("role").and_then(Value::as_str),
+                        Some("user" | "assistant" | "system" | "developer")
+                    ) =>
                 {
-                    return Err(TokenError::ContextUnavailable);
+                    readable_text(
+                        item.get("content").ok_or(TokenError::ContextUnavailable)?,
+                        item.get("role").and_then(Value::as_str) == Some("user"),
+                    )?;
                 }
-                let payload = item
-                    .get(if kind == Some("function_call") {
-                        "arguments"
-                    } else {
-                        "input"
-                    })
-                    .and_then(Value::as_str)
-                    .ok_or(TokenError::ContextUnavailable)?;
-                if kind == Some("function_call") {
-                    let parsed =
-                        PayloadJson::try_from_str(payload, budget.clone(), budget.limit())?;
-                    // Decoded arguments are tool data, not protocol dependency envelopes.
-                    visit_request_references(parsed.as_value(), None, |_| Ok(()))?;
-                }
-                if item
-                    .get("reasoning_content")
-                    .is_some_and(|v| !v.is_null() && !v.is_string())
-                {
-                    return Err(TokenError::ContextUnavailable);
-                }
-                has_recorded_call |= projection.is_some_and(|p| p.has_recorded_call_identity(item));
-                calls.push((id, kind == Some("custom_tool_call")))?;
+                _ => return Err(TokenError::ContextUnavailable),
             }
-            Some("function_call_output" | "custom_tool_call_output") => {
-                let id = item
-                    .get("call_id")
-                    .and_then(Value::as_str)
-                    .ok_or(TokenError::ContextUnavailable)?;
-                let custom = kind == Some("custom_tool_call_output");
-                if !calls.as_slice().contains(&(id, custom)) || outputs.as_slice().contains(&id) {
-                    return Err(TokenError::ContextUnavailable);
-                }
-                readable_text(
-                    item.get("output").ok_or(TokenError::ContextUnavailable)?,
-                    false,
-                )?;
-                outputs.push(id)?;
-            }
-            Some("reasoning") => {
-                let summary = item.get("summary").filter(|v| !v.is_null());
-                let content = item.get("content").filter(|v| !v.is_null());
-                if summary.is_none() && content.is_none() {
-                    return Err(TokenError::ContextUnavailable);
-                }
-                if let Some(summary) = summary {
-                    readable_parts(summary, &["summary_text", "reasoning_text"], false, false)?;
-                }
-                if let Some(content) = content {
-                    readable_parts(content, &["reasoning_text"], false, false)?;
-                }
-            }
-            Some("message") | None
-                if matches!(
-                    item.get("role").and_then(Value::as_str),
-                    Some("user" | "assistant" | "system" | "developer")
-                ) =>
-            {
-                readable_text(
-                    item.get("content").ok_or(TokenError::ContextUnavailable)?,
-                    item.get("role").and_then(Value::as_str) == Some("user"),
-                )?;
-            }
-            _ => return Err(TokenError::ContextUnavailable),
         }
+        if calls.as_slice().len() != outputs.as_slice().len() {
+            return Err(TokenError::ContextUnavailable);
+        }
+        Ok(())
+    })();
+    match readable {
+        Ok(()) if has_recorded_call => Ok(RequestHistoryClassification::ExplicitDependency),
+        Ok(()) => Ok(RequestHistoryClassification::FreshReadable),
+        Err(TokenError::ContextUnavailable)
+            if has_recorded_call || has_plaintext_call_reasoning =>
+        {
+            Ok(RequestHistoryClassification::ExplicitDependency)
+        }
+        Err(TokenError::ContextUnavailable) => Ok(RequestHistoryClassification::UnknownPassthrough),
+        Err(error) => Err(error),
     }
-    if calls.as_slice().len() != outputs.as_slice().len() {
-        return Err(TokenError::ContextUnavailable);
-    }
-    // Message inspection proof is not a tool dependency; recorded calls keep completion checks.
-    Ok(!has_recorded_call)
 }
 
 #[cfg(test)]

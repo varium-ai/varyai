@@ -753,10 +753,10 @@ fn message_projection_http_tool_history_retains_dependency_boundaries() -> TestR
             &mut body,
             |candidate| Ok(candidate.clone()),
         );
-        if case == 0 {
+        if matches!(case, 0 | 4) {
             assert!(
                 result.is_ok(),
-                "message_projection_http_readable_history_rejected"
+                "readable or unknown history must not require recovery authority"
             );
             assert!(
                 !result

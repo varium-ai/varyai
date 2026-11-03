@@ -10,6 +10,12 @@ The DLP engine inspects supported outbound text extracted from requests handled 
 4. When redaction is required, update only selected text values in a copy and inspect the result again. Return a protocol-shaped error if safe redaction cannot be established.
 5. Queue audit work for bounded asynchronous persistence rather than writing to SQLite in the forwarding hot path.
 
+## Codex history provenance
+
+Immutable Codex input is classified as `FreshReadable`, `ExplicitDependency`, or `UnknownPassthrough` before recovery obligations are selected. Fully recognized readable tool history can use the existing per-call completion checks. Explicit protocol dependencies, including `previous_response_id`, non-null encrypted context, live recorded calls, and plaintext call reasoning attached to otherwise unknown history, retain strict resume and completion-witness requirements. Authorized references in unsupported or immutable carriers, capacity exhaustion, internal failures, and explicit `Block` decisions are not downgraded.
+
+`UnknownPassthrough` covers unrecognized media, fields, item shapes, and unprovable call/output pairing. It forwards the request without granting session, cursor, cached-history, restoration, or tool-execution authority, and it does not fabricate completion evidence. Chat cache enrichment is skipped for this classification. Supported text is still inspected and existing redaction or blocking rules still apply, but unknown fields and media are not guaranteed to be inspected or redacted.
+
 ## Prepared-request target boundary
 
 A prepared DLP attempt is bound to its final upstream target and sending authority, even when it has no active token mappings. The reqwest path disables automatic redirects for these attempts. Both reqwest and Hyper reject upstream 3xx responses with a fixed status-only DLP error before parsing the response body; neither follows `Location` with the original request body or inherited history permission. Configure the final upstream endpoint directly. Requests without a prepared DLP attempt retain the existing redirect behavior.
@@ -44,6 +50,8 @@ The detector itself executes locally. That statement does not describe the whole
 - [Runtime policy](../../src-tauri/src/proxy/security/runtime.rs)
 - [Audit worker](../../src-tauri/src/proxy/security/audit_logger.rs)
 - [Persistence normalization](../../src-tauri/src/database/dao/security.rs)
+- [History classification](../../src-tauri/src/proxy/security/request_preparation.rs)
+- [HTTP recovery admission](../../src-tauri/src/proxy/security/http_restoration.rs)
 - [Regression tests](../../src-tauri/src/proxy/security/tests.rs)
 
 Pattern literals, private-IP examples and synthetic credentials in tests are intentional detector fixtures. They must not be replaced with live credentials or removed merely because a secret scanner flags their shape. Existing third-party notices remain applicable.
