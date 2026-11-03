@@ -15,6 +15,9 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+vi.mock("@/components/routing/RoutingClient", () => ({
+  RoutingClient: () => <span>Codex</span>,
+}));
 vi.mock("@/components/proxy/GatewayKeysPanel", () => ({
   GatewayKeysPanel: () => <div />,
 }));
@@ -177,11 +180,11 @@ describe("ProxyPanel routing applications", () => {
     setTakeover.mockRejectedValue("proxy.takeover.setupRequired");
     render(<ProxyPanel onToggleProxy={vi.fn()} isProxyPending={false} />);
     fireEvent.click(
-      within(screen.getByText("Codex").parentElement!).getByRole("switch"),
+      within(screen.getByText("Claude").parentElement!).getByRole("switch"),
     );
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith(
-        expect.stringContaining("Codex 配置尚未初始化"),
+        expect.stringContaining("Claude 配置尚未初始化"),
       ),
     );
     expect(toast.success).not.toHaveBeenCalled();

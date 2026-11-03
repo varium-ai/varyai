@@ -12,14 +12,27 @@ fn intent_extension(path: &Path, version: i32) -> Result<(), AppError> {
         "DROP TABLE gateway_agent_bindings;
          DROP TABLE gateway_usage_details;
          DROP TABLE gateway_usage_models;
+         DROP TABLE routing_upstreams;
+         DROP TABLE IF EXISTS routing_upstream_origins;
          DROP TABLE IF EXISTS intent_routing_groups;
          DROP TABLE IF EXISTS intent_routing_preferences;
          CREATE TABLE intent_routing_groups (
             id TEXT PRIMARY KEY, revision INTEGER NOT NULL, config TEXT NOT NULL);
-         INSERT INTO intent_routing_groups VALUES ('synthetic-group',7,'{}');
          INSERT INTO gateway_keys VALUES ('synthetic-key','synthetic-hash','{}',0);
          INSERT INTO gateway_usage VALUES ('synthetic-key',0,31);
          INSERT INTO tool_risk_settings VALUES ('policy_version','9');",
+    )?;
+    let group = serde_json::json!({
+        "id":"synthetic-group", "name":"Synthetic group", "revision":7,
+        "client":"codex", "enabled":false,
+        "members":[{"id":"member","providerId":"synthetic-provider","modelId":"synthetic-model"}],
+        "defaultMemberId":"member", "fallbackMemberIds":[],
+        "intentRecognitionEnabled":false, "classifierTarget":null,
+        "classificationBudgetMs":2000, "rules":[]
+    });
+    conn.execute(
+        "INSERT INTO intent_routing_groups VALUES ('synthetic-group',7,?1)",
+        [group.to_string()],
     )?;
     if version == 4 {
         conn.execute_batch(
@@ -31,20 +44,19 @@ fn intent_extension(path: &Path, version: i32) -> Result<(), AppError> {
     Ok(())
 }
 
-fn assert_intent_data(db: &Database, version: i32) -> Result<(), AppError> {
+fn assert_intent_data(db: &Database, _version: i32) -> Result<(), AppError> {
     let conn = lock_conn!(db.extension_connection());
     assert_eq!(Database::get_user_version(&conn)?, EXTENSION_SCHEMA_VERSION);
-    let revision: i64 = conn.query_row(
-        "SELECT revision FROM intent_routing_groups WHERE id='synthetic-group'",
+    let groups: i64 = conn.query_row("SELECT COUNT(*) FROM intent_routing_groups", [], |r| {
+        r.get(0)
+    })?;
+    assert_eq!(groups, 0);
+    let prefs: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM intent_routing_preferences WHERE key='synthetic-preference'",
         [],
         |r| r.get(0),
     )?;
-    assert_eq!(revision, 7);
-    let prefs: i64 =
-        conn.query_row("SELECT COUNT(*) FROM intent_routing_preferences", [], |r| {
-            r.get(0)
-        })?;
-    assert_eq!(prefs, i64::from(version == 4));
+    assert_eq!(prefs, 0);
     let tokens: i64 = conn.query_row(
         "SELECT tokens FROM gateway_usage WHERE key_id='synthetic-key'",
         [],
@@ -54,13 +66,22 @@ fn assert_intent_data(db: &Database, version: i32) -> Result<(), AppError> {
     assert!(Database::table_exists(&conn, "gateway_agent_bindings")?);
     assert!(Database::table_exists(&conn, "gateway_usage_details")?);
     assert!(Database::table_exists(&conn, "gateway_usage_models")?);
+    assert!(Database::table_exists(&conn, "routing_upstreams")?);
+    assert!(!Database::table_exists(&conn, "routing_upstream_origins")?);
     drop(conn);
     assert_eq!(db.get_tool_risk_settings()?.policy_version, 9);
+    assert_eq!(
+        db.list_intent_routing_groups()
+            .map_err(AppError::Database)?
+            .len(),
+        0
+    );
     Ok(())
 }
 
 #[test]
-fn historical_intent_extensions_upgrade_without_losing_data() -> Result<(), AppError> {
+fn historical_intent_extensions_reset_routing_but_preserve_unrelated_data() -> Result<(), AppError>
+{
     for version in [3, 4] {
         let dir = tempfile::tempdir().expect("temporary storage");
         let path = dir.path().join("cc-switch.db");
@@ -83,12 +104,17 @@ fn historical_intent_extensions_upgrade_without_losing_data() -> Result<(), AppE
         let backup = Connection::open(extension_backup.path())?;
         assert_eq!(Database::get_user_version(&backup)?, version);
         assert!(!Database::table_exists(&backup, "gateway_agent_bindings")?);
+        assert!(!Database::table_exists(&backup, "routing_upstreams")?);
+        assert!(!Database::table_exists(
+            &backup,
+            "routing_upstream_origins"
+        )?);
     }
     Ok(())
 }
 
 #[test]
-fn historical_intent_data_survives_portable_sql_and_binary_restore() -> Result<(), AppError> {
+fn reset_extension_survives_portable_sql_and_binary_restore() -> Result<(), AppError> {
     let dir = tempfile::tempdir().expect("temporary storage");
     let path = dir.path().join("cc-switch.db");
     intent_extension(&path, 4)?;
@@ -153,6 +179,8 @@ fn historical_gateway_extensions_upgrade_to_the_combined_schema() -> Result<(), 
         ext.execute_batch(
             "DROP TABLE intent_routing_groups;
              DROP TABLE intent_routing_preferences;
+             DROP TABLE routing_upstreams;
+             DROP TABLE IF EXISTS routing_upstream_origins;
              INSERT INTO gateway_keys VALUES ('synthetic-key','synthetic-hash','{}',0);
              INSERT INTO gateway_usage VALUES ('synthetic-key',0,31);
              INSERT INTO gateway_agent_bindings VALUES ('synthetic-app','synthetic-key');",
@@ -175,6 +203,8 @@ fn historical_gateway_extensions_upgrade_to_the_combined_schema() -> Result<(), 
         assert!(Database::table_exists(&ext, "intent_routing_groups")?);
         assert!(Database::table_exists(&ext, "intent_routing_preferences")?);
         assert!(Database::table_exists(&ext, "gateway_usage_models")?);
+        assert!(Database::table_exists(&ext, "routing_upstreams")?);
+        assert!(!Database::table_exists(&ext, "routing_upstream_origins")?);
     }
     Ok(())
 }

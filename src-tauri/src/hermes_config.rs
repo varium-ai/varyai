@@ -310,7 +310,7 @@ fn serialize_yaml_section(key: &str, value: &serde_yaml::Value) -> Result<String
 /// Used to clean residual duplicates of a key after replacing its first
 /// occurrence; safe values come from the keep-last healed read, so dropping
 /// all on-disk copies here loses nothing.
-fn remove_all_sections(raw: &str, section_key: &str) -> String {
+pub(crate) fn remove_all_sections(raw: &str, section_key: &str) -> String {
     let mut result = String::with_capacity(raw.len());
     let mut rest = raw;
     while let Some((start, end)) = find_yaml_section_range(rest, section_key) {
@@ -322,7 +322,7 @@ fn remove_all_sections(raw: &str, section_key: &str) -> String {
 }
 
 /// Replace a YAML section in raw text, or append it if not found.
-fn replace_yaml_section(
+pub(crate) fn replace_yaml_section(
     raw: &str,
     section_key: &str,
     value: &serde_yaml::Value,

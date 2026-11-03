@@ -1,3 +1,5 @@
+@import "./components/layout/workspace.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -162,6 +164,89 @@ html[data-window-active="false"] .status-heartbeat {
   transition-duration: 0s;
 }
 
+/* Preserve Tailwind centering while Radix Presence waits for the exit animation. */
+@keyframes vary-dialog-in {
+  from {
+    opacity: 0;
+    transform: translate3d(
+        var(--tw-translate-x, 0),
+        var(--tw-translate-y, 0),
+        0
+      )
+      scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(
+        var(--tw-translate-x, 0),
+        var(--tw-translate-y, 0),
+        0
+      )
+      scale(1);
+  }
+}
+
+@keyframes vary-dialog-out {
+  from {
+    opacity: 1;
+    transform: translate3d(
+        var(--tw-translate-x, 0),
+        var(--tw-translate-y, 0),
+        0
+      )
+      scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(
+        var(--tw-translate-x, 0),
+        var(--tw-translate-y, 0),
+        0
+      )
+      scale(0.95);
+  }
+}
+
+@keyframes vary-dialog-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes vary-dialog-backdrop-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.vary-dialog-motion {
+  transform-origin: center;
+}
+
+.vary-dialog-motion[data-state="open"] {
+  animation: vary-dialog-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.vary-dialog-motion[data-state="closed"] {
+  animation: vary-dialog-out 160ms cubic-bezier(0.4, 0, 1, 1) both;
+  pointer-events: none !important;
+}
+
+.vary-dialog-backdrop-motion[data-state="open"] {
+  animation: vary-dialog-backdrop-in 220ms ease-out both;
+}
+
+.vary-dialog-backdrop-motion[data-state="closed"] {
+  animation: vary-dialog-backdrop-out 160ms ease-in both;
+  pointer-events: none;
+}
+
 @keyframes pi-thinking-popover-in {
   0% {
     opacity: 0;
@@ -235,6 +320,11 @@ html[data-window-active="false"] .status-heartbeat {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .vary-dialog-motion[data-state],
+  .vary-dialog-backdrop-motion[data-state] {
+    animation: none;
+  }
+
   .status-heartbeat {
     opacity: 1;
     transition-property: color;

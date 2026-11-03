@@ -833,7 +833,6 @@ export function SecurityEventsPanel({
         </div>
       )}
       <SecurityEventDetailsDialog
-        key={selected?.key ?? "closed"}
         event={selected}
         onClose={() => setSelected(null)}
         onCreateRule={createRule}

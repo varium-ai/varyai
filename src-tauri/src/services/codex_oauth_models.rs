@@ -3,39 +3,64 @@
 //! ChatGPT Codex exposes models through `chatgpt.com/backend-api/codex/models`,
 //! which is not an OpenAI-compatible `/v1/models` endpoint.
 
-use crate::proxy::providers::codex_oauth_auth::{
-    CODEX_OAUTH_CLIENT_VERSION, CODEX_OAUTH_ORIGINATOR,
-};
+use crate::proxy::providers::codex_oauth_auth::CODEX_OAUTH_ORIGINATOR;
 use crate::services::model_fetch::FetchedModel;
 use serde_json::Value;
 use std::time::Duration;
 
 const CODEX_OAUTH_MODELS_URL: &str = "https://chatgpt.com/backend-api/codex/models";
 const CODEX_OAUTH_FETCH_TIMEOUT_SECS: u64 = 15;
-const ERROR_BODY_MAX_CHARS: usize = 512;
+const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 pub async fn fetch_models_with_token(
     token: &str,
     account_id: &str,
 ) -> Result<Vec<FetchedModel>, String> {
-    let client = crate::proxy::http_client::get();
+    Ok(parse_models(
+        fetch_catalog_with_token(token, account_id).await?,
+    ))
+}
+
+pub(crate) async fn fetch_catalog_with_token(
+    token: &str,
+    account_id: &str,
+) -> Result<Value, String> {
+    crate::codex_client::resolve_version().await;
+    let client = crate::proxy::http_client::get_without_redirects()
+        .map_err(|_| "Model discovery client unavailable".to_string())?;
     let response = build_models_request(&client, token, account_id)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
+        .map_err(|_| "Model discovery request failed".to_string())?;
+    read_catalog_response(response).await
+}
 
-    let status = response.status();
-    if !status.is_success() {
-        let body = truncate_body(response.text().await.unwrap_or_default());
-        return Err(format!("HTTP {status}: {body}"));
+#[cfg(test)]
+async fn read_models_response(response: reqwest::Response) -> Result<Vec<FetchedModel>, String> {
+    Ok(parse_models(read_catalog_response(response).await?))
+}
+
+async fn read_catalog_response(mut response: reqwest::Response) -> Result<Value, String> {
+    if !response.status().is_success() {
+        return Err(format!(
+            "Model discovery HTTP {}",
+            response.status().as_u16()
+        ));
     }
-
-    let value: Value = response
-        .json()
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|e| format!("Failed to parse response: {e}"))?;
-
-    Ok(parse_models(value))
+        .map_err(|_| "Model discovery read failed")?
+    {
+        if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err("Model discovery response too large".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let value: Value =
+        serde_json::from_slice(&bytes).map_err(|_| "Invalid model discovery response")?;
+    Ok(value)
 }
 
 fn build_models_request(
@@ -43,17 +68,19 @@ fn build_models_request(
     token: &str,
     account_id: &str,
 ) -> reqwest::RequestBuilder {
+    let version = crate::codex_client::current_version();
     client
         .get(CODEX_OAUTH_MODELS_URL)
-        .query(&[("client_version", CODEX_OAUTH_CLIENT_VERSION)])
+        .query(&[("client_version", &version)])
         .header("Authorization", format!("Bearer {token}"))
         .header("originator", CODEX_OAUTH_ORIGINATOR)
-        .header("version", CODEX_OAUTH_CLIENT_VERSION)
+        .header("version", &version)
+        .header("User-Agent", format!("codex_cli_rs/{version}"))
         .header("chatgpt-account-id", account_id)
         .timeout(Duration::from_secs(CODEX_OAUTH_FETCH_TIMEOUT_SECS))
 }
 
-fn parse_models(value: Value) -> Vec<FetchedModel> {
+pub(crate) fn parse_models(value: Value) -> Vec<FetchedModel> {
     let entries = value
         .get("data")
         .and_then(Value::as_array)
@@ -80,21 +107,34 @@ fn parse_models(value: Value) -> Vec<FetchedModel> {
     models
 }
 
+pub(crate) fn picker_visible(entry: &Value) -> bool {
+    entry.get("hidden").and_then(Value::as_bool) != Some(true)
+        && entry.get("show_in_picker").and_then(Value::as_bool) != Some(false)
+        && entry
+            .get("visibility")
+            .is_none_or(|visibility| visibility.as_str() == Some("list"))
+}
+
 fn push_model_entry(models: &mut Vec<FetchedModel>, entry: &Value, fallback_id: Option<&str>) {
+    if !picker_visible(entry) {
+        return;
+    }
     if let Some(id) = entry.as_str().map(str::trim).filter(|id| !id.is_empty()) {
-        models.push(FetchedModel {
-            id: id.to_string(),
-            owned_by: Some("Codex".to_string()),
-        });
+        models.push(FetchedModel::from_entry(
+            id.to_string(),
+            Some("Codex".to_string()),
+            entry,
+        ));
         return;
     }
 
     let Some(obj) = entry.as_object() else {
         if let Some(id) = fallback_id.map(str::trim).filter(|id| !id.is_empty()) {
-            models.push(FetchedModel {
-                id: id.to_string(),
-                owned_by: Some("Codex".to_string()),
-            });
+            models.push(FetchedModel::from_entry(
+                id.to_string(),
+                Some("Codex".to_string()),
+                entry,
+            ));
         }
         return;
     };
@@ -115,7 +155,7 @@ fn push_model_entry(models: &mut Vec<FetchedModel>, entry: &Value, fallback_id: 
     )
     .or_else(|| Some("Codex".to_string()));
 
-    models.push(FetchedModel { id, owned_by });
+    models.push(FetchedModel::from_entry(id, owned_by, entry));
 }
 
 fn string_field(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
@@ -127,23 +167,66 @@ fn string_field(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<S
         .map(str::to_string)
 }
 
-fn truncate_body(body: String) -> String {
-    if body.chars().count() <= ERROR_BODY_MAX_CHARS {
-        body
-    } else {
-        let mut s: String = body.chars().take(ERROR_BODY_MAX_CHARS).collect();
-        s.push_str("...");
-        s
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
+    async fn synthetic_response(status: &str, body: String) -> reqwest::Response {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let _ = socket.read(&mut request).await;
+            let _ = socket.write_all(response.as_bytes()).await;
+        });
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{addr}"))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn discovery_bounds_response_and_never_exposes_error_bodies() {
+        let response =
+            synthetic_response("401 Unauthorized", "synthetic-private-body".into()).await;
+        assert_eq!(
+            read_models_response(response).await.unwrap_err(),
+            "Model discovery HTTP 401"
+        );
+        let response = synthetic_response("200 OK", "x".repeat(MAX_RESPONSE_BYTES + 1)).await;
+        assert_eq!(
+            read_models_response(response).await.unwrap_err(),
+            "Model discovery response too large"
+        );
+        let response = synthetic_response("200 OK", "synthetic-private-invalid-json".into()).await;
+        assert_eq!(
+            read_models_response(response).await.unwrap_err(),
+            "Invalid model discovery response"
+        );
+        let response = synthetic_response(
+            "200 OK",
+            r#"{"models":[{"slug":"synthetic-model"}]}"#.into(),
+        )
+        .await;
+        assert_eq!(
+            read_models_response(response).await.unwrap()[0].id,
+            "synthetic-model"
+        );
+    }
+
     #[test]
-    fn codex_oauth_model_discovery_uses_gpt6_compatible_identity() {
+    fn codex_oauth_model_discovery_uses_current_identity_for_gpt61() {
         let request = build_models_request(&reqwest::Client::new(), "test-token", "test-account")
             .build()
             .unwrap();
@@ -161,15 +244,19 @@ mod tests {
             .split('.')
             .map(|part| part.parse().unwrap())
             .collect();
-        // Sol and Luna require the same client version in discovery and generation.
-        assert!(parts.as_slice() >= [0, 155, 0].as_slice());
+        // Older discovery identities omit 6.1 even when the account can use it.
+        assert!(parts.as_slice() >= [0, 164, 0].as_slice());
         assert_eq!(request.headers()["version"], version);
+        assert_eq!(
+            request.headers()["user-agent"],
+            format!("codex_cli_rs/{version}")
+        );
         let models = parse_models(json!({"models": [
-            {"slug": "gpt-6-sol", "minimal_client_version": "0.155.0"},
-            {"slug": "gpt-6-luna", "minimal_client_version": "0.155.0"}
+            {"slug": "gpt-6.1-sol", "minimal_client_version": "0.164.0"},
+            {"slug": "gpt-6.1-terra", "minimal_client_version": "0.164.0"}
         ]}));
-        assert_eq!(models[0].id, "gpt-6-luna");
-        assert_eq!(models[1].id, "gpt-6-sol");
+        assert_eq!(models[0].id, "gpt-6.1-sol");
+        assert_eq!(models[1].id, "gpt-6.1-terra");
     }
 
     #[test]
@@ -214,6 +301,59 @@ mod tests {
 
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "gpt-5.4");
+    }
+
+    #[test]
+    fn official_catalog_only_lists_picker_visible_models_without_rewriting_ids() {
+        let models = parse_models(json!({"models": [
+            {"slug":"vendor/Model_1.2-20261029", "visibility":"list", "supported_in_api":false},
+            {"slug":"hidden-model", "visibility":"hide"},
+            {"slug":"unlisted-model", "visibility":"none"},
+            {"slug":"future-visibility", "visibility":"internal"},
+            {"slug":"explicitly-hidden", "visibility":"list", "hidden":true},
+            {"slug":"not-in-picker", "show_in_picker":false},
+            {"slug":"legacy-model"},
+            "legacy-string",
+            {"slug":"duplicate", "visibility":"hide"},
+            {"slug":"duplicate", "visibility":"list"}
+        ]}));
+        assert_eq!(
+            models.into_iter().map(|model| model.id).collect::<Vec<_>>(),
+            vec![
+                "duplicate",
+                "legacy-model",
+                "legacy-string",
+                "vendor/Model_1.2-20261029"
+            ]
+        );
+    }
+
+    #[test]
+    fn official_visibility_applies_to_all_supported_catalog_shapes() {
+        let entries = json!([
+            {"id":"visible", "visibility":"list"},
+            {"id":"hidden", "visibility":"hide"},
+            {"id":"unlisted", "visibility":"none"}
+        ]);
+        for value in [
+            entries.clone(),
+            json!({"data":entries}),
+            json!({"items":entries}),
+            json!({"models": {
+                "visible":{"visibility":"list"},
+                "hidden":{"visibility":"hide"},
+                "unlisted":{"visibility":"none"}
+            }}),
+        ] {
+            let ids = parse_models(value)
+                .into_iter()
+                .map(|model| model.id)
+                .collect::<Vec<_>>();
+            assert_eq!(ids, vec!["visible"]);
+        }
+        assert!(
+            parse_models(json!({"models":[{"slug":"hidden", "visibility":"hide"}]})).is_empty()
+        );
     }
 
     #[test]

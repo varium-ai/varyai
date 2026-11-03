@@ -6,7 +6,7 @@ const net = require("node:net");
 const { PassThrough } = require("node:stream");
 const { createBridge } = require("./renderer.cjs");
 const SLOT = "__varyaiTraeNativeBridge";
-const REVISION = 4;
+const REVISION = 5;
 // Keep the renderer API compatible so an older resident helper cannot replace the new hook.
 const RENDERER_REVISION = 2;
 // Older helpers remain resident; their disabled audit callbacks must not receive new events.
@@ -535,6 +535,8 @@ async function run(endpoint, directory) {
     const first = sessions.keys().next().value;
     if (!first) throw Error("no_chat_window");
     if (command.op === "list") return invoke(first, "list");
+    if (command.op === "matches")
+      return invoke(first, "matches", command.id, command.config);
     if (command.op === "apply")
       return invoke(first, "apply", command.id, command.name, command.config);
     if (command.op === "replace")

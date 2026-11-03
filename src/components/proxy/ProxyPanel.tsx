@@ -32,6 +32,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { RoutingClient } from "@/components/routing/RoutingClient";
 import { GatewayKeysPanel } from "./GatewayKeysPanel";
 import { ClaudeDesktopRouteToggle } from "./ClaudeDesktopRouteToggle";
 import {
@@ -292,17 +293,25 @@ export function ProxyPanel({ onToggleProxy, isProxyPending }: ProxyPanelProps) {
                       return (
                         <div
                           key={appType}
-                          className="flex items-center justify-between rounded-md border border-primary/20 bg-background/60 px-3 py-2"
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/20 bg-background/60 px-3 py-2"
                         >
-                          <span className="text-sm font-medium">
-                            {getAppLabel(appType)}
-                            {waiting && (
-                              <span className="block text-xs font-normal text-muted-foreground">
-                                {waiting}
-                              </span>
-                            )}
-                          </span>
-                          {appType === "claude-desktop" ? (
+                          {appType !== "codex" && (
+                            <span className="text-sm font-medium">
+                              {getAppLabel(appType)}
+                              {waiting && (
+                                <span className="block text-xs font-normal text-muted-foreground">
+                                  {waiting}
+                                </span>
+                              )}
+                            </span>
+                          )}
+                          {appType === "codex" ? (
+                            <RoutingClient
+                              disabled={
+                                isProxyPending || setTakeoverForApp.isPending
+                              }
+                            />
+                          ) : appType === "claude-desktop" ? (
                             <ClaudeDesktopRouteToggle
                               variant="settings"
                               disabled={

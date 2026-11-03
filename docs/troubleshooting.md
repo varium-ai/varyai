@@ -271,6 +271,43 @@ TRAE's displayed product version is distinct from its editor/build version. Doub
 
 ## Client takeover and recovery
 
+### Claude Desktop refuses a shared connection
+
+A saved or applied legacy Vary profile is not proof of a live proxy takeover.
+Earlier builds blocked the switch when the old profile existed or was applied.
+Disconnecting correctly restored the original profile, but that restored profile
+could then block reconnection. An explicit shared connection now journals the
+current Desktop documents, including an applied legacy profile, before changing
+its owned fields. Disconnect restores that baseline; reconnect can acquire it
+again. Pending legacy proxy backups, malformed or unreadable configuration and
+conflicting external edits still fail safely rather than being discarded.
+
+Claude Desktop 4.4212 encrypts gateway keys in its profile after startup. Earlier
+Vary builds compared that ciphertext with the original plaintext, incorrectly
+reported configuration drift, and refused disconnect with a configuration-conflict
+message. The Desktop adapter now recognizes this at-rest sealing, preserves it
+on refresh, and restores the managed profile and previous selection on disconnect.
+Existing recovery receipts remain usable; do not delete them or replace the
+encrypted key manually. User changes to deployment mode and unrelated profiles
+are retained. A genuinely different gateway address or plaintext key still
+requires explicit recovery. This compatibility check does not prove the contents
+of an opaque macOS key or that an upstream request succeeds.
+
+The Desktop model-list control remains available while disconnected. Saving a
+selection only updates the private visibility preference; it does not enable
+the Agent, change Desktop's active model or edit its configuration. The next
+connection uses that saved list. Desktop itself remains responsible for choosing
+the conversation's model.
+
+Shared model names use Desktop's accepted Claude role prefix and a stable hash,
+with the actual model name shown through `labelOverride`. Older `claude-vary-…`
+aliases remain accepted by the authenticated local ingress for existing chats,
+but are no longer published to Desktop's model picker. After loading the fixed
+build, turn on Claude Desktop in Tools, then fully quit and reopen Desktop to
+load the shared menu. Configuration success alone does not verify an upstream
+model; send a new message and inspect request statistics. No login credentials
+need to be deleted to resolve the inactive-profile conflict.
+
 TRAE CN does not need to be open to select or edit a provider. Vary AI saves the selection locally and shows that client delivery is pending; keep Vary AI running and connect TRAE to apply it automatically. Switching to Official while offline also queues withdrawal of previously managed models. A successful local selection does not mean the closed client has already received it. Connection setup and auditing retain their existing consent requirements.
 
 In Settings → Advanced → Local routing, a selected TRAE CN or Doubao Work switch can be waiting for its client connection. The waiting hint means enablement was saved, but traffic is not yet protected. Open the client and follow the displayed connection instructions; deselecting the switch cancels the pending request. Waiting enablement does not show an active-routing success notification.
@@ -295,6 +332,34 @@ Common configuration locations include:
 | Claude Code | `~/.claude/settings.json`                    |
 
 Local proxy configuration can refer to `http://127.0.0.1:15722` or its `/v1` endpoint. If a client still points at that endpoint after an abnormal exit, review the application's takeover state and recovery options. A normal disable/exit path can restore the saved configuration; inspect the relevant backup before manual recovery. Back up the current files before editing them and preserve unrelated client settings. Do not publish authentication files or entire backups in an issue.
+
+### Codex stays on "Loading models..." after enabling routing
+
+Keep Vary AI and its local proxy running. After enabling the unified Codex model menu, fully quit and reopen Codex rather than only closing its window. Start a new conversation and select a published provider model or routing group. Existing conversations may keep their previous provider.
+
+The current Codex routing switch represents a live connection, not a persisted startup preference. Normal application shutdown restores its configuration and removes its recovery receipt/catalogs; startup also recovers an interrupted projection without automatically reconnecting the menu. Consequently this switch returns to off after restart even when other agents resume ordinary proxy takeover. This is a lifecycle limitation, not evidence that routing groups or model windows were erased.
+
+A partial leftover configuration can select `model_provider = "varyai-routing"` without a valid `model_catalog_json`, while retaining a raw upstream model ID instead of a published alias. The provider label alone does not prove that model-menu takeover is active. If explicit reconnect adopted this partial configuration as its baseline, disconnect correctly restores that same baseline rather than guessing a different provider; the orphan hint can therefore return on every reopen. The original writer of such a baseline must be established separately. Use VaryAI's explicit Codex reconnect/recovery flow to publish a complete catalog and current local credential; automatic refresh must not claim receiptless configuration. Reconnect keeps a private baseline backup and does not change the login file. If configuration was repaired after Codex's last model-list load, fully quit/reopen Codex so it reads the new projection. Do not manually invent a catalog path or delete recovery files.
+
+An older unified-menu writer always set `requires_openai_auth = false`. Codex then hid a preserved OpenAI login from account discovery even though `auth.json` was unchanged. Desktop authentication and workspace initialization could fail while the model picker stayed on "Loading models...". The writer now derives this flag from the effective authentication store: file-backed OpenAI login material keeps it enabled, absent or unsupported login material leaves it disabled, and keyring/auto stores preserve the active provider's policy because disk alone cannot establish their login state. An ephemeral store remains signed out.
+
+The local `experimental_bearer_token` remains installed on the Vary AI provider and takes precedence for forwarded request authentication; the preserved OpenAI credential is not substituted for it. Publishing and restoring the menu do not rewrite `auth.json`. Refreshing or reconnecting with a fixed build repairs a still-owned projection; external configuration edits still require the normal conflict/recovery flow. Do not delete authentication files, conversation databases, or recovery receipts to clear a loading indicator. A stale desktop initialization failure can still require a full Codex restart after repairing configuration.
+
+### Codex shows only 31k context for a routing model
+
+Earlier routing catalogs advertised a fixed 32,768-token window for every entry. With Codex's 95% effective-window reserve this appears as approximately 31k, even when an upstream has a larger window. This is a client context budget, not the account's remaining token allowance.
+
+The corrected backend retains explicit model windows, maximum windows, effective percentages and separate compaction thresholds through official discovery and Codex publication. Select **Reload** in Routing to replace an older account discovery cache, then reload Codex configuration or fully restart Codex; existing conversations may retain their initial model metadata. This requires the updated Rust backend, not just frontend hot reload. User-set Codex `model_context_window` and `model_auto_compact_token_limit` can still override catalog behavior.
+
+A group intentionally publishes no more than its smallest prepared destination's capacity, including inactive manual members that older conversations may still be bound to. Unknown destinations retain a conservative 32k fallback; no model capacity is inferred from its name. A relay with no exact-model capacity metadata can therefore keep both its direct entries and a mixed official/relay group at about 31k even after a successful Reload. Official discovery cannot establish the same-named relay model's capacity. Review the actual provider's exact-model catalog metadata rather than setting every model to 1M. Existing opaque continuations stay on their original account/model, and increasing a menu value never migrates them.
+
+### Codex reports routing_unknown_continuation after reconnecting
+
+This 409 means VaryAI cannot establish one exact owner for the supplied response ID, tool call or opaque continuation. Older builds retained ordinary ownership only in memory, so restarting VaryAI or reconnecting the Codex menu could lose it. Starting a new conversation avoids submitting unknown account-bound state; do not remove reasoning or compaction items from an existing history to bypass the check.
+
+Updated builds asynchronously save bounded, encrypted ownership records for normal Codex-menu/native and authenticated gateway conversations. After reconnecting and reloading Codex configuration, the same consumer, alias and complete destination set can resume observed bindings. An old local bearer token still requires configuration reload; persistence never bypasses current authentication. Records expire after 24 hours, are bounded to 512 conversations, and are not portable conversation history. Temporary editor sessions remain memory-only.
+
+Previously lost bindings cannot be recovered retroactively. Changed accounts, API keys, endpoints, models or execution settings; expired/evicted records; corrupt or unavailable local recovery files; and conflicting IDs still fail closed. A crash before queued writes reach disk can lose recent observations. No request is moved to another account, and no opaque history is silently discarded. See [continuation recovery](guides/intent-routing.md#continuation-recovery-after-restart).
 
 ### Codex Official login asks to sign in again after switching
 
@@ -367,6 +432,8 @@ The helper also enables native target discovery before scanning. Without that ha
 ### TRAE CN reports HTTP 502 with security auditing off
 
 The local-routing switch and the global security-audit policy are separate. A reproduced TRAE CN 3.4.13 failure affected follow-up turns using Responses: TRAE replayed a reasoning history item without its `summary` array. The first turn succeeded, while the next request returned upstream HTTP 502. Adding only the missing `summary: []` restored forwarding; the original reasoning text and other history fields were retained.
+
+The same missing-summary repair applies to TRAE's shared Agent connection endpoint. It does not relax the shared router's existing continuation checks or modify other Agents' reasoning history. Replayed item IDs and opaque state must still belong to a known conversation.
 
 With TRAE routing enabled, the current build sends managed native Responses models through the local compatibility route, including when global auditing is off. It preserves native model IDs so existing conversations can continue. Turning routing off restores the saved upstream address and credential. Delivery to a closed client remains pending until it connects; keep Vary AI running until restoration finishes. Official models remain unchanged. Load a build containing the fix and verify multiple turns in the failed conversation. A single successful probe or usage-accounting row with status 200 does not establish that a conversation works. See the [reproduction and regression evidence](qa/2026-11-03-pending-bug-review.md#route-only-http-502-follow-up).
 

@@ -33,6 +33,7 @@ use tokio::task::JoinHandle;
 #[derive(Clone)]
 pub struct ProxyState {
     pub db: Arc<Database>,
+    pub(crate) intent_runtime: Arc<super::intent::Runtime>,
     pub(crate) pi_runtime: Arc<crate::services::pi_routing::Runtime>,
     pub workbuddy_upstream: Arc<RwLock<Option<String>>>,
     pub config: Arc<RwLock<ProxyConfig>>,
@@ -76,6 +77,7 @@ impl ProxyServer {
 
         let state = ProxyState {
             pi_runtime: Arc::default(),
+            intent_runtime: Arc::default(),
             db,
             config: Arc::new(RwLock::new(config.clone())),
             status: Arc::new(RwLock::new(ProxyStatus::default())),
@@ -104,6 +106,11 @@ impl ProxyServer {
         runtime: Arc<crate::services::pi_routing::Runtime>,
     ) -> Self {
         self.state.pi_runtime = runtime;
+        self
+    }
+
+    pub(crate) fn with_intent_runtime(mut self, runtime: Arc<super::intent::Runtime>) -> Self {
+        self.state.intent_runtime = runtime;
         self
     }
 
@@ -248,6 +255,7 @@ impl ProxyServer {
     }
 
     pub async fn stop(&self) -> Result<(), ProxyError> {
+        self.state.intent_runtime.flush_continuations().await;
         // 1. 发送关闭信号
         if let Some(tx) = self.shutdown_tx.write().await.take() {
             let _ = tx.send(());
@@ -324,8 +332,14 @@ impl ProxyServer {
     pub(crate) fn build_router(&self) -> Router {
         Router::new()
             // 健康检查
+            .route("/intent/*path", any(super::intent::handle))
+            .route("/connections/*path", any(super::connections::handle))
+            .route(
+                "/backend-api/codex/*path",
+                any(super::intent::native::handle),
+            )
             .route("/health", get(handlers::health_check))
-            .route("/gateway/*path", post(super::gateway::handle))
+            .route("/gateway/*path", any(super::gateway::handle))
             .route("/private/trae/audit", post(super::trae::audit))
             .route("/pi/*path", any(super::pi::handle))
             .route(
@@ -459,6 +473,10 @@ impl ProxyServer {
             .layer(axum::middleware::from_fn_with_state(
                 self.state.clone(),
                 super::gateway::enforce_agent,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                self.state.clone(),
+                super::intent::native::admission,
             ))
             .with_state(self.state.clone())
     }

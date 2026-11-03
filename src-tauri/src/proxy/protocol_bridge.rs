@@ -18,14 +18,14 @@ use std::{
 mod streaming;
 type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Protocol {
+pub(crate) enum Protocol {
     Anthropic,
     Chat,
     Responses,
     Gemini,
 }
 impl Protocol {
-    pub(super) fn from_format(format: &str) -> Option<Self> {
+    pub(crate) fn from_format(format: &str) -> Option<Self> {
         match format {
             "anthropic" | "anthropic_messages" => Some(Self::Anthropic),
             "openai_chat" | "chat_completions" => Some(Self::Chat),
@@ -34,12 +34,55 @@ impl Protocol {
             _ => None,
         }
     }
-    fn format(self) -> &'static str {
+    pub(crate) fn format(self) -> &'static str {
         match self {
             Self::Anthropic => "anthropic",
             Self::Chat => "openai_chat",
             Self::Responses => "openai_responses",
             Self::Gemini => "gemini_native",
+        }
+    }
+}
+
+/// Public SDK options only. Query credentials and vendor-specific options are not passthrough.
+pub(crate) fn supported_query(path: &str, query: Option<&str>) -> bool {
+    query.is_none_or(|query| {
+        query.is_empty()
+            || (matches!(path, "/v1/messages" | "/v1/messages/count_tokens")
+                && query == "beta=true")
+            || (path.starts_with("/v1beta/models/")
+                && path.ends_with(":streamGenerateContent")
+                && query == "alt=sse")
+    })
+}
+
+/// Preserve Claude Code's SDK identity for Anthropic, never its credentials or arbitrary headers.
+pub(crate) fn copy_caller_headers(
+    protocol: Protocol,
+    source: &http::HeaderMap,
+    destination: &mut http::HeaderMap,
+) {
+    let claude_code = protocol == Protocol::Anthropic
+        && source
+            .get(http::header::USER_AGENT)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("claude-cli/"));
+    for name in source.keys() {
+        let name_str = name.as_str();
+        if matches!(
+            name_str,
+            "openai-beta" | "x-client-request-id" | "session-id" | "thread-id"
+        ) || (protocol == Protocol::Anthropic
+            && matches!(name_str, "anthropic-version" | "anthropic-beta"))
+            || (claude_code
+                && (matches!(name_str, "user-agent" | "x-app")
+                    || name_str.starts_with("x-stainless-")
+                    || name_str.starts_with("x-claude-code-")))
+        {
+            destination.remove(name);
+            for value in source.get_all(name) {
+                destination.append(name.clone(), value.clone());
+            }
         }
     }
 }
@@ -57,6 +100,11 @@ pub(super) struct BridgeContext {
     pub hints: providers::transform_gemini::AnthropicToolSchemaHints,
 }
 impl Bridge {
+    /// Plan only cross-protocol work; native requests must keep their own wire path.
+    pub fn plan(input: Protocol, output: Protocol) -> Option<Self> {
+        (input != output).then_some(Self { input, output })
+    }
+
     pub fn endpoint(self, endpoint: &str) -> String {
         let query = endpoint
             .split_once('?')
@@ -65,9 +113,12 @@ impl Bridge {
         let query = query
             .split('&')
             .filter(|pair| {
-                self.input != Protocol::Gemini
-                    || !url::form_urlencoded::parse(pair.as_bytes())
-                        .any(|(name, _)| name == "alt" || name == "key")
+                !url::form_urlencoded::parse(pair.as_bytes()).any(|(name, _)| {
+                    (self.input == Protocol::Gemini && (name == "alt" || name == "key"))
+                        || (self.input == Protocol::Anthropic
+                            && self.output != Protocol::Anthropic
+                            && name == "beta")
+                })
             })
             .filter(|pair| !pair.is_empty())
             .collect::<Vec<_>>()
@@ -605,8 +656,8 @@ fn chat_request(body: Value) -> Result<Value, ProxyError> {
     Ok(out)
 }
 
-// Adapted from Magpie's Gemini tool-result handling (MIT); see
-// third_party/magpie/LICENSE and docs/design/protocol-magpie-comparison.md.
+// Adapted from the reference implementation's Gemini tool-result handling (MIT); see
+// third_party/routing-reference/LICENSE and docs/design/protocol-reference-comparison.md.
 fn gemini_image(part: &Value) -> Result<Value, ProxyError> {
     let (field, source_type, payload) = match (part.get("inlineData"), part.get("fileData")) {
         (Some(data), None) => ("inlineData", "base64", data),
@@ -992,6 +1043,31 @@ fn gemini_response(body: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_plan_depends_only_on_protocols_not_application_or_model() {
+        for input in [
+            Protocol::Anthropic,
+            Protocol::Chat,
+            Protocol::Responses,
+            Protocol::Gemini,
+        ] {
+            for output in [
+                Protocol::Anthropic,
+                Protocol::Chat,
+                Protocol::Responses,
+                Protocol::Gemini,
+            ] {
+                let bridge = Bridge::plan(input, output);
+                assert_eq!(bridge.is_some(), input != output);
+                if let Some(bridge) = bridge {
+                    assert_eq!(bridge.input, input);
+                    assert_eq!(bridge.output, output);
+                }
+                assert_eq!(Protocol::from_format(output.format()), Some(output));
+            }
+        }
+    }
     #[test]
     fn native_agents_bridge_every_selected_upstream_protocol() {
         for app in [

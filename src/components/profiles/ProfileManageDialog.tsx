@@ -1,3 +1,4 @@
+import { useDialogSnapshot } from "@/hooks/useDialogSnapshot";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Portal as TooltipPortal } from "@radix-ui/react-tooltip";
@@ -60,6 +61,8 @@ export function ProfileManageDialog({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
+  const { snapshot: confirmation, onExited: onConfirmationExited } =
+    useDialogSnapshot(confirm);
   const queryClient = useQueryClient();
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const refreshBundle = async (profile: Profile) => {
@@ -280,11 +283,14 @@ export function ProfileManageDialog({
         </DialogContent>
       </Dialog>
 
-      {confirm && (
+      {confirmation && (
         <ConfirmDialog
-          isOpen
+          isOpen={!!confirm}
+          onExited={onConfirmationExited}
           title={t("profiles.deleteConfirmTitle")}
-          message={t("profiles.deleteConfirmMessage", { name: confirm.name })}
+          message={t("profiles.deleteConfirmMessage", {
+            name: confirmation.name,
+          })}
           variant="destructive"
           onConfirm={handleConfirm}
           onCancel={() => setConfirm(null)}

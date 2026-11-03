@@ -3869,6 +3869,7 @@ mod tests {
                     super::super::super::security::http_restoration::RestorationGateway::new_default(
                     ),
                 pi_runtime: Arc::default(),
+                intent_runtime: Arc::default(),
                 db: db.clone(),
                 config: Arc::new(RwLock::new(ProxyConfig::default())),
                 status: Arc::new(RwLock::new(ProxyStatus::default())),

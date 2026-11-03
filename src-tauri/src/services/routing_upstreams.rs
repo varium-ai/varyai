@@ -1,0 +1,521 @@
+//! Native global providers, independent of source application identities.
+use crate::provider::{Provider, ProviderMeta};
+use crate::services::codex_provider::{ModelMode, Settings};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
+
+pub(crate) const INVALID: &str = "routingUpstreams.invalid";
+pub(crate) const UNAVAILABLE: &str = "routingUpstreams.sourceUnavailable";
+pub(crate) const MAX_UPSTREAMS: usize = 256;
+pub(crate) const MAX_CONFIG_BYTES: usize = 512 * 1024;
+pub(crate) const MODEL_POLICY: &str = "routingModelPolicy";
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RoutingUpstream {
+    pub schema_version: u8,
+    pub id: String,
+    pub name: String,
+    pub revision: u32,
+    pub source: UpstreamSource,
+    #[serde(default)]
+    pub has_api_key: bool,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_settings: Option<Settings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<ImportedTransport>,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImportedTransport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_protocol: Option<String>,
+    #[serde(default)]
+    pub endpoints: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub keys: Vec<ImportedKey>,
+    #[serde(default)]
+    pub full_url: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImportedKey {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_format: Option<String>,
+}
+fn default_enabled() -> bool {
+    true
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub(crate) enum UpstreamSource {
+    Api {
+        base_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key: Option<String>,
+        api_format: String,
+        #[serde(default)]
+        models: Vec<Value>,
+        #[serde(default)]
+        catalog: Vec<Value>,
+        #[serde(default)]
+        mode: ModelMode,
+        #[serde(default)]
+        groups_only: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth_type: Option<String>,
+    },
+    Codex,
+}
+
+// Debug output must never expose credentials or private configuration.
+impl std::fmt::Debug for RoutingUpstream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RoutingUpstream")
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
+}
+pub(crate) fn valid_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value == value.trim()
+        && !value.chars().any(char::is_control)
+}
+
+fn valid_name(value: &str) -> bool {
+    !value.trim().is_empty() && value.chars().count() <= 120 && !value.chars().any(char::is_control)
+}
+
+pub(crate) fn valid_format(format: &str) -> bool {
+    matches!(
+        format,
+        "anthropic" | "openai_chat" | "openai_responses" | "gemini_native"
+    )
+}
+
+fn valid_key(key: &str) -> bool {
+    !key.trim().is_empty() && key.len() <= 16384 && !key.chars().any(char::is_control)
+}
+
+pub(crate) fn valid_url(base_url: &str) -> bool {
+    if base_url.len() > 2048
+        || base_url != base_url.trim()
+        || base_url.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let Ok(url) = url::Url::parse(base_url) else {
+        return false;
+    };
+    matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && !base_url
+            .split('/')
+            .nth(2)
+            .is_some_and(|authority| authority.contains('@'))
+}
+
+fn valid_models(models: &[Value]) -> bool {
+    let mut ids = std::collections::HashSet::new();
+    models.len() <= 4096
+        && models.iter().all(|row| {
+            crate::services::intent_routing::model_preferences::valid(row)
+                && model_id(row).is_some_and(|id| {
+                    !id.is_empty()
+                        && id.len() <= 200
+                        && id == id.trim()
+                        && !id.chars().any(char::is_control)
+                        && ids.insert(id)
+                        && !id.starts_with("vary-auto/")
+                        && !id.starts_with("vary-provider/")
+                })
+        })
+}
+pub(crate) fn model_id(row: &Value) -> Option<&str> {
+    row.as_str()
+        .or_else(|| row.get("model").and_then(Value::as_str))
+        .or_else(|| row.get("id").and_then(Value::as_str))
+}
+impl RoutingUpstream {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.schema_version != 1
+            || !valid_identity(&self.id)
+            || !valid_name(&self.name)
+            || self
+                .preset_id
+                .as_ref()
+                .is_some_and(|id| !valid_identity(id))
+            || self.region.as_ref().is_some_and(|id| !valid_identity(id))
+            || self
+                .codex_settings
+                .as_ref()
+                .is_some_and(|s| !s.valid() || !matches!(self.source, UpstreamSource::Codex))
+        {
+            return Err(INVALID.into());
+        }
+        if let UpstreamSource::Api {
+            base_url,
+            api_key,
+            api_format,
+            models,
+            catalog,
+            ..
+        } = &self.source
+        {
+            if matches!(&self.source, UpstreamSource::Api { auth_type: Some(auth), .. } if !matches!(auth.as_str(), "api-key" | "bearer" | "both"))
+            {
+                return Err(INVALID.into());
+            }
+            if !valid_url(base_url)
+                || !api_key.as_deref().is_some_and(valid_key)
+                || !valid_format(api_format)
+                || models.len() > 256
+                || !valid_models(models)
+                || !valid_models(catalog)
+            {
+                return Err(INVALID.into());
+            }
+        }
+        if let Some(transport) = &self.transport {
+            let mut ids = std::collections::HashSet::new();
+            if !matches!(self.source, UpstreamSource::Api { .. })
+                || transport.endpoints.iter().any(|(format, url)| !valid_format(format) || !valid_url(url))
+                || transport.keys.len() > 64
+                || transport.primary_protocol.as_deref().is_some_and(|f| !valid_format(f) || !matches!(&self.source, UpstreamSource::Api { api_format, .. } if api_format == f))
+                || transport.keys.iter().any(|k| !valid_identity(&k.id) || !ids.insert(&k.id) || !k.key.as_deref().is_some_and(valid_key) || k.api_format.as_deref().is_some_and(|f| !valid_format(f) || !transport.endpoints.contains_key(f)))
+                || transport.headers.as_ref().is_some_and(|headers| headers.len() > 64 || headers.iter().any(|(name, value)| {
+                    http::HeaderName::from_bytes(name.as_bytes()).is_err()
+                        || http::HeaderValue::from_str(value).is_err()
+                        || http::HeaderName::from_bytes(name.as_bytes()).is_ok_and(|name| crate::proxy::is_protected_local_proxy_override_header(&name))
+                        || name.eq_ignore_ascii_case("cookie")
+                        || value.contains("${sessionId}") || value.contains("${threadId}")
+                })) { return Err(INVALID.into()); }
+        }
+        if serde_json::to_vec(self).map_err(|_| INVALID)?.len() > MAX_CONFIG_BYTES {
+            return Err(INVALID.into());
+        }
+        Ok(())
+    }
+    pub(crate) fn redacted(mut self) -> Self {
+        self.has_api_key = false;
+        if let UpstreamSource::Api { api_key, .. } = &mut self.source {
+            self.has_api_key = api_key.as_deref().is_some_and(valid_key);
+            *api_key = None;
+        }
+        if let Some(transport) = &mut self.transport {
+            transport.headers = None;
+            for key in &mut transport.keys {
+                key.key = None;
+            }
+        }
+        self
+    }
+}
+fn executable_settings(
+    base_url: &str,
+    key: &str,
+    format: &str,
+    auth_type: Option<&str>,
+    models: Vec<Value>,
+) -> Value {
+    let models = models
+        .into_iter()
+        .map(|mut model| {
+            if let Some(id) = model.as_str() {
+                return json!({"model":id});
+            }
+            if model.get("model").is_none() {
+                if let Some(id) = model.get("id").cloned() {
+                    model["model"] = id;
+                }
+            }
+            model
+        })
+        .collect::<Vec<_>>();
+    let key_field = if auth_type == Some("api-key") {
+        "ANTHROPIC_API_KEY"
+    } else {
+        "ANTHROPIC_AUTH_TOKEN"
+    };
+    let base_url_toml = toml::Value::String(base_url.into()).to_string();
+    let wire = match format {
+        "openai_chat" => "chat",
+        "anthropic" => "anthropic",
+        "gemini_native" => "gemini",
+        _ => "responses",
+    };
+    json!({
+        "env":{"ANTHROPIC_BASE_URL":base_url, (key_field):key, "GOOGLE_GEMINI_BASE_URL":base_url, "GEMINI_API_KEY":key},
+        "auth":{"OPENAI_API_KEY":key},
+        "apiFormat":format,
+        "authType":auth_type.unwrap_or("bearer"),
+        "config":format!("model_provider = \"routing\"\n[model_providers.routing]\nname = \"Routing upstream\"\nbase_url = {base_url_toml}\nwire_api = \"{wire}\"\n"),
+        "modelCatalog":{"models":models}
+    })
+}
+
+pub(crate) fn resolve_provider(record: &RoutingUpstream) -> Result<Provider, String> {
+    record.validate()?;
+    match &record.source {
+        UpstreamSource::Api {
+            base_url,
+            api_key,
+            api_format,
+            models,
+            catalog,
+            mode,
+            groups_only,
+            auth_type,
+        } => {
+            let settings = executable_settings(
+                base_url,
+                api_key.as_deref().ok_or(UNAVAILABLE)?,
+                api_format,
+                auth_type.as_deref(),
+                catalog.clone(),
+            );
+            let mut provider =
+                Provider::with_id(record.id.clone(), record.name.clone(), settings, None);
+            provider.meta = Some(ProviderMeta {
+                api_format: Some(api_format.clone()),
+                api_key_field: (auth_type.as_deref() == Some("api-key"))
+                    .then(|| "ANTHROPIC_API_KEY".into()),
+                ..Default::default()
+            });
+            if let Some(transport) = &record.transport {
+                provider.settings_config["routingImportedTransport"] = json!(transport);
+                if let Some(meta) = &mut provider.meta {
+                    meta.is_full_url = Some(transport.full_url);
+                    meta.local_proxy_request_overrides = transport.headers.clone().map(|headers| {
+                        crate::provider::LocalProxyRequestOverrides {
+                            headers: headers.into_iter().collect(),
+                            ..Default::default()
+                        }
+                    });
+                }
+            }
+            provider.settings_config[MODEL_POLICY] =
+                json!({"mode":mode,"models":models,"groupsOnly":groups_only});
+            // Routing discovery is synchronous; prepare the stored list immediately.
+            filter_models(&mut provider);
+            Ok(provider)
+        }
+        UpstreamSource::Codex => {
+            let mut provider = Provider::with_id(
+                record.id.clone(),
+                record.name.clone(),
+                json!({"auth":{},"config":"","apiFormat":"openai_responses"}),
+                None,
+            );
+            provider.category = Some("official".into());
+            provider.meta = Some(ProviderMeta {
+                api_format: Some("openai_responses".into()),
+                ..Default::default()
+            });
+            crate::services::codex_provider::attach(
+                &mut provider,
+                &record.codex_settings.clone().unwrap_or_default(),
+            )?;
+            crate::services::codex_provider::filter_models(&mut provider);
+            Ok(provider)
+        }
+    }
+}
+
+pub(crate) fn variants(provider: &Provider) -> Vec<Provider> {
+    let mut variants = crate::services::codex_provider::variants(provider);
+    let Some(transport) = provider
+        .settings_config
+        .get("routingImportedTransport")
+        .and_then(|v| serde_json::from_value::<ImportedTransport>(v.clone()).ok())
+    else {
+        return variants;
+    };
+    // Each execution snapshot contains just its own credential, never the pool.
+    for variant in &mut variants {
+        if let Some(settings) = variant.settings_config.as_object_mut() {
+            settings.remove("routingImportedTransport");
+        }
+    }
+    let (base, _) = provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
+    let primary_format = provider.settings_config["apiFormat"]
+        .as_str()
+        .unwrap_or("openai_chat");
+    for key in transport.keys.iter().filter(|key| key.enabled) {
+        let Some(token) = &key.key else {
+            continue;
+        };
+        let mut variant = provider.clone();
+        let format = key.api_format.as_deref().unwrap_or(primary_format);
+        let endpoint = transport
+            .endpoints
+            .get(format)
+            .map(String::as_str)
+            .unwrap_or(&base);
+        let settings = executable_settings(
+            endpoint,
+            token,
+            format,
+            provider.settings_config["authType"].as_str(),
+            vec![],
+        );
+        if let (Some(next), Some(source)) = (
+            variant.settings_config.as_object_mut(),
+            settings.as_object(),
+        ) {
+            next.remove("routingImportedTransport");
+            for field in ["env", "auth", "apiFormat", "authType", "config"] {
+                next.insert(field.into(), source[field].clone());
+            }
+        }
+        variant.meta.get_or_insert_with(Default::default).api_format = Some(format.into());
+        variants.push(variant);
+    }
+    variants
+}
+
+pub(crate) fn filter_models(provider: &mut Provider) {
+    let Some(policy) = provider.settings_config.get(MODEL_POLICY).cloned() else {
+        return;
+    };
+    let picks = policy["models"].as_array().cloned().unwrap_or_default();
+    let catalog = provider
+        .settings_config
+        .get("routingVendorCatalog")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_else(|| {
+            provider.settings_config["modelCatalog"]["models"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        });
+    provider.settings_config["routingVendorCatalog"] = json!(catalog);
+    let mut rows = match policy["mode"].as_str() {
+        Some("usage") => vec![],
+        Some("picked") => picks.clone(),
+        Some("best") => crate::services::codex_provider::best_models(catalog),
+        _ => catalog.into_iter().take(24).collect(),
+    };
+    for row in &mut rows {
+        if let Some(id) = row.as_str() {
+            *row = json!({"model":id});
+        }
+        if row.get("model").is_none() {
+            row["model"] = row["id"].clone();
+        }
+        if let Some(picked) = picks.iter().find(|p| model_id(p) == model_id(row)) {
+            if let Some(prefs) = picked.get("modelPreferences") {
+                row["modelPreferences"] = prefs.clone();
+            }
+        }
+    }
+    provider.settings_config["modelCatalog"] = json!({"models":rows});
+}
+
+pub(crate) fn serves(provider: &Provider, model: &str) -> bool {
+    provider
+        .settings_config
+        .get(MODEL_POLICY)
+        .is_none_or(|policy| {
+            policy["mode"] != "usage"
+                && (policy["mode"] != "picked"
+                    || policy["models"]
+                        .as_array()
+                        .is_some_and(|rows| rows.iter().any(|row| model_id(row) == Some(model))))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_config::AppType;
+    #[test]
+    fn all_protocols_preserve_exact_models_and_support_both_credential_views() {
+        for format in [
+            "anthropic",
+            "openai_chat",
+            "openai_responses",
+            "gemini_native",
+        ] {
+            for auth in [None, Some("api-key"), Some("bearer")] {
+                let models = vec![
+                    json!({"model":"exact-model", "modalities":["text"], "custom":{"unmodified":true}}),
+                ];
+                let record = RoutingUpstream {
+                    transport: None,
+                    schema_version: 1,
+                    preset_id: None,
+                    region: None,
+                    codex_settings: None,
+                    id: uuid::Uuid::new_v4().to_string(),
+                    name: "Fixture".into(),
+                    revision: 1,
+                    has_api_key: false,
+                    enabled: true,
+                    source: UpstreamSource::Api {
+                        catalog: vec![],
+                        mode: crate::services::codex_provider::ModelMode::Picked,
+                        groups_only: false,
+                        base_url: "https://synthetic.example/v1".into(),
+                        api_key: Some("synthetic-fixture-key".into()),
+                        api_format: format.into(),
+                        models: models.clone(),
+                        auth_type: auth.map(str::to_owned),
+                    },
+                };
+                let provider = resolve_provider(&record).unwrap();
+                let (base_url, key) = provider.resolve_usage_credentials(&AppType::Codex);
+                assert_eq!(base_url, "https://synthetic.example/v1");
+                assert!(key == "synthetic-fixture-key");
+                assert_eq!(
+                    provider.settings_config["modelCatalog"]["models"],
+                    json!(models)
+                );
+                assert_eq!(
+                    provider.meta.as_ref().unwrap().api_format.as_deref(),
+                    Some(format)
+                );
+            }
+        }
+    }
+    #[test]
+    fn saved_model_preferences_must_be_validated_before_publication() {
+        let mut record: RoutingUpstream = serde_json::from_value(json!({
+            "schemaVersion":1, "id":"synthetic", "name":"Synthetic", "revision":0,
+            "hasApiKey":false, "source":{"kind":"api","baseUrl":"https://synthetic.invalid/v1", "apiFormat":"openai_chat","apiKey":"synthetic-key", "models":[{"model":"exact", "modelPreferences":{"images":false,"reasoningLevels":[]}}]}
+        })).expect("synthetic record");
+        assert!(record.validate().is_ok());
+        if let UpstreamSource::Api { models, .. } = &mut record.source {
+            models[0]["modelPreferences"]["images"] = json!("invalid");
+        }
+        assert_eq!(record.validate(), Err(INVALID.into()));
+    }
+}

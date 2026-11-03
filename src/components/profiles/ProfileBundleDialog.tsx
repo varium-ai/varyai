@@ -14,13 +14,17 @@ import { toast } from "sonner";
 import { APP_IDS } from "@/config/appConfig";
 
 export function ProfileBundleDialog({
+  open = true,
   profile,
   onClose,
   onChanged,
+  onExited,
 }: {
+  open?: boolean;
   profile: { id: string; name: string };
   onClose: () => void;
   onChanged: () => void;
+  onExited?: () => void;
 }) {
   const { t } = useTranslation();
   const restartClients = new Set([
@@ -168,12 +172,13 @@ export function ProfileBundleDialog({
 
   return (
     <Dialog
-      open
+      open={open}
       onOpenChange={(open) => {
         if (!open && !busy) onClose();
       }}
     >
       <DialogContent
+        onCloseAutoFocus={onExited}
         className="max-w-xl"
         zIndex="top"
         overlayClassName="backdrop-blur-none"

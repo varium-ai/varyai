@@ -12,6 +12,7 @@ use std::{path::Path, sync::Mutex, time::Duration};
 pub(super) const EXTENSION_TABLES: &[&str] = &[
     "intent_routing_groups",
     "intent_routing_preferences",
+    "routing_upstreams",
     "gateway_keys",
     "gateway_usage",
     "gateway_agent_bindings",
@@ -118,15 +119,17 @@ impl Database {
         let ext_path = Self::extension_path(path);
         // Inspect before any shared schema writes. Unknown extension formats are
         // preserved for a newer application to read.
-        let extension_needs_upgrade = if ext_path.exists() {
+        let previous_extension_version = if ext_path.exists() {
             let ext =
                 Connection::open_with_flags(&ext_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
             Self::check_extension_version(&ext)?;
             Self::validate_extension_schema(&ext)?;
-            Self::get_user_version(&ext)? < EXTENSION_SCHEMA_VERSION
+            Self::get_user_version(&ext)?
         } else {
-            false
+            0
         };
+        let extension_needs_upgrade =
+            previous_extension_version > 0 && previous_extension_version < EXTENSION_SCHEMA_VERSION;
         if legacy || (version > 0 && version < SHARED_SCHEMA_VERSION) || extension_needs_upgrade {
             Self::storage_migration_backup(&conn, path)?;
             if ext_path.exists() {
@@ -180,6 +183,15 @@ impl Database {
                     tx.execute(&format!("DROP TABLE IF EXISTS main.\"{table}\""), [])?;
                 }
             }
+            if previous_extension_version < 7 {
+                // Intentional breaking reset: no legacy provider records are translated.
+                tx.execute_batch(
+                    "DELETE FROM vary.routing_upstreams;
+                    DELETE FROM vary.intent_routing_groups;
+                    DELETE FROM vary.intent_routing_preferences;
+                    DROP TABLE IF EXISTS vary.routing_upstream_origins;",
+                )?;
+            }
             tx.execute_batch(&format!("PRAGMA main.user_version={SHARED_SCHEMA_VERSION}; PRAGMA vary.user_version={EXTENSION_SCHEMA_VERSION};"))?;
             Self::validate_attached_integrity(&tx)?;
             tx.commit()?;
@@ -197,6 +209,7 @@ impl Database {
         Ok(Self {
             conn: Mutex::new(conn),
             extension_conn: Some(Mutex::new(extension)),
+            routing_generation: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -217,8 +230,12 @@ impl Database {
         let tables = stmt
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
+        let version = Self::get_user_version(conn)?;
+        let native = Self::is_native_connection(conn)?;
         for table in &tables {
-            if table == "varyai_extension_identity" && Self::is_native_connection(conn)? {
+            if (version < 7 && table == "routing_upstream_origins")
+                || (table == "varyai_extension_identity" && native)
+            {
                 continue;
             }
             if !EXTENSION_TABLES.contains(&table.as_str())
@@ -229,7 +246,6 @@ impl Database {
                 ));
             }
         }
-        let version = Self::get_user_version(conn)?;
         let contains = |table: &str| tables.iter().any(|name| name == table);
         // Two development branches independently used v3/v4. Recognize only
         // their complete known layouts; never treat arbitrary missing tables as optional.
@@ -260,6 +276,7 @@ impl Database {
                     "gateway_usage_models" => version >= 4 && !intent_layout,
                     "intent_routing_groups" => version >= 5 || intent_layout,
                     "intent_routing_preferences" => version >= 5 || intent_layout && version == 4,
+                    "routing_upstreams" => version >= 6 && !(native && version == 6),
                     _ => true,
                 };
                 required && !contains(table)
@@ -332,7 +349,7 @@ impl Database {
         result
     }
 
-    fn storage_migration_backup(conn: &Connection, path: &Path) -> Result<(), AppError> {
+    pub(super) fn storage_migration_backup(conn: &Connection, path: &Path) -> Result<(), AppError> {
         let parent = path
             .parent()
             .ok_or_else(|| AppError::Database("无效的备份路径".into()))?;
@@ -359,7 +376,7 @@ impl Database {
         Ok(())
     }
 
-    fn create_attached_extension_tables(
+    pub(super) fn create_attached_extension_tables(
         conn: &Connection,
         template: &Connection,
     ) -> Result<(), AppError> {
@@ -487,6 +504,9 @@ impl Database {
             Self::set_user_version(conn, SCHEMA_VERSION)?;
         }
         Self::ensure_upstream_shared_columns(conn)?;
+        Self::normalize_imported_routing_upstreams(conn)?;
+        Self::normalize_imported_intent_routing(conn)?;
+        conn.execute_batch("DROP TABLE IF EXISTS routing_upstream_origins;")?;
         Ok(())
     }
 

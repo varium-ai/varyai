@@ -337,6 +337,7 @@ pub(crate) async fn remove_codex_oauth_account_with_switch_lock(
         .proxy_service
         .lock_switch_for_app(AppType::Codex.as_str())
         .await;
+    app_state.proxy_service.revoke_native_compatibility();
     app_state
         .codex_oauth_manager
         .remove_account(account_id)
@@ -408,9 +409,87 @@ pub(crate) async fn logout_codex_oauth_with_switch_lock(
         .proxy_service
         .lock_switch_for_app(AppType::Codex.as_str())
         .await;
+    app_state.proxy_service.revoke_native_compatibility();
     app_state
         .codex_oauth_manager
         .clear_auth()
         .await
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod native_lifecycle_tests {
+    use super::*;
+    use crate::{database::Database, proxy::providers::codex_oauth_auth::CodexOAuthManager};
+    use std::sync::Arc;
+
+    fn fixture() -> (
+        tempfile::TempDir,
+        AppState,
+        Arc<crate::proxy::intent::native::Lease>,
+    ) {
+        let dir = tempfile::tempdir().expect("fixture directory");
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "").expect("synthetic config");
+        std::fs::write(
+            dir.path().join("auth.json"),
+            serde_json::json!({
+                "auth_mode":"chatgpt",
+                "tokens": {
+                    "access_token":"synthetic-token",
+                    "account_id":"synthetic-workspace",
+                    "id_token":crate::codex_config::test_codex_id_token("synthetic-user")
+                }
+            })
+            .to_string(),
+        )
+        .expect("synthetic auth");
+        let db = Arc::new(Database::memory().expect("fixture database"));
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().join("managed-accounts")));
+        let service = crate::services::ProxyService::new_with_codex_oauth_manager(
+            db.clone(),
+            manager.clone(),
+        );
+        let credentials = crate::proxy::intent::native::read_credentials(
+            &config,
+            &dir.path().join("absent-marker.json"),
+        )
+        .expect("fixture credentials");
+        let lease = service
+            .intent_runtime
+            .native
+            .install(credentials)
+            .expect("fixture lease");
+        let state = AppState {
+            db,
+            proxy_service: service,
+            usage_cache: Arc::new(crate::services::UsageCache::new()),
+            profile_bundles: Arc::default(),
+            codex_oauth_manager: manager,
+        };
+        (dir, state, lease)
+    }
+
+    #[tokio::test]
+    async fn native_codex_account_removal_revokes_even_when_mutation_fails() {
+        let (_dir, state, lease) = fixture();
+        assert!(
+            remove_codex_oauth_account_with_switch_lock(&state, "synthetic-missing-account")
+                .await
+                .is_err()
+        );
+        assert!(
+            !lease.valid(),
+            "failed credential removal left native admission enabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_codex_logout_revokes_without_managed_accounts() {
+        let (_dir, state, lease) = fixture();
+        logout_codex_oauth_with_switch_lock(&state)
+            .await
+            .expect("empty account logout");
+        assert!(!lease.valid(), "logout left native admission enabled");
+    }
 }

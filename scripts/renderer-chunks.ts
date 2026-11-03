@@ -100,7 +100,7 @@ export function rendererChunk(id: string): string | undefined {
     }
     return "app-shared";
   }
-  if (/^(hooks|lib|utils|types|i18n|config)\//.test(relative)) {
+  if (/^(hooks|lib|utils|types|i18n|config|contexts)\//.test(relative)) {
     return "app-shared";
   }
   return undefined;

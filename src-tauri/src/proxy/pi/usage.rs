@@ -91,6 +91,7 @@ impl Collector {
     }
 }
 pub(crate) struct Job {
+    pub app_type: &'static str,
     pub db: Arc<Database>,
     pub request_id: String,
     pub provider_id: String,
@@ -127,7 +128,7 @@ pub(crate) fn emit(job: Job) {
                                 .unwrap_or_else(|| job.request_model.clone());
                             let id = job.request_id;
                             let (multiplier, source) = futures::executor::block_on(
-                                logger.resolve_pricing_config(&job.provider_id, "pi"),
+                                logger.resolve_pricing_config(&job.provider_id, job.app_type),
                             );
                             let pricing_model = if source == crate::database::PRICING_SOURCE_REQUEST
                             {
@@ -139,7 +140,7 @@ pub(crate) fn emit(job: Job) {
                                 .log_with_calculation(
                                     id,
                                     job.provider_id,
-                                    "pi".into(),
+                                    job.app_type.into(),
                                     model.clone(),
                                     job.request_model,
                                     pricing_model,
@@ -149,7 +150,7 @@ pub(crate) fn emit(job: Job) {
                                     None,
                                     job.status,
                                     job.session_id,
-                                    Some("pi".into()),
+                                    Some(job.app_type.into()),
                                     job.streaming,
                                 )
                                 .is_err()

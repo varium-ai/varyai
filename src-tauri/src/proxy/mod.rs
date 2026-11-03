@@ -12,8 +12,10 @@ pub mod error;
 pub mod error_mapper;
 pub(crate) mod failover_switch;
 mod forwarder;
+pub(crate) use forwarder::is_protected_local_proxy_override_header;
 pub(crate) mod gateway;
 pub mod gemini_url;
+pub(crate) mod group_forward;
 pub mod handler_config;
 pub mod handler_context;
 mod handlers;
@@ -67,7 +69,10 @@ pub use types::{ProxyConfig, ProxyServerInfo, ProxyStatus};
 // 注意：这个导出用于模块内部，编译器可能警告未使用但实际被子模块使用
 #[allow(unused_imports)]
 pub(crate) use types::*;
+pub(crate) mod intent;
 pub(crate) mod pi;
 
 #[cfg(test)]
 mod protocol_matrix_tests;
+
+pub(crate) mod connections;

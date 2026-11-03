@@ -197,7 +197,28 @@ export const normalizeCodexCatalogModelsForSave = (
     normalized.push({
       model,
       ...(displayName ? { displayName } : {}),
+      ...(typeof item.free === "boolean" ? { free: item.free } : {}),
       ...(contextWindow && contextWindow > 0 ? { contextWindow } : {}),
+      ...(item.contextSource ? { contextSource: item.contextSource } : {}),
+      ...Object.fromEntries(
+        (
+          [
+            "maxContextWindow",
+            "effectiveContextWindowPercent",
+            "autoCompactTokenLimit",
+          ] as const
+        )
+          .filter((key) => {
+            const n = item[key];
+            return (
+              typeof n === "number" &&
+              Number.isSafeInteger(n) &&
+              n > 0 &&
+              (key !== "effectiveContextWindowPercent" || n <= 100)
+            );
+          })
+          .map((key) => [key, item[key]]),
+      ),
       // Native Responses profile overrides (ignored by the chat/proxy profile).
       ...(typeof item.supportsParallelToolCalls === "boolean"
         ? { supportsParallelToolCalls: item.supportsParallelToolCalls }
@@ -206,8 +227,9 @@ export const normalizeCodexCatalogModelsForSave = (
         ? { inputModalities }
         : {}),
       ...(baseInstructions ? { baseInstructions } : {}),
-      ...(reasoningLevels && reasoningLevels.length > 0
-        ? { reasoningLevels }
+      ...(reasoningLevels ? { reasoningLevels } : {}),
+      ...(typeof item.reasoning === "boolean"
+        ? { reasoning: item.reasoning }
         : {}),
       ...(defaultReasoningLevel ? { defaultReasoningLevel } : {}),
     });

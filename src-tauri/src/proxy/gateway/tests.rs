@@ -420,7 +420,11 @@ fn catalog_covers_every_agent_without_returning_credentials(
         .agents
         .iter()
         .any(|a| a.id == "hermes" && a.local_routing));
-    assert_eq!(value.agents.iter().filter(|a| !a.local_routing).count(), 2);
+    assert!(value
+        .agents
+        .iter()
+        .any(|a| a.id == "opencode" && a.local_routing));
+    assert_eq!(value.agents.iter().filter(|a| !a.local_routing).count(), 1);
     Ok(())
 }
 

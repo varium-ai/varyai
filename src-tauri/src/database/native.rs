@@ -221,7 +221,10 @@ impl Database {
         if !Self::is_native_connection(&extension)?
             || extension_identity != (id.clone(), "varyai".into(), "extension".into())
             || Self::get_user_version(&conn)? != NATIVE_MAIN_SCHEMA_VERSION
-            || Self::get_user_version(&extension)? != NATIVE_EXTENSION_SCHEMA_VERSION
+            || !matches!(
+                Self::get_user_version(&extension)?,
+                6 | NATIVE_EXTENSION_SCHEMA_VERSION
+            )
         {
             return Err(invalid());
         }
@@ -233,6 +236,7 @@ impl Database {
             return Err(invalid());
         }
         Self::validate_shared_columns(&conn)?;
+        let extension_version = Self::get_user_version(&extension)?;
         Self::validate_extension_schema(&extension)?;
         let manifest_path = path.with_file_name("storage.json");
         if manifest_path.exists() {
@@ -254,8 +258,29 @@ impl Database {
             .map_err(|_| invalid())?;
             crate::config::atomic_write_private(&manifest_path, &bytes)?;
         }
+        if extension_version == 6 {
+            Self::storage_migration_backup(&conn, path)?;
+            Self::storage_migration_backup(&extension, &ext_path)?;
+        }
         drop((conn, extension));
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        if extension_version == 6 {
+            Self::attach_extension(&conn, &ext_path)?;
+            let upgrade = (|| {
+                let tx = conn.unchecked_transaction()?;
+                let template = Connection::open_in_memory()?;
+                Self::create_extension_tables_on_conn(&template)?;
+                Self::create_attached_extension_tables(&tx, &template)?;
+                tx.execute_batch(&format!(
+                    "PRAGMA vary.user_version={NATIVE_EXTENSION_SCHEMA_VERSION}"
+                ))?;
+                tx.commit()?;
+                Ok::<_, AppError>(())
+            })();
+            let detach = conn.execute_batch("DETACH DATABASE vary");
+            upgrade?;
+            detach?;
+        }
         let extension = Connection::open_with_flags(&ext_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         conn.busy_timeout(Duration::from_secs(5))?;
         let tx = conn.unchecked_transaction()?;
@@ -277,6 +302,7 @@ impl Database {
         Ok(Self {
             conn: Mutex::new(conn),
             extension_conn: Some(Mutex::new(extension)),
+            routing_generation: std::sync::atomic::AtomicU64::new(0),
         })
     }
 }

@@ -248,7 +248,7 @@ export function PricingEditModal({
         </div>
       </form>
 
-      {isNew && isPickerOpen && (
+      {isNew && (
         <ModelsDevPickerDialog
           open={isPickerOpen}
           onClose={() => setIsPickerOpen(false)}

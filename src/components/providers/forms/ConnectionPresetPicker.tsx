@@ -1,3 +1,4 @@
+import { useDialogSnapshot } from "@/hooks/useDialogSnapshot";
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -57,6 +58,8 @@ export function ConnectionPresetPicker({
     ConnectionPreset,
     "id" | "name"
   > | null>(null);
+  const { snapshot: deletion, onExited: onConfirmationExited } =
+    useDialogSnapshot(deleteTarget);
   const [testModel, setTestModel] = useState("");
   const [editingCredentials, setEditingCredentials] = useState(false);
   const [protocolManuallySelected, setProtocolManuallySelected] =
@@ -513,14 +516,15 @@ export function ConnectionPresetPicker({
               {t("connectionPresets.save")}
             </Button>
           </DialogFooter>
-          {deleteTarget && (
+          {deletion && (
             <ConfirmDialog
-              isOpen
+              isOpen={!!deleteTarget}
+              onExited={onConfirmationExited}
               zIndex="top"
               pending={pending}
               title={t("connectionPresets.deleteConfirmTitle")}
               message={t("connectionPresets.deleteConfirmMessage", {
-                name: deleteTarget.name,
+                name: deletion.name,
               })}
               confirmText={t("connectionPresets.delete")}
               onConfirm={() => void remove()}

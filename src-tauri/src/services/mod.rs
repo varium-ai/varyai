@@ -1,5 +1,6 @@
 pub mod balance;
 pub mod codex_oauth_models;
+pub(crate) mod codex_provider;
 pub mod coding_plan;
 pub mod config;
 pub(crate) mod doubao_checkin;
@@ -61,9 +62,15 @@ pub use usage_stats::{
     RequestLogDetail, UsageSummary, UsageSummaryByApp,
 };
 pub(crate) mod agent_clients;
+pub(crate) mod intent_routing;
+pub(crate) mod routing_upstreams;
 
 pub(crate) mod trae_bridge;
 
 pub(crate) mod doubao_work;
 
 pub(crate) mod upstream_protocol;
+
+pub(crate) mod agent_connections;
+
+pub(crate) mod provider_import;

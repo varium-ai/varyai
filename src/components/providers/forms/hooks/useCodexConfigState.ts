@@ -66,6 +66,30 @@ export const mapCodexCatalogModelForForm = (item: any): CodexCatalogModel => {
       : typeof item?.default_reasoning_level === "string"
         ? item.default_reasoning_level
         : undefined;
+  const listedFree = item?.free ?? item?.is_free ?? item?.isFree;
+  const price = item?.pricing ?? item?.price;
+  const prices = [
+    price?.input,
+    price?.output,
+    price?.cacheRead ?? price?.cache_read,
+    price?.cacheWrite ?? price?.cache_write,
+  ];
+  const pricedFree = prices.every(
+    (v) =>
+      (typeof v === "number" ||
+        (typeof v === "string" &&
+          /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(v.trim()))) &&
+      Number.isFinite(Number(v)) &&
+      Number(v) >= 0,
+  )
+    ? prices.every((v) => Number(v) === 0)
+    : undefined;
+  const free =
+    listedFree === true || pricedFree === true
+      ? true
+      : typeof listedFree === "boolean"
+        ? listedFree
+        : pricedFree;
   return {
     model: typeof item?.model === "string" ? item.model : "",
     displayName:
@@ -86,9 +110,35 @@ export const mapCodexCatalogModelForForm = (item: any): CodexCatalogModel => {
       ? { supportsParallelToolCalls }
       : {}),
     ...(inputModalities ? { inputModalities } : {}),
+    ...(free === undefined ? {} : { free }),
+    ...(item?.contextSource === "vendor" || item?.contextSource === "user"
+      ? { contextSource: item.contextSource }
+      : {}),
+    ...(typeof (item?.maxContextWindow ?? item?.max_context_window) === "number"
+      ? { maxContextWindow: item.maxContextWindow ?? item.max_context_window }
+      : {}),
+    ...(typeof (
+      item?.effectiveContextWindowPercent ??
+      item?.effective_context_window_percent
+    ) === "number"
+      ? {
+          effectiveContextWindowPercent:
+            item.effectiveContextWindowPercent ??
+            item.effective_context_window_percent,
+        }
+      : {}),
+    ...(typeof (
+      item?.autoCompactTokenLimit ?? item?.auto_compact_token_limit
+    ) === "number"
+      ? {
+          autoCompactTokenLimit:
+            item.autoCompactTokenLimit ?? item.auto_compact_token_limit,
+        }
+      : {}),
     ...(baseInstructions ? { baseInstructions } : {}),
-    ...(reasoningLevels && reasoningLevels.length > 0
-      ? { reasoningLevels }
+    ...(reasoningLevels ? { reasoningLevels } : {}),
+    ...(typeof item?.reasoning === "boolean"
+      ? { reasoning: item.reasoning }
       : {}),
     ...(defaultReasoningLevel ? { defaultReasoningLevel } : {}),
   };

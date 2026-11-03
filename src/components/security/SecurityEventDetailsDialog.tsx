@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { useDialogSnapshot } from "@/hooks/useDialogSnapshot";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,7 +31,7 @@ import {
 } from "./securityEventLabels";
 
 export function SecurityEventDetailsDialog({
-  event,
+  event: currentEvent,
   onClose,
   onCreateRule,
   onOpenDlpRules,
@@ -41,6 +42,7 @@ export function SecurityEventDetailsDialog({
   onOpenDlpRules?: () => void;
 }) {
   const { t, i18n } = useTranslation();
+  const { snapshot: event, onExited } = useDialogSnapshot(currentEvent);
   const [listDraft, setListDraft] = useState<{
     listType: CommandListType;
     summary: string;
@@ -64,7 +66,7 @@ export function SecurityEventDetailsDialog({
   return (
     <>
       <Dialog
-        open={event !== null}
+        open={currentEvent !== null}
         onOpenChange={(open) => {
           if (!open) {
             setListDraft(null);
@@ -72,7 +74,11 @@ export function SecurityEventDetailsDialog({
           }
         }}
       >
-        <DialogContent zIndex="top" className="max-w-xl overflow-hidden p-0">
+        <DialogContent
+          zIndex="top"
+          className="max-w-xl overflow-hidden p-0"
+          onCloseAutoFocus={onExited}
+        >
           <DialogHeader className="border-b border-border/70 px-6 py-4">
             <DialogTitle>{t("security.detailTitle")}</DialogTitle>
             <DialogDescription>

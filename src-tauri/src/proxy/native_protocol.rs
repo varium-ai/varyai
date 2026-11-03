@@ -101,22 +101,31 @@ pub(super) async fn handle(
     forward(&state, app_type, &provider, parts, payload, Some(job)).await
 }
 
+pub(super) fn normalize_trae_responses(payload: &mut Value) -> bool {
+    // TRAE can replay reasoning content without the Responses summary field.
+    // Retain the original history and fill only the missing required array.
+    let mut changed = false;
+    if let Some(input) = payload["input"].as_array_mut() {
+        for item in input {
+            if item["type"] == "reasoning" {
+                if let Some(object) = item.as_object_mut() {
+                    object.entry("summary").or_insert_with(|| {
+                        changed = true;
+                        json!([])
+                    });
+                }
+            }
+        }
+    }
+    changed
+}
+
 async fn forward_trae_responses(
     provider: &Provider,
     mut parts: Parts,
     mut payload: Value,
 ) -> Result<Response, ProxyError> {
-    // TRAE can replay reasoning content without the Responses summary field.
-    // Retain the original history and fill only the missing required array.
-    if let Some(input) = payload["input"].as_array_mut() {
-        for item in input {
-            if item["type"] == "reasoning" {
-                if let Some(object) = item.as_object_mut() {
-                    object.entry("summary").or_insert_with(|| json!([]));
-                }
-            }
-        }
-    }
+    normalize_trae_responses(&mut payload);
     let config = &provider.settings_config;
     let mut target =
         url::Url::parse(config["baseUrl"].as_str().ok_or_else(invalid)?).map_err(|_| invalid())?;

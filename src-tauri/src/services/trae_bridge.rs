@@ -12,7 +12,7 @@ use std::{
 use std::{path::PathBuf, sync::Mutex};
 pub(crate) const ENABLED_KEY: &str = "trae_audit_enabled";
 pub(crate) const CONSENT_KEY: &str = "trae_local_connection_consent";
-const HELPER_REVISION: u64 = 4;
+const HELPER_REVISION: u64 = 5;
 static AUDIT_TOKEN: Mutex<Option<String>> = Mutex::new(None);
 fn unavailable() -> AppError {
     AppError::localized(
@@ -140,6 +140,11 @@ pub(crate) fn active() -> bool {
         && request(&json!({"op":"health"}), false)
             .ok()
             .is_some_and(|v| v["enabled"] == true)
+}
+pub(crate) fn ready() -> bool {
+    request(&json!({"op":"health"}), false)
+        .ok()
+        .is_some_and(|value| value["ready"] == true && value["revision"] == HELPER_REVISION)
 }
 fn reconnect_in(directory: &std::path::Path, origin: &str, token: &str) -> bool {
     let mut connected = false;
@@ -410,6 +415,20 @@ pub(crate) fn enable(origin: &str) -> Result<(), AppError> {
     )?;
     Ok(())
 }
+/// Prepare only after explicit consent. Never launch the UI or enable audit hooks.
+pub(crate) fn prepare_shared() -> Result<(), AppError> {
+    if ready() {
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    let _ = installed_executable()?;
+    prepare_connection(&directory()?, &argv_path()?)?;
+    let _ = ensure_ready();
+    Ok(())
+}
+pub(crate) fn restore_shared() -> Result<(), AppError> {
+    restore_connection(&directory()?, &argv_path()?)
+}
 pub(crate) fn suspend_inspection() -> Result<(), AppError> {
     // Invalidate first; missed/closed windows release their hooks on the heartbeat.
     *AUDIT_TOKEN.lock().map_err(|_| unavailable())? = None;
@@ -434,6 +453,14 @@ pub(crate) fn apply_connected(provider: &Provider) -> Result<(), AppError> {
         false,
     )?;
     Ok(())
+}
+pub(crate) fn shared_matches(provider: &Provider) -> bool {
+    request(
+        &json!({"op":"matches","id":provider.id,"config":provider.settings_config}),
+        false,
+    )
+    .ok()
+    .is_some_and(|value| value == true)
 }
 pub(crate) fn replace_connected(provider: &Provider) -> Result<(), AppError> {
     model_replacement_ready()?;
@@ -597,9 +624,9 @@ mod tests {
             std::fs::write(dir.path().join(name), "").expect("fixture");
         }
         assert_eq!(socket_paths(dir.path(), false).len(), 1);
-        let previous = dir.path().join("bridge-agent-v3-456.sock");
+        let previous = dir.path().join("bridge-agent-v4-456.sock");
         std::fs::write(&previous, "").expect("previous helper");
-        let current = dir.path().join("bridge-agent-v4-789.sock");
+        let current = dir.path().join("bridge-agent-v5-789.sock");
         std::fs::write(&current, "").expect("current helper");
         assert_eq!(socket_paths(dir.path(), false), vec![current]);
         assert_eq!(socket_paths(dir.path(), true).len(), 4);

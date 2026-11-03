@@ -289,7 +289,7 @@ fn valid_message(format: &str, body: &Value) -> bool {
     };
     finished && message_text(format, body).trim() == MARKER
 }
-fn valid_stream(format: &str, source: &str) -> bool {
+pub(crate) fn valid_stream(format: &str, source: &str) -> bool {
     let normalized = source.replace("\r\n", "\n");
     let mut text = String::new();
     let mut finished = false;

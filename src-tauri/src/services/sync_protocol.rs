@@ -875,6 +875,7 @@ pub(crate) mod security_publication_test_support {
         Ok(Database {
             conn: std::sync::Mutex::new(connection),
             extension_conn: None,
+            routing_generation: std::sync::atomic::AtomicU64::new(0),
         })
     }
 

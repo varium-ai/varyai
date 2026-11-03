@@ -46,6 +46,38 @@ function fixture() {
   };
   return { service, client, calls, models, proto };
 }
+test("shared catalog verification detects removed or changed native models without exporting credentials", async () => {
+  const f = fixture();
+  const bridge = createBridge(f.service, async () => ({}));
+  const config = {
+    protocol: "openai",
+    baseUrl: "http://127.0.0.1:1/connections/trae/v1",
+    apiKey: "synthetic-local",
+    models: [{ model: "auto/shared", displayName: "Shared" }],
+  };
+  assert.equal(
+    await bridge.matches("shared_catalog_connection", config),
+    false,
+  );
+  await bridge.apply("shared_catalog_connection", "Vary AI", config);
+  assert.equal(await bridge.matches("shared_catalog_connection", config), true);
+  f.models[0].ak = "external";
+  assert.equal(
+    await bridge.matches("shared_catalog_connection", config),
+    false,
+  );
+  f.models[0].ak = config.apiKey;
+  f.models[0].base_url = "https://changed.example/v1/chat/completions";
+  assert.equal(
+    await bridge.matches("shared_catalog_connection", config),
+    false,
+  );
+  f.models.length = 0;
+  assert.equal(
+    await bridge.matches("shared_catalog_connection", config),
+    false,
+  );
+});
 test("native model failures retain only operation and numeric vendor code", async () => {
   const f = fixture();
   f.service.addCustomModel = async () => ({

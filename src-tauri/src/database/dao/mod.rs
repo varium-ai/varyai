@@ -4,12 +4,14 @@
 
 pub mod connection_presets;
 pub mod failover;
+pub(crate) mod intent_routing;
 pub mod mcp;
 pub mod profiles;
 pub mod prompts;
 pub mod providers;
 pub mod providers_seed;
 pub mod proxy;
+pub(crate) mod routing_upstreams;
 pub mod security;
 pub mod security_events;
 pub mod settings;

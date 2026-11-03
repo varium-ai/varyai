@@ -53,6 +53,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 Use `pnpm exec vitest run <test-files>` to select frontend tests. There is no `pnpm lint` command. `pnpm format:check` checks `src/`; apply formatting tools to other changed files as appropriate.
 
+Claude Desktop process inspection and restart are supported only on macOS. Keep native restart helpers behind `#[cfg(target_os = "macos")]`; the pure configuration freshness assessment also compiles under `cfg(test)` so its synthetic fixtures run on every CI platform. Linux and Windows report `unsupported` and reject desktop restart requests. Run Clippy on all three CI platforms because a macOS-only check cannot detect unused native helpers in other platform builds.
+
 For Rust compatibility changes, run the backend checks with the exact CI toolchain as well as the previously supported local toolchain; passing on one version does not establish compatibility with another. DLP accounting uses the private `src-tauri/src/proxy/security/atomic_update.rs` compare-and-exchange helper to avoid both the deprecated `fetch_update` API and a replacement newer than the declared minimum Rust version. Its tests cover retry observations, refusal without mutation, budget bounds and saturated owners. API compatibility alone is not evidence that the entire dependency graph has been tested on the minimum version.
 
 Provider tests that read Hermes configuration must isolate `HERMES_HOME` and

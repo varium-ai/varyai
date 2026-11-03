@@ -5,6 +5,13 @@ import { toast } from "sonner";
 export interface FetchedModel {
   id: string;
   ownedBy: string | null;
+  context_window?: number | null;
+  max_context_window?: number | null;
+  effective_context_window_percent?: number | null;
+  auto_compact_token_limit?: number | null;
+  reasoningLevels?: string[];
+  reasoning?: boolean;
+  inputModalities?: string[];
 }
 
 export interface ModelFetchOptions {

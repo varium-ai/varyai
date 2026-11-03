@@ -4,6 +4,8 @@
 
 - [Usage guide](usage.md)
 - [Provider setup and local routing](guides/provider-routing.md)
+- [Global upstreams and routing groups](guides/intent-routing.md)
+- [Routing page and live observations](architecture/routing-observations.md)
 - [Codex model catalogs](guides/codex-model-catalog.md)
 - [Qoder integration](guides/qoder.md)
 - [WorkBuddy integration](guides/workbuddy.md)
@@ -48,3 +50,9 @@
 - [aaPanel business model research](research/aapanel-ai-products-business-model-research.md)
 
 Implementation references and the testing guide describe current source, not a certified release. Design, messaging and research separate proposals and unverified hypotheses from current behavior. Historical CC Switch manuals and release notes remain in retained upstream Git history. Runtime localization remains available independently of documentation language.
+
+## Routing workspace
+
+- [Intent recognition design](design/intent-routing.md)
+- [Shared catalog and Agent connections](architecture/shared-catalog.md)
+- [Routing observations](architecture/routing-observations.md)
