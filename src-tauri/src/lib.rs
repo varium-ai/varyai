@@ -1271,6 +1271,23 @@ pub fn run() {
                     }
                 }
 
+                // Rename legacy Kimi groups after recovery and before routes are rebuilt.
+                {
+                    let _guard = state.proxy_service.lock_switch_for_app("kimi").await;
+                    let db = state.db.clone();
+                    match tauri::async_runtime::spawn_blocking(move || {
+                        crate::services::agent_clients::migrate_legacy_kimi_provider_names(&db)
+                    })
+                    .await
+                    {
+                        Ok(Ok(count)) if count > 0 => {
+                            log::info!("[Kimi] Migrated {count} legacy provider group names");
+                        }
+                        Ok(Ok(_)) => {}
+                        _ => log::warn!("[Kimi] Legacy provider name migration deferred"),
+                    }
+                }
+
                 // 必须排在 auto-extract 之前：先把历史泄漏进 Gemini 共享片段的凭据
                 // 清干净，否则紧接着的提取会基于被污染的 live 再写一遍。
                 if let Err(e) =

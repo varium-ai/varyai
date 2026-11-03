@@ -155,7 +155,7 @@ Token-restoration diagnostics also include a fixed reason, for example `Reversib
 
 | Reason                                      | Failed checkpoint or grouped error                                                                                                                                                       |
 | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `token_format`                              | A strict internal restoration operation rejected malformed input. Ordinary request and response placeholder literals do not require strict resolution.                                |
+| `token_format`                              | A strict internal restoration operation rejected malformed input. Ordinary request and response placeholder literals do not require strict resolution.                                   |
 | `token_context`                             | Request-lease authorization, exact stored category, namespace/generation or storage-context lookup. The diagnostic does not distinguish these checks.                                    |
 | `restore_capacity`                          | A restoration scan/reference/count/length limit, payload budget, allocation or copy-capacity failure. Ordinary text without tokens can also reach this checkpoint.                       |
 | `arguments_empty` / `arguments_size`        | Empty/whitespace-only tool arguments or arguments over the existing byte limit.                                                                                                          |
@@ -338,7 +338,9 @@ The certificate lasts 30 days and is retained across normal restarts. An older t
 
 ### Kimi shows an internal ID as the provider group
 
-Apply the saved provider again to migrate its Kimi group to the provider name shown in Vary AI. Renaming it also updates model references while preserving model aliases and the selected model. Choose a unique provider name: Vary AI refuses to overwrite an existing native group with the same name. Restart Kimi when it needs to reload its configuration.
+When Vary AI starts after an upgrade, it automatically renames recognized legacy `varyai-<provider-id>` groups to the corresponding saved provider names. The old display names disappear while model aliases, the selected model, credentials, custom options and unrelated native models remain intact. Repeated starts do not rewrite an already-migrated configuration. Restart Kimi if its open model list still shows a cached name.
+
+Migration runs after route recovery and before saved routing is restored. If an old group contains unrecognized model references, uses official login, conflicts with an existing native group, or still has a routing backup awaiting recovery, Vary AI leaves the configuration unchanged and retries on a later start. Groups without a matching saved provider are preserved. Resolve any naming conflict or recovery issue before restarting Vary AI; reapplying the saved provider also retains the existing explicit migration path.
 
 ### Qwen Responses reports an invalid or inactive route
 
