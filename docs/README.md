@@ -30,15 +30,28 @@
 
 - [DLP architecture](architecture/security-audit.md)
 - [Tool observations and risk evaluation](architecture/tool-risk.md)
-- [Shared and extension storage](architecture/storage.md)
+- [Independent storage, recovery and backups](architecture/storage.md)
+- [Storage isolation design and shared-file inventory](design/varyai-storage-isolation.md)
 - [Upstream provenance](upstream-provenance.md)
 - [Security policy](../SECURITY.md)
+- [Synthetic security sandbox testing guide](guides/security-testing-guide.md)
 
-## Proposed designs
+## Design specifications (not release promises)
 
-- [Intent recognition and model routing](design/intent-routing.md) — target
-  architecture, interaction flow, safety boundaries, and remaining implementation stages.
+- [Multi-agent profiles](design/profile-schemes.md)
+- [Unified Security Events](design/security-events-unified-entry-spec.md)
+- [Reversible DLP tokenization proposal — not implemented](design/security-dlp-reversible-tokenization-spec.md)
 
-Unless explicitly marked as proposed designs, these documents describe the current Vary AI source. Historical CC Switch manuals and release notes remain available in the retained upstream Git history. They are not Vary AI release or support promises. Runtime localization remains available independently of documentation language.
+## Messaging and research (review before external use)
 
+- [Qualified security features brief](marketing/security-features.md)
+- [VaryAI and bos-api commercialization proposal](marketing/varyai-bos-api-commercialization-proposal.md)
+- [aaPanel business model research](research/aapanel-ai-products-business-model-research.md)
+
+Implementation references and the testing guide describe current source, not a certified release. Design, messaging and research separate proposals and unverified hypotheses from current behavior. Historical CC Switch manuals and release notes remain in retained upstream Git history. Runtime localization remains available independently of documentation language.
+
+## Routing workspace
+
+- [Intent recognition design](design/intent-routing.md)
 - [Shared catalog and Agent connections](architecture/shared-catalog.md)
+- [Routing observations](architecture/routing-observations.md)

@@ -95,6 +95,7 @@ impl RequestContext {
         app_type: AppType,
         tag: &'static str,
         app_type_str: &'static str,
+        dlp_request: Option<&super::security::http_restoration::DlpHttpRequest>,
     ) -> Result<Self, ProxyError> {
         let start_time = Instant::now();
 
@@ -124,13 +125,15 @@ impl RequestContext {
         let session_result = extract_session_id(headers, body, app_type_str);
         let session_id = session_result.session_id.clone();
 
-        log::debug!(
-            "[{}] Session ID: {} (from {:?}, client_provided: {})",
-            tag,
-            session_id,
-            session_result.source,
-            session_result.client_provided
-        );
+        if dlp_request.is_none() {
+            log::debug!(
+                "[{}] Session ID: {} (from {:?}, client_provided: {})",
+                tag,
+                session_id,
+                session_result.source,
+                session_result.client_provided
+            );
+        }
 
         // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
         // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
@@ -151,14 +154,16 @@ impl RequestContext {
             .cloned()
             .ok_or(ProxyError::NoAvailableProvider)?;
 
-        log::debug!(
-            "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
-            tag,
-            provider.name,
-            request_model,
-            providers.len(),
-            session_id
-        );
+        if dlp_request.is_none() {
+            log::debug!(
+                "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
+                tag,
+                provider.name,
+                request_model,
+                providers.len(),
+                session_id
+            );
+        }
 
         let tool_schemas = if crate::services::tool_risk::runtime::collection_enabled() {
             crate::proxy::tool_observation::mount::collect_tool_schemas(body, app_type_str)

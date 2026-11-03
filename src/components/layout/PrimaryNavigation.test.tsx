@@ -249,6 +249,22 @@ describe("PrimaryNavigation", () => {
     expect(screen.getAllByTestId("primary-nav-underline")).toHaveLength(1);
   });
 
+  it("reserves a macOS traffic-light inset while keeping the navigation interactive", () => {
+    const onSelect = vi.fn();
+    const { container } = render(
+      <PrimaryNavigation activeTab="home" onSelect={onSelect} macTitlebar />,
+    );
+    const bar = container.querySelector(".varyai-primary-nav");
+    expect(bar).toHaveStyle({ paddingLeft: "96px" });
+    expect(bar).toHaveAttribute("data-tauri-drag-region");
+    const security = screen.getByRole("button", {
+      name: "primaryNav.security",
+    });
+    fireEvent.click(security);
+    expect(onSelect).toHaveBeenCalledWith("security");
+    expect(security.closest("[data-tauri-no-drag]")).not.toBeNull();
+  });
+
   it("keeps navigation locked while another page has pending edits", () => {
     const onSelect = vi.fn();
     render(<PrimaryNavigation activeTab={null} onSelect={onSelect} disabled />);

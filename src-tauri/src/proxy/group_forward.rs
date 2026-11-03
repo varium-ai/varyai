@@ -135,7 +135,7 @@ pub(crate) async fn forward(
         Default::default(),
         0,
     );
-    let (response, _, _, _) = forwarder
+    let (response, _, _, _, _) = forwarder
         .forward_bridge(
             bridge, method, &upstream, endpoint, body, headers, extensions,
         )
@@ -391,6 +391,8 @@ mod tests {
             gemini_shadow: Arc::default(),
             codex_chat_history: Arc::default(),
             app_handle: None,
+            restoration_gateway:
+                super::super::security::http_restoration::RestorationGateway::new_default(),
             failover_manager: Arc::new(super::super::failover_switch::FailoverSwitchManager::new(
                 db,
             )),

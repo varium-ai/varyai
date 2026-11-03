@@ -34,11 +34,14 @@
     "newDraft": "New preset draft ready. Enter its details and click Save."
   },
   "providerDetection": {
+    "selectModel": "Select detection model",
+    "probeHint": "The detection model only tests protocol compatibility. Configure saved models separately or fill them from the discovered model list.",
     "title": "Detect configuration",
     "discovering": "Retrieving models…",
     "modelsFound": "{{count}} models found",
     "manualModelHint": "You can enter a model manually if no list is available.",
     "selectedModel": "Model to test: {{model}}",
+    "autoHint": "After URL and key entry, detection selects the first protocol with verified text and streaming, using an available model without changing your default.",
     "costHint": "Detection sends up to 8 small inference requests using your key and may incur charges. Nothing is sent while you type.",
     "check": "Detect configuration",
     "checking": "Detecting…",
@@ -116,6 +119,13 @@
     "categoryCustom": "Custom rule",
     "ruleActionBlock": "Block",
     "ruleActionAlert": "Alert",
+    "ruleActionRedactRestore": "Hide & restore locally",
+    "dialogActionRedactRestore": "Hide & restore locally (Codex HTTP only)",
+    "resultRedactRestore": "Tokenized for local restoration",
+    "redactRestoreScope": "Opt-in per rule: Codex HTTP Responses and /responses/compact only, including JSON and SSE. A matching rule on an unsupported inspected route rejects the request; it never silently falls back to ordinary redaction. Tokens are mapped only on this device and mappings are lost on restart.",
+    "redactRestoreRisk": "The model sees references, not plaintext: calculations, slicing and fixed-format schemas are unsupported. Restored shell, SQL, patches or embedded JSON may still be invalid or unsafe. Do not auto-execute output; retain tool approval and sandboxing. This does not supply plaintext to upstream tools or guarantee task correctness or zero leakage.",
+    "notifyRedactRestoreTitle": "Sensitive Information Tokenized",
+    "notifyRedactRestoreBody": "{{app}} request detected “{{rule}}”. Replaced with local references before sending.",
     "ruleActionRedact": "Hide and Send",
     "ruleActionAllow": "Do not process",
     "builtinRules": {
@@ -567,6 +577,7 @@
     "accountLoading": "Loading account…"
   },
   "claudeDesktop": {
+    "modelRoutingHint": "Configure models and the upstream protocol here. Control local routing with the Claude Desktop switch on Home or in Settings. Model mapping and protocol conversion require routing.",
     "modelConfigTitle": "Model Configuration",
     "modelModeLabel": "Connection Mode",
     "modelModeDirect": "Direct",
@@ -576,10 +587,10 @@
     "modeDirect": "Direct",
     "modeProxy": "Requires routing",
     "modelMappingToggle": "Needs model mapping",
-    "modelMappingOffHint": "Direct mode works only when the provider accepts Claude Desktop's three role IDs (claude-sonnet-* / claude-opus-* / claude-haiku-*); for any other model name (including legacy IDs like claude-3-5-sonnet-…), select Model Mapping.",
-    "modelMappingOnHint": "Claude Desktop only accepts the three role IDs claude-sonnet-* / claude-opus-* / claude-haiku-*. In Model Mapping mode, Vary AI maps these roles to your provider's actual models and keeps local routing running while in use.",
+    "modelMappingOffHint": "Use direct mode only when the provider accepts model IDs recognized by Claude Desktop. For other model IDs, use Model Mapping.",
+    "modelMappingOnHint": "Sonnet, Opus, Fable and Haiku are compatibility roles, not a model-count limit. Add multiple models under the same role and choose any menu display name. Vary AI maps each entry to the upstream model through local routing.",
     "routeMapTitle": "Model mapping",
-    "routeMapHint": "Only roles with an actual request model appear in Desktop's menu. Clear the model to remove a menu entry. Unconfigured Haiku sub-agent requests fall back internally to Sonnet or the first configured model. Declare 1M only when supported by the upstream.",
+    "routeMapHint": "Add or delete mappings freely; roles may repeat. Selecting a model updates its menu display name, which you can then customize. Only rows with an actual request model appear in Desktop. Unconfigured Haiku sub-agent requests use Sonnet or the first configured model. Declare 1M only when supported by the upstream.",
     "routeModelLabel": "Model role",
     "routeRoleSonnet": "Sonnet",
     "routeRoleOpus": "Opus",
@@ -594,6 +605,7 @@
     "directModelListHint": "Configure the Sonnet, Opus, and Haiku models available to Claude Desktop. Leave this empty to let Claude Desktop fetch /v1/models automatically. Checking 1M declares 1M context support.",
     "directModelInvalid": "Direct models must use Claude Desktop-recognized Sonnet / Opus / Haiku model IDs",
     "addModel": "Add model",
+    "importAllModels": "Import all models",
     "addRoute": "Add model",
     "routeInvalid": "Choose a model role and enter the requested model",
     "routesRequired": "At least one model mapping is required",
@@ -604,13 +616,16 @@
     "statusGatewayTokenMissing": "The local routing token has not been generated yet. Switching to this provider again will write a new local token.",
     "statusBaseUrlMismatch": "The Claude Desktop profile points to a different URL than the current provider. Current: {{actual}}; expected: {{expected}}. Switch to the current provider again to repair it.",
     "route": {
+      "officialBlocked": "Disable Claude Desktop routing before switching to official login.",
       "ariaLabel": "Claude Desktop local routing",
-      "settingsHint": "For Claude Desktop, first activate a provider with model mapping enabled. This switch controls the shared routing service and cannot be turned off while another app uses takeover.",
+      "settingsHint": "The switch controls routing for Claude Desktop. Model mapping and protocol conversion require it to be enabled. Restart Claude Desktop after changing routing.",
       "tooltip": {
         "active": "Claude Desktop local routing is running - {{address}}:{{port}}",
         "inactive": "Turn on Claude Desktop local routing for providers that need model mapping or format conversion. Configured address: {{address}}:{{port}}"
       },
-      "stopBlockedByTakeover": "Another app is using proxy takeover. Please disable that app's takeover in settings before stopping local routing."
+      "stopBlockedByTakeover": "Another app is using proxy takeover. Please disable that app's takeover in settings before stopping local routing.",
+      "sharedGateway": "Shared gateway",
+      "sharedGatewayInUse": "The shared gateway is in use by {{apps}}. Turn off their routing before stopping the gateway."
     }
   },
   "notifications": {
@@ -663,7 +678,7 @@
     "windowControlFailed": "Window control failed: {{error}}",
     "officialBlockedByProxy": "Cannot switch to official provider while local routing is active. Using routing with official APIs may cause account bans.",
     "proxyOfficialWarning": "Current provider {{name}} is official. Consider switching to a third-party provider before using local routing.",
-    "proxyReasonClaudeDesktop": "Using Claude Desktop local routing mode"
+    "proxyReasonClaudeDesktop": "Claude Desktop model mapping or protocol conversion"
   },
   "confirm": {
     "deleteProvider": "Delete Provider",
@@ -869,8 +884,8 @@
     "themeLight": "Light",
     "themeDark": "Dark",
     "themeSystem": "System",
-    "importExport": "SQL Import/Export",
-    "importExportHint": "Import or export database SQL backups for migration or restore (import supports only backups exported by Vary AI).",
+    "importExport": "Database backup and restore",
+    "importExportHint": "Export or restore a database SQL backup. Restore replaces database contents and may reapply client configuration. Device settings, login files and Skills content are not included.",
     "exportConfig": "Export SQL Backup",
     "selectConfigFile": "Select SQL File",
     "noFileSelected": "No configuration file selected.",
@@ -1191,8 +1206,8 @@
     },
     "configDirectoryOverride": "Configuration Directory Override (Advanced)",
     "configDirectoryDescription": "When using Claude Code or Codex in environments like WSL, you can manually specify the configuration directory to the one in WSL to keep provider data consistent with the main environment.",
-    "appConfigDir": "Vary AI Configuration Directory",
-    "appConfigDirDescription": "Customize the storage location for Vary AI configuration (point to cloud sync folder to enable config sync)",
+    "appConfigDir": "VaryAI application data directory",
+    "appConfigDirDescription": "Choose an independent directory for databases, Skills and data backups. Device settings and login material stay local. Restart to apply.",
     "browsePlaceholderApp": "e.g., C:\\Users\\Administrator\\.cc-switch",
     "claudeConfigDir": "Claude Code Configuration Directory",
     "claudeConfigDirDescription": "Override Claude configuration directory (settings.json). Custom directories store .claude.json (MCP) inside the directory; the default ~/.claude directory keeps Claude Code's split ~/.claude.json path.",
@@ -1794,7 +1809,7 @@
     "fallbackModelHint": "A fallback for requests that don't clearly map to Sonnet, Opus, Fable, or Haiku. Recommended for third-party/relay endpoints—otherwise such requests (including Haiku background subtasks) are forwarded under their original Claude model name and may fail if the upstream doesn't host it. Safe to leave blank for official endpoints.",
     "quickSetModels": "Quick Set",
     "quickSetSuccess": "Imported {{count}} models into model mapping",
-    "importModelsHint": "One-click setup imports every model below. Claude Code 2.1.242+ displays these entries in /model; restart Claude Code after saving. Role defaults below are configured separately.",
+    "importModelsHint": "Fetch models replaces empty or unlisted primary and role defaults with the first fetched model, while preserving available defaults and custom labels. Quick Set also imports all selectable models. Restart Claude Code 2.1.242+ after saving to load /model.",
     "importModelName": "Display name",
     "importModelId": "Request model",
     "removeImportedModel": "Remove model",
@@ -1818,6 +1833,10 @@
     "fetchModelsAuthFailed": "API Key is invalid or lacks permission",
     "fetchModelsNotSupported": "This provider does not support fetching model list",
     "fetchModelsEndpointNotFound": "No reachable models endpoint found. Please check the Base URL or confirm whether the provider exposes this API.",
+    "fetchModelsRateLimited": "The model-list request was rate limited (HTTP 429). Wait a moment and retry, or check the provider quota.",
+    "fetchModelsUpstreamFailed": "The provider could not return its model list (HTTP {{status}}). Retry later or check the provider service.",
+    "fetchModelsNetworkFailed": "Could not connect to the model-list endpoint. Check the network and VaryAI proxy settings.",
+    "fetchModelsInvalidConfig": "Cannot determine the model-list endpoint. Check the API base URL and the full-URL option.",
     "fetchModelsTimeout": "Request timed out, please check network connection",
     "requiredFields": "Please fill in provider name, API endpoint, API Key and model",
     "clientProtocol": "Client protocol"
@@ -1968,7 +1987,7 @@
     "pricingModelSourceHint": "Choose whether to match pricing by request model or response model"
   },
   "codexConfig": {
-    "importModelsHint": "Fetch Models loads candidates without changing the mapping. One-click Setup imports every model below and skips duplicates.",
+    "importModelsHint": "Fetch Models loads candidates and replaces an empty or unlisted default with the first fetched model. Quick Set also imports all models and skips duplicates.",
     "authJson": "auth.json (JSON) *",
     "authJsonPlaceholder": "{\n  \"OPENAI_API_KEY\": \"sk-your-api-key-here\"\n}",
     "authJsonHint": "Codex auth.json configuration content",
@@ -2056,7 +2075,7 @@
     "defaultModel": "Default model",
     "defaultModelHint": "Gemini CLI starts with this model by default. You can switch models during a session with /model.",
     "selectableModels": "Selectable models",
-    "importModelsHint": "Fetch loads candidates only. One-click setup adds every model below and skips duplicates while preserving the current default. Save and restart Gemini CLI, then open /model and press Enter on Manual to see the model list.",
+    "importModelsHint": "Fetch loads candidates and replaces an empty or unlisted default with the first fetched model. Quick Set also imports all selectable models, preserving existing model settings. Save and restart Gemini CLI, then open /model and press Enter on Manual to see the list.",
     "modelsConfigInvalid": "Fix the model configuration in the JSON below before importing models.",
     "envFile": "Environment Variables (.env)",
     "envFileHint": "Configure Gemini environment variables in .env format",
@@ -3329,7 +3348,6 @@
     "clickToSelect": "Click to select icon"
   },
   "migration": {
-    "success": "Configuration migrated successfully",
     "skillsSuccess": "Automatically imported {{count}} skill(s) into unified management",
     "skillsFailed": "Failed to auto import skills",
     "skillsFailedDescription": "Open the Skills page and click \"Import Existing\" to import manually (or restart and try again)."
@@ -3401,7 +3419,7 @@
         },
         "listenPort": {
           "label": "Listen Port",
-          "placeholder": "15721",
+          "placeholder": "15722",
           "description": "Port number the routing server listens on (1024 ~ 65535)"
         },
         "maxRetries": {
@@ -3467,7 +3485,9 @@
         "active": "{{appLabel}} is routing - {{address}}:{{port}}\nSwitch provider for hot switching",
         "broken": "{{appLabel}} is routing, but routing service is not running",
         "inactive": "Route {{appLabel}}'s requests through local routing"
-      }
+      },
+      "setupRequired": "{{app}} configuration has not been initialized. Apply an added or imported provider from Home, or initialize the client, then enable routing again.",
+      "prerequisitesHint": "Routing requires a configured client. Kimi, Qwen, ZCode and Pi need supported models; WorkBuddy needs its native product configuration. Qoder, TRAE and Doubao Work also require their connection or certificate authorization."
     },
     "failover": {
       "proxyRequired": "Routing service must be started to configure failover",
@@ -3890,7 +3910,7 @@
     "activate": "Activate protection",
     "enableRouting": "Enable local routing",
     "unsupported": "This app does not support local routing",
-    "desktopSetup": "Configure a valid local proxy profile for Claude Desktop first",
+    "desktopSetup": "Add and select a Claude Desktop provider with available models first.",
     "routeFailed": "Route takeover is not effective; audit was not enabled",
     "enableFailed": "Security audit operation failed",
     "targetApp": "Linked app",
@@ -4033,10 +4053,13 @@
     "noRules": "No rules yet",
     "resetBuiltin": "Reset to default",
     "sandboxTitle": "Rule Sandbox Test",
-    "sandboxDescription": "Does not execute tools, persist, or echo raw input; returns fixed enums only.",
+    "sandboxDescription": "Manually preview rules independently of the live observation switch. No tools are executed, risk events recorded, or raw input saved or echoed.",
+    "sandboxObservationDisabled": "Live tool-risk observation is off. This is a manual rule preview and does not enable live protection.",
     "sandboxTool": "Tool name",
     "sandboxClient": "Client (optional)",
     "sandboxDefinitionRef": "Trusted schema reference (optional)",
+    "sandboxInvalidJson": "Invalid JSON. Check brackets, quotes and commas before testing.",
+    "sandboxOpenaiWriteHint": "OpenAI write_file uses the path field, for example {\"path\":\"/etc/sudoers\",\"content\":\"test\"}. The file_path field is used by Claude and Gemini. Missing recognized fields produces unchecked, which does not mean safe.",
     "sandboxTrustHint": "Trust is never inferred from a tool name. Explicitly enter a known schema reference, such as builtin:claude:tools:v1, builtin:codex:tools:v1, builtin:gemini:tools:v1 or builtin:openai:tools:v1, only for that client's built-in tools. MCP tools must not claim a built-in identity.",
     "fieldTarget": "Selector target",
     "fieldToolRefs": "Exact tool references (JSON array)",
@@ -4251,7 +4274,6 @@
       "blacklist": "Blacklist · risk warning",
       "matchKind": "Match scope",
       "pattern": "Command or pattern",
-      "advanced": "Advanced: keyword / regex",
       "severity": "Blacklist risk level",
       "riskCategory": "Risk category",
       "whitelistHint": "Whitelists apply only to ordinary commands classified as literal unknown. They do not change known script, network, mutation or privilege classes, or confer trusted identity.",
@@ -4377,7 +4399,7 @@
       "renew": "Update certificate and restore routing",
       "renewing": "Updating certificate…",
       "renewed": "Certificate updated. Fully quit and reopen Qoder.",
-      "renewFailed": "Certificate update failed. Complete macOS authentication and retry.",
+      "renewFailed": "Certificate renewal failed.",
       "expiredTitle": "Qoder local certificate expired",
       "expiredDescription": "The certificate for Qoder official-account protection has expired. Update it here to restore routing without restarting VaryAI; macOS may require authentication. Then fully quit and reopen Qoder to reload its endpoint and certificate trust. Third-party HTTP model routing does not depend on this certificate.",
       "title": "Enable Qoder protection",
@@ -4395,7 +4417,18 @@
       "clearDescription": "Disables Qoder routing, restores client configuration, removes Keychain trust and deletes local certificate files. macOS may ask for your system password to remove trust. Fully restart Qoder afterwards. It will not be recreated automatically. Use Create / Rebuild Certificate to create it again.",
       "rebuildDescription": "Replaces the certificate and enables Qoder routing. macOS may ask for authentication to remove old trust and add new trust. Your password is handled only by macOS. Fully restart Qoder afterwards.",
       "cleared": "Certificate cleared and Qoder routing disabled. Fully restart Qoder.",
-      "operationFailed": "Certificate operation did not complete. Check system authentication and retry.",
+      "operationFailed": "Certificate operation failed.",
+      "failureDetail": "Failed stage: {{stage}}; status: {{status}}.",
+      "failureStages": {
+        "codec": "Qoder version compatibility check",
+        "data": "Certificate files or format",
+        "generate": "Generate certificate",
+        "inspect": "Inspect certificate",
+        "verify_trust": "Verify certificate trust",
+        "install_trust": "Install certificate trust",
+        "remove_trust": "Remove certificate trust",
+        "delete_certificate": "Delete keychain certificate"
+      },
       "statusFailed": "Cannot read certificate status. Try again later."
     }
   },
@@ -4526,6 +4559,8 @@
     "resultWarning": "Risk warning"
   },
   "gatewayKeys": {
+    "created": "Gateway key created",
+    "copied": "Gateway key copied",
     "nameExists": "A gateway key with this name already exists. Choose another name.",
     "sourceAgent": "Request source",
     "upstreamModel": "Forwarded model",
@@ -4585,7 +4620,7 @@
     "traeHint": "Covers custom model routes. Official requests observed only by the audit bridge cannot be blocked by this policy.",
     "filterKey": "Gateway key",
     "allKeys": "All keys",
-    "usageHint": "Up to 200 recent aggregates by key, accounting period, agent, client request model and forwarded model. Rows show completed requests; missing usage is counted separately. Older records without an outbound model remain marked as not recorded.",
+    "usageHint": "Up to 200 recent aggregates by key, accounting period, agent, client request model and forwarded model. Rows show completed requests; missing usage is counted separately. Older records without an outbound model remain marked as not recorded. Client background requests for titles and summaries are also counted and can use a different model from the current chat.",
     "noUsage": "No observed requests yet. Bind an agent with local routing enabled, or send a request with a gateway key.",
     "usageRow": "{{requests}} requests · {{tokens}} tokens · {{unmetered}} without reported usage",
     "lastUsed": "Last request: {{time}}",
@@ -5490,5 +5525,24 @@
       "reauth": "This saved sign-in is expired or incomplete. Sign in again in the source app before importing."
     },
     "subscriptionWarning": "Copies the saved Codex authorization into Vary AI. Stop using this account in the source app before using it here: concurrent token refreshes may sign either app out."
+  },
+  "storage": {
+    "title": "Recover VaryAI storage",
+    "description": "The configured VaryAI data directory is unavailable or invalid. Reconnect it, choose another native directory, or explicitly create empty storage.",
+    "destination": "Configured data directory",
+    "startEmpty": "Start with empty storage",
+    "useExisting": "Choose another data directory",
+    "working": "Preparing storage…",
+    "setupRequired": "The configured VaryAI data directory is unavailable.",
+    "readFailed": "Cannot read the selected source. Check its location and permissions.",
+    "writeFailed": "Storage could not be prepared. Original files are preserved. Check free space and permissions, then retry.",
+    "destinationChanged": "The storage location changed. Reload recovery or select an independent directory.",
+    "invalidTarget": "Choose an independent VaryAI data directory outside the source directory.",
+    "invalidSettings": "The data-directory setting is invalid. Select an independent VaryAI data directory.",
+    "unsupportedSource": "This database format is unsupported or incomplete. Select a supported backup; do not delete or lower the version of the source database.",
+    "invalidRecovery": "Recovery information is incomplete or changed. Select a verified backup.",
+    "restartRequired": "Restart VaryAI before preparing a different storage location.",
+    "useDefault": "Use the default data directory",
+    "setupReadFailed": "Cannot read the VaryAI storage location. Check the data-directory setting and permissions."
   }
 }

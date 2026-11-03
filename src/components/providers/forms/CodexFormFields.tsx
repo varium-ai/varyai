@@ -1,3 +1,4 @@
+import type { FetchedModelCatalog } from "./shared/fetchedModelCatalog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -71,6 +72,7 @@ interface EndpointCandidate {
 }
 
 interface CodexFormFieldsProps {
+  fetchedModelCatalog?: FetchedModelCatalog;
   appId?: AppId;
   providerId?: string;
   // xAI OAuth 托管预设（Grok 订阅）：隐藏 API Key / 端点输入，挂账号选择区块
@@ -384,6 +386,7 @@ function ReasoningLevelsEditor({
 }
 
 export function CodexFormFields({
+  fetchedModelCatalog,
   appId = "codex",
   providerId,
   isXaiOauthPreset,
@@ -446,7 +449,9 @@ export function CodexFormFields({
 }: CodexFormFieldsProps) {
   const { t } = useTranslation();
 
-  const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
+  const localModelCatalog = useState<FetchedModel[]>([]);
+  const [fetchedModels, setFetchedModels] =
+    fetchedModelCatalog ?? localModelCatalog;
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const [importingModels, setImportingModels] = useState(false);
   // 拉取请求序号：请求身份（Base URL / 完整地址开关 / API Key / 自定义 UA）
@@ -466,10 +471,10 @@ export function CodexFormFields({
     isFullUrl,
     codexApiKey,
     customUserAgent,
-    apiFormat,
     isXaiOauthPreset,
     isXaiOauthAuthenticated,
     selectedXaiAccountId,
+    setFetchedModels,
   ]);
   // 思考能力随 Chat 格式显示（仅 Chat Completions 转换路径用得上）；模型映射常驻
   //（填了才生成 catalog）。两者都已与「路由接管」概念解耦。
@@ -603,21 +608,23 @@ export function CodexFormFields({
       const seq = ++fetchModelsSeqRef.current;
       setIsFetchingModels(true);
       try {
-        const models = isXaiOauthPreset
-          ? await fetchXaiOauthModels(selectedXaiAccountId ?? null)
-          : await fetchModelsForConfig(
-              codexBaseUrl,
-              codexApiKey,
-              isFullUrl,
-              undefined,
-              customUserAgent,
-              {
-                apiFormat:
-                  apiFormat === "gemini_native"
-                    ? "google-generative-ai"
-                    : undefined,
-              },
-            );
+        const models = fetchedModels.length
+          ? fetchedModels
+          : isXaiOauthPreset
+            ? await fetchXaiOauthModels(selectedXaiAccountId ?? null)
+            : await fetchModelsForConfig(
+                codexBaseUrl,
+                codexApiKey,
+                isFullUrl,
+                undefined,
+                customUserAgent,
+                {
+                  apiFormat:
+                    apiFormat === "gemini_native"
+                      ? "google-generative-ai"
+                      : undefined,
+                },
+              );
         if (seq !== fetchModelsSeqRef.current) return;
         setFetchedModels(models);
         if (!importModels) {
@@ -645,9 +652,27 @@ export function CodexFormFields({
       apiFormat,
       isXaiOauthPreset,
       selectedXaiAccountId,
+      fetchedModels,
+      setFetchedModels,
       t,
     ],
   );
+
+  const applySuggestedDefault = (suggested: string | undefined) => {
+    if (suggested && suggested !== codexModelRef.current.trim())
+      onModelChange?.(suggested);
+  };
+
+  const handleFetchAndSyncDefault = async () => {
+    const models = await handleFetchModels();
+    if (!models) return;
+    const result = computeAutoImportCatalogModels(
+      catalogRowsRef.current,
+      models,
+      codexModelRef.current,
+    );
+    applySuggestedDefault(result.suggestedDefaultModel);
+  };
 
   const handleQuickSet = async () => {
     setImportingModels(true);
@@ -674,9 +699,7 @@ export function CodexFormFields({
         }),
       );
       setAdvancedExpanded(true);
-      if (result.suggestedDefaultModel && !codexModelRef.current.trim()) {
-        onModelChange?.(result.suggestedDefaultModel);
-      }
+      applySuggestedDefault(result.suggestedDefaultModel);
       toast.success(
         t("providerForm.quickSetSuccess", {
           count: result.nextCatalogModels.length,
@@ -782,7 +805,7 @@ export function CodexFormFields({
         type="button"
         variant="outline"
         size="sm"
-        onClick={() => handleFetchModels()}
+        onClick={handleFetchAndSyncDefault}
         disabled={isFetchingModels}
         className="h-7 gap-1"
       >
@@ -908,7 +931,7 @@ export function CodexFormFields({
                 type="button"
                 variant="outline"
                 size="icon"
-                onClick={() => handleFetchModels()}
+                onClick={handleFetchAndSyncDefault}
                 disabled={isFetchingModels}
                 className="shrink-0"
                 title={t("providerForm.fetchModels")}

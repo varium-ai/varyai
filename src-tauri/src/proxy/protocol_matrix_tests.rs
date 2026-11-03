@@ -28,6 +28,7 @@ impl Drop for CancelSignal {
 #[tokio::test]
 #[serial_test::serial]
 async fn four_protocol_matrix_preserves_text_and_usage_in_json_and_sse() {
+    super::security::runtime::set_security_runtime_for_test(Default::default());
     let formats = [
         "anthropic",
         "openai_chat",
@@ -41,10 +42,13 @@ async fn four_protocol_matrix_preserves_text_and_usage_in_json_and_sse() {
     let cancel_control = cancelled.clone();
     let upstream_status = Arc::new(AtomicU16::new(0));
     let status_control = upstream_status.clone();
+    let prefix_received = Arc::new(tokio::sync::Notify::new());
+    let prefix_control = prefix_received.clone();
     let mock = Router::new().fallback(post(move |request: axum::extract::Request| {
       let capture = capture.clone();
       let status_control = status_control.clone();
       let cancel_control = cancel_control.clone();
+      let prefix_control = prefix_control.clone();
       async move {
         let (parts, body) = request.into_parts();
         let body = http_body_util::BodyExt::collect(body).await.unwrap().to_bytes();
@@ -138,7 +142,11 @@ async fn four_protocol_matrix_preserves_text_and_usage_in_json_and_sse() {
                 let _signal = signal;
                 yield Ok::<Bytes, std::io::Error>(Bytes::from(prefix));
                 if status == 601 { futures::future::pending::<()>().await; }
-                else { yield Ok(Bytes::from_static(b"event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"fixture midstream failure\"}}\n\n")); }
+                else {
+                    // Exercise a midstream failure only after client-visible delivery.
+                    prefix_control.notified().await;
+                    yield Ok(Bytes::from_static(b"event: error\ndata: {\"type\":\"error\",\"error\":{\"message\":\"fixture midstream failure\"}}\n\n"));
+                }
             };
             return ([(header::CONTENT_TYPE,"text/event-stream")], axum::body::Body::from_stream(stream)).into_response();
         }
@@ -343,7 +351,15 @@ async fn four_protocol_matrix_preserves_text_and_usage_in_json_and_sse() {
                     String::from_utf8_lossy(&first).into_owned()
                 } else if error_status == 600 {
                     let mut chunks = response.bytes_stream();
-                    let mut output = String::new();
+                    let first =
+                        tokio::time::timeout(std::time::Duration::from_secs(2), chunks.next())
+                            .await
+                            .expect("midstream fixture must deliver its prefix")
+                            .expect("midstream fixture prefix is present")
+                            .expect("midstream fixture prefix is successful");
+                    assert!(!first.is_empty());
+                    prefix_received.notify_one();
+                    let mut output = String::from_utf8_lossy(&first).into_owned();
                     while let Some(chunk) = chunks.next().await {
                         match chunk {
                             Ok(bytes) => output.push_str(&String::from_utf8_lossy(&bytes)),
@@ -780,6 +796,8 @@ async fn claude_converted_tool_calls_reach_history_from_native_responses() {
                     .post(format!("http://127.0.0.1:{}{path}", info.port))
                     .json(&request);
                 if app == "claude-desktop" {
+                    db.set_setting(crate::claude_desktop_config::ROUTING_ENABLED_KEY, "true")
+                        .unwrap();
                     call = call.bearer_auth(
                         crate::claude_desktop_config::get_or_create_gateway_token(&db).unwrap(),
                     );
@@ -806,16 +824,17 @@ async fn claude_converted_tool_calls_reach_history_from_native_responses() {
                     continue;
                 }
                 assert_eq!(events[0].client_category.as_deref(), Some(app));
-                assert_eq!(events[0].command_summary.as_deref(), Some("pwd"));
+                assert!(events[0].command_summary.is_none());
                 assert_eq!(events[0].stage, "proposed");
                 db.insert_current_tool_risk_events_batch(&events).unwrap();
             }
         }
     }
-    assert_eq!(
-        db.get_tool_risk_command_summary_preview().unwrap().len(),
-        12
-    );
+    assert!(db
+        .get_tool_risk_command_summary_preview()
+        .unwrap()
+        .is_empty());
+    assert_eq!(db.get_tool_risk_events(20, 0).unwrap().len(), 12);
     proxy.stop().await.unwrap();
     server.abort();
     set_tool_risk_runtime_for_test(ToolRiskRuntime::default());

@@ -27,6 +27,7 @@ pub(crate) fn sync(db: &Database) -> bool {
         // Only contact an already connected client. Do not launch, install or
         // enable its bridge or security audit as part of a selection.
         crate::services::trae_bridge::profile_models()?;
+        crate::services::trae_bridge::model_replacement_ready()?;
         let providers = db.get_all_providers("trae")?;
         // Include DB-only providers: an earlier offline switch may have left
         // one of them in the client. The bridge owns only VaryAI's namespace.
@@ -41,13 +42,20 @@ pub(crate) fn sync(db: &Database) -> bool {
             p.category.as_deref() != Some("official")
                 && p.meta.as_ref().and_then(|m| m.live_config_managed) == Some(true)
         }) {
-            crate::services::trae_bridge::apply_connected(
+            crate::services::trae_bridge::replace_connected(
                 &crate::services::upstream_protocol::project(
                     db,
                     &crate::app_config::AppType::Trae,
                     provider,
                 )?,
             )?;
+        }
+        if let Some(official) = db
+            .get_current_provider("trae")?
+            .and_then(|id| providers.get(&id))
+            .filter(|p| p.category.as_deref() == Some("official"))
+        {
+            crate::services::trae_bridge::replace_connected(official)?;
         }
         db.set_setting(PENDING_KEY, "false")
     };

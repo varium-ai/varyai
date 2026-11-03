@@ -9,7 +9,7 @@ Vary AI is a Tauri application using Rust, React, and TypeScript. The historical
 - Preserve protocol keys, model parameters, headers, and response semantics unless a required protocol conversion changes them. Extract only the supported text fields for inspection.
 - Never echo credentials, matched sensitive plaintext, private configuration, or raw tool inputs in client errors, diagnostics, or test reports. Use synthetic fixtures.
 - The shared and extension SQLite connections are separate mutex-protected connections. When both are needed, lock shared first, extension second. Do not hold database locks or execute blocking transactions in request forwarding. Send audit/usage persistence through the asynchronous queues.
-- The local proxy defaults to `127.0.0.1:15721`. Tests must use temporary directories, in-memory databases, and dynamic ports instead of competing with a running application.
+- The local proxy defaults to `127.0.0.1:15722`. Tests must use temporary directories, in-memory databases, and dynamic ports instead of competing with a running application.
 - The single-instance plugin may foreground an existing app and exit a new process. Do not launch, install, or replace the user's running application as a routine check.
 - Use test-first changes for new behavior and reproducible bugs. Keep implementation changes focused and update the applicable documentation.
 - Write commit messages in English.

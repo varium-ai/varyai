@@ -135,6 +135,9 @@ jobs:
       - name: Unit tests
         run: pnpm test:unit
 
+      - name: Development launcher tests
+        run: pnpm test:dev
+
       - name: Client bridge tests
         run: pnpm test:trae-bridge
 

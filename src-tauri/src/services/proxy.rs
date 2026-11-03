@@ -431,8 +431,9 @@ pub struct HotSwitchOutcome {
 
 impl ProxyService {
     pub fn new(db: Arc<Database>) -> Self {
-        let codex_oauth_manager =
-            Arc::new(CodexOAuthManager::new(crate::config::get_app_config_dir()));
+        let codex_oauth_manager = Arc::new(CodexOAuthManager::new(
+            crate::config::get_device_config_dir(),
+        ));
 
         Self::new_with_codex_oauth_manager(db, codex_oauth_manager)
     }
@@ -1056,12 +1057,10 @@ impl ProxyService {
         if settings.enabled && !self.is_running().await {
             self.start().await?;
         }
-        self.db
-            .update_security_settings(settings)
-            .map_err(|e| e.to_string())?;
-        if let Err(e) = crate::proxy::security::reload_security_runtime(&self.db) {
-            log::warn!("[SecurityAudit] 热更新安全运行时配置失败: {e}");
-        }
+        crate::proxy::security::runtime::update_security_runtime(&self.db, |db| {
+            db.update_security_settings(settings)
+        })
+        .map_err(|e| e.to_string())?;
         if let Some(app) = self.app_handle.read().await.as_ref() {
             crate::tray::update_security_audit_icon(app, settings.enabled);
         }
@@ -1334,6 +1333,10 @@ impl ProxyService {
                 .await
                 .unwrap_or(false);
         Ok(ProxyTakeoverStatus {
+            claude_desktop: self.is_running().await
+                && crate::claude_desktop_config::routing_enabled(&self.db)
+                    .map_err(|e| e.to_string())?
+                && crate::claude_desktop_config::routing_applied(&self.db).unwrap_or(false),
             doubaowork: self.doubaowork.active(),
             doubaowork_waiting: !self.doubaowork.active()
                 && self
@@ -1669,6 +1672,62 @@ impl ProxyService {
         if self.agent_connections.owns(app_type) {
             return Err(super::agent_connections::CONFLICT.into());
         }
+        if app_type == "claude-desktop" {
+            let _guard = self.switch_locks.lock_for_app(app_type).await;
+            let previous = crate::claude_desktop_config::routing_enabled(&self.db)
+                .map_err(|e| e.to_string())?;
+            let provider =
+                crate::settings::get_effective_current_provider(&self.db, &AppType::ClaudeDesktop)
+                    .map_err(|e| e.to_string())?
+                    .map(|id| self.db.get_provider_by_id(&id, app_type))
+                    .transpose()
+                    .map_err(|e| e.to_string())?
+                    .flatten();
+            if enabled {
+                let provider = provider
+                    .as_ref()
+                    .filter(|provider| {
+                        !crate::claude_desktop_config::is_official_provider(provider)
+                    })
+                    .ok_or("homeAudit.desktopSetup")?;
+                crate::claude_desktop_config::validate_proxy_provider(provider)
+                    .map_err(|_| "homeAudit.desktopSetup")?;
+                self.start().await?;
+            }
+            self.db
+                .set_setting(
+                    crate::claude_desktop_config::ROUTING_ENABLED_KEY,
+                    if enabled { "true" } else { "false" },
+                )
+                .map_err(|e| e.to_string())?;
+            let applied = if enabled {
+                provider
+                    .as_ref()
+                    .ok_or_else(|| "homeAudit.desktopSetup".to_string())
+                    .and_then(|provider| {
+                        crate::claude_desktop_config::apply_provider(&self.db, provider)
+                            .map_err(|e| e.to_string())
+                    })
+            } else {
+                crate::claude_desktop_config::suspend_routing(&self.db).map_err(|e| e.to_string())
+            };
+            if let Err(error) = applied {
+                self.db
+                    .set_setting(
+                        crate::claude_desktop_config::ROUTING_ENABLED_KEY,
+                        if previous { "true" } else { "false" },
+                    )
+                    .map_err(|e| e.to_string())?;
+                return Err(error);
+            }
+            if enabled {
+                self.refresh_active_target_from_current_provider(&AppType::ClaudeDesktop)
+                    .await;
+            } else if let Some(server) = self.server.read().await.as_ref() {
+                server.clear_active_target(app_type).await;
+            }
+            return Ok(());
+        }
         if app_type == "doubaowork" {
             let _guard = self.switch_locks.lock_for_app("doubaowork").await;
             if enabled {
@@ -1851,6 +1910,20 @@ impl ProxyService {
         let app_type_str = app.as_str();
 
         if enabled {
+            let initialized = match &app {
+                AppType::Claude => get_claude_settings_path().is_file(),
+                AppType::Codex => {
+                    crate::codex_config::get_codex_auth_path().is_file()
+                        || crate::codex_config::get_codex_config_path().is_file()
+                }
+                AppType::Gemini => crate::gemini_config::get_gemini_env_path().is_file(),
+                AppType::GrokBuild => crate::grok_config::get_grok_config_path().is_file(),
+                _ => true,
+            };
+            if !initialized {
+                return Err("proxy.takeover.setupRequired".into());
+            }
+
             // 1) 代理服务未运行则自动启动
             if !self.is_running().await {
                 self.start().await?;
@@ -3186,6 +3259,9 @@ impl ProxyService {
 
         // 5. 删除备份
         self.db
+            .set_setting(crate::claude_desktop_config::ROUTING_ENABLED_KEY, "false")
+            .map_err(|e| e.to_string())?;
+        self.db
             .delete_all_live_backups()
             .await
             .map_err(|e| format!("删除备份失败: {e}"))?;
@@ -3674,6 +3750,12 @@ impl ProxyService {
         self.doubaowork.disable().await;
         let mut errors = Vec::new();
         {
+            let _guard = self.switch_locks.lock_for_app("claude-desktop").await;
+            if let Err(error) = crate::claude_desktop_config::suspend_routing(&self.db) {
+                errors.push(error.to_string());
+            }
+        }
+        {
             let _guard = self.lock_trae_audit().await;
             match tokio::task::spawn_blocking(super::trae_bridge::disable).await {
                 Ok(Ok(())) => {}
@@ -3746,6 +3828,27 @@ impl ProxyService {
         app_type: &AppType,
     ) -> Result<(), String> {
         let app_type_str = app_type.as_str();
+
+        // Shared client placeholders alone cannot establish ownership after storage isolation.
+        if self
+            .db
+            .is_native_storage()
+            .map_err(|_| "Cannot inspect VaryAI storage identity".to_string())?
+            && self
+                .db
+                .get_live_backup(app_type_str)
+                .await
+                .map_err(|_| "Cannot inspect client recovery state".to_string())?
+                .is_none()
+            && !self
+                .db
+                .get_proxy_config_for_app(app_type_str)
+                .await
+                .map_err(|_| "Cannot inspect client routing state".to_string())?
+                .enabled
+        {
+            return Ok(());
+        }
 
         // 1) 优先从 Live 备份恢复（这是"原始 Live"的唯一可靠来源）
         let backup = self
@@ -4099,12 +4202,7 @@ impl ProxyService {
     /// 检查是否处于 Live 接管模式
     pub async fn is_takeover_active(&self) -> Result<bool, String> {
         let status = self.get_takeover_status().await?;
-        Ok(status.claude
-            || status.codex
-            || status.gemini
-            || status.grokbuild
-            || status.workbuddy
-            || status.qoder)
+        Ok(status.has_active_routes())
     }
 
     /// 从异常退出中恢复（启动时调用）
@@ -5427,10 +5525,12 @@ impl ProxyService {
         Self::pi_origin(&config.listen_address, config.listen_port)
     }
     pub(crate) async fn pi_routing_status(&self) -> Result<super::pi_routing::Status, String> {
-        let origin = self
-            .pi_configured_origin()
-            .await
-            .unwrap_or_else(|_| "http://127.0.0.1:15721".into());
+        let origin = self.pi_configured_origin().await.unwrap_or_else(|_| {
+            format!(
+                "http://127.0.0.1:{}",
+                crate::proxy::types::DEFAULT_PROXY_PORT
+            )
+        });
         self.pi_routing
             .status(&self.db, self.is_running().await, &origin)
     }
@@ -5853,7 +5953,7 @@ mod tests {
             ), false).unwrap();
             crate::services::ProviderService::switch(&state, AppType::Trae, id).unwrap();
         }
-        let directory = short_home.path().join(".cc-switch/trae-bridge");
+        let directory = short_home.path().join(".varyai/trae-bridge");
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("bridge-agent-offline.sock");
         let listener = UnixListener::bind(&path).unwrap();
@@ -5861,6 +5961,8 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let models = Arc::new(Mutex::new(vec!["trae-a".to_string()]));
         let reject = Arc::new(AtomicBool::new(false));
+        let replacement_capability = Arc::new(AtomicBool::new(true));
+        let native_capability = replacement_capability.clone();
         let run = Arc::new(AtomicBool::new(true));
         let (native_models, reject_target, running) = (models.clone(), reject.clone(), run.clone());
         let worker = std::thread::spawn(move || {
@@ -5880,13 +5982,19 @@ mod tests {
                 let request: serde_json::Value = serde_json::from_str(&line).unwrap();
                 let mut models = native_models.lock().unwrap();
                 let response = match request["op"].as_str().unwrap() {
-                    "health" => json!({"result":{"ready":true,"enabled":false}}),
+                    "health" => {
+                        json!({"result":{"ready":true,"enabled":false,"revision":2,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
+                    }
                     "list" => json!({"result":[]}),
                     "remove" => {
                         models.retain(|id| id != request["id"].as_str().unwrap());
                         json!({"result":true})
                     }
-                    "apply" => {
+                    "replace" if request["config"].is_null() => {
+                        models.clear();
+                        json!({"result":true})
+                    }
+                    "apply" | "replace" => {
                         let id = request["id"].as_str().unwrap();
                         if (id == "trae-a" && reject_target.load(Ordering::Relaxed))
                             || models.iter().any(|existing| existing != id)
@@ -5932,6 +6040,16 @@ mod tests {
         state.proxy_service.refresh_trae_takeover().await;
         assert!(models.lock().unwrap().is_empty());
         assert!(!db
+            .get_bool_flag(super::super::trae_bridge::selection::PENDING_KEY)
+            .unwrap());
+        // An older bridge must be rejected before withdrawing inactive models.
+        models.lock().unwrap().push("trae-a".into());
+        replacement_capability.store(false, Ordering::Relaxed);
+        db.set_setting(super::super::trae_bridge::selection::PENDING_KEY, "true")
+            .unwrap();
+        state.proxy_service.refresh_trae_takeover().await;
+        assert_eq!(*models.lock().unwrap(), ["trae-a"]);
+        assert!(db
             .get_bool_flag(super::super::trae_bridge::selection::PENDING_KEY)
             .unwrap());
         assert!(!short_home.path().join(".trae-cn/argv.json").exists());
@@ -5984,8 +6102,215 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    #[serial]
+    #[cfg(any(target_os = "macos", windows))]
+    async fn claude_desktop_takeover_is_independent_and_restores_on_exit() {
+        let _home = TempHome::new();
+        let previous = crate::settings::get_settings();
+        crate::settings::update_settings(crate::settings::AppSettings::default()).unwrap();
+        let db = Arc::new(Database::memory().unwrap());
+        let mut provider = crate::provider::Provider::with_id(
+            "desktop-fixture".into(),
+            "Fixture".into(),
+            json!({"env":{"ANTHROPIC_BASE_URL":"https://synthetic.invalid/v1","ANTHROPIC_AUTH_TOKEN":"synthetic-key"}}),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            api_format: Some("openai_chat".into()),
+            claude_desktop_mode: Some(crate::provider::ClaudeDesktopMode::Proxy),
+            claude_desktop_model_routes: std::collections::HashMap::from([(
+                "claude-sonnet-5".into(),
+                crate::provider::ClaudeDesktopModelRoute {
+                    model: "synthetic-model".into(),
+                    label_override: Some("Synthetic".into()),
+                    supports_1m: None,
+                },
+            )]),
+            ..Default::default()
+        });
+        db.save_provider("claude-desktop", &provider).unwrap();
+        db.set_current_provider("claude-desktop", &provider.id)
+            .unwrap();
+        crate::settings::set_current_provider(&AppType::ClaudeDesktop, Some(&provider.id)).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        db.update_proxy_config(crate::proxy::types::ProxyConfig {
+            listen_port: port,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let service = ProxyService::new(db.clone());
+        service
+            .set_takeover_for_app("claude-desktop", true)
+            .await
+            .unwrap();
+        assert!(service.get_takeover_status().await.unwrap().claude_desktop);
+        let mut codex = db.get_proxy_config_for_app("codex").await.unwrap();
+        codex.enabled = true;
+        db.update_proxy_config_for_app(codex).await.unwrap();
+        let token = crate::claude_desktop_config::get_or_create_gateway_token(&db).unwrap();
+        let url = format!("http://127.0.0.1:{port}/claude-desktop/v1/models");
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        assert!(client
+            .get(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success());
+        service
+            .set_takeover_for_app("claude-desktop", false)
+            .await
+            .unwrap();
+        let status = service.get_takeover_status().await.unwrap();
+        assert!(!status.claude_desktop);
+        assert!(status.codex);
+        assert!(service.is_running().await);
+        assert!(!client
+            .get(&url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success());
+        assert!(!crate::claude_desktop_config::routing_applied(&db).unwrap());
+        service
+            .set_takeover_for_app("claude-desktop", true)
+            .await
+            .unwrap();
+        let profile_path =
+            crate::claude_desktop_config::profile_configuration_paths().unwrap()[2].clone();
+        let external = serde_json::to_vec(&json!({"inferenceGatewayBaseUrl":"https://external.invalid/v1","inferenceGatewayApiKey":"synthetic-external"})).unwrap();
+        std::fs::write(&profile_path, &external).unwrap();
+        service
+            .set_takeover_for_app("claude-desktop", false)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&profile_path).unwrap(), external);
+        service
+            .set_takeover_for_app("claude-desktop", true)
+            .await
+            .unwrap();
+        service.stop_with_restore_keep_state().await.unwrap();
+        assert!(crate::claude_desktop_config::routing_enabled(&db).unwrap());
+        assert!(!crate::claude_desktop_config::routing_applied(&db).unwrap());
+        service
+            .set_takeover_for_app("claude-desktop", true)
+            .await
+            .unwrap();
+        assert!(service.get_takeover_status().await.unwrap().claude_desktop);
+        service.stop_with_restore().await.unwrap();
+        assert!(!crate::claude_desktop_config::routing_enabled(&db).unwrap());
+        crate::settings::update_settings(previous).unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn native_recovery_leaves_another_managers_client_untouched() {
+        let home = TempHome::new();
+        let previous = crate::settings::get_settings();
+        crate::settings::update_settings(crate::settings::AppSettings::default()).unwrap();
+        let db =
+            Arc::new(Database::init_native_at(&home.dir.path().join("data/varyai.db")).unwrap());
+        let codex = home.dir.path().join(".codex/config.toml");
+        std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+        let foreign = "model_provider = \"cc-switch-official\"\n[model_providers.cc-switch-official]\nname = \"Synthetic external owner\"\nbase_url = \"http://127.0.0.1:0/v1\"\nwire_api = \"responses\"\n";
+        std::fs::write(&codex, foreign).unwrap();
+        let claude = home.dir.path().join(".claude/settings.json");
+        std::fs::create_dir_all(claude.parent().unwrap()).unwrap();
+        std::fs::write(&claude, r#"{"env":{"ANTHROPIC_API_KEY":"PROXY_MANAGED"}}"#).unwrap();
+        let own = r#"{"env":{"ANTHROPIC_API_KEY":"synthetic-owned-key"}}"#;
+        db.save_live_backup("claude", own).await.unwrap();
+        ProxyService::new(db).recover_from_crash().await.unwrap();
+        assert_eq!(std::fs::read_to_string(codex).unwrap(), foreign);
+        let restored: Value =
+            serde_json::from_str(&std::fs::read_to_string(claude).unwrap()).unwrap();
+        assert_eq!(restored["env"]["ANTHROPIC_API_KEY"], "synthetic-owned-key");
+        crate::settings::update_settings(previous).unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn uninitialized_clients_return_setup_guidance_without_starting_the_gateway() {
+        let _home = TempHome::new();
+        let previous = crate::settings::get_settings();
+        crate::settings::update_settings(crate::settings::AppSettings::default()).unwrap();
+        let db = Arc::new(Database::memory().unwrap());
+        use_ephemeral_proxy_port(&db).await;
+        let service = ProxyService::new(db.clone());
+        for app in ["claude", "codex", "gemini", "grokbuild"] {
+            assert_eq!(
+                service.set_takeover_for_app(app, true).await.unwrap_err(),
+                "proxy.takeover.setupRequired"
+            );
+            assert!(!service.is_running().await);
+            assert!(!db.get_proxy_config_for_app(app).await.unwrap().enabled);
+            assert!(db.get_live_backup(app).await.unwrap().is_none());
+        }
+        crate::settings::update_settings(previous).unwrap();
+    }
+
     fn assert_env_str(env: &Map<String, Value>, key: &str, expected: Option<&str>) {
         assert_eq!(env.get(key).and_then(|value| value.as_str()), expected);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn disabling_desktop_routing_clears_only_its_active_target_after_main_merge(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let _home = TempHome::new();
+        let db = Arc::new(Database::memory()?);
+        let service = ProxyService::new(db.clone());
+        let server = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            db,
+            None,
+        )
+        .with_restoration_gateway(
+            crate::proxy::security::http_restoration::RestorationGateway::new_default(),
+        );
+        server
+            .set_active_target("claude-desktop", "synthetic-desktop", "Synthetic Desktop")
+            .await;
+        server
+            .set_active_target("codex", "synthetic-codex", "Synthetic Codex")
+            .await;
+        *service.server.write().await = Some(server);
+
+        assert!(
+            service
+                .set_takeover_for_app("claude-desktop", false)
+                .await
+                .is_ok(),
+            "desktop_disable_rejected"
+        );
+        assert!(
+            service
+                .set_takeover_for_app("claude-desktop", false)
+                .await
+                .is_ok(),
+            "desktop_disable_not_idempotent"
+        );
+        let guard = service.server.read().await;
+        let server = guard.as_ref().ok_or("synthetic_server_missing")?;
+        let status = server.get_status().await;
+        assert_eq!(status.active_targets.len(), 1, "active_target_count");
+        assert!(
+            status.active_targets.iter().all(|target| {
+                target.app_type == "codex" && target.provider_id == "synthetic-codex"
+            }),
+            "unrelated_target_changed"
+        );
+        assert!(!status.running, "fixture_started_listener");
+        Ok(())
     }
 
     async fn use_ephemeral_proxy_port(db: &Arc<Database>) {
@@ -7504,6 +7829,84 @@ mod tests {
                 });
             });
         }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn security_settings_save_requires_successful_policy_publication(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        struct Restore(crate::proxy::security::SecurityRuntimeConfig);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _restore = Restore((*crate::proxy::security::get_security_runtime()).clone());
+        let db = Arc::new(Database::memory()?);
+        crate::proxy::security::reload_security_runtime(&db)?;
+        db.extension_connection()
+            .lock()
+            .map_err(|_| "fixture lock")?
+            .execute_batch("DROP TABLE security_custom_rules")?;
+        let service = ProxyService::new(db.clone());
+        let result = service
+            .update_security_audit_settings(&crate::database::SecurityAuditSettings {
+                enabled: false,
+            })
+            .await;
+        assert_eq!(result, Err("dlp_unavailable".into()));
+        assert!(
+            !db.get_security_settings()?.enabled,
+            "save committed before source load failed"
+        );
+        let mut body = json!({"input":"synthetic harmless fixture"});
+        let response = crate::proxy::security::inspect_and_intercept_mut(
+            &crate::app_config::AppType::Codex,
+            &mut body,
+        )?;
+        assert_eq!(
+            response
+                .ok_or("failed publication must close HTTP admission")?
+                .status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn security_settings_persistence_failure_closes_policy_before_attempting_save(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        struct Restore(crate::proxy::security::SecurityRuntimeConfig);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _restore = Restore((*crate::proxy::security::get_security_runtime()).clone());
+        let db = Arc::new(Database::memory()?);
+        crate::proxy::security::reload_security_runtime(&db)?;
+        db.extension_connection().lock().map_err(|_| "fixture lock")?
+            .execute_batch("CREATE TRIGGER synthetic_settings_save_failure BEFORE INSERT ON security_settings BEGIN SELECT RAISE(ABORT, 'synthetic private persistence detail'); END")?;
+        let service = ProxyService::new(db);
+        let result = service
+            .update_security_audit_settings(&crate::database::SecurityAuditSettings {
+                enabled: false,
+            })
+            .await;
+        assert_eq!(result, Err("dlp_unavailable".into()));
+        let mut body = json!({"input":"synthetic harmless fixture"});
+        let response = crate::proxy::security::inspect_and_intercept_mut(
+            &crate::app_config::AppType::Codex,
+            &mut body,
+        )?;
+        assert_eq!(
+            response
+                .ok_or("save failure must leave admission closed")?
+                .status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -12813,7 +13216,8 @@ requires_openai_auth = true
             message.contains("写入 Codex 配置失败")
                 || message.contains("原子替换失败")
                 || (message.contains("捕获 Codex 热切换前状态失败")
-                    && message.contains("cc-switch-model-catalog.json")),
+                    && message
+                        .contains(crate::codex_config::CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)),
             "switch should surface catalog write failure, got: {message}"
         );
     }

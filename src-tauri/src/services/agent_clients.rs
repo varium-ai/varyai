@@ -322,25 +322,91 @@ impl Document {
             && (selection["baseUrl"].is_null() || model["baseUrl"] == selection["baseUrl"])
     }
 
-    pub fn qwen_provider_conflicts(&self, id: &str, target: &Value) -> bool {
-        let env = format!("VARYAI_{}_API_KEY", id.replace('-', "_"));
-        self.value["modelProviders"]
-            .as_object()
-            .is_some_and(|groups| {
-                groups.iter().any(|(protocol, entries)| {
-                    entries.as_array().is_some_and(|entries| {
-                        entries.iter().any(|model| {
-                            model["envKey"] == env
-                                && model["baseUrl"] == target["baseUrl"]
-                                && Some(self.qwen_model_protocol(protocol, model))
-                                    == target["protocol"].as_str()
-                                && target["models"].as_array().is_some_and(|models| {
-                                    models.iter().any(|wanted| wanted["model"] == model["id"])
-                                })
+    pub fn clear_managed_models(&mut self, app: &str) -> Result<(), AppError> {
+        if self.value.as_object().is_some_and(|value| value.is_empty()) {
+            return Ok(());
+        }
+        match app {
+            "kimi" => {
+                object(&mut self.value, "providers")?;
+                object(&mut self.value, "models")?;
+                let models = self.value["models"].as_object().ok_or_else(invalid)?;
+                let owned: std::collections::HashSet<_> = models
+                    .iter()
+                    .filter(|(alias, model)| {
+                        model["model"].as_str().is_some_and(|wire| {
+                            alias.strip_prefix("varyai-").is_some_and(|suffix| {
+                                suffix
+                                    .strip_suffix(&format!("-{wire}"))
+                                    .is_some_and(|id| !id.is_empty())
+                            })
                         })
                     })
-                })
-            })
+                    .map(|(alias, _)| alias.clone())
+                    .collect();
+                let providers: Vec<_> = self.value["providers"]
+                    .as_object()
+                    .ok_or_else(invalid)?
+                    .iter()
+                    .filter(|(name, provider)| {
+                        let references: Vec<_> = models
+                            .iter()
+                            .filter(|(_, m)| m["provider"] == **name)
+                            .collect();
+                        provider.get("oauth").is_none()
+                            && provider["type"] != "kimi"
+                            && (!references.is_empty() || name.starts_with("varyai-"))
+                            && references.iter().all(|(alias, _)| owned.contains(*alias))
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                self.value["models"]
+                    .as_object_mut()
+                    .ok_or_else(invalid)?
+                    .retain(|alias, _| !owned.contains(alias));
+                self.value["providers"]
+                    .as_object_mut()
+                    .ok_or_else(invalid)?
+                    .retain(|name, _| !providers.contains(name));
+            }
+            "qwen" => {
+                let managed = |key: &str| key.starts_with("VARYAI_") && key.ends_with("_API_KEY");
+                if let Some(groups) = self
+                    .value
+                    .get_mut("modelProviders")
+                    .and_then(Value::as_object_mut)
+                {
+                    for models in groups.values_mut() {
+                        models
+                            .as_array_mut()
+                            .ok_or_else(invalid)?
+                            .retain(|model| !model["envKey"].as_str().is_some_and(managed));
+                    }
+                }
+                if let Some(env) = self.value.get_mut("env").and_then(Value::as_object_mut) {
+                    env.retain(|key, _| !managed(key));
+                }
+            }
+            "zcode" => {
+                self.ensure_zcode_config()?;
+                for path in [
+                    "/config/providerConfigRules/providerRules",
+                    "/config/modelConfigRules/providerModelRules",
+                    "/config/modelConfigRules/manualProviderModelRules",
+                ] {
+                    if let Some(rules) = self.value.pointer_mut(path).and_then(Value::as_array_mut)
+                    {
+                        rules.retain(|rule| {
+                            !rule["providerId"]
+                                .as_str()
+                                .is_some_and(|id| id.starts_with("varyai-"))
+                        });
+                    }
+                }
+            }
+            _ => return Err(invalid()),
+        }
+        Ok(())
     }
 
     pub fn apply(

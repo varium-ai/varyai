@@ -20,9 +20,11 @@ import type { FetchedModel } from "@/lib/api/model-fetch";
 export function ModelDropdown({
   models,
   onSelect,
+  ariaLabel,
 }: {
   models: FetchedModel[];
   onSelect: (id: string) => void;
+  ariaLabel?: string;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -43,9 +45,12 @@ export function ModelDropdown({
           variant="outline"
           size="icon"
           className="shrink-0"
-          aria-label={t("providerForm.searchModelAriaLabel", {
-            defaultValue: "Select model",
-          })}
+          aria-label={
+            ariaLabel ??
+            t("providerForm.searchModelAriaLabel", {
+              defaultValue: "Select model",
+            })
+          }
         >
           <ChevronDown className="h-4 w-4" />
         </Button>

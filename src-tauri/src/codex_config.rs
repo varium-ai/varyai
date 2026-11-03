@@ -21,7 +21,17 @@ pub const CC_SWITCH_CODEX_MODEL_PROVIDER_ID: &str = "custom";
 /// marker: unlike a generic localhost `base_url`, it can be detected and
 /// cleaned up without mistaking a user's own local provider for takeover.
 pub const CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID: &str = "cc-switch-official";
-pub const CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalog.json";
+pub const CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME: &str = "varyai-model-catalog.json";
+const LEGACY_CODEX_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalog.json";
+
+fn is_managed_catalog_filename(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name == CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME
+                || name == LEGACY_CODEX_MODEL_CATALOG_FILENAME
+        })
+}
 const CODEX_PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 
 #[cfg(target_os = "windows")]
@@ -459,7 +469,7 @@ pub fn get_codex_auth_path() -> PathBuf {
 }
 
 pub(crate) fn get_codex_managed_oauth_live_auth_marker_path() -> PathBuf {
-    crate::config::get_app_config_dir().join(CODEX_MANAGED_OAUTH_LIVE_AUTH_MARKER_FILENAME)
+    crate::config::get_device_config_dir().join(CODEX_MANAGED_OAUTH_LIVE_AUTH_MARKER_FILENAME)
 }
 
 #[cfg(test)]
@@ -2315,12 +2325,27 @@ fn codex_model_catalog_from_settings(
         }
         CodexCatalogToolProfile::ProxyChat => load_codex_model_catalog_template()?,
     };
-    Ok(Some(codex_model_catalog_from_specs(
-        &specs,
-        &template,
-        profile,
-        default_context_window,
-    )))
+    let mut catalog =
+        codex_model_catalog_from_specs(&specs, &template, profile, default_context_window);
+    let default_model = config_text.parse::<toml::Value>().ok().and_then(|doc| {
+        let profile_model = doc
+            .get("profile")
+            .and_then(|value| value.as_str())
+            .and_then(|name| doc.get("profiles")?.get(name)?.get("model"))
+            .and_then(|value| value.as_str());
+        profile_model
+            .or_else(|| doc.get("model").and_then(|value| value.as_str()))
+            .map(|model| model.trim().to_string())
+    });
+    if let Some(entry) = catalog["models"].as_array_mut().and_then(|entries| {
+        entries
+            .iter_mut()
+            .find(|entry| entry["slug"].as_str() == default_model.as_deref())
+    }) {
+        // Desktop metadata generation falls back to the catalog default, independently of chat selection.
+        entry["priority"] = json!(999);
+    }
+    Ok(Some(catalog))
 }
 
 fn set_codex_model_catalog_json_field(
@@ -2340,10 +2365,7 @@ fn set_codex_model_catalog_json_field(
             let is_cc_switch_owned = doc
                 .get("model_catalog_json")
                 .and_then(|item| item.as_str())
-                .map(|path| {
-                    Path::new(path).file_name().and_then(|name| name.to_str())
-                        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
-                })
+                .map(|path| is_managed_catalog_filename(Path::new(path)))
                 .unwrap_or(true);
             if is_cc_switch_owned {
                 doc["model_catalog_json"] =
@@ -2354,10 +2376,7 @@ fn set_codex_model_catalog_json_field(
             let should_remove = doc
                 .get("model_catalog_json")
                 .and_then(|item| item.as_str())
-                .map(|path| {
-                    Path::new(path).file_name().and_then(|name| name.to_str())
-                        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
-                })
+                .map(|path| is_managed_catalog_filename(Path::new(path)))
                 .unwrap_or(false);
             if should_remove {
                 doc.as_table_mut().remove("model_catalog_json");
@@ -2525,8 +2544,7 @@ pub(crate) fn resolve_cc_switch_catalog_path(
         .filter(|s| !s.is_empty())?;
 
     let referenced_path = Path::new(catalog_path_str);
-    let is_cc_switch_owned = referenced_path.file_name().and_then(|name| name.to_str())
-        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+    let is_cc_switch_owned = is_managed_catalog_filename(referenced_path);
     if !is_cc_switch_owned {
         return None;
     }
@@ -6767,6 +6785,69 @@ base_url = "https://production.api/v1"
     }
 
     #[test]
+    fn codex_catalog_default_tracks_configured_model_without_reordering_models() {
+        let settings = json!({"modelCatalog":{"models":[
+            {"model":"synthetic-qwen","reasoningLevels":["low","high"]},
+            {"model":"synthetic-glm","reasoningLevels":["low","high"]}
+        ]}});
+        for profile in [
+            CodexCatalogToolProfile::ProxyChat,
+            CodexCatalogToolProfile::NativeResponses,
+            CodexCatalogToolProfile::Anthropic,
+        ] {
+            let catalog = codex_model_catalog_from_settings(
+                &settings,
+                "model = \"synthetic-glm\"\n",
+                profile,
+            )
+            .unwrap()
+            .unwrap();
+            let entries = catalog["models"].as_array().unwrap();
+            assert_eq!(entries[0]["slug"], "synthetic-qwen");
+            assert_eq!(entries[1]["slug"], "synthetic-glm");
+            let default = entries
+                .iter()
+                .min_by_key(|entry| entry["priority"].as_u64().unwrap())
+                .unwrap();
+            assert_eq!(default["slug"], "synthetic-glm");
+            assert_eq!(
+                entries[0]["supported_reasoning_levels"],
+                entries[1]["supported_reasoning_levels"]
+            );
+        }
+    }
+
+    #[test]
+    fn codex_catalog_respects_the_active_profile_default_and_unknown_defaults() {
+        let settings = json!({"modelCatalog":{"models":[
+            {"model":"synthetic-first"}, {"model":"synthetic-profile"}
+        ]}});
+        let config = "model = \"synthetic-first\"\nprofile = \"work\"\n[profiles.work]\nmodel = \"synthetic-profile\"\n";
+        let catalog = codex_model_catalog_from_settings(
+            &settings,
+            config,
+            CodexCatalogToolProfile::NativeResponses,
+        )
+        .unwrap()
+        .unwrap();
+        let entries = catalog["models"].as_array().unwrap();
+        assert!(
+            entries[1]["priority"].as_u64().unwrap() < entries[0]["priority"].as_u64().unwrap()
+        );
+        for config in ["", "model = \"synthetic-unlisted\"\n"] {
+            let catalog = codex_model_catalog_from_settings(
+                &settings,
+                config,
+                CodexCatalogToolProfile::NativeResponses,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(catalog["models"][0]["priority"], 1000);
+            assert_eq!(catalog["models"][1]["priority"], 1001);
+        }
+    }
+
+    #[test]
     fn codex_model_catalog_uses_provider_models_and_context() {
         let template = json!({
             "slug": "gpt-5.5",
@@ -7822,7 +7903,7 @@ web_search = "disabled"
         let config = r#"model_catalog_json = "/tmp/.codex/cc-switch-model-catalog.json"
 "#;
         let resolved = resolve_cc_switch_catalog_path(config, &base).expect("path resolves");
-        assert_eq!(resolved, base.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME));
+        assert_eq!(resolved, base.join(LEGACY_CODEX_MODEL_CATALOG_FILENAME));
     }
 
     #[test]
@@ -8222,7 +8303,7 @@ model_catalog_json = "cc-switch-model-catalog.json"
         let result = resolve_cc_switch_catalog_path(config_text, &base_dir);
         assert_eq!(
             result,
-            Some(base_dir.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)),
+            Some(base_dir.join(LEGACY_CODEX_MODEL_CATALOG_FILENAME)),
             "relative filename should resolve under base_dir for file I/O"
         );
     }
@@ -8247,7 +8328,7 @@ model_catalog_json = "cc-switch-model-catalog.json"
         let result = resolve_cc_switch_catalog_path(config_text, &base_dir);
         assert_eq!(
             result,
-            Some(base_dir.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)),
+            Some(base_dir.join(LEGACY_CODEX_MODEL_CATALOG_FILENAME)),
             "absolute path inside ~/.codex should be accepted"
         );
     }
@@ -8274,7 +8355,7 @@ model_catalog_json = "cc-switch-model-catalog.json"
         let outside_dir = temp.path().join("outside");
         fs::create_dir_all(&base_dir).expect("create base");
         fs::create_dir_all(&outside_dir).expect("create outside");
-        let escaped_file = outside_dir.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        let escaped_file = outside_dir.join(LEGACY_CODEX_MODEL_CATALOG_FILENAME);
         fs::write(&escaped_file, r#"{"models":[]}"#).expect("write escaped catalog");
 
         #[cfg(unix)]
@@ -8297,7 +8378,7 @@ model_catalog_json = "cc-switch-model-catalog.json"
         let temp = tempfile::tempdir().expect("tempdir");
         let base_dir = temp.path().join("codex");
         fs::create_dir_all(&base_dir).expect("create base");
-        let catalog_file = base_dir.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        let catalog_file = base_dir.join(LEGACY_CODEX_MODEL_CATALOG_FILENAME);
         fs::write(&catalog_file, r#"{"models":[]}"#).expect("write catalog");
 
         let config_text = r#"model_catalog_json = "cc-switch-model-catalog.json"
@@ -8306,7 +8387,7 @@ model_catalog_json = "cc-switch-model-catalog.json"
         let resolved = result.expect("real file inside config dir should be accepted");
         assert_eq!(
             resolved.file_name().and_then(|n| n.to_str()),
-            Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+            Some(LEGACY_CODEX_MODEL_CATALOG_FILENAME)
         );
     }
 

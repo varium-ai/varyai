@@ -24,7 +24,11 @@ import {
   useGlobalProxyConfig,
   useUpdateGlobalProxyConfig,
 } from "@/lib/query/proxy";
-import type { ProxyStatus, ProxyTakeoverStatus } from "@/types/proxy";
+import {
+  DEFAULT_PROXY_PORT,
+  type ProxyStatus,
+  type ProxyTakeoverStatus,
+} from "@/types/proxy";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "framer-motion";
 import { extractErrorMessage } from "@/utils/errorUtils";
@@ -58,7 +62,7 @@ export function ProxyPanel({ onToggleProxy, isProxyPending }: ProxyPanelProps) {
 
   // 监听地址/端口的本地状态（端口用字符串以支持完全清空）
   const [listenAddress, setListenAddress] = useState("127.0.0.1");
-  const [listenPort, setListenPort] = useState("15721");
+  const [listenPort, setListenPort] = useState(String(DEFAULT_PROXY_PORT));
 
   // 同步全局配置到本地状态
   useEffect(() => {
@@ -116,7 +120,9 @@ export function ProxyPanel({ onToggleProxy, isProxyPending }: ProxyPanelProps) {
         t("common.unknown", { defaultValue: "未知错误" });
       toast.error(
         t("proxy.takeover.failed", {
-          detail: detail.startsWith("piRouting.") ? t(detail) : detail,
+          detail: /^[a-zA-Z]\w*(?:\.\w+)+$/.test(detail)
+            ? t(detail, { app: getAppLabel(appType), defaultValue: detail })
+            : detail,
           defaultValue: "切换接管状态失败",
         }),
       );
@@ -278,57 +284,56 @@ export function ProxyPanel({ onToggleProxy, isProxyPending }: ProxyPanelProps) {
                   })}
                 </p>
                 <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                  {APP_IDS.filter(
-                    (appType) =>
-                      isRoutingAppId(appType) || appType === "claude-desktop",
-                  ).map((appType) => {
-                    const waiting = waitingHint(appType, takeoverStatus);
-                    const isEnabled = isRoutingAppId(appType)
-                      ? Boolean(takeoverStatus?.[appType] || waiting)
-                      : false;
-                    return (
-                      <div
-                        key={appType}
-                        className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/20 bg-background/60 px-3 py-2"
-                      >
-                        {appType !== "codex" && (
-                          <span className="text-sm font-medium">
-                            {getAppLabel(appType)}
-                            {waiting && (
-                              <span className="block text-xs font-normal text-muted-foreground">
-                                {waiting}
-                              </span>
-                            )}
-                          </span>
-                        )}
-                        {appType === "codex" ? (
-                          <RoutingClient
-                            disabled={
-                              isProxyPending || setTakeoverForApp.isPending
-                            }
-                          />
-                        ) : appType === "claude-desktop" ? (
-                          <ClaudeDesktopRouteToggle
-                            variant="settings"
-                            disabled={
-                              isProxyPending || setTakeoverForApp.isPending
-                            }
-                          />
-                        ) : (
-                          <Switch
-                            aria-label={getAppLabel(appType)}
-                            checked={isEnabled}
-                            onCheckedChange={(checked) =>
-                              handleTakeoverChange(appType, checked)
-                            }
-                            disabled={
-                              isProxyPending || setTakeoverForApp.isPending
-                            }
-                          />
-                        )}
-                      </div>
-                    );
-                  })}
+                  {APP_IDS.filter((appType) => isRoutingAppId(appType)).map(
+                    (appType) => {
+                      const waiting = waitingHint(appType, takeoverStatus);
+                      const isEnabled = isRoutingAppId(appType)
+                        ? Boolean(takeoverStatus?.[appType] || waiting)
+                        : false;
+                      return (
+                        <div
+                          key={appType}
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/20 bg-background/60 px-3 py-2"
+                        >
+                          {appType !== "codex" && (
+                            <span className="text-sm font-medium">
+                              {getAppLabel(appType)}
+                              {waiting && (
+                                <span className="block text-xs font-normal text-muted-foreground">
+                                  {waiting}
+                                </span>
+                              )}
+                            </span>
+                          )}
+                          {appType === "codex" ? (
+                            <RoutingClient
+                              disabled={
+                                isProxyPending || setTakeoverForApp.isPending
+                              }
+                            />
+                          ) : appType === "claude-desktop" ? (
+                            <ClaudeDesktopRouteToggle
+                              variant="settings"
+                              disabled={
+                                isProxyPending || setTakeoverForApp.isPending
+                              }
+                            />
+                          ) : (
+                            <Switch
+                              aria-label={getAppLabel(appType)}
+                              checked={isEnabled}
+                              onCheckedChange={(checked) =>
+                                handleTakeoverChange(appType, checked)
+                              }
+                              disabled={
+                                isProxyPending || setTakeoverForApp.isPending
+                              }
+                            />
+                          )}
+                        </div>
+                      );
+                    },
+                  )}
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {t("proxy.takeover.hint", {
@@ -337,9 +342,12 @@ export function ProxyPanel({ onToggleProxy, isProxyPending }: ProxyPanelProps) {
                   })}
                 </p>
                 <p className="text-xs text-muted-foreground">
+                  {t("proxy.takeover.prerequisitesHint")}
+                </p>
+                <p className="text-xs text-muted-foreground">
                   {t("claudeDesktop.route.settingsHint", {
                     defaultValue:
-                      "Claude Desktop 需先启用“需要模型映射”的供应商。此开关控制共享路由服务，其他应用接管期间无法关闭。",
+                      "Claude Desktop 的路由由此开关独立控制。模型映射或协议转换需要开启路由；更改后请重启 Claude Desktop。",
                   })}
                 </p>
                 <p className="text-xs text-muted-foreground">
@@ -614,7 +622,7 @@ export function ProxyPanel({ onToggleProxy, isProxyPending }: ProxyPanelProps) {
                     placeholder={t(
                       "proxy.settings.fields.listenPort.placeholder",
                       {
-                        defaultValue: "15721",
+                        defaultValue: String(DEFAULT_PROXY_PORT),
                       },
                     )}
                   />

@@ -867,9 +867,15 @@ async fn all_agent_connections_accept_anthropic_sdk_beta_without_leaking_it_acro
             .bearer_auth(format!("synthetic-{app}"))
             .header("user-agent", "claude-cli/2.1.0 (external, cli)")
             .json(&json!({"model":"wire-anthropic","messages":[{"role":"user","content":"synthetic count"}],"tools":[{"name":"synthetic_tool","input_schema":{"type":"object"}}]})).send().await?;
-        assert_eq!(count.status(), StatusCode::OK, "token count unavailable for {app}");
+        assert_eq!(
+            count.status(),
+            StatusCode::OK,
+            "token count unavailable for {app}"
+        );
         assert_eq!(count.json::<Value>().await?["input_tokens"], 19);
-        let (uri, _, body) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await?.ok_or("missing count request")?;
+        let (uri, _, body) = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await?
+            .ok_or("missing count request")?;
         assert!(uri.path().ends_with("/messages/count_tokens"));
         assert_eq!(uri.query(), None);
         assert_eq!(body["model"], "exact-model");
@@ -879,10 +885,19 @@ async fn all_agent_connections_accept_anthropic_sdk_beta_without_leaking_it_acro
             let count = client.post(format!("{root}/messages/count_tokens"))
                 .bearer_auth(format!("synthetic-{app}"))
                 .json(&json!({"model":format!("wire-{protocol}"),"messages":[{"role":"user","content":"synthetic estimate"}]})).send().await?;
-            assert_eq!(count.status(), StatusCode::OK, "local estimate unavailable for {app}");
-            assert!(count.json::<Value>().await?["input_tokens"].as_u64().is_some());
+            assert_eq!(
+                count.status(),
+                StatusCode::OK,
+                "local estimate unavailable for {app}"
+            );
+            assert!(count.json::<Value>().await?["input_tokens"]
+                .as_u64()
+                .is_some());
         }
-        assert!(rx.try_recv().is_err(), "local estimate made a generation request");
+        assert!(
+            rx.try_recv().is_err(),
+            "local estimate made a generation request"
+        );
         for (endpoint, query) in [
             ("messages", "beta=false"),
             ("messages", "beta=true&key=synthetic-query"),

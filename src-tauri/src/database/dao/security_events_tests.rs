@@ -630,3 +630,18 @@ fn performance_100k_per_table() {
         "performance budget exceeded: {violations:?}"
     );
 }
+
+#[test]
+fn redact_restore_is_request_redaction_without_losing_raw_action() {
+    let db = Database::memory().unwrap();
+    dlp(&db, 1, 1000, "redact_restore", "HIGH");
+    let query = filter(json!({"view":"security_events","result":"redacted"}));
+    let page = db.get_security_events(&query, 1, 100).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].result, SecurityEventResult::Redacted);
+    let row = serde_json::to_value(&page.items[0]).unwrap();
+    assert_eq!(row["record"]["actionTaken"], "redact_restore");
+    let summary = db.get_security_events_summary(&default_filter()).unwrap();
+    assert_eq!(summary.redacted, 1);
+    assert_eq!(summary.other, 0);
+}

@@ -1,5 +1,10 @@
 import { useTranslation } from "react-i18next";
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import {
+  useLayoutEffect,
+  useRef,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import appIcon from "@/assets/icons/app-icon.png";
 import { APP_DISPLAY_NAME } from "@/config/brand";
 
@@ -10,16 +15,19 @@ interface PrimaryNavigationProps {
   onSelect: (tab: PrimaryTab) => void;
   actions?: ReactNode;
   disabled?: boolean;
+  macTitlebar?: boolean;
 }
 
 const tabs: PrimaryTab[] = ["home", "security", "stats", "settings"];
 const [brandName, brandAccent] = APP_DISPLAY_NAME.split(/ (?=AI$)/);
+const noDrag = { WebkitAppRegion: "no-drag" } as CSSProperties;
 
 export function PrimaryNavigation({
   activeTab,
   onSelect,
   actions,
   disabled = false,
+  macTitlebar = false,
 }: PrimaryNavigationProps) {
   const { t } = useTranslation();
   const trackRef = useRef<HTMLDivElement>(null);
@@ -175,16 +183,26 @@ export function PrimaryNavigation({
   }, []);
 
   return (
-    <div className="varyai-primary-nav flex h-16 items-center justify-between gap-5 border-b border-slate-200/90 bg-white px-6 dark:border-slate-700 dark:bg-card">
+    <div
+      className="varyai-primary-nav flex h-16 items-center gap-2 border-b border-slate-200/90 bg-white px-6 min-[1100px]:gap-5 dark:border-slate-700 dark:bg-card"
+      {...(macTitlebar ? { "data-tauri-drag-region": true } : {})}
+      style={
+        macTitlebar
+          ? ({ paddingLeft: 96, WebkitAppRegion: "drag" } as CSSProperties)
+          : undefined
+      }
+    >
       <button
         type="button"
+        data-tauri-no-drag
+        style={noDrag}
         onClick={() => onSelect("home")}
         disabled={disabled}
         className="flex shrink-0 items-center gap-3 text-left disabled:cursor-not-allowed disabled:opacity-50"
         aria-label={t("app.title")}
       >
         <img src={appIcon} alt="" className="h-9 w-9" />
-        <span className="flex flex-col leading-none">
+        <span className="hidden flex-col leading-none min-[1100px]:flex">
           <span className="text-lg font-black tracking-tight text-slate-900 dark:text-foreground">
             {brandName} <span className="text-primary">{brandAccent}</span>
           </span>
@@ -193,9 +211,12 @@ export function PrimaryNavigation({
           </span>
         </span>
       </button>
+      {/* Anchor tabs to the brand; changing actions must not redistribute their position. */}
       <nav
         className="-m-1 min-w-0 overflow-x-auto p-1"
         aria-label={t("primaryNav.label")}
+        data-tauri-no-drag
+        style={noDrag}
       >
         <div
           ref={trackRef}
@@ -243,7 +264,13 @@ export function PrimaryNavigation({
         </div>
       </nav>
       {actions && (
-        <div className="flex shrink-0 items-center gap-3">{actions}</div>
+        <div
+          className="ml-auto flex shrink-0 items-center gap-3"
+          data-tauri-no-drag
+          style={noDrag}
+        >
+          {actions}
+        </div>
       )}
     </div>
   );

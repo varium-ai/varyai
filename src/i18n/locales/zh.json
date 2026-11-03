@@ -34,11 +34,14 @@
     "newDraft": "已新建空白预设，请填写信息后点击保存。"
   },
   "providerDetection": {
+    "selectModel": "选择检测模型",
+    "probeHint": "检测模型仅用于验证协议。下方模型配置请单独选择，或从已获取的模型列表中填入。",
     "title": "检测配置",
     "discovering": "正在获取模型列表…",
     "modelsFound": "已获取 {{count}} 个模型",
     "manualModelHint": "没有模型列表时，也可以手动填写模型名称。",
     "selectedModel": "待检测模型：{{model}}",
+    "autoHint": "填完 URL 和 Key 后自动检测，使用可用模型选择第一个普通响应和流式响应均通过验证的协议，不修改默认模型。",
     "costHint": "检测会使用你的 Key 发送最多 8 次少量推理请求，可能产生费用。输入过程中不会发送请求。",
     "check": "检测配置",
     "checking": "正在检测…",
@@ -116,6 +119,13 @@
     "categoryCustom": "自定义规则",
     "ruleActionBlock": "拦截",
     "ruleActionAlert": "提醒",
+    "ruleActionRedactRestore": "隐藏并本地还原",
+    "dialogActionRedactRestore": "隐藏并本地还原（仅 Codex HTTP）",
+    "resultRedactRestore": "已替换为本地还原引用",
+    "redactRestoreScope": "逐规则手动启用：仅支持 Codex HTTP Responses 和 /responses/compact 的 JSON、SSE。已检查但不支持的路由命中此动作时将拒绝请求，不会静默改为普通脱敏。映射仅保存在本机，重启后丢失。",
+    "redactRestoreRisk": "模型只能看到引用，无法计算、截取原文或满足固定格式约束。还原后的 Shell、SQL、补丁或内嵌 JSON 仍可能无效或不安全；请勿自动执行输出，保留工具审批和沙箱。此功能不会向上游工具提供原文，也不保证任务正确或零泄漏。",
+    "notifyRedactRestoreTitle": "敏感信息已替换为本地引用",
+    "notifyRedactRestoreBody": "{{app}} 请求命中“{{rule}}”，发送前已替换为本地引用。",
     "ruleActionRedact": "自动隐藏后发送",
     "ruleActionAllow": "不处理",
     "builtinRules": {
@@ -567,6 +577,7 @@
     "accountLoading": "正在加载账号…"
   },
   "claudeDesktop": {
+    "modelRoutingHint": "此处配置模型和上游协议；是否经过本地路由，由首页或设置中的 Claude Desktop 路由开关统一控制。模型映射和协议转换需要开启路由。",
     "modelConfigTitle": "模型配置",
     "modelModeLabel": "接入方式",
     "modelModeDirect": "直连",
@@ -576,10 +587,10 @@
     "modeDirect": "直连",
     "modeProxy": "需要路由",
     "modelMappingToggle": "需要模型映射",
-    "modelMappingOffHint": "仅当供应商直接接受 Claude Desktop 可识别的三档角色 ID（claude-sonnet-* / claude-opus-* / claude-haiku-*）时才适用直连；其他模型名（含 claude-3-5-sonnet-… 等旧式 ID）请选择模型映射。",
-    "modelMappingOnHint": "Claude Desktop 只接受 claude-sonnet-* / claude-opus-* / claude-haiku-* 三档角色 ID。选择模型映射后，Vary AI 会把这三档映射到供应商的实际模型，并在使用期间保持本地路由开启。",
+    "modelMappingOffHint": "仅当供应商直接接受 Claude Desktop 可识别的模型 ID 时才适用直连；其他模型 ID 请选择模型映射。",
+    "modelMappingOnHint": "Sonnet、Opus、Fable、Haiku 是兼容角色，不限制模型数量。同一角色可添加多个模型，菜单显示名可自由填写。Vary AI 通过本地路由将每条映射转发到实际模型。",
     "routeMapTitle": "模型映射",
-    "routeMapHint": "仅填写了实际请求模型的角色会出现在 Desktop 菜单；清空模型即可移除该菜单项。未配置的 Haiku 子 agent 请求会在内部沿用 Sonnet 或第一个已配置模型。仅在上游支持时声明 1M。",
+    "routeMapHint": "可自由添加或删除映射，角色可重复。下拉选择模型会同步菜单显示名，之后可自行改名。仅填写了实际请求模型的行会出现在 Desktop 菜单；未配置的 Haiku 子 agent 请求沿用 Sonnet 或第一个已配置模型。仅在上游支持时声明 1M。",
     "routeModelLabel": "模型角色",
     "routeRoleSonnet": "Sonnet",
     "routeRoleOpus": "Opus",
@@ -594,6 +605,7 @@
     "directModelListHint": "配置 Claude Desktop 可用的 Sonnet、Opus、Haiku 模型。留空时 Claude Desktop 会自动读取 /v1/models；勾选 1M 会声明支持 1M 上下文。",
     "directModelInvalid": "直连模型必须使用 Claude Desktop 可识别的 Sonnet / Opus / Haiku 模型名",
     "addModel": "添加模型",
+    "importAllModels": "一键导入所有模型",
     "addRoute": "添加模型",
     "routeInvalid": "请选择模型角色并填写实际请求模型",
     "routesRequired": "至少填写一个模型映射",
@@ -604,13 +616,16 @@
     "statusGatewayTokenMissing": "当前本地路由 token 尚未生成；重新切换该供应商会写入新的本地 token。",
     "statusBaseUrlMismatch": "Claude Desktop profile 指向的地址与当前供应商不一致；当前为 {{actual}}，应为 {{expected}}。重新切换当前供应商可修复。",
     "route": {
+      "officialBlocked": "请先关闭 Claude Desktop 的本地路由，再切换官方登录。",
       "ariaLabel": "Claude Desktop 本地路由",
-      "settingsHint": "Claude Desktop 需先启用“需要模型映射”的供应商。此开关控制共享路由服务，其他应用接管期间无法关闭。",
+      "settingsHint": "此开关控制 Claude Desktop 的路由；模型映射或协议转换需要开启。修改后请重启 Claude Desktop。",
       "tooltip": {
         "active": "Claude Desktop 本地路由已开启 - {{address}}:{{port}}",
         "inactive": "开启 Claude Desktop 本地路由，用于需要模型映射或格式转换的供应商。当前配置地址：{{address}}:{{port}}"
       },
-      "stopBlockedByTakeover": "其它应用正在使用代理接管。请先在设置中关闭对应应用接管，再停止本地路由。"
+      "stopBlockedByTakeover": "其它应用正在使用代理接管。请先在设置中关闭对应应用接管，再停止本地路由。",
+      "sharedGateway": "共享网关",
+      "sharedGatewayInUse": "共享网关正在供 {{apps}} 使用，请先关闭这些应用的路由，再停止网关。"
     }
   },
   "notifications": {
@@ -663,7 +678,7 @@
     "windowControlFailed": "窗口控制失败：{{error}}",
     "officialBlockedByProxy": "本地路由模式下不能切换到官方供应商，使用路由访问官方 API 可能导致账号被封禁",
     "proxyOfficialWarning": "当前供应商 {{name}} 是官方供应商，建议切换到第三方供应商后再使用本地路由",
-    "proxyReasonClaudeDesktop": "使用 Claude Desktop 本地路由模式"
+    "proxyReasonClaudeDesktop": "Claude Desktop 模型映射或协议转换需要路由"
   },
   "confirm": {
     "deleteProvider": "删除供应商",
@@ -869,8 +884,8 @@
     "themeLight": "浅色",
     "themeDark": "深色",
     "themeSystem": "跟随系统",
-    "importExport": "SQL 导入导出",
-    "importExportHint": "导入/导出数据库 SQL 备份（仅支持导入由 Vary AI 导出的备份），便于备份或迁移。",
+    "importExport": "数据库备份与恢复",
+    "importExportHint": "导出或恢复数据库 SQL 备份。恢复会替换数据库内容，并可能重新应用客户端配置；不包含本机设置、登录文件和 Skills 文件。",
     "exportConfig": "导出 SQL 备份",
     "selectConfigFile": "选择 SQL 文件",
     "noFileSelected": "尚未选择配置文件。",
@@ -1191,8 +1206,8 @@
     },
     "configDirectoryOverride": "配置目录覆盖（高级）",
     "configDirectoryDescription": "在 WSL 等环境使用 Claude Code 或 Codex 的时候，可手动指定为 WSL 里的配置目录，供应商数据与主环境保持一致。",
-    "appConfigDir": "Vary AI 配置目录",
-    "appConfigDirDescription": "自定义 Vary AI 的配置存储位置（指定到云同步文件夹即可云同步配置）",
+    "appConfigDir": "VaryAI 应用数据目录",
+    "appConfigDirDescription": "为数据库、Skills 和数据备份选择独立目录。本机设置和登录资料保留在本机，重启后生效。",
     "browsePlaceholderApp": "例如：C:\\Users\\Administrator\\.cc-switch",
     "claudeConfigDir": "Claude Code 配置目录",
     "claudeConfigDirDescription": "覆盖 Claude 配置目录 (settings.json)。真正自定义目录会在目录内存放 Claude MCP 的 .claude.json；默认 ~/.claude 目录仍使用 Claude 默认的 ~/.claude.json。",
@@ -1794,7 +1809,7 @@
     "fallbackModelHint": "用于未明确落到 Sonnet、Opus、Fable、Haiku 角色的请求。使用第三方/中转端点时建议填写：否则这些请求（含 Haiku 后台子任务）会以原始 Claude 模型名透传给上游，可能因上游无此模型而报错。官方端点可留空。",
     "quickSetModels": "一键设置",
     "quickSetSuccess": "已导入 {{count}} 个模型到模型映射",
-    "importModelsHint": "一键设置将全部模型逐行导入下方。Claude Code 2.1.242 及以上版本可在 /model 菜单中显示这些模型，保存后需重启 Claude Code。下方角色默认模型单独配置。",
+    "importModelsHint": "获取模型列表时，将为空或不在本次列表中的默认模型和档位映射改为首个模型，保留仍可用的默认值和自定义名称。一键设置还会导入全部可选模型。保存后重启 Claude Code 2.1.242 及以上版本以加载 /model 菜单。",
     "importModelName": "显示名称",
     "importModelId": "实际请求模型",
     "removeImportedModel": "移除模型",
@@ -1818,6 +1833,10 @@
     "fetchModelsAuthFailed": "API Key 无效或无权限",
     "fetchModelsNotSupported": "该供应商不支持获取模型列表",
     "fetchModelsEndpointNotFound": "未找到可用的模型列表端点，请检查 Base URL 或确认供应商是否开放该接口",
+    "fetchModelsRateLimited": "获取模型列表被限流（HTTP 429），请稍后重试或检查供应商额度。",
+    "fetchModelsUpstreamFailed": "供应商暂时无法返回模型列表（HTTP {{status}}），请稍后重试或检查上游服务。",
+    "fetchModelsNetworkFailed": "无法连接模型列表接口，请检查网络及 VaryAI 的代理设置。",
+    "fetchModelsInvalidConfig": "无法确定模型列表接口，请检查 API 地址和“完整地址”选项。",
     "fetchModelsTimeout": "请求超时，请检查网络连接",
     "requiredFields": "请填写供应商名称、API 地址、API Key 和模型",
     "clientProtocol": "客户端协议"
@@ -1968,7 +1987,7 @@
     "pricingModelSourceHint": "选择按请求模型还是返回模型进行定价匹配"
   },
   "codexConfig": {
-    "importModelsHint": "获取模型列表只加载候选项，不修改映射；一键设置将全部模型逐行导入下方并跳过重复项。",
+    "importModelsHint": "获取模型列表会加载候选项，并将为空或不在本次列表中的默认模型改为首个模型。一键设置还会导入全部模型并跳过重复项。",
     "authJson": "auth.json (JSON) *",
     "authJsonPlaceholder": "{\n  \"OPENAI_API_KEY\": \"sk-your-api-key-here\"\n}",
     "authJsonHint": "Codex auth.json 配置内容",
@@ -2056,7 +2075,7 @@
     "defaultModel": "默认模型",
     "defaultModelHint": "启动 Gemini CLI 时优先使用此模型；进入会话后仍可通过 /model 切换。",
     "selectableModels": "可选模型列表",
-    "importModelsHint": "获取模型列表只加载候选项；一键设置将全部模型加入下方列表并跳过重复项。保留当前默认模型，保存后重启 Gemini CLI，在 /model 中选择 Manual（手动选择）并按回车，即可展开模型列表。",
+    "importModelsHint": "获取模型列表会加载候选项，并将为空或不在本次列表中的默认模型改为首个模型。一键设置还会导入全部可选模型，保留已有模型设置。保存后重启 Gemini CLI，在 /model 中选择 Manual 并按回车展开列表。",
     "modelsConfigInvalid": "请先修正下方配置 JSON 中的模型配置，再导入模型。",
     "envFile": "环境变量 (.env)",
     "envFileHint": "使用 .env 格式配置 Gemini 环境变量",
@@ -3329,7 +3348,6 @@
     "clickToSelect": "点击选择图标"
   },
   "migration": {
-    "success": "配置迁移成功",
     "skillsSuccess": "已自动导入 {{count}} 个技能到统一管理",
     "skillsFailed": "自动导入技能失败",
     "skillsFailedDescription": "请打开 Skills 页面点击“导入已有”手动导入（或重启后再试）。"
@@ -3401,7 +3419,7 @@
         },
         "listenPort": {
           "label": "监听端口",
-          "placeholder": "15721",
+          "placeholder": "15722",
           "description": "路由服务器监听的端口号（1024 ~ 65535）"
         },
         "maxRetries": {
@@ -3467,7 +3485,9 @@
         "active": "{{appLabel}} 路由中 - {{address}}:{{port}}\n切换该应用供应商为热切换",
         "broken": "{{appLabel}} 路由中，但路由服务未运行",
         "inactive": "路由 {{appLabel}} 的请求，让该应用请求走本地路由"
-      }
+      },
+      "setupRequired": "{{app}} 配置尚未初始化。请先在首页应用已添加或导入的供应商，或完成客户端初始化，再开启路由。",
+      "prerequisitesHint": "开启前需先配置客户端。Kimi、Qwen、ZCode 和 Pi 需要可用模型；WorkBuddy 需要本机产品配置；Qoder、TRAE 和豆包工作还需完成对应的连接或证书授权。"
     },
     "failover": {
       "proxyRequired": "需要先启动路由服务才能配置故障转移",
@@ -3890,7 +3910,7 @@
     "activate": "启用防护",
     "enableRouting": "启用本地路由",
     "unsupported": "当前应用不支持本地路由",
-    "desktopSetup": "请先为 Claude Desktop 配置有效的本地代理模式",
+    "desktopSetup": "请先添加并选择一个包含可用模型的 Claude Desktop 供应商。",
     "routeFailed": "路由未成功接管，未启用审计",
     "enableFailed": "安全审计操作失败",
     "targetApp": "联动应用",
@@ -4033,10 +4053,13 @@
     "noRules": "暂无规则",
     "resetBuiltin": "恢复默认",
     "sandboxTitle": "规则沙箱测试",
-    "sandboxDescription": "不执行工具、不落盘、不回显原文，仅返回固定枚举结论。",
+    "sandboxDescription": "手动预览规则，不受实时观测总开关影响；不执行工具、不产生风险记录、不保存或回显原文。",
+    "sandboxObservationDisabled": "实时工具风险观测已关闭。以下仅为手动规则测试，不代表实时防护已开启。",
     "sandboxTool": "工具名",
     "sandboxClient": "客户端（可选）",
     "sandboxDefinitionRef": "可信 schema 引用（可选）",
+    "sandboxInvalidJson": "JSON 格式不合法，请检查括号、引号和逗号后再测试。",
+    "sandboxOpenaiWriteHint": "OpenAI write_file 使用 path 字段，例如 {\"path\":\"/etc/sudoers\",\"content\":\"test\"}；file_path 是 Claude、Gemini 的字段。缺少可识别字段会显示 unchecked（未检查），不代表安全。",
     "sandboxTrustHint": "不会根据工具名推断可信身份。仅测试对应客户端的内置工具时，显式填写已知 schema：builtin:claude:tools:v1、builtin:codex:tools:v1、builtin:gemini:tools:v1 或 builtin:openai:tools:v1。MCP 工具不得冒充内置身份。",
     "fieldTarget": "选择器目标",
     "fieldToolRefs": "精确工具引用（JSON 数组）",
@@ -4251,7 +4274,6 @@
       "blacklist": "黑名单 · 风险预警",
       "matchKind": "匹配范围",
       "pattern": "命令或匹配内容",
-      "advanced": "高级：关键字 / 正则",
       "severity": "黑名单风险级别",
       "riskCategory": "风险类别",
       "whitelistHint": "白名单只覆盖字面量 unknown 分类的普通命令，不改变已知的脚本、网络、变更或提权类别，也不赋予可信身份。",
@@ -4377,7 +4399,7 @@
       "renew": "更新证书并恢复接管",
       "renewing": "正在更新证书…",
       "renewed": "证书已更新，请完全退出并重新打开 Qoder。",
-      "renewFailed": "证书更新失败，请完成 macOS 系统认证后重试。",
+      "renewFailed": "证书更新失败。",
       "expiredTitle": "Qoder 本机证书已过期",
       "expiredDescription": "Qoder 官方账号的安全接管证书已过期。可直接在此更新证书并恢复接管，无需重启 VaryAI；macOS 可能要求系统认证。完成后请完全退出并重新打开 Qoder，以重新读取接口地址和证书信任。第三方模型的 HTTP 路由不依赖此证书。",
       "title": "启用 Qoder 安全接管",
@@ -4395,7 +4417,18 @@
       "clearDescription": "将关闭 Qoder 接管、恢复客户端配置，移除本机证书的钥匙串信任并删除证书文件。macOS 可能要求系统密码以确认移除信任。完成后请完全重启 Qoder；清除后不会自动生成证书，只有点击“创建 / 重建证书”才会重新创建。",
       "rebuildDescription": "将替换现有证书并启用 Qoder 接管。macOS 可能先后要求认证以移除旧信任、添加新信任；密码只交给系统。完成后请完全重启 Qoder。",
       "cleared": "证书已清除，Qoder 接管已关闭，请完全重启 Qoder。",
-      "operationFailed": "证书操作未完成，请检查系统认证并重试。",
+      "operationFailed": "证书操作失败。",
+      "failureDetail": "失败阶段：{{stage}}；状态：{{status}}。",
+      "failureStages": {
+        "codec": "Qoder 版本兼容性检查",
+        "data": "证书文件或格式处理",
+        "generate": "生成证书",
+        "inspect": "检查证书",
+        "verify_trust": "校验证书信任",
+        "install_trust": "安装证书信任",
+        "remove_trust": "移除证书信任",
+        "delete_certificate": "删除钥匙串证书"
+      },
       "statusFailed": "无法读取证书状态，请稍后重试。"
     }
   },
@@ -4526,6 +4559,8 @@
     "resultWarning": "风险预警"
   },
   "gatewayKeys": {
+    "created": "密钥创建成功",
+    "copied": "密钥已复制",
     "nameExists": "已存在同名密钥，请使用其他名称。",
     "sourceAgent": "请求来源",
     "upstreamModel": "实际转发模型",
@@ -4585,7 +4620,7 @@
     "traeHint": "覆盖自定义模型路由；仅通过审计桥观察的官方请求无法由此策略拦截。",
     "filterKey": "网关密钥",
     "allKeys": "全部密钥",
-    "usageHint": "按密钥、计量周期、agent、客户端请求模型及实际转发模型汇总最近 200 条记录。显示已结束的请求，未上报用量单独计数；旧记录未保存实际转发模型时显示“未记录”。",
+    "usageHint": "按密钥、计量周期、agent、客户端请求模型及实际转发模型汇总最近 200 条记录。显示已结束的请求，未上报用量单独计数；旧记录未保存实际转发模型时显示“未记录”。 客户端自动生成标题、摘要等后台请求也会计入，所用模型可能与当前聊天不同。",
     "noUsage": "还没有观察到请求。请绑定已开启本地路由的 agent，或使用网关密钥发送请求。",
     "usageRow": "{{requests}} 次请求 · {{tokens}} Token · {{unmetered}} 次未上报用量",
     "lastUsed": "最近请求：{{time}}",
@@ -5488,5 +5523,24 @@
       "reauth": "保存的登录已失效或不完整，请在来源应用中重新登录后再导入。"
     },
     "subscriptionWarning": "将保存的 Codex 授权复制到 Vary AI。使用前请先停止在来源应用中使用此账号，同时刷新登录凭据可能导致任一应用掉线。"
+  },
+  "storage": {
+    "title": "恢复 VaryAI 存储",
+    "description": "配置的 VaryAI 数据目录不可用或无效。请重新连接、选择其他原生数据目录，或明确创建空存储。",
+    "destination": "配置的数据目录",
+    "startEmpty": "创建空存储",
+    "useExisting": "选择其他数据目录",
+    "working": "正在准备存储…",
+    "setupRequired": "配置的 VaryAI 数据目录不可用。",
+    "readFailed": "无法读取所选来源，请检查位置和权限。",
+    "writeFailed": "未能准备存储，原文件已保留。请检查可用空间和权限后重试。",
+    "destinationChanged": "存储位置已发生变化，请重新加载恢复页面或选择独立目录。",
+    "invalidTarget": "请选择位于来源目录之外的独立 VaryAI 数据目录。",
+    "invalidSettings": "数据目录设置格式无效，请选择独立的 VaryAI 数据目录。",
+    "unsupportedSource": "数据库格式不受支持或数据不完整。请选择兼容备份，不要删除源数据库或降低其版本号。",
+    "invalidRecovery": "恢复信息不完整或已发生变化，请选择经过验证的备份。",
+    "restartRequired": "请先重启 VaryAI，再准备其他存储位置。",
+    "useDefault": "使用默认数据目录",
+    "setupReadFailed": "无法读取 VaryAI 存储位置，请检查数据目录设置和权限。"
   }
 }

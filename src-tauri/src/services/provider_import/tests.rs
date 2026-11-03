@@ -570,3 +570,11 @@ fn provider_backup_model_context_overrides_and_vendor_catalog_remain_independent
     );
     Ok(())
 }
+
+#[test]
+fn provider_import_rejects_both_application_default_gateway_ports() {
+    for port in [15721, crate::proxy::types::DEFAULT_PROXY_PORT] {
+        assert!(self_route(&format!("http://127.0.0.1:{port}/v1")));
+    }
+    assert!(!self_route("https://synthetic-upstream.example/v1"));
+}

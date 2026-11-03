@@ -4,12 +4,18 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { ProviderForm } from "@/components/providers/forms/ProviderForm";
 import { providersApi } from "@/lib/api/providers";
 import { fetchModelsForConfig, type FetchedModel } from "@/lib/api/model-fetch";
+import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
+
+vi.mock("@/lib/api/provider-protocol-detection", () => ({
+  detectProviderProtocols: vi.fn().mockResolvedValue([]),
+}));
 
 vi.mock("@/lib/api/model-fetch", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api/model-fetch")>()),
@@ -37,6 +43,78 @@ vi.mock("@/hooks/useProxyStatus", () => ({
 }));
 
 describe("WorkBuddyProviderForm", () => {
+  it("keeps probe selection separate and reuses the discovered catalog for model configuration", async () => {
+    vi.useFakeTimers();
+    Element.prototype.scrollIntoView = vi.fn();
+    vi.mocked(fetchModelsForConfig)
+      .mockClear()
+      .mockResolvedValue([
+        { id: "configured-model", ownedBy: null },
+        { id: "probe-model", ownedBy: null },
+      ]);
+    const onSubmit = vi.fn();
+    try {
+      render(
+        <ProviderForm
+          appId="workbuddy"
+          submitLabel="Save WorkBuddy"
+          onSubmit={onSubmit}
+          onCancel={vi.fn()}
+          initialData={{
+            name: "Synthetic provider",
+            settingsConfig: {
+              id: "configured-model",
+              url: "https://fixture.example/v1",
+              apiKey: "synthetic-key",
+            },
+          }}
+        />,
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(850);
+      });
+      const detection = within(
+        screen.getByRole("region", { name: "providerDetection.title" }),
+      );
+      fireEvent.click(
+        detection.getByRole("button", { name: "Select detection model" }),
+      );
+      fireEvent.click(screen.getByRole("option", { name: "probe-model" }));
+      expect(screen.getByLabelText("workbuddy.form.modelId")).toHaveValue(
+        "configured-model",
+      );
+      await act(async () => {
+        fireEvent.click(
+          detection.getByRole("button", { name: "providerDetection.check" }),
+        );
+      });
+      expect(detectProviderProtocols).toHaveBeenLastCalledWith(
+        expect.objectContaining({ model: "probe-model" }),
+      );
+      expect(fetchModelsForConfig).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "providerForm.fetchModels" }),
+        );
+      });
+      expect(fetchModelsForConfig).toHaveBeenCalledTimes(1);
+      fireEvent.click(
+        screen.getByRole("button", { name: "workbuddy.form.addFetchedModels" }),
+      );
+      vi.useRealTimers();
+      fireEvent.click(screen.getByRole("button", { name: "Save WorkBuddy" }));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+      const config = JSON.parse(onSubmit.mock.calls[0][0].settingsConfig);
+      expect(config.id).toBe("configured-model");
+      expect(config.models.map((model: { id: string }) => model.id)).toEqual([
+        "configured-model",
+        "probe-model",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("saves multiple model IDs with shared credentials and rejects duplicates", async () => {
     const onSubmit = vi.fn();
     render(
@@ -194,7 +272,7 @@ describe("WorkBuddyProviderForm", () => {
       );
       expect(screen.getByLabelText("workbuddy.form.url")).toHaveValue(url);
       expect(screen.getByLabelText("workbuddy.form.modelId")).toHaveValue(
-        "old-model",
+        "grok-4.5",
       );
       expect(onSubmit).not.toHaveBeenCalled();
     });

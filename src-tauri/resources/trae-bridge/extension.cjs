@@ -95,7 +95,7 @@ async function activate(context) {
       }
     }),
   );
-  const directory = path.join(os.homedir(), ".cc-switch", "trae-bridge");
+  const directory = path.join(os.homedir(), ".varyai", "trae-bridge");
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   fs.chmodSync(directory, 0o700);
   socketPath = path.join(directory, `bridge-${process.pid}.sock`);

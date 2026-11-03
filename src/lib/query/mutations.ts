@@ -93,7 +93,7 @@ export const useAddProviderMutation = (appId: AppId) => {
       await providersApi.add(
         newProvider,
         appId,
-        ["qoder", "trae", "kimi", "qwen", "zcode"].includes(appId)
+        ["workbuddy", "qoder", "trae", "kimi", "qwen", "zcode"].includes(appId)
           ? false
           : addToLive,
       );
@@ -336,7 +336,7 @@ export const useSwitchProviderMutation = (appId: AppId) => {
       // A switch may use normal live writes after another process has reset
       // takeover. Refresh both sources before reporting success so an old
       // in-memory proxy target cannot mask the selected provider on the home page.
-      if (isTakeoverAppId(appId) || appId === "claude-desktop") {
+      if (isTakeoverAppId(appId)) {
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: proxyKeys.status }),
           queryClient.invalidateQueries({ queryKey: proxyKeys.takeoverStatus }),

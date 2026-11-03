@@ -5,9 +5,9 @@
 //! OpenAI-compatible Chat Completions endpoint.
 
 use super::codex_chat_common::{
-    append_reasoning_content, extract_reasoning_field_text, extract_reasoning_summary_text,
-    response_function_call_item, response_function_call_item_with_namespace,
-    split_leading_think_block,
+    allows_long_thinking_tags, append_reasoning_content, extract_reasoning_field_text,
+    extract_reasoning_summary_text, response_function_call_item,
+    response_function_call_item_with_namespace, split_leading_think_block_with_compatibility,
 };
 use crate::provider::CodexChatReasoningConfig;
 use crate::proxy::{
@@ -15,6 +15,10 @@ use crate::proxy::{
     json_canonical::{
         canonical_json_string, canonicalize_json_string_if_parseable, canonicalize_tool_arguments,
         short_sha256_hex,
+    },
+    security::history_provenance::{
+        DlpHistoryLeafField, DlpHistoryMapping, DlpHistoryProjection, DlpHistorySeparator,
+        DlpHistoryTarget, DlpHistoryTrace,
     },
     tool_media::{
         chat_file_from_input_file, chat_media_part_from_tool_part, flush_pending_chat_tool_media,
@@ -265,8 +269,20 @@ pub fn responses_to_chat_completions_with_reasoning(
     body: Value,
     reasoning_config: Option<&CodexChatReasoningConfig>,
 ) -> Result<Value, ProxyError> {
+    responses_to_chat_completions_with_reasoning_and_history(body, reasoning_config, None)
+        .map(|(body, _)| body)
+}
+
+/// Carry only exact source coordinates through the actual conversion operations.
+pub(crate) fn responses_to_chat_completions_with_reasoning_and_history(
+    body: impl std::borrow::Borrow<Value>,
+    reasoning_config: Option<&CodexChatReasoningConfig>,
+    projection: Option<&DlpHistoryProjection<'_>>,
+) -> Result<(Value, Option<DlpHistoryMapping>), ProxyError> {
+    let body = body.borrow();
+    let mut history = CodexChatHistory::new(body, projection);
     let mut result = json!({});
-    let tool_context = build_codex_tool_context_from_request(&body);
+    let tool_context = build_codex_tool_context_from_request(body);
 
     if let Some(model) = body.get("model") {
         result["model"] = model.clone();
@@ -284,8 +300,15 @@ pub fn responses_to_chat_completions_with_reasoning(
     }
 
     if let Some(input) = body.get("input") {
-        append_responses_input_as_chat_messages(input, &mut messages, &tool_context)?;
+        append_responses_input_as_chat_messages(input, &mut messages, &tool_context, &mut history)?;
     }
+    // Fill only after all real reasoning has been attached, and only by explicit opt-in.
+    if reasoning_config
+        .is_some_and(|config| config.requires_tool_reasoning_placeholder == Some(true))
+    {
+        backfill_tool_call_reasoning_placeholders(&mut messages);
+    }
+    history.remap_system_messages(&messages);
     let messages = collapse_system_messages_to_head(messages);
     result["messages"] = json!(messages);
 
@@ -310,7 +333,7 @@ pub fn responses_to_chat_completions_with_reasoning(
         }
     }
 
-    apply_reasoning_options(&mut result, &body, model, reasoning_config);
+    apply_reasoning_options(&mut result, body, model, reasoning_config);
 
     let tools = tool_context.chat_tools();
     if !tools.is_empty() {
@@ -347,7 +370,10 @@ pub fn responses_to_chat_completions_with_reasoning(
     // 与 Claude→openai_chat 路径共用同一 helper，保证两个客户端方向一致。
     super::transform::inject_openai_stream_include_usage(&mut result);
 
-    Ok(result)
+    let mapping = history
+        .finish()
+        .and_then(|mut mapping| mapping.seal_chat_targets(&result).then_some(mapping));
+    Ok((result, mapping))
 }
 
 fn apply_reasoning_options(
@@ -596,10 +622,286 @@ fn instruction_text(value: &Value) -> String {
     }
 }
 
+/// Proof metadata follows the same moves as text, never a final-text lookup.
+/// Missing proof invalidates one target; optional allocation failure is sticky.
+struct CodexChatHistory<'a, 'request> {
+    projection: Option<&'a DlpHistoryProjection<'request>>,
+    mapping: Option<DlpHistoryMapping>,
+    pending: Option<DlpHistoryTrace>,
+    failed: bool,
+}
+
+impl<'a, 'request> CodexChatHistory<'a, 'request> {
+    fn new(body: &Value, projection: Option<&'a DlpHistoryProjection<'request>>) -> Self {
+        let projection = projection.filter(|projection| projection.consumed_body_matches(body));
+        let mapping = projection.and_then(DlpHistoryProjection::mapping);
+        Self {
+            projection,
+            failed: projection.is_some() && mapping.is_none(),
+            mapping,
+            pending: None,
+        }
+    }
+
+    fn fail(&mut self) {
+        self.failed = true;
+        self.mapping = None;
+        self.pending = None;
+    }
+
+    fn trace(&mut self) -> Option<DlpHistoryTrace> {
+        if self.failed || self.mapping.is_none() {
+            return None;
+        }
+        let trace = self.projection.and_then(DlpHistoryProjection::trace);
+        if trace.is_none() {
+            self.fail();
+        }
+        trace
+    }
+
+    fn push_leaf(
+        &mut self,
+        trace: &mut DlpHistoryTrace,
+        input_index: usize,
+        field: DlpHistoryLeafField,
+        part_index: usize,
+        separator: DlpHistorySeparator,
+    ) {
+        if let Some(source) = self.projection.and_then(|projection| {
+            projection.source_for_responses_leaf(input_index, field, part_index)
+        }) {
+            trace.push(&source, separator);
+        } else {
+            trace.invalidate();
+        }
+        if trace.failed() {
+            self.fail();
+        }
+    }
+
+    fn item_reasoning_trace(
+        &mut self,
+        item: &Value,
+        input_index: usize,
+        reasoning_item: bool,
+    ) -> Option<DlpHistoryTrace> {
+        if !reasoning_item {
+            // Other reasoning aliases are still converted, but are not supported sources.
+            if !matches!(
+                item.get("type").and_then(Value::as_str),
+                Some("function_call" | "custom_tool_call")
+            ) {
+                return None;
+            }
+            let text = item.get("reasoning_content")?.as_str()?;
+            if text.is_empty() {
+                return None;
+            }
+            let mut trace = self.trace()?;
+            self.push_leaf(
+                &mut trace,
+                input_index,
+                DlpHistoryLeafField::CallReasoning,
+                0,
+                DlpHistorySeparator::None,
+            );
+            if text.trim() != text {
+                trace.invalidate();
+            }
+            return Some(trace);
+        }
+        // Match the extractor's priority, not just a supported-looking sibling.
+        if ["reasoning_content", "content", "text"].iter().any(|key| {
+            item.get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty())
+        }) {
+            return None;
+        }
+        let parts = item.get("summary")?.as_array()?;
+        let mut trace = self.trace()?;
+        let mut first = true;
+        for (part_index, part) in parts.iter().enumerate() {
+            let text = part
+                .get("text")
+                .and_then(Value::as_str)
+                .or_else(|| part.get("content").and_then(Value::as_str))
+                .or_else(|| part.as_str());
+            let Some(text) = text.filter(|text| !text.is_empty()) else {
+                continue;
+            };
+            self.push_leaf(
+                &mut trace,
+                input_index,
+                DlpHistoryLeafField::ReasoningSummary,
+                part_index,
+                if first {
+                    DlpHistorySeparator::None
+                } else {
+                    DlpHistorySeparator::DoubleNewline
+                },
+            );
+            if text.trim() != text {
+                trace.invalidate();
+            }
+            first = false;
+        }
+        Some(trace)
+    }
+
+    fn record_content(&mut self, item: &Value, input_index: usize, message_index: usize) {
+        if item.get("type").and_then(Value::as_str) != Some("message")
+            || item.get("role").and_then(Value::as_str) != Some("assistant")
+        {
+            return;
+        }
+        let Some(parts) = item.get("content").and_then(Value::as_array) else {
+            return;
+        };
+        let Some(mut trace) = self.trace() else {
+            return;
+        };
+        let mut first = true;
+        for (part_index, part) in parts.iter().enumerate() {
+            let part_type = part.get("type").and_then(Value::as_str).unwrap_or("");
+            if matches!(part_type, "input_image" | "input_file" | "input_audio") {
+                trace.invalidate();
+                continue;
+            }
+            let text = match part_type {
+                "input_text" | "output_text" | "text" => part.get("text"),
+                "refusal" => part.get("refusal"),
+                _ => None,
+            }
+            .and_then(Value::as_str);
+            if text.is_none_or(str::is_empty) {
+                continue;
+            }
+            self.push_leaf(
+                &mut trace,
+                input_index,
+                DlpHistoryLeafField::OutputText,
+                part_index,
+                if first {
+                    DlpHistorySeparator::None
+                } else {
+                    DlpHistorySeparator::Newline
+                },
+            );
+            first = false;
+        }
+        self.record(DlpHistoryTarget::ChatContent { message_index }, Some(trace));
+    }
+
+    fn record(&mut self, target: DlpHistoryTarget, trace: Option<DlpHistoryTrace>) {
+        if trace.as_ref().is_some_and(DlpHistoryTrace::failed) {
+            self.fail();
+            return;
+        }
+        if let Some(mapping) = self.mapping.as_mut() {
+            if let Some(trace) = trace {
+                mapping.record_trace(target, trace);
+            } else {
+                mapping.remove(target);
+            }
+            if mapping.failed() {
+                self.fail();
+            }
+        }
+    }
+
+    fn append_pending(&mut self, trace: Option<DlpHistoryTrace>, has_existing: bool) {
+        self.pending = if has_existing {
+            Self::join(self.pending.take(), trace)
+        } else {
+            trace
+        };
+        if self.pending.as_ref().is_some_and(DlpHistoryTrace::failed) {
+            self.fail();
+        }
+    }
+
+    fn join(
+        existing: Option<DlpHistoryTrace>,
+        added: Option<DlpHistoryTrace>,
+    ) -> Option<DlpHistoryTrace> {
+        match (existing, added) {
+            (Some(mut existing), Some(added)) => {
+                existing.append(added, DlpHistorySeparator::DoubleNewline);
+                Some(existing)
+            }
+            (Some(mut trace), None) | (None, Some(mut trace)) => {
+                trace.invalidate();
+                Some(trace)
+            }
+            (None, None) => None,
+        }
+    }
+
+    fn attach(&mut self, message_index: usize, has_existing: bool) {
+        let target = DlpHistoryTarget::ChatReasoning { message_index };
+        let pending = self.pending.take();
+        let trace = if has_existing {
+            Self::join(
+                self.mapping
+                    .as_mut()
+                    .and_then(|mapping| mapping.take_trace(target)),
+                pending,
+            )
+        } else {
+            pending
+        };
+        self.record(target, trace);
+    }
+
+    fn remove_reasoning(&mut self, message_index: usize) {
+        if let Some(mapping) = self.mapping.as_mut() {
+            mapping.remove(DlpHistoryTarget::ChatReasoning { message_index });
+        }
+    }
+
+    fn remap_system_messages(&mut self, messages: &[Value]) {
+        let Some(mapping) = self.mapping.as_mut() else {
+            return;
+        };
+        let removed = |message: &Value| {
+            message.get("role").and_then(Value::as_str) == Some("system")
+                && message.get("content").and_then(Value::as_str).is_some()
+        };
+        let has_head = messages.iter().any(|message| {
+            removed(message)
+                && message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.trim().is_empty())
+        });
+        mapping.remap_chat_targets(|index| {
+            let message = messages.get(index)?;
+            if removed(message) {
+                return None;
+            }
+            Some(
+                messages[..index]
+                    .iter()
+                    .filter(|message| !removed(message))
+                    .count()
+                    + usize::from(has_head),
+            )
+        });
+    }
+
+    fn finish(self) -> Option<DlpHistoryMapping> {
+        self.mapping
+            .filter(|mapping| !self.failed && mapping.valid())
+    }
+}
+
 fn append_responses_input_as_chat_messages(
     input: &Value,
     messages: &mut Vec<Value>,
     tool_context: &CodexToolContext,
+    history: &mut CodexChatHistory<'_, '_>,
 ) -> Result<(), ProxyError> {
     let mut pending_tool_calls = Vec::new();
     let mut pending_media = Vec::new();
@@ -614,7 +916,7 @@ fn append_responses_input_as_chat_messages(
             }));
         }
         Value::Array(items) => {
-            for item in items {
+            for (input_index, item) in items.iter().enumerate() {
                 append_responses_item_as_chat_message(
                     item,
                     messages,
@@ -622,7 +924,11 @@ fn append_responses_input_as_chat_messages(
                     &mut pending_media,
                     &mut pending_reasoning,
                     &mut last_assistant_index,
-                    tool_context,
+                    CodexChatInputItem {
+                        tool_context,
+                        history,
+                        input_index,
+                    },
                 )?;
             }
         }
@@ -634,7 +940,11 @@ fn append_responses_input_as_chat_messages(
                 &mut pending_media,
                 &mut pending_reasoning,
                 &mut last_assistant_index,
-                tool_context,
+                CodexChatInputItem {
+                    tool_context,
+                    history,
+                    input_index: 0,
+                },
             )?;
         }
         _ => {}
@@ -650,6 +960,7 @@ fn append_responses_input_as_chat_messages(
         &mut pending_media,
         &mut pending_reasoning,
         &mut last_assistant_index,
+        history,
     );
     // 整个 input 处理完毕后仍剩余的 pending reasoning 属于「真正的尾部」思考
     // （其后已没有任何可前向附挂的 message / function_call），回溯附挂到最后一条
@@ -659,9 +970,15 @@ fn append_responses_input_as_chat_messages(
         messages,
         last_assistant_index,
         &mut pending_reasoning,
+        history,
     );
-    backfill_tool_call_reasoning_placeholders(messages);
     Ok(())
+}
+
+struct CodexChatInputItem<'context, 'history, 'projection, 'source> {
+    tool_context: &'context CodexToolContext,
+    history: &'history mut CodexChatHistory<'projection, 'source>,
+    input_index: usize,
 }
 
 fn append_responses_item_as_chat_message(
@@ -671,23 +988,46 @@ fn append_responses_item_as_chat_message(
     pending_media: &mut Vec<Value>,
     pending_reasoning: &mut Option<String>,
     last_assistant_index: &mut Option<usize>,
-    tool_context: &CodexToolContext,
+    context: CodexChatInputItem<'_, '_, '_, '_>,
 ) -> Result<(), ProxyError> {
+    let CodexChatInputItem {
+        tool_context,
+        history,
+        input_index,
+    } = context;
     let item_type = item.get("type").and_then(|v| v.as_str());
     match item_type {
         Some("function_call") => {
-            append_unique_pending_reasoning(pending_reasoning, responses_item_reasoning_text(item));
+            let trace = history.item_reasoning_trace(item, input_index, false);
+            append_unique_pending_reasoning(
+                pending_reasoning,
+                responses_item_reasoning_text(item),
+                trace,
+                history,
+            );
             pending_tool_calls.push(responses_function_call_to_chat_tool_call(
                 item,
                 tool_context,
             ));
         }
         Some("custom_tool_call") => {
-            append_unique_pending_reasoning(pending_reasoning, responses_item_reasoning_text(item));
+            let trace = history.item_reasoning_trace(item, input_index, false);
+            append_unique_pending_reasoning(
+                pending_reasoning,
+                responses_item_reasoning_text(item),
+                trace,
+                history,
+            );
             pending_tool_calls.push(responses_custom_tool_call_to_chat_tool_call(item));
         }
         Some("tool_search_call") => {
-            append_unique_pending_reasoning(pending_reasoning, responses_item_reasoning_text(item));
+            let trace = history.item_reasoning_trace(item, input_index, false);
+            append_unique_pending_reasoning(
+                pending_reasoning,
+                responses_item_reasoning_text(item),
+                trace,
+                history,
+            );
             pending_tool_calls.push(responses_tool_search_call_to_chat_tool_call(item));
         }
         Some("function_call_output") => {
@@ -697,6 +1037,7 @@ fn append_responses_item_as_chat_message(
                 pending_media,
                 pending_reasoning,
                 last_assistant_index,
+                history,
             );
             let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
             let media_plan = item
@@ -728,6 +1069,7 @@ fn append_responses_item_as_chat_message(
                 pending_media,
                 pending_reasoning,
                 last_assistant_index,
+                history,
             );
             let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
             let mut transformed_item = item.clone();
@@ -769,7 +1111,13 @@ fn append_responses_item_as_chat_message(
             // reasoning_content，思考型模型（kimi 等）多轮对话因此中途"断片"。
             // 真正的尾部剩余由 input 结束时的收尾逻辑、或回合边界消息（user 等）
             // 到达时回溯附挂，见 attach_pending_reasoning_to_previous_assistant。
-            append_pending_reasoning(pending_reasoning, responses_reasoning_item_text(item));
+            let trace = history.item_reasoning_trace(item, input_index, true);
+            append_pending_reasoning(
+                pending_reasoning,
+                responses_reasoning_item_text(item),
+                trace,
+                history,
+            );
         }
         // Tool declarations are promoted into the tool registry, not chat messages.
         Some("additional_tools") => {}
@@ -780,6 +1128,7 @@ fn append_responses_item_as_chat_message(
                 pending_media,
                 pending_reasoning,
                 last_assistant_index,
+                history,
             );
             // `flush_pending_tool_calls` intentionally returns early when
             // there is no new assistant batch. A previous tool result may
@@ -796,7 +1145,13 @@ fn append_responses_item_as_chat_message(
             });
             if role == "assistant" {
                 let mut message = message;
-                attach_pending_reasoning_to_assistant(&mut message, pending_reasoning);
+                attach_pending_reasoning_to_assistant(
+                    &mut message,
+                    pending_reasoning,
+                    messages.len(),
+                    history,
+                );
+                history.record_content(item, input_index, messages.len());
                 update_last_assistant_index(messages, &message, last_assistant_index);
                 messages.push(message);
                 return Ok(());
@@ -809,6 +1164,7 @@ fn append_responses_item_as_chat_message(
                     messages,
                     *last_assistant_index,
                     pending_reasoning,
+                    history,
                 );
             }
             update_last_assistant_index(messages, &message, last_assistant_index);
@@ -822,6 +1178,7 @@ fn append_responses_item_as_chat_message(
                     pending_media,
                     pending_reasoning,
                     last_assistant_index,
+                    history,
                 );
                 flush_pending_chat_tool_media(messages, pending_media);
                 let message = responses_message_item_to_chat_message(
@@ -829,7 +1186,10 @@ fn append_responses_item_as_chat_message(
                     pending_reasoning,
                     messages,
                     *last_assistant_index,
+                    history,
+                    input_index,
                 );
+                history.record_content(item, input_index, messages.len());
                 update_last_assistant_index(messages, &message, last_assistant_index);
                 messages.push(message);
             } else if pending_media.is_empty() {
@@ -841,6 +1201,7 @@ fn append_responses_item_as_chat_message(
                     pending_media,
                     pending_reasoning,
                     last_assistant_index,
+                    history,
                 );
             }
         }
@@ -852,6 +1213,7 @@ fn append_responses_item_as_chat_message(
                     pending_media,
                     pending_reasoning,
                     last_assistant_index,
+                    history,
                 );
                 flush_pending_chat_tool_media(messages, pending_media);
                 let message = responses_message_item_to_chat_message(
@@ -859,6 +1221,8 @@ fn append_responses_item_as_chat_message(
                     pending_reasoning,
                     messages,
                     *last_assistant_index,
+                    history,
+                    input_index,
                 );
                 update_last_assistant_index(messages, &message, last_assistant_index);
                 messages.push(message);
@@ -871,6 +1235,7 @@ fn append_responses_item_as_chat_message(
                     pending_media,
                     pending_reasoning,
                     last_assistant_index,
+                    history,
                 );
             }
         }
@@ -885,6 +1250,7 @@ fn flush_pending_tool_calls(
     pending_media: &mut Vec<Value>,
     pending_reasoning: &mut Option<String>,
     last_assistant_index: &mut Option<usize>,
+    history: &mut CodexChatHistory<'_, '_>,
 ) {
     if pending_tool_calls.is_empty() {
         return;
@@ -899,6 +1265,7 @@ fn flush_pending_tool_calls(
         messages,
         pending_tool_calls,
         pending_reasoning,
+        history,
     ) {
         *last_assistant_index = Some(messages.len() - 1);
         return;
@@ -913,7 +1280,7 @@ fn flush_pending_tool_calls(
         "content": null,
         "tool_calls": std::mem::take(pending_tool_calls)
     });
-    attach_pending_reasoning_to_assistant(&mut message, pending_reasoning);
+    attach_pending_reasoning_to_assistant(&mut message, pending_reasoning, messages.len(), history);
     *last_assistant_index = Some(messages.len());
     messages.push(message);
 }
@@ -927,7 +1294,9 @@ fn merge_pending_tool_calls_into_adjacent_assistant(
     messages: &mut [Value],
     pending_tool_calls: &mut Vec<Value>,
     pending_reasoning: &mut Option<String>,
+    history: &mut CodexChatHistory<'_, '_>,
 ) -> bool {
+    let message_index = messages.len().saturating_sub(1);
     let Some(message) = messages.last_mut() else {
         return false;
     };
@@ -949,13 +1318,20 @@ fn merge_pending_tool_calls_into_adjacent_assistant(
         "tool_calls".to_string(),
         Value::Array(std::mem::take(pending_tool_calls)),
     );
-    attach_pending_reasoning_to_assistant_unique(message, pending_reasoning);
+    attach_pending_reasoning_to_assistant_unique(
+        message,
+        pending_reasoning,
+        message_index,
+        history,
+    );
     true
 }
 
 fn attach_pending_reasoning_to_assistant_unique(
     message: &mut Value,
     pending_reasoning: &mut Option<String>,
+    message_index: usize,
+    history: &mut CodexChatHistory<'_, '_>,
 ) {
     let Some(reasoning) = pending_reasoning.take() else {
         return;
@@ -980,7 +1356,21 @@ fn attach_pending_reasoning_to_assistant_unique(
         .filter(|segment| !segment.is_empty() && !existing_segments.contains(segment))
         .collect();
     if missing_segments.is_empty() {
+        history.pending = None;
         return;
+    }
+    let unchanged_segments = |text: &str| {
+        text.split("\n\n")
+            .all(|part| !part.is_empty() && part.trim() == part)
+    };
+    let complete_append = missing_segments.len() == reasoning.split("\n\n").count()
+        && unchanged_segments(reasoning)
+        && (existing_text.is_empty() || unchanged_segments(existing_text));
+    if complete_append {
+        history.attach(message_index, !existing_text.is_empty());
+    } else {
+        history.remove_reasoning(message_index);
+        history.pending = None;
     }
 
     let merged = if existing_segments.is_empty() {
@@ -1000,6 +1390,8 @@ fn responses_message_item_to_chat_message(
     pending_reasoning: &mut Option<String>,
     messages: &mut [Value],
     last_assistant_index: Option<usize>,
+    history: &mut CodexChatHistory<'_, '_>,
+    input_index: usize,
 ) -> Value {
     let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("user");
     let chat_role = responses_role_to_chat_role(role);
@@ -1014,8 +1406,19 @@ fn responses_message_item_to_chat_message(
     });
 
     if chat_role == "assistant" {
-        append_pending_reasoning(pending_reasoning, responses_message_reasoning_text(item));
-        attach_pending_reasoning_to_assistant(&mut message, pending_reasoning);
+        let trace = history.item_reasoning_trace(item, input_index, false);
+        append_pending_reasoning(
+            pending_reasoning,
+            responses_message_reasoning_text(item),
+            trace,
+            history,
+        );
+        attach_pending_reasoning_to_assistant(
+            &mut message,
+            pending_reasoning,
+            messages.len(),
+            history,
+        );
     } else {
         // 非 assistant 的回合边界消息（user 等）：pending reasoning 不再直接丢弃，
         // 回溯附挂到上一条 assistant；其已有 reasoning_content 时追加尾部
@@ -1024,6 +1427,7 @@ fn responses_message_item_to_chat_message(
             messages,
             last_assistant_index,
             pending_reasoning,
+            history,
         );
     }
 
@@ -1056,7 +1460,12 @@ fn update_last_assistant_index(
     }
 }
 
-fn append_pending_reasoning(pending_reasoning: &mut Option<String>, reasoning: Option<String>) {
+fn append_pending_reasoning(
+    pending_reasoning: &mut Option<String>,
+    reasoning: Option<String>,
+    trace: Option<DlpHistoryTrace>,
+    history: &mut CodexChatHistory<'_, '_>,
+) {
     let Some(reasoning) = reasoning else {
         return;
     };
@@ -1065,6 +1474,12 @@ fn append_pending_reasoning(pending_reasoning: &mut Option<String>, reasoning: O
         return;
     }
 
+    history.append_pending(
+        trace,
+        pending_reasoning
+            .as_ref()
+            .is_some_and(|text| !text.is_empty()),
+    );
     match pending_reasoning {
         Some(existing) if !existing.is_empty() => {
             existing.push_str("\n\n");
@@ -1079,6 +1494,8 @@ fn append_pending_reasoning(pending_reasoning: &mut Option<String>, reasoning: O
 fn append_unique_pending_reasoning(
     pending_reasoning: &mut Option<String>,
     reasoning: Option<String>,
+    trace: Option<DlpHistoryTrace>,
+    history: &mut CodexChatHistory<'_, '_>,
 ) {
     let Some(reasoning) = reasoning else {
         return;
@@ -1088,8 +1505,19 @@ fn append_unique_pending_reasoning(
         return;
     }
 
+    if pending_reasoning
+        .as_ref()
+        .is_some_and(|existing| existing.contains(reasoning))
+    {
+        return;
+    }
+    history.append_pending(
+        trace,
+        pending_reasoning
+            .as_ref()
+            .is_some_and(|text| !text.is_empty()),
+    );
     match pending_reasoning {
-        Some(existing) if existing.contains(reasoning) => {}
         Some(existing) if !existing.is_empty() => {
             existing.push_str("\n\n");
             existing.push_str(reasoning);
@@ -1103,6 +1531,8 @@ fn append_unique_pending_reasoning(
 fn attach_pending_reasoning_to_assistant(
     message: &mut Value,
     pending_reasoning: &mut Option<String>,
+    message_index: usize,
+    history: &mut CodexChatHistory<'_, '_>,
 ) {
     let Some(reasoning) = pending_reasoning.take() else {
         return;
@@ -1111,15 +1541,19 @@ fn attach_pending_reasoning_to_assistant(
         return;
     }
 
+    history.attach(
+        message_index,
+        message
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty()),
+    );
     if let Some(obj) = message.as_object_mut() {
         append_reasoning_content(obj, &reasoning);
     }
 }
 
-/// 在所有 input 处理完毕后，对仍缺 `reasoning_content` 的 assistant tool-call 消息补占位。
-/// 必须作为管线末端的最终兜底执行：真实 reasoning 可能以尾随 `reasoning` item 的形式经
-/// `attach_pending_reasoning_to_previous_assistant` 回填，过早注入占位会被
-/// `append_reasoning_content` 追加而污染真实思考。
+/// Fill missing tool reasoning only after every real reasoning item was attached.
 fn backfill_tool_call_reasoning_placeholders(messages: &mut [Value]) {
     for message in messages.iter_mut() {
         let is_assistant_tool_call = message.get("role").and_then(|value| value.as_str())
@@ -1134,11 +1568,7 @@ fn backfill_tool_call_reasoning_placeholders(messages: &mut [Value]) {
     }
 }
 
-/// kimi/Moonshot、DeepSeek 等 thinking 模型要求每条带 `tool_calls` 的 assistant
-/// 消息都必须携带非空 `reasoning_content`。跨轮历史恢复 miss（如代理重启丢失内存缓存、
-/// call_id 歧义无法恢复、上游某轮未产出思考）时，这里补一个占位，避免上游返回
-/// `reasoning_content is missing in assistant tool call message`。
-/// 与 `transform::anthropic_to_openai_with_reasoning_content` 的占位行为保持对称。
+/// Apply an explicitly requested upstream compatibility placeholder without overwriting reasoning.
 fn ensure_tool_call_reasoning_content(message: &mut Value) {
     let Some(obj) = message.as_object_mut() else {
         return;
@@ -1171,6 +1601,7 @@ fn attach_pending_reasoning_to_previous_assistant(
     messages: &mut [Value],
     last_assistant_index: Option<usize>,
     pending_reasoning: &mut Option<String>,
+    history: &mut CodexChatHistory<'_, '_>,
 ) {
     let Some(reasoning) = pending_reasoning.take() else {
         return;
@@ -1179,12 +1610,22 @@ fn attach_pending_reasoning_to_previous_assistant(
     if reasoning.is_empty() {
         return;
     }
-    let Some(message) = last_assistant_index.and_then(|index| messages.get_mut(index)) else {
+    let Some((index, message)) = last_assistant_index
+        .and_then(|index| messages.get_mut(index).map(|message| (index, message)))
+    else {
+        history.pending = None;
         return;
     };
     if message.get("role").and_then(|v| v.as_str()) != Some("assistant") {
         return;
     }
+    history.attach(
+        index,
+        message
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty()),
+    );
     if let Some(obj) = message.as_object_mut() {
         append_reasoning_content(obj, reasoning);
     }
@@ -1527,6 +1968,15 @@ pub(crate) fn chat_completion_to_response_with_context(
     body: Value,
     tool_context: &CodexToolContext,
 ) -> Result<Value, ProxyError> {
+    chat_completion_to_response_with_context_and_reasoning(body, tool_context, None)
+}
+
+/// Convert with explicitly declared upstream reasoning output compatibility.
+pub(crate) fn chat_completion_to_response_with_context_and_reasoning(
+    body: Value,
+    tool_context: &CodexToolContext,
+    reasoning_config: Option<&CodexChatReasoningConfig>,
+) -> Result<Value, ProxyError> {
     let choices = body
         .get("choices")
         .and_then(|v| v.as_array())
@@ -1543,14 +1993,17 @@ pub(crate) fn chat_completion_to_response_with_context(
     let created_at = body.get("created").and_then(|v| v.as_u64()).unwrap_or(0);
     let finish_reason = choice.get("finish_reason").and_then(|v| v.as_str());
 
-    let reasoning = chat_reasoning_text(message);
+    let allow_long_tags = allows_long_thinking_tags(reasoning_config);
+    let reasoning = chat_reasoning_text(message, allow_long_tags);
     let mut output = Vec::new();
     if let Some(reasoning_item) =
         chat_reasoning_to_response_output_item(reasoning.as_deref(), &response_id)
     {
         output.push(reasoning_item);
     }
-    if let Some(message_item) = chat_message_to_response_output_item(message, &response_id) {
+    if let Some(message_item) =
+        chat_message_to_response_output_item(message, &response_id, allow_long_tags)
+    {
         output.push(message_item);
     }
     let tool_calls =
@@ -1612,13 +2065,15 @@ fn chat_reasoning_to_response_output_item(
     }))
 }
 
-fn chat_reasoning_text(message: &Value) -> Option<String> {
+fn chat_reasoning_text(message: &Value, allow_long_tags: bool) -> Option<String> {
     if let Some(reasoning) = extract_reasoning_field_text(message) {
         return Some(reasoning);
     }
 
     if let Some(content) = message.get("content").and_then(|v| v.as_str()) {
-        if let Some((reasoning, _answer)) = split_leading_think_block(content) {
+        if let Some((reasoning, _answer)) =
+            split_leading_think_block_with_compatibility(content, allow_long_tags)
+        {
             if !reasoning.is_empty() {
                 return Some(reasoning);
             }
@@ -1628,11 +2083,15 @@ fn chat_reasoning_text(message: &Value) -> Option<String> {
     None
 }
 
-fn chat_message_to_response_output_item(message: &Value, response_id: &str) -> Option<Value> {
+fn chat_message_to_response_output_item(
+    message: &Value,
+    response_id: &str,
+    allow_long_tags: bool,
+) -> Option<Value> {
     let mut content = Vec::new();
 
     if let Some(text) = message.get("content").and_then(|v| v.as_str()) {
-        let text = split_leading_think_block(text)
+        let text = split_leading_think_block_with_compatibility(text, allow_long_tags)
             .map(|(_reasoning, answer)| answer)
             .unwrap_or_else(|| text.to_string());
         if !text.is_empty() {
@@ -2036,10 +2495,8 @@ pub(crate) fn response_id_from_chat_id(id: Option<&str>) -> String {
 }
 
 pub(crate) fn response_status_from_finish_reason(finish_reason: Option<&str>) -> &'static str {
-    match finish_reason {
-        Some("length") => "incomplete",
-        _ => "completed",
-    }
+    crate::proxy::security::completion_evidence::ChatCompletionReason::new(finish_reason)
+        .legacy_status()
 }
 
 /// 把 Chat Completions 上游的错误体规整成 OpenAI Responses API 风格的错误对象。
@@ -2117,6 +2574,604 @@ pub fn chat_error_to_response_error(body: Option<&Value>) -> Value {
 }
 
 #[cfg(test)]
+mod history_source_trace_tests {
+    use super::*;
+    use crate::proxy::security::{
+        history_provenance::{DlpHistoryMapping, DlpHistoryProjection, DlpHistoryTarget},
+        ActualAttemptBinding, DlpRequestLease, DlpTokenStore,
+    };
+
+    fn history_fixture() -> (DlpTokenStore, DlpRequestLease, ActualAttemptBinding, Value) {
+        let Some((store, lease)) =
+            DlpTokenStore::history_fixture_lease_for_test("synthetic-converter-history")
+        else {
+            panic!("synthetic history admission must succeed");
+        };
+        let Some(binding) = lease.history_binding_for_test(
+            "synthetic-provider",
+            "chat",
+            "https://synthetic.invalid/v1/chat/completions",
+            Some("synthetic-principal"),
+        ) else {
+            panic!("synthetic history binding must succeed");
+        };
+        let delivered = json!({"id": "synthetic-response", "status": "completed", "output": [
+            {"id": "synthetic-reasoning", "type": "reasoning", "summary": [
+                {"type": "summary_text", "text": "Synthetic first thought."},
+                {"type": "summary_text", "text": "Synthetic second thought."}]},
+            {"id": "synthetic-message", "type": "message", "role": "assistant", "status": "completed", "content": [
+                {"type": "output_text", "text": "Synthetic first commentary.", "annotations": []},
+                {"type": "output_text", "text": "Synthetic second commentary.", "annotations": []}]},
+            {"id": "synthetic-call-item", "type": "function_call", "call_id": "synthetic-call", "name": "synthetic_tool", "arguments": "{}",
+                "reasoning_content": "Synthetic call thought."}
+        ]});
+        publish_fixture(&lease, &binding, &delivered);
+        (store, lease, binding, delivered)
+    }
+
+    fn publish_fixture(lease: &DlpRequestLease, binding: &ActualAttemptBinding, delivered: &Value) {
+        let Some(pending) = lease.capture_delivered_history(binding, delivered) else {
+            panic!("synthetic delivered history capture must succeed");
+        };
+        assert!(
+            lease.publish_delivered_history(binding, pending),
+            "synthetic delivered history publication must succeed"
+        );
+    }
+
+    fn trace_convert(
+        body: Value,
+        config: Option<&CodexChatReasoningConfig>,
+        projection: Option<&DlpHistoryProjection<'_>>,
+    ) -> (Value, Option<DlpHistoryMapping>) {
+        let Ok(converted) =
+            responses_to_chat_completions_with_reasoning_and_history(body, config, projection)
+        else {
+            panic!("synthetic request conversion must succeed");
+        };
+        converted
+    }
+
+    fn validates(
+        mapping: &Option<DlpHistoryMapping>,
+        lease: &DlpRequestLease,
+        binding: &ActualAttemptBinding,
+        body: &Value,
+        target: DlpHistoryTarget,
+    ) -> bool {
+        mapping
+            .as_ref()
+            .is_some_and(|mapping| mapping.validates_target(lease, binding, body, target))
+    }
+
+    #[test]
+    fn history_source_trace_follows_pending_commentary_tool_merge_and_system_reindex() {
+        let (_store, lease, binding, delivered) = history_fixture();
+        let request = json!({"instructions": "Synthetic root instruction.", "input": [
+            {"type": "message", "role": "developer", "content": "Synthetic first instruction."},
+            delivered["output"][0].clone(), delivered["output"][1].clone(), delivered["output"][2].clone(),
+            {"type": "function_call_output", "call_id": "synthetic-call", "output": "Synthetic result."},
+            {"type": "message", "role": "developer", "content": "Synthetic last instruction."},
+            {"type": "message", "role": "user", "content": "Synthetic continuation."}
+        ]});
+        let Some(projection) = lease.history_projection(&binding, &request) else {
+            panic!("synthetic history projection must exist");
+        };
+        let (converted, mapping) = trace_convert(request.clone(), None, Some(&projection));
+        assert!(
+            converted["messages"][1]["content"]
+                == "Synthetic first commentary.\nSynthetic second commentary.",
+            "source tracing must preserve commentary joining"
+        );
+        assert!(
+            converted["messages"][1]["reasoning_content"] == "Synthetic first thought.\n\nSynthetic second thought.\n\nSynthetic call thought.",
+            "source tracing must preserve pending reasoning and call merging"
+        );
+        for target in [
+            DlpHistoryTarget::ChatContent { message_index: 1 },
+            DlpHistoryTarget::ChatReasoning { message_index: 1 },
+        ] {
+            assert!(
+                validates(&mapping, &lease, &binding, &converted, target),
+                "complete trusted source coordinates must survive conversion and reindexing"
+            );
+        }
+        for target in [
+            DlpHistoryTarget::ChatContent { message_index: 0 },
+            DlpHistoryTarget::ChatContent { message_index: 2 },
+            DlpHistoryTarget::ChatContent { message_index: 3 },
+        ] {
+            assert!(
+                !validates(&mapping, &lease, &binding, &converted, target),
+                "system instructions and tool or user text must remain unmapped"
+            );
+        }
+        let Ok(strict) = responses_to_chat_completions_with_reasoning(request, None) else {
+            panic!("synthetic strict conversion must succeed");
+        };
+        assert!(
+            converted == strict,
+            "tracing must not change request semantics"
+        );
+    }
+
+    #[test]
+    fn history_source_trace_attaches_trailing_reasoning_without_crossing_user_boundary() {
+        let (_store, lease, binding, delivered) = history_fixture();
+        let request = json!({"input": [
+            delivered["output"][2].clone(),
+            {"type": "function_call_output", "call_id": "synthetic-call", "output": "Synthetic result."},
+            delivered["output"][0].clone(),
+            {"type": "message", "role": "user", "content": "Synthetic boundary."},
+            delivered["output"][1].clone()
+        ]});
+        let Some(projection) = lease.history_projection(&binding, &request) else {
+            panic!("synthetic history projection must exist");
+        };
+        let (converted, mapping) = trace_convert(request.clone(), None, Some(&projection));
+        assert!(
+            validates(
+                &mapping,
+                &lease,
+                &binding,
+                &converted,
+                DlpHistoryTarget::ChatReasoning { message_index: 0 }
+            ),
+            "trailing trusted reasoning must retain its previous assistant target"
+        );
+        assert!(
+            !validates(
+                &mapping,
+                &lease,
+                &binding,
+                &converted,
+                DlpHistoryTarget::ChatReasoning { message_index: 3 }
+            ),
+            "trailing reasoning authority must not cross a user boundary"
+        );
+        assert!(
+            validates(
+                &mapping,
+                &lease,
+                &binding,
+                &converted,
+                DlpHistoryTarget::ChatContent { message_index: 3 }
+            ),
+            "later trusted commentary must keep independent source coordinates"
+        );
+    }
+
+    #[test]
+    fn history_source_trace_does_not_reconstruct_authority_from_equal_final_text() {
+        let (_store, lease, binding, delivered) = history_fixture();
+        for item in [
+            json!({"type": "reasoning", "summary": [{"type": "summary_text", "text": "Synthetic first thought.\n\nSynthetic second thought."}]}),
+            json!({"type": "reasoning", "summary": "Synthetic first thought.\n\nSynthetic second thought."}),
+            json!({"type": "reasoning", "summary": [{"type": "summary_text", "text": " Synthetic first thought.\n\nSynthetic second thought. "}]}),
+        ] {
+            let request = json!({"input": [item, delivered["output"][1].clone()]});
+            let Some(projection) = lease.history_projection(&binding, &request) else {
+                panic!("synthetic history projection must exist");
+            };
+            let (converted, mapping) = trace_convert(request.clone(), None, Some(&projection));
+            assert!(
+                converted["messages"][0]["reasoning_content"]
+                    == "Synthetic first thought.\n\nSynthetic second thought.",
+                "synthetic final text collision must exercise the existing join or trim path"
+            );
+            assert!(
+                !validates(
+                    &mapping,
+                    &lease,
+                    &binding,
+                    &converted,
+                    DlpHistoryTarget::ChatReasoning { message_index: 0 }
+                ),
+                "equal final text must not replace exact original source proof"
+            );
+            assert!(
+                validates(
+                    &mapping,
+                    &lease,
+                    &binding,
+                    &converted,
+                    DlpHistoryTarget::ChatContent { message_index: 0 }
+                ),
+                "unproven reasoning must not discard independent trusted commentary"
+            );
+        }
+    }
+
+    #[test]
+    fn history_source_trace_rejects_mixed_unproven_reasoning_and_content() {
+        let (_store, lease, binding, delivered) = history_fixture();
+        for forged in [false, true] {
+            let mut message = delivered["output"][1].clone();
+            if forged {
+                let Some(parts) = message["content"].as_array_mut() else {
+                    panic!("synthetic message content must be an array");
+                };
+                parts.push(json!({"type": "refusal", "refusal": "Synthetic unproven commentary."}));
+            }
+            let request = json!({"input": [
+                delivered["output"][0].clone(),
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Synthetic unproven thought."}]},
+                message
+            ]});
+            let Some(projection) = lease.history_projection(&binding, &request) else {
+                panic!("synthetic history projection must exist");
+            };
+            let (converted, mapping) = trace_convert(request.clone(), None, Some(&projection));
+            assert!(
+                !validates(
+                    &mapping,
+                    &lease,
+                    &binding,
+                    &converted,
+                    DlpHistoryTarget::ChatReasoning { message_index: 0 }
+                ),
+                "a mixed source field must not receive a whole-field reasoning exemption"
+            );
+            assert!(
+                validates(
+                    &mapping,
+                    &lease,
+                    &binding,
+                    &converted,
+                    DlpHistoryTarget::ChatContent { message_index: 0 }
+                ) != forged,
+                "only exact unchanged commentary may carry a content mapping"
+            );
+        }
+    }
+
+    #[test]
+    fn history_source_trace_rechecks_consumed_request_instead_of_reusing_projection_offsets() {
+        let (_store, lease, binding, delivered) = history_fixture();
+        let original =
+            json!({"input": [delivered["output"][0].clone(), delivered["output"][1].clone()]});
+        let Some(projection) = lease.history_projection(&binding, &original) else {
+            panic!("synthetic history projection must exist");
+        };
+        for change in 0..3 {
+            let mut request = original.clone();
+            match change {
+                0 => request["input"][0]["id"] = json!("synthetic-forged-owner"),
+                1 => request["input"][0]["summary"][0]["type"] = json!("reasoning_text"),
+                _ => request["input"][1]["role"] = json!("user"),
+            }
+            let (converted, mapping) = trace_convert(request, None, Some(&projection));
+            assert!(
+                !validates(
+                    &mapping,
+                    &lease,
+                    &binding,
+                    &converted,
+                    DlpHistoryTarget::ChatReasoning { message_index: 0 }
+                ),
+                "changed consumed source identity or shape must not reuse old coordinates"
+            );
+        }
+    }
+
+    #[test]
+    fn history_source_trace_never_maps_placeholder_or_tool_argument_text() {
+        let (_store, lease, binding, delivered) = history_fixture();
+        let request = json!({"input": [
+            {"type": "function_call", "call_id": "synthetic-bare-call", "name": "synthetic_tool", "arguments": "Synthetic first thought.\n\nSynthetic second thought."},
+            {"type": "function_call_output", "call_id": "synthetic-bare-call", "output": "Synthetic first commentary.\nSynthetic second commentary."},
+            delivered["output"][1].clone()
+        ]});
+        let Some(projection) = lease.history_projection(&binding, &request) else {
+            panic!("synthetic history projection must exist");
+        };
+        let config = CodexChatReasoningConfig {
+            requires_tool_reasoning_placeholder: Some(true),
+            ..Default::default()
+        };
+        let (converted, mapping) = trace_convert(request.clone(), Some(&config), Some(&projection));
+        assert!(
+            converted["messages"][0]["reasoning_content"] == "tool call",
+            "synthetic compatibility must exercise placeholder insertion"
+        );
+        for target in [
+            DlpHistoryTarget::ChatReasoning { message_index: 0 },
+            DlpHistoryTarget::ChatContent { message_index: 0 },
+            DlpHistoryTarget::ChatContent { message_index: 1 },
+        ] {
+            assert!(
+                !validates(&mapping, &lease, &binding, &converted, target),
+                "placeholder and tool carriers must never become source proof"
+            );
+        }
+        assert!(
+            validates(
+                &mapping,
+                &lease,
+                &binding,
+                &converted,
+                DlpHistoryTarget::ChatContent { message_index: 2 }
+            ),
+            "trusted assistant text must remain separately mapped"
+        );
+        let (without_projection, no_mapping) = trace_convert(request, Some(&config), None);
+        assert!(
+            without_projection == converted,
+            "missing optional tracing must preserve conversion"
+        );
+        assert!(
+            no_mapping.is_none(),
+            "missing projection must remain strict"
+        );
+    }
+    #[test]
+    fn history_source_trace_duplicate_pending_text_never_upgrades_unproven_existing_reasoning() {
+        let (_store, lease, binding, delivered) = history_fixture();
+        for trusted_existing in [false, true] {
+            let mut call = delivered["output"][2].clone();
+            call["reasoning_content"] =
+                json!("Synthetic first thought.\n\nSynthetic second thought.");
+            let request = if trusted_existing {
+                json!({"input": [delivered["output"][0].clone(), delivered["output"][1].clone(), call]})
+            } else {
+                json!({"input": [
+                    {"type": "message", "role": "assistant", "content": "Synthetic unproven commentary.",
+                        "reasoning_content": "Synthetic first thought.\n\nSynthetic second thought."},
+                    delivered["output"][0].clone(), call
+                ]})
+            };
+            let Some(projection) = lease.history_projection(&binding, &request) else {
+                panic!("synthetic history projection must exist");
+            };
+            let (converted, mapping) = trace_convert(request.clone(), None, Some(&projection));
+            assert!(
+                converted["messages"][0]["reasoning_content"]
+                    == "Synthetic first thought.\n\nSynthetic second thought.",
+                "duplicate fixture must exercise unchanged existing reasoning"
+            );
+            assert!(
+                validates(&mapping, &lease, &binding, &converted, DlpHistoryTarget::ChatReasoning { message_index: 0 }) == trusted_existing,
+                "ignored duplicate text must preserve existing trust without creating new authority"
+            );
+        }
+    }
+
+    #[test]
+    fn history_source_trace_trimming_proven_source_still_requires_strict_fallback() {
+        let (_store, lease, binding, mut delivered) = history_fixture();
+        delivered["output"][0]["summary"][0]["text"] = json!(" Synthetic first thought.");
+        publish_fixture(&lease, &binding, &delivered);
+        let request =
+            json!({"input": [delivered["output"][0].clone(), delivered["output"][1].clone()]});
+        let Some(projection) = lease.history_projection(&binding, &request) else {
+            panic!("synthetic history projection must exist");
+        };
+        let (converted, mapping) = trace_convert(request.clone(), None, Some(&projection));
+        assert!(
+            converted["messages"][0]["reasoning_content"]
+                == "Synthetic first thought.\n\nSynthetic second thought.",
+            "synthetic trusted source must exercise actual converter trimming"
+        );
+        assert!(
+            !validates(
+                &mapping,
+                &lease,
+                &binding,
+                &converted,
+                DlpHistoryTarget::ChatReasoning { message_index: 0 }
+            ),
+            "changed trusted source bytes must not gain converted authority"
+        );
+        assert!(
+            validates(
+                &mapping,
+                &lease,
+                &binding,
+                &converted,
+                DlpHistoryTarget::ChatContent { message_index: 0 }
+            ),
+            "strict fallback must stay confined to the changed field"
+        );
+    }
+
+    #[test]
+    fn history_source_trace_partial_segment_dedup_cannot_exempt_unproven_added_text() {
+        let (_store, lease, binding, delivered) = history_fixture();
+        let mut call = delivered["output"][2].clone();
+        call["reasoning_content"] =
+            json!("Synthetic first thought.\n\nSynthetic injected segment.");
+        let request = json!({"input": [delivered["output"][0].clone(), delivered["output"][1].clone(), call]});
+        let Some(projection) = lease.history_projection(&binding, &request) else {
+            panic!("synthetic history projection must exist");
+        };
+        let (converted, mapping) = trace_convert(request.clone(), None, Some(&projection));
+        assert!(
+            converted["messages"][0]["reasoning_content"] == "Synthetic first thought.\n\nSynthetic second thought.\n\nSynthetic injected segment.",
+            "synthetic fixture must exercise partial segment deduplication"
+        );
+        assert!(
+            !validates(
+                &mapping,
+                &lease,
+                &binding,
+                &converted,
+                DlpHistoryTarget::ChatReasoning { message_index: 0 }
+            ),
+            "retained unproven segment must invalidate whole-field reasoning authority"
+        );
+        assert!(
+            validates(
+                &mapping,
+                &lease,
+                &binding,
+                &converted,
+                DlpHistoryTarget::ChatContent { message_index: 0 }
+            ),
+            "partial reasoning deduplication must not affect independent content proof"
+        );
+    }
+
+    #[test]
+    fn history_source_trace_media_flush_preserves_later_assistant_coordinates() {
+        let (_store, lease, binding, delivered) = history_fixture();
+        let request = json!({"input": [
+            delivered["output"][2].clone(),
+            {"type": "function_call_output", "call_id": "synthetic-call", "output": [
+                {"type": "input_image", "image_url": "data:image/png;base64,U1lOVEhFVElD"}]},
+            delivered["output"][0].clone(), delivered["output"][1].clone()
+        ]});
+        let Some(projection) = lease.history_projection(&binding, &request) else {
+            panic!("synthetic history projection must exist");
+        };
+        let (converted, mapping) = trace_convert(request.clone(), None, Some(&projection));
+        assert!(
+            converted["messages"][2]["role"] == "user",
+            "synthetic media fixture must insert a user carrier"
+        );
+        for target in [
+            DlpHistoryTarget::ChatReasoning { message_index: 0 },
+            DlpHistoryTarget::ChatContent { message_index: 3 },
+            DlpHistoryTarget::ChatReasoning { message_index: 3 },
+        ] {
+            assert!(
+                validates(&mapping, &lease, &binding, &converted, target),
+                "media flush must preserve actual assistant source targets"
+            );
+        }
+        assert!(
+            !validates(
+                &mapping,
+                &lease,
+                &binding,
+                &converted,
+                DlpHistoryTarget::ChatContent { message_index: 2 }
+            ),
+            "synthetic media carrier must not acquire assistant content authority"
+        );
+    }
+
+    #[test]
+    fn history_source_trace_fixture_accounting_is_independent_of_another_live_fixture() {
+        let (store, _lease, _binding, _delivered) = history_fixture();
+        let Some(baseline) = store.history_metadata_bytes_for_test() else {
+            panic!("synthetic_history_baseline_unavailable");
+        };
+        let (other_store, other_lease, other_binding, other_delivered) = history_fixture();
+        assert!(
+            store.history_metadata_bytes_for_test() == Some(baseline),
+            "history_fixture_shared_ledger"
+        );
+        drop((other_delivered, other_binding, other_lease, other_store));
+        assert!(
+            store.history_metadata_bytes_for_test() == Some(baseline),
+            "history_fixture_drop_changed_independent_ledger"
+        );
+    }
+
+    #[test]
+    fn history_source_trace_snapshot_preserves_function_and_custom_targets() {
+        for custom in [false, true] {
+            let (store, lease, binding, _) = history_fixture();
+            let call = if custom {
+                json!({"id":"synthetic-custom-item","type":"custom_tool_call",
+                    "call_id":"synthetic-custom","name":"synthetic_tool","input":"synthetic input",
+                    "reasoning_content":"Synthetic custom thought."})
+            } else {
+                json!({"id":"synthetic-function-item","type":"function_call",
+                    "call_id":"synthetic-function","name":"synthetic_tool","arguments":"{}",
+                    "reasoning_content":"Synthetic function thought."})
+            };
+            let delivered = json!({"output":[call]});
+            publish_fixture(&lease, &binding, &delivered);
+            let request = json!({"input":delivered["output"]});
+            let Some(projection) = lease.history_projection(&binding, &request) else {
+                panic!("synthetic call projection must exist");
+            };
+            let Some(baseline) = store.history_metadata_bytes_for_test() else {
+                panic!("synthetic ledger must be readable");
+            };
+            let Ok(strict) = responses_to_chat_completions_with_reasoning(request.clone(), None)
+            else {
+                panic!("synthetic call conversion must succeed");
+            };
+            let (converted, mapping) = trace_convert(request.clone(), None, Some(&projection));
+            assert!(
+                converted == strict,
+                "snapshot must not change tool conversion"
+            );
+            let target = DlpHistoryTarget::ChatReasoning { message_index: 0 };
+            assert!(
+                validates(&mapping, &lease, &binding, &converted, target),
+                "complete function and custom call targets must retain proof"
+            );
+            let mut changed = converted.clone();
+            changed["messages"][0]["tool_calls"][0]["id"] = json!("synthetic-reassigned-call");
+            assert!(
+                !validates(&mapping, &lease, &binding, &changed, target),
+                "same reasoning must not authorize a different tool target"
+            );
+            drop(mapping);
+            assert!(
+                store.history_metadata_bytes_for_test() == Some(baseline),
+                "converter target snapshot must release all optional charges"
+            );
+        }
+    }
+
+    #[test]
+    fn history_source_trace_optional_metadata_miss_preserves_strict_conversion() {
+        use crate::proxy::security::history_allocation_test_support::fail_metadata_after;
+
+        let (store, lease, binding, delivered) = history_fixture();
+        let request = json!({"input": [
+            delivered["output"][0].clone(), delivered["output"][1].clone(),
+            delivered["output"][2].clone()
+        ]});
+        let Some(projection) = lease.history_projection(&binding, &request) else {
+            panic!("synthetic history projection must exist");
+        };
+        let Ok(strict) = responses_to_chat_completions_with_reasoning(request.clone(), None) else {
+            panic!("synthetic strict conversion must succeed");
+        };
+        let Some(charged_before) = store.history_metadata_bytes_for_test() else {
+            panic!("synthetic history ledger must be readable");
+        };
+        // Fail mapping, pending reasoning, content, call reasoning, and the final
+        // target snapshot in order, including failure after earlier targets exist.
+        for successful_owners in 0..5 {
+            let guard = fail_metadata_after(successful_owners);
+            let (converted, mapping) = trace_convert(request.clone(), None, Some(&projection));
+            assert!(
+                converted == strict,
+                "optional metadata failure must preserve the complete strict conversion"
+            );
+            assert!(
+                mapping.is_none(),
+                "optional metadata failure must discard earlier targets as well"
+            );
+            drop(guard);
+            let Some(charged_after) = store.history_metadata_bytes_for_test() else {
+                panic!("synthetic history ledger must be readable");
+            };
+            assert!(
+                charged_after == charged_before,
+                "optional failed trace must release every temporary charge"
+            );
+        }
+        let (converted, mapping) = trace_convert(request.clone(), None, Some(&projection));
+        for target in [
+            DlpHistoryTarget::ChatContent { message_index: 0 },
+            DlpHistoryTarget::ChatReasoning { message_index: 0 },
+        ] {
+            assert!(
+                validates(&mapping, &lease, &binding, &converted, target),
+                "scoped metadata failure must not disable later independent conversions"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -2162,6 +3217,241 @@ mod tests {
 
     fn result_messages(result: &Value) -> &[Value] {
         result["messages"].as_array().unwrap()
+    }
+
+    #[test]
+    fn reasoning_placeholder_contract_requires_a_distinct_explicit_capability() {
+        for model in ["generic-model", "kimi-k2-thinking", "deepseek-reasoner"] {
+            for declaration in [
+                json!({}),
+                json!({"supportsThinking": true, "outputFormat": "reasoning_content"}),
+                json!({"supportsThinking": true, "outputFormat": "thinking_tags"}),
+                json!({"requiresToolReasoningPlaceholder": false}),
+                json!({"requiresToolReasoningPlaceholder": true}),
+            ] {
+                let enabled =
+                    declaration.get("requiresToolReasoningPlaceholder") == Some(&json!(true));
+                let Ok(config) = serde_json::from_value::<CodexChatReasoningConfig>(declaration)
+                else {
+                    panic!("synthetic capability must deserialize");
+                };
+                let Ok(result) = responses_to_chat_completions_with_reasoning(
+                    json!({
+                        "model": model,
+                        "input": [{"type": "function_call", "call_id": "call_synthetic", "name": "lookup", "arguments": "{}"}]
+                    }),
+                    Some(&config),
+                ) else {
+                    panic!("synthetic history must convert");
+                };
+                if enabled {
+                    assert!(
+                        result["messages"][0]["reasoning_content"] == "tool call",
+                        "explicit compatibility must fill missing reasoning"
+                    );
+                } else {
+                    assert!(
+                        result["messages"][0].get("reasoning_content").is_none(),
+                        "only the distinct capability may synthesize reasoning"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reasoning_placeholder_contract_preserves_real_reasoning_at_pipeline_end() {
+        let Ok(config) = serde_json::from_value::<CodexChatReasoningConfig>(json!({
+            "requiresToolReasoningPlaceholder": true
+        })) else {
+            panic!("synthetic capability must deserialize");
+        };
+        for embedded in [false, true] {
+            let mut call = json!({"type": "function_call", "call_id": "call_synthetic", "name": "lookup", "arguments": "{}"});
+            if embedded {
+                call["reasoning_content"] = json!("Synthetic embedded thought.");
+            }
+            let Ok(result) = responses_to_chat_completions_with_reasoning(
+                json!({
+                    "model": "synthetic-model",
+                    "input": [call, {"type": "function_call_output", "call_id": "call_synthetic", "output": "Synthetic result."},
+                        {"type": "reasoning", "summary": "Synthetic trailing thought."}]
+                }),
+                Some(&config),
+            ) else {
+                panic!("synthetic history must convert");
+            };
+            let expected = if embedded {
+                "Synthetic embedded thought.\n\nSynthetic trailing thought."
+            } else {
+                "Synthetic trailing thought."
+            };
+            assert!(
+                result["messages"][0]["reasoning_content"] == expected,
+                "real reasoning must remain unpolluted by compatibility placeholders"
+            );
+        }
+    }
+
+    #[test]
+    fn reasoning_placeholder_contract_capability_round_trips_and_defaults_off() {
+        let Ok(config) = serde_json::from_value::<CodexChatReasoningConfig>(
+            json!({"requiresToolReasoningPlaceholder": true}),
+        ) else {
+            panic!("synthetic capability must deserialize");
+        };
+        let Ok(serialized) = serde_json::to_value(config) else {
+            panic!("synthetic capability must serialize");
+        };
+        assert!(
+            serialized["requiresToolReasoningPlaceholder"] == true,
+            "explicit placeholder capability must persist"
+        );
+        let Ok(default) = serde_json::to_value(CodexChatReasoningConfig::default()) else {
+            panic!("default capability must serialize");
+        };
+        assert!(
+            default.get("requiresToolReasoningPlaceholder").is_none(),
+            "placeholder capability must default off"
+        );
+    }
+
+    fn long_thinking_config(format: &str) -> CodexChatReasoningConfig {
+        let Ok(config) =
+            serde_json::from_value(json!({"outputFormat": format, "supportsThinking": true}))
+        else {
+            panic!("synthetic long-tag config must deserialize");
+        };
+        config
+    }
+
+    fn long_thinking_json_fixture(text: &str, config: Option<&CodexChatReasoningConfig>) -> Value {
+        let Ok(response) = chat_completion_to_response_with_context_and_reasoning(
+            json!({
+                "id": "chatcmpl_synthetic", "model": "synthetic-model",
+                "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]
+            }),
+            &CodexToolContext::default(),
+            config,
+        ) else {
+            panic!("synthetic long-tag response must convert");
+        };
+        response
+    }
+
+    #[test]
+    fn long_thinking_protocol_json_requires_exact_explicit_format() {
+        let text = " \n<thinking>Synthetic 思考🧪.</thinking>\nSynthetic 答案🌱.";
+        for format in [
+            None,
+            Some("auto"),
+            Some("think_tags"),
+            Some("reasoning_content"),
+            Some("THINKING_TAGS"),
+            Some(" thinking_tags "),
+            Some("thinking_tags"),
+        ] {
+            let config = format.map(long_thinking_config);
+            let response = long_thinking_json_fixture(text, config.as_ref());
+            if format == Some("thinking_tags") {
+                assert!(
+                    response["output"][0]["summary"][0]["text"] == "Synthetic 思考🧪.",
+                    "explicit long-tag protocol must extract leading reasoning"
+                );
+                assert!(
+                    response["output"][1]["content"][0]["text"] == "Synthetic 答案🌱.",
+                    "explicit long-tag protocol must retain the answer"
+                );
+            } else {
+                assert!(
+                    response["output"][0]["type"] == "message",
+                    "undeclared long tags must remain ordinary text"
+                );
+                assert!(
+                    response["output"][0]["content"][0]["text"] == text,
+                    "generic conversion must not remove long tags"
+                );
+            }
+        }
+        let Ok(wrapped) =
+            chat_completion_to_response(json!({"choices": [{"message": {"content": text}}]}))
+        else {
+            panic!("synthetic default wrapper must convert");
+        };
+        assert!(
+            wrapped["output"][0]["content"][0]["text"] == text,
+            "default response wrapper must not recognize long tags"
+        );
+    }
+
+    #[test]
+    fn long_thinking_protocol_json_preserves_literals_and_partial_tag_boundaries() {
+        let config = long_thinking_config("thinking_tags");
+        for text in [
+            "Synthetic example: <thinking>literal</thinking>.",
+            "`<thinking>literal</thinking>`",
+            "```xml\n<thinking>literal</thinking>\n```",
+            "<thinking attr=\"example\">literal</thinking>",
+            "<thinking>Synthetic unclosed thought.",
+            "<thinking>Synthetic thought.</think>",
+        ] {
+            for selected in [None, Some(&config)] {
+                let response = long_thinking_json_fixture(text, selected);
+                assert!(
+                    response["output"][0]["content"][0]["text"] == text,
+                    "literal and incomplete JSON text must remain unchanged"
+                );
+            }
+        }
+        let complete = "<thinking>Synthetic 思考🧪.</thinking>";
+        for cut in complete
+            .char_indices()
+            .map(|(cut, _)| cut)
+            .filter(|cut| *cut > 0)
+        {
+            let response = long_thinking_json_fixture(&complete[..cut], Some(&config));
+            assert!(
+                response["output"][0]["content"][0]["text"] == complete[..cut],
+                "every incomplete JSON tag boundary must remain text"
+            );
+        }
+    }
+
+    #[test]
+    fn long_thinking_protocol_json_preserves_short_tags_and_real_reasoning_precedence() {
+        for config in [None, Some(long_thinking_config("thinking_tags"))] {
+            let response = long_thinking_json_fixture(
+                "<think>Synthetic short thought.</think>Answer.",
+                config.as_ref(),
+            );
+            assert!(
+                response["output"][0]["summary"][0]["text"] == "Synthetic short thought.",
+                "existing short-tag compatibility must remain enabled"
+            );
+            assert!(
+                response["output"][1]["content"][0]["text"] == "Answer.",
+                "existing short-tag answer must be preserved"
+            );
+        }
+        let config = long_thinking_config("thinking_tags");
+        let Ok(response) = chat_completion_to_response_with_context_and_reasoning(
+            json!({
+                "choices": [{"message": {"reasoning_content": "Synthetic real reasoning.", "content": "<thinking>Inline thought.</thinking>Answer.",
+                    "tool_calls": [{"id": "call_synthetic", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}]
+            }),
+            &CodexToolContext::default(),
+            Some(&config),
+        ) else {
+            panic!("synthetic real reasoning response must convert");
+        };
+        assert!(
+            response["output"][0]["summary"][0]["text"] == "Synthetic real reasoning.",
+            "real reasoning field must retain existing precedence"
+        );
+        assert!(
+            response["output"][2]["reasoning_content"] == "Synthetic real reasoning.",
+            "real reasoning must remain attached to tool calls"
+        );
     }
 
     #[test]
@@ -2341,7 +3631,10 @@ mod tests {
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(messages[0]["content"], "Please run the tool.");
         assert_eq!(messages[1]["role"], "assistant");
-        assert_eq!(messages[1]["reasoning_content"], "tool call");
+        assert!(
+            messages[1].get("reasoning_content").is_none(),
+            "default tool history must not synthesize reasoning"
+        );
     }
 
     #[test]
@@ -2694,6 +3987,7 @@ mod tests {
         });
         let config = CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(true),
             thinking_param: Some("thinking".to_string()),
             effort_param: Some("reasoning_effort".to_string()),
@@ -2736,6 +4030,7 @@ mod tests {
         // （与 infer_aggregator_platform_config 推断出的配置保持一致）。
         let config = CodexChatReasoningConfig {
             supports_thinking: Some(false),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(true),
             thinking_param: Some("none".to_string()),
             effort_param: Some("reasoning.effort".to_string()),
@@ -2778,6 +4073,7 @@ mod tests {
         // 带来行为与成本偏差。
         let config = CodexChatReasoningConfig {
             supports_thinking: Some(false),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(true),
             thinking_param: Some("none".to_string()),
             effort_param: Some("reasoning.effort".to_string()),
@@ -2806,6 +4102,7 @@ mod tests {
         // 锁定「none 透传仅限 reasoning.effort 形态」的边界，防止回归。
         let config = CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(true),
             thinking_param: Some("thinking".to_string()),
             effort_param: Some("reasoning_effort".to_string()),
@@ -2835,6 +4132,7 @@ mod tests {
         // 低档一律上钳到最近合法档，超出最高档（含 Codex 扩展档 ultra）取最高合法档。
         let config = CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(true),
             thinking_param: Some("none".to_string()),
             effort_param: Some("reasoning_effort".to_string()),
@@ -2876,6 +4174,7 @@ mod tests {
         // 逐模型钳制不得比那更差，也不得发出声明外的值。
         let config = CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(true),
             thinking_param: Some("none".to_string()),
             effort_param: Some("reasoning_effort".to_string()),
@@ -2914,6 +4213,7 @@ mod tests {
         // 任何请求档都钳到 max。
         let config = CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(true),
             thinking_param: Some("none".to_string()),
             effort_param: Some("reasoning_effort".to_string()),
@@ -2940,6 +4240,7 @@ mod tests {
         // → 完全不发 reasoning_effort，避免给严格校验的网关送无法核实的值。
         let config = CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(true),
             thinking_param: Some("none".to_string()),
             effort_param: Some("reasoning_effort".to_string()),
@@ -2968,6 +4269,7 @@ mod tests {
         });
         let config = CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("thinking".to_string()),
             effort_param: Some("none".to_string()),
@@ -2991,6 +4293,7 @@ mod tests {
         });
         let config = CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("enable_thinking".to_string()),
             effort_param: Some("none".to_string()),
@@ -3388,9 +4691,8 @@ mod tests {
     }
 
     #[test]
-    fn responses_request_to_chat_injects_placeholder_reasoning_for_bare_tool_call() {
-        // 历史恢复 miss 时，带 tool_calls 的 assistant 消息没有任何可用 reasoning，
-        // 必须补占位，否则 kimi/Moonshot thinking 模型会拒绝整个请求。
+    fn responses_request_to_chat_omits_placeholder_reasoning_for_bare_tool_call() {
+        // Kimi history follows the same default-off placeholder contract as generic Chat.
         let input = json!({
             "model": "kimi-k2-thinking",
             "input": [
@@ -3413,7 +4715,10 @@ mod tests {
 
         assert_eq!(messages[0]["role"], "assistant");
         assert_eq!(messages[0]["tool_calls"][0]["id"], "call_1");
-        assert_eq!(messages[0]["reasoning_content"], "tool call");
+        assert!(
+            messages[0].get("reasoning_content").is_none(),
+            "default tool history must not synthesize reasoning"
+        );
         assert_eq!(messages[1]["role"], "tool");
     }
 
@@ -4170,7 +5475,10 @@ mod tests {
         );
         assert_eq!(messages[0]["tool_calls"].as_array().unwrap().len(), 1);
         assert_eq!(messages[0]["tool_calls"][0]["id"], "call_1");
-        assert_eq!(messages[0]["reasoning_content"], "tool call");
+        assert!(
+            messages[0].get("reasoning_content").is_none(),
+            "default tool history must not synthesize reasoning"
+        );
         assert_eq!(messages[1]["tool_calls"].as_array().unwrap().len(), 1);
         assert_eq!(messages[1]["tool_calls"][0]["id"], "call_2");
         assert_eq!(messages[1]["reasoning_content"], "second batch reasoning");
@@ -4312,7 +5620,7 @@ mod tests {
     }
 
     #[test]
-    fn responses_request_to_chat_backfills_reasoning_placeholder_for_coalesced_call() {
+    fn responses_request_to_chat_omits_reasoning_placeholder_for_coalesced_call() {
         let result = convert_test_input(vec![
             json!({
                 "type": "message",
@@ -4329,7 +5637,10 @@ mod tests {
         assert_eq!(message_roles(&result), vec!["assistant", "tool"]);
         assert_eq!(messages[0]["content"], "Running the build now.");
         assert_eq!(messages[0]["tool_calls"][0]["id"], "call_build");
-        assert_eq!(messages[0]["reasoning_content"], "tool call");
+        assert!(
+            messages[0].get("reasoning_content").is_none(),
+            "default tool history must not synthesize reasoning"
+        );
     }
 
     #[test]

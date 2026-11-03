@@ -1,4 +1,6 @@
+import type { FetchedModel } from "@/lib/api/model-fetch";
 import { ConnectionPresetPicker } from "./ConnectionPresetPicker";
+import { ProviderConfigDetection } from "./ProviderConfigDetection";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -115,6 +117,10 @@ export function GrokBuildProviderForm({
     (initialData?.meta?.apiFormat as CodexApiFormat | undefined) ??
       "openai_responses",
   );
+  const [editingCredentials, setEditingCredentials] = useState(false);
+  const fetchedModelCatalog = useState<FetchedModel[]>([]);
+  const [protocolManuallySelected, setProtocolManuallySelected] =
+    useState(false);
   const [anthropicAuthField, setAnthropicAuthField] =
     useState<ClaudeApiKeyField>(
       initialData?.meta?.apiKeyField ?? "ANTHROPIC_AUTH_TOKEN",
@@ -426,6 +432,14 @@ export function GrokBuildProviderForm({
       <form
         id="provider-form"
         onSubmit={form.handleSubmit(handleSubmit)}
+        onFocusCapture={(event) => {
+          if (["codexBaseUrl", "codexApiKey"].includes(event.target.id))
+            setEditingCredentials(true);
+        }}
+        onBlurCapture={(event) => {
+          if (["codexBaseUrl", "codexApiKey"].includes(event.target.id))
+            setEditingCredentials(false);
+        }}
         className="space-y-6 glass rounded-xl p-6 border border-white/10"
       >
         {!initialData && (
@@ -457,6 +471,7 @@ export function GrokBuildProviderForm({
         {category !== "official" && (
           <>
             <CodexFormFields
+              fetchedModelCatalog={fetchedModelCatalog}
               appId="grokbuild"
               providerId={providerId}
               codexApiKey={apiKey}
@@ -489,6 +504,7 @@ export function GrokBuildProviderForm({
               }}
               apiFormat={apiFormat}
               onApiFormatChange={(value) => {
+                setProtocolManuallySelected(true);
                 setApiFormat(value);
               }}
               anthropicAuthField={anthropicAuthField}
@@ -509,6 +525,22 @@ export function GrokBuildProviderForm({
               localProxyBodyOverride={bodyOverride}
               onLocalProxyBodyOverrideChange={setBodyOverride}
             />
+
+            {!isFullUrl && (
+              <ProviderConfigDetection
+                catalogModels={fetchedModelCatalog[0]}
+                onCatalogModelsChange={fetchedModelCatalog[1]}
+                baseUrl={baseUrl}
+                apiKey={apiKey}
+                model={upstreamModel}
+                apiFormat={apiFormat}
+                anthropicAuthField={anthropicAuthField}
+                editingCredentials={editingCredentials}
+                autoSelectFormat={!initialData && !protocolManuallySelected}
+                onManualFormatSelect={() => setProtocolManuallySelected(true)}
+                onApiFormatChange={setApiFormat}
+              />
+            )}
 
             <FormItem>
               <FormLabel htmlFor="grokbuild-context-window">

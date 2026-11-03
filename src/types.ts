@@ -147,15 +147,18 @@ export type CodexChatReasoningOutputFormat =
   | "reasoning_content"
   | "reasoning"
   | "reasoning_details"
-  | "think_tags";
+  | "think_tags"
+  | "thinking_tags";
 
 export interface CodexChatReasoning {
   supportsThinking?: boolean;
+  // Explicit compatibility only; omitted means no synthetic tool reasoning.
+  requiresToolReasoningPlaceholder?: boolean;
   supportsEffort?: boolean;
   thinkingParam?: CodexChatThinkingParam;
   effortParam?: CodexChatEffortParam;
   effortValueMode?: CodexChatEffortValueMode;
-  // 声明性字段：标注上游 reasoning 回传位置。当前提取靠穷举字段，未读取此值（think_tags 尚未接线）。
+  // Only exact thinking_tags enables leading <thinking> output compatibility.
   outputFormat?: CodexChatReasoningOutputFormat;
 }
 

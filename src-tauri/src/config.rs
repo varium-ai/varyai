@@ -199,40 +199,57 @@ pub fn get_claude_settings_path() -> PathBuf {
     settings
 }
 
-/// 获取应用配置目录路径 (~/.cc-switch)
+/// Resolve the independent VaryAI application data directory.
 pub fn get_app_config_dir() -> PathBuf {
     if let Some(custom) = crate::app_store::get_app_config_dir_override() {
         return custom;
     }
 
-    let default_dir = get_home_dir().join(".cc-switch");
+    get_device_config_dir()
+}
 
-    // 兼容 v3.10.3：当用户环境存在 `HOME` 且与真实用户目录不同，
-    // v3.10.3 可能在 `HOME/.cc-switch/` 下创建/使用了数据库。
-    // 这里仅在“默认位置没有数据库”时回退到旧位置，避免再次出现“供应商消失”问题，
-    // 同时也避免新安装因为 `HOME` 被设置而写入非预期路径。
-    #[cfg(windows)]
-    {
-        let default_db = default_dir.join("cc-switch.db");
-        if !default_db.exists() {
-            if let Ok(home_env) = std::env::var("HOME") {
-                let trimmed = home_env.trim();
-                if !trimmed.is_empty() {
-                    let legacy_dir = PathBuf::from(trimmed).join(".cc-switch");
-                    if legacy_dir.join("cc-switch.db").exists() {
-                        log::info!(
-                            "Detected v3.10.3 legacy database at {}, using it instead of {}",
-                            legacy_dir.display(),
-                            default_dir.display()
-                        );
-                        return legacy_dir;
-                    }
-                }
-            }
+/// Device settings and credentials never follow a portable data-directory override.
+pub fn get_device_config_dir() -> PathBuf {
+    get_home_dir().join(".varyai")
+}
+
+pub(crate) fn validate_independent_data_dir(path: &Path) -> Result<(), AppError> {
+    if !path.is_absolute() {
+        return Err(AppError::Message("storage.invalidTarget".into()));
+    }
+    let mut ancestor = path;
+    while !ancestor.exists() {
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| AppError::Message("storage.invalidTarget".into()))?;
+    }
+    let resolved = ancestor
+        .canonicalize()
+        .map_err(|_| AppError::Message("storage.invalidTarget".into()))?;
+    // Legacy filenames may remain in VaryAI's own default root. Resolve its
+    // parent independently so a symlink or junction to a source is not exempt.
+    let owned = get_device_config_dir();
+    let owned_resolved = owned.canonicalize().ok().filter(|canonical| {
+        owned
+            .parent()
+            .and_then(|parent| parent.canonicalize().ok())
+            .is_some_and(|parent| path_eq_lexical(canonical, &parent.join(".varyai")))
+    });
+    for root in [path, resolved.as_path()] {
+        if root.components().any(|part| {
+            part.as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(".cc-switch")
+        }) || root.ancestors().any(|parent| {
+            parent.join("cc-switch.db").exists()
+                && !owned_resolved.as_ref().is_some_and(|canonical| {
+                    path_eq_lexical(parent, &owned) || path_eq_lexical(parent, canonical)
+                })
+        }) {
+            return Err(AppError::Message("storage.invalidTarget".into()));
         }
     }
-
-    default_dir
+    Ok(())
 }
 
 /// 获取应用配置文件路径

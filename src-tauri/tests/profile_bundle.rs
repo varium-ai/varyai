@@ -1177,7 +1177,7 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
     std::env::set_var("CC_SWITCH_TEST_HOME", short_home.path());
     let state = seed();
     let home = std::path::PathBuf::from(std::env::var("CC_SWITCH_TEST_HOME").unwrap());
-    let dir = home.join(".cc-switch/trae-bridge");
+    let dir = home.join(".varyai/trae-bridge");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("bridge-agent-profile.sock");
     let listener = UnixListener::bind(&path).unwrap();
@@ -1205,8 +1205,14 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
                 .unwrap();
             let request: serde_json::Value = serde_json::from_str(&line).unwrap();
             let result=match request["op"].as_str().unwrap(){
-            "health"=>json!({"ready":true,"enabled":false}),
+            "health"=>json!({"ready":true,"enabled":false,"revision":2,"modelReplacement":true}),
             "list"=>json!(server_models.lock().unwrap().iter().map(|(id,c)|json!({"id":id,"name":c["models"][0]["model"],"displayName":format!("VaryAI/{id}/{}",c["models"][0]["model"].as_str().unwrap()),"baseUrl":c["baseUrl"]})).collect::<Vec<_>>()),
+            "replace"=>{
+                let mut models = server_models.lock().unwrap();
+                models.clear();
+                if !request["config"].is_null() { models.insert(request["id"].as_str().unwrap().into(), request["config"].clone()); }
+                json!(true)
+            },
             "apply"=>{
                 let id = request["id"].as_str().unwrap();
                 let mut models = server_models.lock().unwrap();
@@ -1508,7 +1514,7 @@ fn undo_restores_an_instruction_file_symlink_and_its_existing_target() {
     let _guard = test_guard();
     let state = seed();
     let home = support::ensure_test_home();
-    let target = home.join(".cc-switch/shared-instructions.md");
+    let target = home.join(".varyai/shared-instructions.md");
     let path = home.join(".claude/CLAUDE.md");
     std::fs::write(&target, "Saved instructions").unwrap();
     std::os::unix::fs::symlink(&target, &path).unwrap();

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,8 @@ interface Props {
   anthropicAuthField?: ClaudeApiKeyField;
   editingCredentials: boolean;
   autoSelectFormat: boolean;
-  onModelChange: (model: string) => void;
+  // Only bind a separate probe editor here, never a saved provider model field.
+  onProbeModelChange?: (model: string) => void;
   onApiFormatChange: (format: ClaudeApiFormat) => void;
   onManualFormatSelect?: () => void;
   catalogModels?: FetchedModel[];
@@ -56,27 +57,44 @@ export function ProviderConfigDetection(props: Props) {
     anthropicAuthField,
   } = props;
   const [localModels, setLocalModels] = useState<FetchedModel[]>([]);
+  const [probeSelection, setProbeSelection] = useState("");
   const models = props.catalogModels ?? localModels;
   const setModels = props.onCatalogModelsChange ?? setLocalModels;
   const [discovering, setDiscovering] = useState(false);
+  const [catalogReady, setCatalogReady] = useState(false);
   const [checking, setChecking] = useState(false);
   const [results, setResults] = useState<ProtocolDetection[]>([]);
   const [checkError, setCheckError] = useState<string | null>(null);
   const sequence = useRef(0);
+  const attempted = useRef(false);
   const latest = useRef(props);
   latest.current = props;
   const completedCatalog = useRef<{
     baseUrl: string;
     apiKey: string;
-    apiFormat?: ClaudeApiFormat;
   } | null>(null);
   const configured = validBaseUrl(baseUrl) && !!apiKey.trim();
+  const firstModel = models.find((entry) => entry.id.trim())?.id.trim() || "";
+  const selectedModel = (
+    props.onProbeModelChange ? model : probeSelection || model
+  ).trim();
+  const probeModel =
+    firstModel && !models.some((entry) => entry.id.trim() === selectedModel)
+      ? firstModel
+      : selectedModel || firstModel;
+  const latestProbeModel = useRef(probeModel);
+  latestProbeModel.current = probeModel;
+
+  useEffect(() => {
+    setProbeSelection("");
+  }, [baseUrl, apiKey]);
 
   useEffect(() => {
     setModels([]);
     setDiscovering(false);
+    setCatalogReady(false);
     completedCatalog.current = null;
-  }, [baseUrl, apiKey, apiFormat, setModels]);
+  }, [baseUrl, apiKey, setModels]);
 
   useEffect(() => {
     let active = true;
@@ -84,35 +102,39 @@ export function ProviderConfigDetection(props: Props) {
     if (
       editingCredentials ||
       !configured ||
-      (completed?.baseUrl === baseUrl &&
-        completed.apiKey === apiKey &&
-        completed.apiFormat === apiFormat)
+      (completed?.baseUrl === baseUrl && completed.apiKey === apiKey)
     )
       return;
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
       setDiscovering(true);
-      fetchModelsForConfig(
-        baseUrl.trim(),
-        apiKey.trim(),
-        undefined,
-        undefined,
-        undefined,
-        {
-          apiFormat:
-            apiFormat === "gemini_native" ? "google-generative-ai" : undefined,
-        },
-      )
-        .then((catalog) => {
-          if (active) setModels(catalog);
-        })
-        .catch(() => {
-          /* Background failures intentionally stay silent. */
-        })
-        .finally(() => {
+      const formats =
+        apiFormat === "gemini_native"
+          ? ["google-generative-ai", undefined]
+          : [undefined, "google-generative-ai"];
+      for (const format of formats) {
+        if (!active) return;
+        try {
+          const catalog = await fetchModelsForConfig(
+            baseUrl.trim(),
+            apiKey.trim(),
+            undefined,
+            undefined,
+            undefined,
+            { apiFormat: format },
+          );
           if (!active) return;
-          setDiscovering(false);
-          completedCatalog.current = { baseUrl, apiKey, apiFormat };
-        });
+          if (catalog.length > 0) {
+            setModels(catalog);
+            break;
+          }
+        } catch {
+          /* Background failures intentionally stay silent. */
+        }
+      }
+      if (!active) return;
+      setDiscovering(false);
+      completedCatalog.current = { baseUrl, apiKey };
+      setCatalogReady(true);
     }, 800);
     return () => {
       active = false;
@@ -123,63 +145,93 @@ export function ProviderConfigDetection(props: Props) {
 
   useEffect(() => {
     sequence.current += 1;
+    attempted.current = false;
     setResults([]);
     setCheckError(null);
     setChecking(false);
     return () => {
       sequence.current += 1;
     };
-  }, [baseUrl, apiKey, model, anthropicAuthField]);
+  }, [baseUrl, apiKey, probeModel, anthropicAuthField]);
 
-  async function check() {
-    if (!configured) {
-      setCheckError("providerDetection.status.invalid_config");
-      return;
-    }
-    const request = ++sequence.current;
-    const start = {
-      baseUrl,
-      apiKey,
-      model,
-      anthropicAuthField,
-      apiFormat: props.apiFormat,
-    };
-    setChecking(true);
-    setResults([]);
-    setCheckError(null);
-    const isCurrent = () =>
-      request === sequence.current &&
-      ["baseUrl", "apiKey", "model", "anthropicAuthField"].every(
-        (key) =>
-          latest.current[key as keyof Props] ===
-          start[key as keyof typeof start],
-      );
-    try {
-      const detected = await detectProviderProtocols({
-        baseUrl: baseUrl.trim(),
-        apiKey: apiKey.trim(),
-        model: model.trim(),
-        anthropicAuthField,
-      });
-      if (!isCurrent()) return;
-      setResults(detected);
-      const verified = detected.filter(
-        (r) => r.text.status === "verified" && r.stream?.status === "verified",
-      );
-      if (
-        latest.current.autoSelectFormat &&
-        latest.current.apiFormat === start.apiFormat &&
-        !verified.some((r) => r.format === start.apiFormat) &&
-        verified[0]
-      ) {
-        latest.current.onApiFormatChange(verified[0].format);
+  const check = useCallback(
+    async (explicit = false) => {
+      if (!configured || !probeModel) {
+        setCheckError("providerDetection.status.invalid_config");
+        return;
       }
-    } catch {
-      if (isCurrent()) setCheckError("providerDetection.failed");
-    } finally {
-      if (isCurrent()) setChecking(false);
-    }
-  }
+      attempted.current = true;
+      const request = ++sequence.current;
+      const start = {
+        baseUrl,
+        apiKey,
+        model: probeModel,
+        anthropicAuthField,
+        apiFormat: latest.current.apiFormat,
+      };
+      setChecking(true);
+      setResults([]);
+      setCheckError(null);
+      const isCurrent = () =>
+        request === sequence.current &&
+        latestProbeModel.current === probeModel &&
+        ["baseUrl", "apiKey", "anthropicAuthField"].every(
+          (key) =>
+            latest.current[key as keyof Props] ===
+            start[key as keyof typeof start],
+        );
+      try {
+        const detected = await detectProviderProtocols({
+          baseUrl: baseUrl.trim(),
+          apiKey: apiKey.trim(),
+          model: probeModel,
+          anthropicAuthField,
+        });
+        if (!isCurrent()) return;
+        setResults(detected);
+        const verified = detected.filter(
+          (r) =>
+            r.text.status === "verified" && r.stream?.status === "verified",
+        );
+        if (
+          (explicit || latest.current.autoSelectFormat) &&
+          latest.current.apiFormat === start.apiFormat &&
+          verified[0] &&
+          verified[0].format !== start.apiFormat
+        ) {
+          latest.current.onApiFormatChange(verified[0].format);
+        }
+      } catch {
+        if (isCurrent()) setCheckError("providerDetection.failed");
+      } finally {
+        if (isCurrent()) setChecking(false);
+      }
+    },
+    [configured, baseUrl, apiKey, probeModel, anthropicAuthField],
+  );
+
+  useEffect(() => {
+    if (
+      !props.autoSelectFormat ||
+      !catalogReady ||
+      editingCredentials ||
+      !configured ||
+      !probeModel ||
+      attempted.current
+    )
+      return;
+    const timer = window.setTimeout(() => {
+      if (!attempted.current) void check();
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [
+    props.autoSelectFormat,
+    catalogReady,
+    editingCredentials,
+    configured,
+    probeModel,
+    check,
+  ]);
 
   return (
     <section
@@ -201,15 +253,33 @@ export function ProviderConfigDetection(props: Props) {
             <span>
               {t("providerDetection.modelsFound", { count: models.length })}
             </span>
-            <ModelDropdown models={models} onSelect={props.onModelChange} />
+            <ModelDropdown
+              models={models}
+              ariaLabel={t("providerDetection.selectModel", {
+                defaultValue: "Select detection model",
+              })}
+              onSelect={(model) => {
+                if (model !== latestProbeModel.current) sequence.current += 1;
+                setProbeSelection(model);
+                props.onProbeModelChange?.(model);
+              }}
+            />
           </>
         ) : (
           <span>{t("providerDetection.manualModelHint")}</span>
         )}
       </div>
-      {model && (
+      {probeModel && (
         <p className="break-all text-xs text-muted-foreground">
-          {t("providerDetection.selectedModel", { model })}
+          {t("providerDetection.selectedModel", { model: probeModel })}
+        </p>
+      )}
+      <p className="text-xs text-muted-foreground">
+        {t("providerDetection.probeHint")}
+      </p>
+      {props.autoSelectFormat && (
+        <p className="text-xs text-muted-foreground">
+          {t("providerDetection.autoHint")}
         </p>
       )}
       <p className="text-xs text-muted-foreground">
@@ -221,16 +291,16 @@ export function ProviderConfigDetection(props: Props) {
         disabled={
           !baseUrl.trim() ||
           !apiKey.trim() ||
-          !model.trim() ||
+          !probeModel ||
           editingCredentials ||
           checking
         }
-        onClick={check}
+        onClick={() => void check(true)}
       >
         {checking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
         {t(checking ? "providerDetection.checking" : "providerDetection.check")}
       </Button>
-      {!model.trim() && (
+      {!probeModel && (
         <p className="text-xs text-muted-foreground">
           {t("providerDetection.chooseModel")}
         </p>

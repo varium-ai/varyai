@@ -103,6 +103,7 @@ export const PROXY_APP_IDS: ProxyAppId[] = [
 /** Apps whose native configuration can be routed through the local gateway. */
 export const TAKEOVER_APP_IDS = [
   ...PROXY_APP_IDS,
+  "claude-desktop",
   "workbuddy",
   "qoder",
   "doubaowork",
@@ -125,6 +126,7 @@ export function isTakeoverAppId(
   appId: string,
 ): appId is
   | ProxyAppId
+  | "claude-desktop"
   | "workbuddy"
   | "qoder"
   | "doubaowork"

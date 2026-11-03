@@ -58,15 +58,8 @@ export function computeAutoImportCatalogModels(
   ];
 
   let suggestedDefaultModel = currentDefaultModel.trim();
-  if (!suggestedDefaultModel) {
-    if (existingRows.length > 0 && existingRows[0].model.trim()) {
-      suggestedDefaultModel = existingRows[0].model.trim();
-    } else if (newModelsToAdd.length > 0) {
-      suggestedDefaultModel = newModelsToAdd[0].id;
-    } else if (validModels.length > 0) {
-      suggestedDefaultModel = validModels[0].id;
-    }
-  }
+  if (validModels.length > 0 && !seenFetchedIds.has(suggestedDefaultModel))
+    suggestedDefaultModel = validModels[0].id;
 
   return {
     nextCatalogModels,

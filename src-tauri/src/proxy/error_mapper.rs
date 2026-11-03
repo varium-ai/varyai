@@ -18,6 +18,8 @@ use super::ProxyError;
 /// - 其他错误：500 Internal Server Error
 pub fn map_proxy_error_to_status(error: &ProxyError) -> u16 {
     match error {
+        ProxyError::DlpForward(error) => error.status_code().as_u16(),
+        ProxyError::SafeUpstream(error) => error.status().as_u16(),
         // 服务状态错误：与 IntoResponse 保持一致
         ProxyError::AlreadyRunning => 409,
         ProxyError::NotRunning => 503,
@@ -66,13 +68,7 @@ pub fn map_proxy_error_to_status(error: &ProxyError) -> u16 {
 /// 将 ProxyError 转换为用户友好的错误消息
 pub fn get_error_message(error: &ProxyError) -> String {
     match error {
-        ProxyError::UpstreamError { status, body } => {
-            if let Some(body) = body {
-                format!("上游错误 ({status}): {body}")
-            } else {
-                format!("上游错误 ({status})")
-            }
-        }
+        ProxyError::UpstreamError { status, .. } => format!("上游错误 ({status})"),
         ProxyError::Timeout(msg) => format!("请求超时: {msg}"),
         ProxyError::ForwardFailed(msg) => format!("转发失败: {msg}"),
         ProxyError::NoAvailableProvider => "无可用 Provider".to_string(),
@@ -150,6 +146,9 @@ mod tests {
         let msg = get_error_message(&error);
         assert!(msg.contains("上游错误"));
         assert!(msg.contains("500"));
-        assert!(msg.contains("Internal Server Error"));
+        assert!(
+            !msg.contains("Internal Server Error"),
+            "diagnostic_body_exposure"
+        );
     }
 }

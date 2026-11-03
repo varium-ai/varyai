@@ -27,6 +27,9 @@ vi.mock("react-i18next", () => ({
       if (key === "proxy.server.started") {
         return `代理服务已启动 - ${options?.address}:${options?.port}`;
       }
+      if (key === "proxy.takeover.setupRequired") {
+        return `${options?.app} setup required`;
+      }
 
       if (typeof options?.defaultValue === "string") {
         return options.defaultValue;
@@ -104,6 +107,25 @@ describe("useProxyStatus", () => {
     expect(proxyKeys.status).toEqual(["proxyStatus"]);
     expect(proxyKeys.takeoverStatus).toEqual(["proxyTakeoverStatus"]);
     expect(proxyKeys.globalConfig).toEqual(["globalProxyConfig"]);
+  });
+
+  it("translates client setup errors with the affected application name", async () => {
+    invokeMock.mockRejectedValue("proxy.takeover.setupRequired");
+    const { wrapper, queryClient } = createWrapper();
+    const { result, unmount } = renderHook(useProxyStatus, { wrapper });
+    try {
+      await act(async () => {
+        await expect(
+          result.current.setTakeoverForApp({ appType: "codex", enabled: true }),
+        ).rejects.toBe("proxy.takeover.setupRequired");
+      });
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "操作失败: Codex setup required",
+      );
+    } finally {
+      unmount();
+      queryClient.clear();
+    }
   });
 
   it.each(["trae", "doubaowork"])(

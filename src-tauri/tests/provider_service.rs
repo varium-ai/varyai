@@ -2303,9 +2303,12 @@ wire_api = "responses"
 
     let live_config =
         std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
+    let port = futures::executor::block_on(state.db.get_global_proxy_config())
+        .expect("get configured gateway port")
+        .listen_port;
     assert!(
-        live_config.contains("http://127.0.0.1:15721/v1"),
-        "live config should remain pointed at the local proxy"
+        live_config.contains(&format!("http://127.0.0.1:{port}/v1")),
+        "live config should point at the configured VaryAI gateway"
     );
     assert!(
         live_config.contains("PROXY_MANAGED"),
@@ -3545,12 +3548,12 @@ fn provider_service_delete_current_provider_returns_error() {
 }
 
 #[tokio::test]
-async fn recover_from_crash_without_backup_cleans_placeholder_instead_of_writing_it_back() {
+async fn recover_owned_client_without_backup_cleans_placeholder_instead_of_writing_it_back() {
     let _guard = test_mutex().lock().expect("acquire test mutex");
     reset_test_fs();
     let _home = ensure_test_home();
 
-    // 接管态 Claude Live，且 DB 中无备份（模拟切换 app_config_dir 后新库首启的场景）
+    // Simulate owned takeover with a missing recovery backup.
     let taken_over_live = json!({
         "env": {
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
@@ -3566,6 +3569,18 @@ async fn recover_from_crash_without_backup_cleans_placeholder_instead_of_writing
     .expect("write taken over live");
 
     let state = create_test_state().expect("create test state");
+
+    let mut routing = state
+        .db
+        .get_proxy_config_for_app("claude")
+        .await
+        .expect("get routing");
+    routing.enabled = true;
+    state
+        .db
+        .update_proxy_config_for_app(routing)
+        .await
+        .expect("record owned routing");
 
     // 模拟历史异常：接管态 Live 已被导入成 current provider（SSOT 被污染）
     let provider = Provider::with_id(

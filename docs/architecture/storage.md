@@ -1,52 +1,65 @@
-# Shared and extension database storage
+# Independent VaryAI storage
 
-Provider, MCP, prompt, skill, proxy configuration and usage data remain in `cc-switch.db`. VaryAI security audit, DLP policy, tool-risk rules, lists, events and configuration history use `vary-ai.db` in the same configuration directory.
+VaryAI owns a native database pair, device state and synchronization namespace. New installations start independently under `~/.varyai`, or an independent data directory selected in Settings. Old VaryAI installation upgrades are not supported; startup does not discover, transfer or archive their databases, settings or account files. See the [design and shared-file inventory](../design/varyai-storage-isolation.md).
 
-## Version boundaries
+## Paths and ownership
 
-The shared database follows the **released** upstream schema chain. The current shared version is 23, matching CC Switch **v4.0.21**; the extension version is independently 7. Never advance the shared file to an unreleased migration found on upstream `main`: installed CC Switch releases reject a higher version even if the new columns appear harmless. Version 2 added hashed local gateway credentials and per-key token counters (`gateway_keys`, `gateway_usage`). The gateway branch used version 3 for local agent policy bindings and usage aggregates by agent/model (`gateway_agent_bindings`, `gateway_usage_details`) and version 4 for `gateway_usage_models` to distinguish the original client model from the resolved outbound model at request time. New observations use that table; reads include legacy detail rows with an unknown outbound model. Existing credentials, counters and historical aggregates remain intact. Historical VaryAI single-database version 24 remains the compatibility/export format, not the live shared version. VaryAI security and tool-risk tables identify that historical format. Inspect schema structure as well as version because historical VaryAI databases reused some upstream version numbers.
+| Resource                                                                                               | Location                                                                |
+| ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| Main: providers, endpoints, MCP, prompts, Skills metadata, profiles, usage and current client recovery | `<data root>/varyai.db`                                                 |
+| Extension: security, tool risk, gateway keys/counters and retained intent-routing tables               | `<data root>/varyai-ext.db`                                             |
+| Pair identity                                                                                          | `<data root>/storage.json` and identity rows in both databases          |
+| Private Skills, price overrides and database backups                                                   | `<data root>/skills`, `model-pricing.json`, `backups`, `skill-backups`  |
+| Device preferences, client directory overrides and cloud credentials                                   | `~/.varyai/settings.json`                                               |
+| Managed accounts, gateway secret copies, certificates and routing recovery                             | `~/.varyai/`                                                            |
+| Helpers and logs                                                                                       | `~/.varyai/trae-bridge`, `~/.varyai/logs`; crash log in the device root |
+| Bootstrap data-directory pointer                                                                       | VaryAI's Tauri application-data directory                               |
+| Explicit unified Skills choice                                                                         | `~/.agents/skills`, intentionally shared                                |
 
-Extension version 5 reconciles two development branches that independently used versions 3 and 4. The intent-routing branch used those versions for `intent_routing_groups` and `intent_routing_preferences` rather than the gateway additions. Startup recognizes the complete known table/column layouts, backs up both files before upgrading, and adds the missing tables transactionally. Routing rows, gateway credentials/counters, and security/tool-risk state remain intact through startup and full backup/restore. Keeping the intent-routing tables does not enable that branch's runtime or UI. Malformed, partial, and unknown layouts still stop before schema writes; do not delete the extension database or lower its version to bypass validation. Older branches that only support extension v4 cannot reopen the upgraded v5 file.
+A data-directory override relocates data assets, not device files. A new pointer takes effect after restart; current connections and writers retain their root for the running process. A missing configured native directory opens recovery instead of silently selecting another database. Recovery can choose another native root or explicitly create empty storage. Historical pointers into CC Switch storage are discarded without converting source files. Destinations inside `.cc-switch`, aliases and shared database hard links are rejected.
 
-Extension version 7 introduces the native global provider contract in
-`routing_upstreams`. Upgrading an older extension discards its global providers,
-routing groups and routing preferences once, and drops `routing_upstream_origins`;
-there is no migration or compatibility path for that retired provider contract.
-Shared client configurations, account stores, security policy and observations
-are retained. Shared version 23 is unchanged. Native providers receive independent
-identities and revision checks; explicit imports copy supported source data
-instead of retaining live references. Catalog reads, startup, routing validation
-and proxy refresh never import client configurations automatically.
+Historical files named `cc-switch.db` and `vary-ai.db` may already exist in VaryAI's own default `~/.varyai` directory. Their presence does not block startup or trigger conversion. VaryAI creates/opens its separate native filenames and leaves the historical files untouched. This exception requires the actual product-owned default directory; a symlink or junction from that directory into a CC Switch source remains rejected.
 
-The supported upstream additions are:
+Native extension version 7 introduces independent global providers in
+`routing_upstreams`. Provider imports create private copies with stable identities
+and revision checks. Catalog reads and startup never import client configurations
+automatically. The retired registry contract is discarded on staging upgrades;
+shared client settings, security policy and observations remain intact.
 
-| Shared version | CC Switch addition | Preserved columns                         |
-| -------------- | ------------------ | ----------------------------------------- |
-| 19             | MCode              | `enabled_mcode` on MCP servers and skills |
-| 20             | Pi                 | `enabled_pi` on MCP servers only          |
-| 21             | Antigravity CLI    | `enabled_agy` on MCP servers and skills   |
-| 22             | Kimi Code          | `enabled_kimi` on MCP servers and skills  |
-| 23             | Oh My Pi           | `enabled_omp` on MCP servers only         |
+The serialized Skills option `cc_switch` still means private application storage and now follows the VaryAI root. Client configuration remains in native client directories. Independent storage does not coordinate two managers concurrently controlling the same client.
 
-The schema and migrations were checked against the [CC Switch v4.0.21 release](https://github.com/farion1231/cc-switch/releases/tag/v4.0.21) and its [tagged schema source](https://github.com/farion1231/cc-switch/blob/v4.0.21/src-tauri/src/database/schema.rs). Opening an upstream v21-v22 database upgrades it transactionally to v23 after a consistent recovery backup. Opening v23 leaves its version at v23, including repeated startup, extension upgrades, SQL export/import, and binary backup/restore. Existing flags survive VaryAI MCP/skill edits. These storage columns preserve CC Switch-owned state; they do not add the corresponding upstream clients to the VaryAI interface. Shared versions above v23 are rejected without modification, even when upstream `main` contains matching code. This does not affect recognized historical VaryAI monolithic v24 backups.
+## Format boundaries
 
-Opening an older supported shared database also migrates it to v23. A CC Switch installation whose supported schema is below v23 will then reject that file and require an application upgrade. Compatibility with the released v23 schema does not guarantee that every older CC Switch binary can reopen the migrated database.
+| Format                      | Main                         | Extension             | Use                                             |
+| --------------------------- | ---------------------------- | --------------------- | ----------------------------------------------- |
+| Native VaryAI               | 24                           | 7                     | Live independent storage                        |
+| Internal staging layout     | 23                           | 7                     | Backup normalization and compatibility fixtures |
+| Portable database transport | Combined monolithic snapshot | Included in transport | Current VaryAI database backup/restore          |
 
-Before changing shared storage, check the official release tag, its schema, and compatibility with that release's version check. Development branches and prereleases are not the compatibility baseline. Increment the extension version for VaryAI-only schema changes.
+Native extension v6 pairs created by the independent-storage implementation are
+validated and backed up before adding the global-provider table in one attached
+transaction. Their private settings and pair identity remain intact. This narrow
+schema upgrade does not import an old installation or shared CC Switch storage.
 
-## Migration and recovery
+Native files have SQLite `application_id = 0x56525941`. Identity rows contain product `varyai`, roles `main` / `extension` and the same storage UUID. `storage.json` records that UUID and layout version 1. A mismatched pair, unsupported version or malformed schema fails before ordinary writes. Native v24 differs from historical monolithic v24; a version number alone does not identify a format.
 
-On startup, unsupported future versions stop initialization and preserve the files. Recognized older formats are backed up consistently under `backups/storage-split/` before migration; backup failure stops migration. Existing extension data that would conflict with an automatic move also stops the migration rather than overwriting records.
+Internal adapters normalize portable backups on private staging copies. They do not provide a full old VaryAI installation-upgrade path. Unsupported or incomplete layouts are rejected rather than modified in place.
 
-The split uses SQLite ATTACH and a single transaction, DELETE rollback journaling and FULL synchronization. IDs, sequence values, settings and policy versions must survive the split. Unknown formats must not be repaired by lowering `user_version` manually. Another application's incompatible database lock can cause migration to fail; exit that application and retry.
+## Client and routing boundary
 
-An earlier compatibility development build incorrectly advanced released shared v23 databases to unreleased v24. The explicit [recovery helper](../../scripts/recover-shared-v23.py) is only for that known mistake, not general database downgrades. With both applications closed, it requires the affected current file and a verified pre-upgrade v23 backup. Its default is read-only. Before `--apply` writes anything, it validates that removing the two default-valued `enabled_dsh` columns produces exactly the reference schema, creates a private durable backup of the **current** file, checks for concurrent changes, and reverses the schema/version in one transaction. Current data rows are retained rather than replaced with old backup rows. Any v24-specific values, unrelated schema changes, missing reference, or failed backup stop recovery. See [troubleshooting](../troubleshooting.md#cc-switch-rejects-a-shared-database-as-too-new).
+The default gateway is `127.0.0.1:15722`; the development renderer uses port 3001. Native creation and portable restore normalize the previous default 15721 once, preserving other custom ports and later explicit choices through the `varyai_proxy_port_v1` receipt. CC Switch schema defaults and source files remain unchanged.
 
-## Locking, backup and sync
+Fresh storage does not infer ownership from shared placeholders such as `cc-switch-official`. Automatic client import, common-fragment extraction and takeover cleanup require local ownership/backup evidence.
+
+A fresh VaryAI data root still reads existing native client configuration from its original default or explicitly selected client directory. Changing the application data directory does not move or reset those client directories. An empty test home redirects them too, so it must not be mistaken for an existing-client installation.
 
 Public provider DAOs use the shared connection; routing-registry, security/tool-risk and gateway-key DAOs use the extension connection. Routing resolution reads shared provider snapshots before locking the extension connection and runs on the control plane, not during forwarding. Successful routing/source mutations and full imports/restores invalidate the in-process routing snapshot generation; the runtime must publish a refreshed snapshot before using changed resources. Gateway admission reads run on blocking workers; gateway usage persistence runs through an asynchronous queue. Operations needing both always lock shared before extension. Audit persistence remains asynchronous and must not hold database locks in request forwarding.
 
-Gateway authentication still stores only SHA-256 hashes in the extension database. Newly created gateway secrets also have device-local copies under `gateway-secrets/<key UUID>` in the application configuration directory, outside both databases and their export/sync payloads. Private atomic writes use `0600` on Unix; these files are not encrypted. The separate reveal command validates a saved copy against an active key's hash before returning it. Lists contain only an availability flag. Missing copies leave authentication and local agent policies intact. Old hash-only credentials cannot be reconstructed. Failed secret-file writes roll back key creation; deleting a revoked, unbound key removes its local copy.
+VaryAI does not initialize an absent client or grant connection/certificate authorization. Missing Claude/Codex/Gemini/Grok configuration returns setup guidance before listener startup; the other adapters enforce their supported models and prerequisites. See [routing prerequisites](../guides/provider-routing.md#routing-prerequisites-on-a-new-installation).
+
+Claude Desktop uses the same per-agent routing control as other clients. Its switch applies or restores its own native profile; disabling it rejects new requests to the cached gateway address while other agents remain connected. The shared gateway stop guard covers every supported active or waiting route.
+
+New Codex catalog files are `varyai-model-catalog.json`. The historical catalog name remains readable inside the verified Codex directory. The `custom` provider bucket and `cc-switch-official` route ID remain stable because session history can refer to them.
 
 Native API providers store their primary key, backup keys and private headers
 in the extension record. The registry does not encrypt these values. List,
@@ -68,4 +81,18 @@ Normal Codex-menu/native and authenticated gateway routing can save observed con
 
 The store is separate from both databases and their portable export/sync payloads; no schema version changes. Queued aggregate snapshots use a blocking worker for encryption and atomic file replacement, never a forwarding-path transaction or file write. Normal disconnect/stop flushes observed generations; abrupt termination can lose queued observations. The store retains at most 512 conversations for 24 hours, with 128 KiB per encrypted plaintext snapshot, 4096 identifier mappings per snapshot and a 16 MiB file budget. Overflow invalidates the affected snapshot rather than saving a partial owner map. Eviction, corruption, missing keys and destination changes make recovery unavailable instead of guessing another account. See [routing recovery and limits](../guides/intent-routing.md#continuation-recovery-after-restart).
 
-See [storage implementation](../../src-tauri/src/database/storage.rs), [schema](../../src-tauri/src/database/schema.rs), [file-level regression tests](../../src-tauri/src/database/split_storage_tests.rs), and [upstream compatibility tests](../../src-tauri/src/database/upstream_compat_tests.rs). Unit tests do not prove compatibility with every future upstream schema.
+WorkBuddy ownership and native backups remain beside its catalog. TRAE model ownership also exists in client browser storage. Removing a VaryAI database does not clear those native catalogs.
+
+## Transactions, backups and synchronization
+
+Connections use separate mutexes; lock main before extension. Audit, usage and observation persistence is asynchronous. Request forwarding must not execute blocking transactions or wait for auxiliary persistence.
+
+Cross-file replacement uses SQLite ATTACH, DELETE journaling and FULL synchronization. Native rollback recovery validates journal ownership and rejects foreign super-journal paths.
+
+Portable SQL/binary exports combine both databases into the existing monolithic transport without native identity metadata. Restore validates staging, creates a safety backup, replaces both live databases transactionally and retains the destination UUID. Exports can contain provider credentials and client recovery data, but exclude device settings, account/certificate files and saved gateway secret copies. Skills require their file assets too.
+
+Gateway authentication stores SHA-256 hashes in the extension. Device-local `gateway-secrets/<key UUID>` files can contain plaintext copies. Reveal validates a copy against its hash; a missing copy does not invalidate the key and cannot be reconstructed. Unix private files use `0600` and directories `0700`; these permissions are not encryption.
+
+WebDAV/S3 use manifest `varyai-sync` and reserved `<remote root>/varyai/v2/db-v6/<profile>/...` paths. The default root is `varyai-sync`. The reserved segment prevents collision even with an old custom root. New installations configure accounts and initial sync direction independently; no old credentials, remote state or automatic upgrade are transferred. Existing security/tool-risk preservation rules still apply.
+
+Implementation: [native identity](../../src-tauri/src/database/native.rs), [startup/recovery](../../src-tauri/src/storage_setup.rs), [portable storage](../../src-tauri/src/database/storage.rs), [native tests](../../src-tauri/src/database/native_tests.rs). Synthetic tests do not establish installer/signing or every vendor client's live acceptance.

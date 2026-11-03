@@ -78,6 +78,41 @@ pub fn extract_session_id(
     extract_client_session_id(headers, body, client_format).unwrap_or_else(generate_new_session_id)
 }
 
+/// Borrow a strict raw Codex identity for restoration only; legacy extraction is unchanged.
+/// A present invalid or repeated higher-precedence source disables continuity rather
+/// than changing the identity source. No allocation or diagnostic includes the value.
+#[allow(dead_code)]
+pub(crate) fn extract_codex_restoration_session_id<'a>(
+    headers: &'a HeaderMap,
+    body: &'a serde_json::Value,
+) -> Option<&'a str> {
+    fn validate(raw: &str) -> Option<&str> {
+        (!raw.is_empty()
+            && raw.len() <= 256
+            && !raw.chars().any(|ch| ch.is_whitespace() || ch.is_control()))
+        .then_some(raw)
+    }
+
+    for name in ["thread-id", "session-id", "session_id", "x-session-id"] {
+        let mut values = headers.get_all(name).iter();
+        if let Some(value) = values.next() {
+            if values.next().is_some() {
+                return None;
+            }
+            return validate(std::str::from_utf8(value.as_bytes()).ok()?);
+        }
+    }
+
+    let metadata = body.get("metadata")?.as_object()?;
+    if let Some(value) = metadata.get("session_id") {
+        return validate(value.as_str()?);
+    }
+    // Preserve only the existing recognized user-id suffix as the final source.
+    let user_id = metadata.get("user_id")?.as_str()?;
+    let (_, suffix) = user_id.split_once("_session_")?;
+    validate(suffix)
+}
+
 /// Extract an actual client identity without generating a per-request UUID.
 pub(crate) fn extract_client_session_id(
     headers: &HeaderMap,

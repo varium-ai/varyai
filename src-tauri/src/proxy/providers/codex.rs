@@ -16,11 +16,80 @@ use toml::Value as TomlValue;
 
 /// 官方 Codex 客户端 User-Agent 正则
 #[allow(dead_code)]
-static CODEX_CLIENT_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(codex_vscode|codex_cli_rs)/[\d.]+").unwrap());
+static CODEX_CLIENT_REGEX: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"^(codex_vscode|codex_cli_rs)/[\d.]+"));
 
 /// Codex 适配器
 pub struct CodexAdapter;
+
+impl CodexAdapter {
+    /// Resolve only deterministic configured prefix-mode operation pairs.
+    pub(crate) fn resolve_dlp_operation_descriptor<'a>(
+        base_url: &'a str,
+        endpoint: &'a str,
+        protocol: &'a str,
+        target_url: &str,
+        full_url: bool,
+    ) -> Option<crate::proxy::forwarder::DlpOperationDescriptor<'a>> {
+        use crate::proxy::forwarder::{DlpOperationDescriptor, DlpResponsesOperation};
+        if full_url {
+            return None;
+        }
+        let (path, query) = match endpoint.split_once('?') {
+            Some((path, _)) => (path, &endpoint[path.len()..]),
+            None => (endpoint, ""),
+        };
+        let operation = match path {
+            "/responses" | "/v1/responses" => DlpResponsesOperation::Responses,
+            "/responses/compact" | "/v1/responses/compact" => DlpResponsesOperation::Compact,
+            _ => return None,
+        };
+        let base = url::Url::parse(base_url).ok()?;
+        if !matches!(base.scheme(), "http" | "https")
+            || base.host_str().is_none()
+            || base.query().is_some()
+            || base.fragment().is_some()
+            || !base.username().is_empty()
+            || base.password().is_some()
+        {
+            return None;
+        }
+        let base_path = base.path().trim_end_matches('/');
+        if [
+            "/responses",
+            "/responses/compact",
+            "/chat/completions",
+            "/messages",
+        ]
+        .iter()
+        .any(|suffix| base_path.ends_with(suffix))
+        {
+            return None;
+        }
+        let expected_endpoint = match protocol {
+            "openai_responses" => {
+                if operation == DlpResponsesOperation::Compact {
+                    "/responses/compact"
+                } else {
+                    "/responses"
+                }
+            }
+            "openai_chat" => "/chat/completions",
+            "anthropic" => "/v1/messages",
+            _ => return None,
+        };
+        let effective = format!("{expected_endpoint}{query}");
+        if Self::new().build_url(base_url, &effective) != target_url {
+            return None;
+        }
+        Some(DlpOperationDescriptor {
+            base_prefix: base_url,
+            query,
+            route_mode: protocol,
+            operation,
+        })
+    }
+}
 
 /// Whether this Codex provider's real upstream should be called through
 /// OpenAI Chat Completions, even if the local Codex client is talking to CC
@@ -139,24 +208,34 @@ pub fn inject_codex_chat_prompt_cache_key(
     explicit_key: Option<&str>,
     client_session_id: Option<&str>,
 ) -> bool {
-    if !should_send_codex_chat_prompt_cache_key(provider) {
-        return false;
-    }
-
-    let key = explicit_key
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-        .or_else(|| {
-            client_session_id
-                .map(str::trim)
-                .filter(|session_id| !session_id.is_empty())
-        });
-    let Some(key) = key else {
+    let Some(key) = CodexAdapter::prompt_cache_key(provider, explicit_key, client_session_id)
+    else {
         return false;
     };
 
     chat_body["prompt_cache_key"] = JsonValue::String(key.to_string());
     true
+}
+
+impl CodexAdapter {
+    /// Borrow the selected routing key without granting allocation or restoration authority.
+    pub(crate) fn prompt_cache_key<'a>(
+        provider: &Provider,
+        explicit_key: Option<&'a str>,
+        client_session_id: Option<&'a str>,
+    ) -> Option<&'a str> {
+        if !should_send_codex_chat_prompt_cache_key(provider) {
+            return None;
+        }
+        explicit_key
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .or_else(|| {
+                client_session_id
+                    .map(str::trim)
+                    .filter(|key| !key.is_empty())
+            })
+    }
 }
 
 /// Whether this Codex provider's real upstream speaks the native Anthropic
@@ -619,6 +698,7 @@ fn infer_codex_chat_reasoning_config(
     if haystack.contains("deepseek") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(true),
             thinking_param: Some("thinking".to_string()),
             effort_param: Some("reasoning_effort".to_string()),
@@ -638,6 +718,7 @@ fn infer_codex_chat_reasoning_config(
     if haystack.contains("stepfun") || haystack.contains("step-3.5-flash-2603") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(model.contains("2603") || model.contains("step-3.7-flash")),
             thinking_param: Some("none".to_string()),
             effort_param: Some("reasoning_effort".to_string()),
@@ -657,6 +738,7 @@ fn infer_codex_chat_reasoning_config(
     if haystack.contains("kimi") || haystack.contains("moonshot") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("thinking".to_string()),
             effort_param: Some("none".to_string()),
@@ -669,6 +751,7 @@ fn infer_codex_chat_reasoning_config(
     if haystack.contains("glm") || haystack.contains("zhipu") || haystack.contains("z.ai") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("thinking".to_string()),
             effort_param: Some("none".to_string()),
@@ -681,6 +764,7 @@ fn infer_codex_chat_reasoning_config(
     if haystack.contains("qwen") || haystack.contains("dashscope") || haystack.contains("bailian") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("enable_thinking".to_string()),
             effort_param: Some("none".to_string()),
@@ -693,6 +777,7 @@ fn infer_codex_chat_reasoning_config(
     if haystack.contains("minimax") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("reasoning_split".to_string()),
             effort_param: Some("none".to_string()),
@@ -705,6 +790,7 @@ fn infer_codex_chat_reasoning_config(
     if haystack.contains("mimo") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("thinking".to_string()),
             effort_param: Some("none".to_string()),
@@ -735,6 +821,7 @@ fn infer_aggregator_platform_config(
     if platform.contains("openrouter") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(false),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(true),
             thinking_param: Some("none".to_string()),
             effort_param: Some("reasoning.effort".to_string()),
@@ -750,6 +837,7 @@ fn infer_aggregator_platform_config(
     if platform.contains("siliconflow") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("enable_thinking".to_string()),
             effort_param: Some("none".to_string()),
@@ -767,6 +855,7 @@ fn infer_aggregator_platform_config(
     if platform.contains("modelscope") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(false),
             thinking_param: Some("enable_thinking".to_string()),
             effort_param: Some("none".to_string()),
@@ -786,6 +875,7 @@ fn infer_aggregator_platform_config(
     if platform.contains("opencode.ai") {
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
+            requires_tool_reasoning_placeholder: None,
             supports_effort: Some(true),
             thinking_param: Some("none".to_string()),
             effort_param: Some("reasoning_effort".to_string()),
@@ -879,7 +969,9 @@ impl CodexAdapter {
     /// 匹配 User-Agent 模式: `^(codex_vscode|codex_cli_rs)/[\d.]+`
     #[allow(dead_code)]
     pub fn is_official_client(user_agent: &str) -> bool {
-        CODEX_CLIENT_REGEX.is_match(user_agent)
+        CODEX_CLIENT_REGEX
+            .as_ref()
+            .is_ok_and(|regex| regex.is_match(user_agent))
     }
 
     /// 从 Provider 配置中提取 API Key
@@ -1306,6 +1398,45 @@ wire_api = "responses"
             ..Default::default()
         });
         assert!(should_send_codex_chat_prompt_cache_key(&unknown));
+    }
+
+    #[test]
+    fn prompt_cache_key_shared_borrowed_selection_preserves_policy_and_unicode() {
+        let mut provider = create_provider(json!({"base_url":"https://strict.example.com/v1"}));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            prompt_cache_routing: Some("enabled".into()),
+            ..Default::default()
+        });
+        let explicit = " \u{2003}缓存-key\t ";
+        let session = " synthetic-session ";
+        for (key, session, expected) in [
+            (Some(explicit), Some(session), Some(explicit.trim())),
+            (Some(" \t"), Some(session), Some(session.trim())),
+            (Some(""), Some(" "), None),
+            (None, None, None),
+        ] {
+            let selected = CodexAdapter::prompt_cache_key(&provider, key, session);
+            assert_eq!(selected, expected);
+            if let (Some(selected), Some(expected)) = (selected, expected) {
+                assert_eq!(selected.as_ptr(), expected.as_ptr());
+            }
+            let mut legacy = json!({"before":1,"prompt_cache_key":"old","after":2});
+            assert_eq!(
+                inject_codex_chat_prompt_cache_key(&provider, &mut legacy, key, session),
+                expected.is_some()
+            );
+            assert_eq!(legacy["prompt_cache_key"], expected.unwrap_or("old"));
+        }
+        provider.meta.as_mut().expect("meta").prompt_cache_routing = Some("disabled".into());
+        assert_eq!(
+            CodexAdapter::prompt_cache_key(&provider, Some(explicit), Some(session)),
+            None
+        );
+        provider.meta.as_mut().expect("meta").prompt_cache_routing = Some("auto".into());
+        assert_eq!(
+            CodexAdapter::prompt_cache_key(&provider, Some(explicit), Some(session)),
+            None
+        );
     }
 
     #[test]
@@ -1769,6 +1900,27 @@ wire_api = "anthropic"
     }
 
     #[test]
+    fn test_is_official_client_preserves_regex_prefix_and_unicode_semantics() {
+        for user_agent in [
+            "codex_vscode/.suffix",
+            "codex_cli_rs/1suffix",
+            "codex_cli_rs/١.۲",
+            "codex_vscode/９.０",
+        ] {
+            assert!(CodexAdapter::is_official_client(user_agent));
+        }
+        for user_agent in [
+            "codex_vscode/",
+            "codex_cli_rs/not-a-version",
+            "Codex_cli_rs/1.0",
+            "codex_vscode/²",
+            " codex_cli_rs/1.0",
+        ] {
+            assert!(!CodexAdapter::is_official_client(user_agent));
+        }
+    }
+
+    #[test]
     fn test_codex_provider_uses_chat_completions_from_active_wire_api() {
         let provider = create_provider(json!({
             "config": r#"
@@ -1943,6 +2095,7 @@ wire_api = "chat"
         provider.meta = Some(crate::provider::ProviderMeta {
             codex_chat_reasoning: Some(CodexChatReasoningConfig {
                 supports_thinking: Some(false),
+                requires_tool_reasoning_placeholder: None,
                 supports_effort: Some(false),
                 thinking_param: Some("none".to_string()),
                 effort_param: Some("none".to_string()),
@@ -2146,6 +2299,7 @@ wire_api = "chat"
         provider.meta = Some(crate::provider::ProviderMeta {
             codex_chat_reasoning: Some(CodexChatReasoningConfig {
                 supports_thinking: Some(true),
+                requires_tool_reasoning_placeholder: None,
                 supports_effort: Some(true),
                 thinking_param: Some("none".to_string()),
                 effort_param: Some("reasoning_effort".to_string()),

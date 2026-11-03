@@ -1,6 +1,6 @@
 # Keep Vary AI loopback traffic local
 
-Use these examples only after confirming that a VPN/proxy is forwarding requests for `127.0.0.1:15721` to a remote proxy. HTTP 503 alone does not establish that diagnosis.
+Use these examples only after confirming that a VPN/proxy is forwarding requests for `127.0.0.1:15722` to a remote proxy. HTTP 503 alone does not establish that diagnosis.
 
 The examples contain no subscription, server, account, or key. They route loopback traffic directly and send other traffic to the user's selected proxy. They replace the routing policy; they do not preserve an existing region-based split-routing policy. LAN addresses are not included in the direct exception.
 

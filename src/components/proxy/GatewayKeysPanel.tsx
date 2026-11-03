@@ -13,7 +13,6 @@ import {
 } from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { APP_IDS, APP_ICON_MAP } from "@/config/appConfig";
-import { providersApi } from "@/lib/api/providers";
 import { proxyApi } from "@/lib/api/proxy";
 import { proxyKeys } from "@/lib/query/proxy";
 import type { ProxyTakeoverStatus } from "@/types/proxy";
@@ -49,12 +48,6 @@ export function GatewayKeysPanel({
   const { data: usage = [], isError: usageError } = useQuery({
     queryKey: ["gateway-usage"],
     queryFn: () => gatewayApi.usage(),
-    refetchInterval: 5000,
-  });
-  const { data: desktop } = useQuery({
-    queryKey: ["claude-desktop-status"],
-    queryFn: providersApi.getClaudeDesktopStatus,
-    enabled: view === "agents",
     refetchInterval: 5000,
   });
   const [formOpen, setFormOpen] = useState(false);
@@ -203,8 +196,8 @@ export function GatewayKeysPanel({
         void run(async () => {
           if (editing) await gatewayApi.update(editing, policy);
           else {
-            const created = await gatewayApi.create(policy);
-            setSecret(created.secret);
+            await gatewayApi.create(policy);
+            toast.success(t("gatewayKeys.created"));
           }
           reset();
         });
@@ -437,7 +430,10 @@ export function GatewayKeysPanel({
                   size="sm"
                   variant="outline"
                   onClick={() =>
-                    void run(() => navigator.clipboard.writeText(secret))
+                    void run(async () => {
+                      await navigator.clipboard.writeText(secret);
+                      toast.success(t("gatewayKeys.copied"));
+                    })
                   }
                 >
                   {t("common.copy")}
@@ -619,16 +615,7 @@ export function GatewayKeysPanel({
                 catalog?.agents.find((a) => a.id === app)?.localRouting ??
                 false;
               const bound = keys.find((key) => key.agents?.includes(app));
-              const enabled =
-                running &&
-                (app === "claude-desktop"
-                  ? desktop?.mode === "proxy" &&
-                    desktop.configured &&
-                    desktop.gatewayTokenConfigured &&
-                    desktop.actualBaseUrl === desktop.expectedBaseUrl &&
-                    !desktop.staleRawModels &&
-                    !desktop.missingRouteMappings
-                  : takeoverStatus?.[app]);
+              const enabled = running && takeoverStatus?.[app];
               return (
                 <div key={app} className="rounded-lg border p-3 space-y-2">
                   <Label htmlFor={`gateway-agent-${app}`}>{label(app)}</Label>

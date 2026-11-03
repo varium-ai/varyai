@@ -34,11 +34,14 @@
     "newDraft": "已建立空白預設，請填寫資訊後點擊儲存。"
   },
   "providerDetection": {
+    "selectModel": "選擇檢測模型",
+    "probeHint": "檢測模型僅用於驗證協定。下方模型設定請單獨選擇，或從已取得的模型清單填入。",
     "title": "偵測設定",
     "discovering": "正在取得模型清單…",
     "modelsFound": "已取得 {{count}} 個模型",
     "manualModelHint": "沒有模型清單時，也可以手動填寫模型名稱。",
     "selectedModel": "待偵測模型：{{model}}",
+    "autoHint": "填完 URL 和 Key 後自動偵測，使用可用模型選擇第一個一般回應和串流回應均通過驗證的協定，不修改預設模型。",
     "costHint": "偵測會使用你的 Key 傳送最多 8 次少量推論請求，可能產生費用。輸入過程中不會傳送請求。",
     "check": "偵測設定",
     "checking": "正在偵測…",
@@ -251,6 +254,13 @@
     "categoryCustom": "自訂規則",
     "ruleActionBlock": "阻擋",
     "ruleActionAlert": "提醒",
+    "ruleActionRedactRestore": "隱藏並本機還原",
+    "dialogActionRedactRestore": "隱藏並本機還原（僅 Codex HTTP）",
+    "resultRedactRestore": "已替換為本機還原參照",
+    "redactRestoreScope": "逐規則手動啟用：僅支援 Codex HTTP Responses 和 /responses/compact 的 JSON、SSE。已檢查但不支援的路由命中此動作時將拒絕請求，不會靜默改為一般遮蔽。對應僅保留於本機，重新啟動後遺失。",
+    "redactRestoreRisk": "模型只能看到參照，無法計算、擷取原文或滿足固定格式限制。還原後的 Shell、SQL、修補程式或內嵌 JSON 仍可能無效或不安全；請勿自動執行輸出，保留工具核准和沙箱。此功能不會向上游工具提供原文，也不保證任務正確或零洩漏。",
+    "notifyRedactRestoreTitle": "敏感資訊已替換為本機參照",
+    "notifyRedactRestoreBody": "{{app}} 請求命中「{{rule}}」，傳送前已替換為本機參照。",
     "ruleActionRedact": "自動隱藏後傳送",
     "ruleActionAllow": "不處理",
     "dialogEditTitle": "編輯自訂安全檢測規則",
@@ -497,6 +507,7 @@
     "accountLoading": "正在載入帳號…"
   },
   "claudeDesktop": {
+    "modelRoutingHint": "此處設定模型和上游協定；是否經過本機路由，由首頁或設定中的 Claude Desktop 路由開關統一控制。模型對應和協定轉換需要啟用路由。",
     "modelConfigTitle": "模型設定",
     "modelModeLabel": "接入方式",
     "modelModeDirect": "直連",
@@ -506,10 +517,10 @@
     "modeDirect": "直連",
     "modeProxy": "需要路由",
     "modelMappingToggle": "需要模型對應",
-    "modelMappingOffHint": "僅當供應商直接接受 Claude Desktop 可識別的三檔角色 ID（claude-sonnet-* / claude-opus-* / claude-haiku-*）時才適用直連；其他模型名（含 claude-3-5-sonnet-… 等舊式 ID）請選擇「模型映射」。",
-    "modelMappingOnHint": "Claude Desktop 只接受 claude-sonnet-* / claude-opus-* / claude-haiku-* 三檔角色 ID。選擇「模型映射」後，Vary AI 會把這三檔對應到供應商的實際模型，並在使用期間保持本地路由開啟。",
+    "modelMappingOffHint": "只有供應商直接接受 Claude Desktop 可識別的模型 ID 時才適用直連；其他模型 ID 請選擇模型對應。",
+    "modelMappingOnHint": "Sonnet、Opus、Fable、Haiku 是相容角色，不限制模型數量。同一角色可新增多個模型，選單顯示名稱可自由填寫。Vary AI 透過本機路由將每筆對應轉送至實際模型。",
     "routeMapTitle": "模型對應",
-    "routeMapHint": "只有填寫了實際請求模型的角色會出現在 Desktop 選單；清空模型即可移除該選單項目。未設定的 Haiku 子 agent 請求會在內部沿用 Sonnet 或第一個已設定模型。僅在上游支援時宣告 1M。",
+    "routeMapHint": "可自由新增或刪除對應，角色可重複。下拉選擇模型會同步選單顯示名稱，之後可自行改名。只有填寫實際請求模型的列會出現在 Desktop 選單；未設定的 Haiku 子 agent 請求沿用 Sonnet 或第一個已設定模型。僅在上游支援時宣告 1M。",
     "routeModelLabel": "模型角色",
     "routeRoleSonnet": "Sonnet",
     "routeRoleOpus": "Opus",
@@ -524,6 +535,7 @@
     "directModelListHint": "設定 Claude Desktop 可用的 Sonnet、Opus、Haiku 模型。留空時 Claude Desktop 會自動讀取 /v1/models；勾選 1M 會聲明支援 1M 上下文。",
     "directModelInvalid": "直連模型必須使用 Claude Desktop 可識別的 Sonnet / Opus / Haiku 模型名稱",
     "addModel": "新增模型",
+    "importAllModels": "一鍵匯入所有模型",
     "addRoute": "新增模型",
     "routeInvalid": "請選擇模型角色並填寫實際請求模型",
     "routesRequired": "至少填寫一個模型對應",
@@ -534,13 +546,16 @@
     "statusGatewayTokenMissing": "目前本地路由 token 尚未產生；重新切換該供應商會寫入新的本地 token。",
     "statusBaseUrlMismatch": "Claude Desktop profile 指向的位址與目前供應商不一致；目前為 {{actual}}，應為 {{expected}}。重新切換目前供應商可修復。",
     "route": {
+      "officialBlocked": "請先停用 Claude Desktop 的本機路由，再切換官方登入。",
       "ariaLabel": "Claude Desktop 本機路由",
-      "settingsHint": "Claude Desktop 需先啟用「需要模型映射」的供應商。此開關控制共用路由服務，其他應用接管期間無法關閉。",
+      "settingsHint": "此開關控制 Claude Desktop 的路由；模型對應或協定轉換需要啟用。修改後請重新啟動 Claude Desktop。",
       "tooltip": {
         "active": "Claude Desktop 本地路由已開啟 - {{address}}:{{port}}",
         "inactive": "開啟 Claude Desktop 本地路由，用於需要模型對應或格式轉換的供應商。目前設定位址：{{address}}:{{port}}"
       },
-      "stopBlockedByTakeover": "其他應用正在使用代理接管。請先在設定中關閉對應應用接管，再停止本機路由。"
+      "stopBlockedByTakeover": "其他應用正在使用代理接管。請先在設定中關閉對應應用接管，再停止本機路由。",
+      "sharedGateway": "共用網關",
+      "sharedGatewayInUse": "共用網關正供 {{apps}} 使用，請先關閉這些應用的路由，再停止網關。"
     }
   },
   "notifications": {
@@ -593,7 +608,7 @@
     "windowControlFailed": "視窗控制失敗：{{error}}",
     "officialBlockedByProxy": "本地路由模式下不能切換至官方供應商，使用路由存取官方 API 可能導致帳號被封鎖",
     "proxyOfficialWarning": "目前供應商 {{name}} 是官方供應商，建議切換至第三方供應商後再使用本地路由",
-    "proxyReasonClaudeDesktop": "使用 Claude Desktop 本機路由模式"
+    "proxyReasonClaudeDesktop": "Claude Desktop 模型映射或協定轉換需要路由"
   },
   "confirm": {
     "deleteProvider": "刪除供應商",
@@ -795,8 +810,8 @@
     "themeLight": "淺色",
     "themeDark": "深色",
     "themeSystem": "跟隨系統",
-    "importExport": "SQL 匯入匯出",
-    "importExportHint": "匯入/匯出資料庫 SQL 備份（僅支援匯入由 Vary AI 匯出的備份），便於備份或遷移。",
+    "importExport": "資料庫備份與復原",
+    "importExportHint": "匯出或復原資料庫 SQL 備份。復原會取代資料庫內容，並可能重新套用用戶端組態；不包含本機設定、登入檔案與 Skills 檔案。",
     "exportConfig": "匯出 SQL 備份",
     "selectConfigFile": "選擇 SQL 檔案",
     "noFileSelected": "尚未選擇設定檔。",
@@ -1117,8 +1132,8 @@
     },
     "configDirectoryOverride": "設定目錄覆寫（進階）",
     "configDirectoryDescription": "在 WSL 等環境使用 Claude Code 或 Codex 的時候，可手動指定為 WSL 裡的設定目錄，供應商資料與主環境保持一致。",
-    "appConfigDir": "Vary AI 設定目錄",
-    "appConfigDirDescription": "自訂 Vary AI 的設定儲存位置（指定至雲端同步資料夾即可雲端同步設定）",
+    "appConfigDir": "VaryAI 應用程式資料目錄",
+    "appConfigDirDescription": "為資料庫、Skills 與資料備份選擇獨立目錄。本機設定與登入資料保留在本機，重新啟動後生效。",
     "browsePlaceholderApp": "例如：C:\\Users\\Administrator\\.cc-switch",
     "claudeConfigDir": "Claude Code 設定目錄",
     "claudeConfigDirDescription": "覆寫 Claude 設定目錄 (settings.json)。真正自訂目錄會在目錄內存放 Claude MCP 的 .claude.json；預設 ~/.claude 目錄仍使用 Claude 預設的 ~/.claude.json。",
@@ -1721,7 +1736,7 @@
     "fallbackModelHint": "用於未明確落到 Sonnet、Opus、Fable、Haiku 角色的請求。使用第三方/中轉端點時建議填寫：否則這些請求（含 Haiku 背景子任務）會以原始 Claude 模型名透傳給上游，可能因上游無此模型而報錯。官方端點可留空。",
     "quickSetModels": "一鍵設定",
     "quickSetSuccess": "已匯入 {{count}} 個模型至模型對應",
-    "importModelsHint": "一鍵設定會將全部模型逐列匯入下方。Claude Code 2.1.242 以上版本可在 /model 選單中顯示這些模型，儲存後需重新啟動 Claude Code。下方角色預設模型另行設定。",
+    "importModelsHint": "取得模型清單時，將空白或不在本次清單中的預設模型和角色對應改為第一個模型，保留仍可用的預設值和自訂名稱。一鍵設定還會匯入全部可選模型。儲存後重新啟動 Claude Code 2.1.242 以上版本以載入 /model 選單。",
     "importModelName": "顯示名稱",
     "importModelId": "實際請求模型",
     "removeImportedModel": "移除模型",
@@ -1745,6 +1760,10 @@
     "fetchModelsAuthFailed": "API Key 無效或無權限",
     "fetchModelsNotSupported": "該供應商不支援取得模型清單",
     "fetchModelsEndpointNotFound": "未找到可用的模型清單端點，請檢查 Base URL 或確認供應商是否開放該 API",
+    "fetchModelsRateLimited": "取得模型清單受到限流（HTTP 429），請稍後重試或檢查供應商額度。",
+    "fetchModelsUpstreamFailed": "供應商暫時無法回傳模型清單（HTTP {{status}}），請稍後重試或檢查上游服務。",
+    "fetchModelsNetworkFailed": "無法連線至模型清單介面，請檢查網路及 VaryAI 的代理設定。",
+    "fetchModelsInvalidConfig": "無法確定模型清單介面，請檢查 API 位址和「完整位址」選項。",
     "fetchModelsTimeout": "請求逾時，請檢查網路連線",
     "requiredFields": "請填寫供應商名稱、API 位址、API Key 和模型",
     "clientProtocol": "用戶端協定"
@@ -1895,7 +1914,7 @@
     "pricingModelSourceHint": "選擇依請求模型還是回傳模型進行定價比對"
   },
   "codexConfig": {
-    "importModelsHint": "取得模型列表只載入候選項，不修改映射；一鍵設定將全部模型逐行匯入下方並跳過重複項。",
+    "importModelsHint": "取得模型清單會載入候選項，並將空白或不在本次清單中的預設模型改為第一個模型。一鍵設定還會匯入全部模型並略過重複項。",
     "authJson": "auth.json (JSON) *",
     "authJsonPlaceholder": "{\n    \"OPENAI_API_KEY\": \"sk-your-api-key-here\"\n}",
     "authJsonHint": "Codex auth.json 設定內容",
@@ -1983,7 +2002,7 @@
     "defaultModel": "預設模型",
     "defaultModelHint": "啟動 Gemini CLI 時優先使用此模型；進入工作階段後仍可透過 /model 切換。",
     "selectableModels": "可選模型清單",
-    "importModelsHint": "取得模型清單只載入候選項；一鍵設定將全部模型加入下方清單並略過重複項目。保留目前預設模型，儲存後重新啟動 Gemini CLI，在 /model 中選擇 Manual（手動選擇）並按 Enter，即可展開模型清單。",
+    "importModelsHint": "取得模型清單會載入候選項，並將空白或不在本次清單中的預設模型改為第一個模型。一鍵設定還會匯入全部可選模型，保留既有模型設定。儲存後重新啟動 Gemini CLI，在 /model 中選擇 Manual 並按 Enter 展開清單。",
     "modelsConfigInvalid": "請先修正下方設定 JSON 中的模型設定，再匯入模型。",
     "envFile": "環境變數 (.env)",
     "envFileHint": "使用 .env 格式設定 Gemini 環境變數",
@@ -3256,7 +3275,6 @@
     "clickToSelect": "點擊選擇圖示"
   },
   "migration": {
-    "success": "設定遷移成功",
     "skillsSuccess": "已自動匯入 {{count}} 個技能至統一管理",
     "skillsFailed": "自動匯入技能失敗",
     "skillsFailedDescription": "請開啟 Skills 頁面點擊「匯入現有」手動匯入（或重新啟動後再試）。"
@@ -3328,7 +3346,7 @@
         },
         "listenPort": {
           "label": "監聽連接埠",
-          "placeholder": "15721",
+          "placeholder": "15722",
           "description": "路由伺服器監聽的連接埠號（1024 ~ 65535）"
         },
         "maxRetries": {
@@ -3394,7 +3412,9 @@
         "active": "{{appLabel}} 路由中 - {{address}}:{{port}}\n切換該應用程式供應商為熱切換",
         "broken": "{{appLabel}} 路由中，但路由服務未執行",
         "inactive": "路由 {{appLabel}} 的請求，讓該應用程式請求走本地路由"
-      }
+      },
+      "setupRequired": "{{app}} 設定尚未初始化。請先在首頁套用已新增或匯入的供應商，或完成用戶端初始化，再開啟路由。",
+      "prerequisitesHint": "開啟前需先設定用戶端。Kimi、Qwen、ZCode 和 Pi 需要可用模型；WorkBuddy 需要本機產品設定；Qoder、TRAE 和豆包工作還需完成對應的連線或憑證授權。"
     },
     "failover": {
       "proxyRequired": "需要先啟動路由服務才能設定故障轉移",
@@ -3817,7 +3837,7 @@
     "activate": "啟用防護",
     "enableRouting": "啟用本機路由",
     "unsupported": "目前應用不支援本機路由",
-    "desktopSetup": "請先為 Claude Desktop 設定有效的本機代理模式",
+    "desktopSetup": "請先新增並選擇一個包含可用模型的 Claude Desktop 供應商。",
     "routeFailed": "路由未成功接管，未啟用稽核",
     "enableFailed": "安全稽核操作失敗",
     "targetApp": "連動應用",
@@ -3960,10 +3980,13 @@
     "noRules": "暫無規則",
     "resetBuiltin": "恢復預設",
     "sandboxTitle": "規則沙箱測試",
-    "sandboxDescription": "不執行工具、不落盤、不回顯原文，僅回傳固定列舉結論。",
+    "sandboxDescription": "手動預覽規則，不受即時觀測總開關影響；不執行工具、不產生風險記錄、不儲存或顯示原文。",
+    "sandboxObservationDisabled": "即時工具風險觀測已關閉。以下僅為手動規則測試，不代表即時防護已開啟。",
     "sandboxTool": "工具名",
     "sandboxClient": "用戶端（選填）",
     "sandboxDefinitionRef": "可信 schema 引用（選填）",
+    "sandboxInvalidJson": "JSON 格式不合法，請檢查括號、引號和逗號後再測試。",
+    "sandboxOpenaiWriteHint": "OpenAI write_file 使用 path 欄位，例如 {\"path\":\"/etc/sudoers\",\"content\":\"test\"}；file_path 是 Claude、Gemini 的欄位。缺少可辨識欄位會顯示 unchecked（未檢查），不代表安全。",
     "sandboxTrustHint": "不會依工具名推斷可信身分。僅測試對應用戶端的內建工具時，明確填寫已知 schema：builtin:claude:tools:v1、builtin:codex:tools:v1、builtin:gemini:tools:v1 或 builtin:openai:tools:v1。MCP 工具不得冒充內建身分。",
     "fieldTarget": "選擇器目標",
     "fieldToolRefs": "精確工具引用（JSON 陣列）",
@@ -4178,7 +4201,6 @@
       "blacklist": "黑名單 · 風險警告",
       "matchKind": "比對範圍",
       "pattern": "命令或比對內容",
-      "advanced": "進階：關鍵字 / 正則",
       "severity": "黑名單風險等級",
       "riskCategory": "風險類別",
       "whitelistHint": "白名單只覆蓋字面量 unknown 分類的普通命令，不改變已知的腳本、網路、變更或提權類別，也不賦予可信身分。",
@@ -4304,7 +4326,7 @@
       "renew": "更新憑證並恢復接管",
       "renewing": "正在更新憑證…",
       "renewed": "憑證已更新，請完全結束並重新開啟 Qoder。",
-      "renewFailed": "憑證更新失敗，請完成 macOS 系統認證後重試。",
+      "renewFailed": "憑證更新失敗。",
       "expiredTitle": "Qoder 本機憑證已過期",
       "expiredDescription": "Qoder 官方帳號的安全接管憑證已過期。可直接在此更新憑證並恢復接管，無需重新啟動 VaryAI；macOS 可能要求系統認證。完成後請完全結束並重新開啟 Qoder，以重新讀取介面位址和憑證信任。第三方模型的 HTTP 路由不依賴此憑證。",
       "title": "啟用 Qoder 安全接管",
@@ -4322,7 +4344,18 @@
       "clearDescription": "將關閉 Qoder 接管、恢復客戶端設定，移除鑰匙圈信任並刪除本機憑證檔案。macOS 可能要求系統密碼以確認移除信任。完成後請完全重新啟動 Qoder；清除後不會自動產生憑證，只有點擊「建立 / 重建憑證」才會重新建立。",
       "rebuildDescription": "將替換現有憑證並啟用 Qoder 接管。macOS 可能先後要求驗證以移除舊信任及新增信任；密碼只交給系統。完成後請完全重新啟動 Qoder。",
       "cleared": "憑證已清除，Qoder 接管已關閉，請完全重新啟動 Qoder。",
-      "operationFailed": "憑證操作未完成，請檢查系統驗證並重試。",
+      "operationFailed": "憑證操作失敗。",
+      "failureDetail": "失敗階段：{{stage}}；狀態：{{status}}。",
+      "failureStages": {
+        "codec": "Qoder 版本相容性檢查",
+        "data": "憑證檔案或格式處理",
+        "generate": "產生憑證",
+        "inspect": "檢查憑證",
+        "verify_trust": "驗證憑證信任",
+        "install_trust": "安裝憑證信任",
+        "remove_trust": "移除憑證信任",
+        "delete_certificate": "刪除鑰匙圈憑證"
+      },
       "statusFailed": "無法讀取憑證狀態，請稍後重試。"
     }
   },
@@ -4453,6 +4486,8 @@
     "resultWarning": "風險預警"
   },
   "gatewayKeys": {
+    "created": "密鑰建立成功",
+    "copied": "密鑰已複製",
     "nameExists": "已存在同名金鑰，請使用其他名稱。",
     "sourceAgent": "請求來源",
     "upstreamModel": "實際轉發模型",
@@ -4512,7 +4547,7 @@
     "traeHint": "涵蓋自訂模型路由；僅透過稽核橋觀察的官方請求無法由此策略攔截。",
     "filterKey": "閘道金鑰",
     "allKeys": "全部金鑰",
-    "usageHint": "依金鑰、計量週期、agent、用戶端請求模型及實際轉發模型彙總最近 200 筆記錄。顯示已結束的請求，未回報用量另行計數；舊記錄未儲存實際轉發模型時顯示「未記錄」。",
+    "usageHint": "依金鑰、計量週期、agent、用戶端請求模型及實際轉發模型彙總最近 200 筆記錄。顯示已結束的請求，未回報用量另行計數；舊記錄未儲存實際轉發模型時顯示「未記錄」。 用戶端自動產生標題、摘要等背景請求也會計入，所用模型可能與目前聊天不同。",
     "noUsage": "尚未觀察到請求。請綁定已開啟本機路由的 agent，或使用閘道金鑰傳送請求。",
     "usageRow": "{{requests}} 次請求 · {{tokens}} Token · {{unmetered}} 次未回報用量",
     "lastUsed": "最近請求：{{time}}",
@@ -5415,5 +5450,24 @@
       "reauth": "儲存的登入已失效或不完整，請在來源應用中重新登入後再匯入。"
     },
     "subscriptionWarning": "將儲存的 Codex 授權複製到 Vary AI。使用前請先停止在來源應用中使用此帳號，同時更新登入憑證可能導致任一應用登出。"
+  },
+  "storage": {
+    "title": "復原 VaryAI 儲存空間",
+    "description": "設定的 VaryAI 資料目錄無法使用或無效。請重新連接、選擇其他原生資料目錄，或明確建立空白儲存空間。",
+    "destination": "設定的資料目錄",
+    "startEmpty": "建立空白儲存",
+    "useExisting": "選擇其他資料目錄",
+    "working": "正在準備儲存…",
+    "setupRequired": "設定的 VaryAI 資料目錄無法使用。",
+    "readFailed": "無法讀取所選來源，請檢查位置與權限。",
+    "writeFailed": "無法準備儲存，原檔案已保留。請檢查可用空間與權限後重試。",
+    "destinationChanged": "儲存位置已變更，請重新載入復原頁面或選擇獨立目錄。",
+    "invalidTarget": "請選擇位於來源目錄之外的獨立 VaryAI 資料目錄。",
+    "invalidSettings": "資料目錄設定格式無效，請選擇獨立的 VaryAI 資料目錄。",
+    "unsupportedSource": "資料庫格式不受支援或資料不完整。請選擇相容備份，不要刪除來源資料庫或降低版本號。",
+    "invalidRecovery": "復原資訊不完整或已變更，請選擇已驗證的備份。",
+    "restartRequired": "請先重新啟動 VaryAI，再準備其他儲存位置。",
+    "useDefault": "使用預設資料目錄",
+    "setupReadFailed": "無法讀取 VaryAI 儲存位置，請檢查資料目錄設定和權限。"
   }
 }

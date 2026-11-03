@@ -291,8 +291,7 @@ function App() {
     status: proxyStatus,
   } = useProxyStatus();
   const proxyAppId = isProxyAppId(activeApp) ? activeApp : null;
-  const currentAppUsesProxy =
-    isTakeoverAppId(activeApp) || activeApp === "claude-desktop";
+  const currentAppUsesProxy = isTakeoverAppId(activeApp);
   const isCurrentAppTakeoverActive = isTakeoverAppId(activeApp)
     ? takeoverStatus?.[activeApp] || false
     : false;

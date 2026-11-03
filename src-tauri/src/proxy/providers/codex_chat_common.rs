@@ -1,7 +1,14 @@
+use crate::provider::CodexChatReasoningConfig;
 use serde_json::{json, Map, Value};
 
 const THINK_OPEN_TAG: &str = "<think>";
 const THINK_CLOSE_TAG: &str = "</think>";
+const LONG_THINK_OPEN_TAG: &str = "<thinking>";
+const LONG_THINK_CLOSE_TAG: &str = "</thinking>";
+
+pub(crate) fn allows_long_thinking_tags(config: Option<&CodexChatReasoningConfig>) -> bool {
+    config.and_then(|config| config.output_format.as_deref()) == Some("thinking_tags")
+}
 
 // 穷举上游可能的 reasoning 回传字段，优先级：reasoning_content > reasoning(字符串/对象) > reasoning_details。
 // 不依赖 provider meta 的 outputFormat 声明，因此对各家 Chat 兼容接口都能兜底提取。
@@ -189,13 +196,13 @@ pub(crate) fn response_function_call_item_with_namespace(
     item
 }
 
-pub(crate) fn response_item_call_id(item: &Value) -> Option<String> {
+/// Borrow the same trimmed ID without duplicating request/cache metadata.
+pub(crate) fn response_item_call_id(item: &Value) -> Option<&str> {
     item.get("call_id")
         .or_else(|| item.get("id"))
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
 }
 
 pub(crate) fn is_empty_value(value: &Value) -> bool {
@@ -208,17 +215,36 @@ pub(crate) fn is_empty_value(value: &Value) -> bool {
     }
 }
 
+pub(crate) fn split_leading_think_block_with_compatibility(
+    text: &str,
+    allow_long_tags: bool,
+) -> Option<(String, String)> {
+    split_leading_think_block(text).or_else(|| {
+        allow_long_tags
+            .then(|| split_leading_tag_block(text, LONG_THINK_OPEN_TAG, LONG_THINK_CLOSE_TAG))
+            .flatten()
+    })
+}
+
 pub(crate) fn split_leading_think_block(text: &str) -> Option<(String, String)> {
+    split_leading_tag_block(text, THINK_OPEN_TAG, THINK_CLOSE_TAG)
+}
+
+fn split_leading_tag_block(
+    text: &str,
+    open_tag: &str,
+    close_tag: &str,
+) -> Option<(String, String)> {
     let leading_ws_len = text.len() - text.trim_start().len();
     let after_ws = &text[leading_ws_len..];
-    if !after_ws.starts_with(THINK_OPEN_TAG) {
+    if !after_ws.starts_with(open_tag) {
         return None;
     }
 
-    let body_start = leading_ws_len + THINK_OPEN_TAG.len();
-    let close_relative = text[body_start..].find(THINK_CLOSE_TAG)?;
+    let body_start = leading_ws_len + open_tag.len();
+    let close_relative = text[body_start..].find(close_tag)?;
     let close_start = body_start + close_relative;
-    let answer_start = close_start + THINK_CLOSE_TAG.len();
+    let answer_start = close_start + close_tag.len();
 
     Some((
         text[body_start..close_start].trim().to_string(),

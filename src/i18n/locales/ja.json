@@ -34,11 +34,14 @@
     "newDraft": "新しいプリセットを準備しました。詳細を入力して保存してください。"
   },
   "providerDetection": {
+    "selectModel": "検証モデルを選択",
+    "probeHint": "検証モデルはプロトコルの確認にのみ使用します。保存するモデルは個別に設定するか、取得済みのモデル一覧から入力してください。",
     "title": "設定を検出",
     "discovering": "モデル一覧を取得中…",
     "modelsFound": "{{count}} 件のモデルを取得しました",
     "manualModelHint": "一覧を取得できない場合も、モデル名を手動入力できます。",
     "selectedModel": "検出するモデル：{{model}}",
+    "autoHint": "URL とキーの入力後、利用可能なモデルで通常応答とストリーミングを検証し、最初に対応したプロトコルを自動選択します。既定モデルは変更しません。",
     "costHint": "検出ではキーを使用して最大 8 回の小規模な推論リクエストを送信し、料金が発生する場合があります。入力中は送信しません。",
     "check": "設定を検出",
     "checking": "検出中…",
@@ -251,6 +254,13 @@
     "categoryCustom": "カスタムルール",
     "ruleActionBlock": "ブロック",
     "ruleActionAlert": "警告",
+    "ruleActionRedactRestore": "非表示・ローカル復元",
+    "dialogActionRedactRestore": "非表示・ローカル復元（Codex HTTP のみ）",
+    "resultRedactRestore": "ローカル復元用の参照に置換",
+    "redactRestoreScope": "ルールごとに明示的に有効化します。Codex HTTP Responses と /responses/compact の JSON・SSE のみ対応します。検査対象の非対応ルートで一致すると要求を拒否し、通常のマスキングには切り替えません。対応表はこの端末内のみで保持され、再起動で失われます。",
+    "redactRestoreRisk": "モデルが見るのは参照であり、元の値の計算・切り出し・固定形式には対応しません。復元後のシェル、SQL、パッチ、埋め込み JSON も不正または危険な場合があります。出力を自動実行せず、ツール承認とサンドボックスを維持してください。上流ツールに原文は渡せず、タスクの正確性や漏えいゼロは保証しません。",
+    "notifyRedactRestoreTitle": "機密情報を参照に置換しました",
+    "notifyRedactRestoreBody": "{{app}} の要求で「{{rule}}」を検出し、送信前にローカル参照に置換しました。",
     "ruleActionRedact": "隠して送信",
     "ruleActionAllow": "処理しない",
     "dialogEditTitle": "カスタムセキュリティルールを編集",
@@ -497,6 +507,7 @@
     "accountLoading": "アカウントを読み込み中…"
   },
   "claudeDesktop": {
+    "modelRoutingHint": "ここでモデルと上流プロトコルを設定します。ローカルルーティングはホームまたは設定の Claude Desktop スイッチで制御します。モデルのマッピングとプロトコル変換にはルーティングが必要です。",
     "modelConfigTitle": "モデル設定",
     "modelModeLabel": "接続方式",
     "modelModeDirect": "直接接続",
@@ -506,10 +517,10 @@
     "modeDirect": "直結",
     "modeProxy": "ルーティング必要",
     "modelMappingToggle": "モデルマッピングが必要",
-    "modelMappingOffHint": "プロバイダーが Claude Desktop の三つの役割 ID（claude-sonnet-* / claude-opus-* / claude-haiku-*）を受け付ける場合のみ直結できます。それ以外のモデル名（claude-3-5-sonnet-… などの旧式 ID を含む）は「モデルマッピング」を選択してください。",
-    "modelMappingOnHint": "Claude Desktop は claude-sonnet-* / claude-opus-* / claude-haiku-* の三つの役割 ID のみ受け付けます。「モデルマッピング」を選択すると、Vary AI がこの三役割をプロバイダーの実モデルにマッピングし、使用中はローカルルーティングを起動したままにします。",
+    "modelMappingOffHint": "プロバイダーが Claude Desktop の認識するモデル ID を直接受け付ける場合のみ直結を使用してください。それ以外の ID はモデルマッピングを使用してください。",
+    "modelMappingOnHint": "Sonnet、Opus、Fable、Haiku は互換性のためのロールで、モデル数の上限ではありません。同じロールに複数のモデルを追加でき、メニュー表示名も自由に設定できます。Vary AI がローカルルーティングで各項目を実際のモデルへ転送します。",
     "routeMapTitle": "モデルマッピング",
-    "routeMapHint": "実際のリクエストモデルを入力したロールだけが Desktop のメニューに表示されます。モデルを空欄にすると項目が削除されます。未設定の Haiku サブエージェントのリクエストは内部で Sonnet または最初の設定済みモデルを使用します。上流が対応している場合のみ 1M を宣言してください。",
+    "routeMapHint": "マッピングは自由に追加・削除でき、同じロールも複数使えます。モデルを選ぶとメニュー表示名が更新され、その後自由に変更できます。実際のリクエストモデルを入力した行だけが Desktop に表示されます。未設定の Haiku サブエージェントは Sonnet または最初の設定済みモデルを使用します。上流が対応する場合のみ 1M を宣言してください。",
     "routeModelLabel": "モデル役割",
     "routeRoleSonnet": "Sonnet",
     "routeRoleOpus": "Opus",
@@ -524,6 +535,7 @@
     "directModelListHint": "Claude Desktop で使用できる Sonnet、Opus、Haiku モデルを設定します。空欄の場合、Claude Desktop が /v1/models を自動取得します。1M をオンにすると 1M コンテキスト対応を宣言します。",
     "directModelInvalid": "直結モデルは Claude Desktop が認識できる Sonnet / Opus / Haiku モデル ID を使う必要があります",
     "addModel": "モデルを追加",
+    "importAllModels": "すべてのモデルを一括追加",
     "addRoute": "モデルを追加",
     "routeInvalid": "モデル役割を選択し、リクエストモデルを入力してください",
     "routesRequired": "少なくとも 1 つのモデルマッピングが必要です",
@@ -534,13 +546,16 @@
     "statusGatewayTokenMissing": "ローカルルーティング token がまだ生成されていません。このプロバイダーへ再度切り替えると新しい token が書き込まれます。",
     "statusBaseUrlMismatch": "Claude Desktop profile の URL が現在のプロバイダーと一致しません。現在: {{actual}}、期待値: {{expected}}。現在のプロバイダーへ再度切り替えると修復できます。",
     "route": {
+      "officialBlocked": "公式ログインに切り替える前に Claude Desktop のルーティングを無効にしてください。",
       "ariaLabel": "Claude Desktop ローカルルーティング",
-      "settingsHint": "Claude Desktop では、先にモデルマッピングを有効にしたプロバイダーを適用してください。このスイッチは共有ルーティングサービスを操作するため、他のアプリがテイクオーバーを使用している間はオフにできません。",
+      "settingsHint": "このスイッチは Claude Desktop のルーティングを制御します。モデルのマッピングとプロトコル変換には有効化が必要です。変更後は Claude Desktop を再起動してください。",
       "tooltip": {
         "active": "Claude Desktop ローカルルーティングは起動中です - {{address}}:{{port}}",
         "inactive": "モデルマッピングや形式変換が必要なプロバイダー向けに Claude Desktop ローカルルーティングを起動します。設定アドレス: {{address}}:{{port}}"
       },
-      "stopBlockedByTakeover": "別のアプリがプロキシテイクオーバーを使用しています。設定で該当アプリのテイクオーバーを無効にしてから、ローカルルーティングを停止してください。"
+      "stopBlockedByTakeover": "別のアプリがプロキシテイクオーバーを使用しています。設定で該当アプリのテイクオーバーを無効にしてから、ローカルルーティングを停止してください。",
+      "sharedGateway": "共有ゲートウェイ",
+      "sharedGatewayInUse": "共有ゲートウェイを {{apps}} が使用中です。停止する前に、これらのルーティングをオフにしてください。"
     }
   },
   "notifications": {
@@ -593,7 +608,7 @@
     "windowControlFailed": "ウィンドウ操作に失敗しました: {{error}}",
     "officialBlockedByProxy": "ローカルルーティングモード中は公式プロバイダーに切り替えできません。ルーティング経由で公式 API にアクセスするとアカウントが停止される可能性があります。",
     "proxyOfficialWarning": "現在のプロバイダー {{name}} は公式です。ローカルルーティングを使用する前にサードパーティプロバイダーに切り替えてください。",
-    "proxyReasonClaudeDesktop": "Claude Desktop ローカルルーティングモードを使用中"
+    "proxyReasonClaudeDesktop": "Claude Desktop のモデルマッピングまたはプロトコル変換"
   },
   "confirm": {
     "deleteProvider": "プロバイダーを削除",
@@ -795,8 +810,8 @@
     "themeLight": "ライト",
     "themeDark": "ダーク",
     "themeSystem": "システム",
-    "importExport": "SQL インポート/エクスポート",
-    "importExportHint": "移行や復元用にデータベースの SQL バックアップをインポート/エクスポートします（インポートは Vary AI がエクスポートしたバックアップのみ対応）。",
+    "importExport": "データベースのバックアップと復元",
+    "importExportHint": "データベースの SQL バックアップをエクスポートまたは復元します。復元はデータベース内容を置き換え、クライアント構成を再適用する場合があります。端末設定、ログインファイル、Skills の内容は含まれません。",
     "exportConfig": "SQL バックアップをエクスポート",
     "selectConfigFile": "SQL ファイルを選択",
     "noFileSelected": "ファイルが選択されていません。",
@@ -1117,8 +1132,8 @@
     },
     "configDirectoryOverride": "設定ディレクトリの上書き（詳細）",
     "configDirectoryDescription": "WSL などで Claude Code や Codex を使う場合、ここで設定ディレクトリを WSL 側に合わせるとデータを揃えられます。",
-    "appConfigDir": "Vary AI 設定ディレクトリ",
-    "appConfigDirDescription": "Vary AI の保存場所をカスタマイズします（クラウド同期フォルダを指定すると設定を同期できます）",
+    "appConfigDir": "VaryAI アプリケーションデータディレクトリ",
+    "appConfigDirDescription": "データベース、Skills、データバックアップ用の独立したディレクトリを選択してください。端末設定とログイン情報はローカルに保持されます。再起動後に適用されます。",
     "browsePlaceholderApp": "例: C:\\\\Users\\\\Administrator\\\\.cc-switch",
     "claudeConfigDir": "Claude Code 設定ディレクトリ",
     "claudeConfigDirDescription": "Claude の設定ディレクトリ（settings.json）を上書きします。カスタムディレクトリでは .claude.json（MCP）をその中に保存し、既定の ~/.claude では Claude Code の既定どおり ~/.claude.json を使います。",
@@ -1720,7 +1735,7 @@
     "fallbackModelHint": "Sonnet・Opus・Fable・Haiku のいずれにも明確に対応しないリクエストのフォールバックです。サードパーティ/中継エンドポイントでは設定を推奨します。設定しないと、これらのリクエスト（Haiku のバックグラウンドサブタスクを含む）が元の Claude モデル名のまま上流へ転送され、上流に該当モデルが無い場合は失敗することがあります。公式エンドポイントでは空欄で構いません。",
     "quickSetModels": "一括設定",
     "quickSetSuccess": "モデルマッピングに {{count}} 個のモデルをインポートしました",
-    "importModelsHint": "一括設定ですべてのモデルを下の一覧に取り込みます。Claude Code 2.1.242 以降では /model メニューに表示されます。保存後に Claude Code を再起動してください。ロールの既定モデルは下で個別に設定します。",
+    "importModelsHint": "モデル一覧の取得時に、空欄または一覧にない既定モデルとロール設定を最初のモデルに変更します。利用可能な既定値とカスタム名は維持します。一括設定では選択用モデルもすべて取り込みます。保存後に Claude Code 2.1.242 以降を再起動すると /model に表示されます。",
     "importModelName": "表示名",
     "importModelId": "リクエストモデル",
     "removeImportedModel": "モデルを削除",
@@ -1744,6 +1759,10 @@
     "fetchModelsAuthFailed": "API Key が無効か、権限がありません",
     "fetchModelsNotSupported": "このプロバイダーはモデル一覧の取得に対応していません",
     "fetchModelsEndpointNotFound": "利用可能なモデル一覧エンドポイントが見つかりません。Base URL を確認するか、プロバイダーが該当 API を公開しているかご確認ください",
+    "fetchModelsRateLimited": "モデル一覧の取得が制限されました（HTTP 429）。しばらくして再試行するか、プロバイダーの利用枠を確認してください。",
+    "fetchModelsUpstreamFailed": "プロバイダーがモデル一覧を返せませんでした（HTTP {{status}}）。後で再試行するか、サービスの状態を確認してください。",
+    "fetchModelsNetworkFailed": "モデル一覧の接続先に接続できません。ネットワークと VaryAI のプロキシ設定を確認してください。",
+    "fetchModelsInvalidConfig": "モデル一覧の接続先を特定できません。API ベース URL と完全 URL の設定を確認してください。",
     "fetchModelsTimeout": "リクエストがタイムアウトしました。ネットワーク接続を確認してください",
     "requiredFields": "プロバイダー名、API エンドポイント、API Key、モデルを入力してください",
     "clientProtocol": "クライアントのプロトコル"
@@ -1894,7 +1913,7 @@
     "pricingModelSourceHint": "リクエストモデルまたはレスポンスモデルで価格を照合するかを選択"
   },
   "codexConfig": {
-    "importModelsHint": "モデル一覧の取得では候補のみを読み込み、マッピングは変更しません。一括設定ですべてのモデルを下にインポートし、重複を除外します。",
+    "importModelsHint": "モデル一覧の取得時に候補を読み込み、空欄または一覧にない既定モデルを最初のモデルに変更します。一括設定ではすべてのモデルも重複なく取り込みます。",
     "authJson": "auth.json (JSON) *",
     "authJsonPlaceholder": "{\n  \"OPENAI_API_KEY\": \"sk-your-api-key-here\"\n}",
     "authJsonHint": "Codex の auth.json 設定内容",
@@ -1982,7 +2001,7 @@
     "defaultModel": "デフォルトモデル",
     "defaultModelHint": "Gemini CLI の起動時に優先して使うモデルです。セッション中は /model で切り替えられます。",
     "selectableModels": "選択可能なモデル一覧",
-    "importModelsHint": "モデルの取得は候補のみを読み込みます。一括設定ですべてのモデルを下の一覧に追加し、重複を除外します。現在のデフォルトモデルは維持されます。保存後に Gemini CLI を再起動し、/model で Manual を選択して Enter を押すとモデル一覧が開きます。",
+    "importModelsHint": "モデル一覧の取得時に候補を読み込み、空欄または一覧にない既定モデルを最初のモデルに変更します。一括設定では既存の設定を維持し、選択用モデルもすべて取り込みます。保存後に Gemini CLI を再起動し、/model で Manual を選択して Enter を押すと一覧が開きます。",
     "modelsConfigInvalid": "モデルを取り込む前に、下の JSON のモデル設定を修正してください。",
     "envFile": "環境変数 (.env)",
     "envFileHint": ".env 形式で Gemini の環境変数を設定",
@@ -3255,7 +3274,6 @@
     "clickToSelect": "クリックでアイコンを選択"
   },
   "migration": {
-    "success": "設定の移行が完了しました",
     "skillsSuccess": "スキルを {{count}} 件、自動的に統合管理へインポートしました",
     "skillsFailed": "スキルの自動インポートに失敗しました",
     "skillsFailedDescription": "Skills 画面で「既存をインポート」をクリックして手動でインポートしてください（または再起動して再試行）。"
@@ -3327,7 +3345,7 @@
         },
         "listenPort": {
           "label": "リッスンポート",
-          "placeholder": "15721",
+          "placeholder": "15722",
           "description": "ルーティングサーバーがリッスンするポート番号（1024 ~ 65535）"
         },
         "maxRetries": {
@@ -3393,7 +3411,9 @@
         "active": "{{appLabel}} がルーティング中 - {{address}}:{{port}}\nホットスイッチングのためプロバイダを切り替え",
         "broken": "{{appLabel}} がルーティング中ですが、ルーティングサービスが実行されていません",
         "inactive": "{{appLabel}} のリクエストをローカルルーティング経由でルーティング"
-      }
+      },
+      "setupRequired": "{{app}} の設定が初期化されていません。ホームで追加またはインポートしたプロバイダーを適用するか、クライアントを初期化してからルーティングを有効にしてください。",
+      "prerequisitesHint": "ルーティングにはクライアント設定が必要です。Kimi、Qwen、ZCode、Pi は対応モデル、WorkBuddy はネイティブ製品設定が必要です。Qoder、TRAE、Doubao Work では接続または証明書の許可も必要です。"
     },
     "failover": {
       "proxyRequired": "フェイルオーバーを設定するには、ルーティングサービスを先に起動する必要があります",
@@ -3816,7 +3836,7 @@
     "activate": "保護を有効化",
     "enableRouting": "ローカルルーティングを有効化",
     "unsupported": "このアプリはローカルルーティング非対応です",
-    "desktopSetup": "Claude Desktop のローカルプロキシ設定を確認してください",
+    "desktopSetup": "利用可能なモデルを持つ Claude Desktop プロバイダーを追加して選択してください。",
     "routeFailed": "ルーティングが有効でないため監査を有効化しませんでした",
     "enableFailed": "セキュリティ監査操作に失敗しました",
     "targetApp": "連携アプリ",
@@ -3959,10 +3979,13 @@
     "noRules": "ルールがありません",
     "resetBuiltin": "既定に戻す",
     "sandboxTitle": "ルールサンドボックステスト",
-    "sandboxDescription": "ツールを実行せず、保存もせず、原文も返しません。固定列挙のみ返します。",
+    "sandboxDescription": "リアルタイム観測スイッチとは独立してルールを手動プレビューします。ツールの実行、リスク記録、入力原文の保存や表示は行いません。",
+    "sandboxObservationDisabled": "リアルタイムのツールリスク観測はオフです。以下は手動ルールテストであり、リアルタイム保護を有効にはしません。",
     "sandboxTool": "ツール名",
     "sandboxClient": "クライアント（任意）",
     "sandboxDefinitionRef": "信頼できるスキーマ参照（任意）",
+    "sandboxInvalidJson": "JSON の形式が正しくありません。括弧、引用符、カンマを確認してから再テストしてください。",
+    "sandboxOpenaiWriteHint": "OpenAI write_file は path フィールドを使用します。例：{\"path\":\"/etc/sudoers\",\"content\":\"test\"}。file_path は Claude と Gemini のフィールドです。認識できるフィールドがない場合は unchecked（未検査）となり、安全を意味しません。",
     "sandboxTrustHint": "ツール名から信頼性を推測しません。対応クライアントの組み込みツールをテストする場合のみ、既知のスキーマ builtin:claude:tools:v1、builtin:codex:tools:v1、builtin:gemini:tools:v1 または builtin:openai:tools:v1 を明示してください。MCP ツールは組み込みの識別情報を使用できません。",
     "fieldTarget": "セレクターの対象",
     "fieldToolRefs": "厳密なツール参照（JSON 配列）",
@@ -4177,7 +4200,6 @@
       "blacklist": "ブラックリスト · リスク警告",
       "matchKind": "一致範囲",
       "pattern": "コマンドまたはパターン",
-      "advanced": "詳細：キーワード / 正規表現",
       "severity": "ブラックリストのリスクレベル",
       "riskCategory": "リスク分類",
       "whitelistHint": "ホワイトリストは文字どおり unknown に分類された通常コマンドのみ対象です。既知のスクリプト、ネットワーク、変更、権限操作の分類は変えず、信頼済みの識別情報も付与しません。",
@@ -4303,7 +4325,7 @@
       "renew": "証明書を更新して保護を再開",
       "renewing": "証明書を更新しています…",
       "renewed": "証明書を更新しました。Qoder を完全に終了して再度開いてください。",
-      "renewFailed": "証明書の更新に失敗しました。macOS の認証を完了して再試行してください。",
+      "renewFailed": "証明書の更新に失敗しました。",
       "expiredTitle": "Qoder のローカル証明書の有効期限が切れました",
       "expiredDescription": "Qoder 公式アカウントの保護証明書の有効期限が切れました。ここから更新して保護を再開できます。VaryAI の再起動は不要ですが、macOS の認証が必要な場合があります。完了後、接続先と証明書の信頼を再読み込みするため Qoder を完全に終了して再度開いてください。サードパーティモデルの HTTP ルートはこの証明書に依存しません。",
       "title": "Qoder の保護を有効にする",
@@ -4321,7 +4343,18 @@
       "clearDescription": "Qoder の接管を無効にし、設定を復元してキーチェーンの信頼と証明書ファイルを削除します。macOS がシステムパスワードを求める場合があります。完了後は Qoder を完全に再起動してください。削除後は自動で再作成されません。「作成 / 再作成」を押した場合のみ再作成します。",
       "rebuildDescription": "証明書を置き換え、Qoder の接管を有効にします。古い信頼の削除と新しい信頼の追加で macOS の認証が必要になる場合があります。パスワードは macOS のみが処理します。完了後は Qoder を完全に再起動してください。",
       "cleared": "証明書を削除し Qoder の接管を無効にしました。Qoder を完全に再起動してください。",
-      "operationFailed": "証明書の操作が完了しませんでした。システム認証を確認して再試行してください。",
+      "operationFailed": "証明書の操作に失敗しました。",
+      "failureDetail": "失敗した処理: {{stage}}、状態: {{status}}。",
+      "failureStages": {
+        "codec": "Qoder バージョンの互換性確認",
+        "data": "証明書ファイルまたは形式の処理",
+        "generate": "証明書の生成",
+        "inspect": "証明書の検査",
+        "verify_trust": "証明書の信頼を確認",
+        "install_trust": "証明書の信頼を追加",
+        "remove_trust": "証明書の信頼を削除",
+        "delete_certificate": "キーチェーンの証明書を削除"
+      },
       "statusFailed": "証明書の状態を読み取れません。後で再試行してください。"
     }
   },
@@ -4452,6 +4485,8 @@
     "resultWarning": "リスク警告"
   },
   "gatewayKeys": {
+    "created": "キーを作成しました",
+    "copied": "キーをコピーしました",
     "nameExists": "同名のキーが存在します。別の名前を指定してください。",
     "sourceAgent": "リクエスト元",
     "upstreamModel": "転送先のモデル",
@@ -4511,7 +4546,7 @@
     "traeHint": "カスタムモデルのルートが対象です。監査ブリッジのみで観測する公式リクエストは拒否できません。",
     "filterKey": "ゲートウェイキー",
     "allKeys": "すべてのキー",
-    "usageHint": "キー・計測期間・エージェント・クライアントのリクエストモデル・転送先モデル別に直近200件を集計します。完了したリクエストを表示し、使用量未報告は別に数えます。転送先モデルが保存されていない旧記録は「記録なし」と表示します。",
+    "usageHint": "キー・計測期間・エージェント・クライアントのリクエストモデル・転送先モデル別に直近200件を集計します。完了したリクエストを表示し、使用量未報告は別に数えます。転送先モデルが保存されていない旧記録は「記録なし」と表示します。 クライアントによるタイトルや要約などのバックグラウンド要求も集計され、現在のチャットとは別のモデルが使われる場合があります。",
     "noUsage": "リクエストはまだありません。有効なローカルルートに agent を割り当てるか、キーを使ってリクエストを送信してください。",
     "usageRow": "{{requests}} リクエスト · {{tokens}} トークン · 使用量未報告 {{unmetered}} 件",
     "lastUsed": "最終リクエスト：{{time}}",
@@ -5414,5 +5449,24 @@
       "reauth": "保存された認証が無効または不完全です。インポート元のアプリで再ログインしてからインポートしてください。"
     },
     "subscriptionWarning": "保存された Codex 認証を Vary AI にコピーします。使用前に インポート元のアプリでこのアカウントの使用を停止してください。同時更新するとログアウトされる場合があります。"
+  },
+  "storage": {
+    "title": "VaryAI ストレージの復旧",
+    "description": "設定した VaryAI データディレクトリが利用できないか無効です。再接続するか、別のネイティブディレクトリを選択するか、空のストレージを明示的に作成してください。",
+    "destination": "設定されたデータディレクトリ",
+    "startEmpty": "空のストレージで開始",
+    "useExisting": "別のデータディレクトリを選択",
+    "working": "ストレージを準備中…",
+    "setupRequired": "設定された VaryAI データディレクトリを利用できません。",
+    "readFailed": "移行元を読み取れません。場所と権限を確認してください。",
+    "writeFailed": "ストレージを準備できません。元のファイルは保持されています。空き容量と権限を確認して再試行してください。",
+    "destinationChanged": "ストレージの場所が変わりました。復旧画面を再読み込みするか、独立したディレクトリを選択してください。",
+    "invalidTarget": "移行元の外にある独立した VaryAI データディレクトリを選択してください。",
+    "invalidSettings": "データディレクトリ設定が無効です。独立した VaryAI データディレクトリを選択してください。",
+    "unsupportedSource": "未対応または不完全なデータベース形式です。対応するバックアップを選択し、元のデータベースを削除したりバージョンを下げたりしないでください。",
+    "invalidRecovery": "復元情報が不完全または変更されています。検証済みバックアップを選択してください。",
+    "restartRequired": "別のストレージを準備する前に VaryAI を再起動してください。",
+    "useDefault": "既定のデータディレクトリを使用",
+    "setupReadFailed": "VaryAI の保存先を読み取れません。データディレクトリの設定とアクセス権を確認してください。"
   }
 }

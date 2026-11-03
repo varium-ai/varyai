@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { proxyApi } from "@/lib/api/proxy";
 import { toast } from "sonner";
+import { qoderCertificateErrorDetail } from "@/lib/qoderCertificateErrors";
 
 export function QoderCertificateNotice() {
   const { t } = useTranslation();
@@ -54,9 +55,11 @@ export function QoderCertificateNotice() {
       ]);
       close();
       toast.success(t("qoder.certificate.renewed"), { closeButton: true });
-    } catch {
+    } catch (error) {
       setRenewalFailed(true);
-      toast.error(t("qoder.certificate.renewFailed"));
+      toast.error(t("qoder.certificate.renewFailed"), {
+        description: qoderCertificateErrorDetail(error, t),
+      });
     } finally {
       setRenewing(false);
     }

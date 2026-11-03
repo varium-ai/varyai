@@ -11,6 +11,10 @@ export default defineConfig({
     },
   },
   test: {
+    include: [
+      "src/**/*.{test,spec}.{ts,tsx,js,jsx}",
+      "tests/**/*.{test,spec}.{ts,tsx,js,jsx}",
+    ],
     maxWorkers: 2,
     environment: "jsdom",
     setupFiles: ["./tests/setupGlobals.ts", "./tests/setupTests.ts"],

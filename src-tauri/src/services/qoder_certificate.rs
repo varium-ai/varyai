@@ -6,7 +6,17 @@ use std::{
 };
 use tokio::process::Command;
 fn failure() -> String {
-    "Qoder local certificate setup or removal failed; approve the macOS authentication dialog and retry".into()
+    stage_failure("data", "failed")
+}
+fn stage_failure(stage: &str, status: &str) -> String {
+    format!("Qoder certificate {stage} failed: {status}")
+}
+fn command_failure(stage: &str, status: std::process::ExitStatus) -> String {
+    let status = status
+        .code()
+        .map(|code| format!("exit={code}"))
+        .unwrap_or_else(|| "terminated".into());
+    stage_failure(stage, &status)
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Certificate {
@@ -53,17 +63,26 @@ pub(crate) fn inspect(directory: &Path) -> Result<Certificate, String> {
         expires_at,
     })
 }
+pub(crate) fn has_legacy_serial(certificate: &Certificate) -> Result<bool, String> {
+    let output = openssl(
+        &certificate.directory,
+        &["x509", "-in", "ca.pem", "-noout", "-serial"],
+    )?;
+    let text = std::str::from_utf8(&output).map_err(|_| failure())?;
+    let serial = text.trim().strip_prefix("serial=").ok_or_else(failure)?;
+    if serial.is_empty() || !serial.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(failure());
+    }
+    Ok(serial.trim_start_matches('0').eq_ignore_ascii_case("1000"))
+}
 pub(crate) async fn trusted(certificate: &Certificate) -> Result<bool, String> {
     use std::ffi::OsStr;
     let cert = certificate.directory.join("localhost.pem");
-    let ca = certificate.directory.join("ca.pem");
     let keychain = keychain();
-    Ok(security(&[
+    let verified = security(&[
         OsStr::new("verify-cert"),
         OsStr::new("-c"),
         cert.as_os_str(),
-        OsStr::new("-c"),
-        ca.as_os_str(),
         OsStr::new("-p"),
         OsStr::new("ssl"),
         OsStr::new("-L"),
@@ -74,7 +93,20 @@ pub(crate) async fn trusted(certificate: &Certificate) -> Result<bool, String> {
     ])
     .await?
     .status
-    .success())
+    .success();
+    if !verified {
+        return Ok(false);
+    }
+    // Qoder loads its own runtime CA store. Supplying a root to verify-cert can
+    // succeed even when that root is missing from the keychain/runtime store.
+    crate::proxy::qoder_codec::call(serde_json::json!({
+        "operation": "trust", "ca": certificate.pem,
+    }))
+    .await
+    .map_err(|_| stage_failure("verify_trust", "failed"))?
+    .get("trusted")
+    .and_then(serde_json::Value::as_bool)
+    .ok_or_else(|| stage_failure("verify_trust", "failed"))
 }
 fn lifetime_seconds(test_value: Option<&str>, development: bool) -> i64 {
     if development && test_value == Some("60") {
@@ -84,14 +116,19 @@ fn lifetime_seconds(test_value: Option<&str>, development: bool) -> i64 {
     }
 }
 fn openssl(directory: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let stage = if args.first() == Some(&"x509") {
+        "inspect"
+    } else {
+        "generate"
+    };
     let output = std::process::Command::new("/usr/bin/openssl")
         .current_dir(directory)
         .args(args)
         .stdin(Stdio::null())
         .output()
-        .map_err(|_| failure())?;
+        .map_err(|_| stage_failure(stage, "launch"))?;
     if !output.status.success() {
-        return Err(failure());
+        return Err(command_failure(stage, output.status));
     }
     Ok(output.stdout)
 }
@@ -101,7 +138,7 @@ pub(crate) async fn create() -> Result<Certificate, String> {
     }
     tokio::task::spawn_blocking(|| {
         create_at_with_lifetime(
-            crate::config::get_app_config_dir()
+            crate::config::get_device_config_dir()
                 .join("qoder-certificates")
                 .join(uuid::Uuid::new_v4().to_string()),
             lifetime_seconds(
@@ -160,7 +197,11 @@ fn create_at_with_lifetime(directory: PathBuf, lifetime: i64) -> Result<Certific
         )?;
         // `x509 -days` cannot express a minute. Use explicit notAfter for both certificates.
         atomic_write_private(&directory.join("index"), b"").map_err(|_| failure())?;
-        atomic_write_private(&directory.join("serial"), b"1000\n").map_err(|_| failure())?;
+        // Keychain identity includes issuer and serial; fixed serials collide
+        // with earlier roots even when their public keys and fingerprints differ.
+        let serial = format!("{}\n", uuid::Uuid::new_v4().simple());
+        atomic_write_private(&directory.join("serial"), serial.as_bytes())
+            .map_err(|_| failure())?;
         let signing = "[ca]\ndefault_ca=local\n[local]\ndatabase=index\nserial=serial\nnew_certs_dir=.\ncertificate=ca.pem\nprivate_key=ca-key.pem\ndefault_md=sha256\npolicy=subject\nunique_subject=no\n[subject]\ncommonName=supplied\n[ca_ext]\nbasicConstraints=critical,CA:true,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\nnameConstraints=critical,permitted;DNS:localhost,permitted;IP:127.0.0.1/255.255.255.255\n[leaf_ext]\nbasicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost\n";
         atomic_write_private(&directory.join("signing.cnf"), signing.as_bytes())
             .map_err(|_| failure())?;
@@ -267,6 +308,13 @@ fn create_at_with_lifetime(directory: PathBuf, lifetime: i64) -> Result<Certific
     result
 }
 async fn security(args: &[&std::ffi::OsStr]) -> Result<std::process::Output, String> {
+    let stage = match args.first().and_then(|arg| arg.to_str()) {
+        Some("verify-cert") => "verify_trust",
+        Some("add-trusted-cert") => "install_trust",
+        Some("remove-trusted-cert") => "remove_trust",
+        Some("delete-certificate" | "find-certificate") => "delete_certificate",
+        _ => "data",
+    };
     let child = Command::new("/usr/bin/security")
         .args(args)
         .stdin(Stdio::null())
@@ -274,14 +322,14 @@ async fn security(args: &[&std::ffi::OsStr]) -> Result<std::process::Output, Str
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|_| failure())?;
+        .map_err(|_| stage_failure(stage, "launch"))?;
     tokio::time::timeout(
         std::time::Duration::from_secs(180),
         child.wait_with_output(),
     )
     .await
-    .map_err(|_| failure())?
-    .map_err(|_| failure())
+    .map_err(|_| stage_failure(stage, "timeout"))?
+    .map_err(|_| stage_failure(stage, "failed"))
 }
 fn keychain() -> PathBuf {
     crate::config::get_home_dir().join("Library/Keychains/login.keychain-db")
@@ -337,7 +385,7 @@ pub(crate) async fn trust(directory: &Path, app: Option<&tauri::AppHandle>) -> R
     if result.status.success() {
         Ok(())
     } else {
-        Err(failure())
+        Err(command_failure("install_trust", result.status))
     }
 }
 pub(crate) async fn remove(
@@ -347,7 +395,7 @@ pub(crate) async fn remove(
     app: Option<&tauri::AppHandle>,
 ) -> Result<(), String> {
     use std::ffi::OsStr;
-    let root = crate::config::get_app_config_dir().join("qoder-certificates");
+    let root = crate::config::get_device_config_dir().join("qoder-certificates");
     if directory.parent() != Some(root.as_path())
         || sha1.len() != 40
         || !sha1.chars().all(|c| c.is_ascii_hexdigit())
@@ -364,7 +412,7 @@ pub(crate) async fn remove(
         && !String::from_utf8_lossy(&result.stderr).contains("could not be found")
         && !String::from_utf8_lossy(&result.stderr).contains("No Trust Settings")
     {
-        return Err(failure());
+        return Err(command_failure("remove_trust", result.status));
     }
     let keychain = keychain();
     let result = security(&[
@@ -374,17 +422,117 @@ pub(crate) async fn remove(
         keychain.as_os_str(),
     ])
     .await?;
-    if !result.status.success()
-        && !String::from_utf8_lossy(&result.stderr).contains("could not be found")
-    {
-        return Err(failure());
+    if !result.status.success() {
+        // macOS also reports an absent certificate as "Unable to delete ...".
+        // Confirm absence instead of treating that ambiguous failure as success.
+        let listed = security(&[
+            OsStr::new("find-certificate"),
+            OsStr::new("-a"),
+            OsStr::new("-Z"),
+            keychain.as_os_str(),
+        ])
+        .await?;
+        if !certificate_absent(listed.status.success(), &listed.stdout, sha1) {
+            return Err(command_failure("delete_certificate", result.status));
+        }
     }
     std::fs::remove_dir_all(directory).map_err(|_| failure())
+}
+
+fn certificate_absent(listed: bool, output: &[u8], sha1: &str) -> bool {
+    if !listed {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(output) else {
+        return false;
+    };
+    if text.trim().is_empty() {
+        return true;
+    }
+    let hashes: Vec<_> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("SHA-1 hash: "))
+        .collect();
+    !hashes.is_empty()
+        && hashes.iter().all(|hash| {
+            hash.len() == 40
+                && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && !hash.eq_ignore_ascii_case(sha1)
+        })
 }
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+    #[test]
+    fn renewed_root_certificates_have_distinct_keychain_identities() {
+        let temp = tempfile::tempdir().expect("directory");
+        let first = create_at(temp.path().join("first")).expect("first certificate");
+        let second = create_at(temp.path().join("second")).expect("second certificate");
+        let identity = |certificate: &Certificate| {
+            openssl(
+                &certificate.directory,
+                &["x509", "-in", "ca.pem", "-noout", "-issuer", "-serial"],
+            )
+            .expect("public certificate identity")
+        };
+        assert_ne!(identity(&first), identity(&second));
+        assert!(!has_legacy_serial(&first).expect("first serial"));
+        assert!(!has_legacy_serial(&second).expect("second serial"));
+        // A synthetic legacy certificate with the old issuer/serial must be
+        // renewed even if its dates have not yet expired.
+        openssl(
+            &first.directory,
+            &[
+                "req",
+                "-new",
+                "-x509",
+                "-key",
+                "localhost-key.pem",
+                "-set_serial",
+                "4096",
+                "-subj",
+                "/CN=Synthetic Legacy CA",
+                "-out",
+                "legacy.pem",
+            ],
+        )
+        .expect("legacy fixture");
+        std::fs::rename(
+            first.directory.join("legacy.pem"),
+            first.directory.join("ca.pem"),
+        )
+        .expect("legacy certificate");
+        assert!(has_legacy_serial(&first).expect("legacy serial"));
+    }
+    #[test]
+    fn absent_certificate_clear_requires_successful_recognizable_keychain_listing() {
+        let sha1 = "A".repeat(40);
+        assert!(certificate_absent(true, b"", &sha1));
+        assert!(certificate_absent(
+            true,
+            format!("SHA-1 hash: {}\n", "B".repeat(40)).as_bytes(),
+            &sha1
+        ));
+        for (success, output) in [
+            (false, String::new()),
+            (true, format!("SHA-1 hash: {}\n", sha1.to_lowercase())),
+            (true, "unrecognized output".into()),
+            (true, "SHA-1 hash: incomplete\n".into()),
+        ] {
+            assert!(!certificate_absent(success, output.as_bytes(), &sha1));
+        }
+        assert!(!certificate_absent(true, &[0xff], &sha1));
+    }
+    #[test]
+    fn openssl_failures_identify_the_operation_without_echoing_arguments() {
+        let temp = tempfile::tempdir().expect("temporary certificate directory");
+        let error = openssl(temp.path(), &["x509", "-synthetic-private-argument"])
+            .expect_err("invalid fixture command");
+        assert!(error.starts_with("Qoder certificate inspect failed: exit="));
+        assert!(!error.contains("synthetic-private-argument"));
+        assert!(!error.contains(&temp.path().to_string_lossy().to_string()));
+    }
     #[test]
     fn one_minute_mode_is_development_only() {
         assert_eq!(lifetime_seconds(Some("60"), true), 60);

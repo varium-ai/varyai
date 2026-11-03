@@ -18,14 +18,16 @@ use super::{
     handler_context::RequestContext,
     providers::{
         codex_chat_common::extract_reasoning_field_text,
-        codex_chat_history::record_responses_sse_stream,
+        codex_chat_history::{
+            record_responses_sse_stream, record_responses_sse_stream_with_payload_owner,
+        },
         get_adapter, get_claude_api_format,
         streaming::create_anthropic_sse_stream,
         streaming_codex_anthropic::{
-            create_responses_sse_stream_from_anthropic_with_context,
+            create_responses_sse_stream_from_anthropic_observed,
             responses_sse_events_from_anthropic_message,
         },
-        streaming_codex_chat::create_responses_sse_stream_from_chat_with_context,
+        streaming_codex_chat::create_responses_sse_stream_from_chat_observed_with_reasoning,
         streaming_gemini::create_anthropic_sse_stream_from_gemini,
         streaming_responses::{
             create_anthropic_sse_stream_from_responses,
@@ -36,8 +38,8 @@ use super::{
         transform_gemini, transform_responses,
     },
     response_processor::{
-        create_logged_passthrough_stream, create_usage_collector, process_response,
-        read_decoded_body, strip_entity_headers_for_rebuilt_body,
+        create_logged_passthrough_stream, create_usage_collector, process_codex_response,
+        process_response, read_decoded_body, strip_entity_headers_for_rebuilt_body,
         strip_hop_by_hop_response_headers, usage_logging_enabled, SseUsageCollector,
     },
     server::ProxyState,
@@ -184,14 +186,31 @@ async fn handle_messages_for_app(
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
-    if let Some(blocked) = crate::proxy::security::inspect_and_intercept_mut_with_headers(
-        &app_type, &mut body, &headers,
+    let dlp_request = match super::security::http_restoration::admit_http_request(
+        &state.restoration_gateway,
+        &app_type,
+        false,
+        false,
+        &mut body,
+        &headers,
     )? {
-        return Ok(blocked);
-    }
+        super::security::http_restoration::RestorationAdmission::Passthrough => None,
+        super::security::http_restoration::RestorationAdmission::Intercepted(response) => {
+            return Ok(response)
+        }
+        super::security::http_restoration::RestorationAdmission::Admitted(request) => Some(request),
+    };
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        app_type.clone(),
+        tag,
+        app_type_str,
+        dlp_request.as_deref(),
+    )
+    .await?;
 
     let raw_endpoint = uri
         .path_and_query()
@@ -207,7 +226,7 @@ async fn handle_messages_for_app(
         .unwrap_or(false);
 
     // 转发请求
-    let forwarder = ctx.create_forwarder(&state);
+    let forwarder = ctx.create_forwarder(&state).with_dlp_request(dlp_request);
     let mut result = match forwarder
         .forward_with_retry(
             &app_type,
@@ -310,6 +329,13 @@ fn validate_claude_desktop_gateway_auth(
     if token != expected {
         return Err(ProxyError::AuthError(
             "Claude Desktop gateway token 无效".to_string(),
+        ));
+    }
+    if !crate::claude_desktop_config::routing_enabled(state.db.as_ref())
+        .map_err(|e| ProxyError::DatabaseError(e.to_string()))?
+    {
+        return Err(ProxyError::ConfigError(
+            "Claude Desktop local routing is disabled. Enable it in Vary AI.".into(),
         ));
     }
     Ok(())
@@ -582,7 +608,13 @@ async fn handle_claude_transform(
             axum::http::HeaderValue::from_static("no-cache"),
         );
 
-        let body = axum::body::Body::from_stream(logged_stream);
+        // An HTTP reset can discard buffered frames; preserve converted-stream failures as protocol errors.
+        let client_stream = logged_stream.map(|chunk| {
+            Ok::<_, std::io::Error>(chunk.unwrap_or_else(|_| {
+                Bytes::from_static(b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"upstream_error\",\"message\":\"Invalid or incomplete upstream protocol stream\"}}\n\n")
+            }))
+        });
+        let body = axum::body::Body::from_stream(client_stream);
         return Ok((headers, body).into_response());
     }
 
@@ -843,16 +875,31 @@ pub async fn handle_chat_completions(
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
-    if let Some(blocked) = crate::proxy::security::inspect_and_intercept_mut_with_headers(
+    let dlp_request = match super::security::http_restoration::admit_http_request(
+        &state.restoration_gateway,
         &AppType::Codex,
+        false,
+        false,
         &mut body,
         &headers,
     )? {
-        return Ok(blocked);
-    }
+        super::security::http_restoration::RestorationAdmission::Passthrough => None,
+        super::security::http_restoration::RestorationAdmission::Intercepted(response) => {
+            return Ok(response)
+        }
+        super::security::http_restoration::RestorationAdmission::Admitted(request) => Some(request),
+    };
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        AppType::Codex,
+        "Codex",
+        "codex",
+        dlp_request.as_deref(),
+    )
+    .await?;
     let endpoint = endpoint_with_query(&uri, "/chat/completions");
 
     let is_stream = body
@@ -860,7 +907,7 @@ pub async fn handle_chat_completions(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let forwarder = ctx.create_forwarder(&state);
+    let forwarder = ctx.create_forwarder(&state).with_dlp_request(dlp_request);
     let mut result = match forwarder
         .forward_with_retry(
             &AppType::Codex,
@@ -942,14 +989,31 @@ async fn handle_responses_for_app(
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
-    if let Some(blocked) = crate::proxy::security::inspect_and_intercept_mut_with_headers(
-        &app_type, &mut body, &headers,
+    let dlp_request = match super::security::http_restoration::admit_http_request(
+        &state.restoration_gateway,
+        &app_type,
+        true,
+        false,
+        &mut body,
+        &headers,
     )? {
-        return Ok(blocked);
-    }
+        super::security::http_restoration::RestorationAdmission::Passthrough => None,
+        super::security::http_restoration::RestorationAdmission::Intercepted(response) => {
+            return Ok(response)
+        }
+        super::security::http_restoration::RestorationAdmission::Admitted(request) => Some(request),
+    };
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        app_type.clone(),
+        tag,
+        app_type_str,
+        dlp_request.as_deref(),
+    )
+    .await?;
     let endpoint = endpoint_with_query(&uri, "/responses");
 
     let is_stream = body
@@ -960,9 +1024,10 @@ async fn handle_responses_for_app(
     // Captured before `body` is moved into the forwarder: the flat-name →
     // {namespace, name} map used to restore the native Responses upstream's
     // function-call names (see the namespace-restore dispatch below).
-    let namespace_restore_map = transform_codex_responses_namespace::namespace_restore_map(&body);
+    let namespace_restore_map =
+        build_codex_response_namespace_table(&body, dlp_request.as_deref())?;
 
-    let forwarder = ctx.create_forwarder(&state);
+    let forwarder = ctx.create_forwarder(&state).with_dlp_request(dlp_request);
     let mut result = match forwarder
         .forward_with_retry(
             &app_type,
@@ -985,6 +1050,11 @@ async fn handle_responses_for_app(
         }
     };
 
+    let dlp_attempt = result.dlp_attempt.take();
+    let leased_response = dlp_attempt.is_some();
+    let evidence = dlp_attempt
+        .as_ref()
+        .and_then(|attempt| attempt.upstream_sse_evidence_tracker());
     let connection_guard = result.connection_guard.take();
     ctx.converted_output = result.claude_api_format.is_some();
     ctx.outbound_model = result.outbound_model.take();
@@ -992,49 +1062,108 @@ async fn handle_responses_for_app(
     let response = result.response;
 
     if super::providers::should_convert_codex_responses_to_anthropic(&ctx.provider, &endpoint) {
-        return handle_codex_anthropic_to_responses_transform(
+        let client_response = handle_codex_anthropic_to_responses_transform(
             response,
             &ctx,
             &state,
             is_stream,
             connection_guard,
             codex_tool_context,
+            CodexDlpTransformContext {
+                attempt: dlp_attempt.as_ref(),
+                evidence: evidence.clone(),
+            },
         )
-        .await;
+        .await
+        .map_err(|error| {
+            super::response_processor::isolate_codex_dlp_response_error(error, leased_response)
+        })?;
+        return Ok(match dlp_attempt {
+            Some(attempt) => {
+                attempt
+                    .restore_client_http_response(
+                        client_response,
+                        super::security::response_restoration::ArgumentNormalizationMode::Exact,
+                        evidence,
+                    )
+                    .await
+            }
+            None => client_response,
+        });
     }
 
     if super::providers::should_convert_codex_responses_to_chat(&ctx.provider, &endpoint) {
-        return handle_codex_chat_to_responses_transform(
+        let client_response = handle_codex_chat_to_responses_transform(
             response,
             &ctx,
             &state,
             is_stream,
             connection_guard,
             codex_tool_context,
+            CodexDlpTransformContext {
+                attempt: dlp_attempt.as_ref(),
+                evidence: evidence.clone(),
+            },
         )
-        .await;
+        .await
+        .map_err(|error| {
+            super::response_processor::isolate_codex_dlp_response_error(error, leased_response)
+        })?;
+        return Ok(match dlp_attempt {
+            Some(attempt) => attempt
+                .restore_client_http_response(
+                    client_response,
+                    super::security::response_restoration::ArgumentNormalizationMode::ChatCanonical,
+                    evidence,
+                )
+                .await,
+            None => client_response,
+        });
     }
 
     // Native Responses passthrough to a strict gateway (xAI): restore flattened
     // function-call names *and* rewrite whole-float tool arguments. The integer
     // rewrite must run even when the request had no namespace tools.
     if super::providers::provider_needs_responses_namespace_flatten(&ctx.provider) {
-        return handle_codex_xai_native_responses_rewrite(
+        let evidence = if response.status().is_success() && response.is_sse() {
+            dlp_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.xai_original_sse_evidence_tracker())
+        } else {
+            None
+        };
+        let client_response = handle_codex_xai_native_responses_rewrite(
             response,
             &ctx,
             &state,
             connection_guard,
             namespace_restore_map,
+            dlp_attempt.as_ref(),
+            evidence.clone(),
         )
-        .await;
+        .await
+        .map_err(|error| {
+            super::response_processor::isolate_codex_dlp_response_error(error, leased_response)
+        })?;
+        return Ok(match dlp_attempt {
+            Some(attempt) => attempt
+                .restore_client_http_response(
+                    client_response,
+                    super::security::response_restoration::ArgumentNormalizationMode::XaiWholeFloat,
+                    evidence,
+                )
+                .await,
+            None => client_response,
+        });
     }
 
-    process_response(
+    process_codex_response(
         response,
         &ctx,
         &state,
         &CODEX_PARSER_CONFIG,
         connection_guard,
+        dlp_attempt,
     )
     .await
 }
@@ -1100,19 +1229,34 @@ async fn handle_codex_standalone_passthrough(
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::InvalidRequest(format!("Failed to parse request body: {e}")))?;
 
-    if let Some(blocked) = crate::proxy::security::inspect_and_intercept_mut_with_headers(
+    let dlp_request = match super::security::http_restoration::admit_http_request(
+        &state.restoration_gateway,
         &AppType::Codex,
+        false,
+        false,
         &mut body,
         &headers,
     )? {
-        return Ok(blocked);
-    }
+        super::security::http_restoration::RestorationAdmission::Passthrough => None,
+        super::security::http_restoration::RestorationAdmission::Intercepted(response) => {
+            return Ok(response)
+        }
+        super::security::http_restoration::RestorationAdmission::Admitted(request) => Some(request),
+    };
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        AppType::Codex,
+        "Codex",
+        "codex",
+        dlp_request.as_deref(),
+    )
+    .await?;
     let endpoint = endpoint_with_query(&uri, canonical_endpoint);
 
-    let forwarder = ctx.create_forwarder(&state);
+    let forwarder = ctx.create_forwarder(&state).with_dlp_request(dlp_request);
     let mut result = match forwarder
         .forward_with_retry(
             &AppType::Codex,
@@ -1184,14 +1328,31 @@ async fn handle_responses_compact_for_app(
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
-    if let Some(blocked) = crate::proxy::security::inspect_and_intercept_mut_with_headers(
-        &app_type, &mut body, &headers,
+    let dlp_request = match super::security::http_restoration::admit_http_request(
+        &state.restoration_gateway,
+        &app_type,
+        true,
+        true,
+        &mut body,
+        &headers,
     )? {
-        return Ok(blocked);
-    }
+        super::security::http_restoration::RestorationAdmission::Passthrough => None,
+        super::security::http_restoration::RestorationAdmission::Intercepted(response) => {
+            return Ok(response)
+        }
+        super::security::http_restoration::RestorationAdmission::Admitted(request) => Some(request),
+    };
 
-    let mut ctx =
-        RequestContext::new(&state, &body, &headers, app_type.clone(), tag, app_type_str).await?;
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        app_type.clone(),
+        tag,
+        app_type_str,
+        dlp_request.as_deref(),
+    )
+    .await?;
     let endpoint = endpoint_with_query(&uri, "/responses/compact");
 
     let is_stream = body
@@ -1199,9 +1360,10 @@ async fn handle_responses_compact_for_app(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let codex_tool_context = transform_codex_chat::build_codex_tool_context_from_request(&body);
-    let namespace_restore_map = transform_codex_responses_namespace::namespace_restore_map(&body);
+    let namespace_restore_map =
+        build_codex_response_namespace_table(&body, dlp_request.as_deref())?;
 
-    let forwarder = ctx.create_forwarder(&state);
+    let forwarder = ctx.create_forwarder(&state).with_dlp_request(dlp_request);
     let mut result = match forwarder
         .forward_with_retry(
             &app_type,
@@ -1224,54 +1386,207 @@ async fn handle_responses_compact_for_app(
         }
     };
 
+    let dlp_attempt = result.dlp_attempt.take();
+    let leased_response = dlp_attempt.is_some();
+    let evidence = dlp_attempt
+        .as_ref()
+        .and_then(|attempt| attempt.upstream_sse_evidence_tracker());
     let connection_guard = result.connection_guard.take();
     ctx.outbound_model = result.outbound_model.take();
     ctx.provider = result.provider;
     let response = result.response;
 
     if super::providers::should_convert_codex_responses_to_anthropic(&ctx.provider, &endpoint) {
-        return handle_codex_anthropic_to_responses_transform(
+        let client_response = handle_codex_anthropic_to_responses_transform(
             response,
             &ctx,
             &state,
             is_stream,
             connection_guard,
             codex_tool_context,
+            CodexDlpTransformContext {
+                attempt: dlp_attempt.as_ref(),
+                evidence: evidence.clone(),
+            },
         )
-        .await;
+        .await
+        .map_err(|error| {
+            super::response_processor::isolate_codex_dlp_response_error(error, leased_response)
+        })?;
+        return Ok(match dlp_attempt {
+            Some(attempt) => {
+                attempt
+                    .restore_client_http_response(
+                        client_response,
+                        super::security::response_restoration::ArgumentNormalizationMode::Exact,
+                        evidence,
+                    )
+                    .await
+            }
+            None => client_response,
+        });
     }
 
     if super::providers::should_convert_codex_responses_to_chat(&ctx.provider, &endpoint) {
-        return handle_codex_chat_to_responses_transform(
+        let client_response = handle_codex_chat_to_responses_transform(
             response,
             &ctx,
             &state,
             is_stream,
             connection_guard,
             codex_tool_context,
+            CodexDlpTransformContext {
+                attempt: dlp_attempt.as_ref(),
+                evidence: evidence.clone(),
+            },
         )
-        .await;
+        .await
+        .map_err(|error| {
+            super::response_processor::isolate_codex_dlp_response_error(error, leased_response)
+        })?;
+        return Ok(match dlp_attempt {
+            Some(attempt) => attempt
+                .restore_client_http_response(
+                    client_response,
+                    super::security::response_restoration::ArgumentNormalizationMode::ChatCanonical,
+                    evidence,
+                )
+                .await,
+            None => client_response,
+        });
     }
 
     if super::providers::provider_needs_responses_namespace_flatten(&ctx.provider) {
-        return handle_codex_xai_native_responses_rewrite(
+        let evidence = if response.status().is_success() && response.is_sse() {
+            dlp_attempt
+                .as_ref()
+                .and_then(|attempt| attempt.xai_original_sse_evidence_tracker())
+        } else {
+            None
+        };
+        let client_response = handle_codex_xai_native_responses_rewrite(
             response,
             &ctx,
             &state,
             connection_guard,
             namespace_restore_map,
+            dlp_attempt.as_ref(),
+            evidence.clone(),
         )
-        .await;
+        .await
+        .map_err(|error| {
+            super::response_processor::isolate_codex_dlp_response_error(error, leased_response)
+        })?;
+        return Ok(match dlp_attempt {
+            Some(attempt) => attempt
+                .restore_client_http_response(
+                    client_response,
+                    super::security::response_restoration::ArgumentNormalizationMode::XaiWholeFloat,
+                    evidence,
+                )
+                .await,
+            None => client_response,
+        });
     }
 
-    process_response(
+    process_codex_response(
         response,
         &ctx,
         &state,
         &CODEX_PARSER_CONFIG,
         connection_guard,
+        dlp_attempt,
     )
     .await
+}
+
+/// Capture response namespace names before the request body moves into forwarding.
+pub(crate) fn build_codex_response_namespace_table(
+    body: &Value,
+    request: Option<&super::security::http_restoration::DlpHttpRequest>,
+) -> Result<transform_codex_responses_namespace::ResponseNamespaceTable, ProxyError> {
+    use transform_codex_responses_namespace::ResponseNamespaceTable;
+    if let Some(table) = request
+        .map(|request| request.build_response_namespace_table(body))
+        .transpose()
+        .map_err(ProxyError::DlpForward)?
+        .flatten()
+    {
+        return Ok(ResponseNamespaceTable::Charged(table));
+    }
+    Ok(ResponseNamespaceTable::Legacy(
+        transform_codex_responses_namespace::namespace_restore_map(body),
+    ))
+}
+
+#[cfg(test)]
+pub(crate) async fn response_namespace_rewrite_for_test(
+    response: super::hyper_client::ProxyResponse,
+    ctx: &RequestContext,
+    state: &ProxyState,
+    table: transform_codex_responses_namespace::ResponseNamespaceTable,
+) -> Result<axum::response::Response, ProxyError> {
+    handle_codex_xai_native_responses_rewrite(response, ctx, state, None, table, None, None).await
+}
+
+// Test-only occupancy surrounds only the independent xAI JSON serialization.
+// Its RAII guard releases injected reservations before the final restoration wrapper.
+#[cfg(test)]
+pub(crate) mod xai_json_wire_test_support {
+    use std::{cell::RefCell, marker::PhantomData, rc::Rc, sync::Arc};
+
+    pub(crate) enum Event<'a> {
+        Before { active: bool },
+        Encoded(&'a bytes::Bytes),
+        Released,
+    }
+    type Hook = Arc<dyn Fn(Event<'_>) -> Option<Box<dyn Send>> + Send + Sync>;
+    thread_local! {
+        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+    pub(crate) struct Probe {
+        previous: Option<Hook>,
+        _thread_bound: PhantomData<Rc<()>>,
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            HOOK.with(|slot| slot.replace(self.previous.take()));
+        }
+    }
+    pub(crate) fn install(
+        hook: impl Fn(Event<'_>) -> Option<Box<dyn Send>> + Send + Sync + 'static,
+    ) -> Probe {
+        Probe {
+            previous: HOOK.with(|slot| slot.replace(Some(Arc::new(hook)))),
+            _thread_bound: PhantomData,
+        }
+    }
+    pub(super) struct Boundary {
+        hook: Option<Hook>,
+        occupancy: Option<Box<dyn Send>>,
+    }
+    pub(super) fn enter(active: bool) -> Boundary {
+        let hook = HOOK.with(|slot| slot.borrow().clone());
+        let occupancy = hook
+            .as_ref()
+            .and_then(|hook| hook(Event::Before { active }));
+        Boundary { hook, occupancy }
+    }
+    impl Boundary {
+        pub(super) fn encoded(&self, bytes: &bytes::Bytes) {
+            if let Some(hook) = &self.hook {
+                let _ = hook(Event::Encoded(bytes));
+            }
+        }
+    }
+    impl Drop for Boundary {
+        fn drop(&mut self) {
+            drop(self.occupancy.take());
+            if let Some(hook) = &self.hook {
+                let _ = hook(Event::Released);
+            }
+        }
+    }
 }
 
 /// Response handler for the native Responses passthrough to xAI: restore
@@ -1283,9 +1598,12 @@ async fn handle_codex_xai_native_responses_rewrite(
     ctx: &RequestContext,
     state: &ProxyState,
     connection_guard: Option<ActiveConnectionGuard>,
-    restore_map: std::collections::HashMap<
-        String,
-        transform_codex_responses_namespace::NamespacedName,
+    restore_map: transform_codex_responses_namespace::ResponseNamespaceTable,
+    dlp_attempt: Option<&super::security::http_restoration::DlpPreparedAttempt>,
+    evidence: Option<
+        std::sync::Arc<
+            std::sync::Mutex<super::security::http_restoration::UpstreamSseEvidenceTracker>,
+        >,
     >,
 ) -> Result<axum::response::Response, ProxyError> {
     let status = response.status();
@@ -1307,9 +1625,19 @@ async fn handle_codex_xai_native_responses_rewrite(
             builder = builder.header(key, value);
         }
 
+        let upstream = response.bytes_stream();
+        let upstream: std::pin::Pin<
+            Box<dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send>,
+        > = match evidence {
+            Some(evidence) => super::security::http_restoration::observe_xai_original_sse(
+                upstream,
+                Some(evidence),
+            ),
+            None => Box::pin(upstream),
+        };
         let restore_stream =
             transform_codex_responses_xai_sanitize::create_xai_native_responses_sse_stream(
-                response.bytes_stream(),
+                upstream,
                 restore_map,
             );
         let usage_collector =
@@ -1347,6 +1675,32 @@ async fn handle_codex_xai_native_responses_rewrite(
         };
     let (mut response_headers, status, body_bytes) =
         read_decoded_body(response, ctx.tag, body_timeout).await?;
+    if let Some(attempt) = dlp_attempt {
+        let raw = match std::str::from_utf8(&body_bytes) {
+            Ok(raw) => raw,
+            Err(_) => {
+                return Ok(
+                    super::security::http_restoration::build_codex_restore_error_response_at(
+                        super::security::response_restoration::RestoreError::RestoreFailed,
+                        super::security::restore_diagnostics::RestoreStage::JsonRestore,
+                    ),
+                )
+            }
+        };
+        let protocol = if attempt.endpoint_is_compact {
+            super::security::completion_json::JsonCompletionProtocol::ResponsesCompact
+        } else {
+            super::security::completion_json::JsonCompletionProtocol::NativeResponses
+        };
+        if let Err(error) = attempt.verify_upstream_json_completion(protocol, raw) {
+            return Ok(
+                super::security::http_restoration::build_codex_restore_error_response_at(
+                    error,
+                    super::security::restore_diagnostics::RestoreStage::CompletionEvidence,
+                ),
+            );
+        }
+    }
     strip_hop_by_hop_response_headers(&mut response_headers);
 
     // Restore names when the body parses as JSON; otherwise pass the bytes
@@ -1401,13 +1755,34 @@ async fn handle_codex_xai_native_responses_rewrite(
                     }
                 });
             }
-            match serde_json::to_vec(&value) {
-                Ok(bytes) => Bytes::from(bytes),
-                Err(e) => {
-                    log::error!("[{}] 序列化 namespace 还原响应失败: {e}", ctx.tag);
-                    body_bytes
+            #[cfg(test)]
+            let wire_boundary = xai_json_wire_test_support::enter(
+                dlp_attempt.is_some_and(|attempt| attempt.has_active_tokens()),
+            );
+            let bytes = match dlp_attempt
+                .map(|attempt| attempt.encode_response_rewrite_body(&value))
+                .transpose()
+            {
+                Ok(Some(Some(bytes))) => bytes,
+                Err(error) => {
+                    return Ok(
+                        super::security::http_restoration::build_codex_restore_error_response_at(
+                            error,
+                            super::security::restore_diagnostics::RestoreStage::JsonRestore,
+                        ),
+                    );
                 }
-            }
+                Ok(_) => match serde_json::to_vec(&value) {
+                    Ok(bytes) => Bytes::from(bytes),
+                    Err(e) => {
+                        log::error!("[{}] 序列化 namespace 还原响应失败: {e}", ctx.tag);
+                        body_bytes
+                    }
+                },
+            };
+            #[cfg(test)]
+            wire_boundary.encoded(&bytes);
+            bytes
         }
         Err(_) => body_bytes,
     };
@@ -1484,6 +1859,15 @@ fn codex_chat_observation_metadata(
     )
 }
 
+struct CodexDlpTransformContext<'a> {
+    attempt: Option<&'a super::security::http_restoration::DlpPreparedAttempt>,
+    evidence: Option<
+        std::sync::Arc<
+            std::sync::Mutex<super::security::http_restoration::UpstreamSseEvidenceTracker>,
+        >,
+    >,
+}
+
 async fn handle_codex_chat_to_responses_transform(
     response: super::hyper_client::ProxyResponse,
     ctx: &RequestContext,
@@ -1491,7 +1875,12 @@ async fn handle_codex_chat_to_responses_transform(
     is_stream: bool,
     connection_guard: Option<ActiveConnectionGuard>,
     tool_context: transform_codex_chat::CodexToolContext,
+    dlp: CodexDlpTransformContext<'_>,
 ) -> Result<axum::response::Response, ProxyError> {
+    let CodexDlpTransformContext {
+        attempt: dlp_attempt,
+        evidence,
+    } = dlp;
     let status = response.status();
 
     if !status.is_success() {
@@ -1500,6 +1889,14 @@ async fn handle_codex_chat_to_responses_transform(
         // `{"error": {message, type, code, param}}`，保留原始 HTTP 状态码。
         return handle_codex_chat_error_response(response, ctx, status).await;
     }
+
+    // Resolve against the actual attempt provider and mapped outbound model.
+    let reasoning_config = super::providers::resolve_codex_chat_reasoning_config(
+        &ctx.provider,
+        &serde_json::json!({
+            "model": ctx.outbound_model.as_deref().unwrap_or(&ctx.request_model)
+        }),
+    );
 
     if is_stream || response.is_sse() {
         let stream = crate::proxy::tool_observation::mount::observe_stream(
@@ -1510,8 +1907,33 @@ async fn handle_codex_chat_to_responses_transform(
                 crate::proxy::tool_observation::channel::Transport::Sse,
             ),
         );
-        let sse_stream = create_responses_sse_stream_from_chat_with_context(stream, tool_context);
-        let sse_stream = record_responses_sse_stream(sse_stream, state.codex_chat_history.clone());
+        let tracker = evidence.clone();
+        let sse_stream = create_responses_sse_stream_from_chat_observed_with_reasoning(
+            stream,
+            tool_context,
+            reasoning_config,
+            move |fact| {
+                if let Some(tracker) = &tracker {
+                    if let Ok(mut tracker) = tracker.lock() {
+                        tracker.observe(&fact);
+                    }
+                }
+            },
+        );
+        let history_owner = dlp_attempt.and_then(|attempt| attempt.upstream_payload_owner());
+        let sse_stream = match history_owner {
+            Some(owner) => {
+                futures::future::Either::Left(record_responses_sse_stream_with_payload_owner(
+                    sse_stream,
+                    state.codex_chat_history.clone(),
+                    Some(owner),
+                ))
+            }
+            None => futures::future::Either::Right(record_responses_sse_stream(
+                sse_stream,
+                state.codex_chat_history.clone(),
+            )),
+        };
 
         let usage_collector = if usage_logging_enabled(state) {
             let state = state.clone();
@@ -1609,6 +2031,33 @@ async fn handle_codex_chat_to_responses_transform(
         };
     let (mut response_headers, status, body_bytes) =
         read_decoded_body(response, ctx.tag, body_timeout).await?;
+    if let Some(attempt) = dlp_attempt {
+        let raw = match std::str::from_utf8(&body_bytes) {
+            Ok(raw) => raw,
+            Err(_) => {
+                return Ok(
+                    super::security::http_restoration::build_codex_restore_error_response_at(
+                        super::security::response_restoration::RestoreError::RestoreFailed,
+                        super::security::restore_diagnostics::RestoreStage::JsonRestore,
+                    ),
+                )
+            }
+        };
+        let protocol = super::security::completion_json::JsonCompletionProtocol::ChatCompletions;
+        let verified = if body_looks_like_sse(raw) {
+            attempt.verify_upstream_sse_completion(protocol, raw)
+        } else {
+            attempt.verify_upstream_json_completion(protocol, raw)
+        };
+        if let Err(error) = verified {
+            return Ok(
+                super::security::http_restoration::build_codex_restore_error_response_at(
+                    error,
+                    super::security::restore_diagnostics::RestoreStage::CompletionEvidence,
+                ),
+            );
+        }
+    }
     let body_str = String::from_utf8_lossy(&body_bytes);
     let chat_response: Value = match serde_json::from_slice(&body_bytes) {
         Ok(value) => value,
@@ -1649,18 +2098,27 @@ async fn handle_codex_chat_to_responses_transform(
         &body_bytes,
         codex_chat_observation_metadata(ctx, &tool_context, transport),
     );
-    let responses_response = transform_codex_chat::chat_completion_to_response_with_context(
-        chat_response,
-        &tool_context,
-    )
-    .map_err(|e| {
-        log::error!("[Codex] Chat → Responses 响应转换失败: {e}");
-        e
-    })?;
-    state
-        .codex_chat_history
-        .record_response(&responses_response)
-        .await;
+    let responses_response =
+        transform_codex_chat::chat_completion_to_response_with_context_and_reasoning(
+            chat_response,
+            &tool_context,
+            reasoning_config.as_ref(),
+        )
+        .map_err(|e| {
+            log::error!("[Codex] Chat → Responses 响应转换失败: {e}");
+            e
+        })?;
+    if let Some(owner) = dlp_attempt.and_then(|attempt| attempt.upstream_payload_owner()) {
+        state
+            .codex_chat_history
+            .record_response_with_payload_owner(&responses_response, Some(owner))
+            .await;
+    } else {
+        state
+            .codex_chat_history
+            .record_response(&responses_response)
+            .await;
+    }
 
     // 上游非流式 Chat 省略 usage 时，chat_usage_to_responses_usage 会合成全 0 usage
     // (transform_codex_chat.rs:1581)，from_codex_response 对 input/output 字段存在(哪怕=0)
@@ -1750,7 +2208,12 @@ async fn handle_codex_anthropic_to_responses_transform(
     is_stream: bool,
     connection_guard: Option<ActiveConnectionGuard>,
     codex_tool_context: transform_codex_chat::CodexToolContext,
+    dlp: CodexDlpTransformContext<'_>,
 ) -> Result<axum::response::Response, ProxyError> {
+    let CodexDlpTransformContext {
+        attempt: dlp_attempt,
+        evidence,
+    } = dlp;
     let status = response.status();
 
     if !status.is_success() {
@@ -1762,8 +2225,18 @@ async fn handle_codex_anthropic_to_responses_transform(
     // envelopes and gateways that ignore stream:true can be converted faithfully.
     if response.is_sse() || (is_stream && !response.is_json()) {
         let stream = response.bytes_stream();
-        let sse_stream =
-            create_responses_sse_stream_from_anthropic_with_context(stream, codex_tool_context);
+        let tracker = evidence.clone();
+        let sse_stream = create_responses_sse_stream_from_anthropic_observed(
+            stream,
+            codex_tool_context,
+            move |fact| {
+                if let Some(tracker) = &tracker {
+                    if let Ok(mut tracker) = tracker.lock() {
+                        tracker.observe(&fact);
+                    }
+                }
+            },
+        );
         return build_codex_anthropic_sse_response(
             sse_stream,
             ctx,
@@ -1781,6 +2254,46 @@ async fn handle_codex_anthropic_to_responses_transform(
         };
     let (mut response_headers, status, body_bytes) =
         read_decoded_body(response, ctx.tag, body_timeout).await?;
+    if let Some(attempt) = dlp_attempt {
+        let raw = match std::str::from_utf8(&body_bytes) {
+            Ok(raw) => raw,
+            Err(_) => {
+                return Ok(
+                    super::security::http_restoration::build_codex_restore_error_response_at(
+                        super::security::response_restoration::RestoreError::RestoreFailed,
+                        super::security::restore_diagnostics::RestoreStage::JsonRestore,
+                    ),
+                )
+            }
+        };
+        let protocol = super::security::completion_json::JsonCompletionProtocol::AnthropicMessages;
+        let verified = if body_looks_like_sse(raw) {
+            attempt.verify_upstream_sse_completion(protocol, raw)
+        } else {
+            attempt.verify_upstream_json_completion(protocol, raw)
+        };
+        if let Err(error) = verified {
+            return Ok(
+                super::security::http_restoration::build_codex_restore_error_response_at(
+                    error,
+                    super::security::restore_diagnostics::RestoreStage::CompletionEvidence,
+                ),
+            );
+        }
+        if is_stream && !body_looks_like_sse(raw) {
+            if let Some(tracker) = &evidence {
+                match tracker.lock() {
+                    Ok(mut tracker) => tracker.observe_fully_read_anthropic_json(raw),
+                    Err(_) => return Ok(
+                        super::security::http_restoration::build_codex_restore_error_response_at(
+                            super::security::response_restoration::RestoreError::RestoreFailed,
+                            super::security::restore_diagnostics::RestoreStage::CompletionEvidence,
+                        ),
+                    ),
+                }
+            }
+        }
+    }
     let body_str = String::from_utf8_lossy(&body_bytes);
     let anthropic_response: Value = match serde_json::from_slice(&body_bytes) {
         Ok(value) => value,
@@ -2088,6 +2601,12 @@ fn build_codex_proxy_error_response(
     endpoint: &str,
     error: &ProxyError,
 ) -> Result<axum::response::Response, ProxyError> {
+    if let ProxyError::SafeUpstream(error) = error {
+        return Ok(error.to_response());
+    }
+    if let ProxyError::DlpForward(error) = error {
+        return Ok(error.into_codex_response());
+    }
     let status = axum::http::StatusCode::from_u16(map_proxy_error_to_status(error))
         .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     let body = codex_proxy_error_json(&ctx.provider.name, &ctx.request_model, endpoint, error);
@@ -2115,6 +2634,16 @@ fn codex_proxy_error_json(
     endpoint: &str,
     error: &ProxyError,
 ) -> Value {
+    if let ProxyError::UpstreamError {
+        body: Some(raw), ..
+    } = error
+    {
+        return serde_json::from_str(raw).unwrap_or_else(|_| {
+            json!({"error":{
+                "message":raw, "type":"upstream_error", "code":"upstream_error", "param":null
+            }})
+        });
+    }
     let (mut body, upstream_status) = match error {
         ProxyError::UpstreamError { status, body } => {
             let parsed_body = body
@@ -2226,6 +2755,7 @@ fn codex_proxy_error_json(
 
 fn codex_proxy_error_code(error: &ProxyError) -> &'static str {
     match error {
+        ProxyError::DlpForward(error) => error.code(),
         ProxyError::ForwardFailed(_) => "cc_switch_forward_failed",
         ProxyError::Timeout(_) | ProxyError::StreamIdleTimeout(_) => "cc_switch_timeout",
         ProxyError::NoAvailableProvider => "cc_switch_no_available_provider",
@@ -2237,7 +2767,9 @@ fn codex_proxy_error_code(error: &ProxyError) -> &'static str {
         ProxyError::TransformError(_) => "cc_switch_transform_error",
         ProxyError::InvalidRequest(_) => "cc_switch_invalid_request",
         ProxyError::AuthError(_) => "cc_switch_auth_error",
-        ProxyError::UpstreamError { .. } => "cc_switch_upstream_error",
+        ProxyError::UpstreamError { .. } | ProxyError::SafeUpstream(_) => {
+            "cc_switch_upstream_error"
+        }
         ProxyError::DatabaseError(_) => "cc_switch_database_error",
         ProxyError::Internal(_) => "cc_switch_internal_error",
         ProxyError::AlreadyRunning
@@ -2293,19 +2825,32 @@ pub async fn handle_gemini(
     };
 
     if !body.is_null() {
-        if let Some(blocked) = crate::proxy::security::inspect_and_intercept_mut_with_headers(
-            &AppType::Gemini,
-            &mut body,
-            &headers,
-        )? {
-            return Ok(blocked);
+        if let super::security::http_restoration::RestorationAdmission::Intercepted(response) =
+            super::security::http_restoration::admit_http_request(
+                &state.restoration_gateway,
+                &AppType::Gemini,
+                false,
+                false,
+                &mut body,
+                &headers,
+            )?
+        {
+            return Ok(response);
         }
     }
 
     // Gemini 的模型名称在 URI 中
-    let mut ctx = RequestContext::new(&state, &body, &headers, AppType::Gemini, "Gemini", "gemini")
-        .await?
-        .with_model_from_uri(&uri);
+    let mut ctx = RequestContext::new(
+        &state,
+        &body,
+        &headers,
+        AppType::Gemini,
+        "Gemini",
+        "gemini",
+        None,
+    )
+    .await?
+    .with_model_from_uri(&uri);
 
     // 提取完整的路径和查询参数
     let endpoint = uri
@@ -2418,17 +2963,31 @@ async fn responses_sse_stream_to_anthropic_message(
 /// 复用 `proxy::sse` 的 `take_sse_block`/`strip_sse_field`：`take_sse_block` 同时支持
 /// `\n\n` 与 `\r\n\r\n` 两种分隔符，`strip_sse_field` 兼容带/不带空格的字段写法。
 fn responses_sse_to_response_value(body: &str) -> Result<Value, ProxyError> {
+    responses_sse_to_response_value_observed(body, |_| {})
+}
+
+/// Observe original buffered protocol facts without granting entity or lease authority.
+pub(crate) fn responses_sse_to_response_value_observed(
+    body: &str,
+    mut observe: impl for<'a> FnMut(
+        crate::proxy::security::completion_evidence::CompletionObservation<'a>,
+    ),
+) -> Result<Value, ProxyError> {
+    use crate::proxy::security::completion_evidence::CompletionObservation;
     let mut buffer = body.trim_start_matches('\u{feff}').to_string();
     let mut completed_response: Option<Value> = None;
+    let mut native_completion = crate::proxy::security::completion_json::NativeSseCompletion::new();
     let mut output_items = Vec::new();
 
     // strict=false 用于残余尾块：截断的半截 JSON 忽略而非报错，避免破坏
     // 已聚合好的完整响应（codex_oauth 聚合路径也复用本函数）
     let mut process_block = |block: &str, strict: bool| -> Result<(), ProxyError> {
-        // 残余尾块（strict=false）在已拿到 completed 后整体跳过——codex_oauth 聚合
-        // 路径也复用本函数，已完成后再执行残余里的完整 response.failed/杂事件会把
-        // 成功响应翻成 422（C8）。
-        if !strict && completed_response.is_some() {
+        // Observe nonempty provenance even when legacy aggregation ignores the tail.
+        if !block.trim().is_empty() {
+            observe(CompletionObservation::RawFrame(block));
+        }
+        // Preserve completed legacy responses instead of processing residual failures.
+        if !strict && native_completion.legacy_completed() {
             return Ok(());
         }
         let mut event_name = "";
@@ -2454,21 +3013,33 @@ fn responses_sse_to_response_value(body: &str) -> Result<Value, ProxyError> {
 
         let data: Value = match serde_json::from_str(&data_str) {
             Ok(v) => v,
-            Err(_) if !strict => return Ok(()),
             Err(e) => {
+                observe(CompletionObservation::InvalidJson);
+                if !strict {
+                    return Ok(());
+                }
                 return Err(ProxyError::TransformError(format!(
                     "Failed to parse upstream SSE event: {e}"
-                )))
+                )));
             }
         };
 
+        observe(CompletionObservation::NativeEvent {
+            event_name,
+            data: &data,
+        });
         match event_name {
             "response.output_item.done" => {
                 if let Some(item) = data.get("item") {
                     output_items.push(item.clone());
                 }
             }
-            "response.completed" => {
+            _ if crate::proxy::security::completion_evidence::NativeCompletionEvent::new(
+                event_name, &data,
+            )
+            .legacy_is_completed() =>
+            {
+                native_completion.finish_legacy();
                 completed_response = Some(data.get("response").cloned().unwrap_or(data));
             }
             "response.failed" => {
@@ -2490,6 +3061,9 @@ fn responses_sse_to_response_value(body: &str) -> Result<Value, ProxyError> {
     // 残余 buffer 当最后一块处理，否则尾部的 response.completed 会被丢掉。
     // 已完成时的跳过判定在闭包内（C8）。
     process_block(&buffer, false)?;
+    observe(CompletionObservation::BufferedBodyEnd {
+        unfinished_frame: !buffer.trim().is_empty(),
+    });
 
     let mut response = completed_response.ok_or_else(|| {
         ProxyError::TransformError("No response.completed event in upstream SSE".to_string())
@@ -2754,12 +3328,11 @@ fn chat_sse_to_response_value(body: &str) -> Result<Value, ProxyError> {
             // 包成单事件（message 而非 delta），有的还附带空 delta:{}。delta 为空对象
             // 且存在 message 时改用 message 快照（覆盖此前累计的增量，防混合形态双计），
             // 否则内容被静默丢弃、完成性守卫又被其 finish_reason 击穿 → 空内容假成功（C3）。
-            let delta_nonempty = choice
+            let nonempty_delta = choice
                 .get("delta")
-                .and_then(|d| d.as_object())
-                .is_some_and(|o| !o.is_empty());
-            let (payload, is_full_message) = if delta_nonempty {
-                (choice.get("delta").unwrap(), false)
+                .filter(|delta| delta.as_object().is_some_and(|object| !object.is_empty()));
+            let (payload, is_full_message) = if let Some(delta) = nonempty_delta {
+                (delta, false)
             } else if let Some(message) = choice.get("message") {
                 (message, true)
             } else if let Some(delta) = choice.get("delta") {
@@ -3074,6 +3647,22 @@ mod tests {
         Arc,
     };
 
+    #[test]
+    fn chat_sse_aggregation_production_has_no_panic_extractors() {
+        let source = include_str!("handlers.rs");
+        let aggregation = source
+            .split_once("fn chat_sse_to_response_value(")
+            .map(|(_, rest)| {
+                rest.split_once("\n#[cfg(test)]")
+                    .map_or(rest, |(production, _)| production)
+            })
+            .expect("aggregation source fixture");
+        assert!(
+            !aggregation.contains(".unwrap()") && !aggregation.contains(".expect("),
+            "production Chat aggregation must not panic when extracting provider fields"
+        );
+    }
+
     mod codex_chat_tool_risk {
         use crate::database::{Database, ToolRiskEventInput};
         use crate::proxy::{
@@ -3118,8 +3707,167 @@ mod tests {
             let event = json!({"id":"chat_test","choices":[{"index":0,"delta":choice["message"],"finish_reason":choice["finish_reason"]}]});
             Bytes::from(format!("data: {event}\n\ndata: [DONE]\n\n"))
         }
+        async fn run_long_tag_handler(stream: bool, explicit_protocol: bool) -> Value {
+            let request = json!({"model":"synthetic-client-alias","input":[]});
+            let mut ctx = RequestContext::for_tool_risk_test(&request);
+            ctx.request_model = "synthetic-client-alias".into();
+            ctx.outbound_model = Some("synthetic-outbound-model".into());
+            // The response provider is the actual attempt, not the initial route.
+            ctx.provider = crate::provider::Provider::with_id(
+                "synthetic-actual-provider".into(),
+                "Synthetic actual provider".into(),
+                json!({}),
+                None,
+            );
+            if explicit_protocol {
+                ctx.provider.meta = Some(crate::provider::ProviderMeta {
+                    codex_chat_reasoning: Some(crate::provider::CodexChatReasoningConfig {
+                        output_format: Some("thinking_tags".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+            }
+            let chat = json!({
+                "id":"synthetic-chat", "model":"synthetic-outbound-model",
+                "choices":[{"index":0,"message":{
+                    "role":"assistant","content":"<thinking>synthetic 思考</thinking>synthetic answer"
+                },"finish_reason":"stop"}]
+            });
+            let body = if stream {
+                let event = json!({"id":"synthetic-chat","model":"synthetic-outbound-model",
+                    "choices":[{"index":0,"delta":chat["choices"][0]["message"],"finish_reason":"stop"}]});
+                Bytes::from(format!("data: {event}\n\ndata: [DONE]\n\n"))
+            } else {
+                let encoded = serde_json::to_vec(&chat);
+                assert!(encoded.is_ok(), "synthetic response encoding must succeed");
+                Bytes::from(encoded.unwrap_or_default())
+            };
+            let mut headers = http::HeaderMap::new();
+            headers.insert(
+                "content-type",
+                http::HeaderValue::from_static(if stream {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                }),
+            );
+            let response = if stream {
+                let chunks: Vec<_> = body
+                    .chunks(1)
+                    .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
+                    .collect();
+                ProxyResponse::streamed(
+                    http::StatusCode::OK,
+                    headers,
+                    futures::stream::iter(chunks),
+                )
+            } else {
+                ProxyResponse::buffered(http::StatusCode::OK, headers, body)
+            };
+            let db = Database::memory();
+            assert!(db.is_ok(), "synthetic database must initialize");
+            let Ok(db) = db else {
+                return Value::Null;
+            };
+            let result = super::super::handle_codex_chat_to_responses_transform(
+                response,
+                &ctx,
+                &state(Arc::new(db)),
+                stream,
+                None,
+                transform_codex_chat::build_codex_tool_context_from_request(&request),
+                super::super::CodexDlpTransformContext {
+                    attempt: None,
+                    evidence: None,
+                },
+            )
+            .await;
+            assert!(result.is_ok(), "synthetic handler conversion must succeed");
+            let Ok(response) = result else {
+                return Value::Null;
+            };
+            let body = response.into_body().collect().await;
+            assert!(body.is_ok(), "synthetic handler body must be readable");
+            let Ok(body) = body else {
+                return Value::Null;
+            };
+            let body = body.to_bytes();
+            let parsed = if stream {
+                let text = std::str::from_utf8(&body);
+                assert!(text.is_ok(), "synthetic stream must be valid UTF-8");
+                let Ok(text) = text else {
+                    return Value::Null;
+                };
+                super::super::responses_sse_to_response_value(text).ok()
+            } else {
+                serde_json::from_slice(&body).ok()
+            };
+            assert!(
+                parsed.is_some(),
+                "synthetic handler output must be parseable"
+            );
+            parsed.unwrap_or(Value::Null)
+        }
+
+        fn assert_long_tag_handler_output(output: &Value, explicit_protocol: bool) {
+            let items = output.get("output").and_then(Value::as_array);
+            assert!(items.is_some(), "synthetic output items must exist");
+            let Some(items) = items else {
+                return;
+            };
+            let reasoning = items.iter().find(|item| item["type"] == "reasoning");
+            let answer = items
+                .iter()
+                .find(|item| item["type"] == "message")
+                .and_then(|item| item["content"][0]["text"].as_str());
+            if explicit_protocol {
+                assert!(
+                    reasoning.and_then(|item| item["summary"][0]["text"].as_str())
+                        == Some("synthetic 思考"),
+                    "actual provider protocol must select reasoning"
+                );
+                assert!(
+                    answer == Some("synthetic answer"),
+                    "actual provider protocol must preserve answer"
+                );
+            } else {
+                assert!(
+                    reasoning.is_none(),
+                    "generic protocol must not infer long-tag reasoning"
+                );
+                assert!(
+                    answer == Some("<thinking>synthetic 思考</thinking>synthetic answer"),
+                    "generic protocol must preserve long tags as ordinary text"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn codex_chat_long_tag_handler_json_uses_actual_provider() {
+            assert_long_tag_handler_output(&run_long_tag_handler(false, true).await, true);
+        }
+
+        #[tokio::test]
+        async fn codex_chat_long_tag_handler_sse_uses_actual_provider() {
+            assert_long_tag_handler_output(&run_long_tag_handler(true, true).await, true);
+        }
+
+        #[tokio::test]
+        async fn codex_chat_long_tag_handler_json_generic_is_unchanged() {
+            assert_long_tag_handler_output(&run_long_tag_handler(false, false).await, false);
+        }
+
+        #[tokio::test]
+        async fn codex_chat_long_tag_handler_sse_generic_is_unchanged() {
+            assert_long_tag_handler_output(&run_long_tag_handler(true, false).await, false);
+        }
+
         fn state(db: Arc<Database>) -> ProxyState {
             ProxyState {
+                restoration_gateway:
+                    super::super::super::security::http_restoration::RestorationGateway::new_default(
+                    ),
                 pi_runtime: Arc::default(),
                 intent_runtime: Arc::default(),
                 db: db.clone(),
@@ -3183,6 +3931,10 @@ mod tests {
                 stream,
                 None,
                 transform_codex_chat::build_codex_tool_context_from_request(&request),
+                super::super::CodexDlpTransformContext {
+                    attempt: None,
+                    evidence: None,
+                },
             )
             .await
             .unwrap();
@@ -3241,7 +3993,7 @@ mod tests {
                 assert_eq!(events[0].client_category.as_deref(), Some("codex"));
                 assert_eq!(events[0].verdict.as_deref(), Some("risky"));
                 assert!(events[0].rule_ids.iter().any(|id| id == rule));
-                assert_eq!(events[0].command_summary.as_deref(), Some(command));
+                assert!(events[0].command_summary.is_none());
                 let arguments: Value =
                     serde_json::from_str(client["output"][0]["arguments"].as_str().unwrap())
                         .unwrap();
@@ -3343,7 +4095,7 @@ mod tests {
                         run(req, wire, Some("text/event-stream"), true, true).await;
                     assert_eq!(observations.len(), 1);
                     assert_eq!(events.len(), 1);
-                    assert_eq!(events[0].command_summary.as_deref(), Some(command));
+                    assert!(events[0].command_summary.is_none());
                     assert_eq!(events[0].operation_category.as_deref(), Some("shell_exec"));
                     let expected = if command == "cat ~/.env" {
                         "risky"
@@ -3398,7 +4150,7 @@ mod tests {
                     assert_eq!(observations.len(), 1);
                     assert_eq!(events.len(), 1);
                     assert_eq!(events[0].verdict.as_deref(), Some("low_risk"));
-                    assert_eq!(events[0].command_summary.as_deref(), Some(command));
+                    assert!(events[0].command_summary.is_none());
                     let forwarded: Value =
                         serde_json::from_str(client["output"][0]["arguments"].as_str().unwrap())
                             .unwrap();
@@ -3475,7 +4227,7 @@ mod tests {
                     if arguments == "{\"cmd\":\"ls\"}" {
                         assert_eq!(events.len(), 1);
                         assert_eq!(events[0].verdict.as_deref(), Some("unchecked"));
-                        assert_eq!(events[0].command_summary.as_deref(), Some("ls"));
+                        assert!(events[0].command_summary.is_none());
                         assert!(events[0].rule_ids.is_empty());
                     } else {
                         assert!(
@@ -3604,7 +4356,7 @@ mod tests {
         }
         #[tokio::test]
         #[serial_test::serial]
-        async fn event_redacts_only_privacy_and_keeps_forwarded_command() {
+        async fn event_omits_command_summary_and_keeps_forwarded_command() {
             let command = format!("{}={} sudo ls -la", "API_KEY", "TEST_PRIVATE_TOKEN");
             let (client, _, events) = run(
                 request(),
@@ -3615,11 +4367,7 @@ mod tests {
             )
             .await;
             assert_eq!(events.len(), 1);
-            let expected = format!("{}={} sudo ls -la", "API_KEY", "<redacted>");
-            assert_eq!(
-                events[0].command_summary.as_deref(),
-                Some(expected.as_str())
-            );
+            assert!(events[0].command_summary.is_none());
             assert!(!serde_json::to_string(&events)
                 .unwrap()
                 .contains("TEST_PRIVATE_TOKEN"));
@@ -4316,52 +5064,66 @@ data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\"}}\n
     }
 
     #[test]
-    fn codex_proxy_upstream_error_normalizes_nonstandard_body() {
+    fn codex_proxy_upstream_error_preserves_nonstandard_body() {
+        let expected = serde_json::json!({"base_resp":{"status_code":2013,"status_msg":"synthetic gateway failure"}});
         let error = ProxyError::UpstreamError {
             status: 502,
-            body: Some(
-                r#"{"base_resp":{"status_code":2013,"status_msg":"upstream gateway failed"}}"#
-                    .to_string(),
-            ),
+            body: Some(expected.to_string()),
         };
-        let body = codex_proxy_error_json("MiniMax", "abab6.5s", "/responses", &error);
-
-        let message = body["error"]["message"].as_str().unwrap();
-        assert!(message.contains("upstream_status: HTTP 502"));
-        assert!(message.contains("upstream gateway failed"));
-        assert_eq!(body["error"]["code"], 2013);
-        assert_eq!(body["error"]["upstream_status"], 502);
+        let body = codex_proxy_error_json(
+            "synthetic-provider",
+            "synthetic-model",
+            "/responses",
+            &error,
+        );
+        assert!(body == expected, "upstream_body_changed");
     }
 
     #[test]
-    fn codex_proxy_413_points_to_upstream_not_local_proxy() {
-        // 模拟上游渠道商 nginx 因 client_max_body_size 返回的 413 HTML 页面
-        // （见 issue #666：长上下文 / 大图 / 大日志撞上游体积上限）
+    fn codex_proxy_413_preserves_upstream_reason_without_local_enrichment() {
         let error = ProxyError::UpstreamError {
             status: 413,
-            body: Some(
-                "<html>\r\n<head><title>413 Request Entity Too Large</title></head>\r\n\
-                 <body>\r\n<center><h1>413 Request Entity Too Large</h1></center>\r\n\
-                 <hr><center>nginx/1.29.6</center>\r\n</body>\r\n</html>"
-                    .to_string(),
-            ),
+            body: Some("synthetic payload limit".into()),
         };
-        let body = codex_proxy_error_json("HCAI", "gpt-5.5", "/responses", &error);
+        let body = codex_proxy_error_json(
+            "synthetic-provider",
+            "synthetic-model",
+            "/responses",
+            &error,
+        );
+        assert!(
+            body["error"]["message"] == "synthetic payload limit",
+            "upstream_reason_changed"
+        );
+        for field in ["provider", "model", "endpoint", "upstream_status"] {
+            assert!(
+                body["error"].get(field).is_none(),
+                "upstream_error_enriched"
+            );
+        }
+        assert!(
+            !body.to_string().contains("Vary AI local proxy failed"),
+            "upstream_error_misclassified_as_local"
+        );
+    }
+}
 
-        let message = body["error"]["message"].as_str().unwrap();
-        // 不再误导成「本地代理失败」
-        assert!(!message.contains("Vary AI local proxy failed"));
-        // 明确指向上游 + 体积超限 + 可操作指引
-        assert!(message.contains("413"));
-        assert!(message.to_lowercase().contains("upstream"));
-        assert!(message.contains("/compact"));
-        // 关键：不把整段 nginx HTML 回显给用户
-        assert!(!message.contains("<html>"));
-        assert!(!message.contains("nginx/1.29.6"));
-        // 结构化字段仍然保留，便于程序化消费 / UI 呈现
-        assert_eq!(body["error"]["upstream_status"], 413);
-        assert_eq!(body["error"]["provider"], "HCAI");
-        assert_eq!(body["error"]["model"], "gpt-5.5");
-        assert_eq!(body["error"]["endpoint"], "/responses");
+#[cfg(test)]
+mod upstream_error_passthrough_tests {
+    use super::*;
+    #[test]
+    fn upstream_error_passthrough_unleased_codex_keeps_upstream_fields() {
+        let upstream = serde_json::json!({"error":{"message":"synthetic unsupported model", "type":"invalid_request_error", "code":"model_not_found", "param":"model", "safe_extension":true}});
+        let error = ProxyError::UpstreamError {
+            status: 400,
+            body: Some(upstream.to_string()),
+        };
+        let actual = codex_proxy_error_json(
+            "synthetic-provider",
+            "synthetic-model",
+            "/v1/responses",
+            &error,
+        );
+        assert!(actual == upstream, "upstream_error_misclassified_as_local");
     }
 }

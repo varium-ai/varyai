@@ -84,8 +84,28 @@ describe("computeAutoImportCatalogModels", () => {
       model: "model-4",
       displayName: "model-4",
     });
-    // Already has default model "custom-a", should not override
-    expect(result.suggestedDefaultModel).toBe("custom-a");
+    expect(result.suggestedDefaultModel).toBe("model-1");
+  });
+
+  it("preserves a default model present in the current supplier catalog", () => {
+    const result = computeAutoImportCatalogModels(
+      [],
+      [
+        { id: "model-1", ownedBy: null },
+        { id: "model-2", ownedBy: null },
+      ],
+      "model-2",
+    );
+    expect(result.suggestedDefaultModel).toBe("model-2");
+  });
+
+  it("does not replace the default when the supplier returns no valid models", () => {
+    const result = computeAutoImportCatalogModels(
+      [],
+      [{ id: " ", ownedBy: null }],
+      "existing-default",
+    );
+    expect(result.suggestedDefaultModel).toBe("existing-default");
   });
 
   it("still imports new models when the catalog already has ten rows", () => {

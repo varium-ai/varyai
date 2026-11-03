@@ -22,6 +22,7 @@ const CONFIG_FILE: &str = "claude_desktop_config.json";
 #[cfg(any(target_os = "macos", windows, test))]
 const CONFIG_LIBRARY_DIR: &str = "configLibrary";
 const GATEWAY_TOKEN_SETTING_KEY: &str = "claude_desktop_gateway_token";
+pub(crate) const ROUTING_ENABLED_KEY: &str = "claude_desktop_routing_enabled";
 const CLAUDE_DESKTOP_PROXY_PREFIX: &str = "/claude-desktop";
 const DEFAULT_CREATED_AT: &str = "2024-01-01T00:00:00Z";
 const MIMO_REDACTED_THINKING_PLACEHOLDER: &str = "[redacted thinking]";
@@ -182,14 +183,24 @@ pub fn get_status(db: &Database, proxy_running: bool) -> Result<ClaudeDesktopSta
     .ok()
     .flatten()
     .and_then(|id| db.get_provider_by_id(&id, "claude-desktop").ok().flatten());
-    let mode = current_provider.as_ref().map(provider_mode);
-    let expected_base_url = match mode {
-        Some(ClaudeDesktopMode::Proxy) => proxy_gateway_base_url_from_db(db).ok(),
-        Some(ClaudeDesktopMode::Direct) => current_provider
+    let enabled = routing_enabled(db)?;
+    let mode = current_provider.as_ref().and_then(|provider| {
+        if enabled {
+            Some(ClaudeDesktopMode::Proxy)
+        } else if is_compatible_direct_provider(provider) {
+            Some(ClaudeDesktopMode::Direct)
+        } else {
+            None
+        }
+    });
+    let expected_base_url = if enabled {
+        proxy_gateway_base_url_from_db(db).ok()
+    } else {
+        current_provider
             .as_ref()
+            .filter(|provider| is_compatible_direct_provider(provider))
             .and_then(|provider| direct_gateway_credentials(provider).ok())
-            .map(|credentials| credentials.base_url),
-        None => None,
+            .map(|credentials| credentials.base_url)
     };
     let missing_route_mappings = current_provider.as_ref().is_some_and(|provider| {
         matches!(provider_mode(provider), ClaudeDesktopMode::Proxy)
@@ -231,7 +242,65 @@ pub fn default_proxy_routes() -> Vec<ClaudeDesktopDefaultRoute> {
 }
 
 pub fn is_compatible_direct_provider(provider: &Provider) -> bool {
-    validate_direct_provider(provider).is_ok()
+    let mut native = provider.clone();
+    if let Some(meta) = native.meta.as_mut() {
+        meta.claude_desktop_mode = Some(ClaudeDesktopMode::Direct);
+    }
+    validate_direct_provider(&native).is_ok()
+}
+
+pub(crate) fn routing_enabled(db: &Database) -> Result<bool, AppError> {
+    db.get_bool_flag(ROUTING_ENABLED_KEY)
+}
+
+pub(crate) fn routing_applied(db: &Database) -> Result<bool, AppError> {
+    if !is_supported_platform() {
+        return Ok(false);
+    }
+    let Some(token) = db.get_setting(GATEWAY_TOKEN_SETTING_KEY)? else {
+        return Ok(false);
+    };
+    let paths = current_platform_paths()?;
+    if read_applied_id(&paths.meta_path).as_deref() != Some(PROFILE_ID) {
+        return Ok(false);
+    }
+    let profile = read_json_or_empty(&paths.profile_path)?;
+    Ok(profile
+        .get("inferenceGatewayApiKey")
+        .and_then(Value::as_str)
+        == Some(token.as_str())
+        && profile
+            .get("inferenceGatewayBaseUrl")
+            .and_then(Value::as_str)
+            .and_then(|value| url::Url::parse(value).ok())
+            .is_some_and(|url| {
+                matches!(url.host_str(), Some("127.0.0.1" | "[::1]" | "::1"))
+                    && url.path() == CLAUDE_DESKTOP_PROXY_PREFIX
+            }))
+}
+
+pub(crate) fn suspend_routing(db: &Database) -> Result<(), AppError> {
+    if !routing_applied(db)? {
+        return Ok(());
+    }
+    let paths = current_platform_paths()?;
+    let provider = crate::settings::get_effective_current_provider(
+        db,
+        &crate::app_config::AppType::ClaudeDesktop,
+    )?
+    .map(|id| db.get_provider_by_id(&id, "claude-desktop"))
+    .transpose()?
+    .flatten();
+    match provider {
+        Some(provider)
+            if !is_official_provider(&provider) && is_compatible_direct_provider(&provider) =>
+        {
+            with_rollback(&paths, |paths| {
+                apply_provider_to_paths_inner(db, &provider, paths, false)
+            })
+        }
+        _ => restore_official_at_paths(&paths),
+    }
 }
 
 pub fn is_official_provider(provider: &Provider) -> bool {
@@ -239,11 +308,11 @@ pub fn is_official_provider(provider: &Provider) -> bool {
 }
 
 pub fn provider_mode(provider: &Provider) -> ClaudeDesktopMode {
-    provider
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.claude_desktop_mode.clone())
-        .unwrap_or(ClaudeDesktopMode::Direct)
+    if is_compatible_direct_provider(provider) {
+        ClaudeDesktopMode::Direct
+    } else {
+        ClaudeDesktopMode::Proxy
+    }
 }
 
 pub fn is_claude_safe_model_id(model: &str) -> bool {
@@ -502,9 +571,10 @@ pub fn validate_provider(provider: &Provider) -> Result<(), AppError> {
         return Ok(());
     }
 
-    match provider_mode(provider) {
-        ClaudeDesktopMode::Direct => validate_direct_provider(provider),
-        ClaudeDesktopMode::Proxy => validate_proxy_provider(provider),
+    if is_compatible_direct_provider(provider) {
+        Ok(())
+    } else {
+        validate_proxy_provider(provider)
     }
 }
 
@@ -962,12 +1032,23 @@ fn apply_provider_to_paths(
     paths: &ClaudeDesktopPaths,
 ) -> Result<(), AppError> {
     if is_official_provider(provider) {
+        if routing_enabled(db)? {
+            return Err(AppError::localized(
+                "claudeDesktop.route.officialBlocked",
+                "请先关闭 Claude Desktop 的本地路由，再切换官方登录。",
+                "Disable Claude Desktop routing before switching to official login.",
+            ));
+        }
         return restore_official_at_paths(paths);
     }
 
     validate_provider(provider)?;
+    let routed = routing_enabled(db)?;
+    if !routed && !is_compatible_direct_provider(provider) {
+        return restore_official_at_paths(paths);
+    }
     with_rollback(paths, |paths| {
-        apply_provider_to_paths_inner(db, provider, paths)
+        apply_provider_to_paths_inner(db, provider, paths, routed)
     })
 }
 
@@ -998,31 +1079,29 @@ fn apply_provider_to_paths_inner(
     db: &Database,
     provider: &Provider,
     paths: &ClaudeDesktopPaths,
+    routed: bool,
 ) -> Result<(), AppError> {
-    let profile = match provider_mode(provider) {
-        ClaudeDesktopMode::Direct => {
-            let credentials = direct_gateway_credentials(provider)?;
-            let model_specs = direct_inference_model_specs(provider)?;
-            build_gateway_profile(
-                &credentials.base_url,
-                &credentials.api_key,
-                (!model_specs.is_empty()).then_some(model_specs.as_slice()),
-            )
-        }
-        ClaudeDesktopMode::Proxy => {
-            let base_url = proxy_gateway_base_url_from_db(db)?;
-            let api_key = get_or_create_gateway_token(db)?;
-            let routes = proxy_model_routes(provider)?;
-            let model_specs = routes
-                .iter()
-                .map(|route| InferenceModelSpec {
-                    name: route.route_id.clone(),
-                    label_override: route.label_override.clone(),
-                    supports_1m: route.supports_1m,
-                })
-                .collect::<Vec<_>>();
-            build_gateway_profile(&base_url, &api_key, Some(model_specs.as_slice()))
-        }
+    let profile = if !routed {
+        let credentials = direct_gateway_credentials(provider)?;
+        let model_specs = direct_inference_model_specs(provider)?;
+        build_gateway_profile(
+            &credentials.base_url,
+            &credentials.api_key,
+            (!model_specs.is_empty()).then_some(model_specs.as_slice()),
+        )
+    } else {
+        let base_url = proxy_gateway_base_url_from_db(db)?;
+        let api_key = get_or_create_gateway_token(db)?;
+        let routes = proxy_model_routes(provider)?;
+        let model_specs = routes
+            .iter()
+            .map(|route| InferenceModelSpec {
+                name: route.route_id.clone(),
+                label_override: route.label_override.clone(),
+                supports_1m: route.supports_1m,
+            })
+            .collect::<Vec<_>>();
+        build_gateway_profile(&base_url, &api_key, Some(model_specs.as_slice()))
     };
 
     write_deployment_mode(&paths.normal_config_path, "3p")?;
@@ -1264,6 +1343,10 @@ fn macos_paths_from_home(home: &Path) -> ClaudeDesktopPaths {
 
 #[cfg(windows)]
 fn windows_local_app_data_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(root) = std::env::var_os("CC_SWITCH_TEST_HOME") {
+        return PathBuf::from(root).join("AppData").join("Local");
+    }
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| get_home_dir().join("AppData").join("Local"))
@@ -1564,6 +1647,50 @@ mod tests {
     }
 
     #[test]
+    fn disabled_routing_does_not_apply_a_mapped_provider_to_the_gateway() {
+        let home = TempDir::new().unwrap();
+        let paths = test_paths(home.path());
+        let db = test_db();
+        db.set_setting("claude_desktop_routing_enabled", "false")
+            .unwrap();
+        apply_provider_to_paths(&db, &proxy_provider("mapped"), &paths).unwrap();
+        assert!(!paths.profile_path.exists());
+        let config: Value = read_json_file(&paths.normal_config_path).unwrap();
+        assert_eq!(config["deploymentMode"], "1p");
+    }
+
+    #[test]
+    fn enabled_routing_takes_over_a_native_anthropic_provider() {
+        let home = TempDir::new().unwrap();
+        let paths = test_paths(home.path());
+        let db = test_db();
+        set_proxy_port(&db, 15722);
+        db.set_setting("claude_desktop_routing_enabled", "true")
+            .unwrap();
+        let mut provider = direct_provider("native");
+        provider
+            .meta
+            .as_mut()
+            .unwrap()
+            .claude_desktop_model_routes
+            .insert(
+                "claude-sonnet-5".into(),
+                ClaudeDesktopModelRoute {
+                    model: "claude-sonnet-5".into(),
+                    label_override: None,
+                    supports_1m: None,
+                },
+            );
+        apply_provider_to_paths(&db, &provider, &paths).unwrap();
+        let profile: Value = read_json_file(&paths.profile_path).unwrap();
+        assert_eq!(
+            profile["inferenceGatewayBaseUrl"],
+            "http://127.0.0.1:15722/claude-desktop"
+        );
+        assert_ne!(profile["inferenceGatewayApiKey"], "test-token");
+    }
+
+    #[test]
     fn proxy_gateway_base_url_rejects_unresolved_ephemeral_port() {
         let db = test_db();
         set_proxy_port(&db, 0);
@@ -1743,8 +1870,9 @@ mod tests {
             .expect("route")
             .model = "mimo-v2.5-pro".to_string();
 
-        let err = validate_provider(&provider).expect_err("direct mapping should fail");
-        assert!(err.to_string().contains("本地路由模式"));
+        assert!(!is_compatible_direct_provider(&provider));
+        validate_provider(&provider)
+            .expect("a mapped provider can be saved before enabling routing");
     }
 
     #[test]
@@ -1753,6 +1881,7 @@ mod tests {
         let paths = test_paths(temp.path());
         let provider = proxy_provider("proxy");
         let db = test_db();
+        db.set_setting(ROUTING_ENABLED_KEY, "true").unwrap();
 
         apply_provider_to_paths(&db, &provider, &paths).expect("apply proxy provider");
 
@@ -1788,6 +1917,7 @@ mod tests {
             let temp = TempDir::new().expect("tempdir");
             let paths = test_paths(temp.path());
             let db = test_db();
+            db.set_setting(ROUTING_ENABLED_KEY, "true").unwrap();
             apply_provider_to_paths(&db, &provider, &paths).expect("apply oauth proxy provider");
 
             let profile: Value = read_json_file(&paths.profile_path).expect("read profile");
@@ -1860,7 +1990,9 @@ mod tests {
             .all(|model| !model["id"].as_str().expect("id").contains("haiku")));
         let temp = TempDir::new().expect("tempdir");
         let paths = test_paths(temp.path());
-        apply_provider_to_paths(&test_db(), &provider, &paths).expect("apply");
+        let db = test_db();
+        db.set_setting(ROUTING_ENABLED_KEY, "true").unwrap();
+        apply_provider_to_paths(&db, &provider, &paths).expect("apply");
         let profile: Value = read_json_file(&paths.profile_path).expect("profile");
         assert_eq!(
             profile["inferenceModels"]

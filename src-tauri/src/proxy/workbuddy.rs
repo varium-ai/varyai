@@ -107,6 +107,25 @@ async fn forward_to_provider(
         headers.insert(header::AUTHORIZATION, auth);
         parts.headers = headers;
         if super::native_protocol::needs_conversion(&provider, &parts.uri)? {
+            // WorkBuddy's SDK spreads local conversation bookkeeping into Chat messages.
+            // It is not model content and has no counterpart in another wire protocol.
+            if let Some(messages) = payload
+                .get_mut("messages")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for message in messages {
+                    if let Some(fields) = message.as_object_mut() {
+                        for key in [
+                            "agent",
+                            "conversationRequestId",
+                            "rootRequestId",
+                            "startsNewUserRequest",
+                        ] {
+                            fields.remove(key);
+                        }
+                    }
+                }
+            }
             let state = state
                 .as_ref()
                 .ok_or_else(|| ProxyError::ConfigError("WorkBuddy route unavailable".into()))?;
@@ -232,6 +251,7 @@ mod tests {
     use super::*;
     use axum::{
         body::{to_bytes, Body},
+        response::IntoResponse,
         routing::post,
         Router,
     };
@@ -314,6 +334,86 @@ mod tests {
                     .to_string(),
             ))
             .expect("request")
+    }
+
+    #[tokio::test]
+    async fn responses_route_accepts_workbuddy_session_markers_and_reasoning_controls() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let app = Router::new().route("/v1/responses", post(|req: Request| async move {
+            assert_eq!(req.headers()["authorization"], "Bearer synthetic-api-key");
+            assert!(!req.headers().contains_key("cookie"));
+            let body: Value = serde_json::from_slice(
+                &to_bytes(req.into_body(), 1024 * 1024).await.expect("body"),
+            ).expect("JSON");
+            assert_eq!(body["model"], "synthetic-model");
+            assert_eq!(body["reasoning"], json!({"effort":"none","summary":"auto"}));
+            assert!(body["input"].to_string().contains("Synthetic prompt"));
+            assert!(!body.to_string().contains("synthetic-agent"));
+            assert!(!body.to_string().contains("synthetic-conversation"));
+            let response = json!({"id":"resp-fixture","object":"response","model":"synthetic-model","status":"completed","output":[{"type":"message","id":"msg-fixture","role":"assistant","content":[{"type":"output_text","text":"Synthetic reply"}]}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}});
+            if body["stream"] == true {
+                let frames = [
+                    json!({"type":"response.created","response":{"id":"resp-fixture","model":"synthetic-model"}}),
+                    json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Synthetic reply"}),
+                    json!({"type":"response.completed","response":response}),
+                ];
+                let stream = frames.iter().map(|frame| format!("event: {}\ndata: {frame}\n\n", frame["type"].as_str().expect("type"))).collect::<String>();
+                ([("content-type", "text/event-stream")], stream).into_response()
+            } else {
+                axum::Json(response).into_response()
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("dynamic port");
+        let address = listener.local_addr().expect("address");
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("upstream");
+        });
+        let db = Arc::new(crate::database::Database::memory().expect("db"));
+        let mut provider = crate::provider::Provider::with_id(
+            "fixture".into(),
+            "Fixture".into(),
+            json!({"id":"synthetic-model","name":"Fixture","url":format!("http://{address}/v1/chat/completions"),"apiKey":"synthetic-api-key"}),
+            None,
+        );
+        provider.meta =
+            Some(serde_json::from_value(json!({"apiFormat":"openai_responses"})).expect("meta"));
+        db.save_provider("workbuddy", &provider).expect("provider");
+        let proxy = super::super::server::ProxyServer::new(
+            crate::proxy::types::ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            db,
+            None,
+        );
+        proxy
+            .set_workbuddy_upstream(Some("https://official.invalid/v2".into()))
+            .await;
+        let info = proxy.start().await.expect("proxy");
+        let endpoint = format!(
+            "http://127.0.0.1:{}/workbuddy/providers/fixture/chat/completions",
+            info.port
+        );
+        for stream in [false, true] {
+            let response = reqwest::Client::new().post(&endpoint).header("cookie","synthetic-login").json(&json!({
+                "model":"synthetic-model", "stream":stream, "reasoning_effort":"none", "reasoning_summary":"auto",
+                "messages":[{"role":"user","content":"Synthetic prompt","agent":"synthetic-agent","conversationRequestId":"synthetic-conversation","rootRequestId":"synthetic-root","startsNewUserRequest":true}]
+            })).send().await.expect("request");
+            assert_eq!(
+                response.status(),
+                200,
+                "WorkBuddy conversion must reach the upstream"
+            );
+            let body = response.text().await.expect("response");
+            assert!(body.contains("Synthetic reply"));
+            if stream {
+                assert!(body.contains("[DONE]"));
+            }
+        }
+        proxy.stop().await.expect("stop");
+        task.abort();
     }
 
     #[tokio::test]

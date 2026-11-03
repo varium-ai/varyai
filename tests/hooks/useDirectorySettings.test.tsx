@@ -17,6 +17,7 @@ const toastErrorMock = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({
   settingsApi: {
     getAppConfigDirOverride: getAppConfigDirOverrideMock,
+    getDefaultAppDataDir: async () => "/home/mock/.varyai",
     getConfigDir: getConfigDirMock,
     getWorkBuddyDefaultConfigDir: getWorkBuddyDefaultConfigDirMock,
     selectConfigDirectory: selectConfigDirectoryMock,
@@ -209,7 +210,7 @@ describe("useDirectorySettings", () => {
 
     expect(result.current.appConfigDir).toBe("/new/app");
     expect(selectConfigDirectoryMock).toHaveBeenCalledWith(
-      "/home/mock/.cc-switch",
+      "/home/mock/.varyai",
     );
   });
 
@@ -239,7 +240,7 @@ describe("useDirectorySettings", () => {
     });
     expect(result.current.resolvedDirs.claude).toBe("/home/mock/.claude");
     expect(result.current.resolvedDirs.codex).toBe("/home/mock/.codex");
-    expect(result.current.resolvedDirs.appConfig).toBe("/home/mock/.cc-switch");
+    expect(result.current.resolvedDirs.appConfig).toBe("/home/mock/.varyai");
   });
 
   it("updates openclaw directory when browsing succeeds", async () => {

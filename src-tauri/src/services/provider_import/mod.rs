@@ -39,7 +39,6 @@ impl ImportPaths {
     pub(crate) fn local(source_path: Option<String>) -> Self {
         let home = crate::config::get_home_dir();
         let mut paths = Self::at(&home);
-        paths.cc_switch = crate::config::get_app_config_dir().join("cc-switch.db");
         paths.claude = crate::config::get_claude_settings_path();
         paths.codex = crate::codex_config::get_codex_config_path();
         paths.opencode = crate::opencode_config::get_opencode_config_path();
@@ -261,8 +260,10 @@ fn candidate(
     {
         let own = url::Url::parse(base_url).ok().is_some_and(|url| {
             matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
-                && (url.port() == Some(15721)
-                    || url.path().contains("/connections/")
+                && (matches!(
+                    url.port(),
+                    Some(15721) | Some(crate::proxy::types::DEFAULT_PROXY_PORT)
+                ) || url.path().contains("/connections/")
                     || url.path().contains("/codex-menu"))
         });
         if own {
@@ -345,8 +346,10 @@ fn self_route(raw: &str) -> bool {
         matches!(
             url.host_str(),
             Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
-        ) && (url.port() == Some(15721)
-            || url.path().contains("/connections/")
+        ) && (matches!(
+            url.port(),
+            Some(15721) | Some(crate::proxy::types::DEFAULT_PROXY_PORT)
+        ) || url.path().contains("/connections/")
             || url.path().contains("/codex-menu"))
     })
 }

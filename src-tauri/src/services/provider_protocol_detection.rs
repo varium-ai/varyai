@@ -1,4 +1,4 @@
-//! Explicit, bounded inference probes. Results describe this URL/key/model only.
+//! Bounded inference probes. Results describe this URL/key/model only.
 use futures::future::join_all;
 use reqwest::{header::HeaderMap, Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};

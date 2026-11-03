@@ -63,9 +63,20 @@ export function UpstreamProtocolSelect({
 }
 
 export function nativeUpstreamFormat(protocol: unknown): ClaudeApiFormat {
-  return protocol === "anthropic"
+  return protocol === "anthropic" ||
+    protocol === "anthropic-messages" ||
+    protocol === "@ai-sdk/anthropic"
     ? "anthropic"
-    : protocol === "openai-responses"
+    : protocol === "openai-responses" || protocol === "@ai-sdk/openai"
       ? "openai_responses"
-      : "openai_chat";
+      : protocol === "google-generative-ai" || protocol === "@ai-sdk/google"
+        ? "gemini_native"
+        : "openai_chat";
 }
+
+export const NATIVE_API_FORMATS = {
+  anthropic: "anthropic-messages",
+  openai_chat: "openai-completions",
+  openai_responses: "openai-responses",
+  gemini_native: "google-generative-ai",
+} as const;
