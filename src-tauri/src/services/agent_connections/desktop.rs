@@ -1,18 +1,23 @@
 //! Desktop configuration freshness is independent of field ownership.
 use serde::Serialize;
+#[cfg(any(target_os = "macos", test))]
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum State {
+    #[cfg(any(target_os = "macos", test))]
     Stopped,
+    #[cfg(any(target_os = "macos", test))]
     Current,
     RestartRequired,
+    #[cfg(any(target_os = "macos", test))]
     Unknown,
     #[cfg(not(target_os = "macos"))]
     Unsupported,
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Instance {
     pid: i32,
@@ -20,6 +25,7 @@ struct Instance {
     launched_ms: Option<i64>,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn assess(instances: &[Instance], applied_ms: Option<i64>) -> State {
     if instances.is_empty() {
         return State::Stopped;
@@ -58,10 +64,14 @@ pub(crate) fn state(app: &str, applied_ms: Option<i64>) -> Option<State> {
     }
 }
 
+#[cfg(target_os = "macos")]
 const FAILED: &str = "agentConnections.restartFailed";
+#[cfg(target_os = "macos")]
 const CHANGED: &str = "agentConnections.restartChanged";
+#[cfg(target_os = "macos")]
 const RUNNING: &str = "agentConnections.restartBlocked";
 
+#[cfg(target_os = "macos")]
 trait Runtime {
     fn instances(&self) -> Result<Vec<Instance>, String>;
     fn quit(&self, instance: &Instance) -> Result<(), String>;
@@ -69,6 +79,7 @@ trait Runtime {
     fn open(&self, bundle: &std::path::Path) -> Result<(), String>;
 }
 
+#[cfg(target_os = "macos")]
 fn restart_with(
     runtime: &impl Runtime,
     applied_ms: Option<i64>,
@@ -230,6 +241,34 @@ mod tests {
         assert_eq!(
             assess(&[instance(Some(1000)), instance(Some(3000))], Some(2000)),
             State::RestartRequired
+        );
+    }
+
+    #[test]
+    fn non_desktop_apps_have_no_desktop_state_and_cannot_restart() {
+        assert_eq!(state("claude", Some(2000)), None);
+        assert_eq!(
+            restart("claude", Some(2000), || panic!(
+                "must not validate an unsupported app"
+            )),
+            Err("agentConnections.restartUnsupported".into())
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn desktop_restart_is_unsupported_without_validating_configuration() {
+        let state = state("claude-desktop", Some(2000));
+        assert_eq!(state, Some(State::Unsupported));
+        assert_eq!(
+            serde_json::to_value(state).unwrap(),
+            serde_json::json!("unsupported")
+        );
+        assert_eq!(
+            restart("claude-desktop", Some(2000), || {
+                panic!("must not validate an unsupported platform")
+            }),
+            Err("agentConnections.restartUnsupported".into())
         );
     }
 }
