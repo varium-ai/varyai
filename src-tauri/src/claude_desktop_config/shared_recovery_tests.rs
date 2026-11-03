@@ -48,6 +48,8 @@ impl Fixture {
             compact_at: None,
             group: "Synthetic".into(),
             reasoning_levels: vec![],
+            reasoning: false,
+            default_reasoning_level: None,
             images: true,
         };
         let (files, mapping) = shared_catalog_edits_at(

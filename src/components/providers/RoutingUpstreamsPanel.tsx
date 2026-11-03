@@ -387,6 +387,13 @@ export function RoutingUpstreamsPanel({
   function modelRow(model: FetchedModel) {
     return {
       model: model.id,
+      ...(model.reasoningLevels
+        ? { reasoningLevels: model.reasoningLevels }
+        : {}),
+      ...(model.reasoning !== undefined ? { reasoning: model.reasoning } : {}),
+      ...(model.inputModalities
+        ? { inputModalities: model.inputModalities }
+        : {}),
       ...(model.context_window
         ? { contextWindow: model.context_window, contextSource: "vendor" }
         : {}),

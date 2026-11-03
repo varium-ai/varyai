@@ -100,7 +100,8 @@ const UnifiedSkillsPanel = React.forwardRef<
     variant?: "destructive" | "info";
     onConfirm: () => void;
   } | null>(null);
-  const { snapshot: confirmation, onExited: onConfirmationExited } = useDialogSnapshot(confirmDialog);
+  const { snapshot: confirmation, onExited: onConfirmationExited } =
+    useDialogSnapshot(confirmDialog);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -734,7 +735,7 @@ const UnifiedSkillsPanel = React.forwardRef<
       {confirmation && (
         <ConfirmDialog
           isOpen={confirmDialog?.isOpen ?? false}
-        onExited={onConfirmationExited}
+          onExited={onConfirmationExited}
           title={confirmation.title}
           message={confirmation.message}
           confirmText={confirmation.confirmText}

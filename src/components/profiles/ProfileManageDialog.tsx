@@ -59,7 +59,8 @@ export function ProfileManageDialog({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
-  const { snapshot: confirmation, onExited: onConfirmationExited } = useDialogSnapshot(confirm);
+  const { snapshot: confirmation, onExited: onConfirmationExited } =
+    useDialogSnapshot(confirm);
   const queryClient = useQueryClient();
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const refreshBundle = async (profile: Profile) => {
@@ -261,9 +262,11 @@ export function ProfileManageDialog({
       {confirmation && (
         <ConfirmDialog
           isOpen={!!confirm}
-              onExited={onConfirmationExited}
+          onExited={onConfirmationExited}
           title={t("profiles.deleteConfirmTitle")}
-          message={t("profiles.deleteConfirmMessage", { name: confirmation.name })}
+          message={t("profiles.deleteConfirmMessage", {
+            name: confirmation.name,
+          })}
           variant="destructive"
           onConfirm={handleConfirm}
           onCancel={() => setConfirm(null)}

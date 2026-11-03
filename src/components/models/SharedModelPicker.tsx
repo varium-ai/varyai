@@ -6,11 +6,11 @@ import {
   GripVertical,
   Image,
   List,
-  Network,
   Search,
 } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { useRoutingRowDrag } from "@/hooks/useRoutingRowDrag";
+import { getIconUrl, hasIcon } from "@/icons/extracted";
 import "./model-picker.css";
 
 export interface ModelChoice {
@@ -19,6 +19,7 @@ export interface ModelChoice {
   group?: string;
   modelId?: string;
   icon?: string | null;
+  logo?: string | null;
   contextWindow?: number | null;
   reasoningLevels?: string[];
   images?: boolean | null;
@@ -39,6 +40,30 @@ const modelName = (model: ModelChoice) => {
     ? model.name.slice(0, -suffix.length)
     : model.name;
 };
+const context = (n?: number | null) =>
+  !n
+    ? ""
+    : n >= 1e6
+      ? `${n % 1e6 ? (n / 1e6).toFixed(1) : n / 1e6}M`
+      : `${Math.round(n / 1e3)}K`;
+
+function RoutingMark() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width={14}
+      height={14}
+      aria-hidden
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M1.5 8a1.4 1.4 0 1 0 2.8 0a1.4 1.4 0 1 0-2.8 0M11.7 3.4a1.4 1.4 0 1 0 2.8 0a1.4 1.4 0 1 0-2.8 0M11.7 8a1.4 1.4 0 1 0 2.8 0a1.4 1.4 0 1 0-2.8 0M11.7 12.6a1.4 1.4 0 1 0 2.8 0a1.4 1.4 0 1 0-2.8 0M4.3 8h7.4M4.3 8c2.6 0 3.2-4.6 5.8-4.6h1.6M4.3 8c2.6 0 3.2 4.6 5.8 4.6h1.6" />
+    </svg>
+  );
+}
 
 function ModelCapabilities({ model }: { model: ModelChoice }) {
   const { t, i18n } = useTranslation();
@@ -155,18 +180,48 @@ export function SharedModelPicker({
   }, [armed]);
   const groupName = (group: string) =>
     group === "routing"
-      ? t("workspaceNav.routing")
+      ? t("agentConnections.routingGroups")
       : group || t("modelProviders.title");
-  const groupIcon = (group: string) =>
-    group === "routing" ? (
-      <Network size={14} aria-hidden />
-    ) : (
+  const groupIcon = (group: string) => {
+    if (group === "routing") return <RoutingMark />;
+    const icon = groups.get(group)?.[0]?.icon;
+    return icon && (hasIcon(icon) || getIconUrl(icon)) ? (
       <ProviderIcon
-        icon={groups.get(group)?.[0]?.icon ?? "generic"}
+        icon={icon}
         name={groupName(group)}
         size={14}
+        showFallback={false}
       />
+    ) : (
+      <svg
+        className="mp-am-provider-icon"
+        viewBox="0 0 16 16"
+        width={14}
+        height={14}
+        aria-hidden
+      >
+        <path
+          d="M8 2.2 13.2 5.1v5.8L8 13.8 2.8 10.9V5.1Z M8 8v5.8 M2.8 5.1 8 8l5.2-2.9"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.4}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
     );
+  };
+  const modelIcon = (model: ModelChoice) =>
+    model.group === "routing" ? (
+      <RoutingMark />
+    ) : model.logo ? (
+      <ProviderIcon
+        icon={model.logo}
+        name={modelName(model)}
+        size={16}
+        showFallback={false}
+      />
+    ) : null;
   function setShown(rows: ModelChoice[], visible: boolean) {
     if (!visibility || disabled) return;
     if (!visible) setKept((old) => new Set([...old, ...rows.map((m) => m.id)]));
@@ -369,6 +424,9 @@ export function SharedModelPicker({
                   key={model.id}
                   data-agent-model={model.id}
                   className="mp-am-row mp-am-order-row"
+                  onPointerDown={(event) => {
+                    if (!disabled) drag.start(event, model.id);
+                  }}
                   onKeyDown={(event) => {
                     if (
                       disabled ||
@@ -387,12 +445,14 @@ export function SharedModelPicker({
                     type="button"
                     disabled={disabled}
                     aria-label={`${t("agentConnections.dragModel")} ${modelName(model)}`}
-                    onPointerDown={(event) => drag.start(event, model.id)}
                     onClick={() => drag.consumeClick(model.id)}
                   >
                     <GripVertical size={12} />
                   </button>
                   <small>{index + 1}</small>
+                  <span className="mp-am-logo" aria-hidden>
+                    {modelIcon(model)}
+                  </span>
                   <span className="mp-am-name">{modelName(model)}</span>
                   <span className="mp-am-context">
                     {groupName(model.group ?? "")}
@@ -486,12 +546,18 @@ export function SharedModelPicker({
                               }}
                             >
                               <span className="mp-am-logo" aria-hidden>
-                                {groupIcon(group)}
+                                {modelIcon(model)}
                               </span>
                               <span className="mp-am-name">
                                 {modelName(model)}
                               </span>
-                              <ModelCapabilities model={model} />
+                              {visibility ? (
+                                <span className="mp-am-context">
+                                  {context(model.contextWindow)}
+                                </span>
+                              ) : (
+                                <ModelCapabilities model={model} />
+                              )}
                               <span className="mp-am-check" aria-hidden>
                                 {visible && (
                                   <Check size={12} strokeWidth={1.9} />

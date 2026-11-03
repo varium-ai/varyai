@@ -50,6 +50,7 @@ export interface RoutingTrace {
   outputTokens?: number | null;
   cacheReadTokens?: number | null;
   estimatedTokens?: number | null;
+  costUsd?: string | null;
 }
 export interface RoutingAccount {
   id?: string;
@@ -71,7 +72,16 @@ export interface RoutingTraceSnapshot {
   requests: RoutingTrace[];
   accounts: RoutingAccount[];
   capacity: number;
+  running: boolean;
+  days: string[];
+  historyError?: boolean;
+}
+export interface RoutingTraceHistory {
+  requests: RoutingTrace[];
+  cut: boolean;
 }
 export const routingTraceApi = {
   snapshot: () => invoke<RoutingTraceSnapshot>("routing_trace_snapshot"),
+  history: (day: string) =>
+    invoke<RoutingTraceHistory>("routing_trace_history", { day }),
 };

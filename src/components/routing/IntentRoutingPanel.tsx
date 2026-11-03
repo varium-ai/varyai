@@ -594,6 +594,7 @@ export function IntentRoutingPanel({
       client.invalidateQueries({ queryKey: ["intent-routing-client"] }),
       client.invalidateQueries({ queryKey: ["intent-routing-providers"] }),
       client.invalidateQueries({ queryKey: ["gateway-catalog"] }),
+      client.invalidateQueries({ queryKey: ["agent-model-catalog"] }),
     ]);
   }
   function addPattern(): boolean {

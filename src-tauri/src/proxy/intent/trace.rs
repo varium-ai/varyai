@@ -1,6 +1,9 @@
 //! Bounded routing metadata, recorded at the decision sites. Never stores bodies,
 //! headers, upstream errors or caller session identifiers. Observation fails open.
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+mod history;
+pub(crate) use history::Page as HistoryPage;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -13,7 +16,7 @@ use std::{
 
 pub(crate) const CAPACITY: usize = 60;
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Candidate {
     pub provider_id: String,
@@ -27,7 +30,7 @@ pub(crate) struct Candidate {
     pub(super) scheduling: Weak<super::scheduling::Scheduling>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum State {
     Routing,
@@ -37,7 +40,7 @@ pub(crate) enum State {
     Cancelled,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Kind {
     Strategy,
@@ -57,7 +60,7 @@ pub(crate) enum Kind {
     Cancelled,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Step {
     pub kind: Kind,
@@ -66,14 +69,14 @@ pub(crate) struct Step {
     pub status: Option<u16>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Route {
     pub id: String,
     pub started_at: i64,
     pub agent: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub kind: Option<&'static str>,
+    pub kind: Option<String>,
     pub session: Option<String>,
     pub model: String,
     pub group_name: String,
@@ -89,11 +92,14 @@ pub(crate) struct Route {
     pub output_tokens: Option<u32>,
     pub cache_read_tokens: Option<u32>,
     pub estimated_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<String>,
 }
 
 pub(crate) struct Store {
     pub(super) rows: RwLock<VecDeque<Route>>,
     salt: String,
+    history: Option<history::History>,
 }
 
 impl Default for Store {
@@ -101,6 +107,7 @@ impl Default for Store {
         Self {
             rows: RwLock::default(),
             salt: uuid::Uuid::new_v4().to_string(),
+            history: None,
         }
     }
 }
@@ -114,6 +121,37 @@ fn label(value: &str) -> String {
 }
 
 impl Store {
+    pub(crate) fn with_history(root: std::path::PathBuf) -> std::io::Result<Self> {
+        Ok(Self {
+            history: Some(history::History::new(root)?),
+            ..Self::default()
+        })
+    }
+
+    pub(crate) fn history_days(&self) -> std::io::Result<Vec<String>> {
+        self.history
+            .as_ref()
+            .map_or_else(|| Ok(Vec::new()), |history| history.days())
+    }
+
+    pub(crate) fn history(&self, day: Option<&str>) -> std::io::Result<HistoryPage> {
+        match (&self.history, day) {
+            (Some(history), Some(day)) => history.read(day),
+            (Some(history), None) => {
+                history.days()?;
+                Ok(HistoryPage::default())
+            }
+            _ => Ok(HistoryPage::default()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn flush_history(&self) -> std::io::Result<()> {
+        self.history
+            .as_ref()
+            .map_or(Ok(()), |history| history.flush())
+    }
+
     pub(crate) fn candidate(&self, target: &super::Target) -> Candidate {
         // A runtime-salted identity groups models without exposing a key, URL,
         // workspace or credential-derived stable identifier to the renderer.
@@ -244,6 +282,7 @@ impl Store {
                 output_tokens: None,
                 cache_read_tokens: None,
                 estimated_tokens: None,
+                cost_usd: None,
             });
             rows.truncate(CAPACITY);
         }
@@ -315,7 +354,7 @@ impl Request {
                 .filter(|source| !matches!(source.as_str(), "" | "user" | "subagent"))
                 .map(|source| known_kind(&source).unwrap_or("unknown"))
         };
-        self.update(|row| row.kind = kind);
+        self.update(|row| row.kind = kind.map(str::to_owned));
     }
 
     pub(crate) fn session(&self, session: &str, consumer: &str) {
@@ -413,6 +452,7 @@ impl Request {
             State::Cancelled => Kind::Cancelled,
             _ => Kind::Failed,
         };
+        let mut completed = None;
         self.update(|row| {
             row.state = state;
             row.status = Some(status);
@@ -429,7 +469,13 @@ impl Request {
                 candidate,
                 status: Some(status),
             });
+            if self.store.history.is_some() {
+                completed = Some(row.clone());
+            }
         });
+        if let (Some(history), Some(row)) = (&self.store.history, completed) {
+            history.save(row);
+        }
     }
 }
 
@@ -473,7 +519,7 @@ impl Drop for Request {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Serialize)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AccountKind {
     Account,
@@ -481,7 +527,7 @@ pub(crate) enum AccountKind {
     Provider,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Account {
     pub id: String,
@@ -492,7 +538,7 @@ pub(crate) struct Account {
     #[serde(flatten)]
     pub telemetry: Telemetry,
 }
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Telemetry {
     pub rest_until: i64,
@@ -502,7 +548,7 @@ pub(crate) struct Telemetry {
     pub output_tokens_per_second: Option<f64>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Allowance {
     pub used_percent: f64,
@@ -510,10 +556,13 @@ pub(crate) struct Allowance {
     pub resets_at: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Snapshot {
     pub requests: Vec<Route>,
     pub accounts: Vec<Account>,
     pub capacity: usize,
+    pub running: bool,
+    pub days: Vec<String>,
+    pub history_error: bool,
 }

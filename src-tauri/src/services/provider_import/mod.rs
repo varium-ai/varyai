@@ -1,5 +1,6 @@
 //! Explicit, read-only app imports. Credentials never cross the preview boundary.
 mod readers;
+mod reasoning;
 mod subscriptions;
 pub(crate) use subscriptions::{import_with_accounts, preview_with_accounts};
 #[cfg(test)]
@@ -205,13 +206,26 @@ fn models(value: &Value) -> Vec<Value> {
     } else {
         vec![]
     };
-    let mut seen = HashSet::new();
-    rows.into_iter()
-        .filter(|row| {
-            crate::services::routing_upstreams::model_id(row)
-                .is_some_and(|id| seen.insert(id.to_owned()))
-        })
-        .collect()
+    let mut normalized: Vec<Value> = vec![];
+    for mut row in rows {
+        reasoning::normalize(&mut row);
+        let Some(id) = crate::services::routing_upstreams::model_id(&row) else {
+            continue;
+        };
+        if let Some(previous) = normalized
+            .iter_mut()
+            .find(|previous| crate::services::routing_upstreams::model_id(previous) == Some(id))
+        {
+            if let (Some(previous), Some(row)) = (previous.as_object_mut(), row.as_object()) {
+                for (key, value) in row {
+                    previous.entry(key).or_insert_with(|| value.clone());
+                }
+            }
+        } else {
+            normalized.push(row);
+        }
+    }
+    normalized
 }
 
 fn candidate(
@@ -392,7 +406,7 @@ fn scan(paths: &ImportPaths, have: &[RoutingUpstream]) -> Vec<PrivateSource> {
         ("claude-code", "Claude Code", &paths.claude),
         ("codex", "Codex", &paths.codex),
         ("opencode", "OpenCode", &paths.opencode),
-        ("magpie", "Provider backup", &paths.provider_backup),
+        ("magpie", "Magpie", &paths.provider_backup),
     ];
     definitions
         .into_iter()
@@ -619,10 +633,23 @@ pub(crate) fn join_keys(
     {
         for (target, incoming) in [(models, incoming_models), (catalog, incoming_catalog)] {
             for row in incoming {
-                if !target.iter().any(|have| {
+                if let Some(have) = target.iter_mut().find(|have| {
                     crate::services::routing_upstreams::model_id(have)
                         == crate::services::routing_upstreams::model_id(row)
                 }) {
+                    if let (Some(have), Some(row)) = (have.as_object_mut(), row.as_object()) {
+                        for field in [
+                            "reasoningLevels",
+                            "reasoning",
+                            "defaultReasoningLevel",
+                            "modelPreferences",
+                        ] {
+                            if let Some(value) = row.get(field) {
+                                have.entry(field).or_insert_with(|| value.clone());
+                            }
+                        }
+                    }
+                } else {
                     target.push(row.clone());
                 }
             }

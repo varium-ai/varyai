@@ -180,8 +180,9 @@ function createCatalogRow(seed?: Partial<CodexCatalogModel>): CodexCatalogRow {
     ...(seed?.baseInstructions
       ? { baseInstructions: seed.baseInstructions }
       : {}),
-    ...(seed?.reasoningLevels && seed.reasoningLevels.length > 0
-      ? { reasoningLevels: seed.reasoningLevels }
+    ...(seed?.reasoningLevels ? { reasoningLevels: seed.reasoningLevels } : {}),
+    ...(typeof seed?.reasoning === "boolean"
+      ? { reasoning: seed.reasoning }
       : {}),
     ...(seed?.defaultReasoningLevel
       ? { defaultReasoningLevel: seed.defaultReasoningLevel }
@@ -203,6 +204,7 @@ function catalogRowsMatchModels(
     return (
       row.model === (incoming.model ?? "") &&
       (row.free ?? null) === (incoming.free ?? null) &&
+      row.reasoning === incoming.reasoning &&
       (row.displayName ?? "") === (incoming.displayName ?? "") &&
       String(row.contextWindow ?? "") ===
         String(incoming.contextWindow ?? "") &&

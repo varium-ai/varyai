@@ -59,7 +59,14 @@ fn client(reference: String, app: &str, name: String, settings: &Value) -> Candi
                     .into();
             }
             if let Some(model) = config.as_ref().and_then(|c| c.get("model")?.as_str()) {
-                rows.push(json!({"model":model}));
+                let mut row = json!({"model":model});
+                reasoning::selected(
+                    &mut row,
+                    config
+                        .as_ref()
+                        .and_then(|c| c.get("model_reasoning_effort")?.as_str()),
+                );
+                rows.push(row);
             }
             let format = match table.and_then(|c| c.get("wire_api")?.as_str()) {
                 Some("chat") => "openai_chat",
@@ -106,15 +113,25 @@ fn client(reference: String, app: &str, name: String, settings: &Value) -> Candi
         }
         .into();
     }
-    let mut result = candidate(
-        reference,
-        app,
-        name,
-        base,
-        key.clone(),
-        &format,
-        models(&json!(rows)),
-    );
+    let mut rows = models(&json!(rows));
+    if app == "codex" {
+        if let Ok(config) = text(settings, &["config"]).parse::<toml::Value>() {
+            if let Some(model) = config.get("model").and_then(toml::Value::as_str) {
+                for row in rows.iter_mut().filter(|row| row["model"] == model) {
+                    reasoning::selected(
+                        row,
+                        config
+                            .get("model_reasoning_effort")
+                            .and_then(toml::Value::as_str),
+                    );
+                }
+            }
+        }
+    }
+    if matches!(app, "claude" | "claude-desktop" | "Claude Code") {
+        reasoning::claude(&mut rows, settings);
+    }
+    let mut result = candidate(reference, app, name, base, key.clone(), &format, rows);
     if key.is_empty() {
         result.skip = Some("subscription".into());
     }
@@ -314,7 +331,14 @@ pub(super) fn codex(path: &Path, home: &Path) -> Result<Vec<Candidate>, String> 
                 return;
             }
             if let Some(model) = config.get("model").and_then(toml::Value::as_str) {
-                rows.push(json!({"model":model}));
+                let mut row = json!({"model":model});
+                reasoning::selected(
+                    &mut row,
+                    config
+                        .get("model_reasoning_effort")
+                        .and_then(toml::Value::as_str),
+                );
+                rows.push(row);
             }
             if let Some(catalog) = config
                 .get("model_catalog_json")
@@ -465,6 +489,15 @@ pub(super) fn opencode(paths: &ImportPaths) -> Result<Vec<Candidate>, String> {
 
 pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
     let value = json_file(path)?;
+    let settings_path = path.with_file_name("settings.json");
+    let settings = if settings_path.try_exists().map_err(|_| FAILED)? {
+        json_file(&settings_path)?
+    } else {
+        json!({})
+    };
+    if !settings.is_object() {
+        return Err(INVALID.into());
+    }
     let providers = value
         .get("providers")
         .and_then(Value::as_array)
@@ -572,10 +605,17 @@ pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
             }
             let mut vendor = super::models(&p["pickedFrom"]);
             for row in models.iter() {
-                if !vendor.iter().any(|v| {
+                if let Some(existing) = vendor.iter_mut().find(|v| {
                     crate::services::routing_upstreams::model_id(v)
                         == crate::services::routing_upstreams::model_id(row)
                 }) {
+                    if let (Some(existing), Some(row)) = (existing.as_object_mut(), row.as_object())
+                    {
+                        for (key, value) in row {
+                            existing.entry(key).or_insert_with(|| value.clone());
+                        }
+                    }
+                } else {
                     vendor.push(row.clone());
                 }
             }
@@ -591,16 +631,21 @@ pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
                         row["contextWindow"] = json!(context);
                         row["contextSource"] = json!("custom");
                     }
-                    if let Some(prefs) = p["modelPrefs"].get(&id) {
-                        let mut accepted = serde_json::Map::new();
-                        for field in ["name", "sameAs", "reasoningLevels", "images"] {
-                            if let Some(value) = prefs.get(field) {
-                                accepted.insert(field.into(), value.clone());
-                            }
+                    let prefs = reasoning::preferences(
+                        &text(p, &["id"]),
+                        &id,
+                        &p["modelPrefs"][&id],
+                        &settings,
+                    )?;
+                    if prefs.as_object().is_some_and(|prefs| !prefs.is_empty()) {
+                        let mut existing = row["modelPreferences"]
+                            .as_object()
+                            .cloned()
+                            .unwrap_or_default();
+                        if let Some(prefs) = prefs.as_object() {
+                            existing.extend(prefs.clone());
                         }
-                        if !accepted.is_empty() {
-                            row["modelPreferences"] = Value::Object(accepted);
-                        }
+                        row["modelPreferences"] = Value::Object(existing);
                     }
                 }
             }

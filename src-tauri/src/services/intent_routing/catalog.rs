@@ -516,7 +516,7 @@ async fn prepare_static_context(
     let Ok(identity) = serde_json::to_string(&provider.settings_config) else {
         return status;
     };
-    let key = cache_key("static-context-v1", &provider.id, &identity);
+    let key = cache_key("static-capabilities-v2", &provider.id, &identity);
     let cache_db = db.clone();
     let read_key = key.clone();
     let now = chrono::Utc::now().timestamp();
@@ -573,11 +573,12 @@ async fn prepare_static_context(
                 reasoning: models
                     .into_iter()
                     .map(|m| {
+                        let capability = super::effort::Capability::parse(&m.capability_entry());
                         (
                             m.id,
                             super::effort::Capability {
                                 context: m.context,
-                                ..Default::default()
+                                ..capability
                             },
                         )
                     })
@@ -601,6 +602,11 @@ async fn prepare_static_context(
         }
     }
     if let Some(cache) = cache {
+        provider.settings_config["routingModelCapabilities"] = json!(cache
+            .reasoning
+            .iter()
+            .map(|(id, capability)| (id.clone(), capability.declaration()))
+            .collect::<serde_json::Map<_, _>>());
         if provider
             .settings_config
             .get(crate::services::routing_upstreams::MODEL_POLICY)
@@ -609,7 +615,7 @@ async fn prepare_static_context(
             provider.settings_config["routingVendorCatalog"] = json!(cache
                 .models
                 .iter()
-                .map(|id| json!({"model":id}))
+                .map(|id| static_entry(provider, &cache, id))
                 .collect::<Vec<_>>());
         }
         // Empty API selections follow the vendor list. Saved nonempty selections
@@ -624,7 +630,7 @@ async fn prepare_static_context(
                 .models
                 .iter()
                 .filter(|id| super::valid_target(&provider.id, id))
-                .map(|id| json!({"model":id}))
+                .map(|id| static_entry(provider, &cache, id))
                 .collect::<Vec<_>>();
             provider.settings_config["modelCatalog"] = json!({"models":models});
         }
@@ -632,6 +638,49 @@ async fn prepare_static_context(
             .map(|(id, c)| (id, json!(c.context))).collect::<serde_json::Map<_,_>>()});
     }
     status
+}
+
+fn static_entry(provider: &Provider, cache: &ModelCache, id: &str) -> Value {
+    let mut entry = cache
+        .reasoning
+        .get(id)
+        .map(|capability| capability.declaration())
+        .unwrap_or_else(|| json!({}));
+    entry["model"] = json!(id);
+    let saved = ["/modelCatalog/models", "/routingVendorCatalog"]
+        .into_iter()
+        .find_map(|path| {
+            provider
+                .settings_config
+                .pointer(path)
+                .and_then(Value::as_array)
+                .and_then(|rows| rows.iter().find(|row| row["model"] == id))
+        });
+    if let Some(saved) = saved {
+        let mut vendor = saved.clone();
+        if let Some(vendor) = vendor.as_object_mut() {
+            vendor.remove("modelPreferences");
+        }
+        if let (Some(entry), Some(fields)) = (
+            entry.as_object_mut(),
+            super::effort::Capability::parse(&vendor)
+                .declaration()
+                .as_object(),
+        ) {
+            for (key, value) in fields {
+                entry.entry(key).or_insert_with(|| value.clone());
+            }
+        }
+        if super::model_preferences::valid(saved) {
+            if let Some(prefs) = saved.get("modelPreferences") {
+                entry["modelPreferences"] = prefs.clone();
+            }
+        }
+        if let Some(default) = super::effort::Capability::parse(saved).default_level {
+            entry["defaultReasoningLevel"] = json!(default);
+        }
+    }
+    entry
 }
 
 fn apply_cache(provider: &mut Provider, cache: ModelCache) {
@@ -656,14 +705,17 @@ fn apply_cache(provider: &mut Provider, cache: ModelCache) {
             entry["displayName"] = json!(name);
         }
         if let Some(capability) = cache.reasoning.get(&model) {
-            entry["reasoningLevels"] = json!(capability.levels);
-            if let Some(images) = capability.images { entry["input_modalities"] = if images { json!(["text", "image"]) } else { json!(["text"]) }; }
-            if capability.quiet { entry["reasoning"] = json!(false); }
+            if let (Some(entry), Some(fields)) = (entry.as_object_mut(), capability.declaration().as_object()) {
+                entry.extend(fields.clone());
+            }
             if let Some(free) = capability.free { entry["free"] = json!(free); }
             capability.context.write(&mut entry);
         }
         // Saved exact-model overrides win only for models still visible in this account.
         if let Some(saved) = saved.iter().find(|e| e["model"].as_str().is_some_and(|id| id.trim() == model)) {
+            if let Some(level) = super::effort::Capability::parse(saved).default_level {
+                entry["defaultReasoningLevel"] = json!(level);
+            }
             super::context::Metadata::parse(saved)
                 .with_fallback(super::context::Metadata::parse(&entry)).write(&mut entry);
             if super::model_preferences::valid(saved) {
@@ -850,7 +902,10 @@ mod tests {
             let app = Router::new().route(
                 "/v1/models",
                 get(|| async {
-                    Json(json!({"data":[{"id":"shared-model","context_length":1000000}]}))
+                    Json(
+                        json!({"data":[{"id":"shared-model","context_length":1000000,
+                        "supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]}]}),
+                    )
                 }),
             );
             let _ = axum::serve(listener, app).await;
@@ -874,15 +929,44 @@ mod tests {
                 "shared-model"
             );
             assert_eq!(db.get_all_providers("codex")?[id].settings_config, saved);
+            let capability =
+                super::super::effort::Capability::for_provider(&provider, "shared-model");
+            assert_eq!(capability.levels, ["low", "high"]);
             providers.push(provider);
         }
         task.abort();
-        assert_eq!(super::super::discover_groups(providers).len(), 1);
+        assert_eq!(super::super::discover_groups(providers.clone()).len(), 1);
+        let manager_dir = tempfile::tempdir()?;
+        let manager = Arc::new(CodexOAuthManager::new(manager_dir.path().to_owned()));
+        let menu = super::super::menu::prepare(manager, providers, vec![], None).await?;
+        let published = crate::services::agent_connections::models(&menu);
+        assert_eq!(published.len(), 2);
+        for model in published {
+            assert_eq!(model.reasoning_levels, ["low", "high"]);
+            assert!(model.reasoning);
+            assert_eq!(
+                crate::services::agent_connections::pi_model(&model)["thinkingLevelMap"]["high"],
+                "high"
+            );
+            assert_eq!(
+                crate::services::agent_connections::opencode_model(&model)["variants"]["high"]
+                    ["reasoningEffort"],
+                "high"
+            );
+            assert_eq!(
+                menu.groups[&model.id].model_entry(&model.id)["supported_reasoning_levels"],
+                json!([{"effort":"low","description":"low"},{"effort":"high","description":"high"}])
+            );
+        }
         for (_, mut provider) in db.get_all_providers("codex")? {
             prepare_static_context(db.clone(), &mut provider, false).await;
             assert_eq!(
                 provider.settings_config["modelCatalog"]["models"][0]["model"],
                 "shared-model"
+            );
+            assert_eq!(
+                super::super::effort::Capability::for_provider(&provider, "shared-model").levels,
+                ["low", "high"]
             );
         }
         Ok(())
@@ -1260,6 +1344,8 @@ mod tests {
             provider.settings_config["modelCatalog"]["models"][0]["contextWindow"] = json!(500000);
             provider.settings_config["modelCatalog"]["models"][0]["autoCompactTokenLimit"] =
                 json!(100000);
+            provider.settings_config["modelCatalog"]["models"][0]["defaultReasoningLevel"] =
+                json!("low");
             let restored: ModelCache = serde_json::from_str(&serialized).expect("restore");
             apply_cache(&mut provider, restored);
             let metadata = super::super::context::Metadata::for_provider(
@@ -1269,6 +1355,10 @@ mod tests {
             assert_eq!(metadata.context_window, Some(500000));
             assert_eq!(metadata.auto_compact_token_limit, Some(100000));
             assert_eq!(metadata.max_context_window, Some(1200000));
+            assert_eq!(
+                provider.settings_config["modelCatalog"]["models"][0]["defaultReasoningLevel"],
+                "low"
+            );
             let mut invalid: Value = serde_json::from_str(&serialized).expect("json");
             invalid["reasoning"]["exact-model"]["context"]["effective_context_window_percent"] =
                 json!(101);
@@ -1283,6 +1373,45 @@ mod tests {
                 .as_array()
                 .expect("models")
                 .is_empty());
+        }
+    }
+
+    #[test]
+    fn refreshed_vendor_models_keep_imported_reasoning_preferences_and_defaults() {
+        let cache = ModelCache::from_catalog(
+            json!({"models":[{"id":"exact","reasoningLevels":["low","high","max"]}]}),
+            100,
+        )
+        .expect("synthetic cache");
+        for saved in [
+            json!({"model":"exact","defaultReasoningLevel":"low","modelPreferences":{"reasoningLevels":["low","high"]}}),
+            json!({"model":"exact"}),
+        ] {
+            let mut provider = Provider::with_id(
+                "fixture".into(),
+                "Synthetic".into(),
+                json!({
+                    "modelCatalog":{"models":[saved.clone()]},
+                    "routingVendorCatalog":[{"model":"exact","defaultReasoningLevel":"max","modelPreferences":{"reasoningLevels":["max"]}}],
+                    "routingModelPolicy":{"mode":"vendor","models":[],"groupsOnly":false}
+                }),
+                None,
+            );
+            provider.settings_config["routingVendorCatalog"] =
+                json!([static_entry(&provider, &cache, "exact")]);
+            crate::services::routing_upstreams::filter_models(&mut provider);
+            let capability = super::super::effort::Capability::for_provider(&provider, "exact");
+            if saved.get("modelPreferences").is_some() {
+                assert_eq!(capability.levels, ["low", "high"]);
+                assert_eq!(capability.default_level.as_deref(), Some("low"));
+            } else {
+                assert_eq!(capability.levels, ["low", "high", "max"]);
+                assert_eq!(capability.default_level, None);
+            }
+            assert_eq!(
+                provider.settings_config["modelCatalog"]["models"][0]["reasoningLevels"],
+                json!(["low", "high", "max"])
+            );
         }
     }
 

@@ -244,6 +244,11 @@ pub(crate) fn filter_models(provider: &mut Provider) {
                 if let Some(prefs) = picked.get("modelPreferences") {
                     row["modelPreferences"] = prefs.clone();
                 }
+                if let Some(level) =
+                    crate::services::intent_routing::effort::Capability::parse(picked).default_level
+                {
+                    row["defaultReasoningLevel"] = json!(level);
+                }
                 row
             })
             .collect(),
@@ -480,14 +485,14 @@ mod tests {
         p.category = Some("official".into());
         let policy = Settings {
             mode: ModelMode::Picked,
-            models: vec![json!({"model":"model-a"})],
+            models: vec![json!({"model":"model-a","defaultReasoningLevel":"low"})],
             ..Default::default()
         };
         attach(&mut p, &policy).expect("attach");
         filter_models(&mut p);
         assert_eq!(
             p.settings_config["modelCatalog"]["models"],
-            json!([{"model":"model-a"}])
+            json!([{"model":"model-a","defaultReasoningLevel":"low"}])
         );
         assert_eq!(p.settings_config["auth"]["untouched"], "synthetic-secret");
         assert_eq!(variants(&p).len(), 1);

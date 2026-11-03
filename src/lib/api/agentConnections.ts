@@ -26,6 +26,8 @@ export interface AgentModel {
   contextWindow: number | null;
   group?: string;
   reasoningLevels?: string[];
+  reasoning?: boolean;
+  defaultReasoningLevel?: string | null;
   images?: boolean;
   icon?: string | null;
 }

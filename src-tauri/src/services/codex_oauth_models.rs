@@ -120,21 +120,21 @@ fn push_model_entry(models: &mut Vec<FetchedModel>, entry: &Value, fallback_id: 
         return;
     }
     if let Some(id) = entry.as_str().map(str::trim).filter(|id| !id.is_empty()) {
-        models.push(FetchedModel {
-            id: id.to_string(),
-            owned_by: Some("Codex".to_string()),
-            context: Default::default(),
-        });
+        models.push(FetchedModel::from_entry(
+            id.to_string(),
+            Some("Codex".to_string()),
+            entry,
+        ));
         return;
     }
 
     let Some(obj) = entry.as_object() else {
         if let Some(id) = fallback_id.map(str::trim).filter(|id| !id.is_empty()) {
-            models.push(FetchedModel {
-                id: id.to_string(),
-                owned_by: Some("Codex".to_string()),
-                context: Default::default(),
-            });
+            models.push(FetchedModel::from_entry(
+                id.to_string(),
+                Some("Codex".to_string()),
+                entry,
+            ));
         }
         return;
     };
@@ -155,11 +155,7 @@ fn push_model_entry(models: &mut Vec<FetchedModel>, entry: &Value, fallback_id: 
     )
     .or_else(|| Some("Codex".to_string()));
 
-    models.push(FetchedModel {
-        id,
-        owned_by,
-        context: crate::services::intent_routing::context::Metadata::parse(entry),
-    });
+    models.push(FetchedModel::from_entry(id, owned_by, entry));
 }
 
 fn string_field(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {

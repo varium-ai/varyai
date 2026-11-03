@@ -33,6 +33,8 @@ const models = [
     name: "Alpha · Vendor one",
     group: "Vendor one",
     contextWindow: 200_000,
+    images: true,
+    reasoningLevels: ["low", "high"],
   },
   {
     id: "b",
@@ -121,6 +123,78 @@ it("uses the reference implementation's compact immediate-save model list withou
   await waitFor(() =>
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );
+});
+
+it("uses empty maker slots and context text rather than repeating provider initials or capability badges", async () => {
+  const { dialog } = await open();
+  const alpha = within(dialog).getByRole("menuitemcheckbox", { name: "Alpha" });
+  expect(alpha.querySelector(".mp-am-logo")).toBeEmptyDOMElement();
+  expect(alpha).toHaveTextContent("200K");
+  expect(alpha.querySelector(".mp-model-badge")).toBeNull();
+  expect(within(alpha).queryByRole("img")).not.toBeInTheDocument();
+});
+
+it("shows routing, relay and subscription groups from the shared catalog on the provider rail", async () => {
+  const catalog = [
+    ...Array.from({ length: 8 }, (_, index) => ({
+      id: `route/${index}`,
+      name: `Shared ${index} · routing group`,
+      group: "routing",
+      contextWindow: 500_000,
+    })),
+    ...Array.from({ length: 10 }, (_, index) => ({
+      id: `relay/${index}`,
+      name: `Relay ${index} · Relay`,
+      group: "Relay",
+      contextWindow: null,
+    })),
+    ...Array.from({ length: 7 }, (_, index) => ({
+      id: `vendor/${index}`,
+      name: `Vendor ${index} · Vendor`,
+      group: "Vendor",
+      contextWindow: null,
+    })),
+    ...Array.from({ length: 8 }, (_, index) => ({
+      id: `subscription/${index}`,
+      name: `Shared ${index} · Subscription`,
+      group: "Subscription",
+      contextWindow: 500_000,
+    })),
+  ];
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <AgentModelVisibility
+        app="claude-desktop"
+        name="Desktop"
+        connected
+        models={catalog}
+        disabled={false}
+        onBusyChange={busy}
+      />
+    </QueryClientProvider>,
+  );
+  const trigger = screen.getByRole("button", {
+    name: "agentConnections.modelList Desktop",
+  });
+  await waitFor(() => expect(trigger).toBeEnabled());
+  fireEvent.click(trigger);
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog.querySelector(".mp-shared-picker")).toHaveClass("railed");
+  const rail = within(dialog).getByRole("navigation");
+  for (const [name, count] of [
+    ["agentConnections.routingGroups", 8],
+    ["Relay", 10],
+    ["Vendor", 7],
+    ["Subscription", 8],
+  ] as const) {
+    const button = within(rail).getByRole("button", { name });
+    expect(button).toHaveTextContent(`${count}/${count}`);
+    fireEvent.click(button);
+    expect(within(dialog).getAllByRole("menuitemcheckbox")).toHaveLength(count);
+  }
+  expect(
+    within(dialog).getByRole("menuitemcheckbox", { name: "Shared 0" }),
+  ).toHaveTextContent("500K");
 });
 
 it("searches all providers even after choosing one on the rail and retains just-hidden rows in Shown", async () => {

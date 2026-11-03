@@ -5,6 +5,7 @@ pub(crate) mod desktop_config;
 mod document;
 pub(crate) mod native;
 mod projections;
+mod reasoning;
 mod visibility;
 use crate::{config::atomic_write_private, proxy::intent::Menu};
 use document::Format;
@@ -46,6 +47,8 @@ pub(crate) struct Model {
     pub compact_at: Option<u64>,
     pub group: String,
     pub reasoning_levels: Vec<String>,
+    pub reasoning: bool,
+    pub default_reasoning_level: Option<String>,
     pub images: bool,
     pub icon: Option<String>,
 }
@@ -69,6 +72,8 @@ pub(crate) fn models(menu: &Menu) -> Vec<Model> {
                 context_window: metadata.context_window,
                 compact_at: published["auto_compact_token_limit"].as_u64(),
                 reasoning_levels: session.offered_levels(),
+                reasoning: session.menu_targets().any(|target| target.effort.thinks()),
+                default_reasoning_level: session.default_reasoning_level(),
                 images: session
                     .menu_targets()
                     .any(|target| target.effort.images != Some(false)),
@@ -85,6 +90,14 @@ pub(crate) fn models(menu: &Menu) -> Vec<Model> {
                         .first()
                         .and_then(|target| target.upstream.as_ref())
                         .map(|p| p.name.clone())
+                        .or_else(|| {
+                            session
+                                .targets
+                                .first()?
+                                .credentials
+                                .as_ref()
+                                .map(|credentials| credentials.provider_name().to_owned())
+                        })
                         .unwrap_or_else(|| session.group.name.clone())
                 },
             })
@@ -103,7 +116,7 @@ fn working_window(model: &Model) -> Option<u64> {
 }
 
 pub(crate) fn pi_model(model: &Model) -> Value {
-    let mut row = json!({"id":model.id,"name":model.name,"api":"openai-completions","input":if model.images { vec!["text", "image"] } else { vec!["text"] },"reasoning":model.reasoning_levels.iter().any(|level| level != "none")});
+    let mut row = json!({"id":model.id,"name":model.name,"api":"openai-completions","input":if model.images { vec!["text", "image"] } else { vec!["text"] },"reasoning":model.reasoning || model.reasoning_levels.iter().any(|level| level != "none")});
     if let Some(context) = model.context_window {
         row["contextWindow"] = json!(context);
     }
@@ -129,6 +142,8 @@ pub(crate) fn pi_model(model: &Model) -> Value {
 
 pub(crate) fn opencode_model(model: &Model) -> Value {
     let mut row = json!({"name":model.name});
+    row["reasoning"] =
+        json!(model.reasoning || model.reasoning_levels.iter().any(|level| level != "none"));
     if let Some(context) = model.context_window {
         row["limit"] = json!({"context":context});
     }
@@ -514,7 +529,7 @@ impl Manager {
                 .then_some(RecoveryReason::ConfigurationChanged),
             model: receipt.map(|r| r.model),
             restart_required: configured
-                && desktop_state.map_or(true, |state| state == desktop::State::RestartRequired),
+                && desktop_state.is_none_or(|state| state == desktop::State::RestartRequired),
             desktop_state,
         })
     }
@@ -802,6 +817,8 @@ fn build_with_token(
             }
             let context = catalog.iter().find(|m| m.id == selected).and_then(working_window);
             put(value, &["env".into(), "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into()], context.map(|n| json!(n.to_string())))?;
+            let capabilities = reasoning::claude_capabilities(&catalog);
+            put(value, &["env".into(), "CLAUDE_CODE_MODEL_CAPABILITIES".into()], (!capabilities.is_empty()).then(|| json!(capabilities)))?;
             put(value, &["env".into(), "ANTHROPIC_API_KEY".into()], None)
         })?),
         "pi" => {
@@ -828,6 +845,7 @@ fn build_with_token(
             if rows.iter().any(|row| catalog.iter().any(|model| row["id"] == model.id)) { return Err(CONFLICT.into()); }
             for model in &catalog {
                 let mut row = json!({"id":model.id,"name":model.name,"vendor":"Vary AI","apiKey":token,"url":format!("{base}/v1/chat/completions"),"supportsToolCall":true});
+                reasoning::workbuddy(&mut row, model);
                 if let Some(context) = model.context_window {
                     row["maxInputTokens"] = json!(context);
                     if context > 200_000 { row["contextWindow"] = json!({"supportedLengths":[200_000,context],"defaultLength":context}); }
@@ -851,7 +869,7 @@ fn build_with_token(
             receipt.files = files;
             receipt.visible_models = Some(visible.iter().map(|m| m.id.clone()).collect());
             // Keep hidden models addressable by existing Desktop conversations.
-            receipt.model_map = catalog.iter().map(|m| (crate::claude_desktop_config::shared_model_name(&m.id), m.id.clone())).collect();
+            receipt.model_map = catalog.iter().map(|m| (crate::claude_desktop_config::shared_model_wire(m), m.id.clone())).collect();
         }
         _ => projections::build(app, &catalog, &base, &token, selected, &mut receipt)?,
     }

@@ -227,8 +227,9 @@ export const normalizeCodexCatalogModelsForSave = (
         ? { inputModalities }
         : {}),
       ...(baseInstructions ? { baseInstructions } : {}),
-      ...(reasoningLevels && reasoningLevels.length > 0
-        ? { reasoningLevels }
+      ...(reasoningLevels ? { reasoningLevels } : {}),
+      ...(typeof item.reasoning === "boolean"
+        ? { reasoning: item.reasoning }
         : {}),
       ...(defaultReasoningLevel ? { defaultReasoningLevel } : {}),
     });

@@ -168,6 +168,13 @@ export function ProviderEditorDialog({
   for (const value of [
     ...discovered.map((value) => ({
       model: value.id,
+      ...(value.reasoningLevels
+        ? { reasoningLevels: value.reasoningLevels }
+        : {}),
+      ...(value.reasoning !== undefined ? { reasoning: value.reasoning } : {}),
+      ...(value.inputModalities
+        ? { inputModalities: value.inputModalities }
+        : {}),
       ...(value.context_window
         ? { contextWindow: value.context_window, contextSource: "vendor" }
         : {}),

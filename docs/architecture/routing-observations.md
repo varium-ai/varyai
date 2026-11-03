@@ -43,18 +43,16 @@ navigation, and reduced-motion settings suppress control and stage movement.
   names, final errors and fallback attempts are not purpose-menu options.
   Equivalent call-kind spellings share a purpose; an absent kind is Unmarked,
   not an inferred conversation turn. Session grouping and metric
-  preferences are stored locally. Historical usage pages support pagination.
+  preferences are stored locally. History dates come only from persisted gateway
+  traces; the last 2,000 requests per day remain replayable, with a truncation notice.
 - Accounts and keys are folded from the candidates of the listed requests,
   including untried standby routes. The full model catalog never supplies rows.
   A provider heads its observed accounts/keys; models answered by one credential
   appear below it. Completed attempts, answers, bounded failure categories and
   the last answer time are counted over those requests. Cancelled attempts are
-  excluded. Usage-only archives cannot invent credential identities.
-  These archives still appear as provider/model summaries with request and
-  outcome counts, explicitly labeled Account/key not recorded. They never merge
-  with observed credential rows, infer a retry count, borrow current credentials,
-  or display current quota and cooldown telemetry. This fallback also covers
-  imported session usage, whose provider can be a session-source placeholder.
+  excluded. Imported session usage and provider/model summaries never supply
+  routing requests or account observations; they remain in Statistics. With no
+  gateway requests, the account column is hidden rather than filled from a catalog.
 - Three or more keys start folded. Three to five subscription accounts start
   expanded; six or more start folded, matching the reference implementation. Explicit folding choices
   persist locally. Model cooldowns name the affected models and do not mark an
@@ -77,7 +75,9 @@ navigation, and reduced-motion settings suppress control and stage movement.
 `proxy::intent::Runtime` owns an in-memory ring of 60 requests. Decisions are
 recorded at their execution sites, after actual scheduling and capacity ordering.
 It covers shared group/direct-model execution and temporary routing sessions.
-Legacy forwarding outside this execution path has usage summaries only.
+Legacy forwarding outside this execution path has usage summaries only and
+does not appear on the routing page. Stopping the gateway clears the live view;
+persisted dates remain available and replay their recorded decisions.
 
 The recorder uses nonblocking `try_read`/`try_write` operations. Contended or
 poisoned observation locks discard observations and do not change forwarding.
@@ -114,13 +114,26 @@ preserve Vary's metadata-redaction boundary. Reading purposes never edits the
 headers, request body, selected model or routing behavior. Observation lock
 contention and malformed/oversized metadata cannot interrupt forwarding.
 
-The existing asynchronous usage queue persists completed usage. Its request ID
-is shared with the trace so the page can join costs without duplicate rows.
-Usage history survives restart; full decision traces do not. Older usage-only
-requests explicitly say that their routing decisions were not retained, and
-cannot replay an invented decision sequence. These summaries also lack call-kind
-metadata and remain Unmarked; this change does not migrate historical usage or
-claim persistent purpose-filter parity with the reference implementation.
+Completed gateway traces are copied to a bounded 128-entry nonblocking queue.
+A dedicated worker writes private daily JSONL files under the application data
+folder's `routing-history` directory. Yesterday's files are compressed, history
+older than 30 calendar days is removed, and the oldest prior-day archives are
+pruned to a 200 MiB budget. Today's file is exempt from byte pruning. Reads are
+bounded and return at most the latest 2,000 records per day; incomplete trailing
+appends and malformed records are ignored. The completion guard submits once,
+including cancellations. Worker startup, queue saturation, observation contention
+and disk failures discard observations without interrupting forwarding. An
+unavailable history reader reports a generic error without filesystem paths.
+No native session files are read by this recorder or by the routing page.
+
+Files contain the same safe metadata as the live trace, including candidate
+observations, purpose, scoped session digest and relative decision timestamps.
+Scheduler weak references and all credentials are excluded from serialization.
+History never borrows current credential identities or current quota readings.
+Unknown timing, throughput and prices are omitted; missing values are not shown
+as zero latency or zero cost. The existing usage queue and native session imports
+continue to feed Statistics independently. Trace history begins with this version;
+older usage summaries are not converted into invented gateway traces.
 
 ## Group transfer
 
@@ -254,7 +267,7 @@ change destination identity.
 Unsupported options are rejected rather than silently removed. Nested groups,
 classifier groups, automatic reasoning and fast mode still require execution
 semantics beyond the current schema. Transfer of those unsupported semantics,
-account lifecycle and trace retention do not reproduce the complete reference behavior; this port
+account lifecycle and the trace event schema do not reproduce the complete reference behavior; this port
 does not establish full engine parity.
 
 ## Verification

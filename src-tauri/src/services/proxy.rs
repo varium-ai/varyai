@@ -448,7 +448,18 @@ impl ProxyService {
         let pi_path = std::env::temp_dir()
             .join(format!("vary-pi-test-{}", uuid::Uuid::new_v4()))
             .join("pi-routing.json");
-        let intent_runtime = Arc::new(crate::proxy::intent::Runtime::default());
+        #[allow(unused_mut)]
+        let mut runtime = crate::proxy::intent::Runtime::default();
+        #[cfg(not(test))]
+        {
+            runtime.traces = Arc::new(
+                crate::proxy::intent::trace::Store::with_history(
+                    crate::config::get_app_config_dir().join("routing-history"),
+                )
+                .unwrap_or_default(),
+            );
+        }
+        let intent_runtime = Arc::new(runtime);
         #[cfg(not(test))]
         let (intent_config, intent_receipt) = (
             crate::codex_config::get_codex_config_path(),

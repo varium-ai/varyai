@@ -202,6 +202,8 @@ impl Metadata {
         if let Some(object) = settings.as_object_mut() {
             object.remove("routingContext");
             object.remove("routingModelFacts");
+            object.remove("routingModelCapabilities");
+            object.remove("routingPublicCapabilities");
         }
         if let Some(config) = settings.get("config").and_then(Value::as_str) {
             if let Ok(mut doc) = config.parse::<toml_edit::DocumentMut>() {

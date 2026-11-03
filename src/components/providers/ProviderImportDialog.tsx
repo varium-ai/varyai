@@ -75,6 +75,9 @@ export function ProviderImportDialog({
     void request
       .then((next) => {
         if (!active) return;
+        const ordered = [...next].sort(
+          (a, b) => Number(b.id === "magpie") - Number(a.id === "magpie"),
+        );
         const initial: Record<string, Choice> = {};
         for (const source of next)
           for (const item of source.items) {
@@ -84,17 +87,9 @@ export function ProviderImportDialog({
                 mode: item.status === "vendor" ? "key" : "add",
               };
           }
-        setSources(next);
+        setSources(ordered);
         setChoices(initial);
-        setTab(
-          sourcePath
-            ? "magpie"
-            : ((
-                next.find((s) =>
-                  s.items.some((it) => initial[keyOf(s.id, it.reference)]?.on),
-                ) ?? next[0]
-              )?.id ?? ""),
-        );
+        setTab(ordered[0]?.id ?? "");
       })
       .catch(() => {
         if (active) setError("providerImport.failed");

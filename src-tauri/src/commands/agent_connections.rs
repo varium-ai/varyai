@@ -389,6 +389,76 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    async fn reasoning_catalog_projects_into_native_agent_files_and_restores_them(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let _home = IsolatedHome::new()?;
+        let provider = crate::provider::Provider::with_id(
+            "fixture".into(),
+            "Synthetic".into(),
+            json!({
+                "apiFormat":"openai_responses",
+                "env":{"ANTHROPIC_BASE_URL":"https://synthetic.invalid/v1","ANTHROPIC_AUTH_TOKEN":"synthetic-upstream"},
+                "auth":{"OPENAI_API_KEY":"synthetic-upstream"},
+                "config":"model_provider='fixture'\n[model_providers.fixture]\nbase_url='https://synthetic.invalid/v1'\nwire_api='responses'",
+                "modelCatalog":{"models":[{"model":"synthetic","reasoningLevels":["none","low","high","max"],"reasoning":true}]}
+            }),
+            None,
+        );
+        let manager = Arc::new(
+            crate::proxy::providers::codex_oauth_auth::CodexOAuthManager::new(
+                _home.dir.path().join("accounts"),
+            ),
+        );
+        let menu =
+            crate::services::intent_routing::menu::prepare(manager, vec![provider], vec![], None)
+                .await?;
+        let alias = menu.default_model.as_deref().ok_or("missing model")?;
+        let connections = agent_connections::Manager {
+            root: _home.dir.path().join("receipts"),
+        };
+        for app in ["claude", "pi", "opencode", "workbuddy"] {
+            let receipt = agent_connections::build(app, &menu, "http://127.0.0.1:1", alias)?;
+            let files = serde_json::to_value(&receipt)?;
+            let installed = &files["files"][0]["installed"];
+            match app {
+                "claude" => assert_eq!(
+                    installed["env"]["CLAUDE_CODE_MODEL_CAPABILITIES"],
+                    format!("{alias}=effort,xhigh_effort,max_effort")
+                ),
+                "pi" => assert_eq!(
+                    installed["providers"]["varyai"]["models"][0]["thinkingLevelMap"]["max"],
+                    "max"
+                ),
+                "opencode" => assert_eq!(
+                    installed["provider"]["varyai"]["models"][alias]["variants"]["max"]
+                        ["reasoningEffort"],
+                    "max"
+                ),
+                "workbuddy" => {
+                    let row = if installed.is_array() {
+                        &installed[0]
+                    } else {
+                        &installed["models"][0]
+                    };
+                    assert_eq!(row["supportsReasoning"], true);
+                    assert_eq!(
+                        row["reasoning"]["supportedEfforts"],
+                        json!(["low", "high", "max"])
+                    );
+                    assert_eq!(row["reasoning"]["canDisableThinking"], true);
+                }
+                _ => unreachable!(),
+            }
+            connections.install(receipt)?;
+            assert!(connections.status(app)?.configured);
+            connections.disconnect(app)?;
+            assert!(!connections.status(app)?.configured);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn connecting_one_agent_does_not_refresh_or_wait_for_other_agents(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let _home = IsolatedHome::new()?;

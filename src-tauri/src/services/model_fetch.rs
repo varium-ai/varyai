@@ -18,6 +18,58 @@ pub struct FetchedModel {
     pub owned_by: Option<String>,
     #[serde(flatten, default)]
     pub(crate) context: crate::services::intent_routing::context::Metadata,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_levels: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_modalities: Option<Vec<String>>,
+}
+
+impl FetchedModel {
+    pub(crate) fn from_entry(
+        id: String,
+        owned_by: Option<String>,
+        entry: &serde_json::Value,
+    ) -> Self {
+        use crate::services::intent_routing::effort::Capability;
+        let capability = Capability::parse(entry);
+        Self {
+            id,
+            owned_by,
+            context: capability.context,
+            reasoning_levels: Capability::has_reasoning_declaration(entry)
+                .then_some(capability.levels.clone()),
+            reasoning: if capability.quiet {
+                Some(false)
+            } else {
+                capability
+                    .reasoning
+                    .or_else(|| (!capability.levels.is_empty()).then_some(true))
+            },
+            input_modalities: capability.images.map(|images| {
+                if images {
+                    vec!["text".into(), "image".into()]
+                } else {
+                    vec!["text".into()]
+                }
+            }),
+        }
+    }
+
+    pub(crate) fn capability_entry(&self) -> serde_json::Value {
+        let mut entry = serde_json::json!({});
+        if let Some(levels) = &self.reasoning_levels {
+            entry["reasoningLevels"] = serde_json::json!(levels);
+        }
+        if let Some(reasoning) = self.reasoning {
+            entry["reasoning"] = serde_json::json!(reasoning);
+        }
+        if let Some(modalities) = &self.input_modalities {
+            entry["inputModalities"] = serde_json::json!(modalities);
+        }
+        entry
+    }
 }
 
 /// 模型列表响应的兼容格式。
@@ -153,13 +205,7 @@ pub async fn fetch_models(
 
                 let page_models: Vec<FetchedModel> = if let Some(data) = resp.data {
                     data.into_iter()
-                        .map(|m| FetchedModel {
-                            id: m.id,
-                            owned_by: m.owned_by,
-                            context: crate::services::intent_routing::context::Metadata::parse(
-                                &m.facts,
-                            ),
-                        })
+                        .map(|m| FetchedModel::from_entry(m.id, m.owned_by, &m.facts))
                         .collect()
                 } else {
                     resp.models
@@ -168,13 +214,11 @@ pub async fn fetch_models(
                         .into_iter()
                         .flatten()
                         .filter_map(|entry| {
-                            Some(FetchedModel {
-                                id: catalog_model_id(entry)?.to_owned(),
-                                owned_by: None,
-                                context: crate::services::intent_routing::context::Metadata::parse(
-                                    entry,
-                                ),
-                            })
+                            Some(FetchedModel::from_entry(
+                                catalog_model_id(entry)?.to_owned(),
+                                None,
+                                entry,
+                            ))
                         })
                         .collect()
                 };
@@ -565,6 +609,8 @@ mod tests {
                 get(|| async {
                     Json(serde_json::json!({"data":[{
                         "id":"fixture","context_length":1000000,"auto_compact_token_limit":272000,
+                        "supported_reasoning_levels":[{"effort":"high"},{"effort":"low"},{"effort":"bogus"}],
+                        "input_modalities":["text","image"],
                         "private_extension":"not-retained"
                     }]}))
                 }),
@@ -573,7 +619,8 @@ mod tests {
                 "/gemini",
                 get(|| async {
                     Json(serde_json::json!({"models":[{
-                        "name":"models/fixture","inputTokenLimit":1000000
+                        "name":"models/fixture","inputTokenLimit":1000000,
+                        "reasoning_options":[{"type":"effort","values":["low","high"]}]
                     }]}))
                 }),
             );
@@ -596,6 +643,7 @@ mod tests {
             assert_eq!(result.len(), 1);
             let value = serde_json::to_value(&result[0])?;
             assert_eq!(value["context_window"], 1000000);
+            assert_eq!(value["reasoningLevels"], serde_json::json!(["low", "high"]));
             assert!(value.get("private_extension").is_none());
             if path == "openai" {
                 assert_eq!(value["auto_compact_token_limit"], 272000);

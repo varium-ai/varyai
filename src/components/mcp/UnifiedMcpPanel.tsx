@@ -77,7 +77,8 @@ const UnifiedMcpPanel = React.forwardRef<
     message: string;
     onConfirm: () => void;
   } | null>(null);
-  const { snapshot: confirmation, onExited: onConfirmationExited } = useDialogSnapshot(confirmDialog);
+  const { snapshot: confirmation, onExited: onConfirmationExited } =
+    useDialogSnapshot(confirmDialog);
 
   const { data: serversMap, isLoading } = useAllMcpServers();
   const toggleAppMutation = useToggleMcpApp();
@@ -357,7 +358,7 @@ const UnifiedMcpPanel = React.forwardRef<
       {confirmation && (
         <ConfirmDialog
           isOpen={confirmDialog?.isOpen ?? false}
-        onExited={onConfirmationExited}
+          onExited={onConfirmationExited}
           title={confirmation.title}
           message={confirmation.message}
           pending={writePending}

@@ -11,10 +11,19 @@ vi.mock("@/components/routing/IntentRoutingPanel", () => ({
   IntentRoutingPanel: () => <div>Group editor</div>,
 }));
 vi.mock("@/lib/api/routingTrace", () => ({
-  routingTraceApi: { snapshot: vi.fn() },
+  routingTraceApi: { snapshot: vi.fn(), history: vi.fn() },
 }));
 vi.mock("@/lib/api/agentConnections", () => ({
   agentConnectionsApi: { models: vi.fn() },
+}));
+vi.mock("@/lib/api/proxy", () => ({
+  proxyApi: {
+    getProxyStatus: vi.fn(async () => ({
+      running: true,
+      address: "127.0.0.1",
+      port: 15722,
+    })),
+  },
 }));
 vi.mock("@/lib/api/usage", () => ({
   usageApi: {
@@ -78,11 +87,18 @@ function show(
 
 beforeEach(() => {
   localStorage.clear();
+  vi.mocked(routingTraceApi.history).mockResolvedValue({
+    requests: [],
+    cut: false,
+  });
+  vi.mocked(usageApi.getRequestLogs).mockClear();
   vi.mocked(agentConnectionsApi.models).mockResolvedValue([]);
   vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
     requests: [route],
     accounts: [],
     capacity: 60,
+    running: true,
+    days: ["2026-11-02"],
   } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
 });
 
@@ -108,6 +124,8 @@ it("shows the catalog model name throughout a direct request, retaining the inte
     requests: [row],
     accounts: [],
     capacity: 60,
+    running: true,
+    days: ["2026-11-02"],
   } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
   vi.mocked(agentConnectionsApi.models).mockResolvedValue([
     {
@@ -118,7 +136,7 @@ it("shows the catalog model name throughout a direct request, retaining the inte
     },
   ]);
   show();
-  expect(await screen.findAllByText("Friendly Flash")).toHaveLength(3);
+  expect(await screen.findAllByText("Friendly Flash")).toHaveLength(4);
   for (const label of document.querySelectorAll(".rt-model-label")) {
     expect(label).toHaveTextContent("Friendly Flash");
     expect(label).toHaveAttribute("title", internal);
@@ -129,7 +147,7 @@ it("shows the catalog model name throughout a direct request, retaining the inte
     screen.getByRole("button", { name: "routingPage.hideAccounts" }),
   );
   expect(screen.queryByText(/Synthetic vendor/)).not.toBeInTheDocument();
-  expect(screen.getAllByText("Friendly Flash")).toHaveLength(3);
+  expect(screen.getAllByText("Friendly Flash")).toHaveLength(4);
 });
 
 it("uses the recorded group name rather than a hash or the last fallback model", async () => {
@@ -138,6 +156,8 @@ it("uses the recorded group name rather than a hash or the last fallback model",
     requests: [{ ...route, model: internal, groupName: "Research pool" }],
     accounts: [],
     capacity: 60,
+    running: true,
+    days: ["2026-11-02"],
   } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
   show();
   await screen.findByRole("button", { name: /Research pool/ });
@@ -150,41 +170,45 @@ it("uses the recorded group name rather than a hash or the last fallback model",
   expect(screen.queryByText(internal)).not.toBeInTheDocument();
 });
 
-it("resolves archived direct aliases from the recorded wire model when the provider is no longer in the catalog", async () => {
+it("resolves persisted direct aliases from their recorded wire model without a current provider", async () => {
   const internal = `vary-provider/model-${"c".repeat(64)}`;
-  vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
-    requests: [],
-    accounts: [],
-    capacity: 60,
-  });
   vi.mocked(agentConnectionsApi.models).mockRejectedValue(
     new Error("synthetic unavailable"),
   );
-  vi.mocked(usageApi.getRequestLogs).mockResolvedValueOnce({
-    data: [
+  vi.mocked(routingTraceApi.history).mockResolvedValue({
+    requests: [
       {
-        requestId: "archived-direct",
-        createdAt: Date.now() / 1000,
-        appType: "claude-desktop",
-        requestModel: internal,
-        model: "vendor/old-model",
-        providerId: "removed-provider",
-        providerName: "Removed provider",
-        statusCode: 200,
-        latencyMs: 20,
+        ...route,
+        model: internal,
+        groupName: "Direct model",
+        candidates: [
+          {
+            providerId: "removed",
+            providerName: "Removed provider",
+            model: "vendor/old-model",
+          },
+        ],
+        steps: [
+          { kind: "attempt", atMs: 1, candidate: 0 },
+          { kind: "completed", atMs: 20, candidate: 0, status: 200 },
+        ],
       },
-    ],
-    total: 1,
-    page: 0,
-    pageSize: 80,
-  } as Awaited<ReturnType<typeof usageApi.getRequestLogs>>);
+    ] as Awaited<ReturnType<typeof routingTraceApi.history>>["requests"],
+    cut: false,
+  });
   show();
-  await screen.findByText("routingPage.summaryOnly");
+  await screen.findByRole("button", { name: /group\/research/ });
+  fireEvent.click(document.querySelectorAll(".rt-days > button")[1]);
+  await screen.findAllByText("vendor/old-model");
   for (const label of document.querySelectorAll(".rt-model-label")) {
     expect(label).toHaveTextContent("vendor/old-model");
     expect(label).toHaveAttribute("title", internal);
   }
   expect(screen.queryByText(internal)).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "routingPage.replay" }),
+  ).toBeInTheDocument();
+  expect(routingTraceApi.history).toHaveBeenCalledWith("2026-11-02");
 });
 
 it("does not expose an opaque model alias when no readable model metadata remains", async () => {
@@ -201,11 +225,13 @@ it("does not expose an opaque model alias when no readable model metadata remain
     ],
     accounts: [],
     capacity: 60,
+    running: true,
+    days: ["2026-11-02"],
   } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
   show();
   expect(
     await screen.findAllByText("routingPage.modelUnavailable"),
-  ).toHaveLength(3);
+  ).toHaveLength(4);
   expect(screen.queryByText(internal)).not.toBeInTheDocument();
 });
 
@@ -244,6 +270,8 @@ it("distinguishes an available account moved to the back from one still cooling 
       },
     ],
     capacity: 60,
+    running: true,
+    days: ["2026-11-02"],
   } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
   show();
   expect(await screen.findByText("routingPage.sunk")).toBeInTheDocument();
@@ -308,6 +336,8 @@ it("hides the purpose filter for unmarked requests regardless of agent, errors o
     ],
     accounts: [],
     capacity: 60,
+    running: true,
+    days: ["2026-11-02"],
   } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
   show();
   await screen.findAllByText("Synthetic fallback");
@@ -323,6 +353,8 @@ it("groups equivalent call kinds into one purpose instead of showing a redundant
     ],
     accounts: [],
     capacity: 60,
+    running: true,
+    days: ["2026-11-02"],
   } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
   show();
   await screen.findAllByText("Synthetic fallback");
@@ -339,6 +371,8 @@ it("multi-selects recorded purposes without closing the menu and clears back to 
     ],
     accounts: [],
     capacity: 60,
+    running: true,
+    days: ["2026-11-02"],
   } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
   show();
   await user.click(
@@ -404,6 +438,8 @@ it("keeps an active purpose filter visible when refreshed records no longer matc
     requests: [route, { ...route, id: "title", kind: "thread_title" }],
     accounts: [],
     capacity: 60,
+    running: true,
+    days: ["2026-11-02"],
   } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
   show(client);
   await user.click(
@@ -419,6 +455,8 @@ it("keeps an active purpose filter visible when refreshed records no longer matc
     requests: [],
     accounts: [],
     capacity: 60,
+    running: true,
+    days: ["2026-11-02"],
   });
   await client.invalidateQueries({ queryKey: ["routing-trace"] });
   expect(await screen.findByText("routingPage.noRequests")).toBeInTheDocument();
@@ -442,6 +480,8 @@ it("closes the purpose menu on outside clicks and preserves metric preferences",
     requests: [route, { ...route, id: "title", kind: "thread_title" }],
     accounts: [],
     capacity: 60,
+    running: true,
+    days: ["2026-11-02"],
   } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
   show();
   await user.click(
@@ -454,41 +494,22 @@ it("closes the purpose menu on outside clicks and preserves metric preferences",
   expect(localStorage.getItem("vary.routingMetrics")).not.toContain('"tokens"');
 });
 
-it("treats usage-only history as unmarked instead of inferring its purpose", async () => {
-  const user = userEvent.setup();
+it("never reads imported session usage or renders it as gateway traffic", async () => {
   vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
-    requests: [{ ...route, kind: "thread_title" }],
+    requests: [],
     accounts: [],
     capacity: 60,
-  } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
-  vi.mocked(usageApi.getRequestLogs).mockResolvedValueOnce({
-    data: [
-      {
-        requestId: "archive",
-        createdAt: Date.now() / 1000,
-        appType: "codex",
-        model: "archive-model",
-        providerId: "fixture",
-        statusCode: 200,
-        latencyMs: 20,
-      },
-    ],
-    total: 1,
-    page: 0,
-    pageSize: 80,
-  } as Awaited<ReturnType<typeof usageApi.getRequestLogs>>);
+    running: true,
+    days: [],
+  });
   show();
-  await user.click(
-    await screen.findByRole("button", { name: "routingPage.purpose" }),
-  );
-  await user.click(
-    screen.getByRole("menuitemcheckbox", {
-      name: "routingPage.purposes.unmarked",
-    }),
-  );
-  await user.keyboard("{Escape}");
-  expect(document.querySelectorAll(".rt-req")).toHaveLength(1);
-  expect(screen.getByText("routingPage.summaryOnly")).toBeInTheDocument();
+  await screen.findByText("routingPage.noRequests");
+  expect(usageApi.getRequestLogs).not.toHaveBeenCalled();
+  expect(document.querySelectorAll(".rt-req")).toHaveLength(0);
+  expect(
+    screen.queryByRole("region", { name: "routingPage.accounts" }),
+  ).toBeNull();
+  expect(screen.queryByText("routingPage.state.completed")).toBeNull();
 });
 
 it("changes the visible metrics without requiring a purpose filter", async () => {
@@ -514,6 +535,8 @@ it("renders future purpose names as literal text without interpreting markup or 
     ],
     accounts: [],
     capacity: 60,
+    running: true,
+    days: ["2026-11-02"],
   } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
   show();
   await user.click(
@@ -543,44 +566,84 @@ it("replays recorded decisions rather than exposing all future steps at once", a
   expect(screen.getByText("routingPage.step.completed")).toBeInTheDocument();
 });
 
-it("labels usage-only history without inventing replayable decisions or exposing errors", async () => {
+it("clears live traffic while the gateway is stopped but keeps real historical decisions replayable", async () => {
   vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
-    requests: [],
+    requests: [route],
     accounts: [],
     capacity: 60,
-  });
-  vi.mocked(usageApi.getRequestLogs).mockResolvedValueOnce({
-    data: [
-      {
-        requestId: "usage-fixture",
-        createdAt: Date.now() / 1000,
-        appType: "codex",
-        requestModel: "group/archived",
-        model: "model-a",
-        providerId: "fixture",
-        providerName: "Synthetic archive",
-        statusCode: 200,
-        latencyMs: 20,
-        errorMessage: "synthetic-private-upstream-error",
-      },
-    ],
-    total: 1,
-    page: 0,
-    pageSize: 80,
-  } as Awaited<ReturnType<typeof usageApi.getRequestLogs>>);
+    running: false,
+    days: ["2026-11-02"],
+  } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
+  vi.mocked(routingTraceApi.history).mockResolvedValue({
+    requests: [route],
+    cut: true,
+  } as Awaited<ReturnType<typeof routingTraceApi.history>>);
   show();
   expect(
-    await screen.findByText("routingPage.summaryOnly"),
-  ).toBeInTheDocument();
+    await screen.findAllByText("routingPage.gatewayStopped"),
+  ).not.toHaveLength(0);
+  expect(document.querySelectorAll(".rt-req")).toHaveLength(0);
+  expect(document.querySelector(".rt-livedot")).toHaveClass("off");
+  expect(screen.queryByText("routingPage.state.completed")).toBeNull();
+  fireEvent.click(document.querySelectorAll(".rt-days > button")[1]);
+  await screen.findByRole("button", { name: /group\/research/ });
+  expect(screen.getByText("routingPage.historyCut")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "routingPage.replay" }));
+  expect(screen.getByText("routingPage.replaying")).toBeInTheDocument();
+});
+
+it("omits unavailable metrics instead of showing zero latency or zero cost", async () => {
+  vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+    requests: [
+      {
+        ...route,
+        durationMs: 0,
+        firstTokenMs: null,
+        inputTokens: null,
+        outputTokens: null,
+        cacheReadTokens: null,
+      },
+    ],
+    accounts: [],
+    capacity: 60,
+    running: true,
+    days: [],
+  } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
+  show();
+  await screen.findByRole("button", { name: /group\/research/ });
+  const request = document.querySelector(".rt-req") as HTMLElement;
+  expect(request.querySelectorAll(".meta > span")).toHaveLength(0);
+  expect(request).not.toHaveTextContent("0.00s");
+  expect(request).not.toHaveTextContent("$0.0000");
+  expect(document.querySelector(".rt-log-head")).not.toHaveTextContent("0.00s");
+});
+
+it("lists only stored history days and shows a read failure without stale live requests", async () => {
+  vi.mocked(routingTraceApi.history).mockRejectedValue(
+    new Error("synthetic private path"),
+  );
+  show();
+  await screen.findByRole("button", { name: /group\/research/ });
+  expect(document.querySelectorAll(".rt-days > button")).toHaveLength(2);
+  fireEvent.click(document.querySelectorAll(".rt-days > button")[1]);
   expect(
-    screen.queryByRole("button", { name: "routingPage.replay" }),
-  ).toBeNull();
-  expect(screen.queryByText("synthetic-private-upstream-error")).toBeNull();
-  const accounts = screen.getByRole("region", { name: "routingPage.accounts" });
-  expect(within(accounts).getByText("Synthetic archive")).toBeInTheDocument();
-  expect(within(accounts).getByText("model-a")).toBeInTheDocument();
-  expect(
-    within(accounts).getByText("routingPage.accountSummaryHint"),
+    await screen.findByText("routingPage.historyFailed"),
   ).toBeInTheDocument();
-  expect(within(accounts).queryByText("routingPage.noAccounts")).toBeNull();
+  expect(document.querySelectorAll(".rt-req")).toHaveLength(0);
+  expect(screen.queryByText("synthetic private path")).toBeNull();
+});
+
+it("shows an exactly matched gateway cost without fetching or adding session usage rows", async () => {
+  vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+    requests: [{ ...route, costUsd: "0.0123" }],
+    accounts: [],
+    capacity: 60,
+    running: true,
+    days: [],
+  } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
+  show();
+  await screen.findByRole("button", { name: /group\/research/ });
+  expect(document.querySelector(".rt-req .meta")).toHaveTextContent("$0.0123");
+  expect(usageApi.getRequestLogs).not.toHaveBeenCalled();
+  expect(document.querySelectorAll(".rt-req")).toHaveLength(1);
 });

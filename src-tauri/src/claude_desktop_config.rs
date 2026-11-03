@@ -15,6 +15,8 @@ pub const PROFILE_ID: &str = "00000000-0000-4000-8000-000000157210";
 pub const PROFILE_NAME: &str = "Vary AI";
 
 #[cfg(test)]
+mod reasoning_tests;
+#[cfg(test)]
 mod shared_recovery_tests;
 
 #[cfg(any(target_os = "macos", windows, test))]
@@ -127,6 +129,7 @@ struct InferenceModelSpec {
     name: String,
     label_override: Option<String>,
     supports_1m: bool,
+    max_effort: Option<String>,
 }
 
 pub fn apply_provider(db: &Database, provider: &Provider) -> Result<(), AppError> {
@@ -328,12 +331,9 @@ pub fn is_claude_safe_model_id(model: &str) -> bool {
         return false;
     };
 
-    // 角色前缀后必须还有实际模型标识，拒绝 claude-sonnet- 这类退化值
-    // （否则会写入 profile 并触发 Claude Desktop fail-all 拒收整组）。
-    // Claude Desktop 1.12603.1+ 的 fail-all validator 角色白名单已纳入 fable
-    // （app.asar 内 ["sonnet","opus","haiku","fable","mythos"]），故 claude-fable-*
-    // 可安全写入 profile。mythos 官方未公开发布，暂不暴露给用户。
-    ["sonnet-", "opus-", "haiku-", "fable-"]
+    // Desktop's native validator accepts these role prefixes, with a nonempty
+    // suffix. Mythos is also used for private gateway effort aliases, not labels.
+    ["sonnet-", "opus-", "haiku-", "fable-", "mythos-"]
         .iter()
         .any(|prefix| {
             route_tail
@@ -343,13 +343,16 @@ pub fn is_claude_safe_model_id(model: &str) -> bool {
 }
 
 fn inference_model_json(spec: &InferenceModelSpec) -> Value {
-    if spec.supports_1m || spec.label_override.is_some() {
+    if spec.supports_1m || spec.label_override.is_some() || spec.max_effort.is_some() {
         let mut item = json!({ "name": spec.name });
         if let Some(label_override) = spec.label_override.as_deref() {
             item["labelOverride"] = json!(label_override);
         }
         if spec.supports_1m {
             item["supports1m"] = json!(true);
+        }
+        if let Some(effort) = &spec.max_effort {
+            item["maxEffort"] = json!(effort);
         }
         item
     } else {
@@ -626,6 +629,7 @@ fn direct_inference_model_specs(provider: &Provider) -> Result<Vec<InferenceMode
                 .filter(|value| !value.is_empty())
                 .map(str::to_string),
             supports_1m,
+            max_effort: None,
         });
     }
 
@@ -1099,6 +1103,7 @@ fn apply_provider_to_paths_inner(
                 name: route.route_id.clone(),
                 label_override: route.label_override.clone(),
                 supports_1m: route.supports_1m,
+                max_effort: None,
             })
             .collect::<Vec<_>>();
         build_gateway_profile(&base_url, &api_key, Some(model_specs.as_slice()))
@@ -1576,6 +1581,8 @@ mod tests {
             context_window: Some(1_000_000),
             group: "Synthetic provider".into(),
             reasoning_levels: vec![],
+            reasoning: false,
+            default_reasoning_level: None,
             images: true,
         };
         let wire = shared_model_name(&model.id);
@@ -2603,6 +2610,30 @@ pub(crate) fn shared_model_name(id: &str) -> String {
     )
 }
 
+pub(crate) fn shared_reasoning_model_name(id: &str) -> String {
+    let legacy = legacy_shared_model_name(id);
+    format!(
+        "claude-mythos-vary-{}",
+        legacy.trim_start_matches("claude-vary-")
+    )
+}
+
+pub(crate) fn shared_model_wire(model: &crate::services::agent_connections::Model) -> String {
+    if desktop_max_effort(model).is_some() {
+        shared_reasoning_model_name(&model.id)
+    } else {
+        shared_model_name(&model.id)
+    }
+}
+
+pub(crate) fn desktop_max_effort(
+    model: &crate::services::agent_connections::Model,
+) -> Option<&str> {
+    ["max", "xhigh", "high", "medium", "low"]
+        .into_iter()
+        .find(|level| model.reasoning_levels.iter().any(|known| known == level))
+}
+
 pub(crate) fn legacy_shared_model_name(id: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("claude-vary-{:x}", Sha256::digest(id.as_bytes()))
@@ -2645,16 +2676,25 @@ fn shared_catalog_edits_at(
     let specs = models
         .iter()
         .map(|model| {
-            let name = shared_model_name(&model.id);
+            let name = shared_model_wire(model);
             mapping.insert(name.clone(), model.id.clone());
             InferenceModelSpec {
                 name,
                 label_override: Some(model.name.clone()),
                 supports_1m: model.context_window.is_some_and(|n| n >= 1_000_000),
+                max_effort: desktop_max_effort(model).map(str::to_owned),
             }
         })
         .collect::<Vec<_>>();
-    let profile = build_gateway_profile(base, token, Some(&specs));
+    let mut profile = build_gateway_profile(base, token, Some(&specs));
+    if let Some(effort) = models.first().and_then(|model| {
+        model.default_reasoning_level.as_deref().filter(|effort| {
+            matches!(*effort, "low" | "medium" | "high" | "xhigh" | "max")
+                && model.reasoning_levels.iter().any(|level| level == effort)
+        })
+    }) {
+        profile["defaultModelEffort"] = json!(effort);
+    }
     let mut files = vec![];
     for path in [paths.normal_config_path, paths.threep_config_path] {
         files.push(
@@ -2677,8 +2717,12 @@ fn shared_catalog_edits_at(
                 .ok_or(crate::services::agent_connections::FAILED)?
             {
                 if (key == "inferenceGatewayApiKey" && preserve_key)
-                    || (["coworkEgressAllowedHosts", "disableDeploymentModeChooser"]
-                        .contains(&key.as_str())
+                    || ([
+                        "coworkEgressAllowedHosts",
+                        "disableDeploymentModeChooser",
+                        "defaultModelEffort",
+                    ]
+                    .contains(&key.as_str())
                         && value.get(key).is_some())
                 {
                     continue;

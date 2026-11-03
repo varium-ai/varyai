@@ -1,8 +1,8 @@
 # 路由意图识别方案
 
-状态：目标方案；已实现草稿配置与离线计划校验，尚未接通真实分类及转发  
-日期：2026-10-26  
-代码基线：`1b7189f2`  
+状态：目标方案；已实现草稿配置与离线计划校验，尚未接通真实分类及转发<br>
+日期：2026-10-26<br>
+代码基线：`1b7189f2`<br>
 Reference implementation: see the [pinned source notice](../../third_party/routing-reference/NOTICE.md), revision `e5dd86965b56a8a176790e2c1ade09f9ef554208`.
 
 ## 1. 核心方案

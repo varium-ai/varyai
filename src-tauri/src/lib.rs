@@ -1441,6 +1441,7 @@ pub fn run() {
             commands::delete_routing_upstream,
             commands::list_intent_routing_providers,
             commands::routing_trace_snapshot,
+            commands::routing_trace_history,
             commands::list_intent_routing_groups,
             commands::refresh_intent_routing_catalogs,
             commands::set_intent_routing_auto_create,

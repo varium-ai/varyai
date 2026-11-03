@@ -15,9 +15,7 @@ vi.mock("@/lib/api/providerImport", () => ({
 const sources = ["cc-switch", "claude-code", "codex", "opencode", "magpie"].map(
   (id, at) => ({
     id,
-    name: ["CC Switch", "Claude Code", "Codex", "OpenCode", "Provider backup"][
-      at
-    ],
+    name: ["CC Switch", "Claude Code", "Codex", "OpenCode", "Magpie"][at],
     path: `~/.fixture/${id}`,
     found: true,
     items: at
@@ -79,13 +77,46 @@ function mount(onImported = vi.fn()) {
     <ProviderImportDialog open onClose={vi.fn()} onImported={onImported} />,
   );
 }
+it("places Magpie first and opens it even when another source has selected providers", async () => {
+  mount();
+  const tablist = await screen.findByRole("tablist");
+  const tabs = within(tablist).getAllByRole("tab");
+  expect(tabs.map((tab) => tab.id)).toEqual([
+    "import-tab-magpie",
+    "import-tab-cc-switch",
+    "import-tab-claude-code",
+    "import-tab-codex",
+    "import-tab-opencode",
+  ]);
+  expect(tabs[0]).toHaveAccessibleName(/Magpie/);
+  expect(tabs[0]).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("tabpanel")).toHaveAttribute(
+    "aria-labelledby",
+    "import-tab-magpie",
+  );
+  expect(screen.getByText("providerImport.empty")).toBeInTheDocument();
+});
+it("moves between source tabs in their displayed order with the keyboard", async () => {
+  mount();
+  const tablist = await screen.findByRole("tablist");
+  const magpie = within(tablist).getByRole("tab", { name: /Magpie/ });
+  const ccSwitch = within(tablist).getByRole("tab", { name: /CC Switch/ });
+  const openCode = within(tablist).getByRole("tab", { name: /OpenCode/ });
+  fireEvent.keyDown(magpie, { key: "ArrowRight" });
+  expect(ccSwitch).toHaveAttribute("aria-selected", "true");
+  expect(ccSwitch).toHaveFocus();
+  fireEvent.keyDown(ccSwitch, { key: "Home" });
+  expect(magpie).toHaveFocus();
+  fireEvent.keyDown(magpie, { key: "ArrowLeft" });
+  expect(openCode).toHaveAttribute("aria-selected", "true");
+  expect(openCode).toHaveFocus();
+});
 it("shows five sources, pickable counts and disabled duplicate/subscription rows", async () => {
   mount();
   const tabs = await screen.findByRole("tablist");
   expect(within(tabs).getAllByRole("tab")).toHaveLength(5);
-  expect(
-    within(tabs).getByRole("tab", { name: /Provider backup/ }),
-  ).toBeInTheDocument();
+  expect(within(tabs).getByRole("tab", { name: /Magpie/ })).toBeInTheDocument();
+  fireEvent.click(within(tabs).getByRole("tab", { name: /CC Switch/ }));
   expect(screen.getByRole("checkbox", { name: "New relay" })).toBeChecked();
   expect(
     screen.getByRole("checkbox", { name: "Existing relay" }),
@@ -94,7 +125,7 @@ it("shows five sources, pickable counts and disabled duplicate/subscription rows
     screen.getByRole("checkbox", { name: "Official account" }),
   ).toBeDisabled();
   expect(screen.getByText("providerImport.readOnly")).toBeInTheDocument();
-  fireEvent.click(within(tabs).getByRole("tab", { name: /Provider backup/ }));
+  fireEvent.click(within(tabs).getByRole("tab", { name: /Magpie/ }));
   expect(screen.getByText("providerImport.empty")).toBeInTheDocument();
   fireEvent.click(within(tabs).getByRole("tab", { name: /CC Switch/ }));
   expect(screen.getByRole("checkbox", { name: "New relay" })).toBeChecked();
@@ -102,6 +133,8 @@ it("shows five sources, pickable counts and disabled duplicate/subscription rows
 it("selects only importable rows and sends references with fresh-source fingerprints, never keys", async () => {
   const done = vi.fn();
   mount(done);
+  const tabs = await screen.findByRole("tablist");
+  fireEvent.click(within(tabs).getByRole("tab", { name: /CC Switch/ }));
   const all = await screen.findByRole("checkbox", {
     name: "providerEditor.selectAll",
   });
@@ -157,7 +190,7 @@ it("offers a saved imported Codex subscription in the same picker and submits on
   vi.mocked(providerImportApi.preview).mockResolvedValue(next as never);
   mount();
   const tabs = await screen.findByRole("tablist");
-  fireEvent.click(within(tabs).getByRole("tab", { name: /Provider backup/ }));
+  fireEvent.click(within(tabs).getByRole("tab", { name: /Magpie/ }));
   expect(
     screen.getByRole("checkbox", { name: "Codex saved account" }),
   ).toBeChecked();

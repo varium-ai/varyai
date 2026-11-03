@@ -101,7 +101,7 @@ describe("ProviderForm Codex catalog helpers", () => {
           reasoningLevels: ["none", "low", "medium", "high", "xhigh", "max"],
           defaultReasoningLevel: " xhigh ",
         },
-        // empty levels / whitespace default are dropped
+        // An explicit empty declaration must survive without acquiring public levels.
         {
           model: "plain-model",
           reasoningLevels: [],
@@ -115,7 +115,7 @@ describe("ProviderForm Codex catalog helpers", () => {
         reasoningLevels: ["none", "low", "medium", "high", "xhigh", "max"],
         defaultReasoningLevel: "xhigh",
       },
-      { model: "plain-model" },
+      { model: "plain-model", reasoningLevels: [] },
     ]);
   });
 
@@ -132,6 +132,8 @@ describe("ProviderForm Codex catalog helpers", () => {
       // 手写/旧数据可能是 snake_case，加载侧兼容后保存侧同样要留住
       { model: "deepseek-v4-flash", reasoning_levels: ["low", "high", "max"] },
       { model: "glm-5.1" }, // toggle 型：无表，全程不得凭空造表
+      { model: "toggle-only", reasoning: true, reasoningLevels: [] },
+      { model: "no-thinking", reasoning: false },
     ];
 
     const roundTripped = normalizeCodexCatalogModelsForSave(
@@ -146,6 +148,8 @@ describe("ProviderForm Codex catalog helpers", () => {
       },
       { model: "deepseek-v4-flash", reasoningLevels: ["low", "high", "max"] },
       { model: "glm-5.1" },
+      { model: "toggle-only", reasoning: true, reasoningLevels: [] },
+      { model: "no-thinking", reasoning: false },
     ]);
   });
 

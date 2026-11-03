@@ -28,6 +28,19 @@ configuration.
    identity, DLP inspection, optional gateway budget policy, tool observations, and
    asynchronous usage accounting remain independent of the upstream protocol.
 
+Shared menu preparation freezes each configured subscription account's identity,
+but does not refresh access tokens or wait for quota observations. A temporary
+authentication outage must not remove explicitly selected account models or the
+automatic groups they share with relays. Actual generation refreshes credentials
+for that frozen identity and still rejects removed, changed, or expired accounts.
+Single-session previews retain their eager authentication check. Account model
+visibility, disabled providers, usage-only policies, and explicit group publication
+continue to filter the catalog. Account entries retain their provider's name even
+though their transport deliberately has no static upstream configuration.
+
+Routing mutations invalidate the Agent model catalog as well as the gateway
+catalog, so opening a picker after a group edit does not reuse an obsolete list.
+
 ## Provider model selection
 
 New API providers start with an optional comma-separated model list. Editors
@@ -37,23 +50,68 @@ models updates candidates without selecting them or opening a second picker.
 Names, reasoning levels, image support and context metadata remain attached to
 the exact model ID. Changes are persisted only on Save.
 
+## Reasoning capabilities across Agents
+
+API model discovery retains supported reasoning levels, an explicit reasoning
+switch, and image input support through selection, saving and catalog caching.
+The shared resolver uses exact user overrides first, then vendor declarations,
+then normalized model identity in the public models.dev catalog. Maker entries
+take precedence over relay votes; tied relay declarations remain unknown.
+Explicit empty levels, switch-only models and disabled reasoning do not acquire
+invented effort levels. A reduced models.dev maker snapshot supplies explicit
+effort facts when public discovery is unavailable, including for old rows that
+contain only a model ID. Fresh public facts take precedence over that snapshot.
+Official account catalogs keep their own declarations; a missing declaration
+can use the same exact-model effort facts without adding account models or
+borrowing another account's context capacities. Reimport is not required.
+Public capability refreshes do not change transport or continuation identity.
+
+Native projections publish Codex reasoning levels, Pi thinking maps, OpenCode
+variants, Claude Code model capability flags, WorkBuddy supported efforts,
+Grok Build reasoning efforts, OpenClaw reasoning support, Qoder thinking
+capabilities, Kimi Code effort lists and ZCode reasoning options. Client versions
+must support these native fields. Gemini CLI, Qwen Code and Hermes retain their
+native controls; no unsupported picker schema is invented.
+Claude Desktop uses its native effort-aware gateway alias for models with
+supported effort levels and publishes `maxEffort` in the profile plus
+`max_effort_level` on model discovery. Previous hashed aliases remain routable,
+including the `[1m]` variant, so existing conversations keep their destination.
+The profile seeds an imported default effort for its first model when no Desktop
+preference exists; refreshing preserves the user's existing preference. Desktop
+currently chooses its native effort menu by model identity; sparse upstream
+levels are fitted by the gateway rather than represented as unsupported custom
+profile fields. Models with unknown efforts keep the plain compatibility alias.
+The native alias changes which model identity Desktop's embedded Claude Code
+recognizes; it never changes the actual upstream model or provider.
+
+Their supported wire-level effort fields still pass through the shared ingress
+and fit the selected upstream's declared levels. Protocol conversion retains its
+existing representability checks. Reapply or refresh connected configurations
+and reload the client to observe updated capabilities; this does not update an
+already running installed application binary.
+
 ## External provider imports
 
-The add-provider sheet opens a source-tab dialog for CC Switch, Claude Code,
-Codex, OpenCode and Provider backup. It scans only on an explicit open. Sources are read
-without writes or network calls. Preview payloads contain names, endpoint hosts,
+The add-provider sheet opens a source-tab dialog for Magpie, CC Switch, Claude Code,
+Codex and OpenCode. Magpie is shown first and selected by default. It scans only
+on an explicit open. Sources are read without writes or network calls. Preview
+payloads contain names, endpoint hosts,
 model counts, duplicate status and opaque source fingerprints; credentials and
 private headers never enter the renderer. Confirmation re-reads the files and
 rejects stale fingerprints before writing a batch.
 
 CC Switch imports read its SQLite database with read-only flags (or its earlier
-JSON file). Claude Code reads settings; Codex reads native TOML and API-key auth;
-OpenCode reads provider settings and API-key auth. These four sources follow
+JSON file). Stored model capabilities and manual overrides remain separate.
+Claude Code imports explicit model capability flags and the selected effort;
+Codex imports catalog levels and `model_reasoning_effort`, merging repeated
+model IDs without losing metadata; OpenCode imports enabled reasoning variants
+and model defaults. A selected effort is a default, not a claim that the model
+supports only that level. These four sources follow
 the reference API-provider import scope: their subscription sign-ins are not copied.
 Unsupported or unresolved settings appear as unavailable, with a safe reason.
 
-Provider backup reads `providers.json` and sibling `logins.json` under
-the source app's configuration directory (see the
+Magpie reads `providers.json` and sibling `settings.json` / `logins.json` under
+its configuration directory (see the
 [compatibility notice](../../third_party/routing-reference/NOTICE.md)). A file chooser supports a
 portable folder or an exported `providers.json`/`logins.json`. API imports retain
 exact model IDs, protocol-specific endpoints, enabled state, supported custom
@@ -62,6 +120,16 @@ a matching vendor with a different credential can become another key or a
 separate provider. A name collision is renamed or gets a numeric suffix. Backup
 keys execute as separate immutable credential snapshots, preserving conversation
 binding.
+
+Magpie's per-model effort lists and no-reasoning choices come from
+`settings.json`, keyed by the exact source provider/model identity, and embedded
+`modelPrefs` when provided. Both selected models and unselected catalog candidates
+retain these preferences. Its empty `efforts` list restores vendor defaults;
+`reasonless: true` becomes an explicit no-reasoning override. Relevant settings
+changes invalidate the preview fingerprint. Malformed or unreadable settings
+fail the source read with a sanitized error. Import leaves source files intact.
+Imported defaults are published where the native schema supports a model default;
+an explicit current-client choice still wins and supported levels remain selectable.
 
 Saved Codex / ChatGPT subscriptions from the source app are also selectable. Their stored
 Codex authorization must include a refresh token and an ID-token identity with a
@@ -154,8 +222,17 @@ only visibility mode exposes show/hide, future-model policy, and ordering.
 Disabled native selections remain read-only and opening a picker never connects
 an Agent. The embedded setup picker still requires explicit confirmation.
 
-The shared popover follows the reference implementation's compact 380px layout (580px with
-more than two provider groups on desktop). Desktop uses immediate, serialized saves
+The shared popover follows the reference implementation's compact 380px layout
+(580px with more than two catalog groups and a viewport at least 600px wide).
+Two groups intentionally retain the single column; model count does not control
+the provider rail. List rows reserve an empty maker-icon slot when no maker logo
+is known; they do not repeat provider initials or add capability badges to the
+visibility list. Context windows remain visible in the quiet right column.
+The surface, typography, grouped spacing, segmented controls, switch, arrow,
+and enter/exit motion follow the same reference. Placement selects the room
+above or below the trigger, keeps an eight-pixel gap and edge inset, and limits
+only the scrollable model list while retaining the header and footer.
+Desktop uses immediate, serialized saves
 instead of a draft Save/Cancel form. Search spans all providers, including when
 a provider is selected in the rail. All/Shown/Order views share grouped counts;
 newly hidden rows remain in Shown until the view changes. Bulk show/hide across

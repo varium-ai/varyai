@@ -30,7 +30,7 @@ export function RoutingAccounts({
   refreshing,
   accountName,
 }: {
-  requests: Array<RoutingTrace & { archived?: boolean }>;
+  requests: RoutingTrace[];
   current: RoutingAccount[];
   live: boolean;
   refresh: () => void;
@@ -76,13 +76,7 @@ export function RoutingAccounts({
     }
     return (
       <div className="rt-account-tally">
-        <span>
-          {rows.every((row) => row.summaryOnly)
-            ? t("routingPage.accountRequests", {
-                n: rows.reduce((n, row) => n + row.requests, 0),
-              })
-            : t("routingPage.accountTried", { n: sum("tried") })}
-        </span>
+        <span>{t("routingPage.accountTried", { n: sum("tried") })}</span>
         <span className="ok">
           {t("routingPage.accountAnswered", { n: sum("answered") })}
         </span>
@@ -143,9 +137,6 @@ export function RoutingAccounts({
                   { n: count > 1 ? index + 1 : "" },
                 ).trim()}
           </b>
-          {account.summaryOnly && (
-            <span>{t("routingPage.accountSummaryOnly")}</span>
-          )}
         </div>
         {rests.length > 0 && (
           <div className="rt-account-rest">
@@ -227,11 +218,6 @@ export function RoutingAccounts({
       <div className="list rt-acts">
         {!accounts.length && (
           <p className="none">{t("routingPage.noAccounts")}</p>
-        )}
-        {accounts.some((account) => account.summaryOnly) && (
-          <p className="rt-account-summary-note">
-            {t("routingPage.accountSummaryHint")}
-          </p>
         )}
         {[...providers].map(([providerId, rows]) => (
           <div key={providerId} className="rt-account-provider">

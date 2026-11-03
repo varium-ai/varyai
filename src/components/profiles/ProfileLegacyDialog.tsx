@@ -66,7 +66,11 @@ export function ProfileLegacyDialog({
         if (!open && !apply.isPending) onClose();
       }}
     >
-      <DialogContent className="max-w-xl" zIndex="top" onCloseAutoFocus={onExited}>
+      <DialogContent
+        className="max-w-xl"
+        zIndex="top"
+        onCloseAutoFocus={onExited}
+      >
         <DialogHeader>
           <DialogTitle className="line-clamp-2 break-all" title={profile.name}>
             {t("profiles.bundle.previewTitle", { name: profile.name })}

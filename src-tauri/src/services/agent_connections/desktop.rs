@@ -9,6 +9,7 @@ pub(crate) enum State {
     Current,
     RestartRequired,
     Unknown,
+    #[cfg(not(target_os = "macos"))]
     Unsupported,
 }
 

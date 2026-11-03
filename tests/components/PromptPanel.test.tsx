@@ -5,7 +5,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { createRef } from "react";
+import { createRef, useEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import PromptPanel, {
@@ -102,26 +102,39 @@ vi.mock("@/components/prompts/PromptFormPanel", () => ({
 
 vi.mock("@/components/ConfirmDialog", () => ({
   ConfirmDialog: ({
+    isOpen,
     message,
     onConfirm,
     onCancel,
+    onExited,
     pending,
   }: {
+    isOpen: boolean;
     message: string;
     onConfirm: (checked: boolean) => void;
     onCancel: () => void;
+    onExited?: () => void;
     pending?: boolean;
-  }) => (
-    <div role="dialog">
-      <span>{message}</span>
-      <button type="button" disabled={pending} onClick={() => onConfirm(false)}>
-        confirm-dialog
-      </button>
-      <button type="button" disabled={pending} onClick={onCancel}>
-        cancel-dialog
-      </button>
-    </div>
-  ),
+  }) => {
+    useEffect(() => {
+      if (!isOpen) onExited?.();
+    }, [isOpen, onExited]);
+    return isOpen ? (
+      <div role="dialog">
+        <span>{message}</span>
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => onConfirm(false)}
+        >
+          confirm-dialog
+        </button>
+        <button type="button" disabled={pending} onClick={onCancel}>
+          cancel-dialog
+        </button>
+      </div>
+    ) : null;
+  },
 }));
 
 const createPrompts = () => ({

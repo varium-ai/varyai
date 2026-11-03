@@ -127,38 +127,9 @@ it("reflects a filtered-empty request view instead of showing unrelated catalog 
   expect(container.querySelectorAll("[data-account-row]")).toHaveLength(0);
 });
 
-it("shows usage-only provider/model summaries with an explicit identity limitation instead of an empty account list", () => {
-  const { accounts, request } = fixtures();
-  const { container } = render(
-    <RoutingAccounts
-      requests={[{ ...request, archived: true, status: 200 }]}
-      current={accounts}
-      live
-      refreshing={false}
-      refresh={() => {}}
-      accountName={(candidate) => candidate.providerName}
-    />,
-  );
-  expect(screen.getByText("Synthetic provider")).toBeInTheDocument();
-  expect(screen.getByText("model-a")).toBeInTheDocument();
-  expect(
-    screen.getByText("routingPage.accountSummaryOnly"),
-  ).toBeInTheDocument();
-  expect(
-    screen.getByText("routingPage.accountSummaryHint"),
-  ).toBeInTheDocument();
-  expect(screen.getByText("routingPage.accountRequests")).toBeInTheDocument();
-  expect(screen.queryByText("routingPage.accountTried")).toBeNull();
-  expect(screen.queryByText("routingPage.noAccounts")).toBeNull();
-  expect(screen.queryByText("routingPage.keyLabel")).toBeNull();
-  expect(
-    screen.queryByRole("button", { name: "routingPage.refreshAccounts" }),
-  ).toBeNull();
-  expect(container.querySelector('[role="progressbar"]')).toBeNull();
-});
-
-it("masks historical provider names and excludes live telemetry even if archived candidates contain old account data", () => {
+it("masks historical provider names and excludes live telemetry without borrowing live quota data", () => {
   const { accounts, request } = fixtures(1, "account");
+  const historical: RoutingTrace = JSON.parse(JSON.stringify(request));
   accounts[0].restUntil = Date.now() / 1000 + 300;
   accounts[0].windows = [
     {
@@ -169,7 +140,7 @@ it("masks historical provider names and excludes live telemetry even if archived
   ];
   const { container } = render(
     <RoutingAccounts
-      requests={[{ ...request, archived: true }]}
+      requests={[historical]}
       current={accounts}
       live={false}
       refreshing={false}

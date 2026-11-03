@@ -74,7 +74,11 @@ export function SecurityEventDetailsDialog({
           }
         }}
       >
-        <DialogContent zIndex="top" className="max-w-xl overflow-hidden p-0" onCloseAutoFocus={onExited}>
+        <DialogContent
+          zIndex="top"
+          className="max-w-xl overflow-hidden p-0"
+          onCloseAutoFocus={onExited}
+        >
           <DialogHeader className="border-b border-border/70 px-6 py-4">
             <DialogTitle>{t("security.detailTitle")}</DialogTitle>
             <DialogDescription>

@@ -8,16 +8,100 @@ use serde::Serialize;
 use tauri::State;
 
 #[tauri::command]
-pub(crate) fn routing_trace_snapshot(
+pub(crate) async fn routing_trace_snapshot(
     state: State<'_, AppState>,
-) -> crate::proxy::intent::trace::Snapshot {
-    let runtime = &state.proxy_service.intent_runtime;
-    let requests = runtime.traces.snapshot();
-    let accounts = runtime.traces.live_accounts(&requests);
-    crate::proxy::intent::trace::Snapshot {
+) -> Result<crate::proxy::intent::trace::Snapshot, String> {
+    let running = state.proxy_service.is_running().await;
+    let store = state.proxy_service.intent_runtime.traces.clone();
+    let mut requests = if running {
+        store.snapshot()
+    } else {
+        Vec::new()
+    };
+    let accounts = store.live_accounts(&requests);
+    let db = state.db.clone();
+    let inventory = tokio::task::spawn_blocking(move || {
+        recorded_gateway_costs(&db, &mut requests);
+        (requests, store.history_days())
+    })
+    .await;
+    let (requests, inventory) = match inventory {
+        Ok((requests, days)) => (requests, days),
+        Err(_) => (
+            Vec::new(),
+            Err(std::io::Error::other("Routing history unavailable")),
+        ),
+    };
+    let history_error = inventory.is_err();
+    let days = inventory.unwrap_or_default();
+    Ok(crate::proxy::intent::trace::Snapshot {
         requests,
         accounts,
         capacity: crate::proxy::intent::trace::CAPACITY,
+        running,
+        days,
+        history_error,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn routing_trace_history(
+    day: String,
+    state: State<'_, AppState>,
+) -> Result<crate::proxy::intent::trace::HistoryPage, String> {
+    let store = state.proxy_service.intent_runtime.traces.clone();
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut history = store.history(Some(&day))?;
+        recorded_gateway_costs(&db, &mut history.requests);
+        Ok::<_, std::io::Error>(history)
+    })
+    .await
+    .map_err(|_| "Routing history unavailable".to_string())?
+    .map_err(|_| "Routing history unavailable".to_string())
+}
+
+fn recorded_gateway_costs(
+    db: &crate::database::Database,
+    requests: &mut [crate::proxy::intent::trace::Route],
+) {
+    // Exact trace IDs enrich a price, never supply rows or routing outcomes.
+    let Ok(conn) = db.conn.lock() else { return };
+    let Ok(mut query) = conn.prepare(
+        "SELECT total_cost_usd, pricing_model FROM proxy_request_logs
+         WHERE request_id = ?1 AND COALESCE(data_source, 'proxy') = 'proxy'",
+    ) else {
+        return;
+    };
+    for row in requests {
+        let Ok((cost, model)) = query.query_row([&row.id], |record| {
+            Ok((
+                record.get::<_, String>(0)?,
+                record.get::<_, Option<String>>(1)?,
+            ))
+        }) else {
+            continue;
+        };
+        let Ok(value) = cost.parse::<f64>() else {
+            continue;
+        };
+        if !value.is_finite() || value < 0.0 {
+            continue;
+        }
+        let free = value == 0.0
+            && model.as_deref().is_some_and(|model| {
+                crate::services::usage_stats::find_model_pricing_row(&conn, model)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|(input, output, read, create)| {
+                        [input, output, read, create]
+                            .iter()
+                            .all(|price| price.parse::<f64>().is_ok_and(|price| price == 0.0))
+                    })
+            });
+        if value > 0.0 || free {
+            row.cost_usd = Some(cost);
+        }
     }
 }
 
@@ -60,17 +144,8 @@ struct ModelFacts {
 }
 fn model_facts(provider: &crate::provider::Provider, model: &str) -> ModelFacts {
     let fact = &provider.settings_config["routingModelFacts"][model];
-    let capability = provider
-        .settings_config
-        .pointer("/modelCatalog/models")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|entries| {
-            entries
-                .iter()
-                .find(|entry| entry["model"].as_str() == Some(model))
-        })
-        .map(crate::services::intent_routing::effort::Capability::parse)
-        .unwrap_or_default();
+    let capability =
+        crate::services::intent_routing::effort::Capability::for_provider(provider, model);
     ModelFacts {
         output_price: fact["outputPrice"]
             .as_f64()
@@ -174,10 +249,11 @@ fn model_options(provider: &crate::provider::Provider) -> Vec<ModelOption> {
                 ModelOption {
                     id: id.into(),
                     name: name.into(),
-                    reasoning_levels: crate::services::intent_routing::effort::Capability::parse(
-                        entry,
-                    )
-                    .levels,
+                    reasoning_levels:
+                        crate::services::intent_routing::effort::Capability::for_provider(
+                            provider, id,
+                        )
+                        .levels,
                     facts: model_facts(provider, id),
                     context_window:
                         crate::services::intent_routing::context::Metadata::for_provider(
@@ -217,6 +293,25 @@ fn model_options(provider: &crate::provider::Provider) -> Vec<ModelOption> {
 
 #[cfg(test)]
 mod model_picker_tests {
+    #[test]
+    fn fetched_capabilities_reach_picker_without_rewriting_saved_model_rows() {
+        let provider = crate::provider::Provider::with_id(
+            "fixture".into(),
+            "Synthetic".into(),
+            serde_json::json!({"modelCatalog":{"models":[{"model":"exact"}]}, "routingModelCapabilities":{"exact":{"reasoningLevels":["low","high"],"reasoning":true}}}),
+            None,
+        );
+        let value =
+            serde_json::to_value(super::model_options(&provider)).expect("synthetic projection");
+        assert_eq!(
+            value[0]["reasoningLevels"],
+            serde_json::json!(["low", "high"])
+        );
+        assert_eq!(value[0]["reasoning"], true);
+        assert!(provider.settings_config["modelCatalog"]["models"][0]
+            .get("reasoningLevels")
+            .is_none());
+    }
     #[test]
     fn model_preferences_override_picker_names_images_and_reasoning() {
         let provider = crate::provider::Provider::with_id(
@@ -642,4 +737,45 @@ pub(crate) async fn cleanup_intent_routing_orphan(
     tokio::task::spawn_blocking(move || manager.cleanup_orphan(consent))
         .await
         .map_err(|_| "intentRouting.clientFailed")?
+}
+
+#[cfg(test)]
+mod routing_cost_tests {
+    use super::*;
+
+    #[test]
+    fn only_recorded_gateway_costs_can_enrich_existing_traces(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = crate::database::Database::memory()?;
+        {
+            let conn = db.conn.lock().map_err(|_| "synthetic lock")?;
+            for (id, source, price) in [
+                ("gateway", "proxy", "0.0123"),
+                ("session", "codex_session", "7"),
+                ("unknown", "proxy", "0"),
+            ] {
+                conn.execute("INSERT INTO proxy_request_logs (request_id, provider_id, app_type, model, created_at, data_source, total_cost_usd, latency_ms, status_code) VALUES (?1, 'fixture', 'codex', 'fixture', 1, ?2, ?3, 1, 200)", rusqlite::params![id, source, price])?;
+            }
+        }
+        let store = std::sync::Arc::new(crate::proxy::intent::trace::Store::default());
+        let request = store.begin(
+            "codex",
+            "fixture",
+            "Fixture",
+            "ordered",
+            std::time::Instant::now(),
+        );
+        request.finish(200, crate::proxy::intent::trace::State::Completed);
+        let base = store.snapshot().remove(0);
+        let mut rows = ["gateway", "session", "unknown", "missing"].map(|id| {
+            let mut row = base.clone();
+            row.id = id.into();
+            row
+        });
+        recorded_gateway_costs(&db, &mut rows);
+        assert_eq!(rows[0].cost_usd.as_deref(), Some("0.0123"));
+        assert!(rows[1..].iter().all(|row| row.cost_usd.is_none()));
+        assert_eq!(rows.len(), 4);
+        Ok(())
+    }
 }

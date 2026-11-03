@@ -58,7 +58,8 @@ export function ConnectionPresetPicker({
     ConnectionPreset,
     "id" | "name"
   > | null>(null);
-  const { snapshot: deletion, onExited: onConfirmationExited } = useDialogSnapshot(deleteTarget);
+  const { snapshot: deletion, onExited: onConfirmationExited } =
+    useDialogSnapshot(deleteTarget);
   const [testModel, setTestModel] = useState("");
   const [editingCredentials, setEditingCredentials] = useState(false);
   const [protocolManuallySelected, setProtocolManuallySelected] =

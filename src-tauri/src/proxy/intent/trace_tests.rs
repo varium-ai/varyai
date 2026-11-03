@@ -1018,3 +1018,65 @@ async fn forwarding_trace_records_fallback_and_usage_without_changing_the_reply(
     upstream.abort();
     Ok(())
 }
+
+#[test]
+fn completed_gateway_history_survives_a_new_store_with_decisions_and_safe_metadata(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let store = Arc::new(Store::with_history(dir.path().join("history"))?);
+    let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let target = observed_target("synthetic-private-key")?;
+    let request = store.begin(
+        "codex",
+        "group/research",
+        "Research",
+        "ordered",
+        Instant::now(),
+    );
+    request.purpose(&http::HeaderMap::new(), true);
+    request.session("synthetic-private-session", "codex");
+    request.plan(vec![store.candidate(&target)], Some(100));
+    request.step(Kind::Attempt, Some(0), None);
+    assert!(store.history(Some(&day))?.requests.is_empty());
+    request.finish(200, State::Completed);
+    request.finish(502, State::Failed);
+    store.flush_history()?;
+    let reopened = Store::with_history(dir.path().join("history"))?;
+    assert_eq!(reopened.history_days()?, vec![day.clone()]);
+    let history = reopened.history(Some(&day))?;
+    assert!(!history.cut);
+    assert_eq!(history.requests.len(), 1);
+    let row = &history.requests[0];
+    assert_eq!(row.state, State::Completed);
+    assert_eq!(row.kind.as_deref(), Some("compact"));
+    assert_eq!(row.steps.last().map(|s| s.kind), Some(Kind::Completed));
+    assert_eq!(row.candidates[0].model, "model-a");
+    let json = serde_json::to_string(&history)?;
+    for private in [
+        "synthetic-private-key",
+        "synthetic-private-session",
+        "127.0.0.1",
+        "authorization",
+    ] {
+        assert!(!json.contains(private));
+    }
+    assert!(row.candidates[0].scheduling.upgrade().is_none());
+    assert!(reopened.history(Some("../private")).is_err());
+    assert!(reopened.history(Some("2026-02-30")).is_err());
+    Ok(())
+}
+
+#[test]
+fn history_failure_never_changes_a_forwarding_observation() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    let blocked = dir.path().join("file");
+    std::fs::write(&blocked, "synthetic")?;
+    let store = Arc::new(Store::with_history(blocked.join("history"))?);
+    let request = store.begin("codex", "fixture", "Fixture", "ordered", Instant::now());
+    request.finish(200, State::Completed);
+    store.flush_history()?;
+    assert_eq!(store.snapshot()[0].state, State::Completed);
+    assert!(store.history(None).is_err());
+    Ok(())
+}

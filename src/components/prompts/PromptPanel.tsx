@@ -49,7 +49,8 @@ const StandardPromptPanel = React.forwardRef<
       messageParams?: Record<string, unknown>;
       onConfirm: () => void;
     } | null>(null);
-    const { snapshot: confirmation, onExited: onConfirmationExited } = useDialogSnapshot(confirmDialog);
+    const { snapshot: confirmation, onExited: onConfirmationExited } =
+      useDialogSnapshot(confirmDialog);
     const [writePending, setWritePending] = useState(false);
     const [reloadPending, setReloadPending] = useState(false);
     const writeLockRef = React.useRef(false);
@@ -296,7 +297,7 @@ const StandardPromptPanel = React.forwardRef<
         {confirmation && (
           <ConfirmDialog
             isOpen={confirmDialog?.isOpen ?? false}
-          onExited={onConfirmationExited}
+            onExited={onConfirmationExited}
             title={t(confirmation.titleKey)}
             message={t(confirmation.messageKey, confirmation.messageParams)}
             pending={writePending}

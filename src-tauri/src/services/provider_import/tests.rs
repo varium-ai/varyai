@@ -26,7 +26,7 @@ fn preview_has_five_sources_and_never_serializes_credentials_or_changes_files(
     let preview = preview(&db, &paths)?;
     assert_eq!(preview.len(), 5);
     assert_eq!(preview[4].id, "magpie");
-    assert_eq!(preview[4].name, "Provider backup");
+    assert_eq!(preview[4].name, "Magpie");
     assert_eq!(preview[1].items[0].model_count, 1);
     assert!(serde_json::to_value(&preview)?[1]["items"][0]
         .get("apiKey")
@@ -372,6 +372,10 @@ async fn provider_backup_codex_subscriptions_import_into_managed_accounts_withou
         &paths.provider_backup,
         json!({"providers":[{"id":"codex","models":["exact-subscription-model"]}]}),
     )?;
+    write(
+        &paths.provider_backup.with_file_name("settings.json"),
+        json!({"modelEfforts":{"codex/exact-subscription-model":["low","high"]}}),
+    )?;
     let logins = paths.provider_backup.with_file_name("logins.json");
     write(
         &logins,
@@ -419,9 +423,11 @@ async fn provider_backup_codex_subscriptions_import_into_managed_accounts_withou
         assert!(!public.contains(token));
     }
     assert!(matches!(provider.source, UpstreamSource::Codex));
+    let imported_settings = provider.codex_settings.ok_or("settings")?;
+    assert_eq!(imported_settings.accounts, vec![accounts[0].id.clone()]);
     assert_eq!(
-        provider.codex_settings.ok_or("settings")?.accounts,
-        vec![accounts[0].id.clone()]
+        imported_settings.models[0]["modelPreferences"]["reasoningLevels"],
+        json!(["low", "high"])
     );
     assert!(std::fs::read(&logins)? == before);
     assert!(!paths.codex.with_file_name("auth.json").exists());
@@ -577,4 +583,376 @@ fn provider_import_rejects_both_application_default_gateway_ports() {
         assert!(self_route(&format!("http://127.0.0.1:{port}/v1")));
     }
     assert!(!self_route("https://synthetic-upstream.example/v1"));
+}
+
+#[tokio::test]
+async fn provider_backup_imports_saved_reasoning_preferences_into_shared_agent_catalogs(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::{
+        proxy::providers::codex_oauth_auth::CodexOAuthManager,
+        services::intent_routing::{effort::Capability, menu},
+    };
+    use std::sync::Arc;
+    let (dir, paths) = fixture()?;
+    write(
+        &paths.provider_backup,
+        json!({"providers":[{
+            "id":"relay", "name":"Synthetic", "chat":"https://relay.example/v1", "key":"synthetic",
+            "models":["vendor/exact","quiet","toggle"], "pickedFrom":["vendor/exact","quiet","toggle","unpicked"],
+            "modelPrefs":{"toggle":{"efforts":[],"reasonless":false}}
+        }]}),
+    )?;
+    let settings_path = paths.provider_backup.with_file_name("settings.json");
+    write(
+        &settings_path,
+        json!({
+            "modelEfforts":{"relay/vendor/exact":["max","low","high","high"], "relay/unpicked":["high"], "other/vendor/exact":["medium"]},
+            "modelReasonless":{"relay/quiet":true},
+            "modelNames":{"relay/vendor/exact":"Custom"}, "modelImages":{"relay/vendor/exact":false}
+        }),
+    )?;
+    let before = [
+        std::fs::read(&paths.provider_backup)?,
+        std::fs::read(&settings_path)?,
+    ];
+    let db = Database::memory()?;
+    let item = preview(&db, &paths)?.remove(4).items.remove(0);
+    assert_eq!(
+        import(
+            &db,
+            &paths,
+            vec![Pick {
+                source: "magpie".into(),
+                reference: item.reference,
+                fingerprint: item.fingerprint,
+                mode: ImportMode::Add,
+                name: None
+            }]
+        )?
+        .added,
+        1
+    );
+    let saved = db.list_routing_upstreams()?.remove(0);
+    let mut provider = db.routing_discovery_provider(&saved.id, saved.revision)?;
+    crate::services::routing_upstreams::filter_models(&mut provider);
+    assert_eq!(
+        Capability::for_provider(&provider, "vendor/exact").levels,
+        ["low", "high", "max"]
+    );
+    assert!(Capability::for_provider(&provider, "quiet").reasonless);
+    assert!(!Capability::for_provider(&provider, "toggle").reasonless);
+    let UpstreamSource::Api { catalog, .. } = &saved.source else {
+        return Err("API fixture".into());
+    };
+    assert_eq!(
+        catalog
+            .iter()
+            .find(|row| row["model"] == "unpicked")
+            .ok_or("missing vendor model")?["modelPreferences"]["reasoningLevels"],
+        json!(["high"])
+    );
+    let manager = Arc::new(CodexOAuthManager::new(dir.path().join("accounts")));
+    let menu = menu::prepare(manager, vec![provider], vec![], None).await?;
+    let models = crate::services::agent_connections::models(&menu);
+    let exact = models
+        .iter()
+        .find(|model| model.name == "Custom · Synthetic")
+        .ok_or("missing imported model")?;
+    assert_eq!(
+        crate::services::agent_connections::pi_model(exact)["thinkingLevelMap"]["max"],
+        "max"
+    );
+    assert_eq!(
+        crate::services::agent_connections::opencode_model(exact)["variants"]["max"]
+            ["reasoningEffort"],
+        "max"
+    );
+    assert_eq!(
+        before,
+        [
+            std::fs::read(&paths.provider_backup)?,
+            std::fs::read(&settings_path)?
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn codex_import_keeps_catalog_levels_when_the_selected_model_is_also_listed(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    std::fs::create_dir_all(paths.codex.parent().ok_or("parent")?)?;
+    std::fs::write(&paths.codex,"model_provider='relay'\nmodel='exact'\nmodel_reasoning_effort='max'\nmodel_catalog_json='catalog.json'\n[model_providers.relay]\nbase_url='https://relay.example/v1'\nexperimental_bearer_token='synthetic'\n")?;
+    write(
+        &paths.codex.with_file_name("catalog.json"),
+        json!({"models":[
+            {"slug":"exact","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"},{"effort":"max"}],"default_reasoning_level":"high"},
+            {"slug":"hidden","visibility":"hide","supported_reasoning_levels":[{"effort":"high"}]}
+        ]}),
+    )?;
+    let candidate = readers::codex(&paths.codex, &paths.home)?.remove(0);
+    let UpstreamSource::Api { models, .. } = candidate.record.source else {
+        return Err("API fixture".into());
+    };
+    assert_eq!(models.len(), 1);
+    let capability = crate::services::intent_routing::effort::Capability::parse(&models[0]);
+    assert_eq!(capability.levels, ["low", "high", "max"]);
+    assert_eq!(models[0]["defaultReasoningLevel"], "max");
+    assert_eq!(capability.default_level.as_deref(), Some("max"));
+    Ok(())
+}
+
+#[test]
+fn provider_backup_keeps_vendor_levels_separate_from_manual_reasoning_preferences(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    write(
+        &paths.provider_backup,
+        json!({"providers":[{
+            "id":"relay","chat":"https://relay.example/v1","key":"synthetic",
+            "models":[{"model":"exact","reasoningLevels":["low","high","max"]}],
+        "pickedFrom":["exact"],
+            "modelPrefs":{"exact":{"efforts":["high"],"reasonless":false}}
+        }]}),
+    )?;
+    let source = readers::provider_backup(&paths.provider_backup)?
+        .remove(0)
+        .record
+        .source;
+    let UpstreamSource::Api {
+        models, catalog, ..
+    } = source
+    else {
+        return Err("API fixture".into());
+    };
+    assert_eq!(models[0]["reasoningLevels"], json!(["low", "high", "max"]));
+    assert_eq!(
+        models[0]["modelPreferences"]["reasoningLevels"],
+        json!(["high"])
+    );
+    assert_eq!(
+        crate::services::intent_routing::effort::Capability::parse(&models[0]).levels,
+        ["high"]
+    );
+    assert_eq!(catalog[0]["reasoningLevels"], json!(["low", "high", "max"]));
+    Ok(())
+}
+
+#[test]
+fn invalid_reasoning_preferences_and_unreadable_sidecars_do_not_import_defaults(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    write(
+        &paths.provider_backup,
+        json!({"providers":[{"id":"relay","chat":"https://relay.example/v1","key":"synthetic","models":["exact"]}]}),
+    )?;
+    let sidecar = paths.provider_backup.with_file_name("settings.json");
+    for setting in [
+        json!({"modelEfforts":{"relay/exact":["high","unknown"]}}),
+        json!({"modelEfforts":{"relay/exact":"high"}}),
+        json!({"modelReasonless":{"relay/exact":"false"}}),
+        json!([]),
+    ] {
+        write(&sidecar, setting)?;
+        let db = Database::memory()?;
+        let source = preview(&db, &paths)?.remove(4);
+        assert!(source.error.is_some());
+        assert!(source.items.is_empty());
+        assert!(db.list_routing_upstreams()?.is_empty());
+    }
+    std::fs::write(&sidecar, b"{broken")?;
+    assert!(preview(&Database::memory()?, &paths)?[4].error.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn imported_default_reasoning_reaches_codex_publication_without_restricting_choices(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::{
+        proxy::providers::codex_oauth_auth::CodexOAuthManager,
+        services::intent_routing::{client, menu},
+    };
+    let (dir, paths) = fixture()?;
+    write(
+        &paths.opencode,
+        json!({"provider":{"relay":{"options":{"baseURL":"https://relay.example/v1","apiKey":"synthetic"},"models":{
+            "exact":{"options":{"reasoningEffort":"low"},"variants":{"low":{"reasoningEffort":"low"},"high":{"reasoningEffort":"high"},"max":{"reasoningEffort":"max"}}}
+        }}}}),
+    )?;
+    let db = Database::memory()?;
+    let item = preview(&db, &paths)?.remove(3).items.remove(0);
+    import(
+        &db,
+        &paths,
+        vec![Pick {
+            source: "opencode".into(),
+            reference: item.reference,
+            fingerprint: item.fingerprint,
+            mode: ImportMode::Add,
+            name: None,
+        }],
+    )?;
+    let record = db.list_routing_upstreams()?.remove(0);
+    let mut provider = db.routing_discovery_provider(&record.id, record.revision)?;
+    crate::services::routing_upstreams::filter_models(&mut provider);
+    let manager = std::sync::Arc::new(CodexOAuthManager::new(dir.path().join("accounts")));
+    let menu = menu::prepare(manager, vec![provider], vec![], None).await?;
+    let alias = menu.default_model.as_deref().ok_or("missing model")?;
+    assert_eq!(
+        menu.groups[alias].model_entry(alias)["default_reasoning_level"],
+        "low"
+    );
+    let catalog = client::menu_catalog(&menu, "")?;
+    assert_eq!(catalog["models"][0]["default_reasoning_level"], "low");
+    assert_eq!(
+        catalog["models"][0]["supported_reasoning_levels"]
+            .as_array()
+            .ok_or("missing levels")?
+            .len(),
+        3
+    );
+    let models = crate::services::agent_connections::models(&menu);
+    assert_eq!(models[0].default_reasoning_level.as_deref(), Some("low"));
+    Ok(())
+}
+
+#[test]
+fn opencode_import_reads_enabled_reasoning_variants_and_the_saved_default(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    write(
+        &paths.opencode,
+        json!({"provider":{"relay":{"options":{"baseURL":"https://relay.example/v1","apiKey":"synthetic"},"models":{
+            "exact":{"reasoning":true,"options":{"reasoningEffort":"high"},"variants":{"fast":{"reasoningEffort":"low"},"deep":{"reasoningEffort":"max"},"off":{"reasoningEffort":"none","disabled":true}}},
+            "toggle":{"reasoning":true}
+        }}}}),
+    )?;
+    let candidate = readers::opencode(&paths)?.remove(0);
+    let UpstreamSource::Api { models, .. } = candidate.record.source else {
+        return Err("API fixture".into());
+    };
+    let exact = models
+        .iter()
+        .find(|row| row["model"] == "exact")
+        .ok_or("missing model")?;
+    assert_eq!(
+        crate::services::intent_routing::effort::Capability::parse(exact).levels,
+        ["low", "max"]
+    );
+    assert_eq!(exact["defaultReasoningLevel"], "high");
+    let toggle = models
+        .iter()
+        .find(|row| row["model"] == "toggle")
+        .ok_or("missing model")?;
+    assert!(
+        crate::services::intent_routing::effort::Capability::parse(toggle)
+            .levels
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[test]
+fn provider_backup_settings_change_invalidates_the_import_preview(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    write(
+        &paths.provider_backup,
+        json!({"providers":[{"id":"relay","chat":"https://relay.example/v1","key":"synthetic","models":["exact"]}]}),
+    )?;
+    let settings = paths.provider_backup.with_file_name("settings.json");
+    write(&settings, json!({"modelEfforts":{"relay/exact":["low"]}}))?;
+    let db = Database::memory()?;
+    let item = preview(&db, &paths)?.remove(4).items.remove(0);
+    write(&settings, json!({"modelEfforts":{"relay/exact":["high"]}}))?;
+    assert_eq!(
+        import(
+            &db,
+            &paths,
+            vec![Pick {
+                source: "magpie".into(),
+                reference: item.reference,
+                fingerprint: item.fingerprint,
+                mode: ImportMode::Add,
+                name: None
+            }]
+        ),
+        Err(CONFLICT.into())
+    );
+    assert!(db.list_routing_upstreams()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn claude_import_reads_capability_flags_and_selected_effort_without_guessing_other_models(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    write(
+        &paths.claude,
+        json!({"effortLevel":"max","env":{
+            "ANTHROPIC_BASE_URL":"https://relay.example", "ANTHROPIC_AUTH_TOKEN":"synthetic", "ANTHROPIC_MODEL":"exact", "ANTHROPIC_DEFAULT_HAIKU_MODEL":"unknown",
+            "CLAUDE_CODE_MODEL_CAPABILITIES":"exact=effort,xhigh_effort,max_effort"
+        }}),
+    )?;
+    let candidate = readers::claude(&paths.claude)?.remove(0);
+    let UpstreamSource::Api { models, .. } = candidate.record.source else {
+        return Err("API fixture".into());
+    };
+    assert_eq!(
+        models[0]["reasoningLevels"],
+        json!(["low", "medium", "high", "xhigh", "max"])
+    );
+    assert_eq!(models[0]["defaultReasoningLevel"], "max");
+    assert!(models[1].get("reasoningLevels").is_none());
+    Ok(())
+}
+
+#[test]
+fn cc_switch_import_preserves_stored_model_capabilities_and_manual_overrides(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (dir, _paths) = fixture()?;
+    let path = dir.path().join("config.json");
+    write(
+        &path,
+        json!({"codex":{"providers":{"relay":{"name":"Synthetic","settingsConfig":{
+        "config":"model_provider='relay'\nmodel='exact'\nmodel_reasoning_effort='max'\n[model_providers.relay]\nbase_url='https://relay.example/v1'",
+            "auth":{"OPENAI_API_KEY":"synthetic"},
+            "modelCatalog":{"models":[{"model":"exact","reasoningLevels":["low","high","max"],"defaultReasoningLevel":"low","modelPreferences":{"reasoningLevels":["low","high"]}}]}
+        }}}}}),
+    )?;
+    let candidate = readers::cc_switch(&path)?.remove(0);
+    let UpstreamSource::Api { models, .. } = candidate.record.source else {
+        return Err("API fixture".into());
+    };
+    assert_eq!(models[0]["reasoningLevels"], json!(["low", "high", "max"]));
+    assert_eq!(
+        models[0]["modelPreferences"]["reasoningLevels"],
+        json!(["low", "high"])
+    );
+    assert_eq!(models[0]["defaultReasoningLevel"], "max");
+    Ok(())
+}
+
+#[test]
+fn joining_imported_keys_fills_missing_capabilities_and_preserves_local_preferences(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut existing = candidate(
+        "first".into(),
+        "fixture",
+        "Synthetic".into(),
+        "https://relay.example/v1".into(),
+        "synthetic".into(),
+        "openai_chat",
+        vec![json!({"model":"exact","modelPreferences":{"reasoningLevels":[]}})],
+    )
+    .record;
+    let incoming=candidate("second".into(),"fixture","Synthetic".into(),"https://relay.example/v1".into(),"synthetic-other".into(),"openai_chat",vec![json!({"model":"exact","reasoningLevels":["low","high"],"defaultReasoningLevel":"low","modelPreferences":{"reasoningLevels":["high"]}})]).record;
+    join_keys(&mut existing, &incoming)?;
+    let UpstreamSource::Api { models, .. } = existing.source else {
+        return Err("API fixture".into());
+    };
+    assert_eq!(models[0]["reasoningLevels"], json!(["low", "high"]));
+    assert_eq!(models[0]["defaultReasoningLevel"], "low");
+    assert_eq!(models[0]["modelPreferences"]["reasoningLevels"], json!([]));
+    Ok(())
 }

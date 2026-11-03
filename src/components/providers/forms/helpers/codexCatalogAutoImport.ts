@@ -41,6 +41,9 @@ export function computeAutoImportCatalogModels(
   const createdRows: CodexCatalogModel[] = newModelsToAdd.map((m) => ({
     model: m.id,
     displayName: m.id,
+    ...(m.reasoningLevels ? { reasoningLevels: m.reasoningLevels } : {}),
+    ...(typeof m.reasoning === "boolean" ? { reasoning: m.reasoning } : {}),
+    ...(m.inputModalities ? { inputModalities: m.inputModalities } : {}),
     ...(m.context_window ? { contextWindow: m.context_window } : {}),
     ...(m.context_window ? { contextSource: "vendor" as const } : {}),
     ...(m.max_context_window ? { maxContextWindow: m.max_context_window } : {}),

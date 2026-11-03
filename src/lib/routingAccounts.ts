@@ -1,5 +1,5 @@
 // Account folding follows the reference implementation's routing plugin (MIT).
-// See third_party/routing-reference/LICENSE. Usage-only summaries never identify credentials.
+// See third_party/routing-reference/LICENSE. Only gateway candidates supply observations.
 import type { RoutingAccount, RoutingTrace } from "@/lib/api/routingTrace";
 
 export interface FoldedRoutingAccount {
@@ -7,8 +7,6 @@ export interface FoldedRoutingAccount {
   kind: "account" | "key" | "provider";
   providerId: string;
   providerName: string;
-  summaryOnly: boolean;
-  requests: number;
   tried: number;
   answered: number;
   failed: number;
@@ -19,7 +17,7 @@ export interface FoldedRoutingAccount {
 }
 
 export function foldRoutingAccounts(
-  requests: Array<RoutingTrace & { archived?: boolean }>,
+  requests: RoutingTrace[],
   current: RoutingAccount[],
   live: boolean,
 ): FoldedRoutingAccount[] {
@@ -32,60 +30,6 @@ export function foldRoutingAccounts(
   for (const request of [...requests].sort(
     (a, b) => a.startedAt - b.startedAt,
   )) {
-    if (request.archived) {
-      // A usage summary records one destination, not its credential or retry order.
-      const candidate =
-        request.candidates.length === 1 ? request.candidates[0] : undefined;
-      if (!candidate?.providerId || !candidate.model) continue;
-      const id = JSON.stringify([
-        "summary",
-        candidate.providerId,
-        candidate.model,
-      ]);
-      let summary = accounts.get(id);
-      if (!summary) {
-        summary = {
-          id,
-          kind: "provider",
-          providerId: candidate.providerId,
-          providerName: candidate.providerName,
-          summaryOnly: true,
-          requests: 0,
-          tried: 0,
-          answered: 0,
-          failed: 0,
-          failures: {},
-          models: [],
-          observations: [
-            {
-              providerId: candidate.providerId,
-              providerName: candidate.providerName,
-              model: candidate.model,
-              restUntil: 0,
-              windows: [],
-            },
-          ],
-        };
-        accounts.set(id, summary);
-      }
-      summary.providerName = candidate.providerName;
-      summary.requests++;
-      if (request.state === "cancelled" || request.status === 499) continue;
-      if (request.state === "completed" && (request.status ?? 200) < 400) {
-        summary.answered++;
-        summary.lastAnswered = Math.max(
-          summary.lastAnswered ?? 0,
-          request.startedAt + request.durationMs,
-        );
-        if (!summary.models.includes(candidate.model))
-          summary.models.push(candidate.model);
-      } else if (request.state === "failed" || (request.status ?? 0) >= 400) {
-        summary.failed++;
-        const reason = String(request.status ?? "failed");
-        summary.failures[reason] = (summary.failures[reason] ?? 0) + 1;
-      }
-      continue;
-    }
     const candidates = request.candidates.map((candidate) => {
       // Older traces can identify a provider/model, never a credential.
       const recorded = candidate.account ?? {
@@ -105,8 +49,6 @@ export function foldRoutingAccounts(
           kind: recorded.kind ?? "provider",
           providerId: recorded.providerId,
           providerName: recorded.providerName,
-          summaryOnly: false,
-          requests: 0,
           tried: 0,
           answered: 0,
           failed: 0,

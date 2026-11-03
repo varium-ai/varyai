@@ -28,6 +28,17 @@ attribution.
 - `0414bbeddbfc2028508b610fd1e7c194143454a0`: capacity and compaction
   publication from `internal/provider/models.go`, `group.go`, and
   `internal/codexcat/codexcat.go`.
+- `84da86ebd5aecf3ef4656c2315442c26b624933d`: reasoning capability lookup
+  and native Agent publication, reviewed in `internal/provider/models.go`,
+  `internal/catalog/catalog.go`, `internal/codexcat/codexcat.go`, and the
+  Claude, Pi, WorkBuddy, Grok, OpenClaw, Qoder, Kimi and ZCode adapters under
+  `internal/agent/`. Import also follows per-model preference semantics from
+  `internal/provider/modelprefs.go` and the corresponding settings fields in
+  `internal/settings/settings.go`.
+- `869c4d112d00d0c204cb346c49371a40a58d2a08`: Claude Desktop effort-aware
+  gateway identities and old-session alias compatibility, reviewed in
+  `internal/gateway/desktop.go` and `desktop_effort_test.go`. Profile effort caps
+  additionally follow the installed Desktop 4.4212 native configuration schema.
 
 Other adapted catalog helpers include `internal/catalog/family.go`,
 `catalog.SameModel`, `internal/provider/grouptemplate.go`, and the usage-purpose
@@ -49,6 +60,6 @@ files and integrations continue to work:
 - Compatibility tests retain those exact synthetic identifiers. They must not
   be replaced with escaped or dynamically assembled spellings to conceal them.
 
-The renderer labels the portable source **Provider backup**. Import still reads
+The renderer labels the portable source **Magpie** and places it first. Import reads
 the original source files, keeps credentials in the backend, and does not modify
 the source application.

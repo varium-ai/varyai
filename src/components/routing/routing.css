@@ -260,12 +260,12 @@
   stroke-width: 1.5;
 }
 .vary-routing .rt-wires path.live {
-  stroke: var(--rt-accent);
+  stroke: var(--rt-agent, var(--rt-accent));
   stroke-dasharray: 3 5;
   animation: vary-rt-flow 0.7s linear infinite;
 }
 .vary-routing .rt-wires path.lit {
-  stroke: var(--rt-accent);
+  stroke: var(--rt-agent, var(--rt-accent));
 }
 @keyframes vary-rt-flow {
   to {
@@ -324,7 +324,7 @@
   white-space: nowrap;
 }
 .vary-routing .rt-hub {
-  border-color: var(--rt-accent);
+  border-color: var(--rt-fg);
   box-shadow: 0 0 0 4px var(--rt-card-2);
 }
 .vary-routing .rt-hub i {
@@ -338,8 +338,8 @@
   margin-top: 5px;
   padding: 1px 8px;
   border-radius: 999px;
-  background: var(--mp-pill);
-  color: var(--rt-accent);
+  background: var(--rt-fg);
+  color: var(--rt-card);
 }
 .vary-routing .rt-accts {
   position: relative;
@@ -350,13 +350,13 @@
   display: grid;
   gap: 7px;
   min-width: 0;
-  max-height: 350px;
+  max-height: 460px;
   overflow-y: auto;
 }
 .vary-routing .rt-accts li {
   position: relative;
   display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto;
+  grid-template-columns: 10px minmax(0, 1fr) fit-content(60%);
   align-items: center;
   column-gap: 10px;
   row-gap: 4px;
@@ -371,16 +371,45 @@
   color: var(--rt-muted);
   border-style: dashed;
   text-align: center;
+  padding: 18px 12px;
+}
+.vary-routing .rt-accts li.idle code {
+  display: block;
+  margin-top: 5px;
+  color: var(--rt-red);
 }
 .vary-routing .rt-accts b {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 3px 7px;
   font-weight: 560;
   overflow: hidden;
   text-overflow: ellipsis;
   overflow-wrap: anywhere;
+}
+.vary-routing .rt-src b::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--rt-agent, var(--rt-accent));
+}
+.vary-routing .rt-accts .who {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.vary-routing .rt-accts .mdl {
+  min-width: 0;
+  max-width: 55%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-left: auto;
 }
 .vary-routing .rt-accts code {
   color: var(--rt-fg-2);
@@ -391,9 +420,41 @@
 }
 .vary-routing .rt-accts em {
   font-style: normal;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--rt-muted);
   font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vary-routing .rt-accts em code {
+  margin-right: 6px;
+  color: inherit;
+}
+.vary-routing .rt-seat-bar {
+  grid-column: 2 / 4;
+  height: 3px;
+  background: var(--rt-card-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.vary-routing .rt-seat-bar i {
+  display: block;
+  height: 100%;
+  background: var(--rt-muted);
+  border-radius: inherit;
+}
+.vary-routing .rt-accts.max460 li {
+  grid-template-columns: 10px minmax(0, 1fr);
+}
+.vary-routing .rt-accts.max460 em,
+.vary-routing .rt-accts.max460 .rt-seat-bar {
+  grid-column: 2;
+  white-space: normal;
+}
+.vary-routing .rt-route-summary {
+  color: var(--rt-muted);
+  font-size: 12px;
 }
 .vary-routing .dot {
   width: 7px;
@@ -403,11 +464,18 @@
   flex: none;
 }
 .vary-routing .rt-accts li.on {
-  border-color: var(--rt-accent);
+  border-color: var(--rt-fg);
 }
 .vary-routing .rt-accts li.on .dot {
-  background: var(--rt-accent);
-  border-color: var(--rt-accent);
+  background: var(--rt-fg);
+  border-color: var(--rt-fg);
+}
+.vary-routing .rt-accts li.on em {
+  color: var(--rt-fg);
+}
+.vary-routing .rt-accts li.left {
+  border-style: dotted;
+  opacity: 0.65;
 }
 .vary-routing .now .dot {
   animation: vary-rt-live 1.8s infinite;
@@ -568,6 +636,9 @@
   width: 100%;
   accent-color: var(--rt-accent);
 }
+.vary-routing .rt-cols.solo {
+  grid-template-columns: minmax(0, 1fr);
+}
 .vary-routing .rt-cols {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -710,7 +781,7 @@
   display: none;
 }
 .vary-routing .rt-metric-menu,
-.vary-routing .rt-earlier[open] > label {
+.vary-routing .rt-earlier[open] > .rt-earlier-menu {
   position: absolute;
   top: 100%;
   z-index: 10;
@@ -731,7 +802,7 @@
   align-items: center;
   gap: 8px;
 }
-.vary-routing .rt-earlier[open] > label {
+.vary-routing .rt-earlier[open] > .rt-earlier-menu {
   left: 0;
   right: auto;
 }
@@ -862,7 +933,7 @@
   }
 }
 @container routing-page (min-width: 1150px) {
-  .vary-routing .rt-cols {
+  .vary-routing .rt-cols:not(.solo) {
     grid-template-columns: minmax(0, 1fr) clamp(260px, 28%, 360px);
   }
   .vary-routing .rt-acts {
@@ -1683,7 +1754,7 @@
   padding: 1px 8px;
 }
 .vary-routing .rt-stage.narrow .rt-accts li {
-  grid-template-columns: 8px minmax(0, 1fr);
+  grid-template-columns: 10px minmax(0, 1fr);
   padding: 9px 12px;
   column-gap: 10px;
 }
@@ -1755,16 +1826,16 @@
   stroke: none;
 }
 .vary-routing .rt-packet-halo {
-  fill: var(--rt-accent);
+  fill: var(--rt-agent, var(--rt-accent));
   opacity: 0.12;
 }
 .vary-routing .rt-packet .pkt {
-  fill: var(--rt-accent);
-  filter: drop-shadow(0 0 3px var(--rt-accent));
+  fill: var(--rt-agent, var(--rt-accent));
+  filter: drop-shadow(0 0 3px var(--rt-agent, var(--rt-accent)));
 }
 .vary-routing .rt-packet.back .pkt {
   fill: var(--rt-card);
-  stroke: var(--rt-accent);
+  stroke: var(--rt-agent, var(--rt-accent));
   stroke-width: 2.25;
 }
 .vary-routing .rt-packet.err .pkt {
@@ -2421,4 +2492,20 @@
 }
 .vary-routing .rt-gremoved:hover {
   color: var(--mp-fg-2);
+}
+
+.vary-routing .rt-empty-hint {
+  display: block;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--rt-muted);
+}
+.vary-routing .rt-history-cut {
+  color: var(--rt-muted);
+  font-size: 11px;
+  padding: 6px 4px;
+}
+.vary-routing .rt-earlier-menu {
+  max-height: 240px;
+  overflow-y: auto;
 }

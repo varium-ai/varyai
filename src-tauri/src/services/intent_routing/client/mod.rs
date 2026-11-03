@@ -283,6 +283,13 @@ pub(crate) fn menu_catalog(
     if let Some(models) = projection["models"].as_array_mut() {
         for (model, group) in models.iter_mut().zip(&groups) {
             if let Some(session) = menu.groups.values().find(|s| s.group.id == group.id) {
+                if chosen.is_empty() {
+                    super::effort::advertise(
+                        model,
+                        &session.offered_levels(),
+                        session.default_reasoning_level().as_deref().unwrap_or(""),
+                    );
+                }
                 let metadata = super::context::Metadata::for_session(session);
                 let typed = super::context::Metadata::session_typed_window(session);
                 let vendor =

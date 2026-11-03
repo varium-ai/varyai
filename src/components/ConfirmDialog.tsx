@@ -70,7 +70,11 @@ export function ConfirmDialog({
         }
       }}
     >
-      <DialogContent className={`max-w-sm ${className ?? ""}`} zIndex={zIndex} onCloseAutoFocus={onExited}>
+      <DialogContent
+        className={`max-w-sm ${className ?? ""}`}
+        zIndex={zIndex}
+        onCloseAutoFocus={onExited}
+      >
         <DialogHeader className="space-y-3 border-b-0 bg-transparent pb-0">
           <DialogTitle className="flex items-center gap-2 text-lg font-semibold">
             <IconComponent className={iconClass} />

@@ -5,6 +5,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+// Public maker declarations remain available when discovery is offline or blocked.
+// See third_party/models-dev/NOTICE.md for the snapshot and license.
+fn bundled() -> &'static Catalog {
+    static CATALOG: std::sync::OnceLock<Catalog> = std::sync::OnceLock::new();
+    CATALOG.get_or_init(|| {
+        serde_json::from_str(include_str!("../../resources/reasoning-capabilities.json"))
+            .map(|value| parse(&value))
+            .unwrap_or_default()
+    })
+}
+
 #[cfg(not(test))]
 const MAX_BYTES: usize = 32 * 1024 * 1024;
 
@@ -14,6 +25,10 @@ struct Catalog {
     windows: BTreeMap<String, u64>,
     #[serde(default)]
     facts: BTreeMap<String, TemplateFacts>,
+    #[serde(default)]
+    capabilities: BTreeMap<String, Value>,
+    #[serde(default)]
+    capability_version: u8,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -40,6 +55,8 @@ fn released(value: &Value) -> String {
 fn parse(value: &Value) -> Catalog {
     let mut counts: BTreeMap<String, BTreeMap<u64, usize>> = BTreeMap::new();
     let mut facts = BTreeMap::new();
+    let mut capabilities: BTreeMap<String, BTreeMap<String, (usize, bool, Value)>> =
+        BTreeMap::new();
     for (pid, provider) in value.as_object().into_iter().flatten() {
         for (id, model) in provider
             .get("models")
@@ -58,6 +75,26 @@ fn parse(value: &Value) -> Catalog {
             let output = model["cost"]["output"]
                 .as_f64()
                 .filter(|n| n.is_finite() && *n >= 0.0);
+            if super::effort::Capability::has_reasoning_declaration(model) && id.len() <= 256 {
+                let capability = super::effort::Capability::parse(model).declaration();
+                if let Ok(key) = serde_json::to_string(&capability) {
+                    let names = [Some(id.as_str()), model["canonical_model_id"].as_str()]
+                        .into_iter()
+                        .flatten()
+                        .filter(|name| name.len() <= 256 && !name.chars().any(char::is_control))
+                        .map(super::discovery::same_model)
+                        .collect::<std::collections::BTreeSet<_>>();
+                    for name in names {
+                        let candidates = capabilities.entry(name).or_default();
+                        let vote =
+                            candidates
+                                .entry(key.clone())
+                                .or_insert((0, false, capability.clone()));
+                        vote.0 += 1;
+                        vote.1 |= own;
+                    }
+                }
+            }
             if own && output.is_some_and(|n| n > 0.0) && id.len() <= 256 {
                 let fact = TemplateFacts {
                     output_price: output,
@@ -98,6 +135,23 @@ fn parse(value: &Value) -> Catalog {
     Catalog {
         fetched_at: chrono::Utc::now().timestamp(),
         facts,
+        capability_version: 1,
+        capabilities: capabilities
+            .into_iter()
+            .filter_map(|(id, candidates)| {
+                let maker = candidates.values().any(|(_, maker, _)| *maker);
+                let mut ranked = candidates
+                    .into_values()
+                    .filter(|(_, own, _)| !maker || *own)
+                    .collect::<Vec<_>>();
+                ranked.sort_by_key(|(count, _, _)| std::cmp::Reverse(*count));
+                let winner = ranked.first()?;
+                if ranked.get(1).is_some_and(|next| next.0 == winner.0) {
+                    return None;
+                }
+                Some((id, winner.2.clone()))
+            })
+            .collect(),
         windows: counts
             .into_iter()
             .filter_map(|(id, counts)| {
@@ -189,6 +243,13 @@ async fn catalog(refresh: bool) -> Catalog {
         }
         let cached: Catalog = serde_json::from_slice(&bytes).ok()?;
         if cached.windows.len() > 100_000
+            || cached.capabilities.len() > 100_000
+            || cached.capabilities.iter().any(|(id, entry)| {
+                id.len() > 256
+                    || id.chars().any(char::is_control)
+                    || !super::effort::Capability::has_reasoning_declaration(entry)
+                    || super::effort::Capability::parse(entry).declaration() != *entry
+            })
             || cached.facts.len() > 100_000
             || cached.facts.iter().any(|(id, fact)| {
                 id.len() > 256
@@ -214,7 +275,7 @@ async fn catalog(refresh: bool) -> Catalog {
     let age = chrono::Utc::now()
         .timestamp()
         .saturating_sub(cached.fetched_at);
-    if !refresh || (0..86400).contains(&age) {
+    if !refresh || ((0..86400).contains(&age) && cached.capability_version == 1) {
         return cached;
     }
     let fetch = async {
@@ -256,6 +317,30 @@ async fn catalog(refresh: bool) -> Catalog {
 
 fn enrich(providers: &mut [Provider], catalog: &Catalog) {
     for provider in providers {
+        let official = super::catalog::official_source(provider);
+        let public = provider
+            .settings_config
+            .pointer("/modelCatalog/models")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let id = entry["model"].as_str()?;
+                let key = super::discovery::same_model(if official {
+                    id
+                } else {
+                    super::model_preferences::same_as(entry).unwrap_or(id)
+                });
+                catalog
+                    .capabilities
+                    .get(&key)
+                    .or_else(|| bundled().capabilities.get(&key))
+                    .map(|capability| (id.to_owned(), capability.clone()))
+            })
+            .collect::<serde_json::Map<_, _>>();
+        // Only existing exact model rows receive effort facts. This neither adds
+        // account models nor grants capacities from another account's catalog.
+        provider.settings_config["routingPublicCapabilities"] = json!(public);
         let facts = provider
             .settings_config
             .pointer("/modelCatalog/models")
@@ -357,6 +442,111 @@ pub(super) async fn prepare(providers: &mut [Provider], refresh: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn existing_bare_model_rows_get_verified_efforts_without_reimport_or_catalog_network() {
+        let mut relay = Provider::with_id(
+            "fixture".into(),
+            "Synthetic".into(),
+            json!({"modelCatalog":{"models":[
+                {"model":"gpt-6.1-sol"},
+                {"model":"gpt-5.6-luna","modelPreferences":{"reasoningLevels":[]}},
+                {"model":"gpt-reserve"}
+            ]}}),
+            None,
+        );
+        let saved = relay.settings_config.clone();
+        let catalog = Catalog::default();
+        enrich(std::slice::from_mut(&mut relay), &catalog);
+        let capability = super::super::effort::Capability::for_provider(&relay, "gpt-6.1-sol");
+        assert_eq!(capability.levels, ["low", "medium", "high", "xhigh", "max"]);
+        assert!(super::super::effort::Capability::for_provider(&relay, "gpt-5.6-luna").reasonless);
+        assert!(
+            super::super::effort::Capability::for_provider(&relay, "gpt-reserve")
+                .levels
+                .is_empty()
+        );
+        assert_eq!(relay.settings_config["modelCatalog"], saved["modelCatalog"]);
+
+        let mut official = Provider::with_id(
+            "official".into(),
+            "Synthetic account".into(),
+            json!({"modelCatalog":{"models":[
+                {"model":"gpt-6.1-sol"},
+                {"model":"gpt-5.6-luna","supported_reasoning_levels":[]},
+                {"model":"gpt-reserve"}
+            ]}}),
+            None,
+        );
+        official.category = Some("official".into());
+        enrich(std::slice::from_mut(&mut official), &catalog);
+        let capability = super::super::effort::Capability::for_provider(&official, "gpt-6.1-sol");
+        assert_eq!(capability.levels, ["low", "medium", "high", "xhigh", "max"]);
+        assert!(
+            super::super::effort::Capability::for_provider(&official, "gpt-5.6-luna")
+                .levels
+                .is_empty()
+        );
+        assert!(
+            super::super::effort::Capability::for_provider(&official, "gpt-reserve")
+                .levels
+                .is_empty()
+        );
+        assert_eq!(
+            official.settings_config["modelCatalog"]["models"]
+                .as_array()
+                .map(Vec::len),
+            Some(3)
+        );
+        assert!(official
+            .settings_config
+            .pointer("/routingContext/models/gpt-6.1-sol")
+            .is_none());
+    }
+    #[test]
+    fn public_reasoning_prefers_makers_and_does_not_double_count_canonical_ids() {
+        let catalog = parse(&json!({
+            "lab":{"models":{"known":{"canonical_model_id":"lab/known","reasoning_options":[{"type":"effort","values":["high"]}]}}},
+            "relay":{"models":{"lab/known":{"reasoning_options":[{"type":"effort","values":["low"]}]}}},
+            "relay2":{"models":{"known":{"reasoning_options":[{"type":"effort","values":["low"]}]}}},
+            "relay3":{"models":{"tied":{"canonical_model_id":"lab/tied","reasoningLevels":["high"]}}},
+            "relay4":{"models":{"tied":{"reasoningLevels":["low"]}}}
+        }));
+        assert_eq!(
+            catalog.capabilities["known"]["reasoningLevels"],
+            json!(["high"])
+        );
+        assert!(!catalog.capabilities.contains_key("tied"));
+    }
+    #[test]
+    fn public_reasoning_fills_unknown_models_but_keeps_vendor_and_user_declarations() {
+        let catalog = parse(&json!({"lab":{"models":{
+            "known":{"canonical_model_id":"lab/known","reasoning":true,"reasoning_options":[{"type":"effort","values":["low","high"]}]},
+            "toggle":{"canonical_model_id":"lab/toggle","reasoning":true,"reasoning_options":[]}
+        }}}));
+        let mut provider = Provider::with_id(
+            "fixture".into(),
+            "Fixture".into(),
+            json!({"modelCatalog":{"models":[
+                {"model":"vendor/known"},
+                {"model":"custom","modelPreferences":{"sameAs":"known","reasoningLevels":["high"]}},
+                {"model":"quiet","modelPreferences":{"sameAs":"known","reasoningLevels":[]}},
+                {"model":"limited","reasoningLevels":[],"modelPreferences":{"sameAs":"known"}},
+                {"model":"toggle"}, {"model":"unknown"}
+            ]}}),
+            None,
+        );
+        let saved = provider.settings_config["modelCatalog"].clone();
+        enrich(std::slice::from_mut(&mut provider), &catalog);
+        let capability = |model| super::super::effort::Capability::for_provider(&provider, model);
+        assert_eq!(capability("vendor/known").levels, ["low", "high"]);
+        assert_eq!(capability("custom").levels, ["high"]);
+        assert!(capability("quiet").reasonless);
+        assert!(capability("limited").levels.is_empty());
+        assert!(capability("toggle").levels.is_empty());
+        assert!(capability("toggle").thinks());
+        assert!(!capability("unknown").thinks());
+        assert_eq!(provider.settings_config["modelCatalog"], saved);
+    }
     #[test]
     fn explicit_equivalence_fills_unknown_facts_without_overwriting_wire_ids_or_declared_limits() {
         let catalog = parse(

@@ -71,21 +71,7 @@ fn configured_model(provider: &Provider) -> Option<String> {
     config.get("model")?.as_str().map(str::to_owned)
 }
 fn declared_capability(provider: &Provider, model: &str) -> super::effort::Capability {
-    let mut capability = provider
-        .settings_config
-        .pointer("/modelCatalog/models")
-        .and_then(|v| v.as_array())
-        .and_then(|entries| {
-            entries
-                .iter()
-                .find(|entry| entry["model"].as_str().is_some_and(|id| id.trim() == model))
-        })
-        .map(super::effort::Capability::parse)
-        .unwrap_or_default();
-    capability.context = super::context::Metadata::for_provider(&provider.settings_config, model);
-    capability.typed_window =
-        super::context::Metadata::typed_window(&provider.settings_config, model);
-    capability
+    super::effort::Capability::for_provider(provider, model)
 }
 
 pub(crate) async fn prepare(
@@ -467,6 +453,229 @@ mod tests {
             json!({"auth":{"OPENAI_API_KEY":"synthetic"},"apiFormat":"openai_responses","config":"model='shared-model'\nmodel_provider='fixture'\n[model_providers.fixture]\nbase_url='https://synthetic.example/v1'\nwire_api='responses'", "modelCatalog":{"models":[{"model":"shared-model","reasoningLevels":["low","medium","high"],"input_modalities":["text","image"]}]}}),
             None,
         )
+    }
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn shared_catalog_keeps_account_models_and_routes_without_access_token_refresh(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::services::{
+            agent_connections,
+            codex_provider::{ModelMode, Settings},
+            routing_upstreams::{RoutingUpstream, UpstreamSource},
+        };
+        let dir = tempfile::tempdir()?;
+        struct Home(Option<std::ffi::OsString>);
+        impl Drop for Home {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(home) => std::env::set_var("CC_SWITCH_TEST_HOME", home),
+                    None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+                }
+                let _ = crate::settings::reload_settings();
+            }
+        }
+        let _home = Home(std::env::var_os("CC_SWITCH_TEST_HOME"));
+        std::env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+        crate::settings::reload_settings()?;
+        struct Security(crate::proxy::security::SecurityRuntimeConfig);
+        impl Drop for Security {
+            fn drop(&mut self) {
+                crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _security = Security((*crate::proxy::security::get_security_runtime()).clone());
+        crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        manager
+            .add_test_account_with_user_identity("account", "synthetic-access", "user")
+            .await?;
+        let db = Arc::new(crate::database::Database::memory()?);
+        for (name, source, codex_settings) in [
+            (
+                "Subscription",
+                UpstreamSource::Codex,
+                Some(Settings {
+                    accounts: vec!["account".into()],
+                    mode: ModelMode::Picked,
+                    models: (0..8).map(|index| json!({"model":format!("shared-{index}"),"displayName":format!("Shared {index}"),"contextWindow":500000})).collect(),
+                    groups_only: false,
+                }),
+            ),
+            (
+                "Relay",
+                UpstreamSource::Api {
+                    base_url: "https://synthetic.invalid/v1".into(),
+                    api_key: Some("synthetic-only".into()),
+                    api_format: "openai_responses".into(),
+                    models: (0..10).map(|index| json!({"model":format!("shared-{index}")})).collect(),
+                    catalog: vec![],
+                    mode: ModelMode::Picked,
+                    groups_only: false,
+                    auth_type: None,
+                },
+                None,
+            ),
+            (
+                "Other vendor",
+                UpstreamSource::Api {
+                    base_url: "https://synthetic.invalid/v1".into(),
+                    api_key: Some("synthetic-only".into()),
+                    api_format: "openai_chat".into(),
+                    models: (0..7).map(|index| json!({"model":format!("other-{index}")})).collect(),
+                    catalog: vec![], mode: ModelMode::Picked, groups_only: false, auth_type: None,
+                },
+                None,
+            ),
+        ] {
+            db.save_routing_upstream(RoutingUpstream {
+                schema_version: 1,
+                id: String::new(),
+                revision: 0,
+                name: name.into(),
+                enabled: true,
+                has_api_key: false,
+                preset_id: None,
+                region: None,
+                transport: None,
+                codex_settings,
+                source,
+            })?;
+        }
+        let (providers, _) =
+            super::super::catalog::prepare_providers(db.clone(), manager.clone(), false).await?;
+        let catalog = db.intent_routing_catalog_with_providers(Some(providers.clone()))?;
+        assert_eq!(catalog.groups.len(), 8);
+        let menu = prepare(manager, providers, catalog.groups, None).await?;
+        let official = menu
+            .groups
+            .values()
+            .flat_map(|session| &session.targets)
+            .find(|target| target.official)
+            .ok_or("missing account target")?;
+        assert!(
+            !official.headers.contains_key(http::header::AUTHORIZATION),
+            "catalog must not acquire access tokens"
+        );
+        let models = agent_connections::models(&menu);
+        assert_eq!(models.len(), 33);
+        let counts = models
+            .iter()
+            .fold(std::collections::BTreeMap::new(), |mut counts, model| {
+                *counts.entry(model.group.as_str()).or_insert(0) += 1;
+                counts
+            });
+        assert_eq!(
+            counts,
+            std::collections::BTreeMap::from([
+                ("routing", 8),
+                ("Subscription", 8),
+                ("Relay", 10),
+                ("Other vendor", 7)
+            ])
+        );
+        assert!(models.iter().any(|model| model.group == "Subscription"
+            && model.name == "Shared 0 · Subscription"
+            && model.context_window == Some(500000)));
+        assert!(models.iter().any(|model| model.group == "Relay"));
+        let official_alias = models
+            .iter()
+            .find(|model| model.group == "Subscription")
+            .ok_or("missing subscription model")?
+            .id
+            .clone();
+        let payload = serde_json::to_value(&models)?;
+        assert_eq!(
+            payload
+                .as_array()
+                .ok_or("missing serialized catalog")?
+                .len(),
+            33
+        );
+        assert!(payload
+            .as_array()
+            .ok_or("missing serialized catalog")?
+            .iter()
+            .any(|row| row["group"] == "routing"));
+
+        // A persisted login has no cached access token after an application restart.
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let (providers, _) =
+            super::super::catalog::prepare_providers(db.clone(), manager.clone(), false).await?;
+        let catalog = db.intent_routing_catalog_with_providers(Some(providers.clone()))?;
+        let menu = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            prepare(manager.clone(), providers, catalog.groups, None),
+        )
+        .await??;
+        assert_eq!(agent_connections::models(&menu).len(), 33);
+        manager.remove_account("account").await?;
+        let credentials = menu
+            .groups
+            .values()
+            .flat_map(|session| &session.targets)
+            .find_map(|target| target.credentials.as_ref())
+            .ok_or("missing frozen identity")?;
+        assert!(
+            credentials.token().await.is_none(),
+            "removed identities must remain unusable"
+        );
+        // Exercise the same authenticated global ingress used by connected Agents.
+        let runtime = Arc::new(crate::proxy::intent::Runtime::default());
+        runtime.set_global(menu, db.routing_generation())?;
+        let key = db.create_gateway_key(crate::proxy::gateway::KeyPolicy {
+            name: "Synthetic key".into(),
+            models: vec![],
+            all_models: true,
+            token_limit: None,
+            period: crate::proxy::gateway::Period::Never,
+        })?;
+        let server = crate::proxy::server::ProxyServer::new(
+            crate::proxy::ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            db.clone(),
+            None,
+        )
+        .with_intent_runtime(runtime);
+        let info = server.start().await?;
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let root = format!("http://127.0.0.1:{}/gateway/v1", info.port);
+        let listed: serde_json::Value = client
+            .get(format!("{root}/models"))
+            .bearer_auth(&key.secret)
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(
+            listed["data"].as_array().ok_or("missing model list")?.len(),
+            33
+        );
+        let response = client
+            .post(format!("{root}/responses"))
+            .bearer_auth(&key.secret)
+            .json(&json!({"model":official_alias,"input":"synthetic","stream":true,"store":false}))
+            .send()
+            .await?;
+        let status = response.status();
+        let body: serde_json::Value = response.json().await?;
+        assert!(
+            body["error"]["code"] == "routing_account_changed_or_expired",
+            "removed identity must fail closed"
+        );
+        assert_eq!(status, http::StatusCode::UNAUTHORIZED);
+        server.stop().await?;
+        let (providers, _) =
+            super::super::catalog::prepare_providers(db.clone(), manager.clone(), false).await?;
+        let catalog = db.intent_routing_catalog_with_providers(Some(providers.clone()))?;
+        let menu = prepare(manager, providers, catalog.groups, None).await?;
+        let models = agent_connections::models(&menu);
+        assert_eq!(models.len(), 17);
+        assert!(models
+            .iter()
+            .all(|model| matches!(model.group.as_str(), "Relay" | "Other vendor")));
+        Ok(())
     }
     #[tokio::test]
     async fn discovered_groups_execute_and_disabled_discovery_keeps_only_an_unlisted_stand_in(

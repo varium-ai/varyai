@@ -143,16 +143,21 @@ async fn prepare_inner(
                     None
                 };
                 let (url, mut headers, workspace) = if let Some(credentials) = &credentials {
-                    let token = tokio::time::timeout(Duration::from_secs(30), credentials.token())
-                        .await
-                        .map_err(|_| "intentRouting.providerUnavailable")?
-                        .ok_or("intentRouting.providerUnavailable")?;
                     let mut headers = http::HeaderMap::new();
-                    headers.insert(
-                        http::header::AUTHORIZATION,
-                        http::HeaderValue::from_str(&format!("Bearer {token}"))
-                            .map_err(|_| "intentRouting.providerUnavailable")?,
-                    );
+                    // Shared menus freeze identity, not access tokens. Forwarding refreshes
+                    // that same identity; a temporary auth outage must not erase its models.
+                    if enforce_account_models {
+                        let token =
+                            tokio::time::timeout(Duration::from_secs(30), credentials.token())
+                                .await
+                                .map_err(|_| "intentRouting.providerUnavailable")?
+                                .ok_or("intentRouting.providerUnavailable")?;
+                        headers.insert(
+                            http::header::AUTHORIZATION,
+                            http::HeaderValue::from_str(&format!("Bearer {token}"))
+                                .map_err(|_| "intentRouting.providerUnavailable")?,
+                        );
+                    }
                     (
                         "https://chatgpt.com/backend-api/codex/responses".to_string(),
                         headers,
@@ -196,31 +201,7 @@ async fn prepare_inner(
                     } else {
                         Some(normalized_static_provider(provider)?)
                     },
-                    effort: {
-                        let mut capability = provider
-                            .settings_config
-                            .pointer("/modelCatalog/models")
-                            .and_then(|v| v.as_array())
-                            .and_then(|entries| {
-                                entries.iter().find(|entry| {
-                                    entry
-                                        .get("model")
-                                        .and_then(|v| v.as_str())
-                                        .is_some_and(|id| id.trim() == member.model_id)
-                                })
-                            })
-                            .map(super::effort::Capability::parse)
-                            .unwrap_or_default();
-                        capability.context = super::context::Metadata::for_provider(
-                            &provider.settings_config,
-                            &member.model_id,
-                        );
-                        capability.typed_window = super::context::Metadata::typed_window(
-                            &provider.settings_config,
-                            &member.model_id,
-                        );
-                        capability
-                    },
+                    effort: super::effort::Capability::for_provider(provider, &member.model_id),
                     url: reqwest::Url::parse(&url)
                         .map_err(|_| "intentRouting.providerUnavailable")?,
                     headers,
@@ -258,7 +239,10 @@ async fn prepare_inner(
         .map_err(|_| "intentRouting.failed")?;
     #[cfg(not(test))]
     for (index, target) in targets.iter().enumerate() {
-        if target.official && !targets[..index].iter().any(|t| t.same_account(target)) {
+        if enforce_account_models
+            && target.official
+            && !targets[..index].iter().any(|t| t.same_account(target))
+        {
             target.scheduling.prime(&client, &target.headers).await;
         }
     }
@@ -507,6 +491,10 @@ mod tests {
         enriched.settings_config["routingModelFacts"] = json!({
             "fixture-model":{"outputPrice":12,"maker":"synthetic","released":"2026-10-01","images":true}
         });
+        enriched.settings_config["routingModelCapabilities"] =
+            json!({"fixture-model":{"reasoningLevels":["low","high"]}});
+        enriched.settings_config["routingPublicCapabilities"] =
+            json!({"fixture-model":{"reasoning":true}});
         let first = normalized_static_provider(&provider).expect("plain snapshot");
         let next = normalized_static_provider(&enriched).expect("enriched snapshot");
         assert_eq!(first.settings_config, next.settings_config);

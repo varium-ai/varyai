@@ -1957,6 +1957,9 @@ describe("IntentRoutingPanel", () => {
         queryKey: ["gateway-catalog"],
       }),
     );
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["agent-model-catalog"],
+    });
   });
 
   it("preserves explicit publication state when editing a global group", async () => {

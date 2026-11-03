@@ -50,6 +50,122 @@ fn menu(url: &str) -> Menu {
     }
 }
 
+#[tokio::test]
+#[serial_test::serial]
+async fn desktop_effort_picker_publication_and_old_conversations_reach_exact_upstream(
+) -> Result<(), Box<dyn std::error::Error>> {
+    struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for RestoreSecurity {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security = RestoreSecurity((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+    let task = tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/v1/messages", post(move |Json(body): Json<Value>| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send(body).await;
+                Json(json!({"id":"synthetic-message","type":"message","role":"assistant","model":"exact-model","content":[{"type":"text","text":"synthetic answer"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}))
+            }
+        }))).await
+    });
+    let mut published = menu(&format!("http://{address}/v1/messages"));
+    let alias = group().alias();
+    let session = Arc::make_mut(published.groups.get_mut(&alias).ok_or("missing session")?);
+    session.group.levels.clear();
+    session.targets[0].effort = crate::services::intent_routing::effort::Capability::parse(
+        &json!({"reasoningLevels":["low","high"]}),
+    );
+    let mut provider = crate::provider::Provider::with_id(
+        "fixture".into(),
+        "Synthetic".into(),
+        json!({"env":{"ANTHROPIC_BASE_URL":format!("http://{address}"),"ANTHROPIC_AUTH_TOKEN":concat!("synthetic", "-upstream")}}),
+        None,
+    );
+    provider.meta = Some(crate::provider::ProviderMeta {
+        api_format: Some("anthropic".into()),
+        ..Default::default()
+    });
+    session.targets[0].upstream = Some(provider);
+    published.models.insert(
+        alias.clone(),
+        MenuModel {
+            alias: alias.clone(),
+            label: "Synthetic reasoning model".into(),
+            description: "VaryAI routing group",
+            order: 0,
+        },
+    );
+    published.default_model = Some(alias.clone());
+    let runtime = Arc::new(Runtime::default());
+    runtime.set_global(published, 0)?;
+    let current = crate::claude_desktop_config::shared_reasoning_model_name(&alias);
+    let previous = crate::claude_desktop_config::shared_model_name(&alias);
+    let oldest = crate::claude_desktop_config::legacy_shared_model_name(&alias);
+    runtime
+        .connections
+        .install(&crate::services::agent_connections::Receipt {
+            app: "claude-desktop".into(),
+            token: concat!("synthetic", "-local").into(),
+            model: alias.clone(),
+            model_map: std::collections::BTreeMap::from([(previous.clone(), alias)]),
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        })?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let info = server.start().await?;
+    let root = format!(
+        "http://127.0.0.1:{}/connections/claude-desktop/v1",
+        info.port
+    );
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let catalog: Value = client
+        .get(format!("{root}/models"))
+        .bearer_auth("synthetic-local")
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(catalog["data"][0]["id"], current);
+    assert_eq!(catalog["data"][0]["max_effort_level"], "high");
+    for wire in [current, previous, oldest] {
+        for suffix in ["", "[1m]"] {
+            for (chosen, expected) in [("low", "low"), ("high", "high"), ("max", "high")] {
+                let response = client.post(format!("{root}/messages"))
+                    .bearer_auth("synthetic-local")
+                    .json(&json!({"model":format!("{wire}{suffix}"),"max_tokens":64,"thinking":{"type":"adaptive"},"output_config":{"effort":chosen},"messages":[{"role":"user","content":"synthetic"}]}))
+                    .send().await?;
+                let status = response.status();
+                let result: Value = response.json().await?;
+                assert_eq!(status, StatusCode::OK, "synthetic response: {result}");
+                let sent = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                    .await?
+                    .ok_or("missing request")?;
+                assert_eq!(sent["model"], "exact-model");
+                assert_eq!(sent["output_config"]["effort"], expected);
+            }
+        }
+    }
+    server.stop().await?;
+    task.abort();
+    Ok(())
+}
+
 #[test]
 fn global_catalog_is_independent_and_preserves_only_unchanged_continuity() {
     let runtime = Runtime::default();
@@ -944,7 +1060,12 @@ async fn agent_connections_share_global_routes_without_agent_owned_providers(
         }))).await;
     });
     let runtime = Arc::new(Runtime::default());
-    runtime.set_global(menu(&format!("http://{address}/responses")), 0)?;
+    let mut shared = menu(&format!("http://{address}/responses"));
+    let session = Arc::make_mut(shared.groups.values_mut().next().ok_or("missing fixture")?);
+    session.targets[0].effort = crate::services::intent_routing::effort::Capability::parse(
+        &json!({"reasoningLevels":["low","high"]}),
+    );
+    runtime.set_global(shared, 0)?;
     for app in crate::services::agent_connections::APPS
         .iter()
         .copied()
@@ -1002,12 +1123,14 @@ async fn agent_connections_share_global_routes_without_agent_owned_providers(
         let response = client
             .post(format!("{root}/responses"))
             .bearer_auth(format!("synthetic-{app}"))
-            .json(&json!({"model":if app == "claude-desktop" { "desktop-hidden-wire".to_owned() } else { group().alias() }, "input":"synthetic"}))
+            .json(&json!({"model":if app == "claude-desktop" { "desktop-hidden-wire".to_owned() } else { group().alias() }, "input":"synthetic", "reasoning":{"effort":"max","summary":"auto"}}))
             .send()
             .await?;
         assert_eq!(response.status(), StatusCode::OK);
         let (headers, body) = rx.recv().await.ok_or("missing request")?;
         assert_eq!(body["model"], "exact-model");
+        assert_eq!(body["reasoning"]["effort"], "high", "{app}");
+        assert_eq!(body["reasoning"]["summary"], "auto", "{app}");
         assert_ne!(
             headers.get("authorization").and_then(|h| h.to_str().ok()),
             Some(format!("Bearer synthetic-{app}").as_str())

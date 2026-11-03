@@ -35,6 +35,10 @@ impl Connections {
             // Publish valid native names, but retain the old aliases for existing conversations.
             for alias in receipt.model_map.values() {
                 model_map.insert(
+                    crate::claude_desktop_config::shared_reasoning_model_name(alias),
+                    alias.clone(),
+                );
+                model_map.insert(
                     crate::claude_desktop_config::shared_model_name(alias),
                     alias.clone(),
                 );
@@ -83,11 +87,12 @@ mod tests {
     fn desktop_alias_upgrade_preserves_existing_conversation_names() -> Result<(), String> {
         let alias = "synthetic-provider/first";
         let current = crate::claude_desktop_config::shared_model_name(alias);
+        let reasoning = crate::claude_desktop_config::shared_reasoning_model_name(alias);
         use sha2::{Digest, Sha256};
         let legacy = format!("claude-vary-{:x}", Sha256::digest(alias.as_bytes()));
         assert_ne!(legacy, current);
         let connections = Connections::default();
-        for wire in [&current, &legacy] {
+        for wire in [&current, &legacy, &reasoning] {
             connections.install(&Receipt {
                 app: "claude-desktop".into(),
                 token: concat!("synthetic", "-local-token").into(),
@@ -102,20 +107,16 @@ mod tests {
                 .get("claude-desktop", concat!("synthetic", "-local-token"))
                 .ok_or("missing fixture connection")?;
             assert_eq!(
+                connection.model_map.get(&reasoning).map(String::as_str),
+                Some(alias)
+            );
+            assert_eq!(
                 connection.model_map.get(&current).map(String::as_str),
                 Some(alias)
             );
             assert_eq!(
                 connection.model_map.get(&legacy).map(String::as_str),
                 Some(alias)
-            );
-            assert_eq!(
-                connection
-                    .model_map
-                    .iter()
-                    .find(|(_, target)| *target == alias)
-                    .map(|(wire, _)| wire),
-                Some(&current)
             );
         }
         assert!(connections
@@ -242,13 +243,18 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
             .filter_map(|model| {
                 let mut entry = menu.groups.get(&model.id)?.model_entry(&model.id);
                 if app == "claude-desktop" {
-                    entry["id"] = json!(
-                        connection
-                            .model_map
-                            .iter()
-                            .find(|(_, alias)| **alias == model.id)?
-                            .0
-                    );
+                    let wire = crate::claude_desktop_config::shared_model_wire(&model);
+                    if connection.model_map.get(&wire) != Some(&model.id) {
+                        return None;
+                    }
+                    entry["id"] = json!(wire);
+                    if let Some(effort) = crate::claude_desktop_config::desktop_max_effort(&model) {
+                        entry["max_effort_level"] = json!(effort);
+                    }
+                    if let Some(window) = model.context_window {
+                        entry["max_input_tokens"] = json!(window);
+                        entry["supports_1m"] = json!(window >= 1_000_000);
+                    }
                 }
                 entry["display_name"] = json!(model.name);
                 Some(entry)
@@ -283,6 +289,11 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
     let alias = connection
         .model_map
         .get(model)
+        .or_else(|| {
+            (app == "claude-desktop")
+                .then(|| crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(model))
+                .and_then(|plain| connection.model_map.get(plain))
+        })
         .map(String::as_str)
         .unwrap_or(model)
         .to_owned();

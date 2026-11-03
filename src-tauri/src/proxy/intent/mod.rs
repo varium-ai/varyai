@@ -290,6 +290,15 @@ pub(crate) struct Session {
     pub bindings: Arc<tokio::sync::Mutex<Bindings>>,
 }
 impl Session {
+    pub(crate) fn default_reasoning_level(&self) -> Option<String> {
+        let mut defaults = self
+            .menu_targets()
+            .map(|target| target.effort.default_level.as_deref());
+        let level = defaults.next()??;
+        defaults
+            .all(|other| other == Some(level))
+            .then(|| level.to_owned())
+    }
     pub(crate) fn offered_levels(&self) -> Vec<String> {
         use crate::services::intent_routing::effort;
         if !self.group.levels.is_empty() {
@@ -321,7 +330,11 @@ impl Session {
     pub(crate) fn model_entry(&self, alias: &str) -> Value {
         let context = crate::services::intent_routing::context::Metadata::for_session(self);
         let mut model = json!({"id":alias,"object":"model","owned_by":"varyai","context_window":context.context_window});
-        crate::services::intent_routing::effort::advertise(&mut model, &self.offered_levels(), "");
+        crate::services::intent_routing::effort::advertise(
+            &mut model,
+            &self.offered_levels(),
+            self.default_reasoning_level().as_deref().unwrap_or(""),
+        );
         model
     }
     fn target_indices(&self, member: &crate::services::intent_routing::Member) -> Vec<usize> {

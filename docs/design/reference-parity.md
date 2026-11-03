@@ -41,7 +41,7 @@ storage names, and credential redaction throughout this migration.
 - [x] Execute same-model account pools without moving a bound response/tool continuation to another account.
 - [ ] Match separate image-generation model selection and all Codex advanced account controls.
 - [x] Replace retired provider references with independent native provider records; discard the old contract.
-- [x] Add explicit source-tab imports from CC Switch, Claude Code, Codex, OpenCode and Provider backup, with safe previews and stale-source checks.
+- [x] Add explicit source-tab imports from Magpie, CC Switch, Claude Code, Codex and OpenCode, with safe previews and stale-source checks.
 - [x] Import saved Codex subscriptions from the source app into managed accounts without changing source applications.
 - [ ] Match subscription and plugin authentication lifecycle.
 - [ ] Match multiple keys, accounts, quotas, concurrency, and routing controls.

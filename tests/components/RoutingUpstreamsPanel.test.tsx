@@ -487,6 +487,49 @@ describe("global upstream editor", () => {
       ),
     );
   });
+  it("retains discovered reasoning and image capabilities when selecting a model", async () => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+      { ...primary, source: { ...primary.source, models: [] } },
+    ]);
+    vi.mocked(routingUpstreamsApi.discover).mockResolvedValue([
+      {
+        id: "reasoning-model",
+        ownedBy: null,
+        reasoningLevels: ["low", "high"],
+        reasoning: true,
+        inputModalities: ["text", "image"],
+      },
+    ]);
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerForm.fetchModels" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "reasoning-model" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: expect.objectContaining({
+            models: [
+              expect.objectContaining({
+                model: "reasoning-model",
+                reasoningLevels: ["low", "high"],
+                reasoning: true,
+                inputModalities: ["text", "image"],
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+  });
   it("uses an explicitly entered key to test a draft and keeps the form locked during the test", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
     let finish!: (

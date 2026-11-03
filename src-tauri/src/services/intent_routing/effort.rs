@@ -1,4 +1,4 @@
-//! Reasoning capabilities shared by Codex menu publication and request forwarding.
+//! Reasoning capabilities shared by agent catalogs and request forwarding.
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -107,6 +107,12 @@ pub(crate) struct Capability {
     pub levels: Vec<String>,
     pub quiet: bool,
     #[serde(default)]
+    pub declared: bool,
+    #[serde(default)]
+    pub reasoning: Option<bool>,
+    #[serde(default)]
+    pub default_level: Option<String>,
+    #[serde(default)]
     pub reasonless: bool,
     #[serde(default)]
     pub images: Option<bool>,
@@ -118,6 +124,95 @@ pub(crate) struct Capability {
     pub typed_window: bool,
 }
 impl Capability {
+    pub(crate) fn has_reasoning_declaration(entry: &Value) -> bool {
+        [
+            "reasoningLevels",
+            "reasoning_levels",
+            "supported_reasoning_levels",
+            "reasoning_options",
+        ]
+        .iter()
+        .any(|key| entry.get(*key).is_some_and(Value::is_array))
+            || ["reasoning", "supports_reasoning", "supportsReasoning"]
+                .iter()
+                .any(|key| entry.get(*key).is_some_and(Value::is_boolean))
+            || (super::model_preferences::valid(entry)
+                && entry
+                    .pointer("/modelPreferences/reasoningLevels")
+                    .is_some_and(Value::is_array))
+    }
+
+    pub(crate) fn for_provider(provider: &crate::provider::Provider, model: &str) -> Self {
+        let mut resolved = provider
+            .settings_config
+            .pointer("/modelCatalog/models")
+            .and_then(Value::as_array)
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry["model"].as_str().is_some_and(|id| id.trim() == model))
+            })
+            .cloned()
+            .unwrap_or_else(|| json!({"model":model}));
+        for field in ["routingModelCapabilities", "routingPublicCapabilities"] {
+            if let Some(fallback) = provider
+                .settings_config
+                .get(field)
+                .and_then(|map| map.get(model))
+            {
+                let declared = Self::has_reasoning_declaration(&resolved);
+                let images_declared = Self::parse(&resolved).images.is_some();
+                if let (Some(resolved), Some(fallback)) =
+                    (resolved.as_object_mut(), fallback.as_object())
+                {
+                    for (key, value) in fallback {
+                        if declared
+                            && !matches!(key.as_str(), "inputModalities" | "defaultReasoningLevel")
+                        {
+                            continue;
+                        }
+                        if key == "inputModalities" && images_declared {
+                            continue;
+                        }
+                        resolved.entry(key).or_insert_with(|| value.clone());
+                    }
+                }
+            }
+        }
+        let mut capability = Self::parse(&resolved);
+        capability.context =
+            super::context::Metadata::for_provider(&provider.settings_config, model);
+        capability.typed_window =
+            super::context::Metadata::typed_window(&provider.settings_config, model);
+        capability
+    }
+
+    pub(crate) fn declaration(&self) -> Value {
+        let mut entry = json!({});
+        if self.declared || !self.levels.is_empty() || self.quiet {
+            entry["reasoningLevels"] = json!(self.levels);
+        }
+        if let Some(reasoning) = self.reasoning.or_else(|| self.quiet.then_some(false)) {
+            entry["reasoning"] = json!(reasoning);
+        }
+        if let Some(level) = &self.default_level {
+            entry["defaultReasoningLevel"] = json!(level);
+        }
+        if let Some(images) = self.images {
+            entry["inputModalities"] = if images {
+                json!(["text", "image"])
+            } else {
+                json!(["text"])
+            };
+        }
+        entry
+    }
+
+    pub(crate) fn thinks(&self) -> bool {
+        !self.quiet
+            && (self.reasoning == Some(true) || self.levels.iter().any(|level| level != "none"))
+    }
+
     pub fn parse(entry: &Value) -> Self {
         let reasonless = super::model_preferences::valid(entry)
             && entry
@@ -126,11 +221,22 @@ impl Capability {
                 .is_some_and(Vec::is_empty);
         let effective = super::model_preferences::effective(entry);
         let entry = effective.as_ref();
+        let options = entry
+            .get("reasoning_options")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|option| option["type"].as_str() == Some("effort"))
+            .filter_map(|option| option["values"].as_array())
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
         let listed = entry
             .get("reasoningLevels")
             .or_else(|| entry.get("reasoning_levels"))
             .or_else(|| entry.get("supported_reasoning_levels"))
-            .and_then(Value::as_array);
+            .and_then(Value::as_array)
+            .or_else(|| (!options.is_empty()).then_some(&options));
         let levels = LEVELS
             .iter()
             .filter(|level| {
@@ -147,10 +253,12 @@ impl Capability {
         // An absent/empty list is unknown, not evidence that reasoning is disabled.
         let quiet = entry.get("reasoning") == Some(&Value::Bool(false))
             || entry.get("supports_reasoning") == Some(&Value::Bool(false))
+            || entry.get("supportsReasoning") == Some(&Value::Bool(false))
             || levels == ["none"];
         let images = entry
             .get("inputModalities")
             .or_else(|| entry.get("input_modalities"))
+            .or_else(|| entry.pointer("/modalities/input"))
             .and_then(Value::as_array)
             .filter(|values| !values.is_empty())
             .map(|values| values.iter().any(|v| v.as_str() == Some("image")));
@@ -184,6 +292,18 @@ impl Capability {
         Self {
             levels,
             quiet,
+            declared: Self::has_reasoning_declaration(entry),
+            reasoning: entry
+                .get("reasoning")
+                .or_else(|| entry.get("supports_reasoning"))
+                .or_else(|| entry.get("supportsReasoning"))
+                .and_then(Value::as_bool),
+            default_level: entry
+                .get("defaultReasoningLevel")
+                .or_else(|| entry.get("default_reasoning_level"))
+                .and_then(Value::as_str)
+                .filter(|level| valid_member_level(level))
+                .map(str::to_owned),
             reasonless,
             images,
             context: super::context::Metadata::parse(entry),
@@ -424,6 +544,27 @@ fn patch_effort(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vendor_declarations_take_precedence_over_public_fallbacks() {
+        let provider = crate::provider::Provider::with_id(
+            "fixture".into(),
+            "Synthetic".into(),
+            serde_json::json!({
+                "modelCatalog":{"models":[{"model":"known"},{"model":"disabled","supportsReasoning":false},{"model":"limited","reasoningLevels":[]}]},
+                "routingModelCapabilities":{"known":{"reasoningLevels":["low","high"]}},
+                "routingPublicCapabilities":{"known":{"reasoningLevels":["medium","max"]},"disabled":{"reasoningLevels":["high"]},"limited":{"reasoningLevels":["high"]}}
+            }),
+            None,
+        );
+        assert_eq!(
+            super::Capability::for_provider(&provider, "known").levels,
+            ["low", "high"]
+        );
+        assert!(super::Capability::for_provider(&provider, "disabled").quiet);
+        assert!(super::Capability::for_provider(&provider, "limited")
+            .levels
+            .is_empty());
+    }
     #[test]
     fn explicit_no_reasoning_removes_protocol_thinking_without_touching_other_json() {
         let capability = super::Capability::parse(

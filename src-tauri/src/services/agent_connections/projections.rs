@@ -101,6 +101,9 @@ fn edit(
                         "api_key",
                     )?;
                     let mut row = json!({"model":m.id,"name":m.name,"base_url":format!("{base}/v1"),"api_key":token,"api_backend":"responses"});
+                    if !m.reasoning_levels.is_empty() {
+                        row["reasoning_efforts"] = json!(m.reasoning_levels);
+                    }
                     if let Some(window) = super::working_window(m) {
                         row["context_window"] = json!(window);
                     }
@@ -128,6 +131,7 @@ fn edit(
                     .collect::<Vec<_>>();
                 let rows = catalog.iter().map(|m| {
                     let mut row = json!({"id":m.id,"name":m.name,"input":if m.images {vec!["text","image"]} else {vec!["text"]}});
+                    row["reasoning"] = json!(m.reasoning || m.reasoning_levels.iter().any(|level| level != "none"));
                     if let Some(w) = m.context_window { row["contextWindow"] = json!(w); }
                     row
                 }).collect::<Vec<_>>();
@@ -201,6 +205,13 @@ fn edit(
             "qoder" => {
                 owned(value.pointer("/providers/varyai"), token, "apiKey")?;
                 let mut config = client_config(catalog, base, token, selected);
+                if let Some(rows) = config["models"].as_array_mut() {
+                    for row in rows {
+                        if let Some(model) = catalog.iter().find(|model| row["model"] == model.id) {
+                            super::reasoning::qoder(row, model);
+                        }
+                    }
+                }
                 config["name"] = json!("Vary AI");
                 config["model"] = json!(selected);
                 config["type"] = json!("openai-compatible");
@@ -247,6 +258,27 @@ fn edit(
                 )
                 .map_err(|_| FAILED)?;
                 *value = doc.value;
+                for model in catalog {
+                    if app == "kimi" {
+                        super::reasoning::kimi(
+                            &mut value["models"][format!("varyai-shared-catalog-{}", model.id)],
+                            model,
+                        );
+                    } else if app == "zcode" {
+                        for row in value
+                            .pointer_mut("/config/modelConfigRules/providerModelRules")
+                            .and_then(Value::as_array_mut)
+                            .into_iter()
+                            .flatten()
+                            .filter(|row| {
+                                row["providerId"] == "varyai-shared-catalog"
+                                    && row["modelId"] == model.id
+                            })
+                        {
+                            super::reasoning::zcode(&mut row["config"], model);
+                        }
+                    }
+                }
                 // Legacy adapters supply guessed capacities; shared catalogs must not.
                 for m in catalog.iter().filter(|m| m.context_window.is_none()) {
                     if app == "kimi" {
@@ -308,6 +340,8 @@ mod tests {
             compact_at: Some(272_000),
             group: "routing".into(),
             reasoning_levels: vec![],
+            reasoning: false,
+            default_reasoning_level: None,
             images: true,
         }];
         let path = dir.path().join("grok.toml");
@@ -346,7 +380,9 @@ mod tests {
             context_window: Some(1_000_000),
             compact_at: None,
             group: "routing".into(),
-            reasoning_levels: vec![],
+            reasoning_levels: vec!["none".into(), "low".into(), "high".into()],
+            reasoning: true,
+            default_reasoning_level: None,
             images: true,
         }];
         for app in [
@@ -382,6 +418,33 @@ mod tests {
             )?;
             projection.write()?;
             assert!(projection.intact()?, "{app}");
+            let installed = &projection.installed;
+            match app {
+                "grokbuild" => assert_eq!(
+                    installed["model"][wire_id(&catalog[0].id)]["reasoning_efforts"],
+                    json!(["none", "low", "high"])
+                ),
+                "openclaw" => assert_eq!(
+                    installed["models"]["providers"]["varyai"]["models"][0]["reasoning"],
+                    true
+                ),
+                "qoder" => assert_eq!(
+                    installed["providers"]["varyai"]["models"][0]["capabilities"]["thinking"]
+                        ["supportedEffortLevels"],
+                    json!(["low", "high"])
+                ),
+                "kimi" => assert_eq!(
+                    installed["models"][format!("varyai-shared-catalog-{}", catalog[0].id)]
+                        ["support_efforts"],
+                    json!(["low", "high"])
+                ),
+                "zcode" => assert_eq!(
+                    installed["config"]["modelConfigRules"]["providerModelRules"][0]["config"]
+                        ["optionSpecs"]["reasoningLevel"]["values"],
+                    json!(["disabled", "low", "high"])
+                ),
+                _ => {}
+            }
             let repeated = edit(
                 app,
                 path.clone(),

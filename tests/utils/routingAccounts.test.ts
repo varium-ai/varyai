@@ -148,95 +148,26 @@ it("does not turn a model-specific cooldown into an account-wide rest or count c
   expect(result[0].observations.map((row) => row.restUntil)).toEqual([100, 0]);
 });
 
-it("retains provider/model summaries without borrowing credential identities or today's telemetry", () => {
-  const archive = { ...route("1", [account()]), archived: true, status: 200 };
-  const result = foldRoutingAccounts([archive], [account()], true);
+it("folds persisted gateway candidates and decisions after serialization without using live telemetry", () => {
+  const original = route(
+    "persisted",
+    [account()],
+    [
+      { kind: "attempt", candidate: 0, atMs: 1 },
+      { kind: "completed", candidate: 0, atMs: 10, status: 200 },
+    ],
+  );
+  const persisted = JSON.parse(JSON.stringify(original));
+  const current = { ...account(), restUntil: 9999999999 };
+  const result = foldRoutingAccounts([persisted], [current], false);
   expect(result).toHaveLength(1);
   expect(result[0]).toMatchObject({
-    kind: "provider",
-    summaryOnly: true,
-    requests: 1,
-    tried: 0,
+    id: "key-a",
+    tried: 1,
     answered: 1,
-    failed: 0,
     models: ["model-a"],
   });
-  expect(result[0].id).not.toBe("key-a");
-  expect(result[0].observations).toEqual([
-    {
-      providerId: "vendor",
-      providerName: "Synthetic vendor",
-      model: "model-a",
-      restUntil: 0,
-      windows: [],
-    },
-  ]);
-});
-
-it("aggregates archived outcomes by provider/model without inferring fallback attempts or merging with live keys", () => {
-  const result = foldRoutingAccounts(
-    [
-      { ...route("1", [account()]), archived: true, status: 200 },
-      {
-        ...route("2", [account()]),
-        archived: true,
-        state: "failed",
-        status: 429,
-      },
-      {
-        ...route("3", [account()]),
-        archived: true,
-        state: "cancelled",
-        status: 499,
-      },
-      route("4", [account()]),
-    ],
-    [account()],
-    true,
-  );
-  expect(result).toHaveLength(2);
-  const summary = result.find((row) => row.summaryOnly);
-  expect(summary).toMatchObject({
-    requests: 3,
-    tried: 0,
-    answered: 1,
-    failed: 1,
-    failures: { "429": 1 },
-    lastAnswered: 101,
-  });
-  expect(result.find((row) => !row.summaryOnly)).toMatchObject({
-    id: "key-a",
-    tried: 0,
-  });
-});
-
-it("keeps different archived models and providers separate and skips summaries with no unambiguous destination", () => {
-  const result = foldRoutingAccounts(
-    [
-      { ...route("1", [account()]), archived: true },
-      { ...route("2", [account("key-a", "model-b")]), archived: true },
-      {
-        ...route("3", [{ ...account(), providerId: "other" }]),
-        archived: true,
-      },
-      { ...route("4", []), archived: true },
-      { ...route("5", [account(), account("other-key")]), archived: true },
-      { ...route("6", [{ ...account(), providerId: "" }]), archived: true },
-    ],
-    [],
-    false,
-  );
-  expect(result).toHaveLength(3);
-  expect(result.every((row) => row.requests === 1 && row.summaryOnly)).toBe(
-    true,
-  );
-  expect(
-    result.map((row) => [row.providerId, row.observations[0].model]),
-  ).toEqual([
-    ["other", "model-a"],
-    ["vendor", "model-a"],
-    ["vendor", "model-b"],
-  ]);
+  expect(result[0].observations[0].restUntil).not.toBe(current.restUntil);
 });
 
 it("retains bounded failure categories and counts stream failure once after connection", () => {
