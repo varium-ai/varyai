@@ -18,7 +18,7 @@ use super::ProxyError;
 /// - 其他错误：500 Internal Server Error
 pub fn map_proxy_error_to_status(error: &ProxyError) -> u16 {
     match error {
-        ProxyError::DlpForward(error) => error.status_code().as_u16(),
+        ProxyError::DlpForward(error) => error.client_status_code().as_u16(),
         ProxyError::SafeUpstream(error) => error.status().as_u16(),
         // 服务状态错误：与 IntoResponse 保持一致
         ProxyError::AlreadyRunning => 409,
@@ -68,6 +68,10 @@ pub fn map_proxy_error_to_status(error: &ProxyError) -> u16 {
 /// 将 ProxyError 转换为用户友好的错误消息
 pub fn get_error_message(error: &ProxyError) -> String {
     match error {
+        ProxyError::DlpForward(
+            super::security::http_restoration::DlpForwardError::UpstreamStatus(_),
+        ) => error.to_string(),
+        ProxyError::DlpForward(error) => error.client_message().to_string(),
         ProxyError::UpstreamError { status, .. } => format!("上游错误 ({status})"),
         ProxyError::Timeout(msg) => format!("请求超时: {msg}"),
         ProxyError::ForwardFailed(msg) => format!("转发失败: {msg}"),

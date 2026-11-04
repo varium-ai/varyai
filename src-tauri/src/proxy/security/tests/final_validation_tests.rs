@@ -748,7 +748,7 @@ async fn reasoning_empty_lease_keeps_native_completion_validation() -> TestResul
         )
         .await;
     assert!(
-        response.status() == StatusCode::BAD_GATEWAY,
+        response.status() == StatusCode::INTERNAL_SERVER_ERROR,
         "empty token authority must not skip native completion validation"
     );
     Ok(())
@@ -889,7 +889,7 @@ async fn reasoning_delivered_history_json_failed_completion_never_publishes() ->
             )
             .await;
         assert!(
-            response.status() == StatusCode::BAD_GATEWAY,
+            response.status() == StatusCode::INTERNAL_SERVER_ERROR,
             "failed completion must preserve failure semantics"
         );
         assert!(
@@ -1692,21 +1692,33 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
             RestorationAdmission::Admitted(request) => request,
             _ => return Err("completion dependency must defer its actual binding check".into()),
         };
+        let uncompleted_attempt = uncompleted_request
+            .prepare_attempt_for_proxy(
+                "synthetic-history-provider",
+                "openai_responses",
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-history-principal"),
+                &mut uncompleted,
+                |body| Ok(body.clone()),
+            )
+            .map_err(|_| "uncompleted response dependency must degrade without blocking")?;
+        let mut cursor_observer = uncompleted_attempt.lease.fork_attempt()?;
         assert!(
-            matches!(
-                uncompleted_request.prepare_attempt_for_proxy(
-                    "synthetic-history-provider",
-                    "openai_responses",
-                    "https://synthetic.invalid/v1/responses",
-                    Some("synthetic-history-principal"),
-                    &mut uncompleted,
-                    |body| Ok(body.clone())
-                ),
-                Err(crate::proxy::error::ProxyError::DlpForward(
-                    DlpForwardError::ContextUnavailable
-                ))
-            ),
-            "exact delivered-history proof must not authorize an uncompleted response dependency"
+            cursor_observer
+                .resume_completed_context(
+                    &uncompleted_attempt.binding,
+                    Some("synthetic-uncompleted-response"),
+                    &[],
+                    &[],
+                )
+                .is_err(),
+            "exact delivered-history proof must not fabricate an uncompleted cursor"
+        );
+        assert!(
+            uncompleted_attempt
+                .validate_final_send_history(&uncompleted)
+                .is_ok(),
+            "degraded uncompleted history must pass final send validation"
         );
         for (provider, target, principal) in [
             (
@@ -1738,18 +1750,23 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
                 RestorationAdmission::Admitted(request) => request,
                 _ => panic!("private candidate must defer actual-binding decision"),
             };
+            let attempt = request
+                .prepare_attempt_for_proxy(
+                    provider,
+                    "openai_responses",
+                    target,
+                    Some(principal),
+                    &mut candidate,
+                    |body| Ok(body.clone()),
+                )
+                .map_err(|_| "different actual authority must degrade without blocking")?;
             assert!(
-                request
-                    .prepare_attempt_for_proxy(
-                        provider,
-                        "openai_responses",
-                        target,
-                        Some(principal),
-                        &mut candidate,
-                        |body| Ok(body.clone())
-                    )
-                    .is_err(),
-                "different actual authority must refuse history"
+                attempt.history_mapping.is_none(),
+                "different actual authority must not acquire history mapping"
+            );
+            assert!(
+                attempt.validate_final_send_history(&candidate).is_ok(),
+                "degraded authority change must pass final send validation"
             );
         }
         for mutation in 0..4 {
@@ -2044,7 +2061,7 @@ async fn check_history_http_isolation(
                 &mut candidate,
                 candidate_headers,
             )?;
-            assert_bound_history_context_refusal(admission, &mut candidate).await?;
+            assert_bound_history_context_degrades(admission, &mut candidate).await?;
         }
         return Ok(());
     }
@@ -2127,7 +2144,7 @@ async fn check_history_http_isolation(
             &mut candidate,
             &headers,
         )?;
-        assert_bound_history_context_refusal(admission, &mut candidate).await?;
+        assert_bound_history_context_degrades(admission, &mut candidate).await?;
     } else {
         // Revoke proof eligibility, not the request's captured detection matcher.
         let proof_revoked = matches!(
@@ -2146,39 +2163,44 @@ async fn check_history_http_isolation(
     Ok(())
 }
 
-async fn assert_bound_history_context_refusal(
+async fn assert_bound_history_context_degrades(
     admission: RestorationAdmission,
     body: &mut Value,
 ) -> TestResult {
-    let response = match admission {
-        RestorationAdmission::Intercepted(response) => response,
-        RestorationAdmission::Admitted(request) => {
-            let error = match request.prepare_attempt_for_proxy(
-                "synthetic-isolation-provider",
-                "openai_responses",
-                "https://synthetic.invalid/v1/responses",
-                Some("synthetic-isolation-principal"),
-                body,
-                |body| Ok(body.clone()),
-            ) {
-                Err(crate::proxy::error::ProxyError::DlpForward(error)) => error,
-                _ => {
-                    return Err("unproven real completion dependency must refuse at binding".into())
-                }
-            };
-            error.into_codex_response()
+    let request = match admission {
+        RestorationAdmission::Admitted(request) => request,
+        RestorationAdmission::Intercepted(_) => {
+            return Err("missing completion context must not intercept the request".into())
         }
         RestorationAdmission::Passthrough => {
-            return Err("real history dependency cannot pass through".into())
+            return Err("real history dependency must still receive DLP inspection".into())
         }
     };
-    assert_history_context_refusal_response(response).await
+    let attempt = request
+        .prepare_attempt_for_proxy(
+            "synthetic-isolation-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-isolation-principal"),
+            body,
+            |body| Ok(body.clone()),
+        )
+        .map_err(|_| "missing completion context must degrade at binding")?;
+    assert!(
+        attempt.history_mapping.is_none(),
+        "missing completion context must not acquire history mapping"
+    );
+    assert!(
+        attempt.validate_final_send_history(body).is_ok(),
+        "degraded history must pass final send validation"
+    );
+    Ok(())
 }
 
 async fn assert_history_context_refusal_response(response: Response) -> TestResult {
     assert!(
-        response.status() == StatusCode::BAD_REQUEST,
-        "history isolation must produce the fixed client refusal status"
+        response.status() == StatusCode::INTERNAL_SERVER_ERROR,
+        "internal history failures must use the generic server error status"
     );
     let bytes = axum::body::to_bytes(response.into_body(), 4096)
         .await
@@ -2186,14 +2208,14 @@ async fn assert_history_context_refusal_response(response: Response) -> TestResu
     let payload: Value = serde_json::from_slice(&bytes)
         .map_err(|_| "synthetic isolation refusal must encode JSON")?;
     let expected = json!({"error": {
-        "message": DlpForwardError::ContextUnavailable.message(),
-        "type": "invalid_request_error",
-        "code": "dlp_context_unavailable",
+        "message": "The local proxy could not process the request. Please retry.",
+        "type": "server_error",
+        "code": "proxy_processing_failed",
         "param": null
     }});
     assert!(
         payload == expected,
-        "history isolation must return the exact fixed client refusal envelope without extra fields"
+        "internal history failures must not expose diagnostic details"
     );
     Ok(())
 }

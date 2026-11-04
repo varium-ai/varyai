@@ -394,13 +394,14 @@ fn placeholder_passthrough_request_block_budget_and_literal_collision_stay_close
 
 #[test]
 #[serial_test::serial]
-fn placeholder_passthrough_request_previous_response_still_needs_completion() -> TestResult {
+fn placeholder_passthrough_request_previous_response_degrades_without_completion() -> TestResult {
     let _reset = Reset((*runtime::get_security_runtime()).clone());
     runtime::set_security_runtime_for_test(Default::default());
     let gateway = RestorationGateway::with_test_rules(&["chinese_phone_number"], 64 * 1024 * 1024);
     let mut body =
         json!({"previous_response_id":"synthetic-missing-response","input":literals()[0]});
-    if let RestorationAdmission::Admitted(request) = admit_http_request(
+    let original = body.clone();
+    let request = match admit_http_request(
         &gateway,
         &AppType::Codex,
         true,
@@ -408,20 +409,27 @@ fn placeholder_passthrough_request_previous_response_still_needs_completion() ->
         &mut body,
         &Default::default(),
     )? {
-        assert!(
-            request
-                .prepare_attempt(
-                    "synthetic-provider",
-                    "openai_responses",
-                    "https://synthetic.invalid/v1/responses",
-                    Some("synthetic-principal"),
-                    &mut body,
-                    |candidate| Ok(candidate.clone())
-                )
-                .is_err(),
-            "literal_granted_completion"
-        );
-    }
+        RestorationAdmission::Admitted(request) => request,
+        _ => return Err("missing_completion_admission_failed".into()),
+    };
+    let attempt = request
+        .prepare_attempt(
+            "synthetic-provider",
+            "openai_responses",
+            "https://synthetic.invalid/v1/responses",
+            Some("synthetic-principal"),
+            &mut body,
+            |candidate| {
+                assert_eq!(candidate, &original, "missing_completion_changed_literal");
+                Ok(candidate.clone())
+            },
+        )
+        .map_err(|_| "missing_completion_blocked_request")?;
+    assert!(
+        !attempt.has_active_tokens(),
+        "missing_completion_granted_authority"
+    );
+    assert_eq!(body, original, "missing_completion_changed_source");
     Ok(())
 }
 
@@ -515,7 +523,7 @@ fn placeholder_passthrough_request_completed_matching_keeps_binding_boundary() -
 
 #[test]
 #[serial_test::serial]
-fn placeholder_passthrough_request_readable_mixed_authority_still_requires_tool_witness(
+fn placeholder_passthrough_request_readable_mixed_history_degrades_without_tool_witness(
 ) -> TestResult {
     use super::{
         completed_context::CompletionWitness,
@@ -559,9 +567,9 @@ fn placeholder_passthrough_request_readable_mixed_authority_still_requires_tool_
     );
     let mut headers = http::HeaderMap::new();
     headers.insert("session-id", "synthetic-mixed-history".parse()?);
-    for authorized in [false, true] {
+    for includes_reference in [false, true] {
         let literal = &literals()[2];
-        let text = if authorized {
+        let text = if includes_reference {
             format!("{literal} {reference}")
         } else {
             literal.clone()
@@ -591,34 +599,39 @@ fn placeholder_passthrough_request_readable_mixed_authority_still_requires_tool_
             _ => return Err("mixed_history_admission_failed".into()),
         };
         let transformed = std::cell::Cell::new(false);
-        let result = request.prepare_attempt(
-            "synthetic-provider",
-            "openai_responses",
-            "https://synthetic.invalid/v1/responses",
-            Some("synthetic-principal"),
-            &mut body,
-            |candidate| {
-                transformed.set(true);
-                Ok(candidate.clone())
-            },
+        let attempt = request
+            .prepare_attempt(
+                "synthetic-provider",
+                "openai_responses",
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-principal"),
+                &mut body,
+                |candidate| {
+                    transformed.set(true);
+                    assert_eq!(
+                        candidate, &original,
+                        "unwitnessed_reference_changed; includes_reference={includes_reference}"
+                    );
+                    Ok(candidate.clone())
+                },
+            )
+            .map_err(|_| "unwitnessed_history_blocked")?;
+        assert!(transformed.get(), "unwitnessed_history_not_prepared");
+        assert_eq!(
+            attempt.has_active_tokens(),
+            includes_reference,
+            "known_completion_authority_changed; includes_reference={includes_reference}"
         );
-        if authorized {
-            assert!(
-                matches!(
-                    result,
-                    Err(super::http_restoration::DlpForwardError::ContextUnavailable)
-                ),
-                "authorized_reference_bypassed_tool_witness"
-            );
-            assert!(!transformed.get(), "unwitnessed_history_transformed");
-        } else {
-            let attempt = result.map_err(|_| "literal_history_rejected")?;
-            assert!(
-                !attempt.has_active_tokens(),
-                "literal_history_granted_authority"
-            );
-        }
-        assert!(body == original, "mixed_history_bytes_changed");
+        assert_eq!(
+            attempt.lease.resolve(&reference).is_ok(),
+            includes_reference,
+            "known_reference_completion_boundary_changed"
+        );
+        assert!(
+            attempt.lease.resolve(literal).is_err(),
+            "unknown_literal_granted_authority"
+        );
+        assert_eq!(body, original, "mixed_history_bytes_changed");
     }
     Ok(())
 }
@@ -745,29 +758,37 @@ fn message_projection_http_tool_history_retains_dependency_boundaries() -> TestR
             _ if case != 0 => continue,
             _ => return Err("message_projection_http_admission_failed".into()),
         };
-        let result = request.prepare_attempt(
-            "synthetic-provider",
-            "openai_responses",
-            "https://synthetic.invalid/v1/responses",
-            Some("synthetic-principal"),
-            &mut body,
-            |candidate| Ok(candidate.clone()),
+        let attempt = request
+            .prepare_attempt(
+                "synthetic-provider",
+                "openai_responses",
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-principal"),
+                &mut body,
+                |candidate| {
+                    assert_eq!(
+                        candidate, &original,
+                        "projection_changed_unproven_history; case={case}"
+                    );
+                    Ok(candidate.clone())
+                },
+            )
+            .map_err(|_| "message_projection_missing_context_blocked")?;
+        assert_eq!(
+            attempt.has_active_tokens(),
+            case == 1,
+            "projection_completion_authority_changed; case={case}"
         );
-        if matches!(case, 0 | 4) {
-            assert!(
-                result.is_ok(),
-                "readable or unknown history must not require recovery authority"
-            );
-            assert!(
-                !result
-                    .map_err(|_| "projection_attempt_failed")?
-                    .has_active_tokens(),
-                "projection_granted_mapping"
-            );
-        } else {
-            assert!(result.is_err(), "message_projection_bypassed_dependency");
-        }
-        assert!(body == original, "projection_changed_source");
+        assert_eq!(
+            attempt.lease.resolve(&reference).is_ok(),
+            case == 1,
+            "projection_reference_boundary_changed; case={case}"
+        );
+        assert!(
+            attempt.lease.resolve(&literals()[2]).is_err(),
+            "projection_unknown_literal_granted_authority; case={case}"
+        );
+        assert_eq!(body, original, "projection_changed_source");
     }
     Ok(())
 }
@@ -884,7 +905,8 @@ fn message_projection_recorded_identity_without_matching_sibling_stays_strict() 
 
 #[test]
 #[serial_test::serial]
-fn message_projection_recorded_call_http_keeps_binding_and_completion() -> TestResult {
+fn message_projection_recorded_call_http_degrades_unavailable_binding_and_completion() -> TestResult
+{
     let _reset = Reset((*runtime::get_security_runtime()).clone());
     runtime::set_security_runtime_for_test(Default::default());
     let (store, lease, binding, message, _) = message_projection_fixture()?;
@@ -944,42 +966,45 @@ fn message_projection_recorded_call_http_keeps_binding_and_completion() -> TestR
             _ => return Err("bound_admission_failed".into()),
         };
         let transformed = std::cell::Cell::new(false);
-        let result = request.prepare_attempt(
-            if variant == 1 {
-                "synthetic-other-provider"
-            } else {
-                "synthetic-provider"
-            },
-            "openai_responses",
-            "https://synthetic.invalid/v1/responses",
-            Some("synthetic-principal"),
-            &mut body,
-            |candidate| {
-                transformed.set(true);
-                Ok(candidate.clone())
-            },
+        let attempt = request
+            .prepare_attempt(
+                if variant == 1 {
+                    "synthetic-other-provider"
+                } else {
+                    "synthetic-provider"
+                },
+                "openai_responses",
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-principal"),
+                &mut body,
+                |candidate| {
+                    transformed.set(true);
+                    assert_eq!(
+                        candidate, &original,
+                        "unavailable_binding_changed_history; case={case}"
+                    );
+                    Ok(candidate.clone())
+                },
+            )
+            .map_err(|_| "unavailable_bound_history_blocked")?;
+        assert!(transformed.get(), "bound_history_not_prepared; case={case}");
+        assert_eq!(
+            attempt.has_active_tokens(),
+            variant == 0,
+            "bound_completion_authority_changed; case={case}"
         );
-        if variant == 0 {
-            assert!(result.is_ok(), "bound_completed_history_rejected");
-            assert!(transformed.get(), "bound_completed_history_not_prepared");
-        } else {
-            assert!(
-                matches!(
-                    result,
-                    Err(super::http_restoration::DlpForwardError::ContextUnavailable)
-                ),
-                "bound_history_bypassed_completion"
-            );
-            assert!(!transformed.get(), "bound_unproven_history_transformed");
-        }
-        assert!(body == original, "bound_source_changed");
+        assert!(
+            attempt.lease.resolve(&literals()[2]).is_err(),
+            "bound_unknown_literal_granted_authority; case={case}"
+        );
+        assert_eq!(body, original, "bound_source_changed");
     }
     Ok(())
 }
 
 #[test]
 #[serial_test::serial]
-fn mixed_readable_continuation_http_preserves_per_call_completion_boundaries() -> TestResult {
+fn mixed_readable_continuation_http_degrades_unavailable_per_call_completion() -> TestResult {
     let _reset = Reset((*runtime::get_security_runtime()).clone());
     runtime::set_security_runtime_for_test(Default::default());
     let (store, lease, binding, message, reference) = message_projection_fixture()?;
@@ -1014,7 +1039,7 @@ fn mixed_readable_continuation_http_preserves_per_call_completion_boundaries() -
         "source": "Synthetic source\nrredact-custom-"
     }))?;
     for case in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 0, 13] {
-        let positive = matches!(case, 0 | 5 | 13);
+        let must_admit = matches!(case, 0 | 5 | 13);
         let mut body = json!({"input":[
             {"type":"function_call", "call_id":"synthetic-readable-prior", "name":"synthetic-prior-tool", "arguments":"{}"},
             {"type":"function_call_output", "call_id":"synthetic-readable-prior", "output":"Synthetic prior result"},
@@ -1060,7 +1085,7 @@ fn mixed_readable_continuation_http_preserves_per_call_completion_boundaries() -
             admit_http_request(&gateway, &AppType::Codex, true, false, &mut body, &headers);
         let request = match admission {
             Ok(RestorationAdmission::Admitted(request)) => request,
-            _ if !positive => continue,
+            _ if !must_admit => continue,
             _ => return Err("mixed_readable_admission_rejected".into()),
         };
         if case == 10 {
@@ -1068,34 +1093,46 @@ fn mixed_readable_continuation_http_preserves_per_call_completion_boundaries() -
         }
         let attempt_input = body.clone();
         let transformed = std::cell::Cell::new(false);
-        let result = request.prepare_attempt(
-            if case == 9 {
-                "synthetic-other-provider"
-            } else {
-                "synthetic-provider"
-            },
-            "openai_responses",
-            "https://synthetic.invalid/v1/responses",
-            Some("synthetic-principal"),
-            &mut body,
-            |candidate| {
-                transformed.set(true);
-                Ok(candidate.clone())
-            },
+        let attempt = request
+            .prepare_attempt(
+                if case == 9 {
+                    "synthetic-other-provider"
+                } else {
+                    "synthetic-provider"
+                },
+                "openai_responses",
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-principal"),
+                &mut body,
+                |candidate| {
+                    transformed.set(true);
+                    assert_eq!(
+                        candidate, &attempt_input,
+                        "mixed_unproven_history_changed; case={case}"
+                    );
+                    Ok(candidate.clone())
+                },
+            )
+            .map_err(|_| "mixed_readable_missing_context_blocked")?;
+        assert!(transformed.get(), "mixed_readable_history_not_prepared");
+        let expects_completion_authority = matches!(case, 0 | 4 | 5 | 13 | 16);
+        assert_eq!(
+            attempt.has_active_tokens(),
+            expects_completion_authority,
+            "mixed_completion_authority_changed; case={case}"
         );
-        if positive {
-            assert!(result.is_ok(), "mixed_readable_history_rejected");
-            assert!(transformed.get(), "mixed_readable_history_not_prepared");
-        } else {
-            assert!(
-                result.is_err(),
-                "mixed_readable_history_bypassed_dependency"
-            );
-            assert!(!transformed.get(), "mixed_unproven_history_transformed");
-        }
-        assert!(body == attempt_input, "mixed_readable_source_changed");
+        assert_eq!(
+            attempt.lease.resolve(&reference).is_ok(),
+            expects_completion_authority,
+            "mixed_reference_boundary_changed; case={case}"
+        );
+        assert!(
+            attempt.lease.resolve(&literals()[2]).is_err(),
+            "mixed_unknown_literal_granted_authority; case={case}"
+        );
+        assert_eq!(body, attempt_input, "mixed_readable_source_changed");
         if case != 10 {
-            assert!(body == original, "mixed_readable_admission_changed");
+            assert_eq!(body, original, "mixed_readable_admission_changed");
         }
     }
     Ok(())
@@ -1103,7 +1140,7 @@ fn mixed_readable_continuation_http_preserves_per_call_completion_boundaries() -
 
 #[test]
 #[serial_test::serial]
-fn mixed_readable_continuation_valid_cursor_preserves_per_call_completion() -> TestResult {
+fn mixed_readable_continuation_cursor_degrades_unavailable_per_call_completion() -> TestResult {
     let _reset = Reset((*runtime::get_security_runtime()).clone());
     runtime::set_security_runtime_for_test(Default::default());
     let (store, lease, binding, message, reference) = message_projection_fixture()?;
@@ -1134,7 +1171,6 @@ fn mixed_readable_continuation_valid_cursor_preserves_per_call_completion() -> T
     let mut headers = http::HeaderMap::new();
     headers.insert("session-id", "synthetic-message-projection".parse()?);
     for case in 0..9 {
-        let positive = matches!(case, 0 | 1);
         let mut body = json!({"input":[
             {"type":"function_call", "call_id":"synthetic-cursor-prior", "name":"synthetic-prior-tool", "arguments":"{}"},
             {"type":"function_call_output", "call_id":"synthetic-cursor-prior", "output":"Synthetic prior result"},
@@ -1176,38 +1212,44 @@ fn mixed_readable_continuation_valid_cursor_preserves_per_call_completion() -> T
             _ => return Err("cursor_mixed_admission_failed".into()),
         };
         let transformed = std::cell::Cell::new(false);
-        let result = request.prepare_attempt(
-            if matches!(case, 6 | 8) {
-                "synthetic-other-provider"
-            } else {
-                "synthetic-provider"
-            },
-            "openai_responses",
-            "https://synthetic.invalid/v1/responses",
-            Some("synthetic-principal"),
-            &mut body,
-            |candidate| {
-                transformed.set(true);
-                Ok(candidate.clone())
-            },
+        let attempt = request
+            .prepare_attempt(
+                if matches!(case, 6 | 8) {
+                    "synthetic-other-provider"
+                } else {
+                    "synthetic-provider"
+                },
+                "openai_responses",
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-principal"),
+                &mut body,
+                |candidate| {
+                    transformed.set(true);
+                    assert_eq!(
+                        candidate, &original,
+                        "cursor_unproven_history_changed; case={case}"
+                    );
+                    Ok(candidate.clone())
+                },
+            )
+            .map_err(|_| "cursor_mixed_missing_context_blocked")?;
+        assert!(transformed.get(), "cursor_mixed_history_not_prepared");
+        let expects_completion_authority = matches!(case, 0 | 1 | 3);
+        assert_eq!(
+            attempt.has_active_tokens(),
+            expects_completion_authority,
+            "cursor_completion_authority_changed; case={case}"
         );
-        if positive {
-            assert!(
-                result.is_ok(),
-                "valid_cursor_mixed_history_rejected; case={case}"
-            );
-            assert!(transformed.get(), "valid_cursor_history_not_prepared");
-        } else {
-            assert!(
-                matches!(
-                    result,
-                    Err(super::http_restoration::DlpForwardError::ContextUnavailable)
-                ),
-                "cursor_mixed_dependency_bypassed; case={case}"
-            );
-            assert!(!transformed.get(), "cursor_unproven_history_transformed");
-        }
-        assert!(body == original, "cursor_mixed_source_changed");
+        assert_eq!(
+            attempt.lease.resolve(&reference).is_ok(),
+            expects_completion_authority,
+            "cursor_reference_boundary_changed; case={case}"
+        );
+        assert!(
+            attempt.lease.resolve(&literals()[2]).is_err(),
+            "cursor_unknown_literal_granted_authority; case={case}"
+        );
+        assert_eq!(body, original, "cursor_mixed_source_changed");
     }
     Ok(())
 }
@@ -1286,36 +1328,111 @@ fn mixed_readable_continuation_selected_completion_survives_history_eviction() -
                 }
             });
         let transformed = std::cell::Cell::new(false);
-        let result = request.prepare_attempt(
-            if case == 2 {
-                "synthetic-other-provider"
-            } else {
-                "synthetic-provider"
-            },
+        let attempt = request
+            .prepare_attempt(
+                if case == 2 {
+                    "synthetic-other-provider"
+                } else {
+                    "synthetic-provider"
+                },
+                "openai_responses",
+                "https://synthetic.invalid/v1/responses",
+                Some("synthetic-principal"),
+                &mut body,
+                |candidate| {
+                    transformed.set(true);
+                    assert_eq!(
+                        candidate, &original,
+                        "evicted_unproven_history_changed; case={case}"
+                    );
+                    Ok(candidate.clone())
+                },
+            )
+            .map_err(|_| "evicted_missing_context_blocked")?;
+        assert!(evicted.get(), "history_eviction_control_not_exercised");
+        assert!(transformed.get(), "evicted_history_not_prepared");
+        assert_eq!(
+            attempt.has_active_tokens(),
+            case == 3,
+            "evicted_completion_authority_changed; case={case}"
+        );
+        assert!(
+            attempt.lease.resolve(&literals()[2]).is_err(),
+            "evicted_unknown_literal_granted_authority; case={case}"
+        );
+        assert_eq!(body, original, "evicted_source_changed");
+    }
+    Ok(())
+}
+
+#[test]
+#[serial_test::serial]
+fn mixed_media_history_degrades_missing_completion_without_granting_authority() -> TestResult {
+    let _reset = Reset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    let (store, lease, binding, _, _) = message_projection_fixture()?;
+    let current = json!({"id":"synthetic-media-current-item", "type":"function_call", "call_id":"synthetic-media-current-call", "name":"synthetic-current-tool", "arguments":"{}"});
+    let response = json!({"id":"synthetic-media-completed", "object":"response", "status":"completed", "output":[current.clone()]});
+    let restored = super::response_restoration::restore_and_publish_json_response(
+        &response,
+        false,
+        &lease,
+        &binding,
+        &super::completed_context::CompletionWitness::from_verified_completion(true)?,
+        &PayloadBudget::default(),
+    )
+    .map_err(|_| "media_completion_publish_failed")?;
+    let pending = lease
+        .capture_delivered_history(&binding, restored.as_value())
+        .ok_or("media_capture_failed")?;
+    assert!(
+        lease.publish_delivered_history(&binding, pending),
+        "media_delivery_failed"
+    );
+    let gateway = RestorationGateway::with_test_store_and_rules(
+        store,
+        &["chinese_phone_number"],
+        PayloadBudget::default(),
+    );
+    let mut headers = http::HeaderMap::new();
+    headers.insert("session-id", "synthetic-message-projection".parse()?);
+    let prior_literal = literals()[2].clone();
+    let mut body = json!({"previous_response_id":"synthetic-media-completed", "input":[
+        {"type":"function_call", "call_id":"synthetic-media-prior-call", "name":"synthetic-prior-tool", "arguments":"{}"},
+        {"type":"function_call_output", "call_id":"synthetic-media-prior-call", "output":[
+            {"type":"input_image", "image_url":"data:image/png;base64,synthetic-opaque", "detail":"auto"},
+            {"type":"input_text", "text":prior_literal}
+        ]},
+        current,
+        {"type":"function_call_output", "call_id":"synthetic-media-current-call", "output":"Synthetic current result"},
+        {"role":"user", "content":"Synthetic continue"}
+    ]});
+    let original = body.clone();
+    let request =
+        match admit_http_request(&gateway, &AppType::Codex, true, false, &mut body, &headers)? {
+            RestorationAdmission::Admitted(request) => request,
+            _ => return Err("mixed_media_history_admission_failed".into()),
+        };
+    let transformed = std::cell::Cell::new(false);
+    let attempt = request
+        .prepare_attempt(
+            "synthetic-provider",
             "openai_responses",
             "https://synthetic.invalid/v1/responses",
             Some("synthetic-principal"),
             &mut body,
             |candidate| {
                 transformed.set(true);
+                assert_eq!(candidate, &original, "mixed_media_history_changed");
                 Ok(candidate.clone())
             },
-        );
-        assert!(evicted.get(), "history_eviction_control_not_exercised");
-        if case == 3 {
-            assert!(result.is_ok(), "completed_evicted_history_rejected");
-            assert!(transformed.get(), "completed_evicted_history_not_prepared");
-        } else {
-            assert!(
-                matches!(
-                    result,
-                    Err(super::http_restoration::DlpForwardError::ContextUnavailable)
-                ),
-                "selected_completion_downgraded_after_eviction"
-            );
-            assert!(!transformed.get(), "uncompleted_evicted_call_transformed");
-        }
-        assert!(body == original, "evicted_source_changed");
-    }
+        )
+        .map_err(|_| "mixed_media_history_missing_completion_blocked")?;
+    assert!(transformed.get(), "mixed_media_history_not_prepared");
+    assert!(
+        !attempt.has_active_tokens(),
+        "unknown_media_history_granted_restoration_authority"
+    );
+    assert_eq!(body, original, "mixed_media_source_changed");
     Ok(())
 }

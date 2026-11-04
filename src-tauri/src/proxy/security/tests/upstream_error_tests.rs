@@ -1322,6 +1322,43 @@ async fn upstream_error_passthrough_reference_error_has_no_completion_authority(
                     assert!(transport.attempts() == 1, "literal_probe_reached_transport");
                     continue;
                 }
+                let original = continuation.clone();
+                let mut attempt = request
+                    .prepare_attempt(
+                        &provider.id,
+                        "openai_responses",
+                        "http://127.0.0.1:1/v1/responses",
+                        Some("synthetic-error-credential"),
+                        &mut continuation,
+                        |candidate| Ok(candidate.clone()),
+                    )
+                    .map_err(|_| "error_cursor_preparation_rejected")?;
+                assert!(
+                    continuation == original && !attempt.has_active_tokens(),
+                    "error_published_authority"
+                );
+                let mut resume_reason = None;
+                assert_eq!(
+                    attempt
+                        .lease
+                        .resume_completed_context_diagnosed(
+                            &attempt.binding,
+                            Some("synthetic-error-response"),
+                            &[],
+                            &[],
+                            &mut resume_reason,
+                        )
+                        .err(),
+                    Some(super::tokenization::TokenError::ContextUnavailable),
+                    "error_cursor_gained_completion_authority"
+                );
+                drop(attempt);
+                let continuation_transport =
+                    upstream_error_test_support::install(ProxyResponse::buffered(
+                        http::StatusCode::BAD_REQUEST,
+                        continuation_headers.clone(),
+                        bytes::Bytes::from(payload.to_string()),
+                    ));
                 let db = Arc::new(Database::memory()?);
                 let next = RequestForwarder::new(
                     Arc::new(ProviderRouter::new(db.clone())),
@@ -1358,12 +1395,17 @@ async fn upstream_error_passthrough_reference_error_has_no_completion_authority(
                     Err(failure) => failure,
                     Ok(_) => return Err("error_published_authority".into()),
                 };
-                assert!(
-                    matches!(denied.error, crate::proxy::error::ProxyError::DlpForward(_)),
-                    "error_published_authority"
+                assert_eq!(
+                    denied.error.into_response().status(),
+                    http::StatusCode::BAD_REQUEST,
+                    "continuation must preserve the real upstream failure"
+                );
+                assert_eq!(
+                    continuation_transport.attempts(),
+                    1,
+                    "missing error completion must not block the continuation"
                 );
             }
-            assert!(transport.attempts() == 1, "continuation_reached_transport");
         }
     }
     Ok(())

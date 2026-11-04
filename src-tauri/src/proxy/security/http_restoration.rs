@@ -345,6 +345,10 @@ pub(crate) enum RestorationAdmission {
     Admitted(Box<DlpHttpRequest>),
 }
 
+pub(super) const CLIENT_PROCESSING_ERROR_MESSAGE: &str =
+    "The local proxy could not process the request. Please retry.";
+pub(super) const CLIENT_PROCESSING_ERROR_CODE: &str = "proxy_processing_failed";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DlpForwardError {
     ContextUnavailable,
@@ -453,6 +457,37 @@ impl DlpForwardError {
         }
     }
 
+    pub(crate) fn client_status_code(self) -> StatusCode {
+        match self {
+            Self::UpstreamStatus(status) => status,
+            Self::Blocked => StatusCode::BAD_REQUEST,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    pub(crate) fn client_error_type(self) -> &'static str {
+        match self {
+            Self::UpstreamStatus(_) => "upstream_error",
+            Self::Blocked => "invalid_request_error",
+            _ => "server_error",
+        }
+    }
+
+    pub(crate) fn client_code(self) -> &'static str {
+        match self {
+            Self::UpstreamStatus(_) => "upstream_error",
+            Self::Blocked => "dlp_blocked",
+            _ => CLIENT_PROCESSING_ERROR_CODE,
+        }
+    }
+
+    pub(crate) fn client_message(self) -> &'static str {
+        match self {
+            Self::UpstreamStatus(_) | Self::Blocked => self.message(),
+            _ => CLIENT_PROCESSING_ERROR_MESSAGE,
+        }
+    }
+
     pub(crate) fn failure_class(self) -> &'static str {
         match self {
             Self::UpstreamStatus(_) => "Upstream request failed",
@@ -473,10 +508,10 @@ impl DlpForwardError {
                 super::restore_diagnostics::RestoreStage::Unknown,
             );
         }
-        let status = self.status_code();
-        let code = self.code();
-        let message = self.message();
-        let error_type = self.error_type();
+        let status = self.client_status_code();
+        let code = self.client_code();
+        let message = self.client_message();
+        let error_type = self.client_error_type();
         let payload = match app_type {
             AppType::Claude | AppType::ClaudeDesktop => json!({
                 "type": "error",
@@ -503,7 +538,7 @@ impl DlpForwardError {
             }),
         };
         let bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| {
-            b"{\"error\":{\"message\":\"DLP error\",\"type\":\"server_error\",\"code\":\"dlp_unavailable\",\"param\":null}}".to_vec()
+            b"{\"error\":{\"message\":\"The local proxy could not process the request. Please retry.\",\"type\":\"server_error\",\"code\":\"proxy_processing_failed\",\"param\":null}}".to_vec()
         });
         Response::builder()
             .status(status)
@@ -531,7 +566,7 @@ pub(crate) fn build_codex_json_error(
         }
     });
     let bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| {
-        b"{\"error\":{\"message\":\"DLP error\",\"type\":\"server_error\",\"code\":\"dlp_unavailable\",\"param\":null}}".to_vec()
+        b"{\"error\":{\"message\":\"The local proxy could not process the request. Please retry.\",\"type\":\"server_error\",\"code\":\"proxy_processing_failed\",\"param\":null}}".to_vec()
     });
     Response::builder()
         .status(status)
@@ -553,10 +588,10 @@ pub(crate) fn build_codex_restore_error_response_at(
 ) -> Response {
     super::restore_diagnostics::log_failure_with_reason(err.code(), stage, err.reason_at(stage));
     build_codex_json_error(
-        StatusCode::BAD_GATEWAY,
-        &err.message_at(stage),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        CLIENT_PROCESSING_ERROR_MESSAGE,
         "server_error",
-        err.code(),
+        CLIENT_PROCESSING_ERROR_CODE,
     )
 }
 
@@ -1828,42 +1863,44 @@ impl DlpHttpRequest {
                 || (per_call_readable_history && !call_specs.as_slice().is_empty())
             {
                 let mut resume_reason = None;
-                attempt_lease
-                    .resume_completed_context_diagnosed(
-                        &binding,
-                        history
-                            .previous_response_id
-                            .as_ref()
-                            .map(PayloadText::as_str),
-                        call_specs.as_slice(),
-                        opaque_refs.as_slice(),
-                        &mut resume_reason,
-                    )
-                    .map_err(|error| {
-                        let error = DlpForwardError::from_token_error(error);
-                        if error == DlpForwardError::ContextUnavailable {
-                            super::restore_diagnostics::log_context_resume_failure(
-                                resume_reason.unwrap_or(
-                                    super::restore_diagnostics::ContextResumeReason::Unknown,
-                                ),
-                            );
-                        }
-                        error
-                    })?;
+                if let Err(error) = attempt_lease.resume_completed_context_diagnosed(
+                    &binding,
+                    history
+                        .previous_response_id
+                        .as_ref()
+                        .map(PayloadText::as_str),
+                    call_specs.as_slice(),
+                    opaque_refs.as_slice(),
+                    &mut resume_reason,
+                ) {
+                    let error = DlpForwardError::from_token_error(error);
+                    if error == DlpForwardError::ContextUnavailable {
+                        super::restore_diagnostics::log_context_resume_failure(
+                            resume_reason.unwrap_or(
+                                super::restore_diagnostics::ContextResumeReason::Unknown,
+                            ),
+                        );
+                        // Restoration authority is optional; missing memory-only history
+                        // must not block the otherwise independently inspected request.
+                    } else {
+                        return Err(error);
+                    }
+                }
 
-                attempt_lease
-                    .verify_output_call_ids(
-                        &binding,
-                        history
-                            .previous_response_id
-                            .as_ref()
-                            .map(PayloadText::as_str),
-                        orphan_refs.as_slice(),
-                    )
-                    .map_err(|error| {
-                        DlpForwardError::from_token_error(error)
-                            .at_context_checkpoint(ContextCheckpoint::OutputCallIds)
-                    })?;
+                if let Err(error) = attempt_lease.verify_output_call_ids(
+                    &binding,
+                    history
+                        .previous_response_id
+                        .as_ref()
+                        .map(PayloadText::as_str),
+                    orphan_refs.as_slice(),
+                ) {
+                    let error = DlpForwardError::from_token_error(error)
+                        .at_context_checkpoint(ContextCheckpoint::OutputCallIds);
+                    if error != DlpForwardError::ContextUnavailable {
+                        return Err(error);
+                    }
+                }
             }
 
             let mut rule_refs =
@@ -4751,7 +4788,7 @@ mod private_correctness_tests {
             .expect("fixed failure");
         assert!(std::str::from_utf8(&frame)
             .expect("utf8")
-            .contains("dlp_restore_failed"));
+            .contains("proxy_processing_failed"));
     }
 
     #[tokio::test]
@@ -4775,7 +4812,7 @@ mod private_correctness_tests {
         assert!(
             std::str::from_utf8(&output)
                 .expect("utf8")
-                .contains("dlp_restore_failed"),
+                .contains("proxy_processing_failed"),
             "EOF cannot complete unfinished frame"
         );
     }

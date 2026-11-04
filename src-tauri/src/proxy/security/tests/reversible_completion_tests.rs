@@ -3890,12 +3890,24 @@ async fn reversible_empty_tool_calls_restore_reasoning_and_authorize_tool_follow
                         responses_to_chat_completions,
                     )
                 });
-                assert_eq!(
+                assert!(
                     resumed.as_ref().is_some_and(Result::is_ok),
-                    done,
-                    "only verified completion may authorize the tool continuation"
+                    "missing completion evidence must not block the tool continuation"
                 );
                 if let Some(Ok((attempt, _owner))) = resumed {
+                    let mut completion_observer = attempt.lease.fork_attempt().unwrap();
+                    assert_eq!(
+                        completion_observer
+                            .resume_completed_context(
+                                &attempt.binding,
+                                Some("resp_chatcmpl_empty_tools"),
+                                &[],
+                                &[],
+                            )
+                            .is_ok(),
+                        done,
+                        "only verified completion may authorize the original response cursor"
+                    );
                     let bytes = attempt
                         .encode_outbound_body(&followup)
                         .expect("synthetic followup encoding")
@@ -3991,12 +4003,16 @@ async fn reversible_restore_diagnostic_stages_are_fixed_and_keep_tool_barrier() 
             output.push_str(std::str::from_utf8(&chunk.unwrap()).unwrap());
         }
         assert!(
-            output.contains(&format!("[stage={stage}]"))
-                || output.contains(&format!("[stage={stage} reason=")),
-            "missing fixed stage: {stage}"
+            output.contains("event: response.failed"),
+            "missing failure: {stage}"
         );
-        assert!(output.contains("dlp_restore_failed"));
-        assert!(output.contains("event: response.failed"));
+        assert!(output.contains("proxy_processing_failed"));
+        assert!(output.contains("The local proxy could not process the request. Please retry."));
+        assert!(output.contains("resp_proxy_failed"));
+        assert!(!output.contains("[stage="));
+        assert!(!output.contains("reason="));
+        assert!(!output.contains("dlp_restore_failed"));
+        assert!(!output.contains("Reversible DLP"));
         assert!(!output.contains(private_marker));
         assert!(!output.contains("rredact-custom-00000000000000000000-ai"));
         assert!(!output.contains("event: response.function_call_arguments.delta"));
@@ -4034,7 +4050,7 @@ fn assert_fixed_restore_client_error(error: &serde_json::Value, expected: &str) 
         error
             == &serde_json::json!({
                 "message": expected,
-                "code": "dlp_restore_failed",
+                "code": "proxy_processing_failed",
                 "type": "server_error",
                 "param": null,
             }),
@@ -4046,7 +4062,7 @@ fn assert_fixed_restore_client_error(error: &serde_json::Value, expected: &str) 
 fn history_provenance_client_error_assertion_failure_is_content_free() {
     use serde_json::json;
     let expected = "synthetic fixed client restoration message";
-    let valid = json!({"message":expected,"code":"dlp_restore_failed",
+    let valid = json!({"message":expected,"code":"proxy_processing_failed",
         "type":"server_error","param":null});
     assert_fixed_restore_client_error(&valid, expected);
     for field in ["message", "code", "type", "param", "synthetic_extra"] {
@@ -4217,7 +4233,10 @@ async fn reversible_restore_diagnostic_reasons_are_fixed_and_survive_http_sse() 
     cases.push(("unknown", RestoreError::RestoreFailed));
     for (reason, err) in cases {
         let response = build_codex_restore_error_response_at(err, RestoreStage::TokenRestore);
-        assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
         let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
         let http: Value = serde_json::from_slice(&bytes).unwrap();
         let frame = failed_sse_frame_at(err, RestoreStage::TokenRestore);
@@ -4229,16 +4248,25 @@ async fn reversible_restore_diagnostic_reasons_are_fixed_and_survive_http_sse() 
                 .trim(),
         )
         .unwrap();
-        let expected = format!(
+        let expected_diagnostic = format!(
             "Reversible DLP response restoration failed. [stage=token_restore reason={reason}]"
         );
+        assert_eq!(
+            err.message_at(RestoreStage::TokenRestore).as_ref(),
+            expected_diagnostic.as_str(),
+            "internal diagnostic reason changed"
+        );
+        let expected = "The local proxy could not process the request. Please retry.";
         for error in [&http["error"], &sse["response"]["error"]] {
-            assert_fixed_restore_client_error(error, &expected);
+            assert_fixed_restore_client_error(error, expected);
         }
         let http_text = std::str::from_utf8(&bytes).unwrap();
         for text in [http_text, sse_text] {
             assert!(!text.contains(private_marker));
             assert!(!text.contains(&token));
+            assert!(!text.contains("[stage="));
+            assert!(!text.contains("dlp_restore_failed"));
+            assert!(!text.contains("Reversible DLP"));
         }
         assert!(
             sse["response"]["status"] == "failed",
@@ -4316,7 +4344,15 @@ fn reversible_restore_diagnostic_reason_stays_sticky_behind_tool_barrier() {
     assert_eq!(state.failure_stage(), stage);
     let frame = failed_sse_frame_at(failure, stage);
     let text = std::str::from_utf8(&frame).unwrap();
-    assert!(text.contains("[stage=token_restore reason=restore_capacity]"));
+    assert!(failure
+        .message_at(stage)
+        .contains("[stage=token_restore reason=restore_capacity]"));
+    assert!(text.contains("proxy_processing_failed"));
+    assert!(text.contains("The local proxy could not process the request. Please retry."));
+    assert!(!text.contains("[stage="));
+    assert!(!text.contains("reason="));
+    assert!(!text.contains("dlp_restore_failed"));
+    assert!(!text.contains("Reversible DLP"));
     assert!(!text.contains("event: response.function_call_arguments"));
     assert!(!text.contains("event: response.completed"));
 }
@@ -5864,4 +5900,93 @@ fn reasoning_pair_native_json_validates_content_part_types() {
             "native JSON completion must validate the exact reasoning content shape"
         );
     }
+}
+
+#[tokio::test]
+async fn agent_internal_dlp_errors_use_generic_protocol_envelopes() {
+    use super::{
+        http_restoration::{build_codex_restore_error_response_at, DlpForwardError},
+        response_restoration::{failed_sse_frame_at, RestoreError},
+        restore_diagnostics::{RestoreReason, RestoreStage},
+    };
+    use crate::app_config::AppType;
+    use axum::{body::to_bytes, http::StatusCode};
+
+    const MESSAGE: &str = "The local proxy could not process the request. Please retry.";
+    let internal_errors = [
+        DlpForwardError::ContextUnavailable,
+        DlpForwardError::PolicyConflict,
+        DlpForwardError::RestoreUnsupported,
+        DlpForwardError::RedactionFailed,
+        DlpForwardError::Unavailable,
+        DlpForwardError::CapacityExceeded,
+        DlpForwardError::TokenCollision,
+        DlpForwardError::RestoreFailed,
+        DlpForwardError::RestoreFailedAt(RestoreStage::ResponseProcessing),
+    ];
+    for error in internal_errors {
+        for app_type in [
+            AppType::Codex,
+            AppType::Claude,
+            AppType::ClaudeDesktop,
+            AppType::Gemini,
+        ] {
+            let response = error.into_app_response(&app_type);
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
+            let text = std::str::from_utf8(&bytes).unwrap();
+            assert!(!text.contains("DLP") && !text.contains("dlp_"), "{text}");
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            match app_type {
+                AppType::Gemini => {
+                    assert_eq!(body["error"]["code"], 500);
+                    assert_eq!(body["error"]["message"], "proxy_processing_failed");
+                }
+                AppType::Claude | AppType::ClaudeDesktop => {
+                    assert_eq!(body["error"]["message"], "proxy_processing_failed");
+                    assert_eq!(body["error"]["code"], "proxy_processing_failed");
+                }
+                _ => {
+                    assert_eq!(body["error"]["message"], MESSAGE);
+                    assert_eq!(body["error"]["type"], "server_error");
+                    assert_eq!(body["error"]["code"], "proxy_processing_failed");
+                }
+            }
+        }
+    }
+
+    let blocked = DlpForwardError::Blocked.into_codex_response();
+    assert_eq!(blocked.status(), StatusCode::BAD_REQUEST);
+    let bytes = to_bytes(blocked.into_body(), 4096).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        body["error"]["message"],
+        "Request blocked by local security policy."
+    );
+    assert_eq!(body["error"]["code"], "dlp_blocked");
+
+    let restored = build_codex_restore_error_response_at(
+        RestoreError::FailedBecause(RestoreReason::TokenFormat),
+        RestoreStage::TokenRestore,
+    );
+    assert_eq!(restored.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let bytes = to_bytes(restored.into_body(), 4096).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"]["message"], MESSAGE);
+    assert_eq!(body["error"]["code"], "proxy_processing_failed");
+
+    let frame = failed_sse_frame_at(
+        RestoreError::FailedBecause(RestoreReason::TokenFormat),
+        RestoreStage::TokenRestore,
+    );
+    let text = std::str::from_utf8(&frame).unwrap();
+    assert!(text.starts_with("event: response.failed\n"));
+    assert!(!text.contains("DLP") && !text.contains("dlp_"), "{text}");
+    let data = text
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(data).unwrap();
+    assert_eq!(body["response"]["error"]["message"], MESSAGE);
+    assert_eq!(body["response"]["error"]["code"], "proxy_processing_failed");
 }
