@@ -20,6 +20,8 @@ pub(super) struct Conversation {
     pub bindings: Arc<tokio::sync::Mutex<Bindings>>,
     pub history: Arc<CodexChatHistoryStore>,
     pub shadow: Arc<GeminiShadowStore>,
+    // The scope identity freezes the exact ordered destination set.
+    pub official: Arc<super::official_bridge::History>,
 }
 
 pub(super) struct Durable {

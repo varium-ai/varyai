@@ -1495,6 +1495,7 @@ impl RequestForwarder {
                 .session_client_provided
                 .then(|| self.session_id.clone()),
             observation: None,
+            reply_observer: None,
         };
         let mut extensions = extensions.clone();
         extensions.insert(IrWire);

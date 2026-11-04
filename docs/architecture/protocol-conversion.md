@@ -72,3 +72,7 @@ captured structural shapes are reproduced with synthetic content and security
 inspection enabled. Live checks use ordinary managed client configuration and
 do not establish compatibility with every vendor-specific extension or future
 client release.
+
+## Managed official execution
+
+All shared Agent connections use the same IR adapter when their native Chat, Anthropic or Gemini protocol targets a managed ChatGPT/Codex account. No client-name allowlist controls conversion. The existing account executor retains exact destination selection, refresh and authentication; the static API-key executor is not involved. Native Responses requests retain their original wire requirements. Official streaming replies with an omitted SSE media type still pass the strict event decoder, and each client receives its own JSON or SSE format. Private tool reasoning is scoped to the frozen destination and conversation and restored only for matching inspected tool history.

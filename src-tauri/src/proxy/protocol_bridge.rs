@@ -96,6 +96,7 @@ pub(super) struct BridgeContext {
     pub provider_id: String,
     pub session_id: Option<String>,
     pub observation: Option<super::tool_observation::channel::ResponseMetadata>,
+    pub reply_observer: Option<ir::stream::ReplyObserver>,
 }
 impl Bridge {
     /// Plan only cross-protocol work; native requests must keep their own wire path.
@@ -196,7 +197,9 @@ impl Bridge {
                 None => Box::pin(response.bytes_stream()),
             };
             if streaming {
-                let observer = if self.output == Protocol::Gemini {
+                let observer = if context.reply_observer.is_some() {
+                    context.reply_observer.clone()
+                } else if self.output == Protocol::Gemini {
                     let shadow = context.shadow.clone();
                     let provider = context.provider_id.clone();
                     let session = context.session_id.clone();
@@ -261,6 +264,9 @@ impl Bridge {
         if streaming {
             let bytes =
                 ir::stream::from_reply_with_context(&reply, self.input, context.tool_context)?;
+            if let Some(observer) = &context.reply_observer {
+                observer(&reply);
+            }
             let stream: ByteStream = Box::pin(futures::stream::once(async move { Ok(bytes) }));
             headers.insert(
                 http::header::CONTENT_TYPE,
@@ -273,6 +279,9 @@ impl Bridge {
             });
         }
         let encoded = ir::reply::render_with_context(self.input, &reply, &context.tool_context)?;
+        if let Some(observer) = &context.reply_observer {
+            observer(&reply);
+        }
         if self.input == Protocol::Responses {
             context.history.record_response(&encoded).await;
         }

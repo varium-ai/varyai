@@ -6,6 +6,7 @@ mod compaction;
 mod continuation;
 pub(super) mod length;
 pub(crate) mod native;
+mod official_bridge;
 #[cfg(test)]
 mod resume_tests;
 pub(crate) mod scheduling;
@@ -17,6 +18,8 @@ mod trace_tests;
 mod trae_tests;
 #[cfg(test)]
 mod workbuddy_history_tests;
+#[cfg(test)]
+mod workbuddy_official_tests;
 use super::protocol_bridge::Protocol;
 use crate::services::intent_routing::{classifier, RoutingGroup};
 use axum::{
@@ -766,6 +769,20 @@ impl Bindings {
             .into_iter()
             .flatten()
             .chain(value.get("item"));
+        for id in response["candidates"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|candidate| candidate["content"]["parts"].as_array())
+            .flatten()
+            .filter_map(|part| part["functionCall"]["id"].as_str())
+            .filter(|id| !id.is_empty() && id.len() <= 256)
+        {
+            if self.full() {
+                break;
+            }
+            changed |= remember(&mut self.calls, "call", id, target);
+        }
         for item in items {
             if self.full() {
                 break;
@@ -871,6 +888,13 @@ impl Observer {
                     })
                 })
             });
+        self.pending_tools |= value["candidates"].as_array().is_some_and(|candidates| {
+            candidates.iter().any(|candidate| {
+                candidate["content"]["parts"]
+                    .as_array()
+                    .is_some_and(|parts| parts.iter().any(|part| part["functionCall"].is_object()))
+            })
+        });
         self.completed |= matches!(kind, "response.completed" | "message_stop");
         self.trace_terminal |= value["choices"].as_array().is_some_and(|choices| {
             choices.iter().any(|choice| {
@@ -1342,8 +1366,9 @@ async fn execute(
     } else {
         None
     };
-    let portable_tool_history = agent == "workbuddy"
-        && protocol == Protocol::Chat
+    let portable_tool_history = (agent == "workbuddy"
+        || session.targets.iter().all(|target| target.official))
+        && protocol != Protocol::Responses
         && session.targets.len() == 1
         && !opaque_continuation(protocol, &original)
         && completed_tool_history(&projection);
@@ -1405,13 +1430,8 @@ async fn execute(
             // An existing named scope still pins its destination. A self-contained
             // transcript can start a new single-target scope after a model switch.
             Ok(pinned)
-        } else if tools
-            && pinned.is_none()
-            && conversation.is_none()
-            && protocol == Protocol::Chat
-            && agent == "trae"
-        {
-            // TRAE omits session headers. The selected scope already matched observed call IDs;
+        } else if tools && pinned.is_none() && conversation.is_none() {
+            // Clients can omit session headers. The scope already matched observed call IDs;
             // resolve every call again so unknown, colliding or mixed owners still fail closed.
             bindings.resolve(&projection, None)
         } else if (tools || opaque_continuation(protocol, &original)) && pinned.is_none() {
@@ -1869,13 +1889,9 @@ async fn execute(
             trace.finish(200, trace::State::Completed);
             return axum::Json(json!({"input_tokens":tokens})).into_response();
         }
-        if target.official && protocol != Protocol::Responses {
-            return fail(
-                StatusCode::BAD_REQUEST,
-                "routing_official_protocol_unsupported",
-            );
-        }
+        let official_conversion = target.official && protocol != Protocol::Responses;
         if target.official
+            && !official_conversion
             && !compact.is_some_and(|c| c.native && c.operation == compaction::Operation::Legacy)
             && (body["stream"] != true || body["store"] != false)
         {
@@ -1921,6 +1937,22 @@ async fn execute(
                 Err(code) => return fail(StatusCode::BAD_REQUEST, code),
             }
         };
+        let payload = if official_conversion {
+            match official_bridge::request_wire(
+                &payload,
+                protocol,
+                &endpoint,
+                &target.model,
+                &scoped.official,
+                index,
+                agent == "workbuddy",
+            ) {
+                Ok(payload) => payload,
+                Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_conversion_unsupported"),
+            }
+        } else {
+            payload
+        };
         let mut headers = target.headers.clone();
         if target.official && crate::codex_client::apply_identity(&mut headers).is_err() {
             return fail(
@@ -1964,6 +1996,12 @@ async fn execute(
             header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("identity"),
         );
+        if official_conversion {
+            headers.insert(
+                header::ACCEPT,
+                http::HeaderValue::from_static("text/event-stream"),
+            );
+        }
         if generation.is_some_and(|generation| generation != state.db.routing_generation()) {
             return fail(StatusCode::SERVICE_UNAVAILABLE, "routing_catalog_stale");
         }
@@ -1994,7 +2032,7 @@ async fn execute(
             .into_iter()
             .chain(retry_deadline)
             .min();
-        let response = if protocol != output {
+        let response = if protocol != output && !official_conversion {
             let Some(upstream) = &target.upstream else {
                 return fail(StatusCode::BAD_REQUEST, "routing_conversion_unsupported");
             };
@@ -2244,6 +2282,82 @@ async fn execute(
         {
             trace.record(Some(&target.model));
         }
+        let response = if official_conversion {
+            // The official request always asks for SSE. Some successful replies
+            // omit its media type; the wire decoder still verifies every event
+            // and requires a terminal response before reporting completion.
+            let response = if !response.is_sse() && !response.is_json() {
+                let status = response.status();
+                let mut headers = response.headers().clone();
+                headers.insert(
+                    header::CONTENT_TYPE,
+                    http::HeaderValue::from_static("text/event-stream"),
+                );
+                super::hyper_client::ProxyResponse::streamed(
+                    status,
+                    headers,
+                    response.bytes_stream(),
+                )
+            } else {
+                response
+            };
+            let upstream_sse = response.is_sse();
+            let upstream_json = response.is_json();
+            let timeout = Duration::from_secs(state.config.read().await.non_streaming_timeout);
+            let context = super::protocol_bridge::BridgeContext {
+                tool_context: Default::default(),
+                history: scoped.history.clone(),
+                shadow: scoped.shadow.clone(),
+                provider_id: target.provider_id.clone(),
+                session_id: conversation.clone(),
+                observation: Some(super::tool_observation::mount::metadata(
+                    super::tool_observation::parsers::PROTOCOL_OPENAI_RESPONSES,
+                    agent,
+                    super::tool_observation::channel::Transport::Sse,
+                    super::tool_observation::channel::OutputQuality::Native,
+                    super::tool_observation::mount::collect_tool_schemas(
+                        &body,
+                        match protocol {
+                            Protocol::Chat => "openai",
+                            Protocol::Anthropic => "claude",
+                            Protocol::Gemini => "gemini",
+                            Protocol::Responses => "codex",
+                        },
+                    ),
+                )),
+                reply_observer: Some({
+                    let history = scoped.official.clone();
+                    Arc::new(move |reply| history.record(reply, index))
+                }),
+            };
+            let convert = super::protocol_bridge::Bridge {
+                input: protocol,
+                output,
+            }
+            .response(response, streaming, timeout, context);
+            match wait_for_attempt(attempt_deadline, native_lease.as_deref(), convert).await {
+                Ok(Ok(response)) => response,
+                Err(AttemptWait::Revoked) => {
+                    return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable")
+                }
+                Err(AttemptWait::Deadline) => {
+                    log::warn!("[Intent] Official bridge response deadline elapsed");
+                    return fail(StatusCode::BAD_GATEWAY, "routing_upstream_response_invalid");
+                }
+                Ok(Err(error)) => {
+                    let kind = match error {
+                        super::ProxyError::TransformError(_) => "transform",
+                        super::ProxyError::InvalidRequest(_) => "invalid",
+                        super::ProxyError::Timeout(_) => "timeout",
+                        _ => "other",
+                    };
+                    log::warn!("[Intent] Official bridge response failed sse={upstream_sse} json={upstream_json} kind={kind}");
+                    return fail(StatusCode::BAD_GATEWAY, "routing_upstream_response_invalid");
+                }
+            }
+        } else {
+            response
+        };
         let response_headers = public_response_headers(response.headers());
         let mut upstream = Box::pin(response.bytes_stream());
         if count_tokens {
