@@ -838,7 +838,7 @@ mod text_fallback_context_tests {
         http_restoration::{admit_http_request, RestorationAdmission, RestorationGateway},
         request_preparation::is_fresh_readable_history,
         response_restoration::{prepare_text_projection, RestoreError, TEXT_PROJECTION_NOTICE},
-        restore_diagnostics::RestoreReason,
+        restore_diagnostics::{ContextResumeReason, RestoreReason},
         runtime::{self, SecurityRuntimeConfig},
         tokenization::{DlpRequestLease, TokenStoreLimits},
     };
@@ -1017,6 +1017,201 @@ mod text_fallback_context_tests {
         assert!(next.resolve(&fixture.reference)? == ORIGINAL);
         drop(prepared);
         assert_eq!(fixture.budget.used(), 0);
+        Ok(())
+    }
+    fn expect_resume_reason(
+        lease: &mut DlpRequestLease,
+        binding: &ActualAttemptBinding,
+        cursor: Option<&str>,
+        calls: &[CompletedCallSpec<'_>],
+        opaques: &[&str],
+        expected: ContextResumeReason,
+    ) -> TestResult {
+        let mut reason = None;
+        assert_eq!(
+            lease
+                .resume_completed_context_diagnosed(binding, cursor, calls, opaques, &mut reason,)
+                .err(),
+            Some(TokenError::ContextUnavailable),
+            "diagnostics must not change the refusal"
+        );
+        assert_eq!(reason, Some(expected));
+        Ok(())
+    }
+
+    #[test]
+    fn context_resume_diagnostics_identify_fixed_predicates_without_changing_authority(
+    ) -> TestResult {
+        let fixture = fixture(1)?;
+        let source_binding = binding(&fixture.lease)?;
+        let payload = json!({"value":fixture.reference}).to_string();
+        let call = call(&payload);
+        fixture.lease.publish_completed_context(
+            &source_binding,
+            &CompletionWitness::from_verified_completion(true)?,
+            PROJECTED_ID,
+            &[&fixture.reference],
+            &[call],
+            &[OPAQUE],
+        )?;
+        let mut next = fixture.store.admit("codex", Some(SESSION), 1)?;
+        let next_binding = binding(&next)?;
+        let mut reason = None;
+        next.resume_completed_context_diagnosed(
+            &next_binding,
+            Some(PROJECTED_ID),
+            &[call],
+            &[OPAQUE],
+            &mut reason,
+        )?;
+        assert_eq!(reason, None, "successful recovery needs no diagnostic");
+
+        expect_resume_reason(
+            &mut next,
+            &next_binding,
+            Some("invalid cursor"),
+            &[],
+            &[],
+            ContextResumeReason::InvalidCursor,
+        )?;
+        expect_resume_reason(
+            &mut next,
+            &next_binding,
+            Some("resp_synthetic_missing"),
+            &[],
+            &[],
+            ContextResumeReason::CursorNotFound,
+        )?;
+        let foreign_binding = next.bind_actual_attempt(
+            "synthetic-other-provider",
+            "openai_responses",
+            TARGET,
+            Some(PRINCIPAL),
+        )?;
+        expect_resume_reason(
+            &mut next,
+            &foreign_binding,
+            Some(PROJECTED_ID),
+            &[],
+            &[],
+            ContextResumeReason::ProviderMismatch,
+        )?;
+        expect_resume_reason(
+            &mut next,
+            &next_binding,
+            Some(PROJECTED_ID),
+            &[CompletedCallSpec {
+                payload: "synthetic-changed-arguments",
+                ..call
+            }],
+            &[],
+            ContextResumeReason::CallSnapshotMismatch,
+        )?;
+        expect_resume_reason(
+            &mut next,
+            &next_binding,
+            Some(PROJECTED_ID),
+            &[CompletedCallSpec {
+                call_id: "call_synthetic_missing",
+                ..call
+            }],
+            &[],
+            ContextResumeReason::CallNotFound,
+        )?;
+        expect_resume_reason(
+            &mut next,
+            &next_binding,
+            Some(PROJECTED_ID),
+            &[],
+            &["synthetic-unknown-opaque"],
+            ContextResumeReason::OpaqueNotFound,
+        )?;
+        expect_resume_reason(
+            &mut next,
+            &next_binding,
+            Some(PROJECTED_ID),
+            &[CompletedCallSpec {
+                call_id: "",
+                ..call
+            }],
+            &[],
+            ContextResumeReason::InvalidCall,
+        )?;
+        expect_resume_reason(
+            &mut next,
+            &next_binding,
+            Some(PROJECTED_ID),
+            &[],
+            &[""],
+            ContextResumeReason::InvalidOpaque,
+        )?;
+        let request_only = next.bind_actual_attempt(PROVIDER, "openai_responses", TARGET, None)?;
+        expect_resume_reason(
+            &mut next,
+            &request_only,
+            Some(PROJECTED_ID),
+            &[],
+            &[],
+            ContextResumeReason::PrincipalUnavailable,
+        )?;
+
+        fixture.lease.publish_completed_context(
+            &source_binding,
+            &CompletionWitness::from_verified_completion(true)?,
+            "resp_synthetic_second_context",
+            &[&fixture.reference],
+            &[call],
+            &[OPAQUE],
+        )?;
+        expect_resume_reason(
+            &mut next,
+            &next_binding,
+            None,
+            &[call],
+            &[],
+            ContextResumeReason::AmbiguousCall,
+        )?;
+
+        let other_store = DlpTokenStore::new();
+        let other_lease = other_store.admit("codex", Some(SESSION), 1)?;
+        let other_binding = binding(&other_lease)?;
+        expect_resume_reason(
+            &mut next,
+            &other_binding,
+            Some(PROJECTED_ID),
+            &[],
+            &[],
+            ContextResumeReason::LeaseBinding,
+        )?;
+
+        let empty_store = DlpTokenStore::new();
+        let mut empty = empty_store.admit("codex", Some(SESSION), 1)?;
+        let empty_binding = binding(&empty)?;
+        expect_resume_reason(
+            &mut empty,
+            &empty_binding,
+            Some(PROJECTED_ID),
+            &[],
+            &[],
+            ContextResumeReason::ContextsEmpty,
+        )?;
+
+        let excess = vec![call; 129];
+        let mut reason = None;
+        assert_eq!(
+            next.resume_completed_context_diagnosed(
+                &next_binding,
+                Some(PROJECTED_ID),
+                &excess,
+                &[],
+                &mut reason,
+            ),
+            Err(TokenError::CapacityExceeded)
+        );
+        assert_eq!(
+            reason, None,
+            "capacity errors retain their original boundary"
+        );
         Ok(())
     }
 

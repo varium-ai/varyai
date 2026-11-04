@@ -2004,7 +2004,7 @@ fn keyword_loaded_snapshot_preparation_rechecks_residuals_under_original_budget(
 }
 
 #[test]
-fn reversible_closure_req3_classifier_requires_original_complete_unique_ordered_history(
+fn reversible_closure_req3_classifier_does_not_authorize_incomplete_history(
 ) -> Result<(), TokenError> {
     use super::request_preparation::is_fresh_readable_history;
     let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
@@ -2047,10 +2047,17 @@ fn reversible_closure_req3_classifier_requires_original_complete_unique_ordered_
             }
             _ => body["input"][0]["reasoning_content"] = json!(42),
         }
-        assert!(
-            is_fresh_readable_history(&body, &budget).is_err(),
-            "malformed reconstruction must not become fresh input"
-        );
+        if mutation == 4 {
+            assert!(
+                is_fresh_readable_history(&body, &budget).is_err(),
+                "duplicate tool argument keys retain strict JSON validation"
+            );
+        } else {
+            assert!(
+                matches!(is_fresh_readable_history(&body, &budget), Ok(false)),
+                "unknown history must remain non-authoritative without becoming a refusal; case={mutation}"
+            );
+        }
         assert_eq!(budget.used(), 0);
     }
     for key in ["encrypted_content", "encrypted_reasoning"] {
@@ -2061,6 +2068,63 @@ fn reversible_closure_req3_classifier_requires_original_complete_unique_ordered_
     let mut stale = source.clone();
     stale["previous_response_id"] = json!("resp_expired");
     assert!(!is_fresh_readable_history(&stale, &budget)?);
+    Ok(())
+}
+
+#[test]
+fn unknown_history_classifier_passthrough_is_not_a_context_error() -> Result<(), TokenError> {
+    use super::request_preparation::is_fresh_readable_history;
+    let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
+    let source = json!({"input":[
+        {"type":"function_call","call_id":"synthetic_unknown_call","name":"synthetic_lookup","arguments":"{}"},
+        {"type":"function_call_output","call_id":"synthetic_unknown_call","output":"synthetic result"}]});
+    assert!(is_fresh_readable_history(&source, &budget)?);
+    for mutation in 0..9 {
+        let mut body = source.clone();
+        match mutation {
+            0 => {
+                body["input"][1]["output"] = json!([
+                    {"type":"input_image","image_url":"data:image/png;base64,synthetic-opaque"}
+                ]);
+            }
+            1 => body["input"][1]["output"] = json!([{"type":"synthetic_unknown","value":42}]),
+            2 => {
+                body["input"]
+                    .as_array_mut()
+                    .ok_or(TokenError::Unavailable)?
+                    .swap(0, 1);
+            }
+            3 => {
+                body["input"]
+                    .as_array_mut()
+                    .ok_or(TokenError::Unavailable)?
+                    .remove(0);
+            }
+            4 => {
+                body["input"]
+                    .as_array_mut()
+                    .ok_or(TokenError::Unavailable)?
+                    .remove(1);
+            }
+            5 => body["input"]
+                .as_array_mut()
+                .ok_or(TokenError::Unavailable)?
+                .push(source["input"][0].clone()),
+            6 => {
+                body["input"][0]
+                    .as_object_mut()
+                    .ok_or(TokenError::Unavailable)?
+                    .remove("arguments");
+            }
+            7 => body["input"][0]["reasoning_content"] = json!(42),
+            _ => body["input"][0]["type"] = Value::Null,
+        }
+        assert!(
+            matches!(is_fresh_readable_history(&body, &budget), Ok(false)),
+            "unknown history must be non-authoritative passthrough, not a refusal; case={mutation}"
+        );
+        assert_eq!(budget.used(), 0);
+    }
     Ok(())
 }
 
@@ -2091,8 +2155,8 @@ fn reversible_closure_req3_classifier_validates_every_readable_part() -> Result<
     both_null["input"][1]["summary"] = Value::Null;
     both_null["input"][1]["content"] = Value::Null;
     assert!(
-        is_fresh_readable_history(&both_null, &budget).is_err(),
-        "reasoning item with both summary and content null must be rejected"
+        matches!(is_fresh_readable_history(&both_null, &budget), Ok(false)),
+        "unreadable reasoning must remain non-authoritative without becoming a refusal"
     );
     assert_eq!(budget.used(), 0);
     for mutation in 0..12 {
@@ -2117,8 +2181,10 @@ fn reversible_closure_req3_classifier_validates_every_readable_part() -> Result<
                     json!([{"type":"input_image","image_url":"synthetic-inert"}])
             }
         }
-        assert!(is_fresh_readable_history(&body, &budget).is_err(),
-            "every present readable part must have a supported kind and string payload; case={mutation}");
+        assert!(
+            matches!(is_fresh_readable_history(&body, &budget), Ok(false)),
+            "unrecognized parts must be non-authoritative passthrough; case={mutation}"
+        );
         assert_eq!(budget.used(), 0);
     }
     Ok(())
@@ -2221,8 +2287,8 @@ fn reversible_closure_req3_classifier_distinguishes_absent_from_invalid_message_
         let mut invalid = source.clone();
         invalid["input"][0]["type"] = kind;
         assert!(
-            is_fresh_readable_history(&invalid, &budget).is_err(),
-            "present malformed type cannot mean absence"
+            matches!(is_fresh_readable_history(&invalid, &budget), Ok(false)),
+            "present malformed type is unknown passthrough, not implicit absence"
         );
         assert_eq!(budget.used(), 0);
     }
@@ -2294,7 +2360,7 @@ fn image_history_classifier_accepts_only_supported_user_images() -> Result<(), T
 }
 
 #[test]
-fn image_history_classifier_keeps_strict_carriers_and_shapes() -> Result<(), TokenError> {
+fn image_history_classifier_unknown_shapes_have_no_authority() -> Result<(), TokenError> {
     use super::request_preparation::is_fresh_readable_history;
     let budget = PayloadBudget::with_limit(64 * 1024 * 1024);
     let source = image_history_source();
@@ -2360,8 +2426,8 @@ fn image_history_classifier_keeps_strict_carriers_and_shapes() -> Result<(), Tok
     }
     for body in negatives {
         assert!(
-            is_fresh_readable_history(&body, &budget).is_err(),
-            "image exception must not admit unsupported shapes or strict carriers"
+            matches!(is_fresh_readable_history(&body, &budget), Ok(false)),
+            "unknown media and carrier shapes must not acquire recovery authority"
         );
         assert!(
             budget.used() == 0,
