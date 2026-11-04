@@ -49,18 +49,54 @@ function createBridge(
   const isOwned = (id, rows, model) =>
     rows.some((row) => row.id === model.id) ||
     model.displayName?.startsWith(`VaryAI/${id}/`);
+  const verificationKey = (id) => `varyai.trae.model-verification.${id}`;
+  const modelNameMatches = (wire, model) =>
+    typeof wire === "string" && (wire === model || wire.endsWith(`//${model}`));
+  async function modelVerification(config, wanted, row) {
+    const wire = row?.model_name ?? row?.name;
+    if (
+      !modelNameMatches(wire, wanted.model) ||
+      row.base_url !== endpoint(config) ||
+      typeof row.ak !== "string" ||
+      !row.ak ||
+      /^[*•]+$/.test(row.ak)
+    )
+      return null;
+    // Bind the submitted credential to the native protected representation.
+    // Only a one-way digest is persisted; neither representation leaves this call.
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(
+        JSON.stringify([
+          config.protocol,
+          wanted.model,
+          config.apiKey,
+          row.base_url,
+          row.provider,
+          wire,
+          row.ak,
+        ]),
+      ),
+    );
+    return Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+  }
   const shortText = (value, limit) =>
     value.slice(0, limit).replace(/[\uD800-\uDBFF]$/u, "");
   const displayName = (model, provider, used) => {
     const label =
       model.displayName?.trim() || model.model.split("/").pop() || model.model;
     const suffix = ` · ${shortText(provider.trim() || "VaryAI", 32)}`;
+    const name = label.endsWith(suffix)
+      ? label.slice(0, -suffix.length)
+      : label;
     let index = 1,
       value;
     do {
       const number = index === 1 ? "" : ` (${index})`;
       value =
-        shortText(label, 64 - suffix.length - number.length) + number + suffix;
+        shortText(name, 64 - suffix.length - number.length) + number + suffix;
       index++;
     } while (used.has(value));
     used.add(value);
@@ -72,7 +108,7 @@ function createBridge(
       throw Error("model_list_unavailable");
     return result.model_list.map((m) => ({
       id: m.custom_model_id,
-      name: m.name,
+      name: m.name ?? m.model_name,
       displayName: m.display_name,
       baseUrl: m.base_url,
       provider: m.provider,
@@ -92,6 +128,8 @@ function createBridge(
       saveOwned(id, owned);
     }
     saveOwned(id, []);
+    if (id === "shared_catalog_connection")
+      storage.setItem(verificationKey(id), "{}");
     await refreshModels();
   }
   function endpoint(config) {
@@ -114,23 +152,22 @@ function createBridge(
     await refreshModels();
     const result = await service.getModelList();
     if (!Array.isArray(result.model_list)) return false;
-    const owned = loadOwned(id),
-      baseUrl = endpoint(config);
-    return (
-      owned.length === config.models.length &&
-      config.models.every((wanted) => {
-        const owner = owned.find((row) => row.model === wanted.model);
-        const row =
-          owner &&
-          result.model_list.find((m) => m.custom_model_id === owner.id);
-        return (
-          row &&
-          (row.model_name ?? row.name) === wanted.model &&
-          row.base_url === baseUrl &&
-          row.ak === config.apiKey
-        );
-      })
-    );
+    const owned = loadOwned(id);
+    if (owned.length !== config.models.length) return false;
+    const verified = JSON.parse(storage.getItem(verificationKey(id)) || "{}");
+    for (const wanted of config.models) {
+      const owner = owned.find((row) => row.model === wanted.model);
+      const row =
+        owner && result.model_list.find((m) => m.custom_model_id === owner.id);
+      const signature = await modelVerification(config, wanted, row);
+      if (!signature) return false;
+      if (verified?.[owner.id] !== undefined) {
+        if (verified[owner.id] !== signature) return false;
+      } else if (row.ak !== config.apiKey) {
+        return false;
+      }
+    }
+    return true;
   }
   async function apply(id, name, config) {
     if (!/^[\w-]+$/.test(id) || !Array.isArray(config.models))
@@ -158,6 +195,28 @@ function createBridge(
         let match =
           (previous && existing.find((m) => m.id === previous.id)) ||
           existing.find((m) => m.id && m.displayName === legacyName);
+        if (
+          !match &&
+          id === "shared_catalog_connection" &&
+          /^http:\/\/127\.0\.0\.1:\d+\/connections\/trae\/v1\/chat\/completions$/.test(
+            baseUrl,
+          )
+        ) {
+          // Resume an interrupted catalog write only when its native identity is unique.
+          const label = displayName(model, name, new Set());
+          const candidates = existing.filter(
+            (m) =>
+              m.id &&
+              m.baseUrl === baseUrl &&
+              m.provider === "custom_openai_compatible" &&
+              m.displayName === label &&
+              modelNameMatches(m.name, model.model),
+          );
+          if (candidates.length === 1) {
+            match = candidates[0];
+            used.delete(match.displayName);
+          }
+        }
         const display_name = displayName(model, name, used);
         const fields = {
           provider: {
@@ -176,17 +235,28 @@ function createBridge(
         };
         if (!fields.provider) throw Error("invalid_protocol");
         if (!match) {
-          // Keep the recoverable legacy marker until native ownership is persisted.
+          // Shared rows can recover ownership by their unique local endpoint and wire identity.
+          // Publish their final label immediately so refreshes never expose a temporary hash.
+          const initialName =
+            id === "shared_catalog_connection" ? display_name : legacyName;
           const result = await service.addCustomModel({
             ...fields,
-            display_name: legacyName,
+            display_name: initialName,
           });
           if (result.code !== 0) throw modelFailure("add", result.code);
-          added.push(legacyName);
+          if (initialName === legacyName) added.push(legacyName);
           await refreshModels();
-          match = (await list()).find(
-            (m) => m.displayName === legacyName && m.id,
+          const candidates = (await list()).filter(
+            (m) =>
+              m.id &&
+              !existing.some((old) => old.id === m.id) &&
+              m.displayName === initialName &&
+              (initialName === legacyName ||
+                (m.baseUrl === baseUrl &&
+                  m.provider === fields.provider &&
+                  modelNameMatches(m.name, model.model))),
           );
+          match = candidates.length === 1 ? candidates[0] : undefined;
           if (!match) throw Error("model_apply_failed");
           addedIds.add(match.id);
         }
@@ -219,6 +289,20 @@ function createBridge(
         owned.filter((row) => wanted.has(row.id)),
       );
       await refreshModels();
+      if (id === "shared_catalog_connection") {
+        const result = await service.getModelList();
+        const signatures = {};
+        for (const model of config.models) {
+          const owner = owned.find((row) => row.model === model.model);
+          const row = result.model_list?.find(
+            (m) => m.custom_model_id === owner?.id,
+          );
+          const signature = await modelVerification(config, model, row);
+          if (!signature) throw Error("model_verification_unavailable");
+          signatures[owner.id] = signature;
+        }
+        storage.setItem(verificationKey(id), JSON.stringify(signatures));
+      }
       return all.filter((m) => wanted.has(m.id));
     } catch (error) {
       // Roll back newly created entries only. Never remove pre-existing native models.
@@ -319,16 +403,27 @@ function createBridge(
       for (const model of snapshots) {
         if (remaining.some((row) => row.id === model.id)) continue;
         try {
-          const marker = await ownedName(model.owner, model.fields.model_name);
+          const shared = model.owner === "shared_catalog_connection";
+          const marker = shared
+            ? model.fields.display_name
+            : await ownedName(model.owner, model.fields.model_name);
           const added = await service.addCustomModel({
             ...model.fields,
             display_name: marker,
           });
           if (added.code !== 0) throw modelFailure("restore", added.code);
           await refreshModels();
-          const found = (await list()).find(
-            (row) => row.displayName === marker,
+          const candidates = (await list()).filter(
+            (row) =>
+              row.id &&
+              !remaining.some((old) => old.id === row.id) &&
+              row.displayName === marker &&
+              (!shared ||
+                (row.baseUrl === model.fields.base_url &&
+                  row.provider === model.fields.provider &&
+                  modelNameMatches(row.name, model.fields.model_name))),
           );
+          const found = candidates.length === 1 ? candidates[0] : undefined;
           if (!found?.id) throw Error("model_restore_failed");
           const rows = ownership
             .get(model.owner)

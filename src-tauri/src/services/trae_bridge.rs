@@ -12,7 +12,7 @@ use std::{
 use std::{path::PathBuf, sync::Mutex};
 pub(crate) const ENABLED_KEY: &str = "trae_audit_enabled";
 pub(crate) const CONSENT_KEY: &str = "trae_local_connection_consent";
-const HELPER_REVISION: u64 = 5;
+const HELPER_REVISION: u64 = 8;
 static AUDIT_TOKEN: Mutex<Option<String>> = Mutex::new(None);
 fn unavailable() -> AppError {
     AppError::localized(
@@ -626,7 +626,9 @@ mod tests {
         assert_eq!(socket_paths(dir.path(), false).len(), 1);
         let previous = dir.path().join("bridge-agent-v4-456.sock");
         std::fs::write(&previous, "").expect("previous helper");
-        let current = dir.path().join("bridge-agent-v5-789.sock");
+        let current = dir
+            .path()
+            .join(format!("bridge-agent-v{HELPER_REVISION}-789.sock"));
         std::fs::write(&current, "").expect("current helper");
         assert_eq!(socket_paths(dir.path(), false), vec![current]);
         assert_eq!(socket_paths(dir.path(), true).len(), 4);

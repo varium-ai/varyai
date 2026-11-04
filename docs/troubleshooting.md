@@ -271,6 +271,26 @@ TRAE's displayed product version is distinct from its editor/build version. Doub
 
 ## Client takeover and recovery
 
+### Agent switches report configuration conflicts after an upgrade
+
+Older installations can retain per-Agent takeover flags and private recovery
+backups. The shared workspace previously displayed those tools as disconnected
+and rejected attempts to connect them because the legacy owner still existed.
+An explicit connection now validates the chosen shared model and current native
+configuration, restores that Agent's legacy connection under its switch lock,
+and journals the restored baseline before installing the shared connection.
+Disconnecting restores that baseline. Saved providers and other Agents are not
+removed or reconfigured, and the gateway stays available during the transition.
+
+Invalid model selections, unreadable recovery data and conflicting shared
+ownership still fail without discarding the legacy recovery record. Do not
+delete recovery files or database backups to clear this error. TRAE retains
+pending native model and endpoint restoration until its bridge is available;
+the shared catalog is delivered only after that restoration succeeds. A closed
+TRAE client therefore shows a pending connection instead of a legacy-owner
+conflict. The transition does not change the global security-audit setting or
+launch an Agent.
+
 ### Claude Desktop refuses a shared connection
 
 A saved or applied legacy Vary profile is not proof of a live proxy takeover.
@@ -429,15 +449,25 @@ Agent mode also discovers the unique known container export instead of using a f
 
 The helper also enables native target discovery before scanning. Without that handshake, an open workbench can be missing from the native target list and appear disconnected. A build containing the discovery fix replaces older resident helpers automatically.
 
+TRAE may return namespaced model names and protected credential representations from its native model API. The shared catalog verifies the model suffix, owned native ID and local endpoint, then compares a one-way digest bound to the submitted connection credential and the protected native representation recorded after delivery. Plaintext credentials and protected credential values are not persisted in this verification record. External model, endpoint or credential changes still invalidate the connection. After updating an older catalog without this verification record, use **Reapply** once to record delivery without replacing the native model IDs or changing global auditing.
+
+If a catalog write was interrupted before all ownership records were saved, **Reapply** can reuse a unique native model with the expected label, request model, provider type and exact local TRAE shared endpoint. It writes the current connection configuration to that entry and retains its native ID. Ambiguous matches and models at other endpoints are not adopted.
+
 ### TRAE CN reports HTTP 502 with security auditing off
 
 The local-routing switch and the global security-audit policy are separate. A reproduced TRAE CN 3.4.13 failure affected follow-up turns using Responses: TRAE replayed a reasoning history item without its `summary` array. The first turn succeeded, while the next request returned upstream HTTP 502. Adding only the missing `summary: []` restored forwarding; the original reasoning text and other history fields were retained.
 
 The same missing-summary repair applies to TRAE's shared Agent connection endpoint. It does not relax the shared router's existing continuation checks or modify other Agents' reasoning history. Replayed item IDs and opaque state must still belong to a known conversation.
 
-With TRAE routing enabled, the current build sends managed native Responses models through the local compatibility route, including when global auditing is off. It preserves native model IDs so existing conversations can continue. Turning routing off restores the saved upstream address and credential. Delivery to a closed client remains pending until it connects; keep Vary AI running until restoration finishes. Official models remain unchanged. Load a build containing the fix and verify multiple turns in the failed conversation. A single successful probe or usage-accounting row with status 200 does not establish that a conversation works. See the [reproduction and regression evidence](qa/2026-11-03-pending-bug-review.md#route-only-http-502-follow-up).
+The shared connection adds models whose labels end in `Vary AI`. Older provider models can remain in TRAE and in existing conversations with direct upstream addresses. Those entries do not pass through the shared gateway or its compatibility repairs. Check the conversation's selected model and the routing page before treating a repeated HTTP 502 as a missing repair; select the corresponding shared model to use Vary routing.
+
+TRAE CN 3.4.14 also sends native requests with `Sec-Fetch-Site: none` and `Sec-Fetch-Mode: no-cors`. The shared connection accepts that combination only for TRAE on a verified loopback connection without an `Origin` header, and still requires its independent connection credential. Browser origins, cross-site requests, navigation requests, and invalid credentials remain rejected. This prevents native shared models from incorrectly returning `routing_local_clients_only` while keeping browser access restricted.
+
+Legacy provider routing sends managed native Responses models through the local compatibility route, including when global auditing is off. It preserves native model IDs so existing conversations can continue. Turning legacy routing off restores the saved upstream address and credential. Delivery to a closed client remains pending until it connects; keep Vary AI running until restoration finishes. Official models remain unchanged. Load a build containing the fix and verify multiple turns in the failed conversation. A single successful probe or usage-accounting row with status 200 does not establish that a conversation works. See the [reproduction and regression evidence](qa/2026-11-03-pending-bug-review.md#route-only-http-502-follow-up).
 
 ### TRAE CN switching reports a model configuration failure
+
+Shared catalog additions publish their final readable label immediately. Older bridges briefly published `VaryAI/shared_catalog_connection/<hash>` while discovering a new native model ID, then renamed it after refreshing the model list. This caused the picker to alternate between an internal marker and the readable label during synchronization. Load a build containing this fix to refresh the resident helper; shared model request IDs remain unchanged, and interrupted writes still recover through a unique native model at the exact local shared endpoint.
 
 TRAE can keep an older model-list cache after a custom model is added. Older Vary AI bridges may then report a failed switch even though the model was saved; retrying can return a native duplicate-model error. The bridge now refreshes TRAE's native model store before matching existing models and after each addition. It recovers models carrying the provider's legacy ownership label and retains readable labels without duplicating or adopting unrelated user models. Load a build containing this fix so Vary AI refreshes the resident helper, then apply the provider again. Direct custom-provider switches also withdraw the previous managed models before adding the target, because TRAE rejects overlapping request model IDs under different labels. A failed switch attempts to restore the previous models and retains the previous provider selection; an incomplete restoration is reported explicitly.
 

@@ -120,7 +120,7 @@ impl Manager {
             &outbox.token,
             &catalog[0].id,
         );
-        let provider = Provider::with_id(ID.into(), "Vary AI".into(), config, None);
+        let provider = Provider::with_id(ID.into(), "VaryAI".into(), config, None);
         let unchanged = outbox.delivered
             && outbox
                 .provider

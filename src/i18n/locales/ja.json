@@ -4956,6 +4956,10 @@
     "sameAsHint": "グループ検出と不足したカタログ情報の補完で、このモデルを指定したモデルとして扱います。送信するモデル ID は変わりません。"
   },
   "agentConnections": {
+    "officialModels": "公式モデル",
+    "nativeCatalogHint": "Vary が提供する共有モデル一覧です。クライアントで一覧を読み込んだ後、チャットモデルを選択してください。",
+    "nativeCatalogDisconnectedHint": "共有モデル一覧のプレビューです。接続を有効にしてモデルを追加した後、クライアント内でチャットモデルを選択してください。",
+    "nativeCatalogPendingHint": "共有モデル一覧のプレビューです。TRAE ブリッジの同期はまだ完了していません。完了後に TRAE 内でモデルを選択してください。",
     "modelListTitle": "{{agent}} のモデル一覧",
     "modelListDescription": "無効にしたモデルは {{agent}} のモデル選択に表示されません。他の Agent では引き続き利用できます。",
     "modelListView": "モデル一覧の表示",
@@ -5548,7 +5552,7 @@
         "inactive": "現在、受け取れるチェックイン報酬はありません。",
         "switch_required": "チェックイン中にアカウントが変更されました。更新して再試行してください。",
         "sign_in_required": "公式 Doubao Work クライアントにログインしてください。",
-        "connection_required": "下の操作で Doubao Work に接続してください。",
+        "connection_required": "ログイン済みの Doubao Work クライアントに接続してから、アカウントを更新してください。",
         "unsupported": "このクライアントのバージョンは対応するチェックインサービスを提供していません。",
         "failed": "報酬の受け取りを確認できませんでした。もう一度お試しください。"
       },

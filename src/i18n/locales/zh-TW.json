@@ -4957,6 +4957,10 @@
     "sameAsHint": "自動探索群組及補全缺少的模型資訊時，將此模型視為填寫的模型。傳給供應商的模型 ID 保持原樣。"
   },
   "agentConnections": {
+    "officialModels": "官方模型",
+    "nativeCatalogHint": "Vary 提供的共享模型目錄。用戶端載入目錄後，請在用戶端內選擇聊天模型。",
+    "nativeCatalogDisconnectedHint": "共享模型目錄預覽。開啟接入開關後會加入這些模型，再到用戶端內選擇聊天模型。",
+    "nativeCatalogPendingHint": "共享模型目錄預覽。TRAE 橋接仍待同步，完成後請在 TRAE 內選擇模型。",
     "modelListTitle": "{{agent}} 的模型清單",
     "modelListDescription": "關閉的模型不會出現在 {{agent}} 的模型清單中；其他 Agent 仍可使用。",
     "modelListView": "模型清單檢視",
@@ -5549,7 +5553,7 @@
         "inactive": "目前沒有可領取的簽到獎勵。",
         "switch_required": "簽到期間目前帳號發生變更，請重新整理後重試。",
         "sign_in_required": "請先登入豆包 Work 官方用戶端。",
-        "connection_required": "請先使用下方入口連接豆包 Work 用戶端。",
+        "connection_required": "請先連接已登入的豆包 Work 用戶端，再重新整理帳號。",
         "unsupported": "目前用戶端版本暫不提供相容的簽到服務。",
         "failed": "尚未確認領取結果，請重試。"
       },

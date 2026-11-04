@@ -409,8 +409,8 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
   const context = {
     __varyaiTraeNativeBridge: {
       revision: 2,
-      hookRevision: 3,
-      auditBinding: "__varyaiTraeAuditV3",
+      hookRevision: 7,
+      auditBinding: "__varyaiTraeAuditV7",
       bridge: {
         replace() {},
         disable() {
@@ -427,11 +427,11 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
     },
     document: { querySelector: () => null },
     crypto: { randomUUID: () => "synthetic-audit-id" },
-    __varyaiTraeAuditV3() {
+    __varyaiTraeAuditV7() {
       legacyAudits++;
       throw Error("older helper is disabled");
     },
-    __varyaiTraeAuditV5(payload) {
+    __varyaiTraeAuditV8(payload) {
       audits++;
       const { id, value } = JSON.parse(payload);
       value.body.messages[0].content[0].text = "[REDACTED]";
@@ -443,7 +443,7 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
   await vm.runInNewContext(bootstrapSource(), context);
   assert.equal(released, 1);
   assert.equal(context.__varyaiTraeNativeBridge.revision, 2);
-  assert.equal(context.__varyaiTraeNativeBridge.hookRevision, 5);
+  assert.equal(context.__varyaiTraeNativeBridge.hookRevision, 8);
   const current = context.__varyaiTraeNativeBridge;
   assert.equal(typeof current.bridge.replace, "function");
   await current.bridge.enable();
@@ -475,8 +475,8 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
   assert.equal(current.bridge.enabled, true);
   const newer = {
     ...current,
-    hookRevision: 5,
-    auditBinding: "__varyaiTraeAuditV5",
+    hookRevision: 9,
+    auditBinding: "__varyaiTraeAuditV9",
   };
   context.__varyaiTraeNativeBridge = newer;
   await vm.runInNewContext(bootstrapSource(), context);

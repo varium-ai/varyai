@@ -6,7 +6,7 @@ const net = require("node:net");
 const { PassThrough } = require("node:stream");
 const { createBridge } = require("./renderer.cjs");
 const SLOT = "__varyaiTraeNativeBridge";
-const REVISION = 5;
+const REVISION = 8;
 // Keep the renderer API compatible so an older resident helper cannot replace the new hook.
 const RENDERER_REVISION = 2;
 // Older helpers remain resident; their disabled audit callbacks must not receive new events.

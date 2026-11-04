@@ -614,7 +614,7 @@ fn menu_catalog_has_distinct_aliases_and_human_names() {
     assert_eq!(catalog["models"][0]["slug"], "vary-auto/development");
     assert_eq!(
         catalog["models"][1]["display_name"],
-        "Second · routing group"
+        "Second · routing group · VaryAI"
     );
     assert!(catalog["models"][0]["base_instructions"].is_string());
     assert_eq!(catalog["models"][0]["shell_type"], "shell_command");

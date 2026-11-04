@@ -130,12 +130,27 @@ fn error(status: StatusCode, code: &'static str) -> Response {
     (status, Json(json!({"error":{"code":code,"message":code}}))).into_response()
 }
 pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) -> Response {
+    // TRAE's native transport adds Fetch Metadata even outside a browser.
+    // Keep the exception local to its authenticated connection endpoint.
+    let native_trae = request.uri().path().starts_with("/connections/trae/")
+        && request
+            .extensions()
+            .get::<std::net::SocketAddr>()
+            .is_some_and(|peer| peer.ip().is_loopback())
+        && request
+            .headers()
+            .get("sec-fetch-site")
+            .is_some_and(|h| h == "none")
+        && request
+            .headers()
+            .get("sec-fetch-mode")
+            .is_some_and(|h| h == "no-cors");
     if request
         .extensions()
         .get::<std::net::SocketAddr>()
         .is_some_and(|peer| !peer.ip().is_loopback())
         || request.headers().contains_key("origin")
-        || request.headers().contains_key("sec-fetch-site")
+        || (request.headers().contains_key("sec-fetch-site") && !native_trae)
     {
         return error(StatusCode::FORBIDDEN, "routing_local_clients_only");
     }

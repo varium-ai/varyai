@@ -215,6 +215,28 @@ export function AgentConnectionsPage({
       endOperation(app);
     }
   }
+  async function launchDoubao(enabled: boolean) {
+    if (!beginOperation("doubaowork", "connecting")) return;
+    setError(null);
+    try {
+      if (!enabled) await agentConnectionsApi.set("doubaowork", true, null);
+      await proxyApi.launchDoubaoWorkForAudit();
+    } catch (cause) {
+      const allowed = [
+        "homeAudit.doubaoQuitFirst",
+        "homeAudit.doubaoNotInstalled",
+        "homeAudit.doubaoPlatform",
+      ];
+      setError(
+        typeof cause === "string" && allowed.includes(cause)
+          ? cause
+          : "homeAudit.doubaoLaunchFailed",
+      );
+    } finally {
+      refreshConnectionViews();
+      endOperation("doubaowork");
+    }
+  }
   function openSetup(app: AppId) {
     setSetup(app);
     setError(null);
@@ -437,6 +459,68 @@ export function AgentConnectionsPage({
             }
           />
         )}
+        {["workbuddy", "qoder", "trae"].includes(app) && (
+          <Popover
+            open={picking === app}
+            onOpenChange={(open) => setPicking(open ? app : null)}
+          >
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="mp-agent-start"
+                disabled={rowBusy(app) || updates.busy || catalog.isPending}
+                aria-label={`${t("agentConnections.modelList")} ${name(app)}`}
+              >
+                <span>
+                  {catalog.isError
+                    ? t("agentConnections.failed")
+                    : catalog.isPending
+                      ? t("common.loading")
+                      : t("agentConnections.allModels", {
+                          count: catalog.data?.length ?? 0,
+                        })}
+                </span>
+                <ChevronDown size={11} />
+              </button>
+            </PopoverTrigger>
+            <ModelPickerPopoverContent
+              onDismiss={() => setPicking(null)}
+              aria-label={t("agentConnections.modelListTitle", {
+                agent: name(app),
+              })}
+            >
+              <SharedModelPicker
+                models={catalog.isError ? [] : (catalog.data ?? [])}
+                selected={catalog.data?.map((model) => model.id) ?? []}
+                readOnly
+                title={t("agentConnections.modelListTitle", {
+                  agent: name(app),
+                })}
+                description={t(
+                  !enabled
+                    ? "agentConnections.nativeCatalogDisconnectedHint"
+                    : app === "trae" &&
+                        state?.recoveryReason === "bridge_pending"
+                      ? "agentConnections.nativeCatalogPendingHint"
+                      : "agentConnections.nativeCatalogHint",
+                )}
+                error={
+                  catalog.isError ? t("agentConnections.failed") : undefined
+                }
+              />
+            </ModelPickerPopoverContent>
+          </Popover>
+        )}
+        {app === "doubaowork" && (
+          <span
+            className="mp-agent-start"
+            role="note"
+            aria-label={`${t("agentConnections.modelList")} ${name(app)}`}
+            title={t("agentConnections.auditOnlyHint")}
+          >
+            <span>{t("agentConnections.officialModels")}</span>
+          </span>
+        )}
         {!nativePicker(app) && (
           <Popover
             open={picking === app}
@@ -572,6 +656,15 @@ export function AgentConnectionsPage({
               </div>
             )}
             <div className="mp-agent-detail-actions">
+              {app === "doubaowork" && !state?.configured && (
+                <Button
+                  size="sm"
+                  disabled={rowBusy(app) || updates.busy || states.isError}
+                  onClick={() => void launchDoubao(enabled)}
+                >
+                  {t("homeAudit.doubaoLaunch")}
+                </Button>
+              )}
               {enabled && !state?.recoveryPending && app !== "doubaowork" && (
                 <Button
                   size="sm"

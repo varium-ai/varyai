@@ -515,6 +515,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workbuddy_gemini_reasoning_reaches_the_selected_upstream() {
+        let (base, mut captured, task) = upstream(Protocol::Gemini).await;
+        let provider = provider(&base, Protocol::Gemini);
+        let body = json!({"model":"gemini-3.6-flash","messages":[{"role":"user","content":"Synthetic prompt"}],"reasoning_effort":"high","tools":[{"type":"function","function":{"name":"synthetic_tool","parameters":{"type":"object","properties":{"value":{"type":"string"}}}}}]});
+        let response = forward(
+            &state(),
+            Protocol::Chat,
+            &provider,
+            &http::Method::POST,
+            "/v1/chat/completions",
+            &body,
+            &HeaderMap::new(),
+            &http::Extensions::new(),
+            None,
+            Arc::default(),
+            Arc::default(),
+        )
+        .await
+        .expect("WorkBuddy Gemini forwarding");
+        assert!(response.status().is_success());
+        let (uri, headers, sent) = captured.recv().await.expect("synthetic request");
+        assert!(uri.path().ends_with("gemini-3.6-flash:generateContent"));
+        assert_eq!(headers["x-goog-api-key"], SOURCE_KEY);
+        assert_eq!(
+            sent["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "HIGH"
+        );
+        assert_eq!(
+            sent["tools"][0]["functionDeclarations"][0]["name"],
+            "synthetic_tool"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn normalized_openai_auth_is_used_instead_of_caller_credentials() {
         let (base, mut captured, task) = upstream(Protocol::Chat).await;
         let mut provider = provider(&base, Protocol::Chat);
@@ -577,7 +612,7 @@ mod tests {
             &provider(&base, Protocol::Anthropic),
             &http::Method::POST,
             "/v1/chat/completions",
-            &json!({"model":"exact","messages":[],"response_format":{"type":"json_object"}}),
+            &json!({"model":"exact","messages":[{"role":"assistant","tool_calls":[{"id":"synthetic-call","type":"function","function":{"name":"synthetic_tool","arguments":"[]"}}]}]}),
             &HeaderMap::new(),
             &http::Extensions::new(),
             None,

@@ -1,6 +1,8 @@
 # Daily rewards and account selection
 
-Check-in cards start collapsed. Select the card title to expand or collapse its controls. Collapsing a card preserves the selected account and pending authorization; automatic check-in continues independently.
+Open WorkBuddy or Doubao Work's **Details** on the **Tools** page to find its check-in panel. The panels use the workspace's compact controls and theme colors; account controls and reward details wrap to fit narrower windows.
+
+Check-in panels start collapsed. Select the panel title to expand or collapse its controls. Collapsing a panel preserves the selected account and pending authorization; automatic check-in continues independently.
 
 | Client          | Daily reward                                                | Account selection                                                                                                          |
 | --------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |

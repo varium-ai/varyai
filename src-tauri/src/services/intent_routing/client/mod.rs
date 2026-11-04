@@ -216,7 +216,7 @@ pub(crate) fn catalog(
         .map(|(index, group)| {
             let mut model = template.clone();
             model["slug"] = json!(group.alias());
-            model["display_name"] = json!(format!("{} · routing group", group.name));
+            model["display_name"] = json!(format!("{} · routing group · VaryAI", group.name));
             model["description"] = json!("VaryAI routing group");
             model["priority"] = json!(index);
             // Never infer capability from an alias or a model-family name.

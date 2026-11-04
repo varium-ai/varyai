@@ -1958,6 +1958,9 @@ async fn execute(
                 Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_invalid_json"),
             };
             bridge_body["model"] = Value::String(target.model.clone());
+            if agent == "workbuddy" && protocol == Protocol::Chat {
+                super::workbuddy::normalize_chat_for_conversion(&mut bridge_body);
+            }
             // Protocol helpers see only allowed caller protocol metadata, never caller credentials.
             let mut caller_headers = http::HeaderMap::new();
             super::protocol_bridge::copy_caller_headers(
@@ -2481,7 +2484,17 @@ fn opaque_continuation(protocol: Protocol, body: &Value) -> bool {
         }),
         Protocol::Chat => body["messages"].as_array().is_some_and(|messages| {
             messages.iter().any(|message| {
-                message.get("reasoning_content").is_some() || message.get("reasoning").is_some()
+                ["reasoning_content", "reasoning", "reasoning_details"]
+                    .into_iter()
+                    .filter_map(|key| message.get(key))
+                    .any(sealed_chat_reasoning)
+                    || message["tool_calls"].as_array().is_some_and(|calls| {
+                        calls.iter().any(|call| {
+                            call.pointer("/extra_content/google/thought_signature")
+                                .and_then(Value::as_str)
+                                .is_some_and(|signature| !signature.is_empty())
+                        })
+                    })
             })
         }),
         Protocol::Gemini => body["contents"].as_array().is_some_and(|contents| {
@@ -2496,6 +2509,32 @@ fn opaque_continuation(protocol: Protocol, body: &Value) -> bool {
             })
         }),
         Protocol::Responses => false,
+    }
+}
+
+/// Visible Chat reasoning is replayable text. Only sealed vendor state requires
+/// a previously established target binding, including when switching models.
+fn sealed_chat_reasoning(value: &Value) -> bool {
+    match value {
+        Value::String(text) => {
+            text.starts_with(super::providers::reasoning_bridge::OPENAI_REASONING_ITEM_PREFIX)
+        }
+        Value::Array(parts) => parts.iter().any(sealed_chat_reasoning),
+        Value::Object(fields) => {
+            fields
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.contains("encrypted"))
+                || ["signature", "encrypted_content", "data"]
+                    .into_iter()
+                    .any(|key| {
+                        fields.get(key).is_some_and(|value| {
+                            !value.is_null() && value.as_str().is_none_or(|text| !text.is_empty())
+                        })
+                    })
+                || fields.values().any(sealed_chat_reasoning)
+        }
+        _ => false,
     }
 }
 fn request_has_images(protocol: Protocol, body: &Value, projection: &Value) -> bool {

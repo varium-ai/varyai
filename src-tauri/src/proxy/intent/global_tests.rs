@@ -52,6 +52,147 @@ fn menu(url: &str) -> Menu {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn workbuddy_readable_picker_ids_and_legacy_ids_reach_the_same_upstream(
+) -> Result<(), Box<dyn std::error::Error>> {
+    struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for RestoreSecurity {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security = RestoreSecurity((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(
+        crate::proxy::security::SecurityRuntimeConfig {
+            enabled: true,
+            ..Default::default()
+        },
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+    let task = tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/*path", post(move |Json(body): Json<Value>| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send(body).await;
+                Json(json!({"responseId":"synthetic-response","modelVersion":"gemini-3.6-flash","candidates":[{"content":{"role":"model","parts":[{"text":"Synthetic answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}))
+            }
+        }))).await
+    });
+    let runtime = Arc::new(Runtime::default());
+    let mut published = menu(&format!("http://{address}/responses"));
+    let session = Arc::make_mut(
+        published
+            .groups
+            .values_mut()
+            .next()
+            .ok_or("missing session")?,
+    );
+    let mut upstream = crate::provider::Provider::with_id(
+        "fixture".into(),
+        "Synthetic".into(),
+        json!({"base_url":format!("http://{address}"),"api_key":"synthetic-upstream"}),
+        None,
+    );
+    upstream.meta = Some(crate::provider::ProviderMeta {
+        api_format: Some("gemini_native".into()),
+        ..Default::default()
+    });
+    session.group.levels.clear();
+    session.group.members[0].model_id = "gemini-3.6-flash".into();
+    session.targets[0].model = "gemini-3.6-flash".into();
+    session.targets[0].effort = crate::services::intent_routing::effort::Capability::parse(
+        &json!({"reasoningLevels":["minimal","low","medium","high"]}),
+    );
+    session.targets[0].upstream = Some(upstream);
+    runtime.set_global(published, 0)?;
+    let name = "Synthetic model · Synthetic supplier · VaryAI";
+    runtime
+        .connections
+        .install(&crate::services::agent_connections::Receipt {
+            app: "workbuddy".into(),
+            token: "synthetic-local".into(),
+            model: group().alias(),
+            model_map: std::collections::BTreeMap::from([(name.into(), group().alias())]),
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        })?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    for (id, stream, assistant_history) in [
+        (name.to_owned(), false, None),
+        (name.to_owned(), true, None),
+        (group().alias(), false, None),
+        (group().alias(), true, None),
+        (
+            name.to_owned(),
+            false,
+            Some(
+                json!({"role":"assistant","content":[{"type":"text","text":"Synthetic prior answer","annotations":[]}],"agent":"synthetic-agent","conversationRequestId":"synthetic-conversation","messageId":"synthetic-message","model":"synthetic-model","rawUsage":{},"requestModelId":"synthetic-model","requestModelName":"Synthetic model","stepSeq":1,"traceId":"synthetic-trace","usage":{}}),
+            ),
+        ),
+    ] {
+        let mut payload = json!({"model":id,"stream":stream,"stream_options":{"include_usage":true},"reasoning_effort":"high",
+            "messages":[{"role":"system","content":[{"type":"text","text":"Synthetic system prompt"}]},{"role":"user","content":[{"type":"text","text":"Synthetic request"}],"agent":"synthetic-agent","conversationRequestId":"synthetic-conversation","rootRequestId":"synthetic-root","startsNewUserRequest":true}],
+            "tools":[{"type":"function","function":{"name":"synthetic_tool","description":"Synthetic tool","parameters":{"type":"object","properties":{"agent":{"type":"string"}}},"strict":false}}]});
+        if let Some(history) = assistant_history {
+            payload["messages"]
+                .as_array_mut()
+                .ok_or("missing messages")?
+                .insert(1, history);
+        }
+        let response = client
+            .post(format!(
+                "http://127.0.0.1:{}/connections/workbuddy/v1/chat/completions",
+                info.port
+            ))
+            .bearer_auth("synthetic-local")
+            .header("x-conversation-id", "synthetic-workbuddy-history")
+            .json(&payload)
+            .send()
+            .await?;
+        let status = response.status();
+        let body = response.text().await?;
+        assert_eq!(status, StatusCode::OK, "synthetic response: {body}");
+        assert!(body.contains("Synthetic answer"));
+        if stream {
+            assert!(body.contains("[DONE]"));
+        }
+        let sent = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await?
+            .ok_or("missing request")?;
+        let last = sent["contents"]
+            .as_array()
+            .and_then(|items| items.last())
+            .ok_or("missing upstream content")?;
+        assert_eq!(last["parts"][0]["text"], "Synthetic request");
+        assert_eq!(
+            sent["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "HIGH"
+        );
+        assert_eq!(
+            sent["tools"][0]["functionDeclarations"][0]["name"],
+            "synthetic_tool"
+        );
+    }
+    server.stop().await?;
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn desktop_effort_picker_publication_and_old_conversations_reach_exact_upstream(
 ) -> Result<(), Box<dyn std::error::Error>> {
     struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
@@ -547,6 +688,117 @@ fn reserved_aliases_and_native_opaque_continuity_fail_closed() {
         Protocol::Gemini,
         &json!({"contents":[{"parts":[{"thoughtSignature":"opaque"}]}]})
     ));
+}
+
+#[test]
+fn chat_visible_reasoning_is_portable_but_signed_or_encrypted_state_is_not() {
+    for reasoning in [Value::Null, json!(""), json!("Synthetic visible thought")] {
+        assert!(!opaque_continuation(
+            Protocol::Chat,
+            &json!({"messages":[{
+                "role":"assistant", "content":"Synthetic answer", "reasoning_content":reasoning
+            }]})
+        ));
+    }
+    for detail in [
+        json!({"type":"reasoning.encrypted","data":"synthetic-opaque"}),
+        json!({"type":"reasoning.text","signature":"synthetic-signature","text":"Synthetic thought"}),
+    ] {
+        assert!(opaque_continuation(
+            Protocol::Chat,
+            &json!({"messages":[{
+                "role":"assistant", "content":"Synthetic answer", "reasoning_details":[detail]
+            }]})
+        ));
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn workbuddy_switch_to_responses_model_keeps_visible_reasoning_history_portable(
+) -> Result<(), Box<dyn std::error::Error>> {
+    struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for RestoreSecurity {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security = RestoreSecurity((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let task = tokio::spawn(async move {
+        let _=axum::serve(listener,Router::new().route("/responses",post(move |Json(body):Json<Value>|{
+            let tx=tx.clone();async move {let _=tx.send(body).await;Json(json!({"id":"synthetic","object":"response","model":"grok-4.5","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Synthetic Grok reply"}]}],"usage":{"input_tokens":1,"output_tokens":1}}))}
+        }))).await;
+    });
+    let runtime = Arc::new(Runtime::default());
+    let mut shared = menu(&format!("http://{address}/responses"));
+    let session = Arc::make_mut(shared.groups.values_mut().next().ok_or("missing session")?);
+    let mut upstream = crate::provider::Provider::with_id(
+        "fixture".into(),
+        "Synthetic Grok".into(),
+        json!({"base_url":format!("http://{address}"),"auth":{"OPENAI_API_KEY":"synthetic-upstream"}}),
+        None,
+    );
+    upstream.meta = Some(crate::provider::ProviderMeta {
+        api_format: Some("openai_responses".into()),
+        ..Default::default()
+    });
+    session.targets[0].model = "grok-4.5".into();
+    session.targets[0].upstream = Some(upstream);
+    runtime.set_global(shared, 0)?;
+    runtime
+        .connections
+        .install(&crate::services::agent_connections::Receipt {
+            app: "workbuddy".into(),
+            token: "synthetic-local".into(),
+            model: group().alias(),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![],
+            suspended: false,
+            applied_at_ms: None,
+        })?;
+    let proxy = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let info = proxy.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    for reasoning in [Value::Null, json!(""), json!("Synthetic visible thought")] {
+        let response=client.post(format!("http://127.0.0.1:{}/connections/workbuddy/v1/chat/completions",info.port)).bearer_auth("synthetic-local").json(&json!({
+            "model":group().alias(),"messages":[{"role":"user","content":"Synthetic greeting"},{"role":"assistant","content":"Synthetic previous answer","reasoning_content":reasoning,"model":"gemini-synthetic","usage":{"tokens":1}},{"role":"user","content":"Synthetic next question"}]
+        })).send().await?;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "visible reasoning cannot require an opaque binding"
+        );
+        assert!(response.text().await?.contains("Synthetic Grok reply"));
+        let body = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await?
+            .ok_or("missing request")?;
+        assert_eq!(body["model"], "grok-4.5");
+        assert!(body["input"]
+            .to_string()
+            .contains("Synthetic previous answer"));
+    }
+    let blocked=client.post(format!("http://127.0.0.1:{}/connections/workbuddy/v1/chat/completions",info.port)).bearer_auth("synthetic-local").json(&json!({"model":group().alias(),"messages":[{"role":"assistant","content":"Synthetic answer","reasoning_details":[{"type":"reasoning.encrypted","data":"synthetic-opaque"}]}]})).send().await?;
+    assert_eq!(blocked.status(), StatusCode::CONFLICT);
+    assert!(
+        rx.try_recv().is_err(),
+        "unknown encrypted state must not reach upstream"
+    );
+    proxy.stop().await?;
+    task.abort();
+    Ok(())
 }
 
 #[test]
@@ -1131,6 +1383,18 @@ async fn agent_connections_share_global_routes_without_agent_owned_providers(
     let runtime = Arc::new(Runtime::default());
     let mut shared = menu(&format!("http://{address}/responses"));
     let session = Arc::make_mut(shared.groups.values_mut().next().ok_or("missing fixture")?);
+    // Cross-protocol consumers require an explicit static source, not inferred credentials.
+    let mut upstream = crate::provider::Provider::with_id(
+        "fixture".into(),
+        "Synthetic Responses source".into(),
+        json!({"env":{"ANTHROPIC_BASE_URL":format!("http://{address}"),"ANTHROPIC_API_KEY":"synthetic-upstream"}}),
+        None,
+    );
+    upstream.meta = Some(crate::provider::ProviderMeta {
+        api_format: Some("openai_responses".into()),
+        ..Default::default()
+    });
+    session.targets[0].upstream = Some(upstream);
     session.targets[0].effort = crate::services::intent_routing::effort::Capability::parse(
         &json!({"reasoningLevels":["low","high"]}),
     );
@@ -1199,9 +1463,16 @@ async fn agent_connections_share_global_routes_without_agent_owned_providers(
         let first = client
             .post(format!("{root}/responses"))
             .bearer_auth(format!("synthetic-{app}"))
-            .json(&json!({"model":wire,"input":"Synthetic first turn"}))
-            .send()
-            .await?;
+            .json(&json!({"model":wire,"input":"Synthetic first turn"}));
+        let first = if app == "trae" {
+            first
+                .header("sec-fetch-site", "none")
+                .header("sec-fetch-mode", "no-cors")
+        } else {
+            first
+        }
+        .send()
+        .await?;
         assert_eq!(first.status(), StatusCode::OK, "{app}");
         let _ = first.bytes().await?;
         let _ = rx.recv().await.ok_or("missing first request")?;
@@ -1216,9 +1487,16 @@ async fn agent_connections_share_global_routes_without_agent_owned_providers(
         let response = client
             .post(format!("{root}/responses"))
             .bearer_auth(format!("synthetic-{app}"))
-            .json(&json!({"model":wire, "input":history, "reasoning":{"effort":"max","summary":"auto"}}))
-            .send()
-            .await?;
+            .json(&json!({"model":wire, "input":history, "reasoning":{"effort":"max","summary":"auto"}}));
+        let response = if app == "trae" {
+            response
+                .header("sec-fetch-site", "none")
+                .header("sec-fetch-mode", "no-cors")
+        } else {
+            response
+        }
+        .send()
+        .await?;
         assert_eq!(response.status(), StatusCode::OK, "{app}");
         let (headers, body) = rx.recv().await.ok_or("missing request")?;
         assert_eq!(body["model"], "exact-model");
@@ -1234,6 +1512,137 @@ async fn agent_connections_share_global_routes_without_agent_owned_providers(
             Some(format!("Bearer synthetic-{app}").as_str())
         );
     }
+    for (app, site, mode, origin, credential, expected) in [
+        (
+            "trae",
+            "cross-site",
+            "no-cors",
+            None,
+            "synthetic-trae",
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "trae",
+            "same-origin",
+            "cors",
+            None,
+            "synthetic-trae",
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "trae",
+            "none",
+            "navigate",
+            None,
+            "synthetic-trae",
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "trae",
+            "none",
+            "",
+            None,
+            "synthetic-trae",
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "trae",
+            "none",
+            "no-cors",
+            Some("null"),
+            "synthetic-trae",
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "trae",
+            "none",
+            "no-cors",
+            Some("https://synthetic.example"),
+            "synthetic-trae",
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "trae",
+            "none",
+            "no-cors",
+            None,
+            "synthetic-wrong",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "claude",
+            "none",
+            "no-cors",
+            None,
+            "synthetic-claude",
+            StatusCode::FORBIDDEN,
+        ),
+    ] {
+        let mut request = client
+            .post(format!(
+                "http://127.0.0.1:{}/connections/{app}/v1/responses",
+                info.port
+            ))
+            .bearer_auth(credential)
+            .header("sec-fetch-site", site)
+            .header("sec-fetch-mode", mode)
+            .json(&json!({"model":group().alias(),"input":"Synthetic rejected request"}));
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        assert_eq!(
+            request.send().await?.status(),
+            expected,
+            "{app} {site} {mode}"
+        );
+    }
+    for peer in [
+        None,
+        Some("192.0.2.1:12345".parse::<std::net::SocketAddr>()?),
+    ] {
+        use tower::Service;
+        let mut request = http::Request::builder()
+            .method("POST")
+            .uri("/connections/trae/v1/responses")
+            .header("authorization", "Bearer synthetic-trae")
+            .header("sec-fetch-site", "none")
+            .header("sec-fetch-mode", "no-cors")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))?;
+        if let Some(peer) = peer {
+            request.extensions_mut().insert(peer);
+        }
+        assert_eq!(
+            server.build_router().call(request).await?.status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert!(rx.try_recv().is_err(), "rejected request reached upstream");
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    let synthetic_phone = ["138", "0000", "1234"].concat();
+    let redacted = client
+        .post(format!(
+            "http://127.0.0.1:{}/connections/qoder/v1/chat/completions",
+            info.port
+        ))
+        .bearer_auth("synthetic-qoder")
+        .json(&json!({
+            "model":group().alias(),
+            "messages":[{"role":"user","content":format!("Synthetic contact: {synthetic_phone}")}]
+        }))
+        .send()
+        .await?;
+    assert_eq!(redacted.status(), StatusCode::OK);
+    let _ = redacted.bytes().await?;
+    let (_, forwarded) = rx.recv().await.ok_or("missing redacted request")?;
+    assert!(forwarded["input"].is_array());
+    assert!(forwarded.get("messages").is_none());
+    let forwarded = forwarded.to_string();
+    assert!(
+        !forwarded.contains(&synthetic_phone),
+        "unredacted synthetic phone reached upstream"
+    );
+    assert!(forwarded.contains("[REDACTED]"));
     let mut security = crate::proxy::security::SecurityRuntimeConfig::default();
     security.builtin_action_overrides.insert(
         "rsa_ssh_private_key".into(),

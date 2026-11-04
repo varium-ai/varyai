@@ -370,6 +370,9 @@ fn build_generation_config(body: &Value) -> Option<Value> {
     if let Some(value) = body.get("stop_sequences") {
         config.insert("stopSequences".to_string(), value.clone());
     }
+    if let Some(value) = body.pointer("/generationConfig/thinkingConfig") {
+        config.insert("thinkingConfig".to_string(), value.clone());
+    }
 
     if config.is_empty() {
         None

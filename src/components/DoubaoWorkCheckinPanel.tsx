@@ -8,6 +8,7 @@ import {
 } from "@/lib/api/doubao-checkin";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import "./daily-checkin.css";
 
 const queryKey = ["doubaoCheckin"];
 
@@ -49,33 +50,27 @@ export function DoubaoWorkCheckinPanel() {
     selected && ["claimed", "already_checked"].includes(selected.outcome);
 
   return (
-    <section
-      aria-label={t("doubaowork.checkin.title")}
-      className="rounded-2xl border bg-card p-5"
-    >
-      <h2>
+    <section aria-label={t("doubaowork.checkin.title")} className="mp-checkin">
+      <h3 className="mp-checkin-heading">
         <button
           type="button"
           aria-expanded={expanded}
           aria-controls={detailsId}
           onClick={() => setExpanded((value) => !value)}
-          className="flex w-full items-center justify-between gap-3 text-left font-semibold"
+          className="mp-checkin-toggle"
         >
           {t("doubaowork.checkin.title")}
-          <ChevronDown
-            aria-hidden="true"
-            className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`}
-          />
+          <ChevronDown aria-hidden="true" />
         </button>
-      </h2>
-      <div id={detailsId} hidden={!expanded} className="mt-4 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="flex-1 text-sm text-muted-foreground">
-            {t("doubaowork.checkin.description")}
-          </p>
-          <div className="flex gap-2">
+      </h3>
+      <div id={detailsId} hidden={!expanded} className="mp-checkin-body">
+        <div className="mp-checkin-intro">
+          <p>{t("doubaowork.checkin.description")}</p>
+          <div className="mp-checkin-actions">
             <Button
               variant="ghost"
+              size="sm"
+              className="mp-checkin-button mp-checkin-quiet"
               disabled={busy || query.isFetching}
               onClick={() => void query.refetch()}
             >
@@ -83,6 +78,8 @@ export function DoubaoWorkCheckinPanel() {
             </Button>
             <Button
               variant="outline"
+              size="sm"
+              className="mp-checkin-button mp-checkin-primary"
               disabled={!canClaim || busy || query.isError}
               onClick={() => {
                 auto.reset();
@@ -99,13 +96,10 @@ export function DoubaoWorkCheckinPanel() {
             </Button>
           </div>
         </div>
-        <div className="space-y-1">
-          <label htmlFor={accountId} className="text-sm font-medium">
-            {t("doubaowork.checkin.account")}
-          </label>
+        <div className="mp-checkin-field">
+          <label htmlFor={accountId}>{t("doubaowork.checkin.account")}</label>
           <select
             id={accountId}
-            className="block w-full rounded-md border bg-background p-2 text-sm"
             value={selected?.id ?? ""}
             disabled={busy || !query.data?.accounts.length}
             onChange={(event) => {
@@ -128,58 +122,63 @@ export function DoubaoWorkCheckinPanel() {
           </select>
         </div>
         {selected && !selected.current && canClaim && (
-          <p className="text-sm text-muted-foreground">
+          <p className="mp-checkin-muted">
             {t("doubaowork.checkin.switchHint")}
           </p>
         )}
         {query.isError ? (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="mp-checkin-error">
             {t("doubaowork.checkin.loadFailed")}
           </p>
         ) : query.data ? (
-          <div role="status" className="space-y-1 text-sm">
-            <p>
+          <div role="status" className="mp-checkin-status">
+            <p className="mp-checkin-outcome" data-complete={hasReward}>
               {t(
                 `doubaowork.checkin.outcomes.${selected?.outcome ?? query.data.outcome}`,
               )}
             </p>
-            {hasReward && selected.credit != null && (
-              <p>
-                {t("doubaowork.checkin.reward", { credit: selected.credit })}
-              </p>
+            {hasReward && (
+              <div className="mp-checkin-rewards">
+                {selected.credit != null && (
+                  <p>
+                    {t("doubaowork.checkin.reward", {
+                      credit: selected.credit,
+                    })}
+                  </p>
+                )}
+                {selected.streak != null && (
+                  <p>
+                    {t("doubaowork.checkin.streak", { count: selected.streak })}
+                  </p>
+                )}
+                {selected.totalDays != null && (
+                  <p>
+                    {t("doubaowork.checkin.totalDays", {
+                      count: selected.totalDays,
+                    })}
+                  </p>
+                )}
+              </div>
             )}
-            {hasReward && selected.streak != null && (
-              <p>
-                {t("doubaowork.checkin.streak", { count: selected.streak })}
-              </p>
-            )}
-            {hasReward && selected.totalDays != null && (
-              <p>
-                {t("doubaowork.checkin.totalDays", {
-                  count: selected.totalDays,
-                })}
-              </p>
-            )}
-            <p className="text-xs text-muted-foreground">
+            <p className="mp-checkin-muted">
               {t("doubaowork.checkin.day", { day: query.data.day })}
             </p>
           </div>
         ) : (
-          <p role="status" className="text-sm text-muted-foreground">
+          <p role="status" className="mp-checkin-muted">
             {t("common.loading")}
           </p>
         )}
-        <div className="flex items-center justify-between gap-4 border-t pt-3">
-          <div className="space-y-1">
-            <label htmlFor={autoId} className="text-sm font-medium">
-              {t("doubaowork.checkin.autoLabel")}
-            </label>
-            <p className="text-xs text-muted-foreground">
+        <div className="mp-checkin-auto">
+          <div>
+            <label htmlFor={autoId}>{t("doubaowork.checkin.autoLabel")}</label>
+            <p className="mp-checkin-muted">
               {t("doubaowork.checkin.autoHint")}
             </p>
           </div>
           <Switch
             id={autoId}
+            className="mp-switch"
             checked={selected?.autoEnabled ?? false}
             disabled={!selected || busy || query.isError}
             onCheckedChange={(enabled) => {
@@ -189,7 +188,7 @@ export function DoubaoWorkCheckinPanel() {
           />
         </div>
         {(claim.isError || auto.isError) && (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="mp-checkin-error">
             {t("doubaowork.checkin.operationFailed")}
           </p>
         )}

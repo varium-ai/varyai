@@ -5,7 +5,7 @@ This integration targets the standalone Doubao Work client, not the general Doub
 ## Connect
 
 1. Add Doubao Work through Vary AI's agent-management controls; it is not added automatically.
-2. Quit Doubao Work using its own menu. On its Vary AI home page, choose the action to open it with inspection enabled. Review and approve the local debugging connection when prompted.
+2. Quit Doubao Work using its own menu. In Vary AI, open **Tools → Doubao Work → Details**, then choose **Open Doubao Work with inspection** in the connection instructions. The action is shown while the client is disconnected, including when its audit switch is already on and waiting. Review and approve the local debugging connection when prompted.
 3. Wait for the connected state and check that security inspection is enabled. Start a new conversation before sending a synthetic test message.
 
 After enabling or re-enabling inspection, use a new conversation. Earlier messages sent without inspection remain in the conversation and may still be available to the model. Reconnecting does not retrospectively redact them.

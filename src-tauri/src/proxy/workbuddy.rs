@@ -5,6 +5,50 @@ use axum::{
     response::Response,
 };
 
+/// Remove message-level host bookkeeping only when converting WorkBuddy requests.
+pub(super) fn normalize_chat_for_conversion(payload: &mut serde_json::Value) {
+    if let Some(messages) = payload
+        .get_mut("messages")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for message in messages {
+            if let Some(fields) = message.as_object_mut() {
+                for key in [
+                    "agent",
+                    "conversationRequestId",
+                    "rootRequestId",
+                    "startsNewUserRequest",
+                    "messageId",
+                    "model",
+                    "rawUsage",
+                    "requestModelId",
+                    "requestModelName",
+                    "stepSeq",
+                    "traceId",
+                    "usage",
+                ] {
+                    fields.remove(key);
+                }
+                if let Some(content) = fields
+                    .get_mut("content")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    for part in content {
+                        if matches!(
+                            part.get("type").and_then(serde_json::Value::as_str),
+                            Some("text" | "output_text")
+                        ) {
+                            if let Some(fields) = part.as_object_mut() {
+                                fields.remove("annotations");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(crate) async fn handle(
     State(state): State<ProxyState>,
     request: Request,
@@ -107,25 +151,7 @@ async fn forward_to_provider(
         headers.insert(header::AUTHORIZATION, auth);
         parts.headers = headers;
         if super::native_protocol::needs_conversion(&provider, &parts.uri)? {
-            // WorkBuddy's SDK spreads local conversation bookkeeping into Chat messages.
-            // It is not model content and has no counterpart in another wire protocol.
-            if let Some(messages) = payload
-                .get_mut("messages")
-                .and_then(serde_json::Value::as_array_mut)
-            {
-                for message in messages {
-                    if let Some(fields) = message.as_object_mut() {
-                        for key in [
-                            "agent",
-                            "conversationRequestId",
-                            "rootRequestId",
-                            "startsNewUserRequest",
-                        ] {
-                            fields.remove(key);
-                        }
-                    }
-                }
-            }
+            normalize_chat_for_conversion(&mut payload);
             let state = state
                 .as_ref()
                 .ok_or_else(|| ProxyError::ConfigError("WorkBuddy route unavailable".into()))?;
@@ -260,6 +286,71 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
+
+    #[test]
+    fn conversion_normalization_preserves_content_tools_and_unknown_settings() {
+        let mut payload = json!({"agent":"synthetic-root","messages":[{
+            "role":"user","content":"Synthetic agent conversationRequestId text",
+            "agent":"synthetic-agent","conversationRequestId":"synthetic-conversation",
+            "rootRequestId":"synthetic-root","startsNewUserRequest":true,
+            "model_option":{"agent":"preserved"}
+        }],"tools":[{"type":"function","function":{"parameters":{"properties":{"agent":{"type":"string"}}}}}],"reasoning_effort":"high"});
+        let original = payload.clone();
+        normalize_chat_for_conversion(&mut payload);
+        for key in [
+            "agent",
+            "conversationRequestId",
+            "rootRequestId",
+            "startsNewUserRequest",
+        ] {
+            assert!(payload["messages"][0].get(key).is_none());
+        }
+        for key in ["role", "content", "model_option"] {
+            assert_eq!(payload["messages"][0][key], original["messages"][0][key]);
+        }
+        for key in ["agent", "tools", "reasoning_effort"] {
+            assert_eq!(payload[key], original[key]);
+        }
+    }
+
+    #[test]
+    fn conversion_normalization_removes_response_bookkeeping_without_editing_tool_data() {
+        let mut payload = json!({"messages":[{
+            "role":"assistant","content":[{"type":"text","text":"Synthetic answer","annotations":[]}],
+            "agent":"synthetic-agent","conversationRequestId":"synthetic-conversation",
+            "messageId":"synthetic-message","model":"synthetic-model","rawUsage":{},
+            "requestModelId":"synthetic-model","requestModelName":"Synthetic model",
+            "stepSeq":1,"traceId":"synthetic-trace","usage":{},
+            "reasoning_content":"Synthetic reasoning","custom_option":{"annotations":[]},
+            "tool_calls":[{"id":"synthetic-call","type":"function","function":{"name":"synthetic","arguments":"{\"model\":\"synthetic\",\"annotations\":[]}"}}]
+        }]});
+        let original = payload.clone();
+        normalize_chat_for_conversion(&mut payload);
+        for key in [
+            "agent",
+            "conversationRequestId",
+            "messageId",
+            "model",
+            "rawUsage",
+            "requestModelId",
+            "requestModelName",
+            "stepSeq",
+            "traceId",
+            "usage",
+        ] {
+            assert!(payload["messages"][0].get(key).is_none());
+        }
+        assert!(payload["messages"][0]["content"][0]
+            .get("annotations")
+            .is_none());
+        assert_eq!(
+            payload["messages"][0]["content"][0]["text"],
+            original["messages"][0]["content"][0]["text"]
+        );
+        for key in ["reasoning_content", "custom_option", "tool_calls"] {
+            assert_eq!(payload["messages"][0][key], original["messages"][0][key]);
+        }
+    }
 
     async fn upstream(
         expected_messages: Value,

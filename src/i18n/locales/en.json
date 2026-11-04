@@ -5032,6 +5032,10 @@
     "sameAsHint": "Treat this model as the specified model when finding groups and filling missing catalog facts. The upstream model ID stays unchanged."
   },
   "agentConnections": {
+    "officialModels": "Official models",
+    "nativeCatalogHint": "Shared models provided by Vary. Choose the chat model inside the client after it loads this catalog.",
+    "nativeCatalogDisconnectedHint": "Preview of the shared catalog. Enable the connection to add these models, then choose a chat model inside the client.",
+    "nativeCatalogPendingHint": "Preview of the shared catalog. TRAE bridge sync is still pending; choose a model inside TRAE after sync completes.",
     "modelListTitle": "{{agent}}'s model list",
     "modelListDescription": "Models turned off don't show in {{agent}}'s model picker; other agents can still use them.",
     "modelListView": "Model list view",
@@ -5624,7 +5628,7 @@
         "inactive": "No check-in reward is currently available.",
         "switch_required": "The active account changed during check-in. Refresh and try again.",
         "sign_in_required": "Sign in to the official Doubao Work client.",
-        "connection_required": "Connect Doubao Work using the controls below.",
+        "connection_required": "Connect the signed-in Doubao Work client, then refresh accounts.",
         "unsupported": "This client version does not expose a supported check-in service.",
         "failed": "The reward could not be confirmed. Please try again."
       },

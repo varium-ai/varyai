@@ -656,7 +656,7 @@ async fn provider_backup_imports_saved_reasoning_preferences_into_shared_agent_c
     let models = crate::services::agent_connections::models(&menu);
     let exact = models
         .iter()
-        .find(|model| model.name == "Custom · Synthetic")
+        .find(|model| model.name == "Custom · Synthetic · VaryAI")
         .ok_or("missing imported model")?;
     assert_eq!(
         crate::services::agent_connections::pi_model(exact)["thinkingLevelMap"]["max"],

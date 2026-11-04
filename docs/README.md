@@ -29,6 +29,7 @@
 
 ## Implementation references
 
+- [Protocol conversion and the shared IR](architecture/protocol-conversion.md)
 - [DLP architecture](architecture/security-audit.md)
 - [Tool observations and risk evaluation](architecture/tool-risk.md)
 - [Independent storage, recovery and backups](architecture/storage.md)

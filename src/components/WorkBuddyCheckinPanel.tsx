@@ -10,6 +10,7 @@ import {
 import { settingsApi } from "@/lib/api/settings";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import "./daily-checkin.css";
 
 const queryKey = ["workbuddyCheckin", "accounts"];
 
@@ -102,33 +103,27 @@ export function WorkBuddyCheckinPanel() {
     data && ["claimed", "already_checked"].includes(data.outcome);
 
   return (
-    <section
-      aria-label={t("workbuddy.checkin.title")}
-      className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-border dark:bg-card"
-    >
-      <h2>
+    <section aria-label={t("workbuddy.checkin.title")} className="mp-checkin">
+      <h3 className="mp-checkin-heading">
         <button
           type="button"
           aria-expanded={expanded}
           aria-controls={detailsId}
           onClick={() => setExpanded((value) => !value)}
-          className="flex w-full items-center justify-between gap-3 text-left font-semibold"
+          className="mp-checkin-toggle"
         >
           {t("workbuddy.checkin.title")}
-          <ChevronDown
-            aria-hidden="true"
-            className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`}
-          />
+          <ChevronDown aria-hidden="true" />
         </button>
-      </h2>
-      <div id={detailsId} hidden={!expanded} className="mt-4 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="flex-1 text-sm text-muted-foreground">
-            {t("workbuddy.checkin.description")}
-          </p>
-          <div className="flex gap-2">
+      </h3>
+      <div id={detailsId} hidden={!expanded} className="mp-checkin-body">
+        <div className="mp-checkin-intro">
+          <p>{t("workbuddy.checkin.description")}</p>
+          <div className="mp-checkin-actions">
             <Button
               variant="ghost"
+              size="sm"
+              className="mp-checkin-button mp-checkin-quiet"
               disabled={busy || status.isFetching}
               onClick={() => void status.refetch()}
             >
@@ -136,6 +131,8 @@ export function WorkBuddyCheckinPanel() {
             </Button>
             <Button
               variant="outline"
+              size="sm"
+              className="mp-checkin-button mp-checkin-primary"
               disabled={!canClaim || busy || status.isError}
               onClick={() => {
                 auto.reset();
@@ -150,14 +147,13 @@ export function WorkBuddyCheckinPanel() {
             </Button>
           </div>
         </div>
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-48 flex-1 space-y-1">
-            <label htmlFor={accountSelectId} className="text-sm font-medium">
+        <div className="mp-checkin-accounts">
+          <div className="mp-checkin-field">
+            <label htmlFor={accountSelectId}>
               {t("workbuddy.checkin.account")}
             </label>
             <select
               id={accountSelectId}
-              className="block w-full rounded-md border bg-background p-2 text-sm"
               value={selected?.id ?? ""}
               disabled={busy || !status.data?.accounts.length}
               onChange={(event) => {
@@ -181,6 +177,8 @@ export function WorkBuddyCheckinPanel() {
           </div>
           <Button
             variant="outline"
+            size="sm"
+            className="mp-checkin-button"
             disabled={busy || !!loginId}
             onClick={() => add.mutate()}
           >
@@ -189,6 +187,8 @@ export function WorkBuddyCheckinPanel() {
           {selected?.source === "browser" && (
             <Button
               variant="ghost"
+              size="sm"
+              className="mp-checkin-button mp-checkin-quiet"
               disabled={busy}
               onClick={() => remove.mutate(selected.id)}
             >
@@ -197,7 +197,7 @@ export function WorkBuddyCheckinPanel() {
           )}
         </div>
         {loginId && (
-          <div className="flex items-center gap-3 text-sm">
+          <div className="mp-checkin-actions">
             <p role="status">
               {t(
                 login.isError
@@ -207,6 +207,8 @@ export function WorkBuddyCheckinPanel() {
             </p>
             <Button
               variant="outline"
+              size="sm"
+              className="mp-checkin-button"
               disabled={cancel.isPending}
               onClick={() => cancel.mutate()}
             >
@@ -215,43 +217,50 @@ export function WorkBuddyCheckinPanel() {
           </div>
         )}
         {status.isError ? (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="mp-checkin-error">
             {t("workbuddy.checkin.loadFailed")}
           </p>
         ) : data ? (
-          <div role="status" className="space-y-1 text-sm">
-            <p>{t(`workbuddy.checkin.outcomes.${data.outcome}`)}</p>
-            {hasReward && data.credit !== null && (
-              <p>{t("workbuddy.checkin.reward", { credit: data.credit })}</p>
-            )}
-            {hasReward && data.streak !== null && (
-              <p>{t("workbuddy.checkin.streak", { count: data.streak })}</p>
+          <div role="status" className="mp-checkin-status">
+            <p className="mp-checkin-outcome" data-complete={hasReward}>
+              {t(`workbuddy.checkin.outcomes.${data.outcome}`)}
+            </p>
+            {hasReward && (
+              <div className="mp-checkin-rewards">
+                {data.credit !== null && (
+                  <p>
+                    {t("workbuddy.checkin.reward", { credit: data.credit })}
+                  </p>
+                )}
+                {data.streak !== null && (
+                  <p>{t("workbuddy.checkin.streak", { count: data.streak })}</p>
+                )}
+              </div>
             )}
             {hasReward && data.creditDelayed && (
-              <p className="text-muted-foreground">
+              <p className="mp-checkin-muted">
                 {t("workbuddy.checkin.delayed")}
               </p>
             )}
-            <p className="text-xs text-muted-foreground">
+            <p className="mp-checkin-muted">
               {t("workbuddy.checkin.day", { day: data.day })}
             </p>
           </div>
         ) : (
-          <p role="status" className="text-sm text-muted-foreground">
+          <p role="status" className="mp-checkin-muted">
             {t("common.loading")}
           </p>
         )}
-        <div className="flex items-center justify-between gap-4 border-t pt-3">
-          <div className="space-y-1">
-            <label htmlFor={toggleId} className="text-sm font-medium">
-              {t("workbuddy.checkin.autoLabel")}
-            </label>
-            <p className="text-xs text-muted-foreground">
+        <div className="mp-checkin-auto">
+          <div>
+            <label htmlFor={toggleId}>{t("workbuddy.checkin.autoLabel")}</label>
+            <p className="mp-checkin-muted">
               {t("workbuddy.checkin.autoHint")}
             </p>
           </div>
           <Switch
             id={toggleId}
+            className="mp-switch"
             checked={data?.autoEnabled ?? false}
             disabled={!selected || busy || status.isError}
             onCheckedChange={(enabled) => {
@@ -265,7 +274,7 @@ export function WorkBuddyCheckinPanel() {
           add.isError ||
           cancel.isError ||
           remove.isError) && (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="mp-checkin-error">
             {t("workbuddy.checkin.operationFailed")}
           </p>
         )}

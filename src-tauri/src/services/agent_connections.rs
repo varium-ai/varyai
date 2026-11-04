@@ -835,16 +835,29 @@ fn build_with_token(
                 Ok(())
             })?);
         }
-        "workbuddy" => receipt.files.push(FileEdit::prepare_document(crate::workbuddy_config::get_workbuddy_config_path(), true, |value| {
+        "workbuddy" => {
+            let mut named_models = Vec::new();
+            for model in &catalog {
+                let mut name = model.name.clone();
+                let mut duplicate = 2;
+                while receipt.model_map.contains_key(&name) {
+                    name = format!("{} ({duplicate})", model.name);
+                    duplicate += 1;
+                }
+                receipt.model_map.insert(name.clone(), model.id.clone());
+                named_models.push((name, model));
+            }
+            receipt.files.push(FileEdit::prepare_document(crate::workbuddy_config::get_workbuddy_config_path(), true, |value| {
             let array = value.is_array();
             if array { *value = json!({"models":value.take()}); }
             if value.get("models").is_some_and(|rows| !rows.is_array()) { return Err(FAILED.into()); }
             let mut rows = value.get("models").and_then(Value::as_array).cloned().unwrap_or_default();
             let previous = rows.iter().filter(|row| row["apiKey"].as_str() == Some(&token)).filter_map(|row| row["id"].as_str().map(str::to_owned)).collect::<Vec<_>>();
             rows.retain(|row| row["apiKey"].as_str() != Some(&token));
-            if rows.iter().any(|row| catalog.iter().any(|model| row["id"] == model.id)) { return Err(CONFLICT.into()); }
-            for model in &catalog {
-                let mut row = json!({"id":model.id,"name":model.name,"vendor":"Vary AI","apiKey":token,"url":format!("{base}/v1/chat/completions"),"supportsToolCall":true});
+            if rows.iter().any(|row| named_models.iter().any(|(name, _)| row["id"] == *name)) { return Err(CONFLICT.into()); }
+            for (name, model) in &named_models {
+                // WorkBuddy appends the ID unless it exactly matches the name.
+                let mut row = json!({"id":name,"name":name,"vendor":"Vary AI","apiKey":token,"url":format!("{base}/v1/chat/completions"),"supportsToolCall":true});
                 reasoning::workbuddy(&mut row, model);
                 if let Some(context) = model.context_window {
                     row["maxInputTokens"] = json!(context);
@@ -853,10 +866,11 @@ fn build_with_token(
                 rows.push(row);
             }
             value["models"] = json!(rows);
-            if let Some(available) = value.get_mut("availableModels") { let available = available.as_array_mut().ok_or(FAILED)?; available.retain(|id| !id.as_str().is_some_and(|id| previous.iter().any(|old| old == id))); for model in &catalog { let id = json!(model.id); if !available.contains(&id) { available.push(id); } } }
+            if let Some(available) = value.get_mut("availableModels") { let available = available.as_array_mut().ok_or(FAILED)?; available.retain(|id| !id.as_str().is_some_and(|id| previous.iter().any(|old| old == id))); for (name, _) in &named_models { let id = json!(name); if !available.contains(&id) { available.push(id); } } }
             if array { *value = value["models"].take(); }
             Ok(())
-        })?),
+        })?);
+        },
         "opencode" => receipt.files.push(FileEdit::prepare(crate::opencode_config::get_opencode_config_path(), |value| {
             let models = catalog.iter().map(|m| (m.id.clone(), opencode_model(m))).collect::<serde_json::Map<_,_>>();
             put(value, &["provider".into(), "varyai".into()], Some(json!({"npm":"@ai-sdk/openai-compatible","name":"Vary AI","options":{"baseURL":format!("{base}/v1"),"apiKey":token},"models":models})))?;

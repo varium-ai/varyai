@@ -5030,6 +5030,10 @@
     "sameAsHint": "自动发现分组及补全缺失模型信息时，将此模型视为填写的模型。发给供应商的模型 ID 保持原样。"
   },
   "agentConnections": {
+    "officialModels": "官方模型",
+    "nativeCatalogHint": "Vary 提供的共享模型目录。客户端加载目录后，请在客户端内选择聊天模型。",
+    "nativeCatalogDisconnectedHint": "共享模型目录预览。打开接入开关后会添加这些模型，再到客户端内选择聊天模型。",
+    "nativeCatalogPendingHint": "共享模型目录预览。TRAE 桥接仍待同步，完成后请在 TRAE 内选择模型。",
     "modelListTitle": "{{agent}} 的模型列表",
     "modelListDescription": "关闭的模型不会出现在 {{agent}} 的模型列表中；其他 Agent 仍可使用。",
     "modelListView": "模型列表视图",
@@ -5622,7 +5626,7 @@
         "inactive": "当前没有可领取的签到奖励。",
         "switch_required": "签到期间当前账号发生变化，请刷新后重试。",
         "sign_in_required": "请先登录豆包 Work 官方客户端。",
-        "connection_required": "请先使用下方入口连接豆包 Work 客户端。",
+        "connection_required": "请先连接已登录的豆包 Work 客户端，再刷新账号。",
         "unsupported": "当前客户端版本暂不提供兼容的签到服务。",
         "failed": "尚未确认领取结果，请重试。"
       },
