@@ -1334,6 +1334,13 @@ describe("Agent connections", () => {
           const row = await screen.findByRole("article", {
             name: `apps.${app}`,
           });
+          if (app === "trae") {
+            fireEvent.click(
+              within(row).getByRole("button", {
+                name: "agentConnections.details apps.trae",
+              }),
+            );
+          }
           const trigger = within(row).getByRole("button", {
             name: `agentConnections.modelList apps.${app}`,
           });
@@ -1372,6 +1379,90 @@ describe("Agent connections", () => {
       );
     },
   );
+
+  describe.each([false, true])("TRAE details (compact: %s)", (compact) => {
+    it.each([
+      {
+        mode: "connected",
+        enabled: true,
+        configured: true,
+        recoveryPending: false,
+        status: "configured",
+      },
+      {
+        mode: "disconnected",
+        enabled: false,
+        configured: false,
+        recoveryPending: false,
+        status: "off",
+      },
+      {
+        mode: "pending",
+        enabled: true,
+        configured: false,
+        recoveryPending: true,
+        status: "bridgePending",
+      },
+    ])(
+      "keeps one starting picker and useful $mode details",
+      async ({ enabled, configured, recoveryPending, status }) => {
+        vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+          trae: true,
+        } as Awaited<ReturnType<typeof proxyApi.getAgentInstallations>>);
+        vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+          {
+            app: "trae",
+            enabled,
+            configured,
+            recoveryPending,
+            recoveryReason: recoveryPending ? "bridge_pending" : null,
+            restartRequired: recoveryPending,
+            model: enabled ? "vary-auto/shared" : null,
+          },
+        ]);
+        mount(compact);
+        const row = await screen.findByRole("article", { name: "apps.trae" });
+        expect(
+          within(row).getAllByRole("button", {
+            name: "agentConnections.model apps.trae",
+            hidden: true,
+          }),
+        ).toHaveLength(1);
+        expect(
+          within(row).queryByRole("button", {
+            name: "agentConnections.modelList apps.trae",
+            hidden: true,
+          }),
+        ).not.toBeInTheDocument();
+        fireEvent.click(
+          within(row).getByRole("button", {
+            name: "agentConnections.details apps.trae",
+          }),
+        );
+        const details = within(row).getByRole("region", {
+          name: "agentConnections.details apps.trae",
+        });
+        expect(
+          within(details).getByText("agentConnections.bridgeHint"),
+        ).toBeVisible();
+        expect(
+          within(details).getByText(`agentConnections.states.${status}`),
+        ).toBeVisible();
+        const catalog = within(details).getByRole("button", {
+          name: "agentConnections.modelList apps.trae",
+        });
+        await waitFor(() => expect(catalog).toBeEnabled());
+        fireEvent.click(catalog);
+        const dialog = await screen.findByRole("dialog");
+        expect(
+          within(dialog).getByRole("listitem", { name: "Shared group" }),
+        ).toBeVisible();
+        expect(within(dialog).queryByRole("radio")).not.toBeInTheDocument();
+        expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+        expect(agentConnectionsApi.setModelVisibility).not.toHaveBeenCalled();
+      },
+    );
+  });
 
   it("shows a safe catalog error instead of a false model count", async () => {
     vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({

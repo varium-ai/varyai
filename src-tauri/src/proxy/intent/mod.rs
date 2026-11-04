@@ -15,6 +15,8 @@ pub(crate) mod trace;
 mod trace_tests;
 #[cfg(test)]
 mod trae_tests;
+#[cfg(test)]
+mod workbuddy_history_tests;
 use super::protocol_bridge::Protocol;
 use crate::services::intent_routing::{classifier, RoutingGroup};
 use axum::{
@@ -1340,17 +1342,37 @@ async fn execute(
     } else {
         None
     };
+    let portable_tool_history = agent == "workbuddy"
+        && protocol == Protocol::Chat
+        && session.targets.len() == 1
+        && !opaque_continuation(protocol, &original)
+        && completed_tool_history(&projection);
     // Counting history must not claim or change its generation continuation.
     let scoped = if count_tokens {
         Arc::new(scopes::Conversation::default())
     } else {
-        match state.intent_runtime.conversations.acquire_durable(
-            &consumer,
-            &session,
-            conversation.as_deref(),
-            &projection,
-            durable,
-        ) {
+        let scoped = if portable_tool_history {
+            state
+                .intent_runtime
+                .conversations
+                .acquire_durable_with_history(
+                    &consumer,
+                    &session,
+                    conversation.as_deref(),
+                    &projection,
+                    durable,
+                    true,
+                )
+        } else {
+            state.intent_runtime.conversations.acquire_durable(
+                &consumer,
+                &session,
+                conversation.as_deref(),
+                &projection,
+                durable,
+            )
+        };
+        match scoped {
             Ok(scoped) => scoped,
             Err(code) => return fail(StatusCode::CONFLICT, code),
         }
@@ -1379,7 +1401,11 @@ async fn execute(
                     )
                 })
             });
-        if tools
+        if portable_tool_history {
+            // An existing named scope still pins its destination. A self-contained
+            // transcript can start a new single-target scope after a model switch.
+            Ok(pinned)
+        } else if tools
             && pinned.is_none()
             && conversation.is_none()
             && protocol == Protocol::Chat
@@ -2393,6 +2419,18 @@ async fn execute(
                 }
             }
             observer.finish(&mut bindings, index);
+            if portable_tool_history && observer.completed && !observer.failed && !observer.oversized {
+                // Keep imported calls with the scope that accepted them, so a
+                // later round can resolve old and newly generated calls together.
+                let mut changed = false;
+                if let Some(items) = projection["input"].as_array() {
+                    for id in items.iter().filter(|item| item["type"] == "function_call").filter_map(|item| item["call_id"].as_str()) {
+                        if bindings.full() { break; }
+                        changed |= remember(&mut bindings.calls, "call", id, index);
+                    }
+                }
+                if changed { bindings.persist(); }
+            }
             if observer.completed && !observer.failed && !observer.pending_tools && !observer.oversized {
                 if let Some(key) = conversation.as_ref() { bindings.complete_session(key); }
             }
@@ -2487,6 +2525,56 @@ fn public_response_headers(source: &http::HeaderMap) -> http::HeaderMap {
     }
     output
 }
+fn completed_tool_history(projection: &Value) -> bool {
+    if projection["_group_projection_incomplete"] == true
+        || projection
+            .get("previous_response_id")
+            .is_some_and(|v| !v.is_null())
+        || projection.get("conversation").is_some_and(|v| !v.is_null())
+    {
+        return false;
+    }
+    let Some(items) = projection["input"].as_array() else {
+        return false;
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut pending = std::collections::HashSet::new();
+    for item in items {
+        match item["type"].as_str() {
+            Some("message") => {}
+            Some("function_call") => {
+                let Some(id) = item["call_id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty() && id.len() <= 256)
+                else {
+                    return false;
+                };
+                if item["name"].as_str().is_none_or(|name| name.is_empty())
+                    || !item["arguments"]
+                        .as_str()
+                        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                        .is_some_and(|value| value.is_object())
+                    || !seen.insert(id)
+                    || seen.len() >= 4096
+                {
+                    return false;
+                }
+                pending.insert(id);
+            }
+            Some("function_call_output") => {
+                let Some(id) = item["call_id"].as_str() else {
+                    return false;
+                };
+                if item.get("output").is_none_or(Value::is_null) || !pending.remove(id) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    !seen.is_empty() && pending.is_empty()
+}
+
 fn opaque_continuation(protocol: Protocol, body: &Value) -> bool {
     match protocol {
         Protocol::Anthropic => body["messages"].as_array().is_some_and(|messages| {
@@ -2507,6 +2595,11 @@ fn opaque_continuation(protocol: Protocol, body: &Value) -> bool {
                     .into_iter()
                     .filter_map(|key| message.get(key))
                     .any(sealed_chat_reasoning)
+                    || message["content"].as_array().is_some_and(|parts| {
+                        parts
+                            .iter()
+                            .any(|part| part.get("thoughtSignature").is_some())
+                    })
                     || message["tool_calls"].as_array().is_some_and(|calls| {
                         calls.iter().any(|call| {
                             call.pointer("/extra_content/google/thought_signature")

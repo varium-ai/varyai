@@ -120,6 +120,42 @@ pub(super) fn normalize_trae_responses(payload: &mut Value) -> bool {
     changed
 }
 
+/// Add TRAE's required reasoning summary without re-encoding native values.
+pub(super) fn normalize_trae_responses_raw(raw: &[u8]) -> Result<Option<Vec<u8>>, &'static str> {
+    use serde_json::value::{to_raw_value, RawValue};
+    type Fields = std::collections::BTreeMap<String, Box<RawValue>>;
+    const INVALID: &str = "routing_invalid_json";
+    let mut fields: Fields = serde_json::from_slice(raw).map_err(|_| INVALID)?;
+    let Some(input) = fields.get("input") else {
+        return Ok(None);
+    };
+    let Ok(mut items) = serde_json::from_str::<Vec<Box<RawValue>>>(input.get()) else {
+        return Ok(None);
+    };
+    let mut changed = false;
+    for item in &mut items {
+        let Ok(mut object) = serde_json::from_str::<Fields>(item.get()) else {
+            continue;
+        };
+        let reasoning = object.get("type").is_some_and(|kind| {
+            serde_json::from_str::<String>(kind.get()).ok().as_deref() == Some("reasoning")
+        });
+        if reasoning && !object.contains_key("summary") {
+            object.insert(
+                "summary".into(),
+                to_raw_value(&json!([])).map_err(|_| INVALID)?,
+            );
+            *item = to_raw_value(&object).map_err(|_| INVALID)?;
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(None);
+    }
+    fields.insert("input".into(), to_raw_value(&items).map_err(|_| INVALID)?);
+    serde_json::to_vec(&fields).map(Some).map_err(|_| INVALID)
+}
+
 async fn forward_trae_responses(
     provider: &Provider,
     mut parts: Parts,
@@ -312,6 +348,27 @@ mod tests {
         atomic::{AtomicU16, AtomicUsize, Ordering},
         Arc,
     };
+
+    #[test]
+    fn trae_raw_normalization_only_fills_missing_reasoning_summary(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let raw = br#"{"input":[{"type":"reasoning","id":"synthetic-missing","encrypted_content":"synthetic-opaque"},{"type":"reasoning","summary":null},{"type":"reasoning","summary":[{"type":"summary_text","text":"Synthetic summary"}]},{"type":"message","content":[]}]}"#;
+        let normalized = normalize_trae_responses_raw(raw)?.ok_or("missing normalization")?;
+        let body: Value = serde_json::from_slice(&normalized)?;
+        assert_eq!(body["input"][0]["summary"], json!([]));
+        assert_eq!(body["input"][0]["encrypted_content"], "synthetic-opaque");
+        assert!(body["input"][1]["summary"].is_null());
+        assert_eq!(body["input"][2]["summary"][0]["text"], "Synthetic summary");
+        assert!(body["input"][3].get("summary").is_none());
+        assert!(normalize_trae_responses_raw(&normalized)?.is_none());
+        for unchanged in [
+            br#"{"input":"Synthetic question"}"#.as_slice(),
+            br#"{"input":[null,{"type":"message","content":[]}]}"#.as_slice(),
+        ] {
+            assert!(normalize_trae_responses_raw(unchanged)?.is_none());
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     #[serial_test::serial]

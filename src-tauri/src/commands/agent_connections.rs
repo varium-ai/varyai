@@ -439,6 +439,7 @@ mod tests {
             codex_settings: None,
             id: uuid::Uuid::new_v4().to_string(),
             name: "Synthetic upgrade provider".into(),
+            icon: None,
             revision: 0,
             has_api_key: false,
             enabled: true,

@@ -25,6 +25,9 @@ native client support.
   image capability icons. Keep recovery notes below the scrollable list and
   preserve the disconnect confirmation. Desktop visibility retains its own
   show/hide, ordering and future-model controls in the shared picker component.
+- TRAE has one starting-model picker in its main row. Keep the read-only shared
+  catalog in expanded details beside the bridge explanation and current status,
+  including disconnected and pending states in both workspace and tray views.
 - Keep tool icons centered in transparent 28 px containers without colored
   background tiles. Use inset list dividers, 12 px card corners and
   36 x 20 px switches. Keep switch tracks pill-shaped in dialogs by excluding

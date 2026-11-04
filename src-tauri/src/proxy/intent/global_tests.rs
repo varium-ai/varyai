@@ -746,6 +746,7 @@ async fn workbuddy_switch_to_responses_model_keeps_visible_reasoning_history_por
         api_format: Some("openai_responses".into()),
         ..Default::default()
     });
+    session.group.members[0].model_id = "grok-4.5".into();
     session.targets[0].model = "grok-4.5".into();
     session.targets[0].upstream = Some(upstream);
     runtime.set_global(shared, 0)?;
@@ -772,16 +773,24 @@ async fn workbuddy_switch_to_responses_model_keeps_visible_reasoning_history_por
     .with_intent_runtime(runtime);
     let info = proxy.start().await?;
     let client = reqwest::Client::builder().no_proxy().build()?;
-    for reasoning in [Value::Null, json!(""), json!("Synthetic visible thought")] {
+    for (stream, reasoning) in [false, true].into_iter().flat_map(|stream| {
+        [Value::Null, json!(""), json!("Synthetic visible thought")]
+            .into_iter()
+            .map(move |reasoning| (stream, reasoning))
+    }) {
         let response=client.post(format!("http://127.0.0.1:{}/connections/workbuddy/v1/chat/completions",info.port)).bearer_auth("synthetic-local").json(&json!({
-            "model":group().alias(),"messages":[{"role":"user","content":"Synthetic greeting"},{"role":"assistant","content":"Synthetic previous answer","reasoning_content":reasoning,"model":"gemini-synthetic","usage":{"tokens":1}},{"role":"user","content":"Synthetic next question"}]
+            "model":group().alias(),"stream":stream,"messages":[{"role":"user","content":"Synthetic greeting"},{"role":"assistant","content":"Synthetic previous answer","reasoning_content":reasoning,"model":"gemini-synthetic","usage":{"tokens":1}},{"role":"user","content":"Synthetic next question"}]
         })).send().await?;
         assert_eq!(
             response.status(),
             StatusCode::OK,
             "visible reasoning cannot require an opaque binding"
         );
-        assert!(response.text().await?.contains("Synthetic Grok reply"));
+        let text = response.text().await?;
+        assert!(text.contains("Synthetic Grok reply"));
+        if stream {
+            assert!(text.contains("[DONE]"));
+        }
         let body = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await?
             .ok_or("missing request")?;
@@ -1761,15 +1770,9 @@ async fn agent_connections_share_global_routes_without_agent_owned_providers(
             .post(format!("{root}/responses"))
             .bearer_auth(format!("synthetic-{app}"))
             .json(&json!({"model":wire,"input":"Synthetic first turn"}));
-        let first = if app == "trae" {
-            first
-                .header("sec-fetch-site", "none")
-                .header("sec-fetch-mode", "no-cors")
-        } else {
-            first
-        }
-        .send()
-        .await?;
+        // Native Fetch Metadata is allowed only on TRAE's Chat endpoint.
+        // This common Responses fixture uses the plain local consumer contract.
+        let first = first.send().await?;
         assert_eq!(first.status(), StatusCode::OK, "{app}");
         let _ = first.bytes().await?;
         let _ = rx.recv().await.ok_or("missing first request")?;
@@ -1785,15 +1788,7 @@ async fn agent_connections_share_global_routes_without_agent_owned_providers(
             .post(format!("{root}/responses"))
             .bearer_auth(format!("synthetic-{app}"))
             .json(&json!({"model":wire, "input":history, "reasoning":{"effort":"max","summary":"auto"}}));
-        let response = if app == "trae" {
-            response
-                .header("sec-fetch-site", "none")
-                .header("sec-fetch-mode", "no-cors")
-        } else {
-            response
-        }
-        .send()
-        .await?;
+        let response = response.send().await?;
         assert_eq!(response.status(), StatusCode::OK, "{app}");
         let (headers, body) = rx.recv().await.ok_or("missing request")?;
         assert_eq!(body["model"], "exact-model");
@@ -1881,9 +1876,12 @@ async fn agent_connections_share_global_routes_without_agent_owned_providers(
                 info.port
             ))
             .bearer_auth(credential)
-            .header("sec-fetch-site", site)
-            .header("sec-fetch-mode", mode)
             .json(&json!({"model":group().alias(),"input":"Synthetic rejected request"}));
+        if credential != "synthetic-wrong" {
+            request = request
+                .header("sec-fetch-site", site)
+                .header("sec-fetch-mode", mode);
+        }
         if let Some(origin) = origin {
             request = request.header("origin", origin);
         }

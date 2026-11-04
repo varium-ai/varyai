@@ -438,13 +438,13 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
             return error(StatusCode::NOT_FOUND, "routing_model_unavailable");
         }
     }
-    let mut rewritten = gemini.is_none() && alias != model;
+    let rewritten = gemini.is_none() && alias != model;
     if rewritten {
         body["model"] = json!(alias);
     }
-    if app == "trae" && endpoint == "/v1/responses" {
-        rewritten |= super::native_protocol::normalize_trae_responses(&mut body);
-    }
+    let normalized_trae = app == "trae"
+        && endpoint == "/v1/responses"
+        && super::native_protocol::normalize_trae_responses(&mut body);
     let db = state.db.clone();
     let policy_model = alias.clone();
     let grant = match tokio::task::spawn_blocking(move || {
@@ -513,6 +513,15 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
         Ok(uri) => uri,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
+    let bytes = if normalized_trae {
+        match super::native_protocol::normalize_trae_responses_raw(&bytes) {
+            Ok(Some(normalized)) => normalized.into(),
+            Ok(None) => bytes,
+            Err(code) => return error(StatusCode::BAD_REQUEST, code),
+        }
+    } else {
+        bytes
+    };
     let bytes = if rewritten || purpose == Some(desktop::Purpose::Probe) {
         match desktop::patch(&bytes, &alias, purpose == Some(desktop::Purpose::Probe)) {
             Ok(bytes) => bytes.into(),
@@ -533,5 +542,34 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
             super::gateway::meter_response(response, state.db, grant, endpoint != "/v1/messages")
         }
         _ => response,
+    }
+}
+
+#[cfg(test)]
+mod raw_patch_tests {
+    use super::*;
+
+    #[test]
+    fn trae_summary_and_model_patch_preserve_numeric_lexemes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let raw = br#"{"model":"synthetic-old","native_integer":18446744073709551615,"native_decimal":0.12345678901234567890123456789,"input":[{"type":"reasoning","id":"synthetic-reasoning","native_exponent":1.234567890123456789e-100},{"type":"function_call","call_id":"synthetic-call","name":"synthetic_tool","arguments":{"integer":9007199254740993,"decimal":0.98765432109876543210987654321}}]}"#;
+        let normalized = super::super::native_protocol::normalize_trae_responses_raw(raw)?
+            .ok_or("missing reasoning normalization")?;
+        let patched = desktop::patch(&normalized, "synthetic-alias", false)?;
+        let wire = std::str::from_utf8(&patched)?;
+        for number in [
+            "18446744073709551615",
+            "0.12345678901234567890123456789",
+            "1.234567890123456789e-100",
+            "9007199254740993",
+            "0.98765432109876543210987654321",
+        ] {
+            assert!(wire.contains(number), "native numeric lexeme changed");
+        }
+        let body: Value = serde_json::from_slice(&patched)?;
+        assert_eq!(body["model"], "synthetic-alias");
+        assert_eq!(body["input"][0]["summary"], json!([]));
+        assert!(body["input"][1].get("summary").is_none());
+        Ok(())
     }
 }

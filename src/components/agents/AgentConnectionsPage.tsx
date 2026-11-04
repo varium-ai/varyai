@@ -392,6 +392,55 @@ export function AgentConnectionsPage({
                   : "recovery"
               : "gatewayStopped"
           : "off";
+    const modelCatalog = ["workbuddy", "qoder", "trae"].includes(app) ? (
+      <Popover
+        open={browsing === app}
+        onOpenChange={(open) => setBrowsing(open ? app : null)}
+      >
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="mp-agent-start"
+            disabled={rowBusy(app) || updates.busy || catalog.isPending}
+            aria-label={`${t("agentConnections.modelList")} ${name(app)}`}
+          >
+            <span>
+              {catalog.isError
+                ? t("agentConnections.failed")
+                : catalog.isPending
+                  ? t("common.loading")
+                  : t("agentConnections.allModels", {
+                      count: catalog.data?.length ?? 0,
+                    })}
+            </span>
+            <ChevronDown size={11} />
+          </button>
+        </PopoverTrigger>
+        <ModelPickerPopoverContent
+          onDismiss={() => setBrowsing(null)}
+          aria-label={t("agentConnections.modelListTitle", {
+            agent: name(app),
+          })}
+        >
+          <SharedModelPicker
+            models={catalog.isError ? [] : (catalog.data ?? [])}
+            selected={catalog.data?.map((model) => model.id) ?? []}
+            readOnly
+            title={t("agentConnections.modelListTitle", {
+              agent: name(app),
+            })}
+            description={t(
+              !enabled
+                ? "agentConnections.nativeCatalogDisconnectedHint"
+                : app === "trae" && state?.recoveryReason === "bridge_pending"
+                  ? "agentConnections.nativeCatalogPendingHint"
+                  : "agentConnections.nativeCatalogHint",
+            )}
+            error={catalog.isError ? t("agentConnections.failed") : undefined}
+          />
+        </ModelPickerPopoverContent>
+      </Popover>
+    ) : null;
     return (
       <SortableAgentRow
         key={app}
@@ -558,58 +607,7 @@ export function AgentConnectionsPage({
               }
             />
           )}
-          {["workbuddy", "qoder", "trae"].includes(app) && (
-            <Popover
-              open={browsing === app}
-              onOpenChange={(open) => setBrowsing(open ? app : null)}
-            >
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  className="mp-agent-start"
-                  disabled={rowBusy(app) || updates.busy || catalog.isPending}
-                  aria-label={`${t("agentConnections.modelList")} ${name(app)}`}
-                >
-                  <span>
-                    {catalog.isError
-                      ? t("agentConnections.failed")
-                      : catalog.isPending
-                        ? t("common.loading")
-                        : t("agentConnections.allModels", {
-                            count: catalog.data?.length ?? 0,
-                          })}
-                  </span>
-                  <ChevronDown size={11} />
-                </button>
-              </PopoverTrigger>
-              <ModelPickerPopoverContent
-                onDismiss={() => setBrowsing(null)}
-                aria-label={t("agentConnections.modelListTitle", {
-                  agent: name(app),
-                })}
-              >
-                <SharedModelPicker
-                  models={catalog.isError ? [] : (catalog.data ?? [])}
-                  selected={catalog.data?.map((model) => model.id) ?? []}
-                  readOnly
-                  title={t("agentConnections.modelListTitle", {
-                    agent: name(app),
-                  })}
-                  description={t(
-                    !enabled
-                      ? "agentConnections.nativeCatalogDisconnectedHint"
-                      : app === "trae" &&
-                          state?.recoveryReason === "bridge_pending"
-                        ? "agentConnections.nativeCatalogPendingHint"
-                        : "agentConnections.nativeCatalogHint",
-                  )}
-                  error={
-                    catalog.isError ? t("agentConnections.failed") : undefined
-                  }
-                />
-              </ModelPickerPopoverContent>
-            </Popover>
-          )}
+          {app !== "trae" && modelCatalog}
           {app === "doubaowork" && (
             <span
               className="mp-agent-start"
@@ -778,6 +776,17 @@ export function AgentConnectionsPage({
                   </Button>
                 )}
               </div>
+            )}
+            {app === "trae" && (
+              <>
+                <p className="text-xs text-muted-foreground">
+                  {t("agentConnections.bridgeHint")}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {t(`agentConnections.states.${status}`)}
+                </p>
+                <div className="mp-agent-detail-actions">{modelCatalog}</div>
+              </>
             )}
             {app === "workbuddy" && <WorkBuddyCheckinPanel />}
             {app === "doubaowork" && <DoubaoWorkCheckinPanel />}
