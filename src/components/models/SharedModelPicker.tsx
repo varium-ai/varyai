@@ -75,6 +75,7 @@ export function SharedModelPicker({
   onPick,
   multiple = false,
   disabled = false,
+  readOnly = false,
   visibility,
   title,
   description,
@@ -88,9 +89,10 @@ export function SharedModelPicker({
 }: {
   models: ModelChoice[];
   selected: string[];
-  onPick: (id: string) => void;
+  onPick?: (id: string) => void;
   multiple?: boolean;
   disabled?: boolean;
+  readOnly?: boolean;
   visibility?: ModelVisibilityControls;
   title?: string;
   description?: string;
@@ -249,7 +251,7 @@ export function SharedModelPicker({
     <div
       className={`mp-shared-picker${railed ? " railed" : ""}${agentMenu ? " mp-agent-model-picker" : ""}`}
       onKeyDown={(event) => {
-        if (view === "order") return;
+        if (readOnly || view === "order") return;
         const rows = Array.from(
           list.current?.querySelectorAll<HTMLButtonElement>(
             "[data-model-choice]:not(:disabled), [data-model-action]:not(:disabled)",
@@ -402,7 +404,13 @@ export function SharedModelPicker({
         <div
           className="mp-am-list"
           ref={list}
-          role={!multiple && !visibility ? "radiogroup" : undefined}
+          role={
+            readOnly
+              ? "list"
+              : !multiple && !visibility
+                ? "radiogroup"
+                : undefined
+          }
           aria-label={t("modelPicker.models")}
         >
           {view === "order" ? (
@@ -538,30 +546,44 @@ export function SharedModelPicker({
                       <div>
                         {rows.map((model) => {
                           const visible = selected.includes(model.id);
+                          const Choice = readOnly ? "div" : "button";
                           return (
-                            <button
-                              type="button"
+                            <Choice
+                              type={readOnly ? undefined : "button"}
                               role={
-                                visibility
-                                  ? "menuitemcheckbox"
-                                  : multiple
-                                    ? "checkbox"
-                                    : "radio"
+                                readOnly
+                                  ? "listitem"
+                                  : visibility
+                                    ? "menuitemcheckbox"
+                                    : multiple
+                                      ? "checkbox"
+                                      : "radio"
                               }
-                              aria-checked={visible}
+                              aria-checked={readOnly ? undefined : visible}
                               aria-label={modelName(model)}
                               key={model.id}
                               title={model.modelId ?? model.id}
-                              data-model-choice
+                              data-model-choice={readOnly ? undefined : true}
                               className={`mp-am-row${visibility && !visible ? " off" : ""}`}
-                              disabled={disabled || model.disabled}
-                              onClick={() => {
-                                if (!multiple && !visibility && visible) return;
-                                if (visibility && visible)
-                                  setKept((old) => new Set([...old, model.id]));
-                                setArmed(null);
-                                onPick(model.id);
-                              }}
+                              disabled={
+                                readOnly
+                                  ? undefined
+                                  : disabled || model.disabled
+                              }
+                              onClick={
+                                readOnly
+                                  ? undefined
+                                  : () => {
+                                      if (!multiple && !visibility && visible)
+                                        return;
+                                      if (visibility && visible)
+                                        setKept(
+                                          (old) => new Set([...old, model.id]),
+                                        );
+                                      setArmed(null);
+                                      onPick?.(model.id);
+                                    }
+                              }
                             >
                               <span className="mp-am-logo" aria-hidden>
                                 {modelIcon(model)}
@@ -598,12 +620,14 @@ export function SharedModelPicker({
                                   {context(model.contextWindow)}
                                 </span>
                               )}
-                              <span className="mp-am-check" aria-hidden>
-                                {visible && (
-                                  <Check size={12} strokeWidth={1.9} />
-                                )}
-                              </span>
-                            </button>
+                              {!readOnly && (
+                                <span className="mp-am-check" aria-hidden>
+                                  {visible && (
+                                    <Check size={12} strokeWidth={1.9} />
+                                  )}
+                                </span>
+                              )}
+                            </Choice>
                           );
                         })}
                       </div>
@@ -705,7 +729,7 @@ export function SharedModelPicker({
         </footer>
       )}
 
-      {multiple && !visibility && (
+      {multiple && !visibility && !readOnly && (
         <p className="mp-am-foot">
           {t("modelPicker.multiHint", { count: selected.length })}
         </p>

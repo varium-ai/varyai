@@ -127,30 +127,32 @@ pub(super) fn add(
         state.db.save_provider(APP, &provider)?;
         return Ok(true);
     }
-    let incoming = models(&provider)?;
-    let saved = state.db.get_all_providers(APP)?;
-    let owned = crate::workbuddy_config::managed_model_ids()?;
-    if native_models(state)?.iter().any(|native| {
-        if native["id"]
-            .as_str()
-            .is_some_and(|id| owned.iter().any(|owned| owned == id))
-        {
-            return false;
+    if add_to_live {
+        let incoming = models(&provider)?;
+        let saved = state.db.get_all_providers(APP)?;
+        let owned = crate::workbuddy_config::managed_model_ids()?;
+        if native_models(state)?.iter().any(|native| {
+            if native["id"]
+                .as_str()
+                .is_some_and(|id| owned.iter().any(|owned| owned == id))
+            {
+                return false;
+            }
+            incoming.iter().any(|model| model["id"] == native["id"])
+                && !saved
+                    .values()
+                    .filter(|saved| {
+                        saved.category.as_deref() != Some("official")
+                            && ProviderService::provider_live_config_managed(saved) != Some(false)
+                    })
+                    .any(|saved| models(saved).is_ok_and(|models| models.contains(native)))
+        }) {
+            return Err(AppError::localized(
+                "workbuddy.duplicate_model",
+                "WorkBuddy 中已有该模型 ID，请先导入后编辑",
+                "This model ID already exists in WorkBuddy; import it before editing",
+            ));
         }
-        incoming.iter().any(|model| model["id"] == native["id"])
-            && !saved
-                .values()
-                .filter(|saved| {
-                    saved.category.as_deref() != Some("official")
-                        && ProviderService::provider_live_config_managed(saved) != Some(false)
-                })
-                .any(|saved| models(saved).is_ok_and(|models| models.contains(native)))
-    }) {
-        return Err(AppError::localized(
-            "workbuddy.duplicate_model",
-            "WorkBuddy 中已有该模型 ID，请先导入后编辑",
-            "This model ID already exists in WorkBuddy; import it before editing",
-        ));
     }
     ProviderService::set_provider_live_config_managed(&mut provider, false);
     state.db.save_provider(APP, &provider)?;
@@ -999,7 +1001,46 @@ mod tests {
     }
 
     #[test]
-    fn workbuddy_rejects_conflicting_model_ids_without_saving_or_overwriting() {
+    fn workbuddy_saves_alternatives_without_inspecting_or_changing_native_models() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        with_test_dir(dir.path(), || {
+            let state = AppState::new(Arc::new(Database::memory().expect("database")));
+            let path = get_workbuddy_config_path();
+            let native = provider("native", "same-model").settings_config;
+            let original = json!({"models":[native]}).to_string();
+            std::fs::write(&path, &original).expect("seed");
+            let mut input = provider("saved", "same-model");
+            input.settings_config["url"] = json!("https://alternate.example/v1/chat/completions");
+            add(&state, input.clone(), false).expect("save inactive alternative");
+            assert_eq!(std::fs::read_to_string(&path).expect("read"), original);
+            assert_eq!(
+                ProviderService::provider_live_config_managed(
+                    &state
+                        .db
+                        .get_provider_by_id(&input.id, APP)
+                        .expect("lookup")
+                        .expect("saved")
+                ),
+                Some(false)
+            );
+            assert!(
+                enable(&state, &input.id).is_err(),
+                "native conflicts still require resolution when applying"
+            );
+            assert_eq!(std::fs::read_to_string(&path).expect("read"), original);
+
+            std::fs::write(&path, "{invalid native settings").expect("external edit");
+            add(&state, provider("another", "same-model"), false)
+                .expect("saving an alternative does not depend on readable native settings");
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("read"),
+                "{invalid native settings"
+            );
+        });
+    }
+
+    #[test]
+    fn workbuddy_rejects_conflicting_live_models_but_allows_saving_alternatives() {
         let dir = tempfile::tempdir().expect("temp dir");
         with_test_dir(dir.path(), || {
             let state = AppState::new(Arc::new(Database::memory().expect("database")));
@@ -1015,10 +1056,9 @@ mod tests {
                 .expect("saved")
                 .is_none());
             assert_eq!(std::fs::read_to_string(&path).expect("read"), original);
-            assert!(
-                ProviderService::add(&state, AppType::WorkBuddy, input.clone(), false).is_err()
-            );
-            let input = provider("saved", "other-model");
+            ProviderService::add(&state, AppType::WorkBuddy, input.clone(), false)
+                .expect("save inactive alternative");
+            let input = provider("saved-other", "other-model");
             ProviderService::add(&state, AppType::WorkBuddy, input.clone(), false)
                 .expect("save disabled");
             assert!(ProviderService::add(

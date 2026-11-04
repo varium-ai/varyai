@@ -15,6 +15,22 @@ import { proxyApi } from "@/lib/api/proxy";
 import { settingsApi } from "@/lib/api/settings";
 import { intentRoutingApi } from "@/lib/api/intentRouting";
 import { APP_IDS } from "@/config/appConfig";
+import { workbuddyCheckinApi } from "@/lib/api/workbuddy-checkin";
+import { doubaoCheckinApi } from "@/lib/api/doubao-checkin";
+vi.mock("@/lib/api/workbuddy-checkin", () => ({
+  workbuddyCheckinApi: {
+    accounts: vi.fn(async () => ({ accounts: [] })),
+    checkIn: vi.fn(),
+    setAutoEnabled: vi.fn(),
+  },
+}));
+vi.mock("@/lib/api/doubao-checkin", () => ({
+  doubaoCheckinApi: {
+    accounts: vi.fn(async () => ({ connected: false, accounts: [] })),
+    checkIn: vi.fn(),
+    setAutoEnabled: vi.fn(),
+  },
+}));
 vi.mock("@/lib/api/intentRouting", () => ({
   intentRoutingApi: {
     contextSettings: vi.fn(async () => ({ fullWindow: false })),
@@ -41,6 +57,7 @@ vi.mock("@/lib/api/proxy", () => ({
       pi: true,
     })),
     getProxyStatus: vi.fn(async () => ({ running: true })),
+    launchDoubaoWorkForAudit: vi.fn(async () => {}),
   },
 }));
 vi.mock("@/lib/api/settings", () => ({
@@ -436,6 +453,40 @@ describe("Agent connections", () => {
     expect(agentConnectionsApi.set).not.toHaveBeenCalled();
     expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
   });
+  it.each([
+    ["workbuddy", "workbuddy.checkin", workbuddyCheckinApi],
+    ["doubaowork", "doubaowork.checkin", doubaoCheckinApi],
+  ] as const)(
+    "keeps %s account check-in accessible while disconnected without changing routing or claiming rewards",
+    async (app, prefix, api) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      } as Awaited<ReturnType<typeof proxyApi.getAgentInstallations>>);
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([]);
+      mount();
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      expect(api.accounts).not.toHaveBeenCalled();
+      fireEvent.click(
+        within(row).getByRole("button", {
+          name: `agentConnections.details apps.${app}`,
+        }),
+      );
+      const panel = await within(row).findByRole("region", {
+        name: `${prefix}.title`,
+      });
+      fireEvent.click(
+        within(panel).getByRole("button", { name: `${prefix}.title` }),
+      );
+      expect(
+        within(panel).getByRole("combobox", { name: `${prefix}.account` }),
+      ).toBeVisible();
+      await waitFor(() => expect(api.accounts).toHaveBeenCalledTimes(1));
+      expect(api.checkIn).not.toHaveBeenCalled();
+      expect(api.setAutoEnabled).not.toHaveBeenCalled();
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+    },
+  );
+
   it("confirms a stale Desktop restart and never restarts from rendering or cancel", async () => {
     vi.mocked(agentConnectionsApi.list).mockResolvedValue([
       {
@@ -1250,6 +1301,265 @@ describe("Agent connections", () => {
       screen.getByRole("article", { name: "apps.claude" }),
     );
   });
+  describe.each(["workbuddy", "qoder", "trae"] as const)(
+    "%s shared catalog",
+    (app) => {
+      it.each([false, true])(
+        "browses and searches models without changing the connection when enabled is %s",
+        async (enabled) => {
+          vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+            [app]: true,
+          } as Awaited<ReturnType<typeof proxyApi.getAgentInstallations>>);
+          const pending = app === "trae" && enabled;
+          vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+            {
+              app,
+              enabled,
+              configured: enabled && !pending,
+              recoveryPending: pending,
+              recoveryReason: pending ? "bridge_pending" : null,
+              restartRequired: false,
+              model: enabled ? "vary-auto/shared" : null,
+            },
+          ]);
+          vi.mocked(agentConnectionsApi.models).mockResolvedValue([
+            {
+              id: "vary-auto/shared",
+              name: "Shared group",
+              contextWindow: 1000000,
+            },
+            { id: "direct-model", name: "Direct model", contextWindow: 200000 },
+          ]);
+          mount();
+          const row = await screen.findByRole("article", {
+            name: `apps.${app}`,
+          });
+          const trigger = within(row).getByRole("button", {
+            name: `agentConnections.modelList apps.${app}`,
+          });
+          await waitFor(() => expect(trigger).toBeEnabled());
+          fireEvent.click(trigger);
+          const dialog = await screen.findByRole("dialog");
+          expect(dialog).toHaveTextContent(
+            pending
+              ? "agentConnections.nativeCatalogPendingHint"
+              : enabled
+                ? "agentConnections.nativeCatalogHint"
+                : "agentConnections.nativeCatalogDisconnectedHint",
+          );
+          fireEvent.click(
+            within(dialog).getByRole("listitem", { name: "Shared group" }),
+          );
+          fireEvent.change(within(dialog).getByRole("searchbox"), {
+            target: { value: "Direct" },
+          });
+          expect(
+            within(dialog).getByRole("listitem", { name: "Direct model" }),
+          ).toBeVisible();
+          expect(
+            within(dialog).queryByRole("listitem", { name: "Shared group" }),
+          ).not.toBeInTheDocument();
+          expect(within(dialog).queryByRole("radio")).not.toBeInTheDocument();
+          expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+          expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
+          expect(agentConnectionsApi.modelVisibility).not.toHaveBeenCalled();
+          expect(agentConnectionsApi.setModelVisibility).not.toHaveBeenCalled();
+          expect(within(row).getByRole("switch")).toHaveAttribute(
+            "aria-checked",
+            String(enabled),
+          );
+        },
+      );
+    },
+  );
+
+  it("shows a safe catalog error instead of a false model count", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      qoder: true,
+    } as Awaited<ReturnType<typeof proxyApi.getAgentInstallations>>);
+    vi.mocked(agentConnectionsApi.models).mockRejectedValue(
+      new Error("synthetic-private-catalog-error"),
+    );
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.qoder" });
+    const trigger = within(row).getByRole("button", {
+      name: "agentConnections.modelList apps.qoder",
+    });
+    await waitFor(() =>
+      expect(trigger).toHaveTextContent("agentConnections.failed"),
+    );
+    fireEvent.click(trigger);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "agentConnections.failed",
+    );
+    expect(screen.getByRole("dialog")).not.toHaveTextContent(
+      "synthetic-private-catalog-error",
+    );
+    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+  });
+
+  it("labels Doubao's official models without offering an unsupported shared selector", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      doubaowork: true,
+    } as Awaited<ReturnType<typeof proxyApi.getAgentInstallations>>);
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.doubaowork" });
+    const note = within(row).getByRole("note", {
+      name: "agentConnections.modelList apps.doubaowork",
+    });
+    expect(note).toHaveTextContent("agentConnections.officialModels");
+    expect(note).toHaveAttribute("title", "agentConnections.auditOnlyHint");
+    expect(
+      within(row).queryByRole("button", {
+        name: "agentConnections.modelList apps.doubaowork",
+      }),
+    ).not.toBeInTheDocument();
+    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+  });
+
+  it("offers the explicit Doubao audit launcher in disconnected details and explains a running client", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      doubaowork: true,
+    });
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "doubaowork",
+        enabled: true,
+        configured: false,
+        model: null,
+        recoveryPending: false,
+        restartRequired: false,
+      },
+    ]);
+    vi.mocked(proxyApi.launchDoubaoWorkForAudit).mockRejectedValueOnce(
+      "homeAudit.doubaoQuitFirst",
+    );
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.doubaowork" });
+    fireEvent.click(
+      within(row).getByRole("button", {
+        name: "agentConnections.details apps.doubaowork",
+      }),
+    );
+    const launch = within(row).getByRole("button", {
+      name: "homeAudit.doubaoLaunch",
+    });
+    expect(proxyApi.launchDoubaoWorkForAudit).not.toHaveBeenCalled();
+    fireEvent.click(launch);
+    await waitFor(() =>
+      expect(proxyApi.launchDoubaoWorkForAudit).toHaveBeenCalledOnce(),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "homeAudit.doubaoQuitFirst",
+    );
+    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+  });
+
+  it("enables disconnected Doubao inspection before its explicit launcher", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      doubaowork: true,
+    });
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "doubaowork",
+        enabled: false,
+        configured: false,
+        model: null,
+        recoveryPending: false,
+        restartRequired: false,
+      },
+    ]);
+    const order: string[] = [];
+    vi.mocked(agentConnectionsApi.set).mockImplementationOnce(async () => {
+      order.push("enable");
+    });
+    vi.mocked(proxyApi.launchDoubaoWorkForAudit).mockImplementationOnce(
+      async () => {
+        order.push("launch");
+      },
+    );
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.doubaowork" });
+    fireEvent.click(
+      within(row).getByRole("button", {
+        name: "agentConnections.details apps.doubaowork",
+      }),
+    );
+    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+    expect(proxyApi.launchDoubaoWorkForAudit).not.toHaveBeenCalled();
+    fireEvent.click(
+      within(row).getByRole("button", { name: "homeAudit.doubaoLaunch" }),
+    );
+    await waitFor(() => expect(order).toEqual(["enable", "launch"]));
+    expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+      "doubaowork",
+      true,
+      null,
+    );
+    expect(agentConnectionsApi.set).toHaveBeenCalledOnce();
+    expect(proxyApi.launchDoubaoWorkForAudit).toHaveBeenCalledOnce();
+  });
+
+  it("does not offer the Doubao launcher after the inspection connection is active", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      doubaowork: true,
+    });
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "doubaowork",
+        enabled: true,
+        configured: true,
+        model: null,
+        recoveryPending: false,
+        restartRequired: false,
+      },
+    ]);
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.doubaowork" });
+    fireEvent.click(
+      within(row).getByRole("button", {
+        name: "agentConnections.details apps.doubaowork",
+      }),
+    );
+    expect(
+      within(row).queryByRole("button", { name: "homeAudit.doubaoLaunch" }),
+    ).not.toBeInTheDocument();
+    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+    expect(proxyApi.launchDoubaoWorkForAudit).not.toHaveBeenCalled();
+  });
+
+  it("keeps unrecognized Doubao launch errors out of the UI", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      doubaowork: true,
+    });
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "doubaowork",
+        enabled: true,
+        configured: false,
+        model: null,
+        recoveryPending: false,
+        restartRequired: false,
+      },
+    ]);
+    vi.mocked(proxyApi.launchDoubaoWorkForAudit).mockRejectedValueOnce(
+      "synthetic-private-launch-detail",
+    );
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.doubaowork" });
+    fireEvent.click(
+      within(row).getByRole("button", {
+        name: "agentConnections.details apps.doubaowork",
+      }),
+    );
+    fireEvent.click(
+      within(row).getByRole("button", { name: "homeAudit.doubaoLaunch" }),
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("homeAudit.doubaoLaunchFailed");
+    expect(alert).not.toHaveTextContent("synthetic-private-launch-detail");
+  });
+
   it("shows installed native adapters in the main list and distinguishes audit-only tools", async () => {
     vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
       gemini: true,

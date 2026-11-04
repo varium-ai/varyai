@@ -29,6 +29,12 @@ attribution.
   geometry, search, icon navigation, source badges, and row styling additionally
   follow `internal/gui/assets/app.js` and `internal/gui/assets/app.css` at this
   revision; Vary retains its existing connection and disconnect confirmation APIs.
+- `c7bbd3faf6de7c59ff65848450b0640a7ee2ecb1`: protocol-neutral request,
+  reply and streaming-event architecture, typed wire readers and target builders
+  under `internal/gateway/{ir,chat,responses,anthropic,gemini,codeassist}.go`.
+  The Rust implementation keeps Vary AI's routing, authentication and security
+  boundaries; see `docs/architecture/protocol-conversion.md` for verification.
+
 - `3bce283df43c3ce733e457daa16a69ac38bbb5fd`: resource-oriented provider and
   Agent management, the routing workspace, and provider/import artwork under
   `internal/gui/assets/icons/`. Original vendor files are `groq.svg`,

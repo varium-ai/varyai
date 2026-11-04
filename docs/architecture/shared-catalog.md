@@ -28,6 +28,9 @@ configuration.
    identity, DLP inspection, optional gateway budget policy, tool observations, and
    asynchronous usage accounting remain independent of the upstream protocol.
 
+Cross-protocol execution uses the [shared request, reply and event IR](protocol-conversion.md),
+with separate readers and builders for Chat, Responses, Anthropic and Gemini.
+
 Shared menu preparation freezes each configured subscription account's identity,
 but does not refresh access tokens or wait for quota observations. A temporary
 authentication outage must not remove explicitly selected account models or the

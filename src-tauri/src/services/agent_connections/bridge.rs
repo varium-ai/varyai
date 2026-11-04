@@ -157,7 +157,7 @@ impl Manager {
             outbox.model = Some(catalog[0].id.clone());
             outbox.selection_pending = true;
         }
-        let provider = Provider::with_id(ID.into(), "Vary AI".into(), config, None);
+        let provider = Provider::with_id(ID.into(), "VaryAI".into(), config, None);
         let unchanged = outbox.delivered
             && outbox
                 .provider

@@ -12,6 +12,7 @@ use std::{
 use std::{path::PathBuf, sync::Mutex};
 pub(crate) const ENABLED_KEY: &str = "trae_audit_enabled";
 pub(crate) const CONSENT_KEY: &str = "trae_local_connection_consent";
+const HELPER_REVISION: u64 = 9;
 static AUDIT_TOKEN: Mutex<Option<String>> = Mutex::new(None);
 fn unavailable() -> AppError {
     AppError::localized(
@@ -100,47 +101,26 @@ fn socket_paths(directory: &std::path::Path, include_legacy: bool) -> Vec<PathBu
             .then(|| entry.path())
         })
         .collect();
-    if !include_legacy
-        && paths.iter().any(|path| {
-            path.file_name().is_some_and(|name| {
-                name.to_string_lossy()
-                    .starts_with("bridge-agent-v2-selection-")
-            })
-        })
-    {
-        paths.retain(|path| {
-            path.file_name().is_some_and(|name| {
-                name.to_string_lossy()
-                    .starts_with("bridge-agent-v2-selection-")
-            })
-        });
-    }
-    if !include_legacy
-        && paths.iter().any(|path| {
-            path.file_name().is_some_and(|name| {
-                name.to_string_lossy()
-                    .starts_with("bridge-agent-v2-models-")
-            })
-        })
-    {
-        paths.retain(|path| {
-            path.file_name().is_some_and(|name| {
-                name.to_string_lossy()
-                    .starts_with("bridge-agent-v2-models-")
+    if !include_legacy {
+        // Prefer the merged helper, then the newest legacy feature variants.
+        let preferred = [
+            format!("bridge-agent-v{HELPER_REVISION}-"),
+            "bridge-agent-v2-selection-".into(),
+            "bridge-agent-v2-models-".into(),
+        ]
+        .into_iter()
+        .find(|prefix| {
+            paths.iter().any(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(prefix))
             })
         });
-    }
-    // Once installed, use the current helper instead of an older resident process.
-    if !include_legacy
-        && paths.iter().any(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("bridge-agent-v2-"))
-        })
-    {
-        paths.retain(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("bridge-agent-v2-"))
-        });
+        if let Some(prefix) = preferred {
+            paths.retain(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+            });
+        }
     }
     paths
 }
@@ -360,7 +340,7 @@ fn argv_path() -> Result<PathBuf, AppError> {
 }
 fn ensure_ready() -> Result<(), AppError> {
     if let Ok(health) = request(&json!({"op":"health"}), false) {
-        if health["revision"] == 2
+        if health["revision"] == HELPER_REVISION
             && health["modelVerification"] == 1
             && health["startingModel"] == 1
         {
@@ -420,7 +400,7 @@ fn ensure_ready() -> Result<(), AppError> {
                 .ok()
                 .is_some_and(|v| {
                     v["ready"] == true
-                        && v["revision"] == 2
+                        && v["revision"] == HELPER_REVISION
                         && v["modelVerification"] == 1
                         && v["startingModel"] == 1
                         && v["modelReplacement"] == true
@@ -453,6 +433,7 @@ pub(crate) fn prepare_shared() -> Result<(), AppError> {
         .ok()
         .is_some_and(|health| {
             health["ready"] == true
+                && health["revision"] == HELPER_REVISION
                 && health["modelVerification"] == 1
                 && health["startingModel"] == 1
         })
@@ -468,11 +449,18 @@ pub(crate) fn prepare_shared() -> Result<(), AppError> {
 pub(crate) fn restore_shared() -> Result<(), AppError> {
     restore_connection(&directory()?, &argv_path()?)
 }
-pub(crate) fn disable() -> Result<(), AppError> {
+pub(crate) fn suspend_inspection() -> Result<(), AppError> {
     // Invalidate first; missed/closed windows release their hooks on the heartbeat.
     *AUDIT_TOKEN.lock().map_err(|_| unavailable())? = None;
     let _ = request(&json!({"op":"disable"}), true);
+    Ok(())
+}
+pub(crate) fn finish_disconnect() -> Result<(), AppError> {
     restore_connection(&directory()?, &argv_path()?)
+}
+pub(crate) fn disable() -> Result<(), AppError> {
+    suspend_inspection()?;
+    finish_disconnect()
 }
 pub(crate) fn profile_models() -> Result<Value, AppError> {
     request(&json!({"op":"list"}), false)
@@ -520,7 +508,7 @@ pub(crate) fn model_replacement_ready() -> Result<(), AppError> {
     if health["ready"] != true {
         return Err(unavailable());
     }
-    if health["revision"] != 2 {
+    if health["revision"] != HELPER_REVISION {
         ensure_ready()?;
         health = request(&json!({"op":"health"}), false)?;
     }
@@ -663,17 +651,25 @@ mod tests {
             std::fs::write(dir.path().join(name), "").expect("fixture");
         }
         assert_eq!(socket_paths(dir.path(), false).len(), 1);
-        let current = dir.path().join("bridge-agent-v2-456.sock");
+        let previous = dir.path().join("bridge-agent-v4-456.sock");
+        std::fs::write(&previous, "").expect("previous helper");
+        let current = dir
+            .path()
+            .join(format!("bridge-agent-v{HELPER_REVISION}-789.sock"));
         std::fs::write(&current, "").expect("current helper");
-        assert_eq!(socket_paths(dir.path(), false), vec![current]);
-        assert_eq!(socket_paths(dir.path(), true).len(), 3);
+        assert_eq!(socket_paths(dir.path(), false), vec![current.clone()]);
+        assert_eq!(socket_paths(dir.path(), true).len(), 4);
         let verified = dir.path().join("bridge-agent-v2-models-789.sock");
         std::fs::write(&verified, "").expect("current model verification helper");
-        assert_eq!(socket_paths(dir.path(), false), vec![verified]);
+        assert_eq!(socket_paths(dir.path(), false), vec![current.clone()]);
         let selection = dir.path().join("bridge-agent-v2-selection-987.sock");
         std::fs::write(&selection, "").expect("selection socket");
-        assert_eq!(socket_paths(dir.path(), false), vec![selection]);
-        assert_eq!(socket_paths(dir.path(), true).len(), 5);
+        assert_eq!(socket_paths(dir.path(), false), vec![current.clone()]);
+        assert_eq!(socket_paths(dir.path(), true).len(), 6);
+        std::fs::remove_file(current).expect("remove current helper fixture");
+        assert_eq!(socket_paths(dir.path(), false), vec![selection.clone()]);
+        std::fs::remove_file(selection).expect("remove selection helper fixture");
+        assert_eq!(socket_paths(dir.path(), false), vec![verified]);
     }
 
     #[test]

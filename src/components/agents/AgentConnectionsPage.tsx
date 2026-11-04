@@ -30,6 +30,8 @@ import { LongConversationSettings } from "./LongConversationSettings";
 import { SortableAgentRow } from "./SortableAgentRow";
 import { WorkspaceDragOverlay } from "@/components/WorkspaceDragOverlay";
 import { restrictWorkspaceSort } from "@/lib/workspaceSorting";
+import { WorkBuddyCheckinPanel } from "@/components/WorkBuddyCheckinPanel";
+import { DoubaoWorkCheckinPanel } from "@/components/DoubaoWorkCheckinPanel";
 import { proxyApi } from "@/lib/api/proxy";
 import { settingsApi } from "@/lib/api/settings";
 import { useAgentUpdates } from "@/hooks/useAgentUpdates";
@@ -151,6 +153,7 @@ export function AgentConnectionsPage({
     }),
   );
   const [picking, setPicking] = useState<AppId | null>(null);
+  const [browsing, setBrowsing] = useState<AppId | null>(null);
   const [disconnecting, setDisconnecting] = useState<AppId | null>(null);
   const orphanedDisconnect =
     disconnecting === "codex" &&
@@ -250,6 +253,28 @@ export function AgentConnectionsPage({
     } finally {
       refreshConnectionViews();
       endOperation(app);
+    }
+  }
+  async function launchDoubao(enabled: boolean) {
+    if (!beginOperation("doubaowork", "connecting")) return;
+    setError(null);
+    try {
+      if (!enabled) await agentConnectionsApi.set("doubaowork", true, null);
+      await proxyApi.launchDoubaoWorkForAudit();
+    } catch (cause) {
+      const allowed = [
+        "homeAudit.doubaoQuitFirst",
+        "homeAudit.doubaoNotInstalled",
+        "homeAudit.doubaoPlatform",
+      ];
+      setError(
+        typeof cause === "string" && allowed.includes(cause)
+          ? cause
+          : "homeAudit.doubaoLaunchFailed",
+      );
+    } finally {
+      refreshConnectionViews();
+      endOperation("doubaowork");
     }
   }
   function openSetup(app: AppId) {
@@ -533,6 +558,68 @@ export function AgentConnectionsPage({
               }
             />
           )}
+          {["workbuddy", "qoder", "trae"].includes(app) && (
+            <Popover
+              open={browsing === app}
+              onOpenChange={(open) => setBrowsing(open ? app : null)}
+            >
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="mp-agent-start"
+                  disabled={rowBusy(app) || updates.busy || catalog.isPending}
+                  aria-label={`${t("agentConnections.modelList")} ${name(app)}`}
+                >
+                  <span>
+                    {catalog.isError
+                      ? t("agentConnections.failed")
+                      : catalog.isPending
+                        ? t("common.loading")
+                        : t("agentConnections.allModels", {
+                            count: catalog.data?.length ?? 0,
+                          })}
+                  </span>
+                  <ChevronDown size={11} />
+                </button>
+              </PopoverTrigger>
+              <ModelPickerPopoverContent
+                onDismiss={() => setBrowsing(null)}
+                aria-label={t("agentConnections.modelListTitle", {
+                  agent: name(app),
+                })}
+              >
+                <SharedModelPicker
+                  models={catalog.isError ? [] : (catalog.data ?? [])}
+                  selected={catalog.data?.map((model) => model.id) ?? []}
+                  readOnly
+                  title={t("agentConnections.modelListTitle", {
+                    agent: name(app),
+                  })}
+                  description={t(
+                    !enabled
+                      ? "agentConnections.nativeCatalogDisconnectedHint"
+                      : app === "trae" &&
+                          state?.recoveryReason === "bridge_pending"
+                        ? "agentConnections.nativeCatalogPendingHint"
+                        : "agentConnections.nativeCatalogHint",
+                  )}
+                  error={
+                    catalog.isError ? t("agentConnections.failed") : undefined
+                  }
+                />
+              </ModelPickerPopoverContent>
+            </Popover>
+          )}
+          {app === "doubaowork" && (
+            <span
+              className="mp-agent-start"
+              role="note"
+              aria-label={`${t("agentConnections.modelList")} ${name(app)}`}
+              title={t("agentConnections.auditOnlyHint")}
+            >
+              <span>{t("agentConnections.officialModels")}</span>
+            </span>
+          )}
           {!nativePicker(app) && (
             <Popover
               open={picking === app}
@@ -668,18 +755,32 @@ export function AgentConnectionsPage({
             {compact && (
               <AgentVersionTag app={app} updates={updates} disabled={busy} />
             )}
-            {enabled && !state?.recoveryPending && app !== "doubaowork" && (
+            {((app === "doubaowork" && !state?.configured) ||
+              (enabled && !state?.recoveryPending && app !== "doubaowork")) && (
               <div className="mp-agent-detail-actions">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={rowBusy(app) || updates.busy || states.isError}
-                  onClick={() => openSetup(app)}
-                >
-                  {t("agentConnections.individual")}
-                </Button>
+                {app === "doubaowork" && !state?.configured && (
+                  <Button
+                    size="sm"
+                    disabled={rowBusy(app) || updates.busy || states.isError}
+                    onClick={() => void launchDoubao(enabled)}
+                  >
+                    {t("homeAudit.doubaoLaunch")}
+                  </Button>
+                )}
+                {enabled && !state?.recoveryPending && app !== "doubaowork" && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={rowBusy(app) || updates.busy || states.isError}
+                    onClick={() => openSetup(app)}
+                  >
+                    {t("agentConnections.individual")}
+                  </Button>
+                )}
               </div>
             )}
+            {app === "workbuddy" && <WorkBuddyCheckinPanel />}
+            {app === "doubaowork" && <DoubaoWorkCheckinPanel />}
             {!compact && ["codex", "claude", "grokbuild"].includes(app) && (
               <LongConversationSettings
                 disabled={busy || updates.busy}

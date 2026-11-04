@@ -1205,7 +1205,7 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
                 .unwrap();
             let request: serde_json::Value = serde_json::from_str(&line).unwrap();
             let result=match request["op"].as_str().unwrap(){
-            "health"=>json!({"ready":true,"enabled":false,"revision":2,"modelReplacement":true}),
+            "health"=>json!({"ready":true,"enabled":false,"revision":9,"modelVerification":1,"startingModel":1,"modelReplacement":true}),
             "list"=>json!(server_models.lock().unwrap().iter().map(|(id,c)|json!({"id":id,"name":c["models"][0]["model"],"displayName":format!("VaryAI/{id}/{}",c["models"][0]["model"].as_str().unwrap()),"baseUrl":c["baseUrl"]})).collect::<Vec<_>>()),
             "replace"=>{
                 let mut models = server_models.lock().unwrap();

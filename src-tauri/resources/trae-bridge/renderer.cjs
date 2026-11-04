@@ -99,18 +99,54 @@ function createBridge(
   const isOwned = (id, rows, model) =>
     rows.some((row) => row.id === model.id) ||
     model.displayName?.startsWith(`VaryAI/${id}/`);
+  const legacyVerificationKey = (id) => `varyai.trae.model-verification.${id}`;
+  const modelNameMatches = (wire, model) =>
+    typeof wire === "string" && (wire === model || wire.endsWith(`//${model}`));
+  async function modelVerification(config, wanted, row) {
+    const wire = row?.model_name ?? row?.name;
+    if (
+      !modelNameMatches(wire, wanted.model) ||
+      row.base_url !== endpoint(config) ||
+      typeof row.ak !== "string" ||
+      !row.ak ||
+      /^[*•]+$/.test(row.ak)
+    )
+      return null;
+    // Bind the submitted credential to the native protected representation.
+    // Only a one-way digest is persisted; neither representation leaves this call.
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(
+        JSON.stringify([
+          config.protocol,
+          wanted.model,
+          config.apiKey,
+          row.base_url,
+          row.provider,
+          wire,
+          row.ak,
+        ]),
+      ),
+    );
+    return Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+  }
   const shortText = (value, limit) =>
     value.slice(0, limit).replace(/[\uD800-\uDBFF]$/u, "");
   const displayName = (model, provider, used) => {
     const label =
       model.displayName?.trim() || model.model.split("/").pop() || model.model;
     const suffix = ` · ${shortText(provider.trim() || "VaryAI", 32)}`;
+    const name = label.endsWith(suffix)
+      ? label.slice(0, -suffix.length)
+      : label;
     let index = 1,
       value;
     do {
       const number = index === 1 ? "" : ` (${index})`;
       value =
-        shortText(label, 64 - suffix.length - number.length) + number + suffix;
+        shortText(name, 64 - suffix.length - number.length) + number + suffix;
       index++;
     } while (used.has(value));
     used.add(value);
@@ -143,6 +179,7 @@ function createBridge(
     }
     saveOwned(id, []);
     storage.setItem(verificationKey(id), "[]");
+    storage.setItem(legacyVerificationKey(id), "{}");
     await refreshModels();
   }
   function endpoint(config) {
@@ -168,6 +205,12 @@ function createBridge(
     const owned = loadOwned(id),
       verification = loadVerification(id),
       baseUrl = endpoint(config);
+    let legacyVerification = {};
+    try {
+      legacyVerification = JSON.parse(
+        storage.getItem(legacyVerificationKey(id)) || "{}",
+      );
+    } catch {}
     return (
       owned.length === config.models.length &&
       (
@@ -179,9 +222,12 @@ function createBridge(
               result.model_list.find((m) => m.custom_model_id === owner.id);
             if (
               !row ||
-              modelName(row) !== wanted.model ||
+              !modelNameMatches(modelName(row), wanted.model) ||
               row.base_url !== baseUrl ||
-              row.provider !== providerType(config.protocol)
+              row.provider !== providerType(config.protocol) ||
+              typeof row.ak !== "string" ||
+              !row.ak ||
+              /^[*•]+$/.test(row.ak)
             )
               return false;
             if (row.ak === config.apiKey) return true;
@@ -190,10 +236,16 @@ function createBridge(
             const proof = verification.find(
               (entry) => entry.id === row.custom_model_id,
             );
-            return (
-              !!proof &&
+            if (
+              proof &&
               proof.expected === (await expectedProof(config, wanted.model)) &&
               proof.native === (await nativeProof(row))
+            )
+              return true;
+            return (
+              typeof legacyVerification?.[row.custom_model_id] === "string" &&
+              legacyVerification[row.custom_model_id] ===
+                (await modelVerification(config, wanted, row))
             );
           }),
         )
@@ -236,7 +288,7 @@ function createBridge(
             (m) =>
               m.id &&
               !owned.some((row) => row.id === m.id) &&
-              m.name === model.model &&
+              modelNameMatches(m.name, model.model) &&
               m.baseUrl === baseUrl &&
               m.provider === providerType(config.protocol) &&
               m.displayName === desiredLabels[index],
@@ -269,17 +321,28 @@ function createBridge(
         };
         if (!fields.provider) throw Error("invalid_protocol");
         if (!match) {
-          // Keep the recoverable legacy marker until native ownership is persisted.
+          // Shared rows can recover ownership by their unique local endpoint and wire identity.
+          // Publish their final label immediately so refreshes never expose a temporary hash.
+          const initialName =
+            id === "shared_catalog_connection" ? display_name : legacyName;
           const result = await service.addCustomModel({
             ...fields,
-            display_name: legacyName,
+            display_name: initialName,
           });
           if (result.code !== 0) throw modelFailure("add", result.code);
-          added.push(legacyName);
+          if (initialName === legacyName) added.push(legacyName);
           await refreshModels();
-          match = (await list()).find(
-            (m) => m.displayName === legacyName && m.id,
+          const candidates = (await list()).filter(
+            (m) =>
+              m.id &&
+              !existing.some((old) => old.id === m.id) &&
+              m.displayName === initialName &&
+              (initialName === legacyName ||
+                (m.baseUrl === baseUrl &&
+                  m.provider === fields.provider &&
+                  modelNameMatches(m.name, model.model))),
           );
+          match = candidates.length === 1 ? candidates[0] : undefined;
           if (!match) throw Error("model_apply_failed");
           addedIds.add(match.id);
         }
@@ -320,10 +383,12 @@ function createBridge(
           const row = native.find((row) => row.custom_model_id === owner?.id);
           if (
             !row ||
-            modelName(row) !== model.model ||
+            !modelNameMatches(modelName(row), model.model) ||
             row.base_url !== baseUrl ||
             row.provider !== providerType(config.protocol) ||
-            !row.ak
+            typeof row.ak !== "string" ||
+            !row.ak ||
+            /^[*•]+$/.test(row.ak)
           )
             throw Error("model_apply_failed");
           return {
@@ -434,16 +499,27 @@ function createBridge(
       for (const model of snapshots) {
         if (remaining.some((row) => row.id === model.id)) continue;
         try {
-          const marker = await ownedName(model.owner, model.fields.model_name);
+          const shared = model.owner === "shared_catalog_connection";
+          const marker = shared
+            ? model.fields.display_name
+            : await ownedName(model.owner, model.fields.model_name);
           const added = await service.addCustomModel({
             ...model.fields,
             display_name: marker,
           });
           if (added.code !== 0) throw modelFailure("restore", added.code);
           await refreshModels();
-          const found = (await list()).find(
-            (row) => row.displayName === marker,
+          const candidates = (await list()).filter(
+            (row) =>
+              row.id &&
+              !remaining.some((old) => old.id === row.id) &&
+              row.displayName === marker &&
+              (!shared ||
+                (row.baseUrl === model.fields.base_url &&
+                  row.provider === model.fields.provider &&
+                  modelNameMatches(row.name, model.fields.model_name))),
           );
+          const found = candidates.length === 1 ? candidates[0] : undefined;
           if (!found?.id) throw Error("model_restore_failed");
           const rows = ownership
             .get(model.owner)
@@ -493,8 +569,31 @@ function createBridge(
     async enable() {
       if (undo) return;
       const client = await service._clientManagerService.getClient();
-      const proto = Object.getPrototypeOf(client),
-        original = proto.convertReqToRustPayload;
+      const proto = Object.getPrototypeOf(client);
+      let convertName = "convertReqToRustPayload";
+      let original = proto[convertName];
+      if (
+        typeof original !== "function" &&
+        typeof proto.request === "function"
+      ) {
+        // Newer clients minify private names; the request envelope retains its protocol keys.
+        const matches = [
+          ...Function.prototype.toString
+            .call(proto.request)
+            .matchAll(/\bpayload\s*:\s*await\s+this\.([A-Za-z_$][\w$]*)\s*\(/g),
+        ];
+        if (matches.length === 1) {
+          const name = matches[0][1];
+          const candidate = Object.getOwnPropertyDescriptor(proto, name)?.value;
+          if (typeof candidate === "function") {
+            const source = Function.prototype.toString.call(candidate);
+            if (/\bservice\s*:/.test(source) && /\bmethod\s*:/.test(source)) {
+              convertName = name;
+              original = candidate;
+            }
+          }
+        }
+      }
       if (typeof original !== "function")
         throw Error("unsupported_client_version");
       const wrapped = async function (request, ...args) {
@@ -567,8 +666,8 @@ function createBridge(
         return original.call(this, next, ...args);
       };
       const originalStream = proto.requestForStream;
-      const wrapStream = function (request) {
-        const stream = originalStream.call(this, request);
+      const wrapStream = function (request, ...args) {
+        const stream = originalStream.call(this, request, ...args);
         if (request.service !== "lite" || request.method !== "subscribe_events")
           return stream;
         const controller = stream.getController(),
@@ -650,12 +749,11 @@ function createBridge(
         controllers.add(restore);
         return stream;
       };
-      proto.convertReqToRustPayload = wrapped;
+      proto[convertName] = wrapped;
       if (typeof originalStream === "function")
         proto.requestForStream = wrapStream;
       undo = () => {
-        if (proto.convertReqToRustPayload === wrapped)
-          proto.convertReqToRustPayload = original;
+        if (proto[convertName] === wrapped) proto[convertName] = original;
         if (proto.requestForStream === wrapStream)
           proto.requestForStream = originalStream;
         for (const restore of controllers) restore();

@@ -1174,6 +1174,20 @@ pub fn run() {
             app.manage(telemetry.clone());
             telemetry.clone().start_worker();
 
+            if let Ok(directory) = app.path().app_local_data_dir() {
+                let checkin = Arc::new(services::workbuddy_checkin::Manager::new(
+                    directory.join("workbuddy-checkin.json"),
+                ));
+                app.manage(checkin.clone());
+                checkin.start_worker();
+                let doubao_checkin = Arc::new(services::doubao_checkin::Manager::new(
+                    directory.join("doubao-checkin.json"),
+                    app.state::<AppState>().db.clone(),
+                ));
+                app.manage(doubao_checkin.clone());
+                doubao_checkin.start_worker();
+            }
+
             // 初始化 SkillService
             let skill_service = SkillService::new();
             app.manage(commands::skill::SkillServiceState(Arc::new(skill_service)));
@@ -1266,6 +1280,23 @@ pub fn run() {
                         log::error!("恢复 Live 配置失败: {e}");
                     } else {
                         log::info!("Live 配置已恢复");
+                    }
+                }
+
+                // Rename legacy Kimi groups after recovery and before routes are rebuilt.
+                {
+                    let _guard = state.proxy_service.lock_switch_for_app("kimi").await;
+                    let db = state.db.clone();
+                    match tauri::async_runtime::spawn_blocking(move || {
+                        crate::services::agent_clients::migrate_legacy_kimi_provider_names(&db)
+                    })
+                    .await
+                    {
+                        Ok(Ok(count)) if count > 0 => {
+                            log::info!("[Kimi] Migrated {count} legacy provider group names");
+                        }
+                        Ok(Ok(_)) => {}
+                        _ => log::warn!("[Kimi] Legacy provider name migration deferred"),
                     }
                 }
 
@@ -1786,6 +1817,17 @@ pub fn run() {
             commands::save_qoder_settings,
             commands::get_workbuddy_live_provider_ids,
             commands::get_workbuddy_settings,
+            commands::get_workbuddy_checkin_status,
+            commands::check_in_workbuddy,
+            commands::set_workbuddy_auto_checkin,
+            commands::get_workbuddy_checkin_accounts,
+            commands::start_workbuddy_checkin_login,
+            commands::poll_workbuddy_checkin_login,
+            commands::cancel_workbuddy_checkin_login,
+            commands::remove_workbuddy_checkin_account,
+            commands::get_doubao_checkin_accounts,
+            commands::check_in_doubao,
+            commands::set_doubao_auto_checkin,
             commands::save_workbuddy_settings,
             commands::get_workbuddy_default_config_dir,
             // OpenClaw specific

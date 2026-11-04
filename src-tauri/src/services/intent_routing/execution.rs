@@ -733,7 +733,7 @@ mod tests {
         assert!(model["display_name"]
             .as_str()
             .expect("label")
-            .ends_with(" · routing group"));
+            .ends_with(" · routing group · VaryAI"));
         assert_eq!(model["visibility"], "list");
         assert_eq!(model["supported_in_api"], true);
         assert_eq!(model["input_modalities"], json!(["text", "image"]));

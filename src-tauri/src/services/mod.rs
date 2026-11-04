@@ -3,6 +3,7 @@ pub mod codex_oauth_models;
 pub(crate) mod codex_provider;
 pub mod coding_plan;
 pub mod config;
+pub(crate) mod doubao_checkin;
 pub mod env_checker;
 pub mod env_manager;
 pub mod mcp;
@@ -42,6 +43,7 @@ pub mod usage_stats;
 pub mod webdav;
 pub mod webdav_auto_sync;
 pub mod webdav_sync;
+pub(crate) mod workbuddy_checkin;
 pub(crate) mod workbuddy_proxy;
 
 pub use config::ConfigService;

@@ -4254,6 +4254,42 @@
     }
   },
   "workbuddy": {
+    "checkin": {
+      "title": "WorkBuddy 每日簽到",
+      "description": "選擇 WorkBuddy 中國版帳號領取官方每日獎勵。可透過官方瀏覽器登入新增多個帳號。",
+      "checkNow": "立即簽到",
+      "checking": "正在簽到…",
+      "reload": "重新整理帳號",
+      "autoLabel": "每日自動簽到",
+      "autoHint": "僅對此帳號生效。VaryAI 執行期間，會分別為已開啟的帳號自動簽到。",
+      "reward": "領取額度：{{credit}}",
+      "streak": "連續簽到：{{count}} 天",
+      "day": "北京時間日期：{{day}}",
+      "delayed": "WorkBuddy 已受理簽到，獎勵額度可能延遲入帳。",
+      "loadFailed": "無法讀取本機簽到狀態，請重新載入後重試。",
+      "operationFailed": "無法完成或儲存簽到操作，請重新載入後重試。",
+      "storageError": "簽到儲存無法使用，未覆寫既有資料。",
+      "outcomes": {
+        "not_checked": "今日尚未簽到。",
+        "claimed": "已領取今日簽到獎勵。",
+        "already_checked": "今日已簽到。",
+        "inactive": "目前沒有進行中的簽到活動。",
+        "ineligible": "目前帳號不符合活動條件。",
+        "own_app_required": "請在 WorkBuddy 內完成簽到，官方服務要求用戶端驗證。",
+        "sign_in_required": "請開啟 WorkBuddy 重新登入後，再於此重試。",
+        "credentials_protected": "暫時無法透過官方用戶端元件讀取受保護的 WorkBuddy 登入憑證。",
+        "credentials_unavailable": "未找到可讀取的 WorkBuddy 中國版登入狀態，請在官方用戶端登入後重試。",
+        "failed": "未能確認簽到結果，請稍後重試；尚未確認領取獎勵。"
+      },
+      "account": "簽到帳號",
+      "selectAccount": "請選擇帳號",
+      "nativeAccount": "用戶端目前登入",
+      "addAccount": "新增帳號",
+      "removeAccount": "移除帳號",
+      "loginWaiting": "請在 WorkBuddy 官方登入頁面完成登入。",
+      "authError": "登入未能完成，請重新嘗試。",
+      "accountUnavailable": "此帳號目前無法使用，請登入後重新選擇。"
+    },
     "officialName": "WorkBuddy Official",
     "settings": {
       "label": "WorkBuddy 設定檔（settings.json）",
@@ -5034,7 +5070,11 @@
     "restartChanged": "應用程式或接入狀態已變更，請重新整理狀態後重試。",
     "restartBlocked": "應用程式尚未結束，請儲存工作後自行結束。",
     "restartUnsupported": "此工具在目前平台不支援自動重新啟動。",
-    "restartConfirmationRequired": "請先確認重新啟動此應用程式。"
+    "restartConfirmationRequired": "請先確認重新啟動此應用程式。",
+    "officialModels": "官方模型",
+    "nativeCatalogHint": "Vary 提供的共享模型目錄。用戶端載入目錄後，請在用戶端內選擇聊天模型。",
+    "nativeCatalogDisconnectedHint": "共享模型目錄預覽。開啟接入開關後會加入這些模型，再到用戶端內選擇聊天模型。",
+    "nativeCatalogPendingHint": "共享模型目錄預覽。TRAE 橋接仍待同步，完成後請在 TRAE 內選擇模型。"
   },
   "providerFlow": {
     "region": "地區",
@@ -5568,5 +5608,40 @@
     "securityOff": "防護已關閉。",
     "securityRunning": "防護已啟用，閘道運行中。",
     "securityStopped": "防護已啟用，但閘道已停止。"
+  },
+  "doubaowork": {
+    "checkin": {
+      "title": "豆包 Work 每日簽到",
+      "description": "帳號來自豆包 Work 官方用戶端。請在用戶端登入其他帳號，再重新整理此清單。",
+      "account": "簽到帳號",
+      "selectAccount": "請選擇帳號",
+      "currentAccount": "目前登入",
+      "reload": "重新整理帳號",
+      "checkNow": "立即簽到",
+      "checking": "正在簽到…",
+      "autoLabel": "自動每日簽到",
+      "autoHint": "保持兩個應用程式執行並連線，會依序為已開啟的帳號簽到，豆包 Work 最後保留在最後處理的帳號。",
+      "loadFailed": "無法讀取簽到狀態。",
+      "operationFailed": "操作未能完成，請重試。",
+      "storageError": "無法讀取或儲存簽到記錄。",
+      "accountUnavailable": "此帳號目前無法使用，請登入後重新整理。",
+      "reward": "領取額度：{{credit}}",
+      "streak": "連續簽到：{{count}} 天",
+      "totalDays": "累計簽到：{{count}} 天",
+      "day": "北京時間：{{day}}",
+      "outcomes": {
+        "not_checked": "此帳號今日尚未查詢簽到狀態。",
+        "claimed": "簽到獎勵領取成功，詳細獎勵請在豆包 Work 中查看。",
+        "already_checked": "今日已簽到。",
+        "inactive": "目前沒有可領取的簽到獎勵。",
+        "switch_required": "簽到期間目前帳號發生變更，請重新整理後重試。",
+        "sign_in_required": "請先登入豆包 Work 官方用戶端。",
+        "connection_required": "請先連接已登入的豆包 Work 用戶端，再重新整理帳號。",
+        "unsupported": "目前用戶端版本暫不提供相容的簽到服務。",
+        "failed": "尚未確認領取結果，請重試。"
+      },
+      "switchAndCheckin": "切換並簽到",
+      "switchHint": "簽到時會將豆包 Work 切換到此帳號，完成後保留在該帳號。"
+    }
   }
 }

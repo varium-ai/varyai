@@ -17,7 +17,7 @@ fn invalid() -> ProxyError {
 
 pub(super) async fn handle(
     axum::extract::State(state): axum::extract::State<ProxyState>,
-    axum::extract::Path((app, id, _path)): axum::extract::Path<(String, String, String)>,
+    axum::extract::Path((app, id, path)): axum::extract::Path<(String, String, String)>,
     request: axum::extract::Request,
 ) -> Result<Response, ProxyError> {
     let app_type = match app.as_str() {
@@ -41,13 +41,23 @@ pub(super) async fn handle(
         ));
     }
     let db = state.db.clone();
-    let provider = tokio::task::spawn_blocking(move || db.get_provider_by_id(&id, &app))
-        .await
-        .map_err(|_| invalid())?
-        .map_err(|_| invalid())?
+    let (provider, routing) = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::error::AppError>((
+            db.get_provider_by_id(&id, &app)?,
+            db.get_bool_flag(crate::services::trae_bridge::ENABLED_KEY)?,
+        ))
+    })
+    .await
+    .map_err(|_| invalid())?
+    .map_err(|_| invalid())?;
+    let provider = provider
         .filter(|p| p.category.as_deref() != Some("official"))
         .ok_or_else(invalid)?;
-    if !needs_conversion(&provider, request.uri())? {
+    let responses_route = app_type == AppType::Trae
+        && routing
+        && path == "v1/responses"
+        && crate::services::upstream_protocol::trae_native_responses(&provider);
+    if !responses_route && !needs_conversion(&provider, request.uri())? {
         return Err(invalid());
     }
     let (mut parts, body) = request.into_parts();
@@ -74,6 +84,9 @@ pub(super) async fn handle(
     )? {
         return Ok(blocked);
     }
+    if responses_route {
+        return forward_trae_responses(&provider, parts, payload).await;
+    }
     let job = Job {
         app_type: app_type.as_str().into(),
         db: state.db.clone(),
@@ -86,6 +99,71 @@ pub(super) async fn handle(
         streaming: payload["stream"].as_bool().unwrap_or(false),
     };
     forward(&state, app_type, &provider, parts, payload, Some(job)).await
+}
+
+pub(super) fn normalize_trae_responses(payload: &mut Value) -> bool {
+    // TRAE can replay reasoning content without the Responses summary field.
+    // Retain the original history and fill only the missing required array.
+    let mut changed = false;
+    if let Some(input) = payload["input"].as_array_mut() {
+        for item in input {
+            if item["type"] == "reasoning" {
+                if let Some(object) = item.as_object_mut() {
+                    object.entry("summary").or_insert_with(|| {
+                        changed = true;
+                        json!([])
+                    });
+                }
+            }
+        }
+    }
+    changed
+}
+
+async fn forward_trae_responses(
+    provider: &Provider,
+    mut parts: Parts,
+    mut payload: Value,
+) -> Result<Response, ProxyError> {
+    normalize_trae_responses(&mut payload);
+    let config = &provider.settings_config;
+    let mut target =
+        url::Url::parse(config["baseUrl"].as_str().ok_or_else(invalid)?).map_err(|_| invalid())?;
+    let path = target.path().trim_end_matches('/');
+    let path = if path.ends_with("/responses") {
+        path.to_owned()
+    } else {
+        format!("{path}/responses")
+    };
+    let query = [target.query(), parts.uri.query()]
+        .into_iter()
+        .flatten()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("&");
+    target.set_path(&path);
+    target.set_query((!query.is_empty()).then_some(query.as_str()));
+    target.set_fragment(None);
+    for name in [
+        "authorization",
+        "x-api-key",
+        "proxy-authorization",
+        "cookie",
+    ] {
+        parts.headers.remove(name);
+    }
+    let key = config["apiKey"].as_str().ok_or_else(invalid)?;
+    parts.headers.insert(
+        header::AUTHORIZATION,
+        http::HeaderValue::from_str(&format!("Bearer {key}")).map_err(|_| invalid())?,
+    );
+    parts.headers.insert(
+        header::ACCEPT_ENCODING,
+        http::HeaderValue::from_static("identity"),
+    );
+    let bytes = serde_json::to_vec(&payload).map_err(|_| invalid())?;
+    // Native bridge observations already account for TRAE usage.
+    super::qoder::send(target.into(), parts, bytes, None).await
 }
 
 pub(super) fn needs_conversion(provider: &Provider, uri: &Uri) -> Result<bool, ProxyError> {
@@ -234,6 +312,193 @@ mod tests {
         atomic::{AtomicU16, AtomicUsize, Ordering},
         Arc,
     };
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn trae_responses_preserves_multi_turn_history_with_auditing_disabled(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::security::{
+            runtime::set_security_runtime_for_test, SecurityRuntimeConfig,
+        };
+        struct ResetSecurity;
+        impl Drop for ResetSecurity {
+            fn drop(&mut self) {
+                set_security_runtime_for_test(SecurityRuntimeConfig::default());
+            }
+        }
+        let _reset = ResetSecurity;
+        set_security_runtime_for_test(SecurityRuntimeConfig {
+            enabled: false,
+            ..Default::default()
+        });
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = observed.clone();
+        let status = Arc::new(AtomicU16::new(200));
+        let upstream_status = status.clone();
+        let response_bytes = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"fixture reply\"}]}]}}\n\n";
+        let upstream = Router::new().fallback(post(move |request: axum::extract::Request| {
+            let received = received.clone();
+            let status = upstream_status.clone();
+            async move {
+                let (parts, body) = request.into_parts();
+                let bytes = axum::body::to_bytes(body, 1024 * 1024).await.unwrap();
+                let payload: Value = serde_json::from_slice(&bytes).unwrap();
+                let valid = payload["input"][2]["summary"] == json!([]);
+                received
+                    .lock()
+                    .unwrap()
+                    .push((parts.uri, parts.headers, payload));
+                let code = if valid {
+                    status.load(Ordering::Relaxed)
+                } else {
+                    502
+                };
+                (
+                    StatusCode::from_u16(code).unwrap(),
+                    [
+                        ("content-type", "text/event-stream"),
+                        ("x-fixture-response", "kept"),
+                    ],
+                    response_bytes,
+                )
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, upstream).await;
+        });
+        let db = Arc::new(Database::memory()?);
+        db.set_setting(crate::services::trae_bridge::ENABLED_KEY, "true")?;
+        let server = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            db.clone(),
+            None,
+        );
+        let info = server.start().await?;
+        let url = format!(
+            "http://127.0.0.1:{}/upstream/trae/providers/fixture/v1/responses?client=kept",
+            info.port
+        );
+        let client = reqwest::Client::new();
+        let payload = json!({
+            "model":"fixture", "stream":true, "store":false, "max_output_tokens":8192,
+            "tools":[{"type":"function","name":"fixture_tool","parameters":{"type":"object"}}],
+            "input":[
+                {"role":"system","content":[{"type":"input_text","text":"Synthetic system text"}]},
+                {"role":"user","content":[{"type":"input_text","text":"Synthetic first turn"}]},
+                {"type":"reasoning","content":[{"type":"reasoning_text","text":"Synthetic retained thought"}],"extra":"preserved"},
+                {"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Synthetic first answer"}]},
+                {"type":"reasoning","id":"rs_fixture","summary":[{"type":"summary_text","text":"Synthetic summary"}],"encrypted_content":"synthetic-encrypted-state"},
+                {"type":"reasoning","summary":null,"extra":"retain explicit values"},
+                {"role":"user","content":[{"type":"input_text","text":"Synthetic second turn"}]}
+            ], "custom_parameter":{"keep":true}
+        });
+        let mut expected = payload.clone();
+        expected["input"][2]["summary"] = json!([]);
+        for (base_path, code, streaming) in [
+            ("/api/v1", 200, true),
+            ("/api/v1/responses", 429, false),
+            ("", 502, true),
+        ] {
+            let provider = Provider::with_id(
+                "fixture".into(),
+                "Fixture".into(),
+                json!({
+                    "baseUrl":format!("http://{address}{base_path}?base=kept"), "apiKey":"synthetic-upstream",
+                    "protocol":"openai-responses", "models":[{"model":"fixture"}]
+                }),
+                None,
+            );
+            db.save_provider("trae", &provider)?;
+            status.store(code, Ordering::Relaxed);
+            let mut request = payload.clone();
+            request["stream"] = json!(streaming);
+            let response = client
+                .post(&url)
+                .bearer_auth("varyai-local")
+                .header("openai-beta", "fixture-feature")
+                .header("x-fixture-client", "preserved")
+                .header("cookie", "synthetic-private-cookie")
+                .header("x-api-key", "varyai-local")
+                .json(&request)
+                .send()
+                .await?;
+            assert_eq!(response.status().as_u16(), code);
+            assert_eq!(response.headers()["x-fixture-response"], "kept");
+            assert_eq!(response.text().await?, response_bytes);
+            let rows = observed.lock().unwrap();
+            let (uri, headers, actual) = rows.last().unwrap();
+            assert_eq!(
+                uri.path(),
+                if base_path.is_empty() {
+                    "/responses"
+                } else {
+                    "/api/v1/responses"
+                }
+            );
+            assert_eq!(uri.query(), Some("base=kept&client=kept"));
+            assert_eq!(headers["authorization"], "Bearer synthetic-upstream");
+            assert_eq!(headers["openai-beta"], "fixture-feature");
+            assert_eq!(headers["x-fixture-client"], "preserved");
+            assert!(!headers.contains_key("x-api-key"));
+            assert!(!headers.contains_key("cookie"));
+            expected["stream"] = json!(streaming);
+            assert_eq!(actual, &expected);
+        }
+        let count = observed.lock().unwrap().len();
+        assert_eq!(count, 3, "upstream failures must not be retried implicitly");
+        assert!(!client
+            .post(&url)
+            .bearer_auth("synthetic-wrong-key")
+            .json(&payload)
+            .send()
+            .await?
+            .status()
+            .is_success());
+        let mut unconfigured = payload.clone();
+        unconfigured["model"] = json!("unconfigured");
+        assert!(!client
+            .post(&url)
+            .bearer_auth("varyai-local")
+            .json(&unconfigured)
+            .send()
+            .await?
+            .status()
+            .is_success());
+        assert!(!client
+            .post(url.replace("/trae/", "/hermes/"))
+            .bearer_auth("varyai-local")
+            .json(&payload)
+            .send()
+            .await?
+            .status()
+            .is_success());
+        assert!(!client
+            .post(url.replace("/v1/responses", "/v1/unknown/responses"))
+            .bearer_auth("varyai-local")
+            .json(&payload)
+            .send()
+            .await?
+            .status()
+            .is_success());
+        db.set_setting(crate::services::trae_bridge::ENABLED_KEY, "false")?;
+        assert!(!client
+            .post(&url)
+            .bearer_auth("varyai-local")
+            .json(&payload)
+            .send()
+            .await?
+            .status()
+            .is_success());
+        assert_eq!(observed.lock().unwrap().len(), count);
+        server.stop().await?;
+        task.abort();
+        Ok(())
+    }
 
     #[tokio::test]
     #[serial_test::serial]

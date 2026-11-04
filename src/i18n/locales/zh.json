@@ -4327,6 +4327,42 @@
     }
   },
   "workbuddy": {
+    "checkin": {
+      "title": "WorkBuddy 每日签到",
+      "description": "选择 WorkBuddy 国内版账号领取官方每日奖励。可通过官方浏览器登录添加多个账号。",
+      "checkNow": "立即签到",
+      "checking": "正在签到…",
+      "reload": "刷新账号",
+      "autoLabel": "每日自动签到",
+      "autoHint": "仅对此账号生效。VaryAI 运行期间，会分别为已开启的账号自动签到。",
+      "reward": "领取额度：{{credit}}",
+      "streak": "连续签到：{{count}} 天",
+      "day": "北京时间日期：{{day}}",
+      "delayed": "WorkBuddy 已受理签到，奖励额度可能延迟到账。",
+      "loadFailed": "无法读取本机签到状态，请重新加载后重试。",
+      "operationFailed": "无法完成或保存签到操作，请重新加载后重试。",
+      "storageError": "签到存储不可用，未覆盖已有数据。",
+      "outcomes": {
+        "not_checked": "今日尚未签到。",
+        "claimed": "已领取今日签到奖励。",
+        "already_checked": "今日已签到。",
+        "inactive": "当前没有进行中的签到活动。",
+        "ineligible": "当前账号不符合活动条件。",
+        "own_app_required": "请在 WorkBuddy 内完成签到，官方服务要求客户端验证。",
+        "sign_in_required": "请打开 WorkBuddy 重新登录后，再在此重试。",
+        "credentials_protected": "暂时无法通过官方客户端组件读取受保护的 WorkBuddy 登录凭据。",
+        "credentials_unavailable": "未找到可读取的 WorkBuddy 国内版登录态，请在官方客户端登录后重试。",
+        "failed": "未能确认签到结果，请稍后重试；尚未确认领取奖励。"
+      },
+      "account": "签到账号",
+      "selectAccount": "请选择账号",
+      "nativeAccount": "客户端当前登录",
+      "addAccount": "添加账号",
+      "removeAccount": "移除账号",
+      "loginWaiting": "请在 WorkBuddy 官方登录页面完成登录。",
+      "authError": "登录未能完成，请重新尝试。",
+      "accountUnavailable": "此账号当前不可用，请登录后重新选择。"
+    },
     "officialName": "WorkBuddy Official",
     "settings": {
       "label": "WorkBuddy 配置文件（settings.json）",
@@ -5107,7 +5143,11 @@
     "restartChanged": "应用或接入状态已变化，请刷新状态后重试。",
     "restartBlocked": "应用尚未退出，请保存工作后自行退出。",
     "restartUnsupported": "此工具在当前平台不支持自动重启。",
-    "restartConfirmationRequired": "请先确认重启此应用。"
+    "restartConfirmationRequired": "请先确认重启此应用。",
+    "officialModels": "官方模型",
+    "nativeCatalogHint": "Vary 提供的共享模型目录。客户端加载目录后，请在客户端内选择聊天模型。",
+    "nativeCatalogDisconnectedHint": "共享模型目录预览。打开接入开关后会添加这些模型，再到客户端内选择聊天模型。",
+    "nativeCatalogPendingHint": "共享模型目录预览。TRAE 桥接仍待同步，完成后请在 TRAE 内选择模型。"
   },
   "providerFlow": {
     "region": "地区",
@@ -5641,5 +5681,40 @@
     "securityOff": "防护已关闭。",
     "securityRunning": "防护已开启，网关运行中。",
     "securityStopped": "防护已开启，但网关已停止。"
+  },
+  "doubaowork": {
+    "checkin": {
+      "title": "豆包 Work 每日签到",
+      "description": "账号来自豆包 Work 官方客户端。请在客户端登录其他账号，再刷新此列表。",
+      "account": "签到账号",
+      "selectAccount": "请选择账号",
+      "currentAccount": "当前登录",
+      "reload": "刷新账号",
+      "checkNow": "立即签到",
+      "checking": "正在签到…",
+      "autoLabel": "自动每日签到",
+      "autoHint": "保持两个应用运行并连接，会依次为已开启的账号签到，豆包 Work 最后保留在最后处理的账号。",
+      "loadFailed": "无法读取签到状态。",
+      "operationFailed": "操作未能完成，请重试。",
+      "storageError": "无法读取或保存签到记录。",
+      "accountUnavailable": "此账号当前不可用，请登录后刷新。",
+      "reward": "领取额度：{{credit}}",
+      "streak": "连续签到：{{count}} 天",
+      "totalDays": "累计签到：{{count}} 天",
+      "day": "北京时间：{{day}}",
+      "outcomes": {
+        "not_checked": "此账号今日尚未查询签到状态。",
+        "claimed": "签到奖励领取成功，具体奖励请在豆包 Work 中查看。",
+        "already_checked": "今日已签到。",
+        "inactive": "当前没有可领取的签到奖励。",
+        "switch_required": "签到期间当前账号发生变化，请刷新后重试。",
+        "sign_in_required": "请先登录豆包 Work 官方客户端。",
+        "connection_required": "请先连接已登录的豆包 Work 客户端，再刷新账号。",
+        "unsupported": "当前客户端版本暂不提供兼容的签到服务。",
+        "failed": "尚未确认领取结果，请重试。"
+      },
+      "switchAndCheckin": "切换并签到",
+      "switchHint": "签到时会将豆包 Work 切换到此账号，完成后保留在该账号。"
+    }
   }
 }

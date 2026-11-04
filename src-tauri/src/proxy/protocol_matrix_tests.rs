@@ -678,6 +678,28 @@ async fn installed_gemini_cli_uses_chat_bridge() {
 #[tokio::test]
 #[serial_test::serial]
 async fn claude_converted_tool_calls_reach_history_from_native_responses() {
+    struct RestoreHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+            let _ = crate::settings::reload_settings();
+        }
+    }
+    let home = tempfile::tempdir().unwrap();
+    let _home = RestoreHome(std::env::var_os("CC_SWITCH_TEST_HOME"));
+    std::env::set_var("CC_SWITCH_TEST_HOME", home.path());
+    crate::settings::reload_settings().unwrap();
+    struct RestoreSecurity(super::security::SecurityRuntimeConfig);
+    impl Drop for RestoreSecurity {
+        fn drop(&mut self) {
+            super::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security = RestoreSecurity((*super::security::get_security_runtime()).clone());
+    super::security::runtime::set_security_runtime_for_test(Default::default());
     use super::tool_observation::channel::test_channel;
     use crate::services::tool_risk::{
         response_parser::ResponseProcessor, runtime::*, worker::project_event,

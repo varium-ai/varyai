@@ -247,20 +247,6 @@ pub(crate) async fn set_agent_connection(
                 .revoke("trae");
         }
         if enabled {
-            let legacy = state
-                .proxy_service
-                .get_takeover_status()
-                .await
-                .map_err(|_| FAILED)?;
-            if legacy.trae
-                || legacy.trae_waiting
-                || state
-                    .db
-                    .get_bool_flag(crate::services::trae_bridge::selection::PENDING_KEY)
-                    .unwrap_or(false)
-            {
-                return Err(agent_connections::CONFLICT.into());
-            }
             super::proxy::ensure_trae_consent(&app_handle, state.inner()).await?;
             state.proxy_service.start().await?;
             state.proxy_service.refresh_global_routing().await?;
@@ -281,13 +267,10 @@ pub(crate) async fn set_agent_connection(
                 return Err(agent_connections::EMPTY.into());
             }
         }
-        {
-            let _guard = state.proxy_service.lock_switch_for_app("trae").await;
-            let manager = state.proxy_service.agent_connections.clone();
-            tokio::task::spawn_blocking(move || manager.bridge_select_model(enabled, model))
-                .await
-                .map_err(|_| FAILED)??;
-        }
+        state
+            .proxy_service
+            .select_shared_trae_connection_model(enabled, model)
+            .await?;
         state.proxy_service.sync_shared_trae(false).await;
         return Ok(());
     }
@@ -342,16 +325,13 @@ async fn set_native_connection(
         .proxy_service
         .legacy_agent_connection_active(&app)
         .await?;
-    if legacy_enabled
+    let legacy = legacy_enabled
         || state
             .db
             .get_live_backup(&app)
             .await
             .map_err(|_| FAILED)?
-            .is_some()
-    {
-        return Err(agent_connections::CONFLICT.into());
-    }
+            .is_some();
     let info = state.proxy_service.start().await?;
     state.proxy_service.ensure_global_routing().await?;
     let menu = state
@@ -367,7 +347,34 @@ async fn set_native_connection(
                 .map(|model| model.id.clone())
         })
         .ok_or(agent_connections::EMPTY)?;
+    if !agent_connections::models(&menu)
+        .iter()
+        .any(|entry| entry.id == selected)
+    {
+        return Err(agent_connections::EMPTY.into());
+    }
     let origin = format!("http://127.0.0.1:{}", info.port);
+    if legacy {
+        if manager.owns(&app) {
+            return Err(agent_connections::CONFLICT.into());
+        }
+        {
+            let manager = manager.clone();
+            let app = app.clone();
+            let menu = menu.clone();
+            let origin = origin.clone();
+            let selected = selected.clone();
+            tokio::task::spawn_blocking(move || manager.build(&app, &menu, &origin, &selected))
+                .await
+                .map_err(|_| FAILED)?
+                .map_err(|_| agent_connections::CONFLICT)?;
+        }
+        state
+            .proxy_service
+            .release_legacy_agent_connection(&app)
+            .await
+            .map_err(|_| agent_connections::CONFLICT)?;
+    }
     let runtime = state.proxy_service.intent_runtime.clone();
     let result = tokio::task::spawn_blocking(move || {
         if manager.load(&app)?.is_some() {
@@ -417,6 +424,283 @@ mod tests {
                 None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
             }
         }
+    }
+
+    async fn upgrade_state() -> Result<AppState, Box<dyn std::error::Error>> {
+        let db = Arc::new(Database::memory()?);
+        let mut config = db.get_proxy_config().await?;
+        config.listen_port = 0;
+        db.update_proxy_config(config).await?;
+        db.save_routing_upstream(RoutingUpstream {
+            transport: None,
+            schema_version: 1,
+            preset_id: None,
+            region: None,
+            codex_settings: None,
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Synthetic upgrade provider".into(),
+            revision: 0,
+            has_api_key: false,
+            enabled: true,
+            source: UpstreamSource::Api {
+                catalog: vec![],
+                mode: crate::services::codex_provider::ModelMode::Picked,
+                groups_only: false,
+                base_url: "https://synthetic.invalid/v1".into(),
+                api_key: Some("synthetic-upgrade-key".into()),
+                api_format: "openai_responses".into(),
+                models: vec![json!({"model":"synthetic"})],
+                auth_type: None,
+            },
+        })?;
+        Ok(AppState::new(db))
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn legacy_takeovers_upgrade_to_shared_connections_and_restore_originals(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::services::{agent_clients, qoder_proxy, workbuddy_proxy};
+        let _home = IsolatedHome::new()?;
+        crate::settings::reload_settings()?;
+        let state = upgrade_state().await?;
+        let db = &state.db;
+        let claude_path = crate::config::get_claude_settings_path();
+        let claude = json!({"env":{"ANTHROPIC_BASE_URL":"https://synthetic.invalid","ANTHROPIC_AUTH_TOKEN":"synthetic-original"},"custom":true});
+        write_json_file(&claude_path, &claude)?;
+        db.save_live_backup("claude", &claude.to_string()).await?;
+        let mut legacy_claude = claude.clone();
+        legacy_claude["env"]["ANTHROPIC_BASE_URL"] = json!("http://127.0.0.1:1");
+        legacy_claude["env"]["ANTHROPIC_AUTH_TOKEN"] = json!("PROXY_MANAGED");
+        write_json_file(&claude_path, &legacy_claude)?;
+        let mut config = db.get_proxy_config_for_app("claude").await?;
+        config.enabled = true;
+        db.update_proxy_config_for_app(config).await?;
+
+        let gemini = json!({"env":{"GOOGLE_GEMINI_BASE_URL":"https://synthetic.invalid","GEMINI_API_KEY":"synthetic-original","CUSTOM":"keep"}});
+        crate::gemini_config::write_gemini_env_atomic(&crate::gemini_config::json_to_env(
+            &gemini,
+        )?)?;
+        db.save_live_backup("gemini", &gemini.to_string()).await?;
+        let mut legacy_gemini = gemini.clone();
+        legacy_gemini["env"]["GOOGLE_GEMINI_BASE_URL"] = json!("http://127.0.0.1:1");
+        crate::gemini_config::write_gemini_env_atomic(&crate::gemini_config::json_to_env(
+            &legacy_gemini,
+        )?)?;
+
+        let grok = json!({"config":"# keep\ncustom = true\n"});
+        crate::grok_config::write_grok_live_settings(&grok)?;
+        db.save_live_backup("grokbuild", &grok.to_string()).await?;
+        let mut config = db.get_proxy_config_for_app("grokbuild").await?;
+        config.enabled = true;
+        db.update_proxy_config_for_app(config).await?;
+
+        let workbuddy_dir = crate::workbuddy_config::get_workbuddy_dir();
+        let workbuddy_path = workbuddy_dir.join("models.json");
+        let workbuddy = json!({"models":[{"id":"native","name":"Native","url":"https://synthetic.invalid/v1","apiKey":"synthetic-native"}],"custom":true});
+        write_json_file(&workbuddy_path, &workbuddy)?;
+        write_json_file(
+            &workbuddy_dir.join("settings.json"),
+            &json!({"env":{"CODEBUDDY_BASE_URL":"https://synthetic.invalid"},"custom":true}),
+        )?;
+        let settings_before = fs::read(workbuddy_dir.join("settings.json"))?;
+        let backup =
+            workbuddy_proxy::Backup::prepare(&workbuddy_dir, "http://127.0.0.1:1/workbuddy/v1")?;
+        db.save_live_backup("workbuddy", &serde_json::to_string(&backup)?)
+            .await?;
+        backup.apply()?;
+        db.set_setting(workbuddy_proxy::ENABLED_KEY, "true")?;
+
+        let qoder_dir = crate::qoder_config::directory();
+        let qoder_path = crate::qoder_config::path();
+        let qoder = json!({"providers":{"native":{"baseUrl":"https://synthetic.invalid/v1","apiKey":"synthetic-native","models":[{"model":"native"}]}},"custom":true});
+        write_json_file(&qoder_path, &qoder)?;
+        fs::write(qoder_dir.join(".env"), "CUSTOM=keep\n")?;
+        let backup =
+            qoder_proxy::Backup::prepare(&qoder_dir, "http://127.0.0.1:1", "https://localhost:1")?;
+        db.save_live_backup("qoder", &serde_json::to_string(&backup)?)
+            .await?;
+        backup.apply()?;
+        db.set_setting(qoder_proxy::ENABLED_KEY, "true")?;
+
+        let mut native_baselines = vec![];
+        for app in ["kimi", "qwen", "zcode"] {
+            let path = agent_clients::config_path(app)?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(
+                &path,
+                if app == "kimi" {
+                    "custom = true\n"
+                } else {
+                    "{}"
+                },
+            )?;
+            let mut doc = agent_clients::Document::read(app, &path)
+                .map_err(|_| format!("synthetic {app} read failed"))?;
+            doc.apply(app, "legacy", "Synthetic legacy", &json!({"baseUrl":"https://synthetic.invalid/v1","apiKey":"synthetic-legacy","protocol":"openai","models":[{"model":"old-model"}]})).map_err(|_| format!("synthetic {app} apply failed"))?;
+            doc.value["custom"] = json!(true);
+            let baseline = doc.value.clone();
+            let routes = doc
+                .route(app, "http://127.0.0.1:1")
+                .map_err(|_| format!("synthetic {app} route failed"))?;
+            db.save_live_backup(
+                app,
+                &serde_json::to_string(&agent_clients::Backup {
+                    path: path.clone(),
+                    routes,
+                })?,
+            )
+            .await?;
+            doc.write(&path)
+                .map_err(|_| format!("synthetic {app} write failed"))?;
+            db.set_setting(&agent_clients::enabled_key(app), "true")?;
+            native_baselines.push((app, path, baseline));
+        }
+
+        for app in [
+            "claude",
+            "gemini",
+            "grokbuild",
+            "workbuddy",
+            "qoder",
+            "kimi",
+            "qwen",
+            "zcode",
+        ] {
+            set_native_connection(&state, app.into(), true, None).await?;
+            assert!(
+                state
+                    .proxy_service
+                    .agent_connections
+                    .status(app)?
+                    .configured,
+                "{app}"
+            );
+            assert!(db.get_live_backup(app).await?.is_none(), "{app}");
+            set_native_connection(&state, app.into(), false, None).await?;
+        }
+        assert_eq!(
+            crate::config::read_json_file::<Value>(&claude_path)?,
+            claude
+        );
+        assert_eq!(
+            crate::gemini_config::env_to_json(&crate::gemini_config::read_gemini_env()?),
+            gemini
+        );
+        assert_eq!(crate::grok_config::read_grok_live_settings()?, grok);
+        assert_eq!(
+            crate::config::read_json_file::<Value>(&workbuddy_path)?,
+            workbuddy
+        );
+        assert!(fs::read(workbuddy_dir.join("settings.json"))? == settings_before);
+        assert_eq!(crate::config::read_json_file::<Value>(&qoder_path)?, qoder);
+        assert_eq!(fs::read_to_string(qoder_dir.join(".env"))?, "CUSTOM=keep\n");
+        for (app, path, baseline) in native_baselines {
+            assert_eq!(
+                agent_clients::Document::read(app, &path)?.value,
+                baseline,
+                "{app}"
+            );
+            assert!(!db.get_bool_flag(&agent_clients::enabled_key(app))?);
+        }
+        assert!(!db.get_proxy_config_for_app("claude").await?.enabled);
+        assert!(!db.get_bool_flag(workbuddy_proxy::ENABLED_KEY)?);
+        assert!(!db.get_bool_flag(qoder_proxy::ENABLED_KEY)?);
+        state.proxy_service.stop().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn legacy_upgrade_rejects_invalid_models_and_retains_unreadable_recovery(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::services::workbuddy_proxy;
+        let _home = IsolatedHome::new()?;
+        crate::settings::reload_settings()?;
+        let state = upgrade_state().await?;
+        let directory = crate::workbuddy_config::get_workbuddy_dir();
+        write_json_file(&directory.join("models.json"), &json!({"models":[]}))?;
+        write_json_file(
+            &directory.join("settings.json"),
+            &json!({"env":{"CODEBUDDY_BASE_URL":"https://synthetic.invalid"}}),
+        )?;
+        let backup =
+            workbuddy_proxy::Backup::prepare(&directory, "http://127.0.0.1:1/workbuddy/v1")?;
+        let saved = serde_json::to_string(&backup)?;
+        state.db.save_live_backup("workbuddy", &saved).await?;
+        backup.apply()?;
+        state.db.set_setting(workbuddy_proxy::ENABLED_KEY, "true")?;
+        let before = fs::read(directory.join("settings.json"))?;
+        assert_eq!(
+            set_native_connection(
+                &state,
+                "workbuddy".into(),
+                true,
+                Some("missing-model".into())
+            )
+            .await,
+            Err(agent_connections::EMPTY.into())
+        );
+        assert!(state.db.get_live_backup("workbuddy").await?.is_some());
+        assert!(fs::read(directory.join("settings.json"))? == before);
+        fs::write(directory.join("models.json"), "invalid synthetic models")?;
+        assert_eq!(
+            set_native_connection(&state, "workbuddy".into(), true, None).await,
+            Err(agent_connections::CONFLICT.into())
+        );
+        assert!(state.db.get_live_backup("workbuddy").await?.is_some());
+        assert!(state.db.get_bool_flag(workbuddy_proxy::ENABLED_KEY)?);
+        assert!(fs::read(directory.join("settings.json"))? == before);
+        write_json_file(&directory.join("models.json"), &json!({"models":[]}))?;
+        state
+            .db
+            .save_live_backup("workbuddy", "invalid synthetic recovery")
+            .await?;
+        assert_eq!(
+            set_native_connection(&state, "workbuddy".into(), true, None).await,
+            Err(agent_connections::CONFLICT.into())
+        );
+        assert!(state.db.get_live_backup("workbuddy").await?.is_some());
+        assert!(state.db.get_bool_flag(workbuddy_proxy::ENABLED_KEY)?);
+        assert!(fs::read(directory.join("settings.json"))? == before);
+        assert!(!state.proxy_service.agent_connections.owns("workbuddy"));
+        state.db.save_live_backup("workbuddy", &saved).await?;
+        state.proxy_service.stop().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn legacy_trae_connection_can_queue_shared_delivery_without_enabling_audit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::services::trae_bridge;
+        let _home = IsolatedHome::new()?;
+        let state = upgrade_state().await?;
+        state
+            .db
+            .update_security_settings(&crate::database::SecurityAuditSettings { enabled: false })?;
+        state.db.set_setting(trae_bridge::ENABLED_KEY, "true")?;
+        state
+            .db
+            .set_setting(trae_bridge::selection::PENDING_KEY, "true")?;
+        state
+            .proxy_service
+            .select_shared_trae_connection(true)
+            .await?;
+        assert!(!state.db.get_bool_flag(trae_bridge::ENABLED_KEY)?);
+        assert!(state
+            .db
+            .get_bool_flag(trae_bridge::selection::PENDING_KEY)?);
+        assert!(state
+            .db
+            .get_bool_flag(trae_bridge::selection::ROUTE_PENDING_KEY)?);
+        let bridge = state.proxy_service.agent_connections.bridge_status()?;
+        assert!(bridge.enabled && bridge.recovery_pending && !bridge.configured);
+        assert!(!state.db.get_security_settings()?.enabled);
+        assert!(!state.proxy_service.is_running().await);
+        Ok(())
     }
 
     #[tokio::test]

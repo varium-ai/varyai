@@ -365,7 +365,8 @@
   font-size: 13px;
   text-align: left;
 }
-.mp-am-row:hover,
+button.mp-am-row:hover,
+.mp-am-order-row:hover,
 .mp-am-rail > button:hover {
   background: var(--mp-pill);
 }

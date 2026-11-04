@@ -10,6 +10,7 @@
 - [Qoder integration](guides/qoder.md)
 - [WorkBuddy integration](guides/workbuddy.md)
 - [Doubao Work integration](guides/doubao-work.md)
+- [Daily rewards and account selection](guides/daily-checkin.md)
 - [Multi-client profiles](guides/profiles.md)
 - [Gateway keys and token budgets](guides/gateway-keys.md)
 - [Local gateway and VPN bypass](guides/proxy-configs/README.md)
@@ -28,6 +29,7 @@
 
 ## Implementation references
 
+- [Protocol conversion and the shared IR](architecture/protocol-conversion.md)
 - [DLP architecture](architecture/security-audit.md)
 - [Tool observations and risk evaluation](architecture/tool-risk.md)
 - [Independent storage, recovery and backups](architecture/storage.md)

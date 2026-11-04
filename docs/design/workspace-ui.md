@@ -122,6 +122,10 @@ native client support.
   within the same workspace destination. Back restores list search, fold state,
   scroll position and button focus. Canceling a provider editor returns to
   selection; successful saves and imports return to the provider list.
+- Keep WorkBuddy and Doubao Work daily check-in and account controls inside
+  their Agent details, available while disconnected. Opening details only reads
+  account status; claiming rewards, adding an account and enabling automatic
+  check-in retain their explicit actions.
 
 Shared tokens and Agent styles live in
 `src/components/layout/workspace.css`. Provider and routing styles consume the

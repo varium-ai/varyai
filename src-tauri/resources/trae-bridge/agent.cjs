@@ -7,8 +7,11 @@ const { PassThrough } = require("node:stream");
 const { createBridge } = require("./renderer.cjs");
 const { createStartingModelAdapter } = require("./starting-model.cjs");
 const SLOT = "__varyaiTraeNativeBridge";
-const REVISION = 2;
-const AUDIT_BINDING = "__varyaiTraeAuditV2";
+const REVISION = 9;
+// Keep the renderer API compatible so an older resident helper cannot replace the new hook.
+const RENDERER_REVISION = 2;
+// Older helpers remain resident; their disabled audit callbacks must not receive new events.
+const AUDIT_BINDING = `__varyaiTraeAuditV${REVISION}`;
 function safeModelError(message) {
   return typeof message === "string" &&
     (/^model_(add|update|remove|restore)_failed(?::-?\d{1,16})?$/.test(
@@ -128,7 +131,11 @@ function nativeModelService(connection) {
 function bootstrapSource() {
   return `(async()=>{
     const previous=globalThis.${SLOT};
-    if(previous?.revision===${REVISION}&&previous.startingModel===1&&previous.modelVerification===1&&typeof previous.bridge?.replace==='function')return true;
+    if(previous?.revision===${RENDERER_REVISION}&&typeof previous.bridge?.replace==='function'){
+      // Resident helpers must not downgrade a newer compatible renderer.
+      if(previous.hookRevision>${REVISION})return true;
+      if(previous.hookRevision===${REVISION}&&previous.startingModel===1&&previous.modelVerification===1&&previous.auditBinding===${JSON.stringify(AUDIT_BINDING)})return true;
+    }
     await previous?.bridge?.disable();
     const solo=globalThis.__varyaiTraeSoloDI;
     let service,refresh,req;
@@ -154,7 +161,7 @@ function bootstrapSource() {
     // An installed IDE extension may still be present. This helper now owns the window's hook.
     const legacy=document.querySelector('varyai-trae-bridge-v1');
     if(legacy)await legacy.receive({op:'disable',request:'native-pipe-takeover'});
-    globalThis.${SLOT}={revision:${REVISION},modelVerification:1,startingModel:1,bridge,resolve(id,value,error){const task=pending.get(id);if(!task)return;clearTimeout(task.timer);pending.delete(id);error?task.reject(Error('audit_unavailable')):task.resolve(value);}};
+    globalThis.${SLOT}={revision:${RENDERER_REVISION},hookRevision:${REVISION},modelVerification:1,startingModel:1,auditBinding:${JSON.stringify(AUDIT_BINDING)},bridge,resolve(id,value,error){const task=pending.get(id);if(!task)return;clearTimeout(task.timer);pending.delete(id);error?task.reject(Error('audit_unavailable')):task.resolve(value);}};
     return true;
   })()`;
 }
@@ -211,8 +218,30 @@ async function initializeSolo(pipe, sessionId) {
           "Runtime.callFunctionOn",
           {
             objectId: variable.value.objectId,
-            functionDeclaration:
-              "function(){if(!this.m||!this.m[63503])return false;const di=this(63503).mcf.getInstance();if(!di.isInitialized())return false;globalThis.__varyaiTraeSoloDI=di;globalThis.__varyaiTraeSoloRequire=this;return true}",
+            functionDeclaration: function () {
+              if (!this.m) return false;
+              // Module IDs change between builds; select the unique container export.
+              const ids = Object.keys(this.m).filter((id) => {
+                const factory = this.m[id];
+                return (
+                  typeof factory === "function" &&
+                  /\bmcf\s*:/.test(Function.prototype.toString.call(factory))
+                );
+              });
+              if (ids.length !== 1) return false;
+              const container = this(ids[0]).mcf;
+              if (typeof container?.getInstance !== "function") return false;
+              const di = container.getInstance();
+              if (
+                typeof di?.isInitialized !== "function" ||
+                !di.isInitialized() ||
+                typeof di.resolve !== "function"
+              )
+                return false;
+              globalThis.__varyaiTraeSoloDI = di;
+              globalThis.__varyaiTraeSoloRequire = this;
+              return true;
+            }.toString(),
             returnByValue: true,
           },
           sessionId,
@@ -292,6 +321,14 @@ async function connectEndpoint(endpoint, onEvent, WebSocketClass = WebSocket) {
     output.write(event.data + "\0"),
   );
   socket.addEventListener("close", () => pipe.close());
+  try {
+    // Native Electron windows are not listed until target discovery is enabled.
+    await pipe.call("Target.setDiscoverTargets", { discover: true });
+  } catch (error) {
+    socket.close();
+    pipe.close();
+    throw error;
+  }
   return { pipe, socket };
 }
 async function run(endpoint, directory) {

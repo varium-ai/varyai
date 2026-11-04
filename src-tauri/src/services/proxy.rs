@@ -1408,19 +1408,71 @@ impl ProxyService {
                     .enabled
             }
             "pi" => self.pi_routing.enabled()?,
-            "workbuddy" => self.workbuddy_active().await,
-            "kimi" | "qwen" | "zcode" => self.native_agent_active(app).await,
-            "qoder" => {
-                self.qoder.is_active()
-                    && self
-                        .db
-                        .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
-                        .map_err(|_| super::agent_connections::FAILED)?
-            }
+            "workbuddy" => self
+                .db
+                .get_bool_flag(super::workbuddy_proxy::ENABLED_KEY)
+                .map_err(|_| super::agent_connections::FAILED)?,
+            "kimi" | "qwen" | "zcode" => self
+                .db
+                .get_bool_flag(&super::agent_clients::enabled_key(app))
+                .map_err(|_| super::agent_connections::FAILED)?,
+            "qoder" => self
+                .db
+                .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
+                .map_err(|_| super::agent_connections::FAILED)?,
             // Desktop's shared adapter snapshots profiles rather than using legacy takeover.
             "claude-desktop" | "opencode" | "openclaw" | "hermes" => false,
             _ => return Err(super::agent_connections::FAILED.into()),
         })
+    }
+
+    // Caller holds this Agent's switch lock and has validated the shared projection.
+    pub(crate) async fn release_legacy_agent_connection(&self, app: &str) -> Result<(), String> {
+        match app {
+            "claude" | "gemini" | "grokbuild" => {
+                let kind = AppType::from_str(app).map_err(|_| super::agent_connections::FAILED)?;
+                if self
+                    .db
+                    .get_proxy_config_for_app(app)
+                    .await
+                    .map_err(|_| super::agent_connections::FAILED)?
+                    .enabled
+                {
+                    self.set_ordinary_takeover_inner(&kind, false, false)
+                        .await?;
+                } else {
+                    self.restore_live_config_for_app_with_fallback_inner(&kind)
+                        .await?;
+                    self.db
+                        .delete_live_backup(app)
+                        .await
+                        .map_err(|_| super::agent_connections::FAILED)?;
+                }
+            }
+            "workbuddy" => {
+                self.restore_workbuddy_live_inner().await?;
+                self.db
+                    .set_setting(super::workbuddy_proxy::ENABLED_KEY, "false")
+                    .map_err(|_| super::agent_connections::FAILED)?;
+            }
+            "kimi" | "qwen" | "zcode" => {
+                super::agent_clients::restore(&self.db, app)
+                    .await
+                    .map_err(|_| super::agent_connections::FAILED)?;
+                self.db
+                    .set_setting(&super::agent_clients::enabled_key(app), "false")
+                    .map_err(|_| super::agent_connections::FAILED)?;
+            }
+            "qoder" => {
+                self.qoder.restore().await?;
+                self.db
+                    .set_setting(super::qoder_proxy::ENABLED_KEY, "false")
+                    .map_err(|_| super::agent_connections::FAILED)?;
+            }
+            "pi" => self.pi_routing.disable()?,
+            _ => return Err(super::agent_connections::CONFLICT.into()),
+        }
+        Ok(())
     }
 
     async fn workbuddy_active(&self) -> bool {
@@ -1640,6 +1692,63 @@ impl ProxyService {
                         .await;
             }
         }
+        let pending = super::trae_bridge::selection::ROUTE_PENDING_KEY;
+        if !self.agent_connections.bridge_owned() && self.db.get_bool_flag(pending).unwrap_or(false)
+        {
+            let _guard = self.lock_switch_for_app("trae").await;
+            if self.db.get_bool_flag(pending).unwrap_or(false) {
+                let db = self.db.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    if super::trae_bridge::selection::sync_response_route(&db)
+                        && !db
+                            .get_bool_flag(super::trae_bridge::ENABLED_KEY)
+                            .unwrap_or(true)
+                    {
+                        // Preserve the existing connection setup until an offline
+                        // client's native endpoint has been restored.
+                        let _ = super::trae_bridge::finish_disconnect();
+                    }
+                })
+                .await;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn select_shared_trae_connection(&self, enabled: bool) -> Result<(), String> {
+        self.select_shared_trae_connection_model(enabled, None)
+            .await
+    }
+
+    pub(crate) async fn select_shared_trae_connection_model(
+        &self,
+        enabled: bool,
+        model: Option<String>,
+    ) -> Result<(), String> {
+        let _guard = self.lock_switch_for_app("trae").await;
+        let _audit_guard = self.lock_trae_audit().await;
+        self.agent_connections.bridge_status()?;
+        if enabled
+            && self
+                .db
+                .get_bool_flag(super::trae_bridge::ENABLED_KEY)
+                .map_err(|_| super::agent_connections::FAILED)?
+        {
+            tokio::task::spawn_blocking(super::trae_bridge::suspend_inspection)
+                .await
+                .map_err(|_| super::agent_connections::FAILED)?
+                .map_err(|_| super::agent_connections::CONFLICT)?;
+            self.db
+                .set_setting(super::trae_bridge::selection::ROUTE_PENDING_KEY, "true")
+                .map_err(|_| super::agent_connections::FAILED)?;
+            self.db
+                .set_setting(super::trae_bridge::ENABLED_KEY, "false")
+                .map_err(|_| super::agent_connections::FAILED)?;
+        }
+        let manager = self.agent_connections.clone();
+        tokio::task::spawn_blocking(move || manager.bridge_select_model(enabled, model))
+            .await
+            .map_err(|_| super::agent_connections::FAILED)?
     }
 
     pub(crate) async fn sync_shared_trae(&self, suspend: bool) {
@@ -1662,10 +1771,26 @@ impl ProxyService {
         let port = self.get_status().await.map(|s| s.port).unwrap_or(0);
         let manager = self.agent_connections.clone();
         let runtime = self.intent_runtime.clone();
+        let db = self.db.clone();
         let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
             if running {
                 super::trae_bridge::prepare_shared()
                     .map_err(|_| super::agent_connections::FAILED)?;
+                // Restore pending legacy models before the shared catalog captures its baseline.
+                if db
+                    .get_bool_flag(super::trae_bridge::selection::PENDING_KEY)
+                    .map_err(|_| super::agent_connections::FAILED)?
+                    && !super::trae_bridge::selection::sync(&db)
+                {
+                    return Err(super::agent_connections::CONFLICT.into());
+                }
+                if db
+                    .get_bool_flag(super::trae_bridge::selection::ROUTE_PENDING_KEY)
+                    .map_err(|_| super::agent_connections::FAILED)?
+                    && !super::trae_bridge::selection::sync_response_route(&db)
+                {
+                    return Err(super::agent_connections::CONFLICT.into());
+                }
             }
             if let Some(receipt) = manager.bridge_sync(
                 menu.as_deref(),
@@ -1771,6 +1896,9 @@ impl ProxyService {
         }
         if app_type == "trae" {
             let _guard = self.lock_trae_audit().await;
+            if self.agent_connections.bridge_owned() {
+                return Err(super::agent_connections::CONFLICT.into());
+            }
             if enabled {
                 if !self
                     .db
@@ -1788,7 +1916,7 @@ impl ProxyService {
                     .map_err(|_| "TRAE bridge unavailable".to_string())?
                     .map_err(|e| e.to_string())?;
             } else {
-                tokio::task::spawn_blocking(super::trae_bridge::disable)
+                tokio::task::spawn_blocking(super::trae_bridge::suspend_inspection)
                     .await
                     .map_err(|_| "TRAE bridge unavailable".to_string())?
                     .map_err(|e| e.to_string())?;
@@ -1799,6 +1927,11 @@ impl ProxyService {
                     if enabled { "true" } else { "false" },
                 )
                 .map_err(|e| e.to_string())?;
+            self.db
+                .set_setting(super::trae_bridge::selection::ROUTE_PENDING_KEY, "true")
+                .map_err(|e| e.to_string())?;
+            drop(_guard);
+            self.refresh_trae_takeover().await;
             return Ok(());
         }
         if super::agent_clients::supported(app_type) {
@@ -3787,7 +3920,19 @@ impl ProxyService {
         }
         {
             let _guard = self.lock_trae_audit().await;
-            match tokio::task::spawn_blocking(super::trae_bridge::disable).await {
+            let pending = self
+                .db
+                .get_bool_flag(super::trae_bridge::selection::ROUTE_PENDING_KEY)
+                .unwrap_or(true);
+            match tokio::task::spawn_blocking(move || {
+                if pending {
+                    super::trae_bridge::suspend_inspection()
+                } else {
+                    super::trae_bridge::disable()
+                }
+            })
+            .await
+            {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => errors.push(format!("TRAE bridge recovery: {error}")),
                 Err(error) => errors.push(format!("TRAE bridge recovery: {error}")),
@@ -6013,7 +6158,7 @@ mod tests {
                 let mut models = native_models.lock().unwrap();
                 let response = match request["op"].as_str().unwrap() {
                     "health" => {
-                        json!({"result":{"ready":true,"enabled":false,"revision":2,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
+                        json!({"result":{"ready":true,"enabled":false,"revision":9,"modelVerification":1,"startingModel":1,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
                     }
                     "list" => json!({"result":[]}),
                     "remove" => {

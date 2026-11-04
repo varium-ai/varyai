@@ -438,9 +438,12 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
             return error(StatusCode::NOT_FOUND, "routing_model_unavailable");
         }
     }
-    let rewritten = gemini.is_none() && alias != model;
+    let mut rewritten = gemini.is_none() && alias != model;
     if rewritten {
         body["model"] = json!(alias);
+    }
+    if app == "trae" && endpoint == "/v1/responses" {
+        rewritten |= super::native_protocol::normalize_trae_responses(&mut body);
     }
     let db = state.db.clone();
     let policy_model = alias.clone();
