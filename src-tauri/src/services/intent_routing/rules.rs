@@ -202,6 +202,7 @@ impl Conditions {
                     "kimi",
                     "qwen",
                     "zcode",
+                    "deepseek-harness",
                 ]
                 .contains(&agent.as_str())
             })

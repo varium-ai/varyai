@@ -1371,6 +1371,7 @@ impl ProxyService {
             kimi: self.native_agent_active("kimi").await,
             qwen: self.native_agent_active("qwen").await,
             zcode: self.native_agent_active("zcode").await,
+            deepseek_harness: self.native_agent_active("deepseek-harness").await,
             trae,
             pi: self.pi_routing.enabled()?,
             qoder: self.qoder.is_active()
@@ -1412,7 +1413,7 @@ impl ProxyService {
                 .db
                 .get_bool_flag(super::workbuddy_proxy::ENABLED_KEY)
                 .map_err(|_| super::agent_connections::FAILED)?,
-            "kimi" | "qwen" | "zcode" => self
+            "kimi" | "qwen" | "zcode" | "deepseek-harness" => self
                 .db
                 .get_bool_flag(&super::agent_clients::enabled_key(app))
                 .map_err(|_| super::agent_connections::FAILED)?,
@@ -1455,7 +1456,7 @@ impl ProxyService {
                     .set_setting(super::workbuddy_proxy::ENABLED_KEY, "false")
                     .map_err(|_| super::agent_connections::FAILED)?;
             }
-            "kimi" | "qwen" | "zcode" => {
+            "kimi" | "qwen" | "zcode" | "deepseek-harness" => {
                 super::agent_clients::restore(&self.db, app)
                     .await
                     .map_err(|_| super::agent_connections::FAILED)?;

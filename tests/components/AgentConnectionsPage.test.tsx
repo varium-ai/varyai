@@ -1886,6 +1886,58 @@ describe("Agent connections", () => {
       }),
     ).toBeEnabled();
   });
+  it.each([false, true])(
+    "selects the DeepSeek Harness starting model when connected is %s",
+    async (enabled) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        "deepseek-harness": true,
+      });
+      vi.mocked(agentConnectionsApi.models).mockResolvedValue([
+        {
+          id: "vary-auto/shared",
+          name: "Shared group",
+          contextWindow: 1000000,
+        },
+        {
+          id: "vary-auto/another",
+          name: "Another group",
+          contextWindow: 1000000,
+        },
+      ]);
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app: "deepseek-harness",
+          enabled,
+          configured: enabled,
+          model: enabled ? "vary-auto/another" : null,
+          recoveryPending: false,
+          restartRequired: false,
+        },
+      ]);
+      vi.mocked(agentConnectionsApi.nativeModels).mockResolvedValue([
+        { app: "deepseek-harness", available: true, model: "deepseek-flash" },
+      ]);
+      mount();
+      const row = await screen.findByRole("article", {
+        name: "apps.deepseek-harness",
+      });
+      fireEvent.click(
+        await within(row).findByRole("button", {
+          name: "agentConnections.model apps.deepseek-harness",
+        }),
+      );
+      fireEvent.click(
+        await screen.findByRole("radio", { name: /Shared group/ }),
+      );
+      await waitFor(() =>
+        expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+          "deepseek-harness",
+          true,
+          "vary-auto/shared",
+        ),
+      );
+    },
+  );
   it("connects a disconnected tool immediately when a starting model is picked", async () => {
     mount();
     fireEvent.click(

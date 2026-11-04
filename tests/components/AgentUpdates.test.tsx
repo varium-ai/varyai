@@ -10,6 +10,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentConnectionsPage } from "@/components/agents/AgentConnectionsPage";
 import { settingsApi } from "@/lib/api/settings";
 import { proxyApi } from "@/lib/api/proxy";
+import type { AppId } from "@/lib/api";
+import type { AgentVersion } from "@/lib/api/settings";
 
 vi.mock("@/lib/api/agentConnections", () => ({
   agentConnectionsApi: {
@@ -30,6 +32,7 @@ vi.mock("@/lib/api/settings", () => ({
     getAgentVersions: vi.fn(),
     probeToolInstallations: vi.fn(),
     runToolLifecycleAction: vi.fn(),
+    updateDesktopAgent: vi.fn(),
     openExternal: vi.fn(),
   },
 }));
@@ -80,8 +83,194 @@ beforeEach(() => {
       })),
   );
   vi.mocked(settingsApi.runToolLifecycleAction).mockResolvedValue();
+  vi.mocked(settingsApi.updateDesktopAgent).mockResolvedValue();
 });
 describe("Agent versions and updates", () => {
+  it.each<AppId>([
+    "claude-desktop",
+    "workbuddy",
+    "qoder",
+    "doubaowork",
+    "trae",
+    "kimi",
+    "zcode",
+    "deepseek-harness",
+  ])("offers and verifies desktop updates for %s", async (app) => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      [app]: true,
+    });
+    const info: AgentVersion = {
+      supported: true,
+      installed: true,
+      version: "1.0.0",
+      latest_version: "1.1.0",
+      source: "desktop",
+    };
+    vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({ [app]: info });
+    vi.mocked(settingsApi.updateDesktopAgent).mockImplementation(async () => {
+      vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({
+        [app]: { ...info, version: "1.1.0" },
+      });
+    });
+    mount();
+    const row = await screen.findByRole("article", { name: `apps.${app}` });
+    const update = await within(row).findByRole("button", {
+      name: "agentUpdates.update",
+    });
+    expect(within(row).getByText("App 1.0.0")).toBeInTheDocument();
+    expect(settingsApi.updateDesktopAgent).not.toHaveBeenCalled();
+    fireEvent.click(update);
+    fireEvent.click(update);
+    expect(await within(row).findByText("App 1.1.0")).toBeInTheDocument();
+    expect(await screen.findByText(/agentUpdates.changed/)).toBeInTheDocument();
+    expect(settingsApi.updateDesktopAgent).toHaveBeenCalledExactlyOnceWith(app);
+    expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
+    expect(settingsApi.probeToolInstallations).not.toHaveBeenCalled();
+  });
+  it("includes desktop agents and Qwen CLI in mixed batch updates", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      qwen: true,
+      kimi: true,
+      trae: true,
+    });
+    const info: AgentVersion = {
+      supported: true,
+      installed: true,
+      version: "1.0.0",
+      latest_version: "1.1.0",
+      source: "desktop",
+    };
+    vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({
+      kimi: info,
+      trae: info,
+    });
+    vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
+      async () => {
+        vi.mocked(settingsApi.getToolVersions).mockResolvedValue(
+          versions("qwen", "1.1.0"),
+        );
+      },
+    );
+    vi.mocked(settingsApi.updateDesktopAgent).mockImplementation(
+      async (app) => {
+        if (app === "kimi") throw new Error("synthetic-private-update-error");
+        vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({
+          kimi: info,
+          trae: { ...info, version: "1.1.0" },
+        });
+      },
+    );
+    mount();
+    expect(await screen.findAllByText("App 1.0.0")).toHaveLength(2);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "agentUpdates.all" }),
+    );
+    expect(await screen.findByText(/agentUpdates.summary/)).toBeInTheDocument();
+    expect(settingsApi.probeToolInstallations).toHaveBeenCalledExactlyOnceWith([
+      "qwen",
+    ]);
+    expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledExactlyOnceWith(
+      ["qwen"],
+      "update",
+    );
+    expect(settingsApi.updateDesktopAgent).toHaveBeenCalledTimes(2);
+    expect(settingsApi.updateDesktopAgent).toHaveBeenCalledWith("kimi");
+    expect(settingsApi.updateDesktopAgent).toHaveBeenCalledWith("trae");
+    expect(screen.getByText(/agentUpdates.failed/)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/synthetic-private-update-error/),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("App 1.1.0")).toBeInTheDocument();
+  });
+  it.each(["unchanged", "unreadable", "cli"])(
+    "does not claim a desktop upgrade succeeded when its version is %s",
+    async (state) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        kimi: true,
+      });
+      const info: AgentVersion = {
+        supported: true,
+        installed: true,
+        version: "1.0.0",
+        latest_version: "1.1.0",
+        source: "desktop",
+      };
+      vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({ kimi: info });
+      vi.mocked(settingsApi.updateDesktopAgent).mockImplementation(async () => {
+        if (state === "unreadable") {
+          vi.mocked(settingsApi.getAgentVersions).mockRejectedValue(
+            "synthetic-private-probe",
+          );
+        } else if (state === "cli") {
+          vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({
+            kimi: { ...info, version: "2.0.0", source: "cli" },
+          });
+        }
+      });
+      mount();
+      fireEvent.click(
+        await screen.findByRole("button", { name: "agentUpdates.update" }),
+      );
+      expect(
+        await screen.findByText(/agentUpdates.unverified/),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/agentUpdates.changed/),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/synthetic-private-probe/),
+      ).not.toBeInTheDocument();
+    },
+  );
+  it.each(["ahead", "unknown", "missing", "unsupported", "cli"])(
+    "does not offer desktop updates for %s metadata",
+    async (state) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        kimi: true,
+      });
+      vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({
+        kimi: {
+          supported: state !== "unsupported",
+          installed: state !== "missing",
+          version: state === "ahead" ? "1.2.0" : "1.0.0",
+          latest_version: state === "unknown" ? null : "1.1.0",
+          source: state === "cli" ? "cli" : "desktop",
+        },
+      });
+      mount();
+      const row = await screen.findByRole("article", { name: "apps.kimi" });
+      expect(
+        await within(row).findByText(
+          state === "cli"
+            ? "CLI 1.0.0"
+            : `App ${state === "ahead" ? "1.2.0" : "1.0.0"}`,
+        ),
+      ).toBeInTheDocument();
+      expect(
+        within(row).queryByRole("button", { name: "agentUpdates.update" }),
+      ).not.toBeInTheDocument();
+    },
+  );
+  it("shows a CLI-only Kimi version without offering its desktop updater", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({ kimi: true });
+    vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({
+      kimi: {
+        supported: true,
+        installed: true,
+        version: "2.2.0",
+        latest_version: null,
+        source: "cli",
+      },
+    });
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.kimi" });
+    expect(await within(row).findByText("CLI 2.2.0")).toBeInTheDocument();
+    expect(within(row).queryByText(/App /)).not.toBeInTheDocument();
+    expect(
+      within(row).queryByRole("button", { name: "agentUpdates.update" }),
+    ).not.toBeInTheDocument();
+    expect(settingsApi.updateDesktopAgent).not.toHaveBeenCalled();
+  });
   it("shows the Codex CLI version and updater without its desktop App version or updating on mount", async () => {
     mount();
     const row = await screen.findByRole("article", { name: "apps.codex" });
@@ -206,7 +395,9 @@ describe("Agent versions and updates", () => {
     expect(
       screen.getAllByRole("button", { name: "agentUpdates.updating" }),
     ).toHaveLength(2);
-    expect(screen.getByText("agentUpdates.parallelProgress")).toBeInTheDocument();
+    expect(
+      screen.getByText("agentUpdates.parallelProgress"),
+    ).toBeInTheDocument();
     expect(onEditingChange).toHaveBeenLastCalledWith({
       dirty: false,
       busy: false,

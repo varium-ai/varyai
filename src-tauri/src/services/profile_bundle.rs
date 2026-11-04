@@ -222,6 +222,7 @@ fn initialize_providers(
                 | AppType::Kimi
                 | AppType::Qwen
                 | AppType::ZCode
+                | AppType::DeepSeekHarness
                 | AppType::Trae
         ) {
             // The UI lists seed official entries. Do that before the undo snapshot,
@@ -240,6 +241,7 @@ fn captures_current_supplier(app: &AppType) -> bool {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
     )
 }

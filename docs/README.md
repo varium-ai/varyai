@@ -10,6 +10,7 @@
 - [Qoder integration](guides/qoder.md)
 - [WorkBuddy integration](guides/workbuddy.md)
 - [Doubao Work integration](guides/doubao-work.md)
+- [DeepSeek Harness Desktop integration](guides/deepseek-harness.md)
 - [Daily rewards and account selection](guides/daily-checkin.md)
 - [Multi-client profiles](guides/profiles.md)
 - [Gateway keys and token budgets](guides/gateway-keys.md)

@@ -58,21 +58,26 @@ export function AgentVersionTag({
   const { t } = useTranslation();
   const cli = updates.cli.get(app);
   const desktop = updates.desktop?.[app];
+  const cliVersion =
+    cli?.version ?? (desktop?.source === "cli" ? desktop.version : null);
   const appVersion =
     app !== "codex" && desktop?.source === "desktop" ? desktop.version : null;
-  if (!cli?.version && !appVersion) return null;
+  if (!cliVersion && !appVersion) return null;
   const updating = updates.active.includes(app) && !updates.installing;
   return (
     <div className="mp-agent-cli">
-      {cli?.version && (
+      {cliVersion && (
         <span className="mp-agent-version">
-          {app === "codex" || appVersion ? `CLI ${cli.version}` : cli.version}
+          {app === "codex" || appVersion || desktop?.source === "cli"
+            ? `CLI ${cliVersion}`
+            : cliVersion}
         </span>
       )}
       {(updates.updatable.includes(app) || updating) && (
         <button
           type="button"
           className="mp-agent-update"
+          title={appVersion ? t("agentUpdates.appHint") : undefined}
           disabled={disabled || updates.busy}
           aria-busy={updating}
           onClick={() => void updates.start([app])}
@@ -87,7 +92,9 @@ export function AgentVersionTag({
           )}
           <span>
             {t(updating ? "agentUpdates.updating" : "agentUpdates.update", {
-              version: cli?.latest_version,
+              version: appVersion
+                ? desktop?.latest_version
+                : cli?.latest_version,
             })}
           </span>
         </button>

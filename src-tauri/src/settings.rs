@@ -58,6 +58,8 @@ pub struct VisibleApps {
     pub qwen: bool,
     #[serde(default)]
     pub zcode: bool,
+    #[serde(default, rename = "deepseek-harness")]
+    pub deepseek_harness: bool,
     #[serde(default)]
     pub trae: bool,
     #[serde(default)]
@@ -81,6 +83,7 @@ impl Default for VisibleApps {
             kimi: false,
             qwen: false,
             zcode: false,
+            deepseek_harness: false,
             trae: false,
             doubaowork: false,
         }
@@ -105,6 +108,7 @@ impl VisibleApps {
             AppType::Kimi => self.kimi,
             AppType::Qwen => self.qwen,
             AppType::ZCode => self.zcode,
+            AppType::DeepSeekHarness => self.deepseek_harness,
             AppType::Trae => self.trae,
             AppType::DoubaoWork => self.doubaowork,
         }
@@ -1053,6 +1057,7 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
         | AppType::DoubaoWork => None,
     }
@@ -1079,6 +1084,7 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
         | AppType::DoubaoWork => {}
     })

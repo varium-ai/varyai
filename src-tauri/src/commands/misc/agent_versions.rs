@@ -9,6 +9,7 @@ const AGENTS: &[&str] = &[
     "trae",
     "kimi",
     "zcode",
+    "deepseek-harness",
 ];
 
 #[derive(Debug, serde::Serialize)]

@@ -1311,7 +1311,8 @@
     "trae": "TRAE CN",
     "kimi": "Kimi Code",
     "qwen": "Qwen Code",
-    "zcode": "ZCode"
+    "zcode": "ZCode",
+    "deepseek-harness": "DeepSeek Harness"
   },
   "pi": {
     "empty": {
@@ -4990,6 +4991,7 @@
     "confirmShowAll": "全プロバイダーの非表示 {{count}} モデルを表示しますか？もう一度クリック",
     "nativeDefault": "デフォルト",
     "nativeDefaultHint": "起動モデルが設定されていないため、ツール自身のデフォルトを使用します。Vary のモデルが選択されたわけではありません。",
+    "deepseekStartingModelHint": "DeepSeek Harness の新しいセッションの既定モデルを設定します。既存セッションのモデルはクライアント内で切り替えてください。",
     "nativeModelHint": "ツールの現在のネイティブ設定です。共有モデルを選ぶと Vary に接続します。「接続を解除して復元」で接続前の保存済み設定に戻ります。",
     "nativeUnavailable": "ネイティブモデルを取得できません",
     "modelList": "モデル一覧",
@@ -5440,7 +5442,7 @@
     "confirmTitle": "インストールの更新を確認",
     "confirmHint": "{{names}} には複数のインストールがあるか、更新先が不明です。更新は一つのインストールにのみ適用される可能性があります。検出した方法で続行しますか？",
     "confirm": "更新を続行",
-    "appHint": "デスクトップ App のバージョン。App は自身の更新機能で更新され、ここのボタンは CLI のみを更新します。"
+    "appHint": "デスクトップ App のバージョン。更新時に公式リリースをダウンロードし、このアプリを終了して再度開く場合があります。"
   },
   "agentInstall": {
     "install": "インストール",

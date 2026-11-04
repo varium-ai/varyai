@@ -408,6 +408,7 @@ mod tests {
             AppType::Kimi,
             AppType::Qwen,
             AppType::ZCode,
+            AppType::DeepSeekHarness,
             AppType::Trae,
             AppType::Hermes,
         ] {

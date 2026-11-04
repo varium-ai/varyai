@@ -1,8 +1,16 @@
 // Executed inside the official client. Cookies and tokens never leave its runtime.
 async function varyaiDoubaoCheckin(input) {
   try {
-    const chunks = globalThis["@flow-web/desktop:stable"];
-    if (!Array.isArray(chunks)) return { outcome: "unsupported" };
+    const runtimes = [
+      ...new Set(
+        [
+          globalThis["chunk_@flow-web/desktop"],
+          globalThis["@flow-web/desktop:stable"],
+        ].filter(Array.isArray),
+      ),
+    ];
+    if (runtimes.length !== 1) return { outcome: "unsupported" };
+    const chunks = runtimes[0];
     const cache = Symbol.for("varyai.checkin.runtime");
     let require = chunks[cache];
     if (!require) {
@@ -18,17 +26,36 @@ async function varyaiDoubaoCheckin(input) {
     }
     if (!require?.m) return { outcome: "unsupported" };
     // Resolve the installed SDK by its own store/service identifiers, not bundle hashes.
-    const moduleWith = (marker, additionalMarker) => {
-      const matches = Object.entries(require.m).filter(
-        ([, fn]) =>
-          fn.toString().includes(marker) &&
-          (!additionalMarker || fn.toString().includes(additionalMarker)),
+    const matchingModule = (matchesSource) => {
+      const matches = Object.entries(require.m).filter(([, fn]) =>
+        matchesSource(fn.toString()),
       );
       if (matches.length !== 1) throw new Error();
       return require(matches[0][0]);
     };
-    const userStore = moduleWith("flow-account-user-info-store").e;
-    const profileStore = moduleWith("multi-user-profile-store").k;
+    const moduleWith = (marker, additionalMarker) =>
+      matchingModule(
+        (source) =>
+          source.includes(marker) &&
+          (!additionalMarker || source.includes(additionalMarker)),
+      );
+    const exported = (module, matches) => {
+      const values = [...new Set(Object.values(module).filter(matches))];
+      if (values.length !== 1) throw new Error();
+      return values[0];
+    };
+    const storeWith = (marker, field) =>
+      exported(
+        moduleWith(marker),
+        (value) =>
+          typeof value?.getState === "function" &&
+          Object.prototype.hasOwnProperty.call(value.getState(), field),
+      );
+    const userStore = storeWith("flow-account-user-info-store", "userInfo");
+    const profileStore = storeWith(
+      "multi-user-profile-store",
+      "multiUserProfiles",
+    );
     const currentId = () => userStore.getState().userInfo?.user_id_str;
     const user = userStore.getState().userInfo;
     const profiles = profileStore.getState().multiUserProfiles || [];
@@ -43,7 +70,7 @@ async function varyaiDoubaoCheckin(input) {
     if (currentId() && !accounts.has(currentId()))
       accounts.set(currentId(), {
         id: currentId(),
-        label: user.nickname || "Doubao Work",
+        label: user.nickname || user.screen_name || user.name || "Doubao Work",
       });
     const snapshot = {
       currentAccountId: currentId() || null,
@@ -77,13 +104,24 @@ async function varyaiDoubaoCheckin(input) {
     if (!currentId()) return { outcome: "sign_in_required" };
     if (input.expectedAccountId !== currentId())
       return { outcome: "switch_required" };
-    const launch = moduleWith('setDomainSuccess("core"').Z_.getState();
+    const launch = storeWith('setDomainSuccess("core"', "domains").getState();
     const campaign =
       launch.domains?.basic?.data?.ug_campaign_info ||
       launch.domains?.legacy?.data?.ug_campaign_info;
     const scene = campaign?.campaign_group_code;
     if (!scene) return { outcome: "inactive" };
-    const api = moduleWith("ugCampaignApiService:").ugCampaignApiService;
+    const api = exported(
+      matchingModule(
+        (source) =>
+          source.includes("ugCampaignApiService:") ||
+          (source.includes("initApiService") &&
+            /["']ugCampaign["']/.test(source)),
+      ),
+      (value) =>
+        ["GetLandingPage", "DailyCheckIn", "GetCampaignV3Detail"].every(
+          (method) => typeof value?.[method] === "function",
+        ),
+    );
     const successful = (result) =>
       result &&
       (result.code == null || ["0", "200"].includes(String(result.code)));

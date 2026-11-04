@@ -16,7 +16,7 @@ pub(super) fn build(
         "hermes" => crate::hermes_config::get_hermes_config_path(),
         "openclaw" => crate::openclaw_config::get_openclaw_config_path(),
         "qoder" => crate::qoder_config::path(),
-        "kimi" | "qwen" | "zcode" => {
+        "kimi" | "qwen" | "zcode" | "deepseek-harness" => {
             crate::services::agent_clients::config_path(app).map_err(|_| FAILED)?
         }
         _ => return Err(FAILED.into()),
@@ -93,6 +93,7 @@ fn edit(
         "gemini" => Format::Env,
         "grokbuild" | "kimi" => Format::Toml,
         "hermes" => Format::Yaml,
+        "deepseek-harness" => Format::Cordis,
         "openclaw" => Format::Json5,
         _ => Format::Json,
     };
@@ -235,7 +236,7 @@ fn edit(
                 crate::qoder_config::validate_provider(&config).map_err(|_| FAILED)?;
                 set(value, &["providers", "varyai"], config)?;
             }
-            "kimi" | "qwen" | "zcode" => {
+            "kimi" | "qwen" | "zcode" | "deepseek-harness" => {
                 match app {
                     "kimi" => owned(value.pointer("/providers/Vary AI"), token, "api_key")?,
                     "qwen" => {
@@ -259,20 +260,52 @@ fn edit(
                     }
                     _ => {}
                 }
-                let source = if app == "kimi" {
+                if app == "deepseek-harness" {
+                    if let Some(provider) = value.pointer("/providers/varyai-provider-shared-catalog/config/providers/varyai-shared-catalog") {
+                        if provider["headers"]["Authorization"] != format!("Bearer {token}") {
+                            return Err(CONFLICT.into());
+                        }
+                    }
+                }
+                let source = if app == "deepseek-harness" {
+                    crate::services::deepseek_harness::encode("", value)?
+                } else if app == "kimi" {
                     toml::to_string(value).map_err(|_| FAILED)?
                 } else {
                     value.to_string()
                 };
                 let mut doc = crate::services::agent_clients::Document::parse(app, &source)
                     .map_err(|_| FAILED)?;
-                doc.apply(
-                    app,
-                    "shared-catalog",
-                    "Vary AI",
-                    &client_config(catalog, base, token, selected),
-                )
-                .map_err(|_| FAILED)?;
+                let mut config = client_config(catalog, base, token, selected);
+                if app == "deepseek-harness" {
+                    for row in config["models"].as_array_mut().ok_or(FAILED)? {
+                        let model = catalog
+                            .iter()
+                            .find(|model| row["model"] == model.id)
+                            .ok_or(FAILED)?;
+                        row["input"] = if model.images {
+                            json!(["text", "image"])
+                        } else {
+                            json!(["text"])
+                        };
+                        if !model.reasoning_levels.is_empty() {
+                            let levels = model
+                                .reasoning_levels
+                                .iter()
+                                .map(|level| {
+                                    if level == "none" {
+                                        ("off".to_owned(), Value::Null)
+                                    } else {
+                                        (level.clone(), json!(level))
+                                    }
+                                })
+                                .collect::<serde_json::Map<_, _>>();
+                            row["reasoningEfforts"] = json!(levels);
+                        }
+                    }
+                }
+                doc.apply(app, "shared-catalog", "Vary AI", &config)
+                    .map_err(|_| FAILED)?;
                 *value = doc.value;
                 for model in catalog {
                     if app == "kimi" {
@@ -339,6 +372,190 @@ pub(super) fn client_config(catalog: &[Model], base: &str, token: &str, selected
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deepseek_desktop_projection_is_readable_reversible_and_keeps_foreign_edits(
+    ) -> Result<(), String> {
+        let root = tempfile::tempdir().map_err(|_| FAILED)?;
+        let path = root.path().join("cordis.patch.yml");
+        let original =
+            "# Desktop customization\n- id: another-plugin\n  config:\n    enabled: true\n";
+        std::fs::write(&path, original).map_err(|_| FAILED)?;
+        let catalog = vec![Model {
+            id: "vary-provider/synthetic-route".into(),
+            name: "Readable Model · Supplier · VaryAI".into(),
+            context_window: Some(128000),
+            compact_at: None,
+            group: "supplier".into(),
+            reasoning_levels: vec!["none".into(), "high".into()],
+            reasoning: true,
+            default_reasoning_level: Some("high".into()),
+            images: true,
+            icon: None,
+        }];
+        let projection = edit(
+            "deepseek-harness",
+            path.clone(),
+            &catalog,
+            "http://127.0.0.1:1/connections/deepseek-harness",
+            "synthetic-only",
+            &catalog[0].id,
+        )
+        .map_err(|_| "DeepSeek projection preparation failed")?;
+        projection
+            .write()
+            .map_err(|_| "DeepSeek projection write failed")?;
+        let live = std::fs::read_to_string(&path).map_err(|_| FAILED)?;
+        assert!(live.starts_with(original));
+        let doc = crate::services::deepseek_harness::parse(&live)?;
+        assert!(
+            live.contains("id: agent-default-model"),
+            "the chosen starting model reaches Harness"
+        );
+        let provider = &doc["providers"]["varyai-provider-shared-catalog"]["config"]["providers"]
+            ["varyai-shared-catalog"];
+        assert_eq!(provider["api"], "openai-completions");
+        assert_eq!(provider["models"][0]["name"], catalog[0].name);
+        assert_eq!(provider["models"][0]["input"], json!(["text", "image"]));
+        assert_eq!(
+            provider["models"][0]["reasoningEfforts"],
+            json!({"off":null,"high":"high"})
+        );
+        assert!(projection
+            .intact()
+            .map_err(|_| "DeepSeek initial ownership read failed")?);
+        let changed = live.replacen("enabled: true", "enabled: false", 1);
+        std::fs::write(&path, &changed).map_err(|_| FAILED)?;
+        assert!(projection
+            .intact()
+            .map_err(|_| "DeepSeek foreign-edit ownership read failed")?);
+        projection
+            .restore()
+            .map_err(|_| "DeepSeek projection restore failed")?;
+        assert_eq!(
+            std::fs::read_to_string(&path).map_err(|_| FAILED)?,
+            original.replacen("enabled: true", "enabled: false", 1)
+        );
+        let missing = root.path().join("missing-profile.yml");
+        let empty = edit(
+            "deepseek-harness",
+            missing.clone(),
+            &catalog,
+            "http://127.0.0.1:1",
+            "synthetic-only",
+            &catalog[0].id,
+        )?;
+        empty.write()?;
+        empty.restore()?;
+        assert!(
+            !missing.exists(),
+            "disconnect restores an absent profile file"
+        );
+        let baseline = "- id: agent-default-model\n  config:\n    provider: deepseek-official\n    model: deepseek-flash\n";
+        std::fs::write(&path, baseline).map_err(|_| FAILED)?;
+        let selected = edit(
+            "deepseek-harness",
+            path.clone(),
+            &catalog,
+            "http://127.0.0.1:1",
+            "synthetic-only",
+            &catalog[0].id,
+        )?;
+        selected.write()?;
+        selected.restore()?;
+        assert_eq!(
+            std::fs::read_to_string(&path).map_err(|_| FAILED)?,
+            baseline
+        );
+        let mut models = catalog.clone();
+        let mut second = models[0].clone();
+        second.id = "vary-provider/another-model".into();
+        second.name = "Another Model · VaryAI".into();
+        models.push(second);
+        let choice = edit(
+            "deepseek-harness",
+            path.clone(),
+            &models,
+            "http://127.0.0.1:1",
+            "synthetic-only",
+            &models[1].id,
+        )?;
+        let manager = super::super::Manager {
+            root: root.path().join("receipts"),
+        };
+        manager.install(Receipt {
+            app: "deepseek-harness".into(),
+            token: "synthetic-only".into(),
+            model: models[1].id.clone(),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![choice],
+            suspended: false,
+            applied_at_ms: None,
+        })?;
+        let text = std::fs::read_to_string(&path).map_err(|_| FAILED)?;
+        let mut native = crate::services::deepseek_harness::parse(&text)?;
+        assert_eq!(
+            crate::services::deepseek_harness::selection(&native),
+            json!({"provider":"varyai-shared-catalog","model":models[1].id})
+        );
+        let external = json!({"provider":"deepseek-official","model":"native-choice"});
+        crate::services::deepseek_harness::set_selection(&mut native, &external)?;
+        std::fs::write(
+            &path,
+            crate::services::deepseek_harness::encode(&text, &native)?,
+        )
+        .map_err(|_| FAILED)?;
+        assert!(manager.status("deepseek-harness")?.recovery_pending);
+        manager.release_for_reapply("deepseek-harness")?;
+        let restored = crate::services::deepseek_harness::parse(
+            &std::fs::read_to_string(&path).map_err(|_| FAILED)?,
+        )?;
+        assert_eq!(
+            crate::services::deepseek_harness::selection(&restored),
+            external
+        );
+        assert!(restored["providers"].as_object().ok_or(FAILED)?.is_empty());
+        let choice = edit(
+            "deepseek-harness",
+            path.clone(),
+            &models,
+            "http://127.0.0.1:1",
+            "synthetic-only",
+            &models[1].id,
+        )?;
+        manager.install(Receipt {
+            app: "deepseek-harness".into(),
+            token: "synthetic-only".into(),
+            model: models[1].id.clone(),
+            model_map: Default::default(),
+            visible_models: None,
+            files: vec![choice],
+            suspended: false,
+            applied_at_ms: None,
+        })?;
+        let text = std::fs::read_to_string(&path).map_err(|_| FAILED)?;
+        let mut native = crate::services::deepseek_harness::parse(&text)?;
+        crate::services::deepseek_harness::set_selection(
+            &mut native,
+            &json!({"provider":"varyai-shared-catalog","model":models[0].id}),
+        )?;
+        std::fs::write(
+            &path,
+            crate::services::deepseek_harness::encode(&text, &native)?,
+        )
+        .map_err(|_| FAILED)?;
+        manager.release_for_reapply("deepseek-harness")?;
+        let restored = crate::services::deepseek_harness::parse(
+            &std::fs::read_to_string(&path).map_err(|_| FAILED)?,
+        )?;
+        assert_eq!(
+            crate::services::deepseek_harness::selection(&restored),
+            external,
+            "removing a managed provider must not leave its default dangling"
+        );
+        Ok(())
+    }
     #[test]
     fn shared_kimi_qwen_and_zcode_use_readable_models_and_keep_route_mappings() -> Result<(), String>
     {

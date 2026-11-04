@@ -182,7 +182,8 @@ export type AppType =
   | "trae"
   | "kimi"
   | "qwen"
-  | "zcode";
+  | "zcode"
+  | "deepseek-harness";
 
 export type AppTypeFilter = "all" | AppType;
 
@@ -199,6 +200,7 @@ export const KNOWN_APP_TYPES: ReadonlyArray<AppType> = [
   "kimi",
   "qwen",
   "zcode",
+  "deepseek-harness",
 ];
 
 /**
@@ -230,6 +232,7 @@ const PARTIAL_CACHE_WRITE_APP_TYPES: ReadonlySet<string> = new Set([
   "kimi",
   "qwen",
   "zcode",
+  "deepseek-harness",
 ]);
 
 export type CacheWriteAvailability = "ok" | "partial" | "na";

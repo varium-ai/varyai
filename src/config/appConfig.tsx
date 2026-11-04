@@ -33,6 +33,7 @@ export const APP_ICON_NAME: Record<AppId, string> = {
   kimi: "kimi-code",
   qwen: "qwen-code",
   zcode: "zcode",
+  "deepseek-harness": "deepseek",
 };
 
 export const APP_IDS: AppId[] = [
@@ -52,6 +53,7 @@ export const APP_IDS: AppId[] = [
   "kimi",
   "qwen",
   "zcode",
+  "deepseek-harness",
 ];
 
 export const DEFAULT_VISIBLE_APPS: VisibleApps = {
@@ -71,6 +73,7 @@ export const DEFAULT_VISIBLE_APPS: VisibleApps = {
   kimi: false,
   qwen: false,
   zcode: false,
+  "deepseek-harness": false,
 };
 
 /** App IDs shown in Skills panels. */
@@ -85,6 +88,7 @@ export const SKILLS_APP_IDS: Exclude<
   | "kimi"
   | "qwen"
   | "zcode"
+  | "deepseek-harness"
 >[] = ["claude", "codex", "gemini", "grokbuild", "opencode", "hermes", "pi"];
 
 export type ProxyAppId = Extract<
@@ -111,6 +115,7 @@ export const TAKEOVER_APP_IDS = [
   "kimi",
   "qwen",
   "zcode",
+  "deepseek-harness",
 ] as const;
 
 /** Applications controlled by the settings routing switches, including Pi's custom provider. */
@@ -133,7 +138,8 @@ export function isTakeoverAppId(
   | "trae"
   | "kimi"
   | "qwen"
-  | "zcode" {
+  | "zcode"
+  | "deepseek-harness" {
   return (TAKEOVER_APP_IDS as readonly string[]).includes(appId);
 }
 
@@ -153,6 +159,7 @@ export type AdditiveAppId = Extract<
   | "kimi"
   | "qwen"
   | "zcode"
+  | "deepseek-harness"
 >;
 
 export const ADDITIVE_APP_IDS: AdditiveAppId[] = [
@@ -166,6 +173,7 @@ export const ADDITIVE_APP_IDS: AdditiveAppId[] = [
   "kimi",
   "qwen",
   "zcode",
+  "deepseek-harness",
 ];
 
 export function isAdditiveAppId(appId: string): appId is AdditiveAppId {
@@ -185,6 +193,7 @@ export type McpAppId = Exclude<
   | "kimi"
   | "qwen"
   | "zcode"
+  | "deepseek-harness"
 >;
 export const MCP_APP_IDS: McpAppId[] = [
   "claude",
@@ -312,6 +321,12 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
   qwen: {
     label: "Qwen Code",
     icon: <ProviderIcon icon={APP_ICON_NAME.qwen} name="Qwen Code" size={14} />,
+    activeClass: "bg-sky-500/10 text-sky-600",
+    badgeClass: "bg-sky-500/10 text-sky-700",
+  },
+  "deepseek-harness": {
+    label: "DeepSeek Harness",
+    icon: <ProviderIcon icon="deepseek" name="DeepSeek Harness" size={14} />,
     activeClass: "bg-sky-500/10 text-sky-600",
     badgeClass: "bg-sky-500/10 text-sky-700",
   },

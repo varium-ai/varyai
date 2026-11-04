@@ -5,7 +5,7 @@ import {
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
-import { settingsApi } from "@/lib/api/settings";
+import { settingsApi, type AgentVersion } from "@/lib/api/settings";
 import { compareVersions, isUpdateAvailable } from "@/lib/version";
 import type { AppId } from "@/lib/api";
 import { proxyApi } from "@/lib/api/proxy";
@@ -28,6 +28,7 @@ export type AgentUpdateResult = {
   outcome: "changed" | "failed" | "unverified" | "preflightFailed";
 };
 const cliKey = (tool: string) => ["agent-cli-version", tool];
+const desktopKey = ["agent-desktop-versions"];
 
 type LifecycleState = {
   busy: boolean;
@@ -143,15 +144,21 @@ export function useAgentUpdates(installed: AppId[]) {
   });
   const cli = new Map(apps.map((app, i) => [app, queries[i].data]));
   const desktop = useQuery({
-    queryKey: ["agent-desktop-versions"],
+    queryKey: desktopKey,
     queryFn: settingsApi.getAgentVersions,
     staleTime: 300_000,
     retry: false,
     refetchOnWindowFocus: false,
   });
-  const updatable = apps.filter((app) =>
-    isUpdateAvailable(cli.get(app)?.version, cli.get(app)?.latest_version),
-  );
+  const updatable = installed.filter((app) => {
+    const info = desktop.data?.[app];
+    return cliTools[app]
+      ? isUpdateAvailable(cli.get(app)?.version, cli.get(app)?.latest_version)
+      : info?.supported &&
+          info.installed &&
+          info.source === "desktop" &&
+          isUpdateAvailable(info.version, info.latest_version);
+  });
 
   function unlock() {
     locked.current = false;
@@ -167,34 +174,61 @@ export function useAgentUpdates(installed: AppId[]) {
       setActive(selected);
       await Promise.allSettled(
         selected.map(async (app) => {
-          const tool = cliTools[app]!;
-          const from = cli.get(app)?.version;
+          const tool = cliTools[app];
+          const from = tool
+            ? cli.get(app)?.version
+            : desktop.data?.[app]?.version;
           let failed = false;
           try {
-            await settingsApi.runToolLifecycleAction([tool], "update");
+            if (tool) {
+              await settingsApi.runToolLifecycleAction([tool], "update");
+            } else {
+              await settingsApi.updateDesktopAgent(app);
+            }
           } catch {
             failed = true;
           }
-          let fresh:
-            | Awaited<ReturnType<typeof settingsApi.getToolVersions>>[number]
-            | undefined;
-          try {
-            fresh = (await settingsApi.getToolVersions([tool])).find(
-              (v) => v.name === tool,
+          let to: string | null | undefined;
+          if (tool) {
+            try {
+              const fresh = (await settingsApi.getToolVersions([tool])).find(
+                (v) => v.name === tool,
+              );
+              client.setQueryData(cliKey(tool), fresh ?? null);
+              to = fresh?.version;
+            } catch {
+              // Never retain a stale version as evidence that the upgrade succeeded.
+              client.setQueryData(cliKey(tool), null);
+            }
+          } else {
+            let fresh: AgentVersion | undefined;
+            try {
+              fresh = (await settingsApi.getAgentVersions())[app];
+              if (
+                fresh?.supported &&
+                fresh.installed &&
+                fresh.source === "desktop"
+              ) {
+                to = fresh.version;
+              }
+            } catch {
+              // A failed post-update probe must clear the selected app's stale snapshot.
+            }
+            client.setQueryData<Record<string, AgentVersion>>(
+              desktopKey,
+              (current) => {
+                const next = { ...current };
+                if (fresh) next[app] = fresh;
+                else delete next[app];
+                return next;
+              },
             );
-            client.setQueryData(cliKey(tool), fresh ?? null);
-          } catch {
-            // Never retain a stale version as evidence that the upgrade succeeded.
-            client.setQueryData(cliKey(tool), null);
           }
-          const verified =
-            !!fresh?.version &&
-            !!from &&
-            compareVersions(fresh.version, from) > 0;
+          const verified = !!to && !!from && compareVersions(to, from) > 0;
           completed.push({
             app,
             from,
-            to: fresh?.version,
+            to,
             outcome: failed ? "failed" : verified ? "changed" : "unverified",
           });
           setResults(
@@ -225,10 +259,13 @@ export function useAgentUpdates(installed: AppId[]) {
     setResults([]);
     setProgress({ index: 0, total: selected.length });
     try {
-      const plans = await settingsApi.probeToolInstallations(
-        selected.map((app) => cliTools[app]!),
-      );
-      const ambiguous = selected.filter((app) => {
+      const selectedCli = selected.filter((app) => !!cliTools[app]);
+      const plans = selectedCli.length
+        ? await settingsApi.probeToolInstallations(
+            selectedCli.map((app) => cliTools[app]!),
+          )
+        : [];
+      const ambiguous = selectedCli.filter((app) => {
         const plan = plans.find((p) => p.tool === cliTools[app]);
         return !plan || plan.needs_confirmation || !plan.anchored;
       });

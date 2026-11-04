@@ -66,7 +66,9 @@ function getProviderModel(
   const firstModel = models[0];
 
   if (
-    ["qoder", "trae", "kimi", "qwen", "zcode"].includes(appId) &&
+    ["qoder", "trae", "kimi", "qwen", "zcode", "deepseek-harness"].includes(
+      appId,
+    ) &&
     models.length > 0
   )
     return models
@@ -299,8 +301,15 @@ function ProviderIdentity({
   const model = getProviderModel(provider, appId);
   const endpoint = getProviderEndpoint(provider, appId);
   const credentialStatus =
-    ["workbuddy", "qoder", "trae", "kimi", "qwen", "zcode"].includes(appId) &&
-    provider.category === "official"
+    [
+      "workbuddy",
+      "qoder",
+      "trae",
+      "kimi",
+      "qwen",
+      "zcode",
+      "deepseek-harness",
+    ].includes(appId) && provider.category === "official"
       ? t("desktopModels.officialLogin")
       : hasProviderCredential(provider)
         ? t("homeAudit.credentialConfigured")

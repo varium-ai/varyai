@@ -1385,7 +1385,8 @@
     "trae": "TRAE CN",
     "kimi": "Kimi Code",
     "qwen": "Qwen Code",
-    "zcode": "ZCode"
+    "zcode": "ZCode",
+    "deepseek-harness": "DeepSeek Harness"
   },
   "pi": {
     "empty": {
@@ -5066,6 +5067,7 @@
     "confirmShowAll": "Show {{count}} hidden, of every provider? Click again",
     "nativeDefault": "Default",
     "nativeDefaultHint": "No starting model is set in this tool's configuration. It chooses its own default; no Vary model has been selected.",
+    "deepseekStartingModelHint": "Sets the default model for new DeepSeek Harness sessions. Switch models for existing sessions inside the client.",
     "nativeModelHint": "This is the tool's current native configuration, not a Vary selection. Picking a shared model connects this tool to Vary. Disconnect and restore returns to its saved configuration.",
     "nativeUnavailable": "Native model unavailable",
     "modelList": "Model list",
@@ -5516,7 +5518,7 @@
     "confirmTitle": "Confirm installation update",
     "confirmHint": "{{names}} has multiple installations or an uncertain update target. The updater may affect only one installation. Continue using the detected update method?",
     "confirm": "Continue update",
-    "appHint": "Desktop App version. Its own updater manages App updates; the button here updates only the CLI."
+    "appHint": "Desktop App version. Updating downloads the official release and may close and reopen this app."
   },
   "agentInstall": {
     "install": "Install",

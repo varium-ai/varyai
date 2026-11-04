@@ -98,6 +98,7 @@ const websites: Record<AppId, string> = {
   kimi: "https://www.kimi.com/code",
   qwen: "https://qwenlm.github.io/qwen-code-docs/",
   zcode: "https://zcode.ai/",
+  "deepseek-harness": "https://www.deepseek.com/harness/",
 };
 export function AgentConnectionsPage({
   onAddProvider,
@@ -681,7 +682,9 @@ export function AgentConnectionsPage({
                       ? t("agentConnections.orphanReconnectHint")
                       : app === "trae"
                         ? t("agentConnections.traeStartingModelHint")
-                        : undefined
+                        : app === "deepseek-harness"
+                          ? t("agentConnections.deepseekStartingModelHint")
+                          : undefined
                   }
                   disabled={rowBusy(app)}
                   models={[

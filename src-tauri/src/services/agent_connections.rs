@@ -36,6 +36,7 @@ pub(crate) const APPS: &[&str] = &[
     "kimi",
     "qwen",
     "zcode",
+    "deepseek-harness",
 ];
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -456,6 +457,26 @@ impl FileEdit {
         for field in fields {
             put(&mut live, field, at(&original, field).cloned())?;
         }
+        if matches!(self.format, Format::Cordis) && live.get("providers").is_none() {
+            live["providers"] = json!({});
+        }
+        if matches!(self.format, Format::Cordis) && live.get("selection").is_none() {
+            live["selection"] = json!([]);
+        }
+        if matches!(self.format, Format::Cordis) && keep_changed {
+            let selected = crate::services::deepseek_harness::selection(&live);
+            let removed = selected["provider"].as_str().is_some_and(|provider| {
+                provider.starts_with("varyai-")
+                    && !live["providers"].as_object().is_some_and(|entries| {
+                        entries
+                            .values()
+                            .any(|entry| entry["config"]["providers"].get(provider).is_some())
+                    })
+            });
+            if removed {
+                live["selection"] = original["selection"].clone();
+            }
+        }
         let restored = if live == original {
             self.original.clone()
         } else {
@@ -702,14 +723,24 @@ impl Manager {
             if let Some(kind) = file.desktop {
                 desktop_config::restoration(file, kind, true)?;
             }
-            if file
-                .fields
-                .iter()
-                .any(|field| at(&file.installed, field).is_some_and(Value::is_array))
-                && file.desktop.is_none()
-                && !file.restorable()?
-            {
-                return Err(CONFLICT.into());
+            let has_catalog_array = file.fields.iter().any(|field| {
+                at(&file.installed, field).is_some_and(Value::is_array)
+                    && !(matches!(file.format, Format::Cordis) && field.as_slice() == ["selection"])
+            });
+            if has_catalog_array && file.desktop.is_none() {
+                // Keep a changed Harness default while still guarding its model catalog.
+                let restorable = if matches!(file.format, Format::Cordis) {
+                    let mut catalog = file.clone();
+                    catalog
+                        .fields
+                        .retain(|field| field.as_slice() != ["selection"]);
+                    catalog.restorable()?
+                } else {
+                    file.restorable()?
+                };
+                if !restorable {
+                    return Err(CONFLICT.into());
+                }
             }
         }
         desktop_config::save_settings(&self.root, &receipt)?;

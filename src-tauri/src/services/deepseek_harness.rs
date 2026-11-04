@@ -1,0 +1,436 @@
+//! Desktop profile patches. Account credentials remain owned by Harness.
+use serde_json::{json, Value};
+use std::path::PathBuf;
+
+const START: &str = "# BEGIN VaryAI model providers\n";
+const END: &str = "# END VaryAI model providers\n";
+const PLUGIN: &str = "@deepseek-ai/dsh-llm-pi-ai";
+const FAILED: &str = "agentConnections.failed";
+
+pub(crate) fn config_path() -> PathBuf {
+    std::env::var_os("DSH_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::config::get_home_dir().join(".dsh"))
+        .join("profiles/desktop/cordis.patch.yml")
+}
+
+fn sections(text: &str) -> Result<(&str, &str, &str), String> {
+    match (text.find(START), text.find(END)) {
+        (None, None) => Ok((text, "", "")),
+        (Some(start), Some(end))
+            if start < end
+                && (start == 0 || text.as_bytes()[start - 1] == b'\n')
+                && text.matches(START).count() == 1
+                && text.matches(END).count() == 1 =>
+        {
+            Ok((
+                &text[..start],
+                &text[start + START.len()..end],
+                &text[end + END.len()..],
+            ))
+        }
+        _ => Err(FAILED.into()),
+    }
+}
+
+fn array(text: &str) -> Result<Vec<Value>, String> {
+    let value: Value = serde_yaml::from_str(text).map_err(|_| FAILED)?;
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    value.as_array().cloned().ok_or_else(|| FAILED.into())
+}
+
+fn foreign_conflict(value: &Value, id: &str) -> bool {
+    match value {
+        Value::Object(values) => {
+            value["id"] == key(id)
+                || value
+                    .pointer("/config/providers")
+                    .and_then(Value::as_object)
+                    .is_some_and(|providers| providers.contains_key(&format!("varyai-{id}")))
+                || values.values().any(|value| foreign_conflict(value, id))
+        }
+        Value::Array(values) => values.iter().any(|value| foreign_conflict(value, id)),
+        _ => false,
+    }
+}
+
+pub(crate) fn parse(text: &str) -> Result<Value, String> {
+    let (before, managed, after) = sections(text)?;
+    let patches = array(&format!("{before}{after}"))?;
+    let mut providers = serde_json::Map::new();
+    let mut selection = Vec::new();
+    for entry in array(managed)? {
+        if entry["id"] == "agent-default-model" {
+            if !selection.is_empty() || !valid_selection(&entry["config"]) {
+                return Err(FAILED.into());
+            }
+            selection.push(entry);
+            continue;
+        }
+        let children = entry["insert"].as_array().ok_or(FAILED)?;
+        if children.len() != 1 || entry.as_object().is_none_or(|entry| entry.len() != 1) {
+            return Err(FAILED.into());
+        }
+        let child = &children[0];
+        let id = child["id"]
+            .as_str()
+            .filter(|id| id.starts_with("varyai-provider-"))
+            .ok_or(FAILED)?;
+        if child["name"] != PLUGIN || providers.insert(id.into(), child.clone()).is_some() {
+            return Err(FAILED.into());
+        }
+    }
+    let patches = json!(patches);
+    if providers
+        .keys()
+        .any(|id| foreign_conflict(&patches, id.trim_start_matches("varyai-provider-")))
+    {
+        return Err(FAILED.into());
+    }
+    if !selection.is_empty() && !foreign_selection(&json!(array(after)?)).is_null() {
+        return Err(FAILED.into());
+    }
+    Ok(json!({"patches":patches,"providers":providers,"selection":selection}))
+}
+
+pub(crate) fn encode(source: &str, next: &Value) -> Result<String, String> {
+    let original = parse(source)?;
+    if original == *next {
+        return Ok(source.into());
+    }
+    let (before, _, after) = sections(source)?;
+    let foreign = if original["patches"] == next["patches"] {
+        format!("{before}{after}")
+    } else {
+        serde_yaml::to_string(&next["patches"]).map_err(|_| FAILED)?
+    };
+    let empty = serde_json::Map::new();
+    let providers = match next.get("providers") {
+        Some(value) => value.as_object().ok_or(FAILED)?,
+        None => &empty,
+    };
+    let selection = next
+        .get("selection")
+        .map(|value| value.as_array().ok_or(FAILED))
+        .transpose()?;
+    if providers.is_empty() && selection.is_none_or(Vec::is_empty) {
+        return if array(&foreign)?.is_empty() && !foreign.lines().any(|line| line.trim() == "[]") {
+            Ok(format!(
+                "{foreign}{}[]\n",
+                if foreign.is_empty() || foreign.ends_with('\n') {
+                    ""
+                } else {
+                    "\n"
+                }
+            ))
+        } else {
+            Ok(foreign)
+        };
+    }
+    // An explicit empty YAML list cannot be followed by block sequence entries.
+    let foreign = if array(&foreign)?.is_empty() {
+        foreign
+            .lines()
+            .filter(|line| line.trim().is_empty() || line.trim_start().starts_with('#'))
+            .map(|line| format!("{line}\n"))
+            .collect()
+    } else {
+        foreign
+    };
+    let mut entries = providers
+        .values()
+        .map(|provider| json!({"insert":[provider]}))
+        .collect::<Vec<_>>();
+    entries.extend(selection.into_iter().flatten().cloned());
+    let text = format!(
+        "{}{}{}{}{}",
+        foreign,
+        if foreign.is_empty() || foreign.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        },
+        START,
+        serde_yaml::to_string(&entries).map_err(|_| FAILED)?,
+        END
+    );
+    if parse(&text)? != *next {
+        return Err(FAILED.into());
+    }
+    Ok(text)
+}
+
+fn key(id: &str) -> String {
+    format!("varyai-provider-{id}")
+}
+
+fn valid_selection(config: &Value) -> bool {
+    ["provider", "model"].iter().all(|field| {
+        config[*field].as_str().is_some_and(|text| {
+            !text.is_empty() && text.len() <= 512 && !text.chars().any(char::is_control)
+        })
+    })
+}
+
+fn foreign_selection(value: &Value) -> Value {
+    if value["id"] == "agent-default-model" && value["config"].is_object() {
+        return value["config"].clone();
+    }
+    match value {
+        Value::Array(values) => values
+            .iter()
+            .rev()
+            .map(foreign_selection)
+            .find(|value| !value.is_null())
+            .unwrap_or(Value::Null),
+        Value::Object(values) => values
+            .values()
+            .rev()
+            .map(foreign_selection)
+            .find(|value| !value.is_null())
+            .unwrap_or(Value::Null),
+        _ => Value::Null,
+    }
+}
+
+pub(crate) fn selection(value: &Value) -> Value {
+    value["selection"]
+        .as_array()
+        .and_then(|values| values.last())
+        .map(|entry| entry["config"].clone())
+        .unwrap_or_else(|| foreign_selection(&value["patches"]))
+}
+
+pub(crate) fn set_selection(value: &mut Value, config: &Value) -> Result<(), String> {
+    if config.is_null() {
+        value["selection"] = json!([]);
+    } else if valid_selection(config) {
+        value["selection"] = json!([{"id":"agent-default-model","config":config}]);
+    } else {
+        return Err(FAILED.into());
+    }
+    Ok(())
+}
+pub(crate) fn apply(value: &mut Value, id: &str, name: &str, config: &Value) -> Result<(), String> {
+    if foreign_conflict(&value["patches"], id) {
+        return Err(FAILED.into());
+    }
+    let protocol = match config["protocol"].as_str() {
+        Some("openai") => "openai-completions",
+        Some("openai-responses") => "openai-responses",
+        Some("anthropic") => "anthropic-messages",
+        _ => return Err(FAILED.into()),
+    };
+    let auth = if protocol == "anthropic-messages" {
+        json!({"x-api-key":config["apiKey"]})
+    } else {
+        json!({"Authorization":format!("Bearer {}",config["apiKey"].as_str().ok_or(FAILED)?)})
+    };
+    let models = config["models"].as_array().ok_or(FAILED)?.iter().map(|model| {
+        let mut row = json!({"id":model["model"],"name":model.get("displayName").unwrap_or(&model["model"])});
+        if let Some(window) = model["contextWindow"].as_u64().filter(|window| *window > 0) {
+            row["contextWindow"] = json!(window);
+            row["maxTokens"] = json!((window / 2).clamp(1, 8192));
+        }
+        for field in ["input", "reasoningEfforts"] {
+            if let Some(value) = model.get(field) { row[field] = value.clone(); }
+        }
+        row
+    }).collect::<Vec<_>>();
+    let route = format!("varyai-{id}");
+    let provider = json!({"id":key(id),"name":PLUGIN,"config":{"providers":{route:{"displayName":name,"api":protocol,"baseURL":config["baseUrl"],"headers":auth,"models":models,"defaultContextWindow":32000,"defaultMaxTokens":8192}}}});
+    value["providers"]
+        .as_object_mut()
+        .ok_or(FAILED)?
+        .insert(key(id), provider);
+    set_selection(
+        value,
+        &json!({"provider":format!("varyai-{id}"),"model":config["models"][0]["model"]}),
+    )?;
+    Ok(())
+}
+
+pub(crate) fn remove(value: &mut Value, id: &str, expected: &Value) -> Result<(), String> {
+    let providers = value["providers"].as_object_mut().ok_or(FAILED)?;
+    if let Some(entry) = providers.get(&key(id)) {
+        let route = &entry["config"]["providers"][format!("varyai-{id}")];
+        let header = if expected["protocol"] == "anthropic" {
+            "x-api-key"
+        } else {
+            "Authorization"
+        };
+        let auth = if header == "Authorization" {
+            format!("Bearer {}", expected["apiKey"].as_str().ok_or(FAILED)?)
+        } else {
+            expected["apiKey"].as_str().ok_or(FAILED)?.to_owned()
+        };
+        if route["baseURL"] != expected["baseUrl"] || route["headers"][header] != auth {
+            return Err(FAILED.into());
+        }
+        providers.remove(&key(id));
+    }
+    if selection(value)["provider"] == format!("varyai-{id}") {
+        set_selection(value, &Value::Null)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn candidates(value: &Value) -> Vec<(String, String, Vec<String>)> {
+    fn walk(value: &Value, path: &str, result: &mut Vec<(String, String, Vec<String>)>) {
+        if let Some(config) = value
+            .get("config")
+            .filter(|_| value["id"] == "llm-pi-ai" || value["name"] == PLUGIN)
+        {
+            if let Some(providers) = config["providers"].as_object() {
+                for (id, provider) in providers {
+                    if let Some(url) = provider["baseURL"].as_str() {
+                        let escaped = id.replace('~', "~0").replace('/', "~1");
+                        let models = provider["models"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|model| model["id"].as_str().map(String::from))
+                            .collect();
+                        result.push((
+                            format!("{path}/config/providers/{escaped}/baseURL"),
+                            url.into(),
+                            models,
+                        ));
+                    }
+                }
+            }
+        }
+        match value {
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    walk(item, &format!("{path}/{index}"), result);
+                }
+            }
+            Value::Object(items) => {
+                for (key, item) in items {
+                    walk(
+                        item,
+                        &format!("{path}/{}", key.replace('~', "~0").replace('/', "~1")),
+                        result,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut result = Vec::new();
+    walk(value, "", &mut result);
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_provider_protocols_route_and_restore_without_rewriting_foreign_plugins(
+    ) -> Result<(), String> {
+        for protocol in ["openai", "openai-responses", "anthropic"] {
+            let config = json!({"baseUrl":"https://synthetic.invalid/v1","protocol":protocol,"apiKey":"synthetic-only","models":[{"model":"test-model"}]});
+            let mut doc = super::super::agent_clients::Document::parse(
+                "deepseek-harness",
+                "# Customizations\n[]\n",
+            )
+            .map_err(|_| FAILED)?;
+            doc.apply("deepseek-harness", "custom", "Gateway", &config)
+                .map_err(|_| FAILED)?;
+            let baseline = doc.encode().map_err(|_| FAILED)?;
+            let routes = doc
+                .route("deepseek-harness", "http://127.0.0.1:1")
+                .map_err(|_| FAILED)?;
+            assert_eq!(routes.len(), 1);
+            assert_eq!(routes[0].provider_id, "custom");
+            assert_eq!(routes[0].models, vec!["test-model"]);
+            assert!(doc
+                .encode()
+                .map_err(|_| FAILED)?
+                .contains("/agents/deepseek-harness/providers/"));
+            doc.restore(&routes).map_err(|_| FAILED)?;
+            assert_eq!(doc.encode().map_err(|_| FAILED)?, baseline);
+            doc.remove("deepseek-harness", "custom", &config)
+                .map_err(|_| FAILED)?;
+            assert!(parse(&doc.encode().map_err(|_| FAILED)?)?["providers"]
+                .as_object()
+                .ok_or(FAILED)?
+                .is_empty());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn foreign_providers_are_not_claimed_and_customized_auth_is_not_removed() -> Result<(), String>
+    {
+        let config = json!({"baseUrl":"https://synthetic.invalid/v1","protocol":"openai","apiKey":"synthetic-only","models":[{"model":"test"}]});
+        let mut foreign =
+            parse("- insert:\n  - id: varyai-provider-custom\n    name: some-other-plugin\n")?;
+        let original = foreign.clone();
+        assert!(apply(&mut foreign, "custom", "Gateway", &config).is_err());
+        assert_eq!(foreign, original);
+        let mut value = parse("[]")?;
+        apply(&mut value, "custom", "Gateway", &config)?;
+        let encoded = encode("[]", &value)?;
+        assert!(parse(&format!(
+            "{encoded}- id: varyai-provider-custom\n  config: {{}}\n"
+        ))
+        .is_err());
+        value["providers"]["varyai-provider-custom"]["config"]["providers"]["varyai-custom"]
+            ["headers"]["Authorization"] = json!("Bearer synthetic-change");
+        let changed = value.clone();
+        assert!(remove(&mut value, "custom", &config).is_err());
+        assert_eq!(value, changed);
+        Ok(())
+    }
+    #[test]
+    fn managed_plugins_preserve_foreign_patches_comments_and_private_account_stores(
+    ) -> Result<(), String> {
+        let source = "# Keep this comment.\n- id: another-plugin\n  config:\n    enabled: true\n";
+        let mut doc = parse(source)?;
+        let original = doc.clone();
+        apply(
+            &mut doc,
+            "shared-catalog",
+            "VaryAI",
+            &json!({"baseUrl":"http://127.0.0.1:1/v1","protocol":"openai","apiKey":"synthetic-only","models":[{"model":"test-model","displayName":"Readable Model · VaryAI"}]}),
+        )?;
+        let encoded = encode(source, &doc)?;
+        assert!(encoded.starts_with(source));
+        assert_eq!(parse(&encoded)?, doc);
+        let changed = encoded.replacen("enabled: true", "enabled: false", 1);
+        let mut restored = parse(&changed)?;
+        restored["providers"] = json!({});
+        set_selection(&mut restored, &Value::Null)?;
+        let restored = encode(&changed, &restored)?;
+        assert_eq!(
+            restored,
+            source.replacen("enabled: true", "enabled: false", 1)
+        );
+        assert_eq!(original["providers"], json!({}));
+        Ok(())
+    }
+    #[test]
+    fn empty_profile_and_unknown_patch_shapes_fail_safely() -> Result<(), String> {
+        let mut doc = parse("# Profile\n[]\n")?;
+        apply(
+            &mut doc,
+            "custom",
+            "Gateway",
+            &json!({"baseUrl":"https://example.invalid/v1","protocol":"openai-responses","apiKey":"synthetic-only","models":[{"model":"test"}]}),
+        )?;
+        let text = encode("# Profile\n[]\n", &doc)?;
+        assert_eq!(parse(&text)?, doc);
+        assert!(text.starts_with("# Profile\n"));
+        assert!(parse("providers: {}\n").is_err());
+        assert!(parse(START).is_err());
+        assert!(parse(&format!("{START}- insert: []\n{END}")).is_err());
+        assert_eq!(candidates(&doc).len(), 1);
+        Ok(())
+    }
+}

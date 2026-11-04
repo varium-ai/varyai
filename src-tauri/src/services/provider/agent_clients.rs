@@ -14,6 +14,7 @@ pub(super) fn list(state: &AppState, app: &str) -> Result<IndexMap<String, Provi
             "kimi" => "Kimi Code",
             "qwen" => "Qwen Code",
             "zcode" => "ZCode",
+            "deepseek-harness" => "DeepSeek Harness",
             "trae" => "TRAE CN",
             _ => app,
         };
@@ -425,7 +426,7 @@ pub(super) fn remove_with_lock(
 pub(super) fn is_agent(app: &AppType) -> bool {
     matches!(
         app,
-        AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::Trae
+        AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::DeepSeekHarness | AppType::Trae
     )
 }
 

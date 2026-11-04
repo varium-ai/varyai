@@ -3793,6 +3793,7 @@ fn agent_desktop_bundles(app: &str) -> &'static [&'static str] {
         "doubaowork" => &["DoubaoWork.app"],
         "zcode" => &["ZCode.app"],
         "kimi" => &["Kimi Code.app"],
+        "deepseek-harness" => &["DeepSeek Harness.app"],
         _ => &[],
     }
 }

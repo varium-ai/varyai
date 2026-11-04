@@ -86,7 +86,7 @@ pub async fn get_config_status(
                 path: path.to_string_lossy().into_owned(),
             })
         }
-        app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode) => {
+        app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::DeepSeekHarness) => {
             let path = crate::services::agent_clients::config_path(app.as_str())
                 .map_err(|e| e.to_string())?;
             Ok(ConfigStatus {
@@ -200,7 +200,11 @@ pub async fn get_claude_code_config_path() -> Result<String, String> {
 pub async fn get_config_dir(app: String) -> Result<String, String> {
     let dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
         AppType::DoubaoWork => return Err("Doubao Work has no managed configuration file".into()),
-        app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::Trae) => {
+        app @ (AppType::Kimi
+        | AppType::Qwen
+        | AppType::ZCode
+        | AppType::DeepSeekHarness
+        | AppType::Trae) => {
             let path = crate::services::agent_clients::config_path(app.as_str())
                 .map_err(|e| e.to_string())?;
             path.parent().unwrap_or(&path).to_path_buf()
@@ -227,7 +231,11 @@ pub async fn get_config_dir(app: String) -> Result<String, String> {
 pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, String> {
     let config_dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
         AppType::DoubaoWork => return Err("Doubao Work has no managed configuration file".into()),
-        app @ (AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::Trae) => {
+        app @ (AppType::Kimi
+        | AppType::Qwen
+        | AppType::ZCode
+        | AppType::DeepSeekHarness
+        | AppType::Trae) => {
             let path = crate::services::agent_clients::config_path(app.as_str())
                 .map_err(|e| e.to_string())?;
             path.parent().unwrap_or(&path).to_path_buf()

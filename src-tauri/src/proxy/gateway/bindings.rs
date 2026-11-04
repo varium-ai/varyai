@@ -34,6 +34,7 @@ pub fn supports_binding(app: &str) -> bool {
             | "kimi"
             | "qwen"
             | "zcode"
+            | "deepseek-harness"
     )
 }
 

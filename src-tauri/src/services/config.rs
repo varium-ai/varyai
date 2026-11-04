@@ -144,6 +144,7 @@ impl ConfigService {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => {
                 // Pi owns its shared models/settings documents; this legacy

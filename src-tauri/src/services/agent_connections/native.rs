@@ -12,6 +12,7 @@ const STARTING_MODEL_APPS: &[&str] = &[
     "kimi",
     "qwen",
     "zcode",
+    "deepseek-harness",
 ];
 
 #[derive(Serialize)]
@@ -64,7 +65,7 @@ fn selection(app: &str) -> Result<Option<String>, String> {
         }
         "openclaw" => crate::openclaw_config::get_openclaw_config_path(),
         "hermes" => crate::hermes_config::get_hermes_config_path(),
-        "kimi" | "qwen" | "zcode" => {
+        "kimi" | "qwen" | "zcode" | "deepseek-harness" => {
             crate::services::agent_clients::config_path(app).map_err(|_| FAILED)?
         }
         _ => return Err(FAILED.into()),
@@ -109,6 +110,7 @@ fn read_selection(app: &str, path: &Path) -> Result<Option<String>, String> {
     let format = match app {
         "codex" | "grokbuild" | "kimi" => Format::Toml,
         "hermes" => Format::Yaml,
+        "deepseek-harness" => Format::Cordis,
         "opencode" | "openclaw" | "pi" => Format::Json5,
         _ => Format::Json,
     };
@@ -117,6 +119,9 @@ fn read_selection(app: &str, path: &Path) -> Result<Option<String>, String> {
         return Err(FAILED.into());
     }
     match app {
+        "deepseek-harness" => {
+            model_string(crate::services::deepseek_harness::selection(&value).get("model"))
+        }
         "claude" => model_string(field(&value, &["env", "ANTHROPIC_MODEL"])?)?
             .map_or_else(|| model_string(value.get("model")), |model| Ok(Some(model))),
         "codex" => {
@@ -183,6 +188,7 @@ mod tests {
             ("kimi", "default_model = 'native-kimi'\n", "native-kimi"),
             ("qwen", r#"{"model":{"name":"native-qwen"}}"#, "native-qwen"),
             ("zcode", r#"{"config":{"defaultModelSelection":{"modelId":"native-zcode"}}}"#, "native-zcode"),
+            ("deepseek-harness", "- id: agent-default-model\n  config:\n    provider: deepseek-official\n    model: native-deepseek\n", "native-deepseek"),
         ] {
             let dir = tempfile::tempdir().map_err(|_| FAILED)?;
             let path = dir.path().join("config");

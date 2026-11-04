@@ -9,6 +9,7 @@ fn ids(app: &str) -> &'static [&'static str] {
         "trae" => &["cn.trae.app"],
         "qoder" => &["com.qodercn.app"],
         "doubaowork" => &["com.work.pc.doubao"],
+        "deepseek-harness" => &["com.deepseek.dsh"],
         _ => &[],
     }
 }
@@ -205,6 +206,23 @@ fn spotlight(_: &str) -> Option<PathBuf> {
 }
 
 pub(super) fn update_channel_matches(app: &str, bundle: &Path) -> bool {
+    if app == "deepseek-harness" {
+        let Ok(bytes) = std::fs::read(bundle.join("Contents/Resources/app-update.yml")) else {
+            return false;
+        };
+        if bytes.len() > 64 * 1024 {
+            return false;
+        }
+        let Ok(feed) = serde_yaml::from_slice::<serde_json::Value>(&bytes) else {
+            return false;
+        };
+        return feed["provider"] == "generic"
+            && feed["channel"] == "nightly"
+            && feed["url"].as_str().is_some_and(|url| {
+                url.trim_end_matches('/')
+                    == "https://download.deepseek.com/dsh-desk/feeds/mac-arm64"
+            });
+    }
     app != "workbuddy"
         || (field(bundle, "CFBundleIdentifier").as_deref() != Some("com.workbuddy.workbuddy-ai")
             && bundle
@@ -215,6 +233,23 @@ pub(super) fn update_channel_matches(app: &str, bundle: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deepseek_updates_require_the_installed_public_channel() {
+        let root = tempfile::tempdir().unwrap();
+        let resources = root.path().join("Contents/Resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        let feed = "provider: generic\nchannel: nightly\nurl: https://download.deepseek.com/dsh-desk/feeds/mac-arm64/\n";
+        std::fs::write(resources.join("app-update.yml"), feed).unwrap();
+        assert!(update_channel_matches("deepseek-harness", root.path()));
+        for changed in [
+            feed.replace("nightly", "stable"),
+            feed.replace("download.deepseek.com", "example.invalid"),
+        ] {
+            std::fs::write(resources.join("app-update.yml"), changed).unwrap();
+            assert!(!update_channel_matches("deepseek-harness", root.path()));
+        }
+    }
 
     fn bundle(root: &Path, name: &str, id: &str) -> PathBuf {
         let path = root.join(name);

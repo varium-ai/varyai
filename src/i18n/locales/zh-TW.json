@@ -1312,7 +1312,8 @@
     "trae": "TRAE CN",
     "kimi": "Kimi Code",
     "qwen": "Qwen Code",
-    "zcode": "ZCode"
+    "zcode": "ZCode",
+    "deepseek-harness": "DeepSeek Harness"
   },
   "pi": {
     "empty": {
@@ -4991,6 +4992,7 @@
     "confirmShowAll": "顯示所有供應商隱藏的 {{count}} 個模型？再次點擊",
     "nativeDefault": "預設",
     "nativeDefaultHint": "工具設定中未指定啟動模型，將沿用工具自身預設；這不表示已選擇 Vary 共享模型。",
+    "deepseekStartingModelHint": "設定 DeepSeek Harness 新對話的預設模型；現有對話請在用戶端內切換模型。",
     "nativeModelHint": "這裡顯示工具的原生設定，不代表已接入 Vary。選擇共享模型會接入 Vary；「中斷連線並還原」可返回接入前儲存的設定。",
     "nativeUnavailable": "無法讀取原生模型",
     "modelList": "模型列表",
@@ -5441,7 +5443,7 @@
     "confirmTitle": "確認更新安裝",
     "confirmHint": "{{names}} 存在多處安裝，或無法確定更新目標。更新程式可能只影響其中一處，是否繼續使用偵測到的更新方式？",
     "confirm": "繼續更新",
-    "appHint": "桌面 App 版本，由 App 本身的更新程式管理；這裡的按鈕只更新 CLI。"
+    "appHint": "桌面 App 版本。更新將下載官方版本，並可能關閉及重新開啟該應用程式。"
   },
   "agentInstall": {
     "install": "安裝",

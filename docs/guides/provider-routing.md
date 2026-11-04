@@ -2,6 +2,14 @@
 
 Select the target client before adding or editing an existing per-agent provider. Its settings remain client-specific; a preset does not establish account access or model availability. **Settings → Routing → Routing groups** automatically uses the saved provider lists from all agents, without a separate upstream list or import. Manage each connection in its source agent's provider editor; see [shared providers and routing groups](intent-routing.md).
 
+## Agent versions and updates
+
+The home **Tools / Agent** list checks installed CLI and desktop versions. Supported macOS desktop update feeds include Claude Desktop, WorkBuddy, Qoder CN, Doubao Work, TRAE CN, Kimi Code, ZCode and the supported DeepSeek Harness desktop channel. Desktop updates appear alongside CLI updates in the per-agent controls and **Update all**. Codex continues to show and update its CLI version in this list. An unknown latest version, unreadable installed version or unmatched release channel does not establish that an app is current and does not offer an automatic update.
+
+See [DeepSeek Harness Desktop](deepseek-harness.md) for its profile, native model selection and inspection boundaries.
+
+Checking versions does not launch or update a client. Selecting an update uses the existing official installer flow; a desktop update can close and reopen that client. Each result is verified against a fresh installed version from the same desktop or CLI source. Kimi installations detected only as a CLI show their CLI version without using the desktop update feed.
+
 ## Configure a provider
 
 1. Install and initialize the client separately. Back up existing client configuration.

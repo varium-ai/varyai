@@ -14,6 +14,7 @@ async function run(
     detailsFail = false,
     switchDuringDetails = false,
     detailsNeverResolve = false,
+    runtimeStyle = "legacy",
   } = {},
 ) {
   let current = "account-a";
@@ -122,6 +123,12 @@ async function run(
       return { success: true };
     },
   };
+  if (runtimeStyle === "current") {
+    modules.user = { U: modules.user.e };
+    modules.profiles = { e: modules.profiles.k };
+    modules.launch = { B$: modules.launch.Z_ };
+    modules.api = { k: modules.api.ugCampaignApiService };
+  }
   const requireMock = (id) => modules[id];
   requireMock.m = {
     user: function () {
@@ -140,6 +147,11 @@ async function run(
       return ["sec_to_user_id", "onSwitchSuccess"];
     },
   };
+  if (runtimeStyle === "current") {
+    requireMock.m.api = function () {
+      return initApiService("ugCampaign");
+    };
+  }
   let captures = 0;
   const chunks = [];
   chunks.push = (chunk) => {
@@ -148,7 +160,9 @@ async function run(
     return 1;
   };
   const context = vm.createContext({
-    "@flow-web/desktop:stable": chunks,
+    [runtimeStyle === "current"
+      ? "chunk_@flow-web/desktop"
+      : "@flow-web/desktop:stable"]: chunks,
     setTimeout,
     clearTimeout,
   });
@@ -175,6 +189,25 @@ test("listing accounts does not query campaigns or claim rewards", async () => {
   assert.equal(result.accounts.length, 2);
   assert.equal(result.currentAccountId, "account-a");
   assert.deepEqual(calls, { status: 0, claim: 0 });
+});
+
+test("current desktop runtime reads accounts despite renamed module exports", async () => {
+  const { result, calls } = await run(
+    { mode: "accounts" },
+    { runtimeStyle: "current" },
+  );
+  assert.equal(result.currentAccountId, "account-a");
+  assert.equal(result.accounts.length, 2);
+  assert.deepEqual(calls, { status: 0, claim: 0 });
+});
+
+test("current campaign SDK resolves its initialized service without bundle export names", async () => {
+  const { result, calls } = await run(
+    { mode: "status", expectedAccountId: "account-a" },
+    { runtimeStyle: "current" },
+  );
+  assert.equal(result.outcome, "not_checked");
+  assert.deepEqual(calls, { status: 1, claim: 0 });
 });
 
 test("repeated polling reuses one SDK capture without accumulating synthetic chunks", async () => {

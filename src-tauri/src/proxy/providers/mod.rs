@@ -216,6 +216,7 @@ impl ProviderType {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => return None,
         };
@@ -279,6 +280,7 @@ pub fn get_adapter(app_type: &AppType) -> Option<Box<dyn ProviderAdapter>> {
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
         | AppType::DoubaoWork => return None,
     })

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-pub(crate) const APPS: &[&str] = &["kimi", "qwen", "zcode"];
+pub(crate) const APPS: &[&str] = &["kimi", "qwen", "zcode", "deepseek-harness"];
 pub(crate) fn supported(app: &str) -> bool {
     APPS.contains(&app)
 }
@@ -46,6 +46,7 @@ pub(crate) fn config_path(app: &str) -> Result<PathBuf, AppError> {
             .unwrap_or_else(|| home.join(".qwen"))
             .join("settings.json")),
         "zcode" => Ok(home.join(".zcode/v2/provider_config.json")),
+        "deepseek-harness" => Ok(super::deepseek_harness::config_path()),
         _ => Err(invalid()),
     }
 }
@@ -112,6 +113,7 @@ pub(crate) struct Document {
     original: Value,
     source: String,
     existed: bool,
+    cordis: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Route {
@@ -129,7 +131,12 @@ impl Document {
         if !supported(app) {
             return Err(invalid());
         }
-        let (value, toml) = if app == "kimi" {
+        let (value, toml) = if app == "deepseek-harness" {
+            (
+                super::deepseek_harness::parse(text).map_err(|_| invalid())?,
+                None,
+            )
+        } else if app == "kimi" {
             let doc = text
                 .parse::<toml_edit::DocumentMut>()
                 .map_err(|_| invalid())?;
@@ -153,13 +160,23 @@ impl Document {
             toml,
             source: text.into(),
             existed: true,
+            cordis: app == "deepseek-harness",
         })
     }
     pub fn read(app: &str, path: &Path) -> Result<Self, AppError> {
         match std::fs::read_to_string(path) {
             Ok(text) => Self::parse(app, &text),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut doc = Self::parse(app, if app == "kimi" { "" } else { "{}" })?;
+                let mut doc = Self::parse(
+                    app,
+                    if app == "kimi" {
+                        ""
+                    } else if app == "deepseek-harness" {
+                        "[]"
+                    } else {
+                        "{}"
+                    },
+                )?;
                 doc.existed = false;
                 Ok(doc)
             }
@@ -167,6 +184,10 @@ impl Document {
         }
     }
     pub fn encode(&self) -> Result<String, AppError> {
+        if self.cordis {
+            return super::deepseek_harness::encode(&self.source, &self.value)
+                .map_err(|_| invalid());
+        }
         if let Some(mut toml) = self.toml.clone() {
             patch_toml(toml.as_item_mut(), &self.original, &self.value)?;
             Ok(toml.to_string())
@@ -192,6 +213,7 @@ impl Document {
     }
     pub fn selection(&self, app: &str) -> Value {
         match app {
+            "deepseek-harness" => super::deepseek_harness::selection(&self.value),
             "kimi" => self.value["default_model"].clone(),
             "qwen" => {
                 json!({"model":self.value["model"]["name"],"baseUrl":self.value["model"]["baseUrl"],"auth":self.value["security"]["auth"]["selectedType"]})
@@ -205,6 +227,17 @@ impl Document {
             .map(|id| format!("varyai-{id}"))
             .unwrap_or_else(|| "varyai-".into());
         match app {
+            "deepseek-harness" => {
+                self.selection(app)["provider"]
+                    .as_str()
+                    .is_some_and(|provider| {
+                        if id.is_some() {
+                            provider == prefix
+                        } else {
+                            provider.starts_with(&prefix)
+                        }
+                    })
+            }
             "kimi" => self.value["default_model"].as_str().is_some_and(|s| {
                 s.starts_with(&format!("{prefix}{}", if id.is_some() { "-" } else { "" }))
                     || ((id.is_none() || id == Some("shared-catalog"))
@@ -250,6 +283,10 @@ impl Document {
         }
     }
     pub fn set_selection(&mut self, app: &str, selection: &Value) -> Result<(), AppError> {
+        if app == "deepseek-harness" {
+            return super::deepseek_harness::set_selection(&mut self.value, selection)
+                .map_err(|_| invalid());
+        }
         fn set(value: &mut Value, key: &str, selection: &Value) -> Result<(), AppError> {
             let map = value.as_object_mut().ok_or_else(invalid)?;
             if selection.is_null() {
@@ -286,6 +323,19 @@ impl Document {
     }
     pub fn selection_available(&self, app: &str, selection: &Value) -> bool {
         match app {
+            "deepseek-harness" => self.value["providers"]
+                .as_object()
+                .is_some_and(|providers| {
+                    providers.values().any(|entry| {
+                        selection["provider"]
+                            .as_str()
+                            .and_then(|provider| entry["config"]["providers"].get(provider))
+                            .and_then(|provider| provider["models"].as_array())
+                            .is_some_and(|models| {
+                                models.iter().any(|model| model["id"] == selection["model"])
+                            })
+                    })
+                }),
             "kimi" => selection
                 .as_str()
                 .is_some_and(|id| self.value["models"].get(id).is_some()),
@@ -332,6 +382,15 @@ impl Document {
     }
 
     pub fn clear_managed_models(&mut self, app: &str) -> Result<(), AppError> {
+        if app == "deepseek-harness" {
+            self.value["providers"]
+                .as_object_mut()
+                .ok_or_else(invalid)?
+                .clear();
+            super::deepseek_harness::set_selection(&mut self.value, &Value::Null)
+                .map_err(|_| invalid())?;
+            return Ok(());
+        }
         if self.value.as_object().is_some_and(|value| value.is_empty()) {
             return Ok(());
         }
@@ -455,6 +514,10 @@ impl Document {
         config: &Value,
     ) -> Result<(), AppError> {
         validate(config)?;
+        if app == "deepseek-harness" {
+            return super::deepseek_harness::apply(&mut self.value, id, name, config)
+                .map_err(|_| invalid());
+        }
         let key = format!("varyai-{id}");
         let models = config["models"].as_array().ok_or_else(invalid)?;
         let first = models
@@ -698,7 +761,9 @@ impl Document {
     }
     pub fn route(&mut self, app: &str, origin: &str) -> Result<Vec<Route>, AppError> {
         let mut candidates: Vec<(String, String, Vec<String>)> = Vec::new();
-        if app == "kimi" {
+        if app == "deepseek-harness" {
+            candidates = super::deepseek_harness::candidates(&self.value);
+        } else if app == "kimi" {
             if let Some(providers) = self.value["providers"].as_object() {
                 for (id, p) in providers {
                     if !matches!(
@@ -869,6 +934,10 @@ impl Document {
                     .and_then(|rule| rule["providerId"].as_str())
                     .and_then(|id| id.strip_prefix("varyai-"))
                     .map(String::from)
+            } else if app == "deepseek-harness" {
+                path.rsplit('/')
+                    .find_map(|part| part.strip_prefix("varyai-"))
+                    .map(String::from)
             } else if app == "kimi" {
                 self.value["models"].as_object().and_then(|models| {
                     models.iter().find_map(|(alias, model)| {
@@ -966,6 +1035,10 @@ impl Document {
     }
 
     pub fn remove(&mut self, app: &str, id: &str, expected: &Value) -> Result<(), AppError> {
+        if app == "deepseek-harness" {
+            return super::deepseek_harness::remove(&mut self.value, id, expected)
+                .map_err(|_| invalid());
+        }
         let key = if app == "kimi" {
             self.kimi_provider_key(id)
         } else {

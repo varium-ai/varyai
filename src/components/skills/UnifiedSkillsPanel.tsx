@@ -288,7 +288,8 @@ const UnifiedSkillsPanel = React.forwardRef<
       app === "trae" ||
       app === "kimi" ||
       app === "qwen" ||
-      app === "zcode"
+      app === "zcode" ||
+      app === "deepseek-harness"
     )
       return;
     if (!skills || !beginWrite()) return;
