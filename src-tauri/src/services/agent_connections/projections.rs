@@ -21,18 +21,34 @@ pub(super) fn build(
         }
         _ => return Err(FAILED.into()),
     };
-    let wire = if app == "gemini" {
-        catalog
+    receipt.model_map.clear();
+    let mut projected = catalog.to_vec();
+    let mut chosen = selected.to_owned();
+    if ["kimi", "qwen", "zcode"].contains(&app) {
+        for model in &mut projected {
+            let internal = model.id.clone();
+            let mut name = model.name.clone();
+            let mut duplicate = 2;
+            while receipt.model_map.contains_key(&name) {
+                name = format!("{} ({duplicate})", model.name);
+                duplicate += 1;
+            }
+            if internal == selected {
+                chosen = name.clone();
+            }
+            receipt.model_map.insert(name.clone(), internal);
+            model.id = name.clone();
+            model.name = name;
+        }
+    } else if app == "gemini" {
+        receipt.model_map = catalog
             .iter()
             .map(|m| (wire_id(&m.id), m.id.clone()))
-            .collect()
-    } else {
-        Default::default()
-    };
-    receipt.model_map = wire;
+            .collect();
+    }
     receipt
         .files
-        .push(edit(app, path, catalog, base, token, selected)?);
+        .push(edit(app, path, &projected, base, token, &chosen)?);
     if app == "gemini" {
         receipt.files.push(FileEdit::prepare(
             crate::gemini_config::get_gemini_settings_path(),
@@ -260,10 +276,7 @@ fn edit(
                 *value = doc.value;
                 for model in catalog {
                     if app == "kimi" {
-                        super::reasoning::kimi(
-                            &mut value["models"][format!("varyai-shared-catalog-{}", model.id)],
-                            model,
-                        );
+                        super::reasoning::kimi(&mut value["models"][model.id.clone()], model);
                     } else if app == "zcode" {
                         for row in value
                             .pointer_mut("/config/modelConfigRules/providerModelRules")
@@ -279,14 +292,12 @@ fn edit(
                         }
                     }
                 }
-                // Legacy adapters supply guessed capacities; shared catalogs must not.
+                // Kimi requires a positive local ceiling even when upstream capacity
+                // is unknown. Optional ZCode metadata can remain absent.
                 for m in catalog.iter().filter(|m| m.context_window.is_none()) {
                     if app == "kimi" {
-                        if let Some(row) = value["models"]
-                            [format!("varyai-shared-catalog-{}", m.id)]
-                        .as_object_mut()
-                        {
-                            row.remove("max_context_size");
+                        if let Some(row) = value["models"][m.id.clone()].as_object_mut() {
+                            row.insert("max_context_size".into(), json!(32_000));
                         }
                     } else if app == "zcode" {
                         for row in value
@@ -328,6 +339,133 @@ pub(super) fn client_config(catalog: &[Model], base: &str, token: &str, selected
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_kimi_qwen_and_zcode_use_readable_models_and_keep_route_mappings() -> Result<(), String>
+    {
+        let catalog = vec![
+            Model {
+                icon: None,
+                id: "vary-provider/route-hash-a".into(),
+                name: "Synthetic Model · Supplier · VaryAI".into(),
+                context_window: Some(200000),
+                compact_at: None,
+                group: "supplier".into(),
+                reasoning_levels: vec!["low".into(), "high".into()],
+                reasoning: true,
+                default_reasoning_level: Some("low".into()),
+                images: true,
+            },
+            Model {
+                icon: None,
+                id: "vary-provider/route-hash-b".into(),
+                name: "Synthetic Model · Supplier · VaryAI".into(),
+                context_window: None,
+                compact_at: None,
+                group: "supplier".into(),
+                reasoning_levels: vec![],
+                reasoning: false,
+                default_reasoning_level: None,
+                images: false,
+            },
+        ];
+        for app in ["kimi", "qwen", "zcode"] {
+            let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+            let path = dir.path().join("client-config");
+            let original = if app == "kimi" {
+                "theme='light'\n"
+            } else if app == "zcode" {
+                r#"{"schemaVersion":1,"config":{"providerConfigRules":{"providerRules":[]},"modelConfigRules":{"providerModelRules":[]}}}"#
+            } else {
+                r#"{"theme":"light"}"#
+            };
+            std::fs::write(&path, original).map_err(|_| FAILED)?;
+            let legacy = edit(
+                app,
+                path.clone(),
+                &catalog,
+                "http://127.0.0.1:1/connections/test",
+                "synthetic-token",
+                &catalog[0].id,
+            )?;
+            legacy.write()?;
+            let mut receipt = Receipt {
+                app: app.into(),
+                token: "synthetic-token".into(),
+                model: catalog[0].id.clone(),
+                model_map: Default::default(),
+                visible_models: None,
+                files: vec![],
+                suspended: false,
+                applied_at_ms: None,
+            };
+            crate::services::agent_clients::with_test_config(&path, || {
+                build(
+                    app,
+                    &catalog,
+                    "http://127.0.0.1:1/connections/test",
+                    "synthetic-token",
+                    &catalog[0].id,
+                    &mut receipt,
+                )
+            })?;
+            assert_eq!(
+                receipt.model_map.get(&catalog[0].name),
+                Some(&catalog[0].id),
+                "{app}"
+            );
+            assert_eq!(
+                receipt.model_map.get(&format!("{} (2)", catalog[1].name)),
+                Some(&catalog[1].id)
+            );
+            let installed = &receipt.files[0].installed;
+            assert!(!installed.to_string().contains("route-hash"), "{app}");
+            match app {
+                "kimi" => {
+                    let selected = installed["default_model"].as_str().ok_or(FAILED)?;
+                    assert_eq!(selected, catalog[0].name);
+                    assert!(installed["models"]
+                        .as_object()
+                        .ok_or(FAILED)?
+                        .values()
+                        .all(|row| row["max_context_size"].as_u64().is_some_and(|n| n > 0)));
+                    assert_eq!(
+                        installed["models"][format!("{} (2)", catalog[1].name)]["max_context_size"],
+                        json!(32_000)
+                    );
+                    assert_eq!(catalog[1].context_window, None);
+                    assert_eq!(installed["models"][selected]["model"], catalog[0].name);
+                    assert_eq!(
+                        installed["models"][selected]["support_efforts"],
+                        json!(["low", "high"])
+                    );
+                }
+                "qwen" => assert_eq!(installed["model"]["name"], catalog[0].name),
+                "zcode" => assert_eq!(
+                    installed["config"]["defaultModelSelection"]["modelId"],
+                    catalog[0].name
+                ),
+                _ => unreachable!(),
+            }
+            receipt.files[0].write()?;
+            let mut repeated = receipt.clone();
+            repeated.files.clear();
+            crate::services::agent_clients::with_test_config(&path, || {
+                build(
+                    app,
+                    &catalog,
+                    "http://127.0.0.1:1/connections/test",
+                    "synthetic-token",
+                    &catalog[0].id,
+                    &mut repeated,
+                )
+            })?;
+            assert_eq!(
+                receipt.files[0].installed, repeated.files[0].installed,
+                "{app} refresh"
+            );
+        }
+        Ok(())
+    }
     #[test]
     fn grok_long_conversations_use_compaction_without_shrinking_the_shared_capacity(
     ) -> Result<(), String> {
@@ -434,8 +572,7 @@ mod tests {
                     json!(["low", "high"])
                 ),
                 "kimi" => assert_eq!(
-                    installed["models"][format!("varyai-shared-catalog-{}", catalog[0].id)]
-                        ["support_efforts"],
+                    installed["models"][catalog[0].id.clone()]["support_efforts"],
                     json!(["low", "high"])
                 ),
                 "zcode" => assert_eq!(
@@ -472,7 +609,7 @@ mod tests {
                     .is_some_and(|rows| rows
                         .values()
                         .filter(|row| row["provider"] == "Vary AI")
-                        .all(|row| row.get("max_context_size").is_none())));
+                        .all(|row| row["max_context_size"] == json!(32_000))));
             }
             if app == "zcode" {
                 assert!(refreshed

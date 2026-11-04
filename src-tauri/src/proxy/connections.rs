@@ -337,6 +337,15 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
                         entry["supports_1m"] = json!(window >= 1_000_000);
                     }
                 }
+                if ["kimi", "qwen", "zcode"].contains(&app) {
+                    if let Some((wire, _)) = connection
+                        .model_map
+                        .iter()
+                        .find(|(_, alias)| **alias == model.id)
+                    {
+                        entry["id"] = json!(wire);
+                    }
+                }
                 entry["display_name"] = json!(model.name);
                 Some(entry)
             })

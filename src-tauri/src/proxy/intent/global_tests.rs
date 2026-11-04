@@ -2105,3 +2105,76 @@ async fn gemini_agent_connection_maps_url_alias_and_strips_local_credentials(
     task.abort();
     Ok(())
 }
+
+#[tokio::test]
+#[serial_test::serial]
+async fn readable_native_catalog_ids_and_legacy_routes_remain_compatible(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, Router::new().route("/responses", post(|Json(body): Json<Value>| async move { Json(json!({"id":"synthetic-reply","model":body["model"],"status":"completed","output":[]})) }))).await;
+    });
+    let runtime = Arc::new(Runtime::default());
+    let label = "Synthetic readable · Supplier · VaryAI";
+    let mut published = menu(&format!("http://{address}/responses"));
+    published.models.insert(
+        group().alias(),
+        MenuModel {
+            alias: group().alias(),
+            label: label.into(),
+            description: "Synthetic model",
+            order: 0,
+        },
+    );
+    runtime.set_global(published, 0)?;
+    for app in ["kimi", "qwen", "zcode"] {
+        runtime
+            .connections
+            .install(&crate::services::agent_connections::Receipt {
+                app: app.into(),
+                token: "synthetic-readable-token".into(),
+                model: group().alias(),
+                model_map: std::collections::BTreeMap::from([(label.into(), group().alias())]),
+                visible_models: None,
+                files: vec![],
+                suspended: false,
+                applied_at_ms: None,
+            })?;
+    }
+    let proxy = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let info = proxy.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    for app in ["kimi", "qwen", "zcode"] {
+        let url = format!("http://127.0.0.1:{}/connections/{app}/v1", info.port);
+        let catalog: Value = client
+            .get(format!("{url}/models"))
+            .bearer_auth("synthetic-readable-token")
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(catalog["data"][0]["id"], label, "{app}");
+        for model in [label.to_owned(), group().alias()] {
+            let response = client
+                .post(format!("{url}/responses"))
+                .bearer_auth("synthetic-readable-token")
+                .json(&json!({"model":model,"input":"Synthetic request"}))
+                .send()
+                .await?;
+            assert_eq!(response.status(), StatusCode::OK, "{app}");
+            assert_eq!(response.json::<Value>().await?["model"], "exact-model");
+        }
+    }
+    proxy.stop().await?;
+    task.abort();
+    Ok(())
+}

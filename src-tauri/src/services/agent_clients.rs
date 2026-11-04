@@ -207,6 +207,15 @@ impl Document {
         match app {
             "kimi" => self.value["default_model"].as_str().is_some_and(|s| {
                 s.starts_with(&format!("{prefix}{}", if id.is_some() { "-" } else { "" }))
+                    || ((id.is_none() || id == Some("shared-catalog"))
+                        && self.value["models"][s]["provider"] == "Vary AI"
+                        && self.value["providers"]["Vary AI"]["base_url"]
+                            .as_str()
+                            .and_then(|url| url::Url::parse(url).ok())
+                            .is_some_and(|url| {
+                                url.host_str() == Some("127.0.0.1")
+                                    && url.path().starts_with("/connections/kimi/")
+                            }))
             }),
             "zcode" => self.value["config"]["defaultModelSelection"]["providerId"]
                 .as_str()
@@ -479,17 +488,35 @@ impl Document {
                     });
                 for model in models {
                     let wire = model["model"].as_str().ok_or_else(invalid)?;
-                    let alias = format!("{key}-{wire}");
+                    let alias = if id == "shared-catalog" {
+                        wire.to_owned()
+                    } else {
+                        format!("{key}-{wire}")
+                    };
+                    if self.value["models"]
+                        .get(&alias)
+                        .is_some_and(|entry| entry["provider"] != provider_name)
+                    {
+                        return Err(invalid());
+                    }
                     object(&mut self.value["models"], &alias)?;
                     let entry = &mut self.value["models"][&alias];
                     entry["provider"] = json!(provider_name);
                     entry["model"] = json!(wire);
+                    entry["display_name"] = model
+                        .get("displayName")
+                        .cloned()
+                        .unwrap_or_else(|| json!(wire));
                     if model["contextWindow"].is_u64() || entry.get("max_context_size").is_none() {
                         entry["max_context_size"] =
                             json!(model["contextWindow"].as_u64().unwrap_or(200000));
                     }
                 }
-                self.value["default_model"] = json!(format!("{key}-{first}"));
+                self.value["default_model"] = json!(if id == "shared-catalog" {
+                    first.to_owned()
+                } else {
+                    format!("{key}-{first}")
+                });
             }
             "qwen" => {
                 for section in ["modelProviders", "env", "model", "security"] {
@@ -531,7 +558,7 @@ impl Document {
                     ));
                 }
                 entries.extend(models.iter().map(|m| {
-                    let mut model = json!({"id":m["model"],"name":m["model"],"baseUrl":config["baseUrl"],"envKey":env});
+                    let mut model = json!({"id":m["model"],"name":m.get("displayName").unwrap_or(&m["model"]),"baseUrl":config["baseUrl"],"envKey":env});
                     if config["protocol"] == "openai-responses" { model["wireApi"] = json!("responses"); }
                     model
                 }));
@@ -928,7 +955,10 @@ impl Document {
             .and_then(|models| {
                 models.iter().find_map(|(alias, model)| {
                     let wire = model["model"].as_str()?;
-                    (alias == &format!("varyai-{id}-{wire}"))
+                    (alias == &format!("varyai-{id}-{wire}")
+                        || (id == "shared-catalog"
+                            && alias == wire
+                            && model["provider"] == "Vary AI"))
                         .then(|| model["provider"].as_str().map(String::from))?
                 })
             })
