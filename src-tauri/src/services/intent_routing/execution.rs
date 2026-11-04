@@ -233,10 +233,11 @@ async fn prepare_inner(
             return Err("intentRouting.providerUnavailable".into());
         }
     }
-    let client = tokio::task::spawn_blocking(crate::proxy::http_client::get_without_redirects)
-        .await
-        .map_err(|_| "intentRouting.failed")?
-        .map_err(|_| "intentRouting.failed")?;
+    let client =
+        tokio::task::spawn_blocking(crate::proxy::http_client::get_forwarding_without_redirects)
+            .await
+            .map_err(|_| "intentRouting.failed")?
+            .map_err(|_| "intentRouting.failed")?;
     #[cfg(not(test))]
     for (index, target) in targets.iter().enumerate() {
         if enforce_account_models

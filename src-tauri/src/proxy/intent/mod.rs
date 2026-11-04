@@ -2174,12 +2174,14 @@ async fn execute(
                 }
                 url.query_pairs_mut().append_pair("alt", "sse");
             }
-            let dispatch = session
-                .client
-                .post(url)
-                .headers(headers)
-                .body(payload)
-                .send();
+            let mut request = session.client.post(url).headers(headers).body(payload);
+            if !streaming {
+                request = request.timeout(super::http_client::UPSTREAM_HEADER_WAIT);
+            }
+            let dispatch = super::http_client::send_with_header_timeout(
+                request,
+                super::http_client::UPSTREAM_HEADER_WAIT,
+            );
             let dispatched =
                 match wait_for_attempt(attempt_deadline, native_lease.as_deref(), dispatch).await {
                     Ok(result) => result,
