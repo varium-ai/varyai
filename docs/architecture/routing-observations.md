@@ -144,6 +144,9 @@ appends and malformed records are ignored. The completion guard submits once,
 including cancellations. Worker startup, queue saturation, observation contention
 and disk failures discard observations without interrupting forwarding. An
 unavailable history reader reports a generic error without filesystem paths.
+Missing history directories are empty only when their nearest existing ancestor
+is a directory. A regular-file ancestor remains unavailable on every platform,
+including Windows where that filesystem failure is reported as `NotFound`.
 No native session files are read by this recorder or by the routing page.
 
 Files contain the same safe metadata as the live trace, including candidate

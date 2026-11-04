@@ -798,6 +798,14 @@ async fn all_agent_connections_accept_anthropic_sdk_beta_without_leaking_it_acro
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::provider::{Provider, ProviderMeta};
     use axum::response::IntoResponse;
+    struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for RestoreSecurity {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security = RestoreSecurity((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let (tx, mut rx) = tokio::sync::mpsc::channel(128);
@@ -982,7 +990,7 @@ async fn all_agent_connections_accept_anthropic_sdk_beta_without_leaking_it_acro
         let count = client.post(format!("{root}/messages/count_tokens?beta=true"))
             .bearer_auth(format!("synthetic-{app}"))
             .header("user-agent", "claude-cli/2.1.0 (external, cli)")
-            .json(&json!({"model":"wire-anthropic","messages":[{"role":"user","content":"synthetic count"}],"tools":[{"name":"synthetic_tool","input_schema":{"type":"object"}}]})).send().await?;
+            .json(&json!({"model":"wire-anthropic","messages":[{"role":"user","content":"synthetic count"},{"role":"assistant","content":[{"type":"tool_use","id":"synthetic-call","name":"synthetic_tool","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"synthetic-call","content":"synthetic result"}]}],"tools":[{"name":"synthetic_tool","input_schema":{"type":"object"}}],"vendor":{"preserved":true}})).send().await?;
         assert_eq!(
             count.status(),
             StatusCode::OK,
@@ -996,9 +1004,16 @@ async fn all_agent_connections_accept_anthropic_sdk_beta_without_leaking_it_acro
         assert_eq!(uri.query(), None);
         assert_eq!(body["model"], "exact-model");
         assert_eq!(body["tools"][0]["name"], "synthetic_tool");
+        assert_eq!(
+            body["messages"][2]["content"][0]["tool_use_id"],
+            "synthetic-call"
+        );
+        assert_eq!(body["vendor"]["preserved"], true);
         assert!(body.get("max_tokens").is_none());
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("output_config").is_none());
         for protocol in ["chat", "responses", "gemini"] {
-            let count = client.post(format!("{root}/messages/count_tokens"))
+            let count = client.post(format!("{root}/messages/count_tokens?beta=true"))
                 .bearer_auth(format!("synthetic-{app}"))
                 .json(&json!({"model":format!("wire-{protocol}"),"messages":[{"role":"user","content":"synthetic estimate"}]})).send().await?;
             assert_eq!(
@@ -1018,6 +1033,8 @@ async fn all_agent_connections_accept_anthropic_sdk_beta_without_leaking_it_acro
             ("messages", "beta=false"),
             ("messages", "beta=true&key=synthetic-query"),
             ("messages", "unknown=1"),
+            ("messages/count_tokens", "beta=false"),
+            ("messages/count_tokens", "beta=true&unknown=1"),
             ("responses", "beta=true"),
             ("chat/completions", "beta=true"),
             ("models", "beta=true"),
@@ -1042,6 +1059,40 @@ async fn all_agent_connections_accept_anthropic_sdk_beta_without_leaking_it_acro
         }
         assert!(rx.try_recv().is_err(), "rejected query reached upstream");
     }
+    for protocol in ["chat", "responses", "gemini"] {
+        let unavailable = client
+            .post(format!("http://127.0.0.1:{}/connections/claude/v1/messages/count_tokens", info.port))
+            .bearer_auth("synthetic-claude")
+            .json(&json!({"model":format!("wire-{protocol}"),"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","data":"synthetic document"}}]}]}))
+            .send().await?;
+        assert_eq!(unavailable.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            unavailable.json::<Value>().await?["error"]["code"],
+            "routing_token_estimate_unavailable"
+        );
+    }
+    assert!(
+        rx.try_recv().is_err(),
+        "unsupported estimate reached upstream"
+    );
+    let mut security = crate::proxy::security::SecurityRuntimeConfig::default();
+    security.builtin_action_overrides.insert(
+        "rsa_ssh_private_key".into(),
+        crate::proxy::security::types::AuditAction::Block,
+    );
+    crate::proxy::security::runtime::set_security_runtime_for_test(security);
+    for protocol in ["anthropic", "responses"] {
+        let blocked = client
+            .post(format!("http://127.0.0.1:{}/connections/claude/v1/messages/count_tokens", info.port))
+            .bearer_auth("synthetic-claude")
+            .json(&json!({"model":format!("wire-{protocol}"),"messages":[{"role":"user","content":format!("-----BEGIN {}-----\nsynthetic-only\n-----END {}-----", "RSA PRIVATE KEY", "RSA PRIVATE KEY")}]}))
+            .send().await?;
+        assert_eq!(blocked.status(), StatusCode::BAD_REQUEST);
+        let blocked = blocked.json::<Value>().await?;
+        assert_eq!(blocked["type"], "error");
+        assert_eq!(blocked["error"]["type"], "invalid_request_error");
+    }
+    assert!(rx.try_recv().is_err(), "blocked count reached upstream");
     server.stop().await?;
     task.abort();
     Ok(())

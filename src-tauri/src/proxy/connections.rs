@@ -347,7 +347,10 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
         || (gemini.is_none()
             && !matches!(
                 endpoint.as_str(),
-                "/v1/messages" | "/v1/chat/completions" | "/v1/responses"
+                "/v1/messages"
+                    | "/v1/messages/count_tokens"
+                    | "/v1/chat/completions"
+                    | "/v1/responses"
             ))
     {
         return StatusCode::NOT_FOUND.into_response();
@@ -523,9 +526,9 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
     )
     .await;
     match grant {
-        Some(grant) => {
+        Some(grant) if endpoint != "/v1/messages/count_tokens" => {
             super::gateway::meter_response(response, state.db, grant, endpoint != "/v1/messages")
         }
-        None => response,
+        _ => response,
     }
 }

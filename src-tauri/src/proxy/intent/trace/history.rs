@@ -82,7 +82,17 @@ fn open(path: &Path, append: bool) -> io::Result<File> {
 
 fn files(root: &Path) -> io::Result<Vec<(String, PathBuf, u64)>> {
     match fs::symlink_metadata(root) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // Windows also reports NotFound when an ancestor is a regular file.
+            for parent in root.ancestors().skip(1) {
+                match fs::metadata(parent) {
+                    Ok(metadata) if metadata.is_dir() => return Ok(Vec::new()),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    _ => return Err(invalid()),
+                }
+            }
+            return Ok(Vec::new());
+        }
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
         _ => return Err(invalid()),
     }
@@ -313,6 +323,18 @@ mod tests {
         let request = store.begin("codex", "fixture", "Fixture", "ordered", Instant::now());
         request.finish(200, State::Completed);
         store.snapshot().remove(0)
+    }
+
+    #[test]
+    fn missing_directories_are_empty_but_file_ancestors_are_unavailable() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        assert!(files(&dir.path().join("missing/history"))?.is_empty());
+        let blocked = dir.path().join("file");
+        fs::write(&blocked, "synthetic")?;
+        assert!(files(&blocked).is_err());
+        assert!(files(&blocked.join("history")).is_err());
+        assert!(files(&blocked.join("missing/history")).is_err());
+        Ok(())
     }
 
     #[test]
