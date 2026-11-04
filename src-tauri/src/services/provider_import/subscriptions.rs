@@ -140,7 +140,7 @@ pub(crate) async fn preview_with_accounts(
 ) -> Result<Vec<Source>, String> {
     let (sources, have) = tokio::task::spawn_blocking(move || {
         let have = db.private_routing_upstreams()?;
-        Ok::<_, String>((scan(&paths, &have), have))
+        Ok::<_, String>((scan(&db, &paths, &have)?, have))
     })
     .await
     .map_err(|_| FAILED)??;
@@ -161,7 +161,7 @@ pub(crate) async fn import_with_accounts(
         return Err(INVALID.into());
     }
     let selected = tokio::task::spawn_blocking(move || {
-        let sources = scan(&paths, &db.private_routing_upstreams()?);
+        let sources = scan(&db, &paths, &db.private_routing_upstreams()?)?;
         let mut seen = HashSet::new();
         let mut selected = vec![];
         let mut auths = vec![];

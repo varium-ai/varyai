@@ -10,19 +10,49 @@ use axum::{
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, sync::RwLock};
 
+#[cfg(test)]
+mod admission_tests;
+pub(crate) mod desktop;
+#[cfg(test)]
+mod desktop_tests;
+
 #[derive(Clone)]
 pub(crate) struct Connection {
     token: String,
     model_map: BTreeMap<String, String>,
     visible_models: Option<Vec<String>>,
 }
+impl Connection {
+    fn resolve(&self, model: &str) -> String {
+        self.model_map
+            .get(model)
+            .or_else(|| {
+                self.model_map
+                    .get(super::model_mapper::strip_one_m_suffix_for_upstream(model))
+            })
+            .cloned()
+            .unwrap_or_else(|| model.to_owned())
+    }
+}
 #[derive(Clone, Copy)]
 pub(crate) struct Agent(pub &'static str);
 #[derive(Default)]
-pub(crate) struct Connections(RwLock<BTreeMap<String, Connection>>);
+pub(crate) struct Connections {
+    entries: RwLock<BTreeMap<String, Connection>>,
+    desktop: desktop::Desktop,
+}
 impl Connections {
+    pub(crate) fn with_desktop(
+        path: std::path::PathBuf,
+        selectors: Vec<std::path::PathBuf>,
+    ) -> std::io::Result<Self> {
+        Ok(Self {
+            entries: RwLock::default(),
+            desktop: desktop::Desktop::load(path, selectors)?,
+        })
+    }
     pub fn active(&self, app: &str) -> bool {
-        self.0
+        self.entries
             .read()
             .is_ok_and(|connections| connections.contains_key(app))
     }
@@ -34,6 +64,10 @@ impl Connections {
         if receipt.app == "claude-desktop" {
             // Publish valid native names, but retain the old aliases for existing conversations.
             for alias in receipt.model_map.values() {
+                model_map.insert(
+                    crate::claude_desktop_config::shared_plain_model_name(alias),
+                    alias.clone(),
+                );
                 model_map.insert(
                     crate::claude_desktop_config::shared_reasoning_model_name(alias),
                     alias.clone(),
@@ -48,7 +82,7 @@ impl Connections {
                 );
             }
         }
-        self.0
+        self.entries
             .write()
             .map_err(|_| "agentConnections.failed")?
             .insert(
@@ -62,12 +96,12 @@ impl Connections {
         Ok(())
     }
     pub fn revoke(&self, app: &str) {
-        if let Ok(mut connections) = self.0.write() {
+        if let Ok(mut connections) = self.entries.write() {
             connections.remove(app);
         }
     }
     fn get(&self, app: &str, supplied: &str) -> Option<Connection> {
-        let connections = self.0.read().ok()?;
+        let connections = self.entries.read().ok()?;
         let connection = connections.get(app)?;
         // Fixed-length credentials; compare every byte before deciding.
         let difference = supplied
@@ -87,12 +121,13 @@ mod tests {
     fn desktop_alias_upgrade_preserves_existing_conversation_names() -> Result<(), String> {
         let alias = "synthetic-provider/first";
         let current = crate::claude_desktop_config::shared_model_name(alias);
+        let plain = crate::claude_desktop_config::shared_plain_model_name(alias);
         let reasoning = crate::claude_desktop_config::shared_reasoning_model_name(alias);
         use sha2::{Digest, Sha256};
         let legacy = format!("claude-vary-{:x}", Sha256::digest(alias.as_bytes()));
         assert_ne!(legacy, current);
         let connections = Connections::default();
-        for wire in [&current, &legacy, &reasoning] {
+        for wire in [&current, &legacy, &reasoning, &plain] {
             connections.install(&Receipt {
                 app: "claude-desktop".into(),
                 token: concat!("synthetic", "-local-token").into(),
@@ -118,6 +153,10 @@ mod tests {
                 connection.model_map.get(&legacy).map(String::as_str),
                 Some(alias)
             );
+            assert_eq!(
+                connection.model_map.get(&plain).map(String::as_str),
+                Some(alias)
+            );
         }
         assert!(connections
             .get("claude-desktop", "wrong-local-token")
@@ -129,14 +168,56 @@ mod tests {
 fn error(status: StatusCode, code: &'static str) -> Response {
     (status, Json(json!({"error":{"code":code,"message":code}}))).into_response()
 }
-pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) -> Response {
-    if request
-        .extensions()
-        .get::<std::net::SocketAddr>()
-        .is_some_and(|peer| !peer.ip().is_loopback())
-        || request.headers().contains_key("origin")
-        || request.headers().contains_key("sec-fetch-site")
+fn ingress_diagnostic(request: &Request) -> String {
+    let peer = match request.extensions().get::<std::net::SocketAddr>() {
+        Some(peer) if peer.ip().is_loopback() => "loopback",
+        Some(_) => "nonloopback",
+        None => "unknown",
+    };
+    let method = match *request.method() {
+        http::Method::POST => "post",
+        http::Method::GET => "get",
+        http::Method::OPTIONS => "options",
+        _ => "other",
+    };
+    let route = if request.uri().path() == "/connections/trae/v1/chat/completions" {
+        "trae_chat"
+    } else {
+        "other"
+    };
+    let mut origins = request.headers().get_all(http::header::ORIGIN).iter();
+    let origin = match (origins.next(), origins.next()) {
+        (None, _) => "absent",
+        (_, Some(_)) => "multiple",
+        (Some(value), None) if value.as_bytes() == b"vscode-file://vscode-app" => "native",
+        _ => "other",
+    };
+    let fetch_site = request.headers().contains_key("sec-fetch-site");
+    format!("peer={peer} method={method} route={route} origin={origin} fetch_site={fetch_site}")
+}
+fn local_client(request: &Request) -> bool {
+    let peer = request.extensions().get::<std::net::SocketAddr>();
+    if peer.is_some_and(|peer| !peer.ip().is_loopback()) {
+        return false;
+    }
+    if !request.headers().contains_key("origin")
+        && !request.headers().contains_key("sec-fetch-site")
     {
+        return true;
+    }
+    // Native TRAE sends Fetch Metadata with or without Origin. Credentials are checked below.
+    let mut origins = request.headers().get_all(http::header::ORIGIN).iter();
+    peer.is_some_and(|peer| peer.ip().is_loopback())
+        && request.method() == http::Method::POST
+        && request.uri().path() == "/connections/trae/v1/chat/completions"
+        && origins
+            .next()
+            .is_none_or(|origin| origin.as_bytes() == b"vscode-file://vscode-app")
+        && origins.next().is_none()
+}
+pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) -> Response {
+    if !local_client(&request) {
+        log::debug!("[AgentIngress] rejected {}", ingress_diagnostic(&request));
         return error(StatusCode::FORBIDDEN, "routing_local_clients_only");
     }
     let Some((app, endpoint)) = request
@@ -286,7 +367,7 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
     else {
         return error(StatusCode::BAD_REQUEST, "routing_model_required");
     };
-    let alias = connection
+    let mut alias = connection
         .model_map
         .get(model)
         .or_else(|| {
@@ -297,6 +378,46 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
         .map(String::as_str)
         .unwrap_or(model)
         .to_owned();
+    let mut purpose = None;
+    let mut remember = false;
+    if app == "claude-desktop" && endpoint == "/v1/messages" {
+        if !state
+            .intent_runtime
+            .global_current(state.db.routing_generation())
+        {
+            return intent::catalog_stale();
+        }
+        if let Ok(Some(menu)) = state.intent_runtime.global_snapshot() {
+            let choices = if desktop::probe(&body) {
+                let runtime = state.intent_runtime.clone();
+                tokio::task::spawn_blocking(move || runtime.connections.desktop.chosen())
+                    .await
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
+            let decision = state.intent_runtime.connections.desktop.resolve(
+                &connection,
+                &menu,
+                model,
+                &body,
+                &parts.headers,
+                &choices,
+            );
+            remember = decision.purpose.is_none()
+                && decision.alias == alias
+                && menu.groups.contains_key(&alias)
+                && body["tools"]
+                    .as_array()
+                    .is_some_and(|tools| !tools.is_empty())
+                && !parts
+                    .headers
+                    .get("x-claude-code-agent-id")
+                    .is_some_and(|v| !v.as_bytes().is_empty());
+            alias = decision.alias;
+            purpose = decision.purpose;
+        }
+    }
     if gemini.is_some_and(|(_, op)| op == "countTokens") {
         if !state
             .intent_runtime
@@ -334,6 +455,16 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
             )
         }
     };
+    if remember {
+        state
+            .intent_runtime
+            .connections
+            .desktop
+            .remember(&parts.headers, &alias);
+    }
+    if let Some(purpose) = purpose {
+        parts.extensions.insert(purpose);
+    }
     if gemini.is_some_and(|(_, op)| op == "countTokens") {
         let payload = body.get("generateContentRequest").unwrap_or(&body);
         let projection = match super::group_forward::canonical_request(
@@ -376,8 +507,8 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
         Ok(uri) => uri,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
-    let bytes = if rewritten {
-        match serde_json::to_vec(&body) {
+    let bytes = if rewritten || purpose == Some(desktop::Purpose::Probe) {
+        match desktop::patch(&bytes, &alias, purpose == Some(desktop::Purpose::Probe)) {
             Ok(bytes) => bytes.into(),
             Err(_) => return error(StatusCode::BAD_REQUEST, "routing_invalid_json"),
         }

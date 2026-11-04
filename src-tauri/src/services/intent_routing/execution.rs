@@ -98,7 +98,7 @@ async fn prepare_inner(
             .get(&target.provider_id)
             .filter(|p| eligible_provider(p, true))
             .ok_or("intentRouting.providerUnavailable")?;
-        Some(provider.clone())
+        Some(crate::services::routing_upstreams::first_enabled(provider)?)
     } else {
         None
     };
@@ -583,6 +583,7 @@ mod tests {
             ),
         ] {
             let record = RoutingUpstream {
+                icon: None,
                 transport: None,
                 schema_version: 1,
                 preset_id: None,
@@ -636,6 +637,7 @@ mod tests {
             resolve_provider, RoutingUpstream, UpstreamSource,
         };
         let record = RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,

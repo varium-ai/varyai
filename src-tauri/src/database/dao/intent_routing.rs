@@ -127,7 +127,7 @@ impl Database {
                 .map_err(|_| FAILED)?
                 .collect::<Result<std::collections::BTreeMap<_, _>, _>>()
                 .map_err(|_| FAILED)?;
-            (enabled.as_deref() != Some("false"), hidden)
+            (enabled.as_deref() == Some("true"), hidden)
         };
         let mut omitted_groups = 0;
         let providers = match providers {

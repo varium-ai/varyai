@@ -490,6 +490,7 @@ mod tests {
             .add_test_account_with_user_identity("account", "synthetic-access", "user")
             .await?;
         let db = Arc::new(crate::database::Database::memory()?);
+        db.set_intent_routing_auto_create(true)?;
         for (name, source, codex_settings) in [
             (
                 "Subscription",
@@ -528,6 +529,7 @@ mod tests {
             ),
         ] {
             db.save_routing_upstream(RoutingUpstream {
+                icon: None,
                 schema_version: 1,
                 id: String::new(),
                 revision: 0,
@@ -1069,6 +1071,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
         let record = RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,

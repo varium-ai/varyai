@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentConnectionsPage } from "@/components/agents/AgentConnectionsPage";
 import { settingsApi } from "@/lib/api/settings";
+import { proxyApi } from "@/lib/api/proxy";
 
 vi.mock("@/lib/api/agentConnections", () => ({
   agentConnectionsApi: {
@@ -43,18 +44,13 @@ const versions = (name: string, version = "1.0.0") => [
     wsl_distro: null,
   },
 ];
-function mount() {
+function mount(
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  onEditingChange = vi.fn(),
+) {
   return render(
-    <QueryClientProvider
-      client={
-        new QueryClient({
-          defaultOptions: {
-            queries: { retry: false },
-          },
-        })
-      }
-    >
-      <AgentConnectionsPage />
+    <QueryClientProvider client={client}>
+      <AgentConnectionsPage onEditingChange={onEditingChange} />
     </QueryClientProvider>,
   );
 }
@@ -86,16 +82,54 @@ beforeEach(() => {
   vi.mocked(settingsApi.runToolLifecycleAction).mockResolvedValue();
 });
 describe("Agent versions and updates", () => {
-  it("loads CLI and App versions separately without performing any updates on mount", async () => {
+  it("shows the Codex CLI version and updater without its desktop App version or updating on mount", async () => {
     mount();
     const row = await screen.findByRole("article", { name: "apps.codex" });
     expect(await within(row).findByText("CLI 1.0.0")).toBeInTheDocument();
-    expect(within(row).getByText("App 26.1000.100")).toBeInTheDocument();
+    expect(within(row).queryByText(/App /)).not.toBeInTheDocument();
+    expect(
+      within(row).getByRole("button", { name: "agentUpdates.update" }),
+    ).toBeEnabled();
     expect(
       await screen.findByRole("button", { name: "agentUpdates.all" }),
     ).toBeInTheDocument();
     expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
     expect(settingsApi.probeToolInstallations).not.toHaveBeenCalled();
+  });
+  it("hides the Codex desktop-only version while retaining other desktop versions", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      codex: true,
+      "claude-desktop": true,
+    });
+    vi.mocked(settingsApi.getToolVersions).mockResolvedValue([]);
+    vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({
+      codex: {
+        supported: true,
+        installed: true,
+        version: "26.1000.100",
+        latest_version: null,
+        source: "desktop",
+      },
+      "claude-desktop": {
+        supported: true,
+        installed: true,
+        version: "4.0.0",
+        latest_version: null,
+        source: "desktop",
+      },
+    });
+    mount();
+    const desktopRow = await screen.findByRole("article", {
+      name: "apps.claude-desktop",
+    });
+    expect(
+      await within(desktopRow).findByText("App 4.0.0"),
+    ).toBeInTheDocument();
+    const codexRow = screen.getByRole("article", { name: "apps.codex" });
+    expect(within(codexRow).queryByText(/App /)).not.toBeInTheDocument();
+    expect(
+      within(codexRow).queryByRole("button", { name: "agentUpdates.update" }),
+    ).not.toBeInTheDocument();
   });
   it("does not block connections when version probes fail or remain pending", async () => {
     vi.mocked(settingsApi.getToolVersions).mockRejectedValue(
@@ -113,27 +147,21 @@ describe("Agent versions and updates", () => {
       screen.queryByText("synthetic-private-probe"),
     ).not.toBeInTheDocument();
   });
-  it("serializes all updates, blocks duplicate clicks, continues after failure and verifies actual versions", async () => {
+  it("starts updates together, blocks duplicate clicks and verifies each result independently", async () => {
     let finish!: () => void;
-    let active = 0;
     const changed = new Set<string>();
     vi.mocked(settingsApi.getToolVersions).mockImplementation(async (tools) =>
       versions(tools![0], changed.has(tools![0]) ? "1.1.0" : "1.0.0"),
     );
     vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
       async (tools) => {
-        expect(active++).toBe(0);
-        try {
-          if (tools[0] === "claude") {
-            await new Promise<void>((resolve) => {
-              finish = resolve;
-            });
-            throw new Error("synthetic-private-upgrade-output");
-          }
-          changed.add(tools[0]);
-        } finally {
-          active--;
+        if (tools[0] === "claude") {
+          await new Promise<void>((resolve) => {
+            finish = resolve;
+          });
+          throw new Error("synthetic-private-upgrade-output");
         }
+        changed.add(tools[0]);
       },
     );
     mount();
@@ -141,13 +169,12 @@ describe("Agent versions and updates", () => {
     fireEvent.click(all);
     fireEvent.click(all);
     await waitFor(() =>
-      expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledTimes(1),
-    );
-    expect(all).toBeDisabled();
-    finish();
-    await waitFor(() =>
       expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledTimes(2),
     );
+    expect(all).toBeDisabled();
+    expect(await screen.findByText("CLI 1.1.0")).toBeInTheDocument();
+    expect(screen.queryByText(/agentUpdates.summary/)).not.toBeInTheDocument();
+    finish();
     expect(settingsApi.runToolLifecycleAction).toHaveBeenNthCalledWith(
       1,
       ["claude"],
@@ -164,6 +191,64 @@ describe("Agent versions and updates", () => {
     expect(
       screen.queryByText(/synthetic-private-upgrade-output/),
     ).not.toBeInTheDocument();
+  });
+  it("shows every active tool and completed counts without locking workspace navigation", async () => {
+    const finishes: Array<() => void> = [];
+    vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
+      () => new Promise<void>((resolve) => finishes.push(resolve)),
+    );
+    const onEditingChange = vi.fn();
+    mount(undefined, onEditingChange);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "agentUpdates.all" }),
+    );
+    await waitFor(() => expect(finishes).toHaveLength(2));
+    expect(
+      screen.getAllByRole("button", { name: "agentUpdates.updating" }),
+    ).toHaveLength(2);
+    expect(screen.getByText("agentUpdates.parallelProgress")).toBeInTheDocument();
+    expect(onEditingChange).toHaveBeenLastCalledWith({
+      dirty: false,
+      busy: false,
+    });
+    finishes.forEach((finish) => finish());
+    await screen.findByText(/agentUpdates.summary/);
+  });
+  it("retains running tasks, duplicate guards and results after leaving and returning to the page", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    let finish!: () => void;
+    vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const first = mount(client);
+    const row = await screen.findByRole("article", { name: "apps.codex" });
+    fireEvent.click(
+      await within(row).findByRole("button", { name: "agentUpdates.update" }),
+    );
+    await waitFor(() =>
+      expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledOnce(),
+    );
+    first.unmount();
+    const second = mount(client);
+    const updating = await screen.findByRole("button", {
+      name: "agentUpdates.updating",
+    });
+    expect(updating).toBeDisabled();
+    fireEvent.click(updating);
+    expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledOnce();
+    second.unmount();
+    finish();
+    await waitFor(() =>
+      expect(settingsApi.getToolVersions).toHaveBeenCalledTimes(3),
+    );
+    mount(client);
+    expect(await screen.findByText(/agentUpdates.summary/)).toBeInTheDocument();
+    expect(screen.getByText(/agentUpdates.unverified/)).toBeInTheDocument();
   });
   it.each(["unchanged", "unreadable"])(
     "does not report an %s version as a successful upgrade",

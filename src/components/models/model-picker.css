@@ -409,25 +409,6 @@
 .mp-am-row:disabled {
   opacity: 0.5;
 }
-.mp-shared-picker .mp-model-info {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 5px;
-  max-width: 45%;
-  color: var(--mp-muted);
-}
-.mp-shared-picker .mp-model-badge {
-  padding: 1px 4px;
-  border: 1px solid var(--mp-line);
-  border-radius: 4px;
-  font-size: 10px;
-  white-space: nowrap;
-}
-.mp-model-info .mp-am-context {
-  max-width: none;
-}
 .mp-am-empty {
   padding: 18px 12px;
   color: var(--mp-muted);
@@ -557,6 +538,157 @@
   background: var(--mp-card-2);
   box-shadow: 0 2px 8px rgb(0 0 0 / 10%);
   transition: none;
+}
+
+/* Agent starting-model menus follow the reference's search and icon rail. */
+.mp-model-popover.mp-model-picker-popover[data-variant="agent"] {
+  width: min(490px, calc(100vw - 16px));
+  max-height: min(420px, var(--radix-popover-content-available-height));
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--mp-line);
+  border-radius: 12px;
+  background: var(--mp-card);
+}
+.mp-model-picker-popover[data-variant="agent"]::before {
+  display: none;
+}
+.mp-agent-model-picker .mp-am-tools {
+  margin: 0;
+  border-bottom: 1px solid var(--mp-line-2);
+}
+.mp-agent-model-picker .mp-am-search {
+  height: 39px;
+  gap: 8px;
+  padding: 0 12px;
+  border-radius: 0;
+  background: none;
+}
+.mp-agent-model-picker .mp-am-search > svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.mp-agent-model-picker .mp-am-search input {
+  height: 38px;
+  font-size: 13px;
+}
+.mp-agent-model-picker .mp-am-search:focus-within {
+  box-shadow: none;
+}
+.mp-agent-model-picker .mp-am-body {
+  gap: 0;
+}
+.mp-agent-model-picker .mp-am-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 43px;
+  gap: 3px;
+  padding: 6px 5px;
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+.mp-agent-model-picker .mp-am-rail::-webkit-scrollbar {
+  display: none;
+}
+.mp-agent-model-picker .mp-am-rail > button {
+  flex: none;
+  justify-content: center;
+  width: 31px;
+  height: 31px;
+  padding: 0;
+  color: var(--mp-muted);
+}
+.mp-agent-model-picker .mp-am-rail > button[hidden] {
+  display: none;
+}
+.mp-agent-model-picker .mp-am-rail > button[aria-pressed="true"] {
+  color: var(--mp-fg);
+  background: var(--mp-model-accent-soft);
+  box-shadow:
+    inset 0 0 0 1px var(--mp-line-2),
+    0 1px 2px rgb(0 0 0 / 6%);
+}
+.mp-agent-model-picker .mp-am-rail > button > svg {
+  width: 16px;
+  height: 16px;
+}
+.mp-agent-model-picker .mp-am-list {
+  padding: 5px;
+}
+.mp-agent-model-picker .mp-am-section-label {
+  display: flex;
+  align-items: flex-end;
+  height: 24px;
+  padding: 7px 8px 0;
+  color: var(--mp-faint);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.mp-agent-model-picker .mp-am-row {
+  width: 100%;
+  height: 34px;
+  gap: 9px;
+  margin: 0;
+  padding: 0 8px;
+  border-radius: 7px;
+  font-size: 12.5px;
+}
+.mp-agent-model-picker .mp-am-row:is(:hover, :focus-visible) {
+  background: var(--mp-model-accent-soft);
+  outline: none;
+}
+.mp-agent-model-picker .mp-am-row:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.mp-am-words {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+}
+.mp-am-words > .mp-am-name {
+  flex: 0 1 auto;
+  line-height: 18px;
+}
+.mp-am-path {
+  flex: none;
+  margin-left: -4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  color: var(--mp-accent);
+  background: var(--mp-model-accent-soft);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 14px;
+  white-space: nowrap;
+}
+.mp-am-path.native {
+  color: var(--mp-muted);
+  background: var(--mp-pill);
+  box-shadow: inset 0 0 0 1px var(--mp-line);
+}
+.mp-am-source {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--mp-muted);
+  font-size: 10.5px;
+  line-height: 18px;
+}
+.mp-am-menu-note {
+  flex: none;
+  margin: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--mp-line-2);
+  color: var(--mp-muted);
+  font-size: 11px;
+  line-height: 1.45;
 }
 .mp-shared-picker button {
   cursor: pointer;

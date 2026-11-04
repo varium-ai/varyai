@@ -4,6 +4,38 @@ use crate::{
     store::AppState,
 };
 use tauri::State;
+
+#[cfg(test)]
+#[path = "agent_connections/codex_status_tests.rs"]
+mod codex_status_tests;
+
+fn codex_connection_status(
+    status: crate::services::intent_routing::client::Status,
+    selected: Option<String>,
+    desired: Option<Option<String>>,
+) -> Status {
+    Status {
+        app: "codex".into(),
+        enabled: status.enabled
+            || (status.recovery_pending && !status.orphaned_config)
+            || desired.is_some(),
+        configured: status.enabled && !status.recovery_pending,
+        recovery_pending: status.recovery_pending || (desired.is_some() && !status.enabled),
+        recovery_reason: if status.orphaned_config {
+            Some(RecoveryReason::Orphaned)
+        } else if status.recovery_pending && !status.configuration_owned {
+            Some(RecoveryReason::ConfigurationChanged)
+        } else if !status.enabled && (status.recovery_pending || desired.is_some()) {
+            Some(RecoveryReason::ConnectionInactive)
+        } else {
+            None
+        },
+        model: selected.or(desired.flatten()),
+        restart_required: status.enabled,
+        desktop_state: None,
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn get_agent_native_models(
 ) -> Result<Vec<agent_connections::native::NativeModel>, String> {
@@ -48,24 +80,7 @@ pub(crate) async fn list_agent_connections(
     let desired = tokio::task::spawn_blocking(move || manager.codex_intent())
         .await
         .map_err(|_| FAILED)??;
-    statuses.push(Status {
-        app: "codex".into(),
-        enabled: status.enabled || status.recovery_pending || desired.is_some(),
-        configured: status.enabled && !status.recovery_pending,
-        recovery_pending: status.recovery_pending || (desired.is_some() && !status.enabled),
-        recovery_reason: if status.orphaned_config {
-            Some(RecoveryReason::Orphaned)
-        } else if status.recovery_pending && !status.configuration_owned {
-            Some(RecoveryReason::ConfigurationChanged)
-        } else if !status.enabled && (status.recovery_pending || desired.is_some()) {
-            Some(RecoveryReason::ConnectionInactive)
-        } else {
-            None
-        },
-        model: selected.or(desired.flatten()),
-        restart_required: status.enabled,
-        desktop_state: None,
-    });
+    statuses.push(codex_connection_status(status, selected, desired));
     let manager = state.proxy_service.agent_connections.clone();
     let mut bridge = tokio::task::spawn_blocking(move || manager.bridge_status())
         .await
@@ -249,12 +264,19 @@ pub(crate) async fn set_agent_connection(
             super::proxy::ensure_trae_consent(&app_handle, state.inner()).await?;
             state.proxy_service.start().await?;
             state.proxy_service.refresh_global_routing().await?;
-            if state
+            let catalog = state
                 .proxy_service
                 .intent_runtime
                 .global_snapshot()?
                 .as_ref()
-                .is_none_or(|menu| agent_connections::models(menu).is_empty())
+                .map(|menu| agent_connections::models(menu))
+                .unwrap_or_default();
+            if catalog.is_empty() {
+                return Err(agent_connections::EMPTY.into());
+            }
+            if model
+                .as_ref()
+                .is_some_and(|selected| !catalog.iter().any(|entry| &entry.id == selected))
             {
                 return Err(agent_connections::EMPTY.into());
             }
@@ -262,7 +284,7 @@ pub(crate) async fn set_agent_connection(
         {
             let _guard = state.proxy_service.lock_switch_for_app("trae").await;
             let manager = state.proxy_service.agent_connections.clone();
-            tokio::task::spawn_blocking(move || manager.bridge_select(enabled))
+            tokio::task::spawn_blocking(move || manager.bridge_select_model(enabled, model))
                 .await
                 .map_err(|_| FAILED)??;
         }
@@ -281,7 +303,17 @@ pub(crate) async fn set_agent_connection(
                 .connect_codex_agent(true, false, model)
                 .await?;
         } else {
-            state.proxy_service.disable_intent_client().await?;
+            state
+                .proxy_service
+                .disconnect_codex_agent()
+                .await
+                .map_err(|error| {
+                    if error == "intentRouting.clientConflict" {
+                        agent_connections::CONFLICT.to_owned()
+                    } else {
+                        FAILED.to_owned()
+                    }
+                })?;
         }
         let manager = state.proxy_service.agent_connections.clone();
         tokio::task::spawn_blocking(move || manager.set_codex_intent(desired.as_deref(), enabled))
@@ -467,6 +499,7 @@ mod tests {
         config.listen_port = 0;
         db.update_proxy_config(config).await?;
         db.save_routing_upstream(RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -579,6 +612,7 @@ mod tests {
         config.listen_port = 0;
         db.update_proxy_config(config).await?;
         db.save_routing_upstream(RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -662,7 +696,7 @@ mod tests {
                     .connections
                     .install(&sorted)?;
                 let profile: Value = crate::config::read_json_file(&profile_path)?;
-                let wire = crate::claude_desktop_config::shared_model_name(&ordered[0]);
+                let wire = crate::claude_desktop_config::shared_plain_model_name(&ordered[0]);
                 assert_eq!(profile["inferenceModels"][0]["name"], wire);
                 let published: Value = client
                     .get(&endpoint)

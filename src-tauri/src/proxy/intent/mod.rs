@@ -13,6 +13,8 @@ mod scopes;
 pub(crate) mod trace;
 #[cfg(test)]
 mod trace_tests;
+#[cfg(test)]
+mod trae_tests;
 use super::protocol_bridge::Protocol;
 use crate::services::intent_routing::{classifier, RoutingGroup};
 use axum::{
@@ -1267,6 +1269,13 @@ async fn execute(
     );
     let compact = parts.extensions.get::<native::Compact>().copied();
     trace.purpose(&parts.headers, compact.is_some());
+    let desktop_purpose = parts
+        .extensions
+        .get::<super::connections::desktop::Purpose>()
+        .copied();
+    if let Some(purpose) = desktop_purpose {
+        trace.auxiliary_purpose(purpose.label());
+    }
     let fail = |status: StatusCode, code| {
         trace.finish(status.as_u16(), trace::State::Failed);
         error(status, code)
@@ -1357,7 +1366,16 @@ async fn execute(
                     )
                 })
             });
-        if (tools || opaque_continuation(protocol, &original)) && pinned.is_none() {
+        if tools
+            && pinned.is_none()
+            && conversation.is_none()
+            && protocol == Protocol::Chat
+            && agent == "trae"
+        {
+            // TRAE omits session headers. The selected scope already matched observed call IDs;
+            // resolve every call again so unknown, colliding or mixed owners still fail closed.
+            bindings.resolve(&projection, None)
+        } else if (tools || opaque_continuation(protocol, &original)) && pinned.is_none() {
             Err(())
         } else {
             Ok(pinned)
@@ -1500,6 +1518,7 @@ async fn execute(
     let classifier_candidates =
         crate::services::intent_routing::rules::classifier_candidates(&session.group, &facts);
     let classified = if inspected_projection["_group_projection_incomplete"] != true
+        && desktop_purpose != Some(super::connections::desktop::Purpose::Probe)
         && pinned.is_none()
         && session.group.uses_classifier()
         && !classifier_candidates.is_empty()

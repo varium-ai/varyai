@@ -41,6 +41,52 @@ though their transport deliberately has no static upstream configuration.
 Routing mutations invalidate the Agent model catalog as well as the gateway
 catalog, so opening a picker after a group edit does not reuse an obsolete list.
 
+The Codex provider editor reconciles native and managed account rows using the
+stable token subject together with the ChatGPT workspace ID. Email addresses do
+not establish identity: a personal seat and a team seat may share an email.
+An exact match is displayed once, preserving the first selected credential source
+and its position. Local aliases prevent the managed-auth status query from adding
+the duplicate row back. Opening the editor neither deletes accounts nor rewrites
+the native login or saved provider policy; a later explicit save removes duplicate
+selections. Identity claims and credentials remain in the backend.
+
+The provider list shows the selected Codex accounts' observed subscription plans
+(for example, ChatGPT Plus or ChatGPT Pro), including switched-off providers.
+Repeated plan labels are combined; different plans remain visible in the tooltip.
+Missing or unrecognized plan claims keep the generic subscription label. The
+summary reads only local native and managed identity metadata, without renewing
+credentials, requesting allowance or opening the editor. These display fields are
+not saved in provider configuration.
+
+Ready Codex account rows load vendor allowance independently when the editor
+opens, without blocking edits or saving. Account-scoped query entries share
+in-flight work and cache each completed attempt for 60 seconds, including
+failures; reopening within that interval does not request again. Manual refresh
+bypasses freshness. Transient refresh failures keep the last successful meters
+with a stale label; unavailable credentials hide those meters. Empty results are
+not zero usage. Only the allowance endpoint is called: no inference probe, login
+file rewrite, or policy save is performed. Vendor error text is not retained in
+the renderer's allowance cache or displayed in the editor. Reset-card controls
+are not supported by the current allowance DTO.
+
+Explicit subscription imports retain a bounded access token only when its user
+and workspace match the imported identity and its expiry is known and still in
+the future. Its original refresh timestamp and expiry are preserved in the
+private account store, so restarting does not force an unnecessary OAuth refresh.
+These credentials never enter provider DTOs. Import rollback does not publish
+access-cache entries, and reimport cannot replace a different refresh-token
+generation. Managed refresh uses the native Codex JSON contract without adding
+scopes. Credential-generation changes invalidate retained imported access.
+Refresh-token invalidation requires an explicit vendor error rather than a bare
+403; allowance 403, 429 and 5xx responses report a failed read, not a logout.
+
+Pre-fix imports with no generation timestamp may recover an existing access token
+from Codex's local file in memory only, requiring the same stable user, workspace
+and exact refresh token. No source account is created, selected, removed, or
+rewritten, and Magpie files are not read by that recovery path. Expiry, missing
+credentials, parse failures and transient OAuth/network failures have distinct
+allowance states; a generic source-unavailable error is not proof of logout.
+
 ## Provider model selection
 
 New API providers start with an optional comma-separated model list. Editors
@@ -80,9 +126,29 @@ The profile seeds an imported default effort for its first model when no Desktop
 preference exists; refreshing preserves the user's existing preference. Desktop
 currently chooses its native effort menu by model identity; sparse upstream
 levels are fitted by the gateway rather than represented as unsupported custom
-profile fields. Models with unknown efforts keep the plain compatibility alias.
+profile fields. Models with unknown efforts use a neutral `anthropic/vary-*`
+compatibility alias instead of a Sonnet identity, so Desktop does not choose an
+unrelated provider as its small/fast model. Older Sonnet, effort and plain
+hashed aliases remain routable.
 The native alias changes which model identity Desktop's embedded Claude Code
 recognizes; it never changes the actual upstream model or provider.
+
+Desktop's automatically generated titles follow the lead model. The gateway
+recognizes Desktop's short tool-free requests and Claude Code's explicit title
+system prompt, preserving intentional classifier and subagent model choices.
+When available, bounded in-memory session bindings distinguish concurrent chats;
+requests without a session binding use the latest lead model, matching the
+reference fallback. Only the latest catalog alias is persisted asynchronously
+in `claude-desktop.model`; caller session identifiers and prompts are not saved
+there. Before a lead model exists, auxiliary calls use the first visible model.
+Subagent turns do not replace the lead preference.
+
+Connection checks use the current Code, Cowork or Chat model menu choice read
+from Desktop's local settings, falling back to the first visible model rather
+than an old session choice. The exact one-token check receives an output-token
+floor of 16 for OpenAI-compatible upstreams and bypasses paid routing
+classification. Title and connection-check requests are labeled in route
+history. Other protocol fields and explicit model mappings retain their values.
 
 Their supported wire-level effort fields still pass through the shared ingress
 and fit the selected upstream's declared levels. Protocol conversion retains its
@@ -92,13 +158,34 @@ already running installed application binary.
 
 ## External provider imports
 
+Provider artwork is stored with the shared provider and survives editing,
+duplication and export. The editor supports built-in marks, local images,
+explicit image URLs and site favicon lookup. Images render without an added
+background tile; unknown providers use a neutral outline cube. Local pictures
+are resized to 256 pixels with transparency preserved. Explicit URL lookups
+accept public HTTPS destinations, follow bounded redirects and save the image
+locally; rendering never downloads the artwork again. Import preserves supported
+built-in icons and images from the source's confined icon folder without network
+requests. Unavailable artwork falls back to the default mark.
+
 The add-provider sheet opens a source-tab dialog for Magpie, CC Switch, Claude Code,
 Codex and OpenCode. Magpie is shown first and selected by default. It scans only
-on an explicit open. Sources are read without writes or network calls. Preview
+on an explicit open. The selected count and import action apply only to checked
+providers in the active source tab. Switching tabs preserves each source's
+choices, while a tab with no checked providers keeps the import action disabled.
+Sources are read without writes or network calls. Preview
 payloads contain names, endpoint hosts,
 model counts, duplicate status and opaque source fingerprints; credentials and
 private headers never enter the renderer. Confirmation re-reads the files and
 rejects stale fingerprints before writing a batch.
+
+Generated local gateway entries are excluded from both the preview and the
+import candidates. Detection checks every protocol endpoint against Magpie,
+CC Switch and Vary defaults and configured listener ports, plus known local
+takeover identities, placeholder keys and gateway paths. Loopback aliases are
+normalized without DNS lookups. Standalone local model services remain eligible
+when they do not match a gateway. Confirmation reads gateway settings again, so
+a previously selected entry that now resolves to a gateway rejects the batch.
 
 CC Switch imports read its SQLite database with read-only flags (or its earlier
 JSON file). Stored model capabilities and manual overrides remain separate.
@@ -198,6 +285,17 @@ again** action beside the tool name. This explicit action checks the shared
 catalog before changing any connection fields, restores fields still owned by
 Vary, and preserves external edits as the next connection's recovery baseline.
 It then installs the current shared catalog without editing login credentials.
+Receiptless Codex configuration remains a recovery warning, but does not enable
+the connection without an active connection or saved intent. Explicit disconnect
+backs up the configuration before removing recognized Vary route selections,
+catalog references, aliases and the native compatibility URL with the same local
+origin. Only the top level and selected profile are detached. External fields,
+inactive profiles, login information and the provider definition remain intact.
+Unknown provider definitions and backup failures block these writes. The
+confirmation explains the fallback to Codex defaults rather than promising the
+lost historical settings. Background recovery still leaves receiptless
+configuration unchanged. Selecting a shared model is an explicit reconnect that
+backs up the current configuration before acquiring it.
 Background refresh continues to refuse conflicting edits. An unreadable or
 malformed configuration, or externally changed owned arrays, fails without
 guessing its contents or element ownership. Successful
@@ -211,24 +309,46 @@ removes that intent. Codex stores its desired connection separately from its
 field-owned receipt, so clean-exit recovery does not silently disconnect it on
 the next launch. Explicit model selections override the previous pick; ordinary
 catalog refreshes preserve it. WorkBuddy and Desktop expose a native picker,
-not a fictitious application-wide default model setting. Qoder CN and TRAE CN also
-use their native model pickers.
+not a fictitious application-wide default model setting. Qoder CN uses its native
+model picker. TRAE CN exposes the shared starting-model picker in Vary: its durable
+outbox stores the selected catalog ID separately from catalog delivery. A connected
+bridge resolves the exact owned custom model and writes a manual recent selection
+for each native Agent label that supports it, without a session ID. Native
+persistence and selection readback must succeed before synchronization is reported
+complete. Existing explicit conversation selections remain intact. Ordinary catalog
+refreshes do not overwrite later native choices; reconnect, explicit reapplication,
+and selection of a different starting model apply the saved preference again.
+Closed or unsupported native windows leave the selection pending. Older outboxes
+without a starting-model field retain native selection behavior until an explicit
+selection is made. If a selected model leaves the catalog, synchronization chooses
+the first remaining catalog model.
 
 Starting-model selection and Desktop visibility use the same `SharedModelPicker`
-panel and `ModelPickerPopoverContent` shell, not separately styled lists. Search,
-provider navigation, grouping, capability badges, keyboard navigation, geometry,
-and close behavior are shared. Single selection switches the starting model;
-only visibility mode exposes show/hide, future-model policy, and ordering.
+component and `ModelPickerPopoverContent` shell. Search, provider filtering,
+keyboard navigation, placement, and close behavior are shared. The Agent menu
+uses the reference's 490px-wide, at most 420px-tall surface: a full-width search
+row, a 43px icon rail, quiet group headings, and 34px model rows. Routing-group
+models use the generic model icon, a localized `via Vary` badge, and a source
+description; native configuration has its own neutral label. Reasoning ranges
+and image capability icons are not shown in these menus. Recovery and TRAE
+synchronization notes appear below the list. The disconnect action opens the
+existing confirmation, with receiptless Codex using its non-restoration wording.
+Single selection switches the starting model; only visibility mode exposes
+show/hide, future-model policy, and ordering.
 Disabled native selections remain read-only and opening a picker never connects
 an Agent. The embedded setup picker still requires explicit confirmation.
+OpenCode's native selection labels show only the model ID, removing its leading
+provider ID while preserving namespaces within the model ID. The Tools row,
+tray summary, and picker share this display label; native configuration and
+routing identifiers retain the complete provider/model reference.
 
-The shared popover follows the reference implementation's compact 380px layout
+The visibility popover follows the reference implementation's compact 380px layout
 (580px with more than two catalog groups and a viewport at least 600px wide).
 Two groups intentionally retain the single column; model count does not control
 the provider rail. List rows reserve an empty maker-icon slot when no maker logo
 is known; they do not repeat provider initials or add capability badges to the
 visibility list. Context windows remain visible in the quiet right column.
-The surface, typography, grouped spacing, segmented controls, switch, arrow,
+The visibility surface, typography, grouped spacing, segmented controls, switch, arrow,
 and enter/exit motion follow the same reference. Placement selects the room
 above or below the trigger, keeps an eight-pixel gap and edge inset, and limits
 only the scrollable model list while retaining the header and footer.
@@ -263,8 +383,9 @@ Unknown context capacity is not replaced with a guessed 200k limit.
 
 TRAE uses a separate private delivery outbox, not Agent-owned provider records.
 Explicit consent prepares its local bridge without launching the client or
-enabling official-session audit hooks. The user opens/restarts TRAE and selects
-a delivered model there. An acknowledgement is required before configuration is
+enabling official-session audit hooks. The user opens/restarts TRAE; Vary can set
+the starting model, and TRAE retains its native picker for conversation changes.
+An acknowledgement is required before configuration is
 reported as delivered. Offline cleanup remains pending; only this connection's
 model namespace is removed. Authorization is revoked on failed refresh or stop.
 An unchanged catalog is checked against native model ownership, endpoint and
@@ -289,8 +410,10 @@ The Tools page reads CLI versions asynchronously, independently of connection
 state and model catalogs. Supported installed CLIs use the existing allowlisted
 lifecycle commands. Codex's desktop App version is read separately from bundle
 metadata on macOS, without launching the application; ChatGPT is not reported as
-the Codex App. Its version label does not offer a CLI updater for the desktop App.
-Other platforms omit desktop metadata that cannot be read safely.
+the Codex App. The Tools list hides Codex's desktop App version to keep its row
+compact, while retaining the CLI version and explicit CLI updater. Other desktop
+tools retain their App version labels. Other platforms omit desktop metadata that
+cannot be read safely.
 
 Update buttons are explicit user actions, never a consequence of version probing
 or connecting an Agent. Two or more available CLI updates expose an Update all
@@ -331,9 +454,12 @@ A configured connection is not proof that the client restarted, sent a request,
 or successfully called an upstream. The UI says so explicitly. The adapters never
 launch or restart user applications merely to verify configuration.
 
-Adding a provider unfolds a searchable vendor/relay sheet at the bottom of the
-provider list. Choosing a preset opens its editor; closing the editor returns to
-the sheet. The provider page follows the reference implementation's compact rows, host/model summaries,
+The provider list places Add provider in the upper-right page header. It switches
+to a dedicated searchable vendor/relay page within Models / Providers, replacing
+the list. Back restores the list's search and fold state and returns focus to
+Add provider. Choosing a preset opens its editor; canceling returns to the
+selection page, while successful saves or imports return to the provider list.
+The provider page follows the reference implementation's compact rows, host/model summaries,
 separate switched-off fold, unframed vendor tiles, and a centered provider dialog.
 Both new and existing providers use the same framed editor.
 Search includes names, safe endpoint hosts, and model IDs; matching switched-off
@@ -392,8 +518,9 @@ requires explicit discard. Saving is blocked while an operation is pending.
 
 Connected tools expose their starting-model picker directly in the row. Selecting
 a model updates the actual connection; details expand inline rather than opening
-a second setup dialog. A configuration awaiting recovery cannot reconnect through
-that picker. Choosing a starting model while off connects directly; switching
+a second setup dialog. Configuration drift with a receipt cannot reconnect through
+that picker. Receiptless Codex settings can reconnect through it, with the backup
+and restoration limits explained in the picker. Choosing a starting model while off connects directly; switching
 off asks for confirmation before restoring the tool's owned configuration.
 Pi's model entries preserve image support and reasoning choices instead of
 declaring every shared model text-only and reasoning-disabled.
@@ -454,6 +581,26 @@ The production shell does not dispatch imported rows to the historical Agent
 provider form. Import already creates an independent native resource; opening an
 API connection resolves a redacted snapshot at the requested registry revision.
 Opening and canceling do not change source files or credentials.
+
+The API editor presents a key pool with masked credential labels, selection
+checkboxes, copy/edit actions, a preferred-key marker and an add-key action.
+Enabling, preference, replacement, removal and additions are provider draft edits;
+cancel discards them, and saving applies them atomically with revision checks.
+Disabling every key removes the provider from executable catalogs without
+deleting its credentials. Preferred keys lead ordered execution; other group
+strategies retain their existing scheduling rules.
+
+A separate revision-checked summary command returns only masked labels and live
+request counts. Counts are bounded, best-effort in-memory observations of Vary
+requests, never activity in Magpie or another client. Each attempted key replaces
+the previous attempt's observation, and request completion/cancellation releases
+it. Observation failures never interrupt forwarding. Credential observation
+fingerprints remain in memory and are excluded from persisted routing traces and
+execution configuration, preserving existing continuation identities. An explicit copy action retrieves
+only the selected secret and writes it directly to the clipboard; normal editor
+and list responses remain redacted. Editing starts with an empty replacement
+input, and Show/Hide applies only to the newly entered value. Leaving it blank
+keeps the selected key. Opening the editor never sends an inference probe.
 
 Saving retains the global resource ID and existing route references. The private
 key stays in backend storage. Reusing it requires an unchanged trusted endpoint,

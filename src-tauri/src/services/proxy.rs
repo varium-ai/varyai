@@ -452,6 +452,11 @@ impl ProxyService {
         let mut runtime = crate::proxy::intent::Runtime::default();
         #[cfg(not(test))]
         {
+            runtime.connections = crate::proxy::connections::Connections::with_desktop(
+                crate::config::get_app_config_dir().join("claude-desktop.model"),
+                crate::claude_desktop_config::selector_roots(),
+            )
+            .unwrap_or_default();
             runtime.traces = Arc::new(
                 crate::proxy::intent::trace::Store::with_history(
                     crate::config::get_app_config_dir().join("routing-history"),
@@ -2609,13 +2614,27 @@ impl ProxyService {
     }
 
     pub(crate) async fn disable_intent_client(&self) -> Result<(), String> {
+        self.restore_codex_connection(false).await
+    }
+
+    pub(crate) async fn disconnect_codex_agent(&self) -> Result<(), String> {
+        self.restore_codex_connection(true).await
+    }
+
+    async fn restore_codex_connection(&self, explicit: bool) -> Result<(), String> {
         self.revoke_native_compatibility();
         self.intent_runtime.flush_continuations().await;
         let _guard = self.lock_switch_for_app("codex").await;
         let manager = self.intent_client.clone();
-        tokio::task::spawn_blocking(move || manager.restore())
-            .await
-            .map_err(|_| "intentRouting.clientFailed")?
+        tokio::task::spawn_blocking(move || {
+            if explicit {
+                manager.disconnect()
+            } else {
+                manager.restore()
+            }
+        })
+        .await
+        .map_err(|_| "intentRouting.clientFailed")?
     }
 
     /// Publish enabled global resources without changing any client's live configuration.
@@ -6346,6 +6365,7 @@ mod tests {
         let db = Arc::new(Database::memory()?);
         use_ephemeral_proxy_port(&db).await;
         let mut upstream = RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -6393,7 +6413,7 @@ mod tests {
         assert_eq!(
             receipt
                 .model_map
-                .get(&crate::claude_desktop_config::shared_model_name(
+                .get(&crate::claude_desktop_config::shared_plain_model_name(
                     &catalog[1].id
                 )),
             Some(&catalog[1].id)
@@ -6567,6 +6587,7 @@ mod tests {
         let db = Arc::new(Database::memory().expect("database"));
         use_ephemeral_proxy_port(&db).await;
         db.save_routing_upstream(RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -6662,6 +6683,7 @@ mod tests {
         let db = Arc::new(Database::memory()?);
         use_ephemeral_proxy_port(&db).await;
         let upstream = db.save_routing_upstream(RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -7255,6 +7277,7 @@ mod tests {
     async fn global_refresh_requires_explicit_import_and_preserves_deletions() {
         let _home = TempHome::new();
         let db = Arc::new(Database::memory().expect("db"));
+        db.set_intent_routing_auto_create(true).expect("on");
         let mut provider = crate::provider::Provider::with_id(
             "fixture".into(),
             "Synthetic source".into(),
@@ -7325,9 +7348,11 @@ mod tests {
         use crate::services::routing_upstreams::{RoutingUpstream, UpstreamSource};
         let _home = TempHome::new();
         let db = Arc::new(Database::memory()?);
+        db.set_intent_routing_auto_create(true)?;
         let mut upstreams = Vec::new();
         for name in ["First", "Second"] {
             upstreams.push(db.save_routing_upstream(RoutingUpstream {
+                icon: None,
                 transport: None,
                 schema_version: 1,
                 preset_id: None,
@@ -7417,7 +7442,9 @@ mod tests {
     async fn global_groups_publish_without_codex_activation_and_revoke_on_resource_changes() {
         use crate::services::routing_upstreams::{RoutingUpstream, UpstreamSource};
         let db = Arc::new(Database::memory().expect("db"));
+        db.set_intent_routing_auto_create(true).expect("on");
         db.save_routing_upstream(RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -7517,6 +7544,7 @@ mod tests {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("settings");
         let db = Arc::new(Database::memory().expect("db"));
+        db.set_intent_routing_auto_create(true).expect("on");
         use_ephemeral_proxy_port(&db).await;
         let mut provider = crate::provider::Provider::with_id(
             "fixture".into(),

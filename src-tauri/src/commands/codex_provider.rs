@@ -32,6 +32,39 @@ struct Account {
     plan: Option<String>,
     native: bool,
     ready: bool,
+    aliases: Vec<String>,
+}
+
+fn merge_native_account(
+    mut rows: Vec<Account>,
+    matching: Option<&str>,
+    settings: &mut Settings,
+) -> Vec<Account> {
+    let Some(managed) = matching else {
+        return rows;
+    };
+    if !rows.iter().any(|row| row.id == "native") || !rows.iter().any(|row| row.id == managed) {
+        return rows;
+    }
+    // Preserve the first selected credential source; deduplication is not a login switch.
+    let representative = settings
+        .accounts
+        .iter()
+        .find(|id| id.as_str() == "native" || id.as_str() == managed)
+        .map(String::as_str)
+        .unwrap_or(managed)
+        .to_owned();
+    let alias = if representative == "native" {
+        managed
+    } else {
+        "native"
+    };
+    rows.retain(|row| row.id != alias);
+    if let Some(row) = rows.iter_mut().find(|row| row.id == representative) {
+        row.aliases.push(alias.into());
+    }
+    settings.accounts.retain(|id| id != alias);
+    rows
 }
 
 #[derive(Serialize)]
@@ -48,6 +81,7 @@ pub(crate) async fn create_codex_provider(
     let db = state.db.clone();
     tokio::task::spawn_blocking(move || {
         db.save_routing_upstream(RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             id: String::new(),
@@ -160,11 +194,12 @@ pub(crate) async fn editor(state: &AppState, id: String, revision: u32) -> Resul
         id: "native".into(),
         login: native
             .as_ref()
-            .map(|(login, _)| login.clone())
+            .map(|info| info.login.clone())
             .unwrap_or_else(|| "Codex".into()),
-        plan: native.as_ref().and_then(|(_, plan)| plan.clone()),
+        plan: native.as_ref().and_then(|info| info.plan.clone()),
         native: true,
         ready: native.is_some(),
+        aliases: vec![],
     }];
     for account in state.codex_oauth_manager.list_accounts().await {
         let plan = state.codex_oauth_manager.editor_plan(&account.id).await;
@@ -174,8 +209,19 @@ pub(crate) async fn editor(state: &AppState, id: String, revision: u32) -> Resul
             plan,
             native: false,
             ready: !account.reauth_required,
+            aliases: vec![],
         });
     }
+    let matching =
+        if let Some((user, workspace)) = native.as_ref().and_then(|info| info.identity.as_ref()) {
+            state
+                .codex_oauth_manager
+                .account_for_editor_identity(user, workspace)
+                .await
+        } else {
+            None
+        };
+    let accounts = merge_native_account(accounts, matching.as_deref(), &mut settings);
     // Local cached catalog only. A refresh is a separate explicit action.
     let mut unfiltered = provider.clone();
     unfiltered
@@ -308,6 +354,25 @@ pub(crate) async fn codex_provider_models(
         .unwrap_or_default())
 }
 
+fn quota_auth_error(
+    error: crate::proxy::providers::codex_oauth_auth::CodexOAuthError,
+) -> Result<crate::services::subscription::SubscriptionQuota, String> {
+    use crate::proxy::providers::codex_oauth_auth::CodexOAuthError;
+    use crate::services::subscription::{CredentialStatus, SubscriptionQuota};
+    let status = match error {
+        CodexOAuthError::RefreshTokenInvalid | CodexOAuthError::ExpiredToken => {
+            CredentialStatus::Expired
+        }
+        CodexOAuthError::AccountNotFound(_) => CredentialStatus::NotFound,
+        CodexOAuthError::ParseError(_) => CredentialStatus::ParseError,
+        _ => return Err("routingUpstreams.failed".into()),
+    };
+    let mut quota = SubscriptionQuota::error("codex_oauth", status, String::new());
+    quota.error = None;
+    quota.credential_message = None;
+    Ok(quota)
+}
+
 #[tauri::command]
 pub(crate) async fn codex_provider_quota(
     state: State<'_, AppState>,
@@ -318,14 +383,14 @@ pub(crate) async fn codex_provider_quota(
         crate::services::subscription::get_subscription_quota("codex").await
     } else {
         let manager = &state.codex_oauth_manager;
-        let token = manager
-            .get_valid_token_for_account(&account)
-            .await
-            .map_err(|_| "routingUpstreams.sourceUnavailable")?;
-        let workspace = manager
-            .chatgpt_account_id_for_account(&account)
-            .await
-            .map_err(|_| "routingUpstreams.sourceUnavailable")?;
+        let token = match manager.get_valid_token_for_account(&account).await {
+            Ok(token) => token,
+            Err(error) => return quota_auth_error(error),
+        };
+        let workspace = match manager.chatgpt_account_id_for_account(&account).await {
+            Ok(workspace) => workspace,
+            Err(error) => return quota_auth_error(error),
+        };
         query_codex_quota(
             &token,
             Some(&workspace),
@@ -339,4 +404,108 @@ pub(crate) async fn codex_provider_quota(
     quota.error = None;
     quota.credential_message = None;
     Ok(quota)
+}
+
+#[cfg(test)]
+mod account_tests {
+    use super::*;
+
+    #[test]
+    fn quota_auth_errors_only_require_login_when_authorization_is_definitively_gone() {
+        use crate::proxy::providers::codex_oauth_auth::CodexOAuthError;
+        use crate::services::subscription::CredentialStatus;
+        assert!(matches!(
+            quota_auth_error(CodexOAuthError::RefreshTokenInvalid)
+                .ok()
+                .map(|q| q.credential_status),
+            Some(CredentialStatus::Expired)
+        ));
+        for error in [
+            CodexOAuthError::NetworkError("synthetic".into()),
+            CodexOAuthError::TokenFetchFailed("synthetic".into()),
+            CodexOAuthError::IoError("synthetic".into()),
+        ] {
+            assert!(quota_auth_error(error).is_err());
+        }
+        assert!(matches!(
+            quota_auth_error(CodexOAuthError::AccountNotFound("synthetic".into()))
+                .ok()
+                .map(|q| q.credential_status),
+            Some(CredentialStatus::NotFound)
+        ));
+        assert!(matches!(
+            quota_auth_error(CodexOAuthError::ParseError("synthetic".into()))
+                .ok()
+                .map(|q| q.credential_status),
+            Some(CredentialStatus::ParseError)
+        ));
+    }
+
+    fn account(id: &str) -> Account {
+        Account {
+            id: id.into(),
+            login: "person@example.test".into(),
+            plan: None,
+            native: id == "native",
+            ready: true,
+            aliases: vec![],
+        }
+    }
+
+    #[test]
+    fn duplicate_native_login_is_shown_once_without_changing_the_selected_binding() {
+        for selected in [
+            vec!["managed"],
+            vec!["native"],
+            vec!["native", "managed"],
+            vec!["managed", "native"],
+        ] {
+            let mut settings = Settings {
+                accounts: selected.iter().map(|id| (*id).into()).collect(),
+                ..Default::default()
+            };
+            let rows = merge_native_account(
+                vec![account("native"), account("managed"), account("other")],
+                Some("managed"),
+                &mut settings,
+            );
+            assert_eq!(rows.len(), 2);
+            let representative = rows
+                .iter()
+                .find(|row| row.id != "other")
+                .expect("representative");
+            assert_eq!(representative.id, selected[0]);
+            assert_eq!(representative.aliases.len(), 1);
+            assert_eq!(settings.accounts, vec![selected[0]]);
+            assert_eq!(representative.native, selected[0] == "native");
+            let serialized = serde_json::to_value(&rows).expect("safe rows");
+            assert!(serialized
+                .as_array()
+                .is_some_and(|rows| rows.iter().all(|row| {
+                    row.get("identity").is_none()
+                        && row.get("idToken").is_none()
+                        && row.get("accessToken").is_none()
+                })));
+        }
+    }
+
+    #[test]
+    fn same_email_is_not_evidence_and_unselected_duplicate_prefers_managed() {
+        let mut settings = Settings {
+            accounts: vec!["other".into()],
+            ..Default::default()
+        };
+        let rows = merge_native_account(
+            vec![account("native"), account("managed"), account("other")],
+            None,
+            &mut settings,
+        );
+        assert_eq!(rows.len(), 3);
+        let rows = merge_native_account(rows, Some("managed"), &mut settings);
+        assert_eq!(rows.len(), 2);
+        assert!(rows
+            .iter()
+            .any(|row| row.id == "managed" && row.aliases == ["native"]));
+        assert_eq!(settings.accounts, vec!["other"]);
+    }
 }

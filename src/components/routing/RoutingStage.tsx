@@ -1,10 +1,11 @@
 // Adapted from the reference routing stage (MIT), without credential-derived labels.
 // See third_party/routing-reference/LICENSE.
-import { Box, KeyRound } from "lucide-react";
+import { Bot, Box, KeyRound } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { APP_ICON_NAME, APP_IDS } from "@/config/appConfig";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { AccountLabel, useAccountText } from "@/components/AccountLabel";
 import appIcon from "@/assets/icons/app-icon.png";
 import { RoutingPackets } from "./RoutingPackets";
 import type {
@@ -39,6 +40,7 @@ export function RoutingStage({
   currentAccounts = [],
   concurrent = [],
   liveObservations = false,
+  layout: stageLayout = "responsive",
   now = Date.now(),
 }: {
   row?: RoutingTrace;
@@ -51,14 +53,27 @@ export function RoutingStage({
   currentAccounts?: RoutingAccount[];
   concurrent?: RoutingTrace[];
   liveObservations?: boolean;
+  layout?: "responsive" | "compact";
   now?: number;
 }) {
   const { t } = useTranslation();
+  const accountText = useAccountText();
   const stage = useRef<HTMLDivElement>(null);
-  const agent = APP_IDS.find((id) => id === row?.agent);
-  const [paths, setPaths] = useState<string[]>([]);
+  const sourceAgents = [row?.agent];
+  const [paths, setPaths] = useState<{ sources: string[]; targets: string[] }>({
+    sources: [],
+    targets: [],
+  });
   const [narrow, setNarrow] = useState(false);
-  const [compactAccounts, setCompactAccounts] = useState(false);
+  const layoutKey = JSON.stringify([
+    sourceAgents,
+    row?.candidates.map((candidate) => [
+      candidate.providerId,
+      candidate.account?.id,
+      candidate.model,
+      candidate.fixedEffort,
+    ]),
+  ]);
   const chosen = [...(row?.steps ?? [])]
     .reverse()
     .find((step) => step.kind === "attempt")?.candidate;
@@ -107,17 +122,21 @@ export function RoutingStage({
     function layout() {
       if (!node) return;
       const box = node.getBoundingClientRect();
-      setNarrow(box.width <= 560);
-      const source = node.querySelector(".rt-src")?.getBoundingClientRect();
+      setNarrow(stageLayout === "responsive" && box.width <= 560);
+      const sources = [...node.querySelectorAll(".rt-src")].map((source) =>
+        source.getBoundingClientRect(),
+      );
+      const sourceList = node
+        .querySelector(".rt-srcs")
+        ?.getBoundingClientRect();
       const hub = node.querySelector(".rt-hub")?.getBoundingClientRect();
       const list = node.querySelector(".rt-accts")?.getBoundingClientRect();
-      setCompactAccounts((list?.width ?? 0) <= 460);
-      const candidates = [...node.querySelectorAll(".rt-accts li")].map(
-        (child) => child.getBoundingClientRect(),
-      );
-      if (!source || !hub) return;
+      const candidates = [
+        ...node.querySelectorAll(".rt-accts li:not(.idle)"),
+      ].map((child) => child.getBoundingClientRect());
+      if (!sources.length || !hub) return;
       const wire = (a: DOMRect, b: DOMRect) => {
-        if (b.top >= a.bottom) {
+        if (b.left < a.right) {
           const x1 = a.left + a.width / 2 - box.left,
             y1 = a.bottom - box.top;
           const x2 = b.left - box.left,
@@ -131,27 +150,37 @@ export function RoutingStage({
         const middle = (x1 + x2) / 2;
         return `M${x1},${y1} C${middle},${y1} ${middle},${y2} ${x2},${y2}`;
       };
-      setPaths([
-        wire(source, hub),
-        ...candidates.map((candidate) => wire(hub, candidate)),
-      ]);
+      setPaths({
+        sources: sources.map((source) =>
+          sourceList &&
+          (source.bottom <= sourceList.top || source.top >= sourceList.bottom)
+            ? ""
+            : wire(source, hub),
+        ),
+        targets: candidates.map((candidate) =>
+          list && (candidate.bottom <= list.top || candidate.top >= list.bottom)
+            ? ""
+            : wire(hub, candidate),
+        ),
+      });
     }
     layout();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(layout);
     observer.observe(node);
     for (const child of node.querySelectorAll(
-      ".rt-node,.rt-accts,.rt-accts li",
+      ".rt-node,.rt-srcs,.rt-accts,.rt-accts li",
     ))
       observer.observe(child);
-    node
-      .querySelector(".rt-accts")
-      ?.addEventListener("scroll", layout, { passive: true });
+    const lists = node.querySelectorAll(".rt-srcs,.rt-accts");
+    lists.forEach((list) =>
+      list.addEventListener("scroll", layout, { passive: true }),
+    );
     return () => {
       observer.disconnect();
-      node.querySelector(".rt-accts")?.removeEventListener("scroll", layout);
+      lists.forEach((list) => list.removeEventListener("scroll", layout));
     };
-  }, [row?.id, row?.candidates.length, narrow, compactAccounts]);
+  }, [layoutKey, narrow, stageLayout]);
   const emptyKey = !row
     ? "emptyCandidates"
     : row.state === "failed"
@@ -161,14 +190,19 @@ export function RoutingStage({
         : live(row)
           ? "planningCandidates"
           : "noCandidatesRecorded";
-  const name = agent
-    ? agent === "claude"
-      ? t("apps.claudeCode")
-      : t(`apps.${agent}`)
-    : row?.agent || t("routingPage.agent");
+  const sourceIndex = sourceAgents.indexOf(row?.agent);
+  const hubDescription = [
+    "Vary AI",
+    address || t("routingPage.listenerUnknown"),
+    row && row.candidates.length > 1
+      ? t(`routingPage.strategy.${row.strategy}`)
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <div
-      className={`rt-stage ${narrow ? "narrow" : ""}`}
+      className={`rt-stage${narrow ? " narrow" : ""}${stageLayout === "compact" ? " compact" : ""}`}
       ref={stage}
       style={
         {
@@ -177,15 +211,16 @@ export function RoutingStage({
       }
     >
       <svg className="rt-wires" aria-hidden>
-        {paths.map((path, index) => (
+        {[...paths.sources, ...paths.targets].map((path, index) => (
           <path
             key={index}
             d={path}
             className={
-              row && (index === 0 || index - 1 === chosen)
-                ? active
+              row &&
+              (index === sourceIndex || index - paths.sources.length === chosen)
+                ? active && animate
                   ? "live"
-                  : row.state === "completed"
+                  : row.state === "completed" || active
                     ? "lit"
                     : ""
                 : ""
@@ -195,44 +230,76 @@ export function RoutingStage({
       </svg>
       <RoutingPackets
         row={row}
-        paths={paths}
+        paths={[
+          paths.sources[Math.max(0, sourceIndex)] ?? "",
+          ...paths.targets.slice(0, row?.candidates.length ?? 0),
+        ]}
         active={animate}
         replay={replay}
         speed={speed}
       />
       <div className="rt-srcs">
-        <div className={`rt-node rt-src ${active ? "now" : ""}`}>
-          <span className="rt-agent-icon">
-            {agent ? (
-              <ProviderIcon icon={APP_ICON_NAME[agent]} name={name} size={26} />
-            ) : (
-              row?.agent.charAt(0).toUpperCase() || "A"
-            )}
-          </span>
-          <b>{name}</b>
-          <small
-            title={
-              requestedModel && row?.model !== requestedModel
-                ? row?.model
-                : undefined
-            }
-          >
-            {requestedModel || t("routingPage.source")}
-          </small>
-        </div>
+        {sourceAgents.map((source) => {
+          const agent = APP_IDS.find((id) => id === source);
+          const name = agent
+            ? agent === "claude"
+              ? t("apps.claudeCode")
+              : t(`apps.${agent}`)
+            : source || t("routingPage.agent");
+          const selectedSource = source === row?.agent;
+          return (
+            <div
+              key={source ?? "idle"}
+              className={`rt-node rt-src ${selectedSource && active ? "now" : ""}`}
+              style={
+                {
+                  "--rt-agent": hues[source ?? ""] ?? "var(--rt-accent)",
+                } as CSSProperties
+              }
+              title={selectedSource ? requestedModel : undefined}
+            >
+              <span className="rt-agent-icon">
+                {agent ? (
+                  <ProviderIcon
+                    icon={APP_ICON_NAME[agent]}
+                    name={name}
+                    size={stageLayout === "compact" ? 18 : 26}
+                  />
+                ) : (
+                  <Bot
+                    size={stageLayout === "compact" ? 18 : 26}
+                    aria-hidden="true"
+                  />
+                )}
+              </span>
+              <b>{name}</b>
+              {row && selectedSource && requestedModel && (
+                <small
+                  className={stageLayout === "compact" ? "sr-only" : undefined}
+                  title={row?.model !== requestedModel ? row?.model : undefined}
+                >
+                  {requestedModel}
+                </small>
+              )}
+            </div>
+          );
+        })}
       </div>
-      <div className="rt-node rt-hub">
+      <div className="rt-node rt-hub" title={hubDescription}>
         <img src={appIcon} className="rt-brand-icon" alt="" />
-        <b>Vary AI</b>
-        <small>{address || t("routingPage.listenerUnknown")}</small>
+        <b className={stageLayout === "compact" ? "sr-only" : undefined}>
+          Vary AI
+        </b>
+        <small className={stageLayout === "compact" ? "sr-only" : undefined}>
+          {address || t("routingPage.listenerUnknown")}
+        </small>
         {row && row.candidates.length > 1 && (
-          <i>{t(`routingPage.strategy.${row.strategy}`)}</i>
+          <i className={stageLayout === "compact" ? "sr-only" : undefined}>
+            {t(`routingPage.strategy.${row.strategy}`)}
+          </i>
         )}
       </div>
-      <ol
-        className={`rt-accts ${compactAccounts ? "max460" : ""}`}
-        aria-label={t("routingPage.candidateSeats")}
-      >
+      <ol className="rt-accts" aria-label={t("routingPage.candidateSeats")}>
         {!row?.candidates.length && (
           <li className="idle">
             <span>{t(`routingPage.${emptyKey}`)}</span>
@@ -348,6 +415,8 @@ export function RoutingStage({
             <li
               key={`${candidate.account?.id ?? candidate.providerId}/${candidate.model}/${index}`}
               className={`${answering || answered ? "on" : ""} ${answering ? "now" : ""} ${failed || resting ? "rest" : ""} ${passed ? "left" : ""} ${used != null && used >= 90 ? "low" : ""}`}
+              title={`${accountText(accountName(candidate))} · ${candidate.model}${candidate.fixedEffort ? ` :${candidate.fixedEffort}` : ""} · ${status}`}
+              tabIndex={0}
             >
               <span className="dot" />
               <b>
@@ -363,7 +432,7 @@ export function RoutingStage({
                   <Box size={16} aria-hidden="true" />
                 )}
                 <span className="who">
-                  {accountName(candidate)}
+                  <AccountLabel>{accountName(candidate)}</AccountLabel>
                   {number ? ` \u00b7 ${kindLabel}` : ""}
                 </span>
                 <code className="mdl" title={candidate.model}>
@@ -371,7 +440,7 @@ export function RoutingStage({
                   {candidate.fixedEffort ? ` :${candidate.fixedEffort}` : ""}
                 </code>
               </b>
-              <em>
+              <em className="rt-seat-status">
                 {step?.status != null && step.status >= 400 && (
                   <code>{step.status}</code>
                 )}

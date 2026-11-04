@@ -8,6 +8,27 @@ attribution.
 
 ## Pinned source revisions
 
+- `e17b6cefc7b25c19d1e522f9e8a9626bf68912d9`: account-visibility behavior
+  reviewed in `internal/gui/assets/app.js` (`hideAccounts`, `names` and
+  `dots`). Vary uses React-rendered stand-ins for account labels and sanitized
+  tooltips, while preserving provider names and logos. No DOM walker or source
+  implementation is copied.
+- `magpie-community/plugins@f7e87877e0692b669a05125d21348178c40d0240`:
+  reviewed `packages/trae/index.mjs` (`conversationID`, `sessionOf` and
+  `traeMessages`) and `conversation.test.mjs` for stable conversation identity
+  and preservation of native tool-call/result pairs. That plugin sends requests
+  to TRAE's service; Vary receives TRAE client requests. Vary's independent
+  implementation resumes unnamed Chat tool history through existing observed
+  call ownership instead of deriving a session from the first user message.
+  No plugin source is copied.
+- `6d1e3f1e29ebe7d862cda8fa4fa842842f3acb49`: explicit Codex disconnect
+  behavior reviewed in `internal/agent/codex.go` and `internal/agent/applied.go`.
+  Vary uses its own private backup, recognition checks and atomic writes when
+  disconnecting a configuration whose recovery receipt is missing. Background
+  recovery remains separate from that explicit action. Agent model-picker
+  geometry, search, icon navigation, source badges, and row styling additionally
+  follow `internal/gui/assets/app.js` and `internal/gui/assets/app.css` at this
+  revision; Vary retains its existing connection and disconnect confirmation APIs.
 - `3bce283df43c3ce733e457daa16a69ac38bbb5fd`: resource-oriented provider and
   Agent management, the routing workspace, and provider/import artwork under
   `internal/gui/assets/icons/`. Original vendor files are `groq.svg`,
@@ -39,6 +60,12 @@ attribution.
   gateway identities and old-session alias compatibility, reviewed in
   `internal/gateway/desktop.go` and `desktop_effort_test.go`. Profile effort caps
   additionally follow the installed Desktop 4.4212 native configuration schema.
+  Desktop auxiliary routing also follows `desktopTurn`, `desktopChosen`,
+  `desktopTitle`, `desktopProbe` and `servedBeside`, with behavior checked against
+  `desktop_turn_test.go`, `desktop_probe_test.go` and
+  `desktop_tier_provider_test.go`. Vary additionally keeps bounded in-memory
+  bindings when requests include a session identifier and queues persistence
+  outside forwarding.
 
 Other adapted catalog helpers include `internal/catalog/family.go`,
 `catalog.SameModel`, `internal/provider/grouptemplate.go`, and the usage-purpose
@@ -63,3 +90,8 @@ files and integrations continue to work:
 The renderer labels the portable source **Magpie** and places it first. Import reads
 the original source files, keeps credentials in the backend, and does not modify
 the source application.
+- `c3593dc4944b91819ed12c601b0f2e844b804b5e`: desktop discovery behavior
+  reviewed in `internal/agent/desktopapp.go`, `workbuddy.go` and
+  `workbuddy_app_test.go`: application identities, both WorkBuddy builds,
+  application subfolders and Spotlight fallback. Vary uses its own Rust
+  discovery and React window-activation refresh implementation.

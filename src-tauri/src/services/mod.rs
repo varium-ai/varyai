@@ -71,4 +71,5 @@ pub(crate) mod upstream_protocol;
 
 pub(crate) mod agent_connections;
 
+pub(crate) mod provider_icons;
 pub(crate) mod provider_import;

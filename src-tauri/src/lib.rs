@@ -47,6 +47,7 @@ mod telemetry;
 mod tool_risk_events;
 
 mod tray;
+mod tray_panel;
 mod usage_events;
 mod usage_script;
 mod workbuddy_config;
@@ -436,6 +437,10 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         // 拦截窗口关闭：根据设置决定是否最小化到托盘
         .on_window_event(|window, event| {
+            if window.label() == tray_panel::LABEL {
+                tray_panel::window_event(window, event);
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // 数据库版本过新的恢复模式下没有托盘可唤回，关闭即退出，避免应用隐身后台
                 let in_db_recovery = crate::init_status::get_init_error().is_some();
@@ -473,6 +478,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::default()
+                .with_denylist(&[tray_panel::LABEL])
                 .with_state_flags(window_state_flags())
                 .build(),
         )
@@ -1091,28 +1097,30 @@ pub fn run() {
             macos_quit::install(app.handle())?;
 
             // 创建动态托盘菜单
+            app.manage(tray_panel::PanelState::default());
             let menu = tray::create_tray_menu(app.handle(), &app_state)?;
 
             // 构建托盘
             let mut tray_builder = TrayIconBuilder::with_id(tray::TRAY_ID)
                 .tooltip("Vary AI") // 鼠标悬停提示
-                .on_tray_icon_event(|tray, event| match event {
-                    // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
-                    // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
-                    // refresh_all_usage_in_tray 内部有 10 秒防抖。
-                    TrayIconEvent::Enter { .. } | TrayIconEvent::Click { .. } => {
-                        let app = tray.app_handle().clone();
-                        tauri::async_runtime::spawn(async move {
-                            crate::tray::refresh_all_usage_in_tray(&app).await;
-                        });
+                .on_tray_icon_event(|tray, event| {
+                    if matches!(
+                        event,
+                        TrayIconEvent::Click {
+                            button: tauri::tray::MouseButton::Left,
+                            button_state: tauri::tray::MouseButtonState::Up,
+                            ..
+                        }
+                    ) && tray_panel::toggle(tray.app_handle()).is_err()
+                    {
+                        log::warn!("Unable to open tray panel");
                     }
-                    _ => log::debug!("unhandled event {event:?}"),
                 })
                 .menu(&menu)
                 .on_menu_event(|app, event| {
                     tray::handle_tray_menu_event(app, &event.id.0);
                 })
-                .show_menu_on_left_click(true);
+                .show_menu_on_left_click(false);
 
             #[cfg(target_os = "macos")]
             {
@@ -1416,6 +1424,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            tray_panel::tray_panel_resize,
+            tray_panel::tray_panel_hide,
+            tray_panel::tray_panel_open,
+            tray_panel::take_workspace_navigation,
+            tray_panel::broadcast_workspace_change,
+            tray_panel::tray_panel_quit,
             commands::list_agent_connections,
             commands::get_agent_model_catalog,
             commands::get_agent_native_models,
@@ -1429,6 +1443,8 @@ pub fn run() {
             commands::preview_provider_import,
             commands::import_provider_sources,
             commands::routing_upstream_editor,
+            commands::routing_upstream_keys,
+            commands::reveal_routing_upstream_key,
             commands::save_codex_provider,
             commands::create_codex_provider,
             commands::codex_provider_models,
@@ -1438,6 +1454,7 @@ pub fn run() {
             commands::discover_routing_upstream_models,
             commands::probe_routing_upstream,
             commands::save_routing_upstream,
+            commands::fetch_provider_icon,
             commands::delete_routing_upstream,
             commands::list_intent_routing_providers,
             commands::routing_trace_snapshot,

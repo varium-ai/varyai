@@ -100,6 +100,67 @@ fn restore_transport(
 }
 
 impl Database {
+    pub(crate) fn routing_upstream_keys(
+        &self,
+        id: &str,
+        revision: u32,
+    ) -> Result<Vec<crate::services::routing_upstreams::KeySummary>, String> {
+        let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        let record = read_records(&conn)?
+            .into_iter()
+            .find(|record| record.id == id && record.revision == revision)
+            .ok_or(CONFLICT)?;
+        let UpstreamSource::Api {
+            api_key: Some(primary),
+            ..
+        } = record.source
+        else {
+            return Err(INVALID.into());
+        };
+        let summary = |id: String, key: &str| crate::services::routing_upstreams::KeySummary {
+            id,
+            label: crate::services::routing_upstreams::masked_key(key),
+            running: None,
+            observation: crate::services::routing_upstreams::key_observation(key),
+        };
+        let mut keys = vec![summary(String::new(), &primary)];
+        if let Some(transport) = record.transport {
+            for key in transport.keys {
+                keys.push(summary(key.id, key.key.as_deref().ok_or(INVALID)?));
+            }
+        }
+        Ok(keys)
+    }
+    pub(crate) fn reveal_routing_upstream_key(
+        &self,
+        id: &str,
+        revision: u32,
+        key_id: &str,
+    ) -> Result<String, String> {
+        let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
+        let record = read_records(&conn)?
+            .into_iter()
+            .find(|record| record.id == id && record.revision == revision)
+            .ok_or(CONFLICT)?;
+        if key_id.is_empty() {
+            if let UpstreamSource::Api {
+                api_key: Some(key), ..
+            } = record.source
+            {
+                return Ok(key);
+            }
+        } else if let Some(transport) = record.transport {
+            if let Some(key) = transport
+                .keys
+                .into_iter()
+                .find(|key| key.id == key_id)
+                .and_then(|key| key.key)
+            {
+                return Ok(key);
+            }
+        }
+        Err(INVALID.into())
+    }
     pub(crate) fn private_routing_upstreams(&self) -> Result<Vec<RoutingUpstream>, String> {
         let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
         read_records(&conn)
@@ -365,7 +426,7 @@ impl Database {
         records
             .into_iter()
             .enumerate()
-            .filter(|(_, r)| include_disabled || r.enabled)
+            .filter(|(_, r)| include_disabled || r.enabled && r.has_enabled_key())
             .map(|(position, record)| {
                 let mut provider = resolve_provider(&record)?;
                 provider.sort_index = Some(position);
@@ -478,6 +539,7 @@ impl Database {
             .into_iter()
             .find(|r| r.id == id);
         self.save_routing_upstream(RoutingUpstream {
+            icon: provider.icon,
             transport: None,
             schema_version: 1,
             id: id.into(),

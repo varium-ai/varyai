@@ -1,0 +1,103 @@
+.vary-dialog-backdrop {
+  background: rgb(22 31 44 / 24%);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+.dark .vary-dialog-backdrop {
+  background: rgb(3 8 16 / 48%);
+}
+.vary-dialog-surface[role="dialog"] {
+  width: calc(100% - 32px);
+  max-height: min(90dvh, calc(100dvh - 48px));
+  border: 1px solid var(--mp-line);
+  border-radius: 12px;
+  background: var(--mp-card);
+  color: var(--mp-fg);
+  box-shadow: 0 8px 32px rgb(15 23 42 / 4%);
+  font-family: var(--mp-font);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+.vary-dialog-surface:focus {
+  outline: none;
+}
+.vary-dialog-header,
+.vary-dialog-footer {
+  background: transparent;
+}
+.vary-dialog-surface .vary-dialog-title {
+  color: var(--mp-fg);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.vary-dialog-surface .vary-dialog-description {
+  max-height: 45dvh;
+  overflow-y: auto;
+  color: var(--mp-fg-2);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.vary-dialog-footer > button {
+  min-height: 32px;
+  height: auto;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  box-shadow: none;
+}
+.vary-dialog-footer > button[data-variant="outline"] {
+  border-color: var(--mp-line);
+  background: var(--mp-card);
+  color: var(--mp-fg-2);
+}
+.vary-dialog-footer > button[data-variant="outline"]:hover {
+  background: var(--mp-card-2);
+  color: var(--mp-fg);
+}
+.vary-dialog-footer > button[data-variant="default"] {
+  background: var(--mp-accent);
+  color: #fff;
+}
+.dark .vary-dialog-footer > button[data-variant="default"] {
+  color: var(--mp-bg);
+}
+.vary-dialog-footer > button[data-variant="default"]:hover {
+  filter: brightness(1.06);
+}
+.vary-dialog-footer > button[data-variant="destructive"] {
+  background: var(--mp-red);
+  color: #fff;
+}
+.vary-dialog-footer > button:focus-visible {
+  outline: 2px solid var(--mp-accent);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+.vary-app-dialog .vary-dialog-title {
+  padding-right: 8px;
+}
+.vary-dialog-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--mp-fg-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.vary-dialog-error {
+  color: var(--mp-red);
+  font-size: 12px;
+  line-height: 1.6;
+}
+@media (max-width: 480px) {
+  .vary-dialog-surface[role="dialog"] {
+    max-height: calc(100dvh - 32px);
+  }
+  .vary-dialog-footer > button {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}

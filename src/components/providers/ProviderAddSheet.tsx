@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, Search } from "lucide-react";
+import { ArrowLeft, Plus, Search } from "lucide-react";
 import {
   globalProviderPresets,
   type GlobalProviderPreset,
@@ -35,10 +35,22 @@ export function ProviderAddSheet({
   );
   return (
     <section aria-label={t("providerFlow.sheet")} className="pv-sheet">
-      <div className="pv-sheet-head">
-        <h2>
+      <header className="pv-add-heading">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="pv-back"
+          disabled={busy}
+          onClick={onClose}
+        >
+          <ArrowLeft size={14} />
+          {t("common.back")}
+        </Button>
+        <h1 className="mp-page-heading">
           {t(records.length ? "modelProviders.add" : "providerFlow.first")}
-        </h2>
+        </h1>
+      </header>
+      <div className="pv-sheet-head">
         <div className="pv-vendor-search">
           <Search size={12} aria-hidden />
           <Input
@@ -59,9 +71,6 @@ export function ProviderAddSheet({
         </div>
         <Button variant="ghost" size="sm" disabled={busy} onClick={onImport}>
           {t("providerFlow.import")}
-        </Button>
-        <Button variant="ghost" size="sm" disabled={busy} onClick={onClose}>
-          {t("common.close")}
         </Button>
       </div>
       {(!term || "chatgpt codex openai".includes(term)) && (

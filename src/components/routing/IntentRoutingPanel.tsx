@@ -19,6 +19,7 @@ import {
   validRoutingRule,
 } from "@/lib/routingGroupTransfer";
 import { SharedModelPicker } from "@/components/models/SharedModelPicker";
+import { AccountLabel, AccountMask } from "@/components/AccountLabel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { RoutingGroupIcon } from "@/components/routing/RoutingGroupIcon";
 import { RoutingGroupSlot } from "@/components/routing/RoutingGroupSlot";
@@ -94,13 +95,6 @@ export function IntentRoutingPanel({
   const providers = useQuery({
     queryKey: ["intent-routing-providers"],
     queryFn: intentRoutingApi.providers,
-    select: (options) =>
-      maskAccounts
-        ? options.map((provider, index) => ({
-            ...provider,
-            name: t("routingPage.maskedAccount", { n: index + 1 }),
-          }))
-        : options,
   });
   const discovery = useQuery({
     queryKey: ["routing-catalog-discovery"],
@@ -722,8 +716,10 @@ export function IntentRoutingPanel({
               value={member.id}
               disabled={group.off?.includes(member.id)}
             >
-              {providers.data?.find((p) => p.id === member.providerId)?.name ||
-                member.providerId}{" "}
+              <AccountLabel>
+                {providers.data?.find((p) => p.id === member.providerId)
+                  ?.name || member.providerId}
+              </AccountLabel>{" "}
               · {member.modelId}
               {member.effort ? ` :${member.effort}` : ""}
             </SelectItem>
@@ -842,7 +838,10 @@ export function IntentRoutingPanel({
   const memberOptions = draft?.members.map((m) => (
     <SelectItem key={m.id} value={m.id}>
       {m.modelId || t("intentRouting.model")} ·{" "}
-      {providers.data?.find((p) => p.id === m.providerId)?.name || m.providerId}
+      <AccountLabel>
+        {providers.data?.find((p) => p.id === m.providerId)?.name ||
+          m.providerId}
+      </AccountLabel>
       {m.effort ? ` :${m.effort}` : ""}
     </SelectItem>
   ));
@@ -1107,8 +1106,10 @@ export function IntentRoutingPanel({
                       {member.effort ? ` :${member.effort}` : ""}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {providers.data?.find((p) => p.id === member.providerId)
-                        ?.name ?? member.providerId}
+                      <AccountLabel>
+                        {providers.data?.find((p) => p.id === member.providerId)
+                          ?.name ?? member.providerId}
+                      </AccountLabel>
                     </p>
                   </div>
                   <DropdownMenu>
@@ -1225,7 +1226,7 @@ export function IntentRoutingPanel({
                             )}
                           {providers.data?.map((p) => (
                             <SelectItem key={p.id} value={p.id}>
-                              {p.name}
+                              <AccountLabel>{p.name}</AccountLabel>
                               {p.appType ? ` · ${p.appType}` : ""}
                             </SelectItem>
                           ))}
@@ -1613,9 +1614,7 @@ export function IntentRoutingPanel({
                         }
                       />
                       <code>
-                        {maskAccounts
-                          ? member.modelId
-                          : `${member.providerId}/${member.modelId}`}
+                        <AccountLabel>{`${member.providerId}/${member.modelId}`}</AccountLabel>
                       </code>
                       <small>{t("intentRouting.byPattern")}</small>
                     </div>
@@ -1806,11 +1805,13 @@ export function IntentRoutingPanel({
                           disabled={pending || draft.routing === "manual"}
                           aria-label={t("routingPage.intentToldBy")}
                         >
-                          {classifierName
-                            ? `${classifierName.name} · ${classifierName.group}`
-                            : draft.classifierTarget
-                              ? `${draft.classifierTarget.modelId} · ${providers.data?.find((provider) => provider.id === draft.classifierTarget?.providerId)?.name ?? draft.classifierTarget.providerId}`
-                              : t("routingPage.chooseClassifier")}
+                          <AccountLabel>
+                            {classifierName
+                              ? `${classifierName.name} · ${classifierName.group}`
+                              : draft.classifierTarget
+                                ? `${draft.classifierTarget.modelId} · ${providers.data?.find((provider) => provider.id === draft.classifierTarget?.providerId)?.name ?? draft.classifierTarget.providerId}`
+                                : t("routingPage.chooseClassifier")}
+                          </AccountLabel>
                         </button>
                       </PopoverTrigger>
                       <PopoverContent
@@ -1939,7 +1940,7 @@ export function IntentRoutingPanel({
                                   key={p.id}
                                   value={`provider:${p.id}`}
                                 >
-                                  {p.name}
+                                  <AccountLabel>{p.name}</AccountLabel>
                                   {p.appType ? ` · ${p.appType}` : ""}
                                 </SelectItem>
                               ))}
@@ -1994,9 +1995,11 @@ export function IntentRoutingPanel({
                   {t("intentRouting.trialNotice")}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  {providers.data?.find(
-                    (p) => p.id === draft.classifierTarget?.providerId,
-                  )?.name || t("intentRouting.none")}
+                  <AccountLabel>
+                    {providers.data?.find(
+                      (p) => p.id === draft.classifierTarget?.providerId,
+                    )?.name || t("intentRouting.none")}
+                  </AccountLabel>
                   {draft.classifierTarget &&
                     ` / ${draft.classifierTarget.modelId}`}
                 </p>
@@ -2060,9 +2063,11 @@ export function IntentRoutingPanel({
                       {trialResult.plan.candidates.map((member, index) => (
                         <li key={member.id} className="break-all">
                           {index + 1}.{" "}
-                          {providers.data?.find(
-                            (p) => p.id === member.providerId,
-                          )?.name || member.providerId}{" "}
+                          <AccountLabel>
+                            {providers.data?.find(
+                              (p) => p.id === member.providerId,
+                            )?.name || member.providerId}
+                          </AccountLabel>{" "}
                           / {member.modelId}
                         </li>
                       ))}
@@ -2103,8 +2108,10 @@ export function IntentRoutingPanel({
                   {preview.candidates.map((m, index) => (
                     <li key={m.id} className="break-all">
                       {index + 1}.{" "}
-                      {providers.data?.find((p) => p.id === m.providerId)
-                        ?.name || m.providerId}{" "}
+                      <AccountLabel>
+                        {providers.data?.find((p) => p.id === m.providerId)
+                          ?.name || m.providerId}
+                      </AccountLabel>{" "}
                       / {m.modelId}
                     </li>
                   ))}
@@ -2141,7 +2148,7 @@ export function IntentRoutingPanel({
   );
 
   return (
-    <section className="rt-group-panel">
+    <AccountMask as="section" masked={maskAccounts} className="rt-group-panel">
       <div className="rt-group-heading">
         <h3 className="label">{t("intentRouting.title")}</h3>
         <span className="note rt-group-hint">
@@ -2480,8 +2487,10 @@ export function IntentRoutingPanel({
             role="status"
             className="text-xs text-muted-foreground"
           >
-            {providers.data?.find((p) => p.id === status.providerId)?.name ||
-              status.providerId}
+            <AccountLabel>
+              {providers.data?.find((p) => p.id === status.providerId)?.name ||
+                status.providerId}
+            </AccountLabel>
             {": "}
             {t(
               `intentRouting.${status.reason ? `catalogReason.${status.reason}` : `catalogStatus.${status.status}`}`,
@@ -2659,7 +2668,11 @@ export function IntentRoutingPanel({
                                 icon:
                                   globalProviderPresets.find(
                                     (preset) => preset.id === provider?.icon,
-                                  )?.icon ?? provider?.icon,
+                                  )?.icon ??
+                                  provider?.icon ??
+                                  (provider?.appType === "codex"
+                                    ? "openai"
+                                    : undefined),
                                 name: provider?.name ?? member.providerId,
                               };
                             })}
@@ -2775,8 +2788,8 @@ export function IntentRoutingPanel({
                         ))}
                       </div>
                     ) : (
-                      <p className="rt-group-summary" title={summary}>
-                        {summary}
+                      <p className="rt-group-summary">
+                        <AccountLabel title>{summary}</AccountLabel>
                       </p>
                     )}
                   </div>
@@ -2908,6 +2921,6 @@ export function IntentRoutingPanel({
         }}
         onCancel={() => setNextDraft(null)}
       />
-    </section>
+    </AccountMask>
   );
 }

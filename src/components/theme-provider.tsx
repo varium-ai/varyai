@@ -53,6 +53,22 @@ export function ThemeProvider({
   }, [theme, storageKey]);
 
   useEffect(() => {
+    const syncTheme = (event: StorageEvent) => {
+      if (event.storageArea !== window.localStorage || event.key !== storageKey)
+        return;
+      if (
+        event.newValue === "light" ||
+        event.newValue === "dark" ||
+        event.newValue === "system"
+      ) {
+        setThemeState(event.newValue);
+      }
+    };
+    window.addEventListener("storage", syncTheme);
+    return () => window.removeEventListener("storage", syncTheme);
+  }, [storageKey]);
+
+  useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }

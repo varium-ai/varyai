@@ -29,14 +29,19 @@ vi.mock("@/lib/api/providers", () => ({
     updateTrayMenu: vi.fn().mockResolvedValue(undefined),
   },
 }));
-function mount(app: AppId, selectedApps: AppId[] = APP_IDS) {
+function mount(app: AppId, selectedApps: AppId[] = APP_IDS, compact = false) {
   render(
     <QueryClientProvider
       client={
         new QueryClient({ defaultOptions: { queries: { retry: false } } })
       }
     >
-      <ProfileSwitcher activeApp={app} selectedApps={selectedApps} />
+      <ProfileSwitcher
+        activeApp={app}
+        selectedApps={selectedApps}
+        compact={compact}
+        side={compact ? "top" : "bottom"}
+      />
     </QueryClientProvider>,
   );
 }
@@ -57,6 +62,13 @@ beforeEach(() => {
       reason: app === "doubaowork" ? "profiles.bundle.nativeLoginOnly" : null,
     })),
   });
+});
+
+it("opens a compact empty profile menu without a redundant section separator", async () => {
+  mount("claude", ["claude"], true);
+  fireEvent.click(await screen.findByRole("combobox"));
+  expect(await screen.findByText(zh.profiles.createFromCurrent)).toBeVisible();
+  expect(document.querySelector("[cmdk-list] .bg-border")).toBeNull();
 });
 
 it.each(["kimi", "claude", "opencode"] as const)(

@@ -606,6 +606,32 @@ fn imported_groups_are_always_disabled() {
 }
 
 #[test]
+fn automatic_groups_default_to_off_until_explicitly_enabled() {
+    let db = Database::memory().expect("db");
+    for id in ["first", "second"] {
+        let mut source = provider();
+        source.id = id.into();
+        source.settings_config["modelCatalog"] = json!({"models":[{"model":"shared-model"}]});
+        db.save_provider("codex", &source).expect("provider");
+        db.register_routing_fixture("codex", id)
+            .expect("explicit import");
+    }
+    let catalog = db.intent_routing_catalog().expect("default catalog");
+    assert!(!catalog.auto_create);
+    assert!(catalog.groups.is_empty());
+
+    db.set_intent_routing_auto_create(true).expect("on");
+    let enabled = db.intent_routing_catalog().expect("enabled catalog");
+    assert!(enabled.auto_create);
+    assert_eq!(enabled.groups.len(), 1);
+
+    db.set_intent_routing_auto_create(false).expect("off");
+    let disabled = db.intent_routing_catalog().expect("disabled catalog");
+    assert!(!disabled.auto_create);
+    assert!(disabled.groups.is_empty());
+}
+
+#[test]
 fn automatic_groups_follow_catalogs_and_preserve_user_overrides_and_hides() {
     let db = Database::memory().expect("db");
     let mut a = provider();
@@ -616,7 +642,7 @@ fn automatic_groups_follow_catalogs_and_preserve_user_overrides_and_hides() {
     db.save_provider("codex", &a).expect("a");
     db.register_routing_fixture("codex", &a.id)
         .expect("explicit import");
-    assert!(db.intent_routing_catalog().expect("catalog").auto_create);
+    assert!(!db.intent_routing_catalog().expect("catalog").auto_create);
     db.set_intent_routing_auto_create(true).expect("on");
     assert!(db
         .intent_routing_catalog()
@@ -726,6 +752,11 @@ fn automatic_group_setting_survives_reopen_and_v3_upgrade_but_import_disables_it
     .expect("v3");
     drop(ext);
     let db = Database::init_at(&path).expect("upgrade");
+    assert!(
+        !db.intent_routing_catalog()
+            .expect("upgrade state")
+            .auto_create
+    );
     db.set_intent_routing_auto_create(true).expect("on");
     drop(db);
     let db = Database::init_at(&path).expect("reopen");
@@ -737,6 +768,14 @@ fn automatic_group_setting_survives_reopen_and_v3_upgrade_but_import_disables_it
         !imported
             .intent_routing_catalog()
             .expect("import state")
+            .auto_create
+    );
+    db.set_intent_routing_auto_create(false).expect("off");
+    drop(db);
+    let db = Database::init_at(&path).expect("reopen with discovery off");
+    assert!(
+        !db.intent_routing_catalog()
+            .expect("saved off state")
             .auto_create
     );
 }

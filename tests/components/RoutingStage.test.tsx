@@ -94,6 +94,10 @@ it("renders individual safe key seats, the requested alias, actual listener and 
   expect(document.querySelector(".rt-hub i")).toHaveTextContent(
     "routingPage.strategy.pace",
   );
+  expect(src.querySelector("small")).not.toHaveClass("sr-only");
+  expect(document.querySelector(".rt-hub b")).not.toHaveClass("sr-only");
+  expect(document.querySelector(".rt-hub small")).not.toHaveClass("sr-only");
+  expect(document.querySelector(".rt-hub i")).not.toHaveClass("sr-only");
   const seats = document.querySelectorAll(".rt-accts li");
   expect(seats).toHaveLength(3);
   expect(seats[0]).toHaveTextContent("routingPage.keyLabel");
@@ -123,6 +127,18 @@ it("reports early failure rather than pretending to wait for candidates", () => 
     screen.queryByText("routingPage.emptyCandidates"),
   ).not.toBeInTheDocument();
   expect(document.querySelector(".rt-accts")).toHaveTextContent("409");
+  expect(document.querySelectorAll(".rt-wires path")).toHaveLength(1);
+  expect(document.querySelectorAll(".rt-packet-path")).toHaveLength(1);
+});
+it("keeps the tray stage horizontal while the workspace stage folds at narrow widths", () => {
+  const view = show({ layout: "compact" });
+  expect(document.querySelector(".rt-stage")).not.toHaveClass("narrow");
+  expect(document.querySelector(".rt-stage")).toHaveClass("compact");
+  expect(document.querySelector(".rt-hub b")).toHaveClass("sr-only");
+  expect(document.querySelector(".rt-src small")).toHaveClass("sr-only");
+  view.unmount();
+  show();
+  expect(document.querySelector(".rt-stage")).toHaveClass("narrow");
 });
 it("distinguishes a retry from the final error and does not animate completed seats", () => {
   show({
@@ -171,10 +187,7 @@ it("only uses fresh observations for the exact account and model while live", ()
       liveObservations={false}
     />,
   );
-  expect(screen.getByRole("progressbar")).toHaveAttribute(
-    "aria-valuenow",
-    "2",
-  );
+  expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "2");
 });
 it("does not turn an untried seat busy from an unrelated request", () => {
   const another: RoutingTrace = {
@@ -187,4 +200,31 @@ it("does not turn an untried seat busy from an unrelated request", () => {
   expect(seats[0]).toHaveTextContent("routingPage.seatAnsweringOther");
   expect(seats[0]).not.toHaveClass("on");
   expect(seats[1]).toHaveClass("on");
+});
+
+it("shows an idle placeholder before any request has been recorded", () => {
+  show({ row: undefined });
+  expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
+  expect(document.querySelector(".rt-src")).toHaveTextContent(
+    "routingPage.agent",
+  );
+  expect(document.querySelectorAll(".rt-accts li:not(.idle)")).toHaveLength(0);
+  expect(screen.getByText("routingPage.emptyCandidates")).toBeInTheDocument();
+  expect(document.querySelector(".rt-agent-icon svg")).toBeInTheDocument();
+  expect(document.querySelector(".rt-src small")).not.toBeInTheDocument();
+  expect(document.querySelector(".rt-hub b")).not.toHaveClass("sr-only");
+  expect(document.querySelector(".rt-hub small")).toHaveTextContent(
+    "127.0.0.1:15722",
+  );
+});
+
+it("shows one branch for a direct request and preserves every recorded fallback for a group", () => {
+  const view = show({
+    row: { ...row, candidates: [row.candidates[0]], steps: [] },
+  });
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(1);
+  expect(document.querySelector(".rt-accts")).toHaveTextContent("model-a");
+  view.unmount();
+  show();
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(3);
 });

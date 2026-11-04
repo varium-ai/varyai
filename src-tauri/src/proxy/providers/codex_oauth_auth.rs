@@ -164,7 +164,7 @@ struct OpenAiAuthClaim {
 }
 
 /// 缓存的 access_token（含过期时间）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedAccessToken {
     token: String,
     /// 过期时间戳（毫秒）
@@ -263,6 +263,9 @@ struct CodexAccountData {
     /// cc-switch 都可能轮换 refresh_token 时拒绝从 live 采纳更旧的一代。
     #[serde(default)]
     pub token_updated_at_ms: i64,
+    /// Explicitly imported access credentials remain backend-only and survive restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    imported_access: Option<CachedAccessToken>,
 }
 
 /// 公开的账号信息（返回给前端，复用 GitHubAccount 结构）
@@ -690,17 +693,7 @@ impl CodexOAuthManager {
         &self,
         refresh_token: &str,
     ) -> Result<OAuthTokenResponse, CodexOAuthError> {
-        let response = crate::proxy::http_client::get()
-            .post(OAUTH_TOKEN_URL)
-            .timeout(OAUTH_HTTP_TIMEOUT)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .header("User-Agent", CODEX_USER_AGENT)
-            .form(&[
-                ("grant_type", "refresh_token"),
-                ("refresh_token", refresh_token),
-                ("client_id", CODEX_CLIENT_ID),
-                ("scope", "openid profile email"),
-            ])
+        let response = build_refresh_request(&crate::proxy::http_client::get(), refresh_token)
             .send()
             .await?;
 
@@ -708,17 +701,7 @@ impl CodexOAuthManager {
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
             let refresh_error_code = extract_refresh_error_code(&text);
-            if status == reqwest::StatusCode::UNAUTHORIZED
-                || status == reqwest::StatusCode::FORBIDDEN
-                || matches!(
-                    refresh_error_code.as_deref(),
-                    Some(
-                        "refresh_token_expired"
-                            | "refresh_token_reused"
-                            | "refresh_token_invalidated"
-                    )
-                )
-            {
+            if refresh_authorization_gone(status, refresh_error_code.as_deref()) {
                 return Err(CodexOAuthError::RefreshTokenInvalid);
             }
             return Err(CodexOAuthError::TokenFetchFailed(format!(
@@ -741,6 +724,7 @@ impl CodexOAuthManager {
     ) -> Result<String, CodexOAuthError> {
         let _lifecycle = self.lifecycle_lock.read().await;
         self.ensure_account_ready_for_use(account_id).await?;
+        self.reuse_legacy_imported_access(account_id).await;
         Ok(self.resolve_valid_cached_token(account_id).await?.token)
     }
 
@@ -945,6 +929,14 @@ impl CodexOAuthManager {
             }
             if account.token_updated_at_ms != obtained_at_ms {
                 account.token_updated_at_ms = obtained_at_ms;
+                needs_save = true;
+            }
+            if account.imported_access.is_some() {
+                account.imported_access = Some(CachedAccessToken {
+                    token: new_tokens.access_token.clone(),
+                    expires_at_ms: compute_expires_at_ms(new_tokens.expires_in),
+                    obtained_at_ms,
+                });
                 needs_save = true;
             }
             (
@@ -1304,6 +1296,7 @@ impl CodexOAuthManager {
             // 服务端提前失效。在同一 accounts 写锁内（accounts -> access_tokens 顺序）
             // 清缓存，避免释放锁后被快路径读到旧 token；下次按新 refresh_token 重取。
             if material_replaced {
+                account.imported_access = None;
                 self.access_tokens.write().await.remove(account_id);
             }
 
@@ -1653,6 +1646,7 @@ impl CodexOAuthManager {
             authenticated_at: chrono::Utc::now().timestamp(),
             id_token: id_token.map(|token| token.to_string()),
             token_updated_at_ms: obtained_at_ms,
+            imported_access: None,
         };
         {
             let mut accounts = self.accounts.write().await;
@@ -1794,6 +1788,7 @@ impl CodexOAuthManager {
             authenticated_at: now,
             id_token,
             token_updated_at_ms: now_ms,
+            imported_access: None,
         };
 
         let account = GitHubAccount::from(&data);
@@ -2018,6 +2013,13 @@ impl CodexOAuthManager {
 
         if let Ok(mut accounts) = self.accounts.try_write() {
             *accounts = store.accounts;
+            if let Ok(mut access) = self.access_tokens.try_write() {
+                for (id, account) in accounts.iter() {
+                    if let Some(cached) = provider_import::retained_imported_access(account) {
+                        access.insert(id.clone(), cached);
+                    }
+                }
+            }
             log::info!("[CodexOAuth] 从磁盘加载 {} 个账号", accounts.len());
         }
         if let Ok(mut default) = self.default_account_id.try_write() {
@@ -2070,6 +2072,23 @@ pub struct CodexOAuthStatus {
 
 // ==================== 工具函数 ====================
 
+fn build_refresh_request(client: &reqwest::Client, refresh: &str) -> reqwest::RequestBuilder {
+    client
+        .post(OAUTH_TOKEN_URL)
+        .timeout(OAUTH_HTTP_TIMEOUT)
+        .header("originator", CODEX_OAUTH_ORIGINATOR)
+        .header(
+            "User-Agent",
+            format!("codex_cli_rs/{}", crate::codex_client::current_version()),
+        )
+        .json(&serde_json::json!({
+            "client_id": CODEX_CLIENT_ID,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh,
+            "refresh_reason": "proactive_expiry"
+        }))
+}
+
 /// 解析 OpenAI Device Code 响应中的 interval 字段
 ///
 /// 服务端可能返回字符串或数字，需要兼容
@@ -2100,6 +2119,15 @@ fn extract_refresh_error_code(body: &str) -> Option<String> {
         })
         .or_else(|| value.get("code").and_then(|code| code.as_str()))
         .map(|code| code.to_ascii_lowercase())
+}
+
+fn refresh_authorization_gone(status: reqwest::StatusCode, code: Option<&str>) -> bool {
+    matches!(
+        code,
+        Some("refresh_token_expired" | "refresh_token_reused" | "refresh_token_invalidated")
+    ) || (status == reqwest::StatusCode::BAD_REQUEST && code == Some("invalid_grant"))
+        || (status == reqwest::StatusCode::UNAUTHORIZED
+            && code.is_some_and(|code| !code.is_empty()))
 }
 
 /// 解析 JWT 中的 claims
@@ -2151,6 +2179,42 @@ fn extract_account_metadata_from_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_refresh_uses_native_json_without_requesting_new_scopes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let request =
+            build_refresh_request(&reqwest::Client::new(), "synthetic-refresh").build()?;
+        assert!(request.headers()["content-type"] == "application/json");
+        assert!(request.headers()["originator"] == CODEX_OAUTH_ORIGINATOR);
+        let body: serde_json::Value = serde_json::from_slice(
+            request
+                .body()
+                .and_then(reqwest::Body::as_bytes)
+                .ok_or("request body")?,
+        )?;
+        assert!(body.get("scope").is_none());
+        assert!(body["refresh_reason"] == "proactive_expiry");
+        assert!(body["grant_type"] == "refresh_token");
+        assert!(body["client_id"] == CODEX_CLIENT_ID);
+        Ok(())
+    }
+
+    #[test]
+    fn refresh_authorization_requires_a_definitive_vendor_error_not_a_bare_http_denial() {
+        use reqwest::StatusCode;
+        assert!(!refresh_authorization_gone(StatusCode::FORBIDDEN, None));
+        assert!(!refresh_authorization_gone(StatusCode::UNAUTHORIZED, None));
+        assert!(!refresh_authorization_gone(StatusCode::BAD_GATEWAY, None));
+        assert!(refresh_authorization_gone(
+            StatusCode::BAD_REQUEST,
+            Some("invalid_grant")
+        ));
+        assert!(refresh_authorization_gone(
+            StatusCode::UNAUTHORIZED,
+            Some("refresh_token_reused")
+        ));
+    }
 
     #[tokio::test]
     async fn codex_editor_import_is_bounded_to_a_proven_user_and_workspace(

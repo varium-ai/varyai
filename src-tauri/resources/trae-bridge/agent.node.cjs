@@ -89,6 +89,9 @@ test("bootstrap uses the common bridge and text audit binding", () => {
   assert.match(source, /convertReqToRustPayload/);
   assert.match(source, /__varyaiTraeAudit/);
   assert.doesNotMatch(source, /getUserInfoWithToken/);
+  assert.match(source, /previous.startingModel===1/);
+  assert.match(source, /createStartingModelAdapter\(req\)/);
+  assert.match(source, /__varyaiTraeSoloRequire/);
   new Function("return " + source);
 });
 test("Agent hooks its default connection client rather than the IDE client manager", () => {
@@ -277,7 +280,9 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
   const client = Object.create(proto);
   const context = {
     __varyaiTraeNativeBridge: {
+      revision: 2,
       bridge: {
+        replace() {},
         disable() {
           released++;
         },
@@ -297,6 +302,7 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
   await vm.runInNewContext(bootstrapSource(), context);
   assert.equal(released, 1);
   assert.equal(context.__varyaiTraeNativeBridge.revision, 2);
+  assert.equal(context.__varyaiTraeNativeBridge.modelVerification, 1);
   const current = context.__varyaiTraeNativeBridge;
   assert.equal(typeof current.bridge.replace, "function");
   await current.bridge.enable();

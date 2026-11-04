@@ -231,9 +231,7 @@ pub(super) async fn update_desktop_agent(app: String) -> Result<(), String> {
     {
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            let _guard = TOOL_LIFECYCLE_LOCK
-                .try_lock()
-                .map_err(|_| "busy".to_owned())?;
+            let _guard = TOOL_LIFECYCLE.reserve(&[&app])?;
             macos::update(&runtime, &app)
         })
         .await

@@ -29,9 +29,29 @@ navigation, and reduced-motion settings suppress control and stage movement.
   the name of a fallback member. Missing metadata is labeled unavailable.
 - The header links to groups, opens a new inline group, and masks provider names
   in the stage, request list, account observations, and group editor.
-- The stage shows the selected request's Agent, gateway, and candidate order.
-  Moving paths indicate an active request or playback of recorded decisions.
-  A completed request has stationary paths.
+- The workspace stage follows the reference's 124px Agent and gateway columns,
+  with vertically stacked icons, names and secondary labels. The Vary gateway
+  shows its actual listener and the observed strategy. Candidate branches fill
+  the remaining width, joined by curved paths. The stage has no fixed minimum
+  height or centered cluster; its height follows the visible nodes. The compact
+  tray keeps horizontal client labels and its circular gateway. The stage
+  shows only the displayed request's recorded Agent and candidate order in the
+  live overview, selected requests, historical days and replay. Connected clients
+  and enabled providers from configuration never supply extra nodes or branches.
+  Before any request, the stage shows a generic terminal icon, Agent label and
+  empty placeholder. A single instruction sits beneath the waiting heading;
+  the footer contains only the aligned counters until a request has a status.
+  A direct request has only its recorded destination; a group retains every
+  recorded candidate, including untried fallbacks. A request that fails before
+  recording any candidates shows its failure state and status without borrowing
+  providers from configuration or earlier requests.
+  The live selected destination receives the Agent's color;
+  moving paths and packets follow actual attempts and fallback decisions.
+  Completed requests have stationary paths. Listener and strategy details remain
+  on the gateway's tooltip, and branch status appears on hover or keyboard focus.
+  Client and provider lists have bounded scrolling, and paths are recalculated
+  when either list scrolls or a node resizes. No credential-derived labels are
+  used: repeated keys/accounts retain safe ordinal labels.
 - Selecting a request shows the decisions recorded while forwarding it:
   strategy order, continuation pinning, conversation affinity, intent preference,
   attempts, context/image exclusions, rejection status, acceptance, and completion

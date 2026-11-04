@@ -1,5 +1,47 @@
 /* Adapted from the reference implementation's provider list, sheet and framed editor.
    MIT attribution: third_party/routing-reference/LICENSE. */
+.vary-providers .pv-page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.vary-providers .pv-page-head > div {
+  min-width: 0;
+}
+.vary-providers .pv-add-trigger {
+  flex: none;
+  height: 30px;
+  gap: 5px;
+  padding: 0 10px;
+  background: var(--mp-accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+}
+.vary-providers .pv-add-trigger:hover {
+  filter: brightness(1.08);
+}
+.dark .vary-providers .pv-add-trigger {
+  color: #151e2b;
+}
+.vary-providers .pv-add-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 20px;
+}
+.vary-providers .pv-add-heading .mp-page-heading {
+  margin: 0;
+}
+.vary-providers .pv-back {
+  height: 28px;
+  gap: 5px;
+  padding: 0 6px;
+  color: var(--mp-muted);
+  font-size: 12px;
+}
 .vary-providers .pv-head {
   display: flex;
   justify-content: flex-end;
@@ -21,13 +63,13 @@
   align-items: center;
   gap: 12px;
   min-height: 62px;
-  padding: 12px 16px;
+  padding: 12px 16px 12px 24px;
   cursor: pointer;
 }
 .vary-providers .pv-row + .pv-row {
-  border-top: 1px solid var(--mp-line);
+  border-top: 0;
 }
-.vary-providers .pv-row:hover {
+.vary-providers .pv-row:hover:not(.dragging) {
   background: var(--mp-card-2);
 }
 .vary-providers .pv-open {
@@ -45,9 +87,69 @@
   flex: none;
   width: 28px;
   height: 28px;
-  border-radius: 7px;
-  background: var(--mp-pill);
   color: var(--mp-fg-2);
+}
+.pv-letter-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  line-height: 1;
+}
+.pv-editor .pv-icon-controls,
+.pv-editor .pv-icon-url {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.pv-editor .pv-icon-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  color: var(--mp-fg-2);
+}
+.pv-editor .pv-icon-controls button {
+  height: 30px;
+  padding: 0 8px;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--mp-muted);
+}
+.pv-editor .pv-icon-url input {
+  flex: 1;
+  min-width: 180px;
+}
+.pv-editor .pv-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
+  gap: 5px;
+  max-height: 180px;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+.pv-editor .pv-icon-grid button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+.pv-editor .pv-icon-grid button:hover,
+.pv-editor .pv-icon-grid button[aria-pressed="true"] {
+  border-color: var(--mp-accent);
+}
+.pv-icon-menu {
+  z-index: 400;
+}
+.pv-editor .pv-icon-error {
+  color: var(--mp-red);
+  font-size: 12px;
 }
 .vary-providers .pv-who {
   display: block;
@@ -151,10 +253,6 @@
   color: var(--mp-faint);
   font-size: 11px;
 }
-.vary-providers .pv-after-list {
-  padding: 8px 4px 0;
-}
-.vary-providers .pv-after-list > button,
 .vary-providers .pv-sheet-head > button {
   height: 24px;
   padding: 0 4px;
@@ -164,35 +262,24 @@
   font-size: 12px;
   font-weight: 400;
 }
-.vary-providers .pv-after-list > button:hover,
 .vary-providers .pv-sheet-head > button:hover {
   background: var(--mp-pill);
   color: var(--mp-fg);
 }
-.vary-providers .pv-sheet-anchor {
-  scroll-margin: 16px;
-}
 .vary-providers .pv-sheet {
-  padding: 6px 0 8px;
+  padding: 0 0 8px;
 }
 .vary-providers .pv-sheet-head {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
-  padding: 8px 4px 0;
-}
-.vary-providers .pv-sheet-head h2 {
-  flex: 1;
-  color: var(--mp-muted);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  padding: 0 4px;
 }
 .vary-providers .pv-vendor-search {
   position: relative;
-  width: 160px;
+  width: 240px;
+  max-width: 100%;
 }
 .vary-providers .pv-vendor-search > svg {
   position: absolute;
@@ -588,20 +675,41 @@
   box-shadow: none;
 }
 @media (max-width: 640px) {
+  .vary-providers .pv-page-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 12px;
+  }
+  .vary-providers .pv-page-head > div {
+    display: contents;
+  }
+  .vary-providers .pv-page-head .mp-page-heading {
+    margin: 0;
+  }
+  .vary-providers .pv-page-head .mp-lead {
+    grid-column: 1 / -1;
+    margin-bottom: 16px;
+  }
+  .vary-providers .pv-add-trigger {
+    grid-column: 2;
+    grid-row: 1;
+  }
   .vary-providers input.pv-query {
     width: 100%;
   }
   .vary-providers .pv-row {
+    --mp-sortable-handle-left: 4px;
     position: relative;
     gap: 8px;
-    padding: 9px 10px 27px;
+    padding: 9px 10px 27px 20px;
   }
   .vary-providers .pv-open {
     gap: 8px;
   }
   .vary-providers .pv-key {
     position: absolute;
-    left: 40px;
+    left: 56px;
     bottom: 4px;
     height: 18px;
     margin: 0;
@@ -613,9 +721,6 @@
   }
   .vary-providers .pv-sheet-head {
     gap: 6px;
-  }
-  .vary-providers .pv-sheet-head h2 {
-    flex-basis: 100%;
   }
   .vary-providers .pv-vendor-search {
     flex: 1;
@@ -741,11 +846,6 @@
 }
 
 /* The reference implementation's framed provider modal: only the fields scroll between both bars. */
-.pv-provider-backdrop {
-  background: rgb(0 0 0 / 28%);
-  backdrop-filter: blur(8px) saturate(1.1);
-  -webkit-backdrop-filter: blur(8px) saturate(1.1);
-}
 .pv-provider-dialog[role="dialog"] {
   width: min(600px, calc(100vw - 48px));
   max-width: none;
@@ -911,10 +1011,81 @@
   color: var(--mp-muted);
   font-size: 10px;
 }
+.pv-provider-dialog .pv-saved-keys {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.pv-provider-dialog .pv-saved-keys .pv-account + .pv-account {
+  border-top: 1px solid var(--mp-line);
+}
+.pv-provider-dialog .pv-saved-keys .pv-account > span:first-of-type {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .pv-provider-dialog .pv-key-input {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+.pv-provider-dialog .pv-key-pool .pv-key-row {
+  gap: 9px;
+  min-height: 39px;
+}
+.pv-provider-dialog .pv-key-row .pv-key-label {
+  flex: 0 1 auto;
+  font-family: ui-monospace, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pv-provider-dialog .pv-key-row.off .pv-key-label {
+  color: var(--mp-muted);
+}
+.pv-provider-dialog .pv-key-check {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--mp-line);
+  border-radius: 50%;
+  background: var(--mp-card);
+  color: transparent;
+}
+.pv-provider-dialog .pv-key-check[aria-checked="true"] {
+  background: var(--mp-fg);
+  border-color: var(--mp-fg);
+  color: var(--mp-card);
+}
+.pv-provider-dialog .pv-key-action {
+  flex: none;
+  padding: 3px;
+  color: var(--mp-muted);
+}
+.pv-provider-dialog .pv-key-prefer {
+  margin-left: auto;
+  color: var(--mp-muted);
+  white-space: nowrap;
+}
+.pv-provider-dialog .pv-key-running {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--mp-pill);
+  font-size: 11px;
+}
+.pv-provider-dialog .pv-key-add {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 11px;
+  border-top: 1px solid var(--mp-line);
+  color: var(--mp-muted);
+  font-size: 12px;
+  text-align: left;
 }
 .pv-provider-dialog .pv-key-input button {
   flex: none;

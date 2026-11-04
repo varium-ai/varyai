@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { AccountLabel } from "@/components/AccountLabel";
 import { ChevronDown, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
@@ -222,7 +223,12 @@ export function RoutingAccounts({
         {[...providers].map(([providerId, rows]) => (
           <div key={providerId} className="rt-account-provider">
             <h3 className="rt-account-provider-name">
-              {accountName({ providerId, providerName: rows[0].providerName })}
+              <AccountLabel>
+                {accountName({
+                  providerId,
+                  providerName: rows[0].providerName,
+                })}
+              </AccountLabel>
             </h3>
             {(["account", "key", "provider"] as const).map((kind) => {
               const entries = rows.filter((row) => row.kind === kind);

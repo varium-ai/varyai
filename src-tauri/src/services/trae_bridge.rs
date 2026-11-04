@@ -100,6 +100,36 @@ fn socket_paths(directory: &std::path::Path, include_legacy: bool) -> Vec<PathBu
             .then(|| entry.path())
         })
         .collect();
+    if !include_legacy
+        && paths.iter().any(|path| {
+            path.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .starts_with("bridge-agent-v2-selection-")
+            })
+        })
+    {
+        paths.retain(|path| {
+            path.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .starts_with("bridge-agent-v2-selection-")
+            })
+        });
+    }
+    if !include_legacy
+        && paths.iter().any(|path| {
+            path.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .starts_with("bridge-agent-v2-models-")
+            })
+        })
+    {
+        paths.retain(|path| {
+            path.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .starts_with("bridge-agent-v2-models-")
+            })
+        });
+    }
     // Once installed, use the current helper instead of an older resident process.
     if !include_legacy
         && paths.iter().any(|path| {
@@ -138,11 +168,6 @@ pub(crate) fn active() -> bool {
         && request(&json!({"op":"health"}), false)
             .ok()
             .is_some_and(|v| v["enabled"] == true)
-}
-pub(crate) fn ready() -> bool {
-    request(&json!({"op":"health"}), false)
-        .ok()
-        .is_some_and(|value| value["ready"] == true)
 }
 fn reconnect_in(directory: &std::path::Path, origin: &str, token: &str) -> bool {
     let mut connected = false;
@@ -238,6 +263,10 @@ fn install_runtime(directory: &std::path::Path) -> Result<PathBuf, AppError> {
             "renderer.cjs",
             include_str!("../../resources/trae-bridge/renderer.cjs"),
         ),
+        (
+            "starting-model.cjs",
+            include_str!("../../resources/trae-bridge/starting-model.cjs"),
+        ),
     ] {
         let path = runtime.join(name);
         std::fs::write(&path, source).map_err(|_| unavailable())?;
@@ -331,7 +360,10 @@ fn argv_path() -> Result<PathBuf, AppError> {
 }
 fn ensure_ready() -> Result<(), AppError> {
     if let Ok(health) = request(&json!({"op":"health"}), false) {
-        if health["revision"] == 2 {
+        if health["revision"] == 2
+            && health["modelVerification"] == 1
+            && health["startingModel"] == 1
+        {
             return if health["ready"] == true && health["modelReplacement"] == true {
                 Ok(())
             } else {
@@ -387,7 +419,11 @@ fn ensure_ready() -> Result<(), AppError> {
             if request(&json!({"op":"health"}), false)
                 .ok()
                 .is_some_and(|v| {
-                    v["ready"] == true && v["revision"] == 2 && v["modelReplacement"] == true
+                    v["ready"] == true
+                        && v["revision"] == 2
+                        && v["modelVerification"] == 1
+                        && v["startingModel"] == 1
+                        && v["modelReplacement"] == true
                 })
             {
                 return Ok(());
@@ -413,7 +449,14 @@ pub(crate) fn enable(origin: &str) -> Result<(), AppError> {
 }
 /// Prepare only after explicit consent. Never launch the UI or enable audit hooks.
 pub(crate) fn prepare_shared() -> Result<(), AppError> {
-    if ready() {
+    if request(&json!({"op":"health"}), false)
+        .ok()
+        .is_some_and(|health| {
+            health["ready"] == true
+                && health["modelVerification"] == 1
+                && health["startingModel"] == 1
+        })
+    {
         return Ok(());
     }
     #[cfg(target_os = "macos")]
@@ -441,6 +484,13 @@ pub(crate) fn apply_connected(provider: &Provider) -> Result<(), AppError> {
         &json!({"op":"apply","id":provider.id,"name":provider.name,"config":provider.settings_config}),
         false,
     )?;
+    Ok(())
+}
+pub(crate) fn select_starting_model(id: &str, model: &str) -> Result<(), AppError> {
+    let result = request(&json!({"op":"select", "id":id, "model":model}), false)?;
+    if result != true {
+        return Err(unavailable());
+    }
     Ok(())
 }
 pub(crate) fn shared_matches(provider: &Provider) -> bool {
@@ -617,6 +667,13 @@ mod tests {
         std::fs::write(&current, "").expect("current helper");
         assert_eq!(socket_paths(dir.path(), false), vec![current]);
         assert_eq!(socket_paths(dir.path(), true).len(), 3);
+        let verified = dir.path().join("bridge-agent-v2-models-789.sock");
+        std::fs::write(&verified, "").expect("current model verification helper");
+        assert_eq!(socket_paths(dir.path(), false), vec![verified]);
+        let selection = dir.path().join("bridge-agent-v2-selection-987.sock");
+        std::fs::write(&selection, "").expect("selection socket");
+        assert_eq!(socket_paths(dir.path(), false), vec![selection]);
+        assert_eq!(socket_paths(dir.path(), true).len(), 5);
     }
 
     #[test]
@@ -792,7 +849,7 @@ mod tests {
         assert!(script.is_file());
         assert_eq!(
             std::fs::read_dir(script.parent().unwrap()).unwrap().count(),
-            2
+            3
         );
         let source = std::fs::read_to_string(&script).unwrap();
         assert!(!source.contains("command.expression"));

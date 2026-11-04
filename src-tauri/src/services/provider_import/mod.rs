@@ -1,4 +1,5 @@
 //! Explicit, read-only app imports. Credentials never cross the preview boundary.
+mod gateways;
 mod readers;
 mod reasoning;
 mod subscriptions;
@@ -138,6 +139,7 @@ pub(crate) struct Candidate {
     record: RoutingUpstream,
     skip: Option<String>,
     subscription: Option<Value>,
+    generated_gateway: bool,
 }
 struct PrivateSource {
     public: Source,
@@ -239,6 +241,7 @@ fn candidate(
 ) -> Candidate {
     use crate::services::codex_provider::ModelMode;
     let mut record = RoutingUpstream {
+        icon: None,
         schema_version: 1,
         id: "imported".into(),
         name: if name.is_empty() {
@@ -272,17 +275,7 @@ fn candidate(
         base_url, api_key, ..
     } = &record.source
     {
-        let own = url::Url::parse(base_url).ok().is_some_and(|url| {
-            matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
-                && (matches!(
-                    url.port(),
-                    Some(15721) | Some(crate::proxy::types::DEFAULT_PROXY_PORT)
-                ) || url.path().contains("/connections/")
-                    || url.path().contains("/codex-menu"))
-        });
-        if own {
-            Some("selfRoute")
-        } else if base_url.is_empty() {
+        if base_url.is_empty() {
             Some("missingUrl")
         } else if api_key.as_deref().is_none_or(str::is_empty) {
             Some("missingKey")
@@ -296,12 +289,15 @@ fn candidate(
     if record.name.chars().count() > 120 {
         record.name = record.name.chars().take(120).collect();
     }
+    let generated_gateway = gateways::generated_id(reference.rsplit('/').next().unwrap_or(""))
+        || gateways::generated_id(&record.name);
     Candidate {
         reference,
         from: from.into(),
         record,
         skip,
         subscription: None,
+        generated_gateway,
     }
 }
 fn fingerprint(candidate: &Candidate) -> Result<String, String> {
@@ -355,18 +351,6 @@ fn protocol_endpoints(record: &RoutingUpstream) -> BTreeMap<String, String> {
     }
     urls
 }
-fn self_route(raw: &str) -> bool {
-    url::Url::parse(raw).is_ok_and(|url| {
-        matches!(
-            url.host_str(),
-            Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
-        ) && (matches!(
-            url.port(),
-            Some(15721) | Some(crate::proxy::types::DEFAULT_PROXY_PORT)
-        ) || url.path().contains("/connections/")
-            || url.path().contains("/codex-menu"))
-    })
-}
 pub(crate) fn same_vendor(a: &RoutingUpstream, b: &RoutingUpstream) -> bool {
     let headers = |r: &RoutingUpstream| {
         r.transport
@@ -400,7 +384,12 @@ pub(crate) fn already_added(a: &RoutingUpstream, b: &RoutingUpstream) -> bool {
                 .is_some_and(|have| have.trim_end_matches('/') == url.trim_end_matches('/'))
         })
 }
-fn scan(paths: &ImportPaths, have: &[RoutingUpstream]) -> Vec<PrivateSource> {
+fn scan(
+    db: &Database,
+    paths: &ImportPaths,
+    have: &[RoutingUpstream],
+) -> Result<Vec<PrivateSource>, String> {
+    let gateways = gateways::Gateways::load(db, paths)?;
     let definitions = [
         ("cc-switch", "CC Switch", &paths.cc_switch),
         ("claude-code", "Claude Code", &paths.claude),
@@ -408,7 +397,7 @@ fn scan(paths: &ImportPaths, have: &[RoutingUpstream]) -> Vec<PrivateSource> {
         ("opencode", "OpenCode", &paths.opencode),
         ("magpie", "Magpie", &paths.provider_backup),
     ];
-    definitions
+    Ok(definitions
         .into_iter()
         .map(|(id, name, path)| {
             let found = path.try_exists().unwrap_or(true)
@@ -444,13 +433,8 @@ fn scan(paths: &ImportPaths, have: &[RoutingUpstream]) -> Vec<PrivateSource> {
                     vec![]
                 }
             };
+            candidates.retain(|candidate| !gateways.excludes(candidate));
             for candidate in &mut candidates {
-                if protocol_endpoints(&candidate.record)
-                    .values()
-                    .any(|url| self_route(url))
-                {
-                    candidate.skip = Some("selfRoute".into());
-                }
                 if candidate.skip.is_none() && candidate.record.validate().is_err() {
                     candidate.skip = Some("unsupported".into());
                 }
@@ -491,12 +475,15 @@ fn scan(paths: &ImportPaths, have: &[RoutingUpstream]) -> Vec<PrivateSource> {
             }
             PrivateSource { public, candidates }
         })
-        .collect()
+        .collect())
 }
 #[cfg(test)]
 pub(crate) fn preview(db: &Database, paths: &ImportPaths) -> Result<Vec<Source>, String> {
     let have = db.private_routing_upstreams()?;
-    Ok(scan(paths, &have).into_iter().map(|s| s.public).collect())
+    Ok(scan(db, paths, &have)?
+        .into_iter()
+        .map(|s| s.public)
+        .collect())
 }
 pub(crate) struct Selected {
     pub record: RoutingUpstream,
@@ -511,7 +498,7 @@ pub(crate) fn import(
     if picks.is_empty() || picks.len() > 256 {
         return Err(INVALID.into());
     }
-    let sources = scan(paths, &db.private_routing_upstreams()?);
+    let sources = scan(db, paths, &db.private_routing_upstreams()?)?;
     let mut selected = Vec::new();
     let mut seen = HashSet::new();
     for pick in picks {

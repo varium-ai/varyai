@@ -6,6 +6,7 @@ use serde_json::json;
 
 fn custom() -> RoutingUpstream {
     RoutingUpstream {
+        icon: None,
         transport: None,
         schema_version: 1,
         preset_id: None,
@@ -30,8 +31,111 @@ fn custom() -> RoutingUpstream {
 }
 
 #[test]
+fn key_pool_editor_preserves_private_keys_and_applies_enabled_preference_order(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::services::routing_upstreams::{variants, ImportedKey, ImportedTransport};
+    let db = Database::memory()?;
+    let mut record = custom();
+    record.transport = Some(ImportedTransport {
+        keys: vec![ImportedKey {
+            id: "backup".into(),
+            name: "Backup".into(),
+            key: Some("synthetic-backup-key".into()),
+            enabled: true,
+            api_format: None,
+        }],
+        ..Default::default()
+    });
+    let saved = db.save_routing_upstream(record)?;
+    let summaries = db.routing_upstream_keys(&saved.id, saved.revision)?;
+    assert_eq!(summaries.len(), 2);
+    assert!(summaries.iter().all(|key| !key.label.contains("synthetic")));
+    assert!(
+        db.reveal_routing_upstream_key(&saved.id, saved.revision, "backup")?
+            == "synthetic-backup-key"
+    );
+    assert!(db
+        .reveal_routing_upstream_key(&saved.id, saved.revision + 1, "backup")
+        .is_err());
+    let mut value = serde_json::to_value(saved)?;
+    value["transport"]["preferredKey"] = json!("backup");
+    let preferred = db.save_routing_upstream(serde_json::from_value(value)?)?;
+    let provider = db.routing_providers()?.remove(0);
+    let candidates = variants(&provider);
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates
+        .iter()
+        .all(|provider| provider.settings_config.get("routingKeyId").is_none()));
+    let encoded = serde_json::to_string(&summaries)?;
+    assert!(!encoded.contains("observation") && !encoded.contains("synthetic"));
+    assert!(
+        candidates[0]
+            .resolve_usage_credentials(&crate::app_config::AppType::Codex)
+            .1
+            == "synthetic-backup-key"
+    );
+    let mut value = serde_json::to_value(preferred)?;
+    value["transport"]["primaryOff"] = json!(true);
+    let disabled = db.save_routing_upstream(serde_json::from_value(value)?)?;
+    assert_eq!(variants(&db.routing_providers()?.remove(0)).len(), 1);
+    let mut value = serde_json::to_value(disabled)?;
+    value["transport"]["keys"][0]["enabled"] = json!(false);
+    db.save_routing_upstream(serde_json::from_value(value)?)?;
+    assert!(db.routing_providers()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn key_pool_edits_cannot_move_hidden_credentials_to_another_endpoint(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::services::routing_upstreams::{ImportedKey, ImportedTransport};
+    let db = Database::memory()?;
+    let mut record = custom();
+    record.transport = Some(ImportedTransport {
+        keys: vec![ImportedKey {
+            id: "backup".into(),
+            name: "Backup".into(),
+            key: Some("synthetic-backup-key".into()),
+            enabled: true,
+            api_format: None,
+        }],
+        ..Default::default()
+    });
+    let saved = db.save_routing_upstream(record)?;
+    let mut value = serde_json::to_value(&saved)?;
+    value["source"]["baseUrl"] = json!("https://other.example/v1");
+    value["source"]["apiKey"] = json!("synthetic-replacement");
+    assert!(db
+        .save_routing_upstream(serde_json::from_value(value)?)
+        .is_err());
+    assert!(db
+        .reveal_routing_upstream_key(&saved.id, saved.revision, "unknown")
+        .is_err());
+    Ok(())
+}
+
+#[test]
+fn provider_icons_round_trip_and_reach_the_shared_catalog() -> Result<(), Box<dyn std::error::Error>>
+{
+    let db = Database::memory()?;
+    let mut value = serde_json::to_value(custom())?;
+    value["icon"] = json!("deepseek");
+    let record: RoutingUpstream = serde_json::from_value(value)?;
+    let saved = db.save_routing_upstream(record)?;
+    assert_eq!(serde_json::to_value(&saved)?["icon"], "deepseek");
+    assert_eq!(
+        serde_json::to_value(db.list_routing_upstreams()?.remove(0))?["icon"],
+        "deepseek"
+    );
+    let resolved = db.routing_discovery_provider(&saved.id, saved.revision)?;
+    assert_eq!(resolved.icon.as_deref(), Some("deepseek"));
+    Ok(())
+}
+
+#[test]
 fn automatic_group_exclusions_preserve_owned_groups_and_unlisted_stand_ins() {
     let db = Database::memory().expect("database");
+    db.set_intent_routing_auto_create(true).expect("on");
     let mut saved = Vec::new();
     for _ in 0..2 {
         saved.push(db.save_routing_upstream(custom()).expect("provider"));

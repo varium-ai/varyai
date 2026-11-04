@@ -1,6 +1,21 @@
-import { useId, useRef, useState } from "react";
+import { Fragment, useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 import {
   ChevronRight,
   ExternalLink,
@@ -12,9 +27,13 @@ import { SharedModelPicker } from "@/components/models/SharedModelPicker";
 import { ModelPickerPopoverContent } from "@/components/models/ModelPickerPopoverContent";
 import { AgentModelVisibility } from "./AgentModelVisibility";
 import { LongConversationSettings } from "./LongConversationSettings";
+import { SortableAgentRow } from "./SortableAgentRow";
+import { WorkspaceDragOverlay } from "@/components/WorkspaceDragOverlay";
+import { restrictWorkspaceSort } from "@/lib/workspaceSorting";
 import { proxyApi } from "@/lib/api/proxy";
 import { settingsApi } from "@/lib/api/settings";
 import { useAgentUpdates } from "@/hooks/useAgentUpdates";
+import { useAgentInstallations } from "@/hooks/useAgentInstallations";
 import {
   useWorkspaceEditing,
   type EditingState,
@@ -29,18 +48,28 @@ import { APP_ICON_NAME, APP_IDS } from "@/config/appConfig";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog";
+import { AppDialog } from "@/components/ui/app-dialog";
 import type { AppId } from "@/lib/api";
 import { Popover, PopoverTrigger } from "@/components/ui/popover";
 
 const supported: readonly AppId[] = APP_IDS;
+const orderStorageKey = "vary-agent-order";
+
+function readAgentOrder(): AppId[] {
+  try {
+    const saved: unknown = JSON.parse(
+      localStorage.getItem(orderStorageKey) ?? "null",
+    );
+    if (Array.isArray(saved)) {
+      const known = saved.filter((app): app is AppId => APP_IDS.includes(app));
+      return [...new Set([...known, ...APP_IDS])];
+    }
+  } catch {
+    // Unavailable storage and invalid saved values use the default order.
+  }
+  return [...APP_IDS];
+}
+
 type ConnectionOperation =
   | "connecting"
   | "disconnecting"
@@ -49,7 +78,7 @@ type ConnectionOperation =
   | "visibility";
 const nativePicker = (app: AppId | null) =>
   app !== null &&
-  ["claude-desktop", "workbuddy", "qoder", "trae", "doubaowork"].includes(app);
+  ["claude-desktop", "workbuddy", "qoder", "doubaowork"].includes(app);
 const websites: Record<AppId, string> = {
   "claude-desktop": "https://claude.ai/download",
   claude: "https://code.claude.com/docs/en/overview",
@@ -71,9 +100,11 @@ const websites: Record<AppId, string> = {
 export function AgentConnectionsPage({
   onAddProvider,
   onEditingChange,
+  compact = false,
 }: {
   onAddProvider?: () => void;
   onEditingChange?: (state: EditingState) => void;
+  compact?: boolean;
 }) {
   const { t } = useTranslation();
   const pageId = useId();
@@ -85,11 +116,7 @@ export function AgentConnectionsPage({
     queryFn: agentConnectionsApi.list,
     refetchInterval: 5000,
   });
-  const installations = useQuery({
-    queryKey: ["agent-installations"],
-    queryFn: proxyApi.getAgentInstallations,
-    refetchInterval: 30000,
-  });
+  const installations = useAgentInstallations();
   const catalog = useQuery({
     queryKey: ["agent-model-catalog"],
     queryFn: agentConnectionsApi.models,
@@ -116,13 +143,25 @@ export function AgentConnectionsPage({
     sharedSettingsBusy || (app !== null && !!operations[app]);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<AppId | null>(null);
+  const [appOrder, setAppOrder] = useState(readAgentOrder);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
   const [picking, setPicking] = useState<AppId | null>(null);
   const [disconnecting, setDisconnecting] = useState<AppId | null>(null);
+  const orphanedDisconnect =
+    disconnecting === "codex" &&
+    states.data?.some(
+      (state) => state.app === "codex" && state.recoveryReason === "orphaned",
+    );
   const [restarting, setRestarting] = useState<AppId | null>(null);
   const updates = useAgentUpdates(
     APP_IDS.filter((app) => installations.data?.[app]),
   );
-  useWorkspaceEditing(false, updates.busy || !!busy, onEditingChange);
+  useWorkspaceEditing(false, !!busy, onEditingChange);
   function beginOperation(app: AppId, operation: ConnectionOperation) {
     if (updates.busy || sharedSettingsBusy || operationLocks.current.has(app))
       return false;
@@ -235,7 +274,7 @@ export function AgentConnectionsPage({
       : catalog.data[0].id;
     void apply(app, true, model);
   }
-  const shown = supported.filter(
+  const shown = appOrder.filter(
     (app) =>
       installations.data?.[app] ||
       states.data?.some(
@@ -243,14 +282,53 @@ export function AgentConnectionsPage({
           state.app === app && (state.enabled || state.recoveryPending),
       ),
   );
+  if (compact)
+    shown.sort(
+      (a, b) =>
+        Number(!!states.data?.find((s) => s.app === b)?.enabled) -
+        Number(!!states.data?.find((s) => s.app === a)?.enabled),
+    );
   const other = APP_IDS.filter((app) => !shown.includes(app));
+  function reorder({ active, over }: DragEndEvent) {
+    if (
+      compact ||
+      !over ||
+      active.id === over.id ||
+      !shown.includes(active.id as AppId) ||
+      !shown.includes(over.id as AppId)
+    )
+      return;
+    const next = arrayMove(
+      appOrder,
+      appOrder.indexOf(active.id as AppId),
+      appOrder.indexOf(over.id as AppId),
+    );
+    setAppOrder(next);
+    try {
+      // Keep undetected tools so a rescan restores their saved positions.
+      localStorage.setItem(orderStorageKey, JSON.stringify(next));
+    } catch {
+      // Sorting remains available for this session when storage is unavailable.
+    }
+  }
+  const announcePosition = (id: string | number, overId: string | number) =>
+    t("agentConnections.sorting.position", {
+      app: name(id as AppId),
+      position: shown.indexOf(overId as AppId) + 1,
+      count: shown.length,
+    });
   function row(app: AppId) {
     const state = states.data?.find((state) => state.app === app);
     const enabled = !!state?.enabled;
+    const orphaned = app === "codex" && state?.recoveryReason === "orphaned";
     const native = nativeModels.data?.find((entry) => entry.app === app);
     const nativeAvailable = native?.available && !nativeModels.isError;
+    const nativeModel =
+      app === "opencode"
+        ? native?.model?.replace(/^[^/]+\//, "")
+        : native?.model;
     const nativeLabel = nativeAvailable
-      ? (native.model ?? t("agentConnections.nativeDefault"))
+      ? (nativeModel ?? t("agentConnections.nativeDefault"))
       : t(
           nativeModels.isPending
             ? "common.loading"
@@ -290,8 +368,11 @@ export function AgentConnectionsPage({
               : "gatewayStopped"
           : "off";
     return (
-      <article
+      <SortableAgentRow
         key={app}
+        app={app}
+        name={name(app)}
+        sortable={!compact}
         className={`mp-agent-row${expanded === app ? " expanded" : ""}`}
         aria-label={t(`apps.${app}`)}
         onClick={(event) => {
@@ -315,6 +396,9 @@ export function AgentConnectionsPage({
         <div className="mp-agent-who">
           <div className="mp-agent-name">
             <h2>{name(app)}</h2>
+            {!compact && (
+              <AgentVersionTag app={app} updates={updates} disabled={busy} />
+            )}
             {app === "doubaowork" && (
               <span className="mp-agent-note">
                 {t("agentConnections.auditOnly")}
@@ -382,7 +466,6 @@ export function AgentConnectionsPage({
                 </button>
               )}
           </div>
-          <AgentVersionTag app={app} updates={updates} disabled={busy} />
           <p
             className={`mp-agent-status ${status === "unavailable" ? "bad" : enabled || operations[app] ? "wait" : ""}`}
             role="status"
@@ -398,6 +481,15 @@ export function AgentConnectionsPage({
             </span>
           </p>
         </div>
+        {compact && (
+          <span className="mp-agent-summary-model" title={currentModel}>
+            {app === "claude-desktop" && enabled
+              ? t("agentConnections.allModels", {
+                  count: catalog.data?.length ?? 0,
+                })
+              : currentModel}
+          </span>
+        )}
         <Button
           variant="ghost"
           className="mp-agent-next"
@@ -407,136 +499,165 @@ export function AgentConnectionsPage({
           aria-controls={expanded === app ? detailsId : undefined}
           onClick={() => setExpanded(expanded === app ? null : app)}
         >
-          {t(
-            expanded === app
-              ? "agentConnections.collapse"
-              : "agentConnections.details",
-          )}
+          <span className={compact ? "sr-only" : undefined}>
+            {t(
+              expanded === app
+                ? "agentConnections.collapse"
+                : "agentConnections.details",
+            )}
+          </span>
           <ChevronRight size={10} />
         </Button>
-        {app === "claude-desktop" && (
-          <AgentModelVisibility
-            app={app}
-            name={name(app)}
-            connected={enabled}
-            models={catalog.data ?? []}
+        <div
+          className={compact ? "mp-agent-panel-controls" : "contents"}
+          hidden={compact && expanded !== app}
+        >
+          {app === "claude-desktop" && (
+            <AgentModelVisibility
+              app={app}
+              name={name(app)}
+              connected={enabled}
+              models={catalog.data ?? []}
+              disabled={
+                sharedSettingsBusy ||
+                (!!operations[app] && operations[app] !== "visibility") ||
+                updates.busy ||
+                !!state?.recoveryPending ||
+                states.isPending ||
+                states.isError ||
+                catalog.isPending ||
+                catalog.isError
+              }
+              onBusyChange={(value) =>
+                value ? beginOperation(app, "visibility") : endOperation(app)
+              }
+            />
+          )}
+          {!nativePicker(app) && (
+            <Popover
+              open={picking === app}
+              onOpenChange={(open) => setPicking(open ? app : null)}
+            >
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="mp-agent-start"
+                  disabled={
+                    rowBusy(app) ||
+                    updates.busy ||
+                    states.isPending ||
+                    states.isError ||
+                    (!!state?.recoveryPending &&
+                      !orphaned &&
+                      !(
+                        app === "trae" &&
+                        state.recoveryReason === "bridge_pending"
+                      )) ||
+                    (enabled &&
+                      (catalog.isPending ||
+                        catalog.isError ||
+                        !catalog.data?.length))
+                  }
+                  aria-label={`${t("agentConnections.model")} ${name(app)}`}
+                  title={
+                    !enabled
+                      ? `${nativeLabel}\n${t(
+                          nativeAvailable
+                            ? native.model
+                              ? "agentConnections.nativeModelHint"
+                              : "agentConnections.nativeDefaultHint"
+                            : "agentConnections.nativeUnavailable",
+                        )}`
+                      : currentModel
+                  }
+                >
+                  {!enabled && nativeAvailable && (
+                    <span className="mp-agent-model-icon" aria-hidden="true">
+                      <ProviderIcon
+                        icon={APP_ICON_NAME[app]}
+                        name={name(app)}
+                        size={14}
+                      />
+                    </span>
+                  )}
+                  <span>{currentModel}</span>
+                  <ChevronDown size={11} />
+                </button>
+              </PopoverTrigger>
+              <ModelPickerPopoverContent
+                data-variant="agent"
+                onDismiss={() => setPicking(null)}
+                aria-label={`${t("agentConnections.model")} ${name(app)}`}
+              >
+                <SharedModelPicker
+                  variant="agent"
+                  description={
+                    orphaned
+                      ? t("agentConnections.orphanReconnectHint")
+                      : app === "trae"
+                        ? t("agentConnections.traeStartingModelHint")
+                        : undefined
+                  }
+                  disabled={rowBusy(app)}
+                  models={[
+                    ...(!enabled && nativeAvailable
+                      ? [
+                          {
+                            id: `native-current/${app}`,
+                            name: nativeLabel,
+                            source: "native" as const,
+                            logo: APP_ICON_NAME[app],
+                            disabled: true,
+                          },
+                        ]
+                      : []),
+                    ...(catalog.isError ? [] : (catalog.data ?? [])),
+                  ]}
+                  selected={
+                    enabled && state?.model
+                      ? [state.model]
+                      : nativeAvailable
+                        ? [`native-current/${app}`]
+                        : []
+                  }
+                  onPick={(model) => void apply(app, true, model)}
+                  onDisconnect={
+                    enabled || orphaned
+                      ? () => {
+                          setPicking(null);
+                          setDisconnecting(app);
+                        }
+                      : undefined
+                  }
+                  disconnectLabel={
+                    orphaned ? t("agentConnections.disconnectOnly") : undefined
+                  }
+                />
+                {(!catalog.data?.length || catalog.isError) && (
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    {t("agentConnections.noModels")}
+                  </p>
+                )}
+              </ModelPickerPopoverContent>
+            </Popover>
+          )}
+          <Switch
+            className="mp-switch"
+            aria-label={t(`apps.${app}`)}
+            checked={enabled}
+            aria-busy={!!operations[app]}
             disabled={
-              sharedSettingsBusy ||
-              (!!operations[app] && operations[app] !== "visibility") ||
+              rowBusy(app) ||
               updates.busy ||
-              !!state?.recoveryPending ||
               states.isPending ||
               states.isError ||
-              catalog.isPending ||
-              catalog.isError
+              (catalog.isPending && !enabled && app !== "doubaowork")
             }
-            onBusyChange={(value) =>
-              value ? beginOperation(app, "visibility") : endOperation(app)
+            onCheckedChange={(checked) =>
+              checked ? connect(app) : setDisconnecting(app)
             }
           />
-        )}
-        {!nativePicker(app) && (
-          <Popover
-            open={picking === app}
-            onOpenChange={(open) => setPicking(open ? app : null)}
-          >
-            <PopoverTrigger asChild>
-              <button
-                type="button"
-                className="mp-agent-start"
-                disabled={
-                  rowBusy(app) ||
-                  updates.busy ||
-                  states.isPending ||
-                  states.isError ||
-                  !!state?.recoveryPending ||
-                  (enabled &&
-                    (catalog.isPending ||
-                      catalog.isError ||
-                      !catalog.data?.length))
-                }
-                aria-label={`${t("agentConnections.model")} ${name(app)}`}
-                title={
-                  !enabled
-                    ? `${nativeLabel}\n${t(
-                        nativeAvailable
-                          ? native.model
-                            ? "agentConnections.nativeModelHint"
-                            : "agentConnections.nativeDefaultHint"
-                          : "agentConnections.nativeUnavailable",
-                      )}`
-                    : currentModel
-                }
-              >
-                {!enabled && nativeAvailable && (
-                  <span className="mp-agent-model-icon" aria-hidden="true">
-                    <ProviderIcon
-                      icon={APP_ICON_NAME[app]}
-                      name={name(app)}
-                      size={14}
-                    />
-                  </span>
-                )}
-                <span>{currentModel}</span>
-                <ChevronDown size={11} />
-              </button>
-            </PopoverTrigger>
-            <ModelPickerPopoverContent
-              onDismiss={() => setPicking(null)}
-              aria-label={`${t("agentConnections.model")} ${name(app)}`}
-            >
-              <SharedModelPicker
-                title={`${t("agentConnections.model")} · ${name(app)}`}
-                description={
-                  !enabled ? t("agentConnections.nativeModelHint") : undefined
-                }
-                disabled={rowBusy(app)}
-                models={[
-                  ...(!enabled && nativeAvailable
-                    ? [
-                        {
-                          id: `native-current/${app}`,
-                          name: nativeLabel,
-                          group: name(app),
-                          disabled: true,
-                        },
-                      ]
-                    : []),
-                  ...(catalog.isError ? [] : (catalog.data ?? [])),
-                ]}
-                selected={
-                  enabled && state?.model
-                    ? [state.model]
-                    : nativeAvailable
-                      ? [`native-current/${app}`]
-                      : []
-                }
-                onPick={(model) => void apply(app, true, model)}
-              />
-              {(!catalog.data?.length || catalog.isError) && (
-                <p className="mt-3 text-xs text-muted-foreground">
-                  {t("agentConnections.noModels")}
-                </p>
-              )}
-            </ModelPickerPopoverContent>
-          </Popover>
-        )}
-        <Switch
-          className="mp-switch"
-          aria-label={t(`apps.${app}`)}
-          checked={enabled}
-          aria-busy={!!operations[app]}
-          disabled={
-            rowBusy(app) ||
-            updates.busy ||
-            states.isPending ||
-            states.isError ||
-            (catalog.isPending && !enabled && app !== "doubaowork")
-          }
-          onCheckedChange={(checked) =>
-            checked ? connect(app) : setDisconnecting(app)
-          }
-        />
+        </div>
         {expanded === app && (
           <div
             id={detailsId}
@@ -544,33 +665,11 @@ export function AgentConnectionsPage({
             role="region"
             aria-label={`${t("agentConnections.details")} ${name(app)}`}
           >
-            <h3>{t("agentConnections.instructions")}</h3>
-            <p>
-              {t(
-                app === "doubaowork"
-                  ? "agentConnections.auditOnlyHint"
-                  : app === "trae"
-                    ? "agentConnections.bridgeHint"
-                    : state?.recoveryPending
-                      ? "agentConnections.reapplyHint"
-                      : !enabled || !state?.configured
-                        ? "agentConnections.connectHint"
-                        : app === "qoder"
-                          ? "agentConnections.nativePicker"
-                          : app === "claude-desktop" || app === "workbuddy"
-                            ? "agentConnections.restartHint"
-                            : "agentConnections.sessionHint",
-              )}
-            </p>
-            {app !== "doubaowork" && <p>{t("agentConnections.verifyHint")}</p>}
-            {state?.model && !nativePicker(app) && (
-              <div className="mp-agent-current">
-                <span>{t("agentConnections.model")}</span>
-                <code>{state.model}</code>
-              </div>
+            {compact && (
+              <AgentVersionTag app={app} updates={updates} disabled={busy} />
             )}
-            <div className="mp-agent-detail-actions">
-              {enabled && !state?.recoveryPending && app !== "doubaowork" && (
+            {enabled && !state?.recoveryPending && app !== "doubaowork" && (
+              <div className="mp-agent-detail-actions">
                 <Button
                   size="sm"
                   variant="ghost"
@@ -579,32 +678,9 @@ export function AgentConnectionsPage({
                 >
                   {t("agentConnections.individual")}
                 </Button>
-              )}
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  void settingsApi
-                    .openExternal(websites[app])
-                    .catch(() => setError("agentConnections.failed"));
-                }}
-              >
-                <ExternalLink size={12} />
-                {t("agentConnections.website")}
-              </Button>
-              {(enabled || state?.recoveryPending) && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="mp-agent-disconnect"
-                  disabled={rowBusy(app) || updates.busy || states.isError}
-                  onClick={() => setDisconnecting(app)}
-                >
-                  {t("agentConnections.restore")}
-                </Button>
-              )}
-            </div>
-            {["codex", "claude", "grokbuild"].includes(app) && (
+              </div>
+            )}
+            {!compact && ["codex", "claude", "grokbuild"].includes(app) && (
               <LongConversationSettings
                 disabled={busy || updates.busy}
                 onBusyChange={setSharedSettingsBusy}
@@ -612,13 +688,19 @@ export function AgentConnectionsPage({
             )}
           </div>
         )}
-      </article>
+      </SortableAgentRow>
     );
   }
   return (
-    <section className="vary-agents" data-testid="agent-connections-page">
-      <h1 className="mp-page-heading">{t("agentConnections.title")}</h1>
-      <p className="mp-lead">{t("agentConnections.subtitle")}</p>
+    <section
+      className={`vary-agents${compact ? " tray-agents" : ""}`}
+      data-testid="agent-connections-page"
+    >
+      {!compact && (
+        <header className="mp-agent-page-header">
+          <h1 className="mp-page-heading">{t("agentConnections.title")}</h1>
+        </header>
+      )}
       {(states.isError || installations.isError || error) && (
         <p role="alert" className="mb-4 text-sm text-destructive">
           {t(error ?? "agentConnections.failed")}
@@ -636,19 +718,62 @@ export function AgentConnectionsPage({
       )}
       <AgentUpdatesBar updates={updates} name={name} disabled={!!busy} />
       <AgentInstallDialog updates={updates} name={name} />
-      <div className="mp-list">
-        {(states.isPending || installations.isPending) && (
-          <p className="py-8 text-sm text-muted-foreground" role="status">
-            {t("common.loading")}
-          </p>
-        )}
-        {shown.map(row)}
-        {!installations.isPending && !shown.length && (
-          <p className="py-8 text-sm text-muted-foreground">
-            {t("agentConnections.empty")}
-          </p>
-        )}
-      </div>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        modifiers={[restrictWorkspaceSort]}
+        onDragEnd={reorder}
+        accessibility={{
+          screenReaderInstructions: {
+            draggable: t("agentConnections.sorting.hint"),
+          },
+          announcements: {
+            onDragStart: ({ active }) =>
+              t("agentConnections.sorting.pickedUp", {
+                app: name(active.id as AppId),
+              }),
+            onDragOver: ({ active, over }) =>
+              over ? announcePosition(active.id, over.id) : undefined,
+            onDragEnd: ({ active, over }) =>
+              over
+                ? t("agentConnections.sorting.dropped", {
+                    position: announcePosition(active.id, over.id),
+                  })
+                : t("agentConnections.sorting.cancelled"),
+            onDragCancel: () => t("agentConnections.sorting.cancelled"),
+          },
+        }}
+      >
+        <SortableContext items={shown} strategy={verticalListSortingStrategy}>
+          <div className="mp-list">
+            {(states.isPending || installations.isPending) && (
+              <p className="py-8 text-sm text-muted-foreground" role="status">
+                {t("common.loading")}
+              </p>
+            )}
+            {shown.map((app, index) => (
+              <Fragment key={app}>
+                {compact &&
+                  !states.data?.find((s) => s.app === app)?.enabled &&
+                  (index === 0 ||
+                    states.data?.find((s) => s.app === shown[index - 1])
+                      ?.enabled) && (
+                    <p className="tray-unconfigured">
+                      {t("trayPanel.notConfigured")}
+                    </p>
+                  )}
+                {row(app)}
+              </Fragment>
+            ))}
+            {!installations.isPending && !shown.length && (
+              <p className="py-8 text-sm text-muted-foreground">
+                {t("agentConnections.empty")}
+              </p>
+            )}
+          </div>
+        </SortableContext>
+        {!compact && <WorkspaceDragOverlay />}
+      </DndContext>
       <details className="mp-agent-more">
         <summary>
           <span className="mp-agent-more-title">
@@ -745,37 +870,18 @@ export function AgentConnectionsPage({
           </Button>
         </div>
       </details>
-      <Dialog
+      <AppDialog
         open={!!restarting}
+        pending={rowBusy(restarting)}
         onOpenChange={(open) => {
           if (!open && !rowBusy(restarting)) setRestarting(null);
         }}
-      >
-        <DialogContent
-          className="mp-dialog max-w-md"
-          onInteractOutside={(event) => {
-            if (rowBusy(restarting)) event.preventDefault();
-          }}
-          onEscapeKeyDown={(event) => {
-            if (rowBusy(restarting)) event.preventDefault();
-          }}
-        >
-          <DialogHeader>
-            <DialogTitle>
-              {t("agentConnections.restartTitle", {
-                app: restarting ? name(restarting) : "",
-              })}
-            </DialogTitle>
-            <DialogDescription>
-              {t("agentConnections.restartConfirmHint")}
-            </DialogDescription>
-          </DialogHeader>
-          {error && (
-            <p role="alert" className="px-6 text-sm text-destructive">
-              {t(error)}
-            </p>
-          )}
-          <DialogFooter>
+        title={t("agentConnections.restartTitle", {
+          app: restarting ? name(restarting) : "",
+        })}
+        description={t("agentConnections.restartConfirmHint")}
+        footer={
+          <>
             <Button
               variant="outline"
               disabled={rowBusy(restarting)}
@@ -790,46 +896,35 @@ export function AgentConnectionsPage({
             >
               {t("agentConnections.restart")}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog
+          </>
+        }
+      >
+        {error && (
+          <p role="alert" className="vary-dialog-error">
+            {t(error)}
+          </p>
+        )}
+      </AppDialog>
+      <AppDialog
         open={!!disconnecting}
+        pending={rowBusy(disconnecting)}
         onOpenChange={(open) => {
           if (!open && !rowBusy(disconnecting)) setDisconnecting(null);
         }}
-      >
-        <DialogContent
-          className="mp-dialog max-w-md"
-          onInteractOutside={(event) => {
-            if (rowBusy(disconnecting)) event.preventDefault();
-          }}
-          onEscapeKeyDown={(event) => {
-            if (rowBusy(disconnecting)) event.preventDefault();
-          }}
-        >
-          <DialogHeader>
-            <DialogTitle>
-              {t("agentConnections.disconnectTitle", {
-                app: disconnecting ? name(disconnecting) : "",
-              })}
-            </DialogTitle>
-            <DialogDescription>
-              {t(
-                disconnecting === "doubaowork"
-                  ? "agentConnections.auditDisconnectHint"
-                  : disconnecting === "trae"
-                    ? "agentConnections.bridgeDisconnectHint"
-                    : "agentConnections.disconnectHint",
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          {error && (
-            <p role="alert" className="px-6 text-sm text-destructive">
-              {t(error)}
-            </p>
-          )}
-          <DialogFooter>
+        title={t("agentConnections.disconnectTitle", {
+          app: disconnecting ? name(disconnecting) : "",
+        })}
+        description={t(
+          orphanedDisconnect
+            ? "agentConnections.orphanDisconnectHint"
+            : disconnecting === "doubaowork"
+              ? "agentConnections.auditDisconnectHint"
+              : disconnecting === "trae"
+                ? "agentConnections.bridgeDisconnectHint"
+                : "agentConnections.disconnectHint",
+        )}
+        footer={
+          <>
             <Button
               variant="outline"
               disabled={rowBusy(disconnecting)}
@@ -842,86 +937,34 @@ export function AgentConnectionsPage({
               disabled={rowBusy(disconnecting)}
               onClick={() => disconnecting && void apply(disconnecting, false)}
             >
-              {t("agentConnections.disconnectRestore")}
+              {t(
+                orphanedDisconnect
+                  ? "agentConnections.disconnectOnly"
+                  : "agentConnections.disconnectRestore",
+              )}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog
+          </>
+        }
+      >
+        {error && (
+          <p role="alert" className="vary-dialog-error">
+            {t(error)}
+          </p>
+        )}
+      </AppDialog>
+      <AppDialog
         open={!!setup}
+        pending={rowBusy(setup)}
+        size="md"
         onOpenChange={(open) => {
           if (!open && !rowBusy(setup)) setSetup(null);
         }}
-      >
-        <DialogContent
-          className="mp-dialog max-w-lg"
-          onInteractOutside={(event) => {
-            if (rowBusy(setup)) event.preventDefault();
-          }}
-          onEscapeKeyDown={(event) => {
-            if (rowBusy(setup)) event.preventDefault();
-          }}
-        >
-          <DialogHeader>
-            <DialogTitle>
-              {t("agentConnections.setupTitle", {
-                app: setup ? t(`apps.${setup}`) : "",
-              })}
-            </DialogTitle>
-            <DialogDescription>
-              {t("agentConnections.setupHint")}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="min-h-0 space-y-4 overflow-y-auto px-6 py-4">
-            {!nativePicker(setup) ? (
-              <fieldset disabled={rowBusy(setup)} className="space-y-3">
-                <legend className="mb-2 text-sm">
-                  {t("agentConnections.model")}
-                </legend>
-                <SharedModelPicker
-                  models={catalog.data ?? []}
-                  selected={[selected]}
-                  onPick={setSelected}
-                />
-              </fieldset>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                {t("agentConnections.nativePicker")}
-              </p>
-            )}
-            {(!catalog.data?.length || catalog.isError) && (
-              <div>
-                <p role="alert" className="text-sm text-amber-700">
-                  {t("agentConnections.noModels")}
-                </p>
-                {onAddProvider && (
-                  <Button
-                    variant="outline"
-                    className="mt-3"
-                    onClick={() => {
-                      setSetup(null);
-                      onAddProvider();
-                    }}
-                  >
-                    {t("modelProviders.add")}
-                  </Button>
-                )}
-              </div>
-            )}
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              {t(
-                setup === "codex"
-                  ? "intentRouting.clientUnifiedConsent"
-                  : "agentConnections.consent",
-              )}
-            </p>
-            {error && (
-              <p role="alert" className="text-sm text-destructive">
-                {t(error)}
-              </p>
-            )}
-          </div>
-          <DialogFooter>
+        title={t("agentConnections.setupTitle", {
+          app: setup ? t(`apps.${setup}`) : "",
+        })}
+        description={t("agentConnections.setupHint")}
+        footer={
+          <>
             <Button
               variant="outline"
               disabled={rowBusy(setup)}
@@ -941,9 +984,64 @@ export function AgentConnectionsPage({
             >
               {t("agentConnections.connect")}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          {!nativePicker(setup) ? (
+            <fieldset disabled={rowBusy(setup)} className="space-y-3">
+              <legend className="mb-2 text-sm">
+                {t("agentConnections.model")}
+              </legend>
+              <SharedModelPicker
+                description={
+                  setup === "trae"
+                    ? t("agentConnections.traeStartingModelHint")
+                    : undefined
+                }
+                models={catalog.data ?? []}
+                selected={[selected]}
+                onPick={setSelected}
+              />
+            </fieldset>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              {t("agentConnections.nativePicker")}
+            </p>
+          )}
+          {(!catalog.data?.length || catalog.isError) && (
+            <div>
+              <p role="alert" className="text-sm text-amber-700">
+                {t("agentConnections.noModels")}
+              </p>
+              {onAddProvider && (
+                <Button
+                  variant="outline"
+                  className="mt-3"
+                  onClick={() => {
+                    setSetup(null);
+                    onAddProvider();
+                  }}
+                >
+                  {t("modelProviders.add")}
+                </Button>
+              )}
+            </div>
+          )}
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {t(
+              setup === "codex"
+                ? "intentRouting.clientUnifiedConsent"
+                : "agentConnections.consent",
+            )}
+          </p>
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {t(error)}
+            </p>
+          )}
+        </div>
+      </AppDialog>
     </section>
   );
 }

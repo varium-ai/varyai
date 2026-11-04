@@ -17,6 +17,8 @@ pub(crate) struct RoutingUpstream {
     pub schema_version: u8,
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     pub revision: u32,
     pub source: UpstreamSource,
     #[serde(default)]
@@ -36,6 +38,10 @@ pub(crate) struct RoutingUpstream {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ImportedTransport {
+    #[serde(default)]
+    pub primary_off: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_protocol: Option<String>,
     #[serde(default)]
@@ -61,6 +67,33 @@ pub(crate) struct ImportedKey {
 }
 fn default_enabled() -> bool {
     true
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct KeySummary {
+    pub id: String,
+    pub label: String,
+    pub running: Option<usize>,
+    #[serde(skip)]
+    pub observation: String,
+}
+
+pub(crate) fn key_observation(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(key.as_bytes()))
+}
+
+pub(crate) fn masked_key(value: &str) -> String {
+    let chars: Vec<_> = value.chars().collect();
+    if chars.len() < 12 {
+        return "••••••••".into();
+    }
+    format!(
+        "{}…{}",
+        chars[..4].iter().collect::<String>(),
+        chars[chars.len() - 4..].iter().collect::<String>()
+    )
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -169,6 +202,10 @@ impl RoutingUpstream {
             || !valid_identity(&self.id)
             || !valid_name(&self.name)
             || self
+                .icon
+                .as_deref()
+                .is_some_and(|icon| !crate::services::provider_icons::valid(icon))
+            || self
                 .preset_id
                 .as_ref()
                 .is_some_and(|id| !valid_identity(id))
@@ -208,6 +245,8 @@ impl RoutingUpstream {
             if !matches!(self.source, UpstreamSource::Api { .. })
                 || transport.endpoints.iter().any(|(format, url)| !valid_format(format) || !valid_url(url))
                 || transport.keys.len() > 64
+                || transport.preferred_key.as_ref().is_some_and(|id| !transport.keys.iter().any(|key| &key.id == id))
+                || transport.keys.iter().any(|key| key.name.chars().count() > 120 || key.name.chars().any(char::is_control))
                 || transport.primary_protocol.as_deref().is_some_and(|f| !valid_format(f) || !matches!(&self.source, UpstreamSource::Api { api_format, .. } if api_format == f))
                 || transport.keys.iter().any(|k| !valid_identity(&k.id) || !ids.insert(&k.id) || !k.key.as_deref().is_some_and(valid_key) || k.api_format.as_deref().is_some_and(|f| !valid_format(f) || !transport.endpoints.contains_key(f)))
                 || transport.headers.as_ref().is_some_and(|headers| headers.len() > 64 || headers.iter().any(|(name, value)| {
@@ -222,6 +261,11 @@ impl RoutingUpstream {
             return Err(INVALID.into());
         }
         Ok(())
+    }
+    pub(crate) fn has_enabled_key(&self) -> bool {
+        self.transport.as_ref().is_none_or(|transport| {
+            !transport.primary_off || transport.keys.iter().any(|key| key.enabled)
+        })
     }
     pub(crate) fn redacted(mut self) -> Self {
         self.has_api_key = false;
@@ -303,6 +347,7 @@ pub(crate) fn resolve_provider(record: &RoutingUpstream) -> Result<Provider, Str
             );
             let mut provider =
                 Provider::with_id(record.id.clone(), record.name.clone(), settings, None);
+            provider.icon = record.icon.clone();
             provider.meta = Some(ProviderMeta {
                 api_format: Some(api_format.clone()),
                 api_key_field: (auth_type.as_deref() == Some("api-key"))
@@ -335,6 +380,7 @@ pub(crate) fn resolve_provider(record: &RoutingUpstream) -> Result<Provider, Str
                 None,
             );
             provider.category = Some("official".into());
+            provider.icon = record.icon.clone().or_else(|| Some("openai".into()));
             provider.meta = Some(ProviderMeta {
                 api_format: Some("openai_responses".into()),
                 ..Default::default()
@@ -363,6 +409,9 @@ pub(crate) fn variants(provider: &Provider) -> Vec<Provider> {
         if let Some(settings) = variant.settings_config.as_object_mut() {
             settings.remove("routingImportedTransport");
         }
+    }
+    if transport.primary_off {
+        variants.clear();
     }
     let (base, _) = provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
     let primary_format = provider.settings_config["apiFormat"]
@@ -396,9 +445,20 @@ pub(crate) fn variants(provider: &Provider) -> Vec<Provider> {
             }
         }
         variant.meta.get_or_insert_with(Default::default).api_format = Some(format.into());
-        variants.push(variant);
+        if transport.preferred_key.as_ref() == Some(&key.id) {
+            variants.insert(0, variant);
+        } else {
+            variants.push(variant);
+        }
     }
     variants
+}
+
+pub(crate) fn first_enabled(provider: &Provider) -> Result<Provider, String> {
+    variants(provider)
+        .into_iter()
+        .next()
+        .ok_or_else(|| UNAVAILABLE.into())
 }
 
 pub(crate) fn filter_models(provider: &mut Provider) {
@@ -470,6 +530,7 @@ mod tests {
                     json!({"model":"exact-model", "modalities":["text"], "custom":{"unmodified":true}}),
                 ];
                 let record = RoutingUpstream {
+                    icon: None,
                     transport: None,
                     schema_version: 1,
                     preset_id: None,

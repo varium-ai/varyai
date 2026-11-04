@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { fetchModelsForConfig, type FetchedModel } from "@/lib/api/model-fetch";
-import { Plus, Server, ChevronRight } from "lucide-react";
+import { Plus, ChevronRight } from "lucide-react";
 import {
   routingUpstreamsApi,
   type RoutingUpstream,
@@ -20,12 +20,28 @@ import {
   globalProviderPresets,
   type GlobalProviderPreset,
 } from "@/config/globalProviderPresets";
-import { ProviderIcon } from "@/components/ProviderIcon";
+import { upstreamIcon, UpstreamIcon } from "./UpstreamIcon";
+import { SortableWorkspaceRow } from "@/components/SortableWorkspaceRow";
+import { SortableProviderList } from "./SortableProviderList";
 import {
   useWorkspaceEditing,
   type EditingState,
 } from "@/hooks/useWorkspaceEditing";
 import "./providers.css";
+
+const orderStorageKey = "vary-provider-order";
+function readProviderOrder(): string[] {
+  try {
+    const value: unknown = JSON.parse(
+      localStorage.getItem(orderStorageKey) ?? "null",
+    );
+    return Array.isArray(value)
+      ? [...new Set(value.filter((id): id is string => typeof id === "string"))]
+      : [];
+  } catch {
+    return [];
+  }
+}
 
 function endpointHost(record: RoutingUpstream) {
   if (record.source.kind !== "api") return "";
@@ -41,23 +57,6 @@ function modelId(entry: unknown) {
   const row = entry as Record<string, unknown>;
   const value = row.model ?? row.id;
   return typeof value === "string" ? value : "";
-}
-function upstreamIcon(record: RoutingUpstream) {
-  if (record.source.kind === "codex") return "openai";
-  const saved = globalProviderPresets.find(
-    (preset) => preset.id === record.presetId,
-  );
-  if (saved) return saved.icon;
-  return globalProviderPresets.find((preset) =>
-    [
-      preset.baseUrl,
-      ...Object.values(preset.endpoints ?? {}),
-      ...Object.values(preset.china?.endpoints ?? {}),
-      ...(preset.regions ?? []).flatMap((region) =>
-        Object.values(region.endpoints),
-      ),
-    ].some((url) => new URL(url).host === endpointHost(record)),
-  )?.icon;
 }
 
 export function RoutingUpstreamsPanel({
@@ -78,8 +77,6 @@ export function RoutingUpstreamsPanel({
   const [loadedRecord, setLoadedRecord] = useState<RoutingUpstream | null>(
     null,
   );
-  const [editorFailed, setEditorFailed] = useState(false);
-  const [loadingEditor, setLoadingEditor] = useState(false);
   const [models, setModels] = useState("");
   const [discovered, setDiscovered] = useState<FetchedModel[]>([]);
   const [apiKey, setApiKey] = useState("");
@@ -91,6 +88,7 @@ export function RoutingUpstreamsPanel({
   const [importBusy, setImportBusy] = useState(false);
   const [query, setQuery] = useState("");
   const [showOff, setShowOff] = useState(false);
+  const [providerOrder, setProviderOrder] = useState(readProviderOrder);
   const [copyFrom, setCopyFrom] = useState<ProviderCopySource>();
   const [duplicating, setDuplicating] = useState(false);
   const [probing, setProbing] = useState(false);
@@ -122,9 +120,34 @@ export function RoutingUpstreamsPanel({
   >({});
   const [discard, setDiscard] = useState(false);
   const initial = useRef("");
+  const page = useRef<HTMLElement>(null);
+  const listScroll = useRef(0);
   const sheet = useRef<HTMLDivElement>(null);
+  const addTrigger = useRef<HTMLButtonElement>(null);
+  const listFocusPending = useRef(false);
   const returnToProvider = useRef<string | null>(null);
   const focusPending = useRef(false);
+  function openAddPage() {
+    listScroll.current = page.current?.closest("main")?.scrollTop ?? 0;
+    setAdding(true);
+  }
+  function closeAddPage() {
+    listFocusPending.current = true;
+    setAdding(false);
+  }
+  useEffect(() => {
+    if (!adding) return;
+    const scroller = page.current?.closest("main");
+    if (scroller) scroller.scrollTop = 0;
+  }, [adding]);
+  useEffect(() => {
+    if (!adding && !draft && !busy && !importBusy && listFocusPending.current) {
+      listFocusPending.current = false;
+      const scroller = page.current?.closest("main");
+      if (scroller) scroller.scrollTop = listScroll.current;
+      addTrigger.current?.focus({ preventScroll: true });
+    }
+  }, [adding, draft, busy, importBusy]);
   function returnFocus() {
     focusPending.current = true;
     setDraft(null);
@@ -140,9 +163,10 @@ export function RoutingUpstreamsPanel({
         ?.querySelector<HTMLButtonElement>(".pv-open")
         ?.focus({ preventScroll: true });
     } else {
-      sheet.current
-        ?.querySelector<HTMLInputElement>("input[type=search]")
-        ?.focus({ preventScroll: true });
+      (
+        sheet.current?.querySelector<HTMLInputElement>("input[type=search]") ??
+        addTrigger.current
+      )?.focus({ preventScroll: true });
     }
   }
   useEffect(() => {
@@ -171,7 +195,6 @@ export function RoutingUpstreamsPanel({
   }
   function edit(record?: RoutingUpstream, preset?: GlobalProviderPreset) {
     setEditorOpen(true);
-    setEditorFailed(false);
     setLoadedRecord(record ?? null);
     returnToProvider.current = record?.id ?? null;
     preset =
@@ -321,7 +344,7 @@ export function RoutingUpstreamsPanel({
   }
   async function save(event: React.FormEvent) {
     event.preventDefault();
-    if (!draft || editorFailed) return;
+    if (!draft) return;
     if (draft.source.kind === "codex") {
       setBusy(true);
       setError(null);
@@ -335,6 +358,7 @@ export function RoutingUpstreamsPanel({
           await routingUpstreamsApi.save({ ...draft, name: draft.name.trim() });
         setEditorOpen(false);
         await refresh();
+        if (adding) closeAddPage();
       } catch (cause) {
         report(cause);
       } finally {
@@ -378,6 +402,7 @@ export function RoutingUpstreamsPanel({
       else await routingUpstreamsApi.save(value);
       setEditorOpen(false);
       await refresh();
+      if (adding) closeAddPage();
     } catch (cause) {
       report(cause);
     } finally {
@@ -573,9 +598,43 @@ export function RoutingUpstreamsPanel({
       setBusy(false);
     }
   }
+  const positions = new Map(providerOrder.map((id, index) => [id, index]));
+  const ordered = [...(records.data ?? [])].sort(
+    (a, b) =>
+      (positions.get(a.id) ?? Infinity) - (positions.get(b.id) ?? Infinity),
+  );
+  function reorder(from: string, to: string) {
+    if (busy || draft) return;
+    const source = ordered.find((row) => row.id === from);
+    const target = ordered.find((row) => row.id === to);
+    if (
+      !source ||
+      !target ||
+      (source.enabled === false) !== (target.enabled === false)
+    )
+      return;
+    // Replace only visible slots; filtered and switched-off providers keep their positions.
+    const visible = (source.enabled === false ? off : on).map((row) => row.id);
+    const sourceIndex = visible.indexOf(from),
+      targetIndex = visible.indexOf(to);
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex)
+      return;
+    visible.splice(targetIndex, 0, ...visible.splice(sourceIndex, 1));
+    const visibleIds = new Set(visible);
+    let index = 0;
+    const next = ordered.map((row) =>
+      visibleIds.has(row.id) ? visible[index++] : row.id,
+    );
+    setProviderOrder(next);
+    try {
+      localStorage.setItem(orderStorageKey, JSON.stringify(next));
+    } catch {
+      // Keep the new order available in this session when storage is unavailable.
+    }
+  }
   const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
   const filtered =
-    records.data?.filter((record) => {
+    ordered.filter((record) => {
       const text = [
         record.name,
         endpointHost(record),
@@ -591,10 +650,12 @@ export function RoutingUpstreamsPanel({
   const off = filtered.filter((record) => record.enabled === false);
   async function openRecord(record: RoutingUpstream) {
     if (busy || draft) return;
-    edit(record);
-    if (record.source.kind !== "codex") return;
+    if (record.source.kind !== "codex") {
+      edit(record);
+      return;
+    }
+    setError(null);
     setBusy(true);
-    setLoadingEditor(true);
     try {
       const value = await routingUpstreamsApi.editor(
         record.id,
@@ -604,17 +665,28 @@ export function RoutingUpstreamsPanel({
         throw new Error("unavailable");
       edit(value);
     } catch (cause) {
-      setEditorFailed(true);
       report(cause);
     } finally {
-      setLoadingEditor(false);
       setBusy(false);
     }
   }
   function providerRow(record: RoutingUpstream) {
+    const plans = [...new Set(record.subscriptionPlans ?? [])];
+    const subscription = plans
+      .map((plan) => plan || t("providerParity.subscription"))
+      .join(" · ");
+    const hasPlan = plans.some((plan) => !!plan);
     return (
-      <article
+      <SortableWorkspaceRow
         key={record.id}
+        id={record.id}
+        disabled={busy || !!draft}
+        handleLabel={t("modelProviders.sorting.handle", {
+          provider: record.name,
+        })}
+        handleRole={t("modelProviders.sorting.role")}
+        handleHint={t("modelProviders.sorting.hint")}
+        handleClassName="pv-drag-handle"
         aria-label={record.name}
         data-provider-id={record.id}
         className={`pv-row ${record.enabled === false ? "off" : ""}`}
@@ -630,15 +702,11 @@ export function RoutingUpstreamsPanel({
           onClick={() => void openRecord(record)}
         >
           <span className="pv-logo" aria-hidden>
-            {upstreamIcon(record) ? (
-              <ProviderIcon
-                icon={upstreamIcon(record)}
-                name={record.name}
-                size={22}
-              />
-            ) : (
-              <Server size={22} />
-            )}
+            <UpstreamIcon
+              icon={upstreamIcon(record)}
+              name={record.name}
+              size={22}
+            />
           </span>
           <span className="pv-who">
             <span className="pv-name">
@@ -657,16 +725,21 @@ export function RoutingUpstreamsPanel({
           </span>
         </button>
         <span
-          className={`pv-key ${record.hasApiKey ? "" : record.source.kind === "codex" ? "imported" : "missing"}`}
+          className={`pv-key ${record.source.kind === "codex" ? (hasPlan ? "" : "imported") : record.hasApiKey ? "" : "missing"}`}
+          title={
+            record.source.kind === "codex"
+              ? subscription || t("providerParity.subscription")
+              : undefined
+          }
         >
           <span>
-            {t(
-              record.source.kind === "codex"
-                ? "providerParity.subscription"
-                : record.hasApiKey
-                  ? "modelProviders.keySaved"
-                  : "modelProviders.keyMissing",
-            )}
+            {record.source.kind === "codex"
+              ? subscription || t("providerParity.subscription")
+              : t(
+                  record.hasApiKey
+                    ? "modelProviders.keySaved"
+                    : "modelProviders.keyMissing",
+                )}
           </span>
         </span>
         <Switch
@@ -677,14 +750,35 @@ export function RoutingUpstreamsPanel({
           onCheckedChange={(enabled) => void toggle(record, enabled)}
         />
         <ChevronRight className="pv-chevron" size={11} aria-hidden />
-      </article>
+      </SortableWorkspaceRow>
     );
   }
   return (
-    <section className="vary-providers" data-testid="global-providers">
-      <h1 className="mp-page-heading">{t("modelProviders.title")}</h1>
-      <p className="mp-lead">{t("modelProviders.description")}</p>
-      {!!records.data?.length && (
+    <section
+      ref={page}
+      className="vary-providers"
+      data-testid="global-providers"
+    >
+      {!adding && (
+        <header className="pv-page-head">
+          <div>
+            <h1 className="mp-page-heading">{t("modelProviders.title")}</h1>
+            <p className="mp-lead">{t("modelProviders.description")}</p>
+          </div>
+          <Button
+            ref={addTrigger}
+            data-provider-add-trigger
+            className="mp-primary pv-add-trigger"
+            size="sm"
+            disabled={busy || !!draft || records.isPending || records.isError}
+            onClick={openAddPage}
+          >
+            <Plus size={13} />
+            {t("modelProviders.add")}
+          </Button>
+        </header>
+      )}
+      {!adding && !!records.data?.length && (
         <div className="pv-head">
           <Input
             className="pv-query"
@@ -703,79 +797,58 @@ export function RoutingUpstreamsPanel({
           {t(error)}
         </p>
       )}
-      {records.isPending ? (
-        <p role="status">{t("common.loading")}</p>
-      ) : (
-        <>
-          {records.data?.length === 0 && (
-            <p className="pv-empty">{t("modelProviders.empty")}</p>
-          )}
-          {!!on.length && (
-            <div className="mp-list pv-list">{on.map(providerRow)}</div>
-          )}
-          {!!terms.length && !filtered.length && (
-            <p className="pv-empty" role="status">
-              {t("modelProviders.noMatches")}
-            </p>
-          )}
-          {!!off.length && (
-            <>
-              <button
-                className="pv-off-head"
-                aria-label={t("modelProviders.turnedOff")}
-                aria-expanded={showOff || !!terms.length}
-                aria-controls="pv-off-list"
-                disabled={busy || !!draft || !!terms.length}
-                onClick={() => setShowOff(!showOff)}
-              >
-                <ChevronRight size={11} />
-                <span>{t("modelProviders.turnedOff")}</span>
-                <small>{off.length}</small>
-              </button>
-              <div
-                className="mp-list pv-list"
-                id="pv-off-list"
-                hidden={!showOff && !terms.length}
-              >
-                {off.map(providerRow)}
+      {!adding &&
+        (records.isPending ? (
+          <p role="status">{t("common.loading")}</p>
+        ) : (
+          <>
+            {records.data?.length === 0 && (
+              <p className="pv-empty">{t("modelProviders.empty")}</p>
+            )}
+            {!!on.length && (
+              <SortableProviderList records={on} onReorder={reorder}>
+                {on.map(providerRow)}
+              </SortableProviderList>
+            )}
+            {!!terms.length && !filtered.length && (
+              <p className="pv-empty" role="status">
+                {t("modelProviders.noMatches")}
+              </p>
+            )}
+            {!!off.length && (
+              <div className="pv-off-section">
+                <button
+                  className="pv-off-head"
+                  aria-label={t("modelProviders.turnedOff")}
+                  aria-expanded={showOff || !!terms.length}
+                  aria-controls="pv-off-list"
+                  disabled={busy || !!draft || !!terms.length}
+                  onClick={() => setShowOff(!showOff)}
+                >
+                  <ChevronRight size={11} />
+                  <span>{t("modelProviders.turnedOff")}</span>
+                  <small>{off.length}</small>
+                </button>
+                <SortableProviderList
+                  records={off}
+                  onReorder={reorder}
+                  id="pv-off-list"
+                  hidden={!showOff && !terms.length}
+                >
+                  {off.map(providerRow)}
+                </SortableProviderList>
               </div>
-            </>
-          )}
-        </>
-      )}
-      <div className="pv-after-list">
-        <Button
-          data-provider-add-trigger
-          variant="ghost"
-          size="sm"
-          aria-expanded={adding}
-          disabled={busy || !!draft || records.isPending || records.isError}
-          onClick={() => {
-            setAdding(true);
-            requestAnimationFrame(() =>
-              sheet.current?.scrollIntoView?.({
-                block: "start",
-                behavior: window.matchMedia?.(
-                  "(prefers-reduced-motion: reduce)",
-                ).matches
-                  ? "auto"
-                  : "smooth",
-              }),
-            );
-          }}
-        >
-          <Plus size={13} />
-          {t("modelProviders.add")}
-        </Button>
-      </div>
-      <div ref={sheet} className="pv-sheet-anchor">
-        {adding && (
+            )}
+          </>
+        ))}
+      {adding && (
+        <div ref={sheet}>
           <ProviderAddSheet
             records={records.data ?? []}
             onImport={() => setImporting(true)}
-            onClose={() => setAdding(false)}
+            onClose={closeAddPage}
             onChoose={(preset) => edit(undefined, preset)}
-            busy={busy || !!draft}
+            busy={busy || !!draft || importBusy}
             onAccount={async () => {
               setBusy(true);
               try {
@@ -794,15 +867,15 @@ export function RoutingUpstreamsPanel({
               }
             }}
           />
-        )}
-      </div>
+        </div>
+      )}
       <ProviderImportDialog
         open={importing}
         onBusyChange={setImportBusy}
         onClose={() => setImporting(false)}
         onImported={async () => {
           await refresh();
-          setAdding(false);
+          closeAddPage();
         }}
       />
       {draft && (
@@ -839,9 +912,7 @@ export function RoutingUpstreamsPanel({
           onError={() => setError("modelProviders.failed")}
           nestedOpen={discard || !!deleting}
           onProbingChange={setProbing}
-          canSave={!editorFailed}
           canDuplicate={draft.source.kind === "api"}
-          loading={loadingEditor}
         />
       )}
       <ConfirmDialog

@@ -20,8 +20,10 @@ import { RoutingAccounts } from "./RoutingAccounts";
 import { RoutingStage } from "./RoutingStage";
 import { routingPurpose } from "@/lib/routingPurposes";
 import { routingModelLabel } from "@/lib/routingModelLabel";
+import { AccountLabel, AccountMask } from "@/components/AccountLabel";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { proxyApi } from "@/lib/api/proxy";
+import * as authApi from "@/lib/api/auth";
 import { routingTraceApi, type RoutingTrace } from "@/lib/api/routingTrace";
 import "./routing.css";
 
@@ -72,6 +74,12 @@ export function RoutingPage({
 }) {
   const { t, i18n } = useTranslation();
   const [masked, setMasked] = useState(false);
+  const logins = useQuery({
+    queryKey: ["managed-auth-status", "codex_oauth"],
+    queryFn: () => authApi.authGetStatus("codex_oauth"),
+    enabled: masked,
+    staleTime: 30000,
+  });
   const [bySession, setBySession] = useState(() =>
     stored("vary.routingBySession", false, (value) => value === "1"),
   );
@@ -173,28 +181,10 @@ export function RoutingPage({
   }, [replay, replayEnded, speed, selected?.id, selected?.durationMs]);
 
   const accounts = trace.data?.accounts ?? [];
-  const names = useMemo(() => {
-    const ids = [
-      ...accounts.map((account) => account.providerId),
-      ...(trace.data?.requests ?? []).flatMap((row) =>
-        row.candidates.map((candidate) => candidate.providerId),
-      ),
-      ...rows.flatMap((row) =>
-        row.candidates.map((candidate) => candidate.providerId),
-      ),
-      ...(selected?.candidates ?? []).map((candidate) => candidate.providerId),
-    ];
-    return new Map(
-      [...new Set(ids)].sort().map((id, index) => [id, index + 1]),
-    );
-  }, [accounts, trace.data, rows, selected]);
   const accountName = (candidate: {
     providerId: string;
     providerName: string;
-  }) =>
-    masked
-      ? t("routingPage.maskedAccount", { n: names.get(candidate.providerId) })
-      : candidate.providerName;
+  }) => candidate.providerName;
   const grouped = useMemo(() => {
     const sessions = new Map<string, Row[]>();
     for (const row of rows) {
@@ -248,7 +238,12 @@ export function RoutingPage({
     day: "numeric",
   });
   return (
-    <div className="vary-routing" data-testid="routing-page">
+    <AccountMask
+      masked={masked}
+      names={logins.data?.accounts.map((account) => account.login)}
+      className="vary-routing"
+      data-testid="routing-page"
+    >
       <header className="row-head rt-page-head">
         <h1 className="label">{t("workspaceNav.routing")}</h1>
         <span
@@ -315,11 +310,13 @@ export function RoutingPage({
                 )}
               </>
             ) : (
-              t(
-                day === "live" && trace.data && !running
-                  ? "routingPage.gatewayStopped"
-                  : "routingPage.waiting",
-              )
+              <b>
+                {t(
+                  day === "live" && trace.data && !running
+                    ? "routingPage.gatewayStopped"
+                    : "routingPage.waiting",
+                )}
+              </b>
             )}
             {selection && (
               <button className="text" onClick={() => lookAt("live")}>
@@ -340,7 +337,7 @@ export function RoutingPage({
                   ? t(`routingPage.strategyHelp.${shown.strategy}`, {
                       defaultValue: t(`routingPage.strategy.${shown.strategy}`),
                     })
-                  : t("routingPage.stageHint")}
+                  : t("routingPage.emptyStage")}
           </p>
         </div>
         {replay && selected && (
@@ -386,16 +383,12 @@ export function RoutingPage({
           concurrent={running && day === "live" && !replay ? allRows : []}
           liveObservations={running && day === "live" && !replay}
         />
-        <div className="rt-foot">
-          <p className="rt-cap" aria-live="polite">
-            {shown
-              ? t(`routingPage.state.${shown.state}`)
-              : t(
-                  day === "live" && trace.data && !running
-                    ? "routingPage.gatewayStopped"
-                    : "routingPage.emptyStage",
-                )}
-          </p>
+        <div className={`rt-foot${shown ? "" : " idle"}`}>
+          {shown && (
+            <p className="rt-cap" aria-live="polite">
+              {t(`routingPage.state.${shown.state}`)}
+            </p>
+          )}
           <div className="rt-stats">
             <span>
               <b>{rows.length}</b>
@@ -468,7 +461,7 @@ export function RoutingPage({
                       </span>
                       {candidate && (
                         <span className="rt-step-target">
-                          {accountName(candidate)}{" "}
+                          <AccountLabel>{accountName(candidate)}</AccountLabel>{" "}
                           <code>
                             {candidate.model}
                             {candidate.fixedEffort
@@ -684,7 +677,7 @@ export function RoutingPage({
                       <span className="rt-req-target">
                         {target ? (
                           <>
-                            {accountName(target)}
+                            <AccountLabel>{accountName(target)}</AccountLabel>
                             <span>{"\u00b7"}</span>
                             <code>{target.model}</code>
                           </>
@@ -746,6 +739,6 @@ export function RoutingPage({
           onEditingChange={onEditingChange}
         />
       </div>
-    </div>
+    </AccountMask>
   );
 }

@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { trayPanelApi } from "@/lib/trayPanel";
 import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -41,6 +42,20 @@ export default function App() {
     setAddingProvider(false);
     setView(next);
   }
+  const navigation = useRef(navigate);
+  navigation.current = navigate;
+  useEffect(() => {
+    void trayPanelApi
+      .navigation()
+      .then((next) => {
+        if (next) navigation.current(next);
+      })
+      .catch(() => {});
+  }, []);
+  useTauriEvent("workspace-navigation", async () => {
+    const next = await trayPanelApi.navigation();
+    if (next) navigation.current(next);
+  });
   const settings = useSettingsQuery();
   const gateway = useQuery({
     queryKey: ["proxyStatus"],

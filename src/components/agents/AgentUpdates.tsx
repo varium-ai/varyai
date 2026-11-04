@@ -3,14 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
 import type { useAgentUpdates } from "@/hooks/useAgentUpdates";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { AppDialog } from "@/components/ui/app-dialog";
 
 type Updates = ReturnType<typeof useAgentUpdates>;
 export function AgentInstallButton({
@@ -65,14 +58,15 @@ export function AgentVersionTag({
   const { t } = useTranslation();
   const cli = updates.cli.get(app);
   const desktop = updates.desktop?.[app];
-  const appVersion = desktop?.source === "desktop" ? desktop.version : null;
+  const appVersion =
+    app !== "codex" && desktop?.source === "desktop" ? desktop.version : null;
   if (!cli?.version && !appVersion) return null;
-  const updating = updates.current === app && !updates.installing;
+  const updating = updates.active.includes(app) && !updates.installing;
   return (
     <div className="mp-agent-cli">
       {cli?.version && (
         <span className="mp-agent-version">
-          {appVersion ? `CLI ${cli.version}` : cli.version}
+          {app === "codex" || appVersion ? `CLI ${cli.version}` : cli.version}
         </span>
       )}
       {(updates.updatable.includes(app) || updating) && (
@@ -116,7 +110,7 @@ export function AgentUpdatesBar({
   disabled: boolean;
 }) {
   const { t } = useTranslation();
-  const { results, progress, current } = updates;
+  const { results, progress, active } = updates;
   const changes = results
     .map((r) =>
       t(`agentUpdates.${r.outcome}`, {
@@ -130,10 +124,10 @@ export function AgentUpdatesBar({
   const updateBusy =
     updates.busy && !updates.installTarget && !updates.installing;
   const message = updateBusy
-    ? current
-      ? t("agentUpdates.progress", {
-          app: name(current),
-          index: progress.index,
+    ? active.length
+      ? t("agentUpdates.parallelProgress", {
+          names: active.map(name).join(", "),
+          completed: progress.index,
           count: progress.total,
         })
       : t(
@@ -182,31 +176,26 @@ export function AgentUpdatesBar({
           )}
         </div>
       )}
-      <Dialog
+      <AppDialog
         open={!!updates.pending}
         onOpenChange={(open) => {
           if (!open) updates.cancel();
         }}
-      >
-        <DialogContent className="mp-dialog max-w-md">
-          <DialogHeader>
-            <DialogTitle>{t("agentUpdates.confirmTitle")}</DialogTitle>
-            <DialogDescription>
-              {t("agentUpdates.confirmHint", {
-                names: updates.pending?.ambiguous.map(name).join(", "),
-              })}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
+        title={t("agentUpdates.confirmTitle")}
+        description={t("agentUpdates.confirmHint", {
+          names: updates.pending?.ambiguous.map(name).join(", "),
+        })}
+        footer={
+          <>
             <Button variant="outline" onClick={updates.cancel}>
               {t("common.cancel")}
             </Button>
             <Button onClick={updates.confirm}>
               {t("agentUpdates.confirm")}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </>
+        }
+      />
     </>
   );
 }
@@ -233,31 +222,26 @@ export function AgentInstallDialog({
           })}
         </p>
       )}
-      <Dialog
+      <AppDialog
         open={!!target}
         onOpenChange={(open) => {
           if (!open) updates.cancelInstall();
         }}
-      >
-        <DialogContent className="mp-dialog max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              {t("agentInstall.title", { app: target ? name(target.app) : "" })}
-            </DialogTitle>
-            <DialogDescription>
-              {t(cli ? "agentInstall.consent" : "agentInstall.websiteHint")}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
+        title={t("agentInstall.title", { app: target ? name(target.app) : "" })}
+        description={t(
+          cli ? "agentInstall.consent" : "agentInstall.websiteHint",
+        )}
+        footer={
+          <>
             <Button variant="outline" onClick={updates.cancelInstall}>
               {t("common.cancel")}
             </Button>
             <Button onClick={() => void updates.confirmInstall()}>
               {t(cli ? "agentInstall.confirm" : "agentInstall.openWebsite")}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </>
+        }
+      />
     </>
   );
 }

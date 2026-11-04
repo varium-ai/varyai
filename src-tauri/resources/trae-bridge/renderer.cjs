@@ -5,6 +5,7 @@ function createBridge(
   audit,
   refreshModels = async () => {},
   storage = globalThis.localStorage,
+  startingModel,
 ) {
   let undo;
   const sessions = new Map(),
@@ -46,6 +47,55 @@ function createBridge(
       `varyai.trae.models.${id}`,
       JSON.stringify(rows.map(({ id, model }) => ({ id, model }))),
     );
+  const modelName = (model) => {
+    if (typeof model.model_name === "string") return model.model_name;
+    const prefix = `${model.provider}//`;
+    return model.name?.startsWith(prefix)
+      ? model.name.slice(prefix.length)
+      : model.name;
+  };
+  const providerType = (protocol) =>
+    ({
+      openai: "custom_openai_compatible",
+      "openai-responses": "custom_responses_compatible",
+      anthropic: "custom_anthropic_compatible",
+    })[protocol];
+  const digest = async (value) => {
+    const bytes = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(JSON.stringify(value)),
+    );
+    return Array.from(new Uint8Array(bytes), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+  };
+  const expectedProof = (config, model) =>
+    digest([config.protocol, endpoint(config), model, config.apiKey]);
+  const nativeProof = (row) =>
+    digest([
+      row.custom_model_id,
+      modelName(row),
+      row.provider,
+      row.base_url,
+      row.ak,
+    ]);
+  const verificationKey = (id) => `varyai.trae.verification.${id}`;
+  const loadVerification = (id) => {
+    try {
+      const rows = JSON.parse(storage.getItem(verificationKey(id)) || "[]");
+      return Array.isArray(rows)
+        ? rows.filter(
+            (row) =>
+              row &&
+              typeof row.id === "string" &&
+              typeof row.expected === "string" &&
+              typeof row.native === "string",
+          )
+        : [];
+    } catch {
+      return [];
+    }
+  };
   const isOwned = (id, rows, model) =>
     rows.some((row) => row.id === model.id) ||
     model.displayName?.startsWith(`VaryAI/${id}/`);
@@ -72,7 +122,7 @@ function createBridge(
       throw Error("model_list_unavailable");
     return result.model_list.map((m) => ({
       id: m.custom_model_id,
-      name: m.name,
+      name: modelName(m),
       displayName: m.display_name,
       baseUrl: m.base_url,
       provider: m.provider,
@@ -92,6 +142,7 @@ function createBridge(
       saveOwned(id, owned);
     }
     saveOwned(id, []);
+    storage.setItem(verificationKey(id), "[]");
     await refreshModels();
   }
   function endpoint(config) {
@@ -115,21 +166,38 @@ function createBridge(
     const result = await service.getModelList();
     if (!Array.isArray(result.model_list)) return false;
     const owned = loadOwned(id),
+      verification = loadVerification(id),
       baseUrl = endpoint(config);
     return (
       owned.length === config.models.length &&
-      config.models.every((wanted) => {
-        const owner = owned.find((row) => row.model === wanted.model);
-        const row =
-          owner &&
-          result.model_list.find((m) => m.custom_model_id === owner.id);
-        return (
-          row &&
-          (row.model_name ?? row.name) === wanted.model &&
-          row.base_url === baseUrl &&
-          row.ak === config.apiKey
-        );
-      })
+      (
+        await Promise.all(
+          config.models.map(async (wanted) => {
+            const owner = owned.find((row) => row.model === wanted.model);
+            const row =
+              owner &&
+              result.model_list.find((m) => m.custom_model_id === owner.id);
+            if (
+              !row ||
+              modelName(row) !== wanted.model ||
+              row.base_url !== baseUrl ||
+              row.provider !== providerType(config.protocol)
+            )
+              return false;
+            if (row.ak === config.apiKey) return true;
+            // TRAE returns sealed keys. Verify the result of our successful write,
+            // without persisting either the local credential or the sealed value.
+            const proof = verification.find(
+              (entry) => entry.id === row.custom_model_id,
+            );
+            return (
+              !!proof &&
+              proof.expected === (await expectedProof(config, wanted.model)) &&
+              proof.native === (await nativeProof(row))
+            );
+          }),
+        )
+      ).every(Boolean)
     );
   }
   async function apply(id, name, config) {
@@ -148,23 +216,48 @@ function createBridge(
         .filter((model) => !isOwned(id, owned, model))
         .map((model) => model.displayName),
     );
+    const labels = new Set();
+    const desiredLabels = config.models.map((model) =>
+      displayName(model, name, labels),
+    );
     const added = [];
     const addedIds = new Set(),
       wanted = new Set();
     try {
-      for (const model of config.models) {
+      for (const [index, model] of config.models.entries()) {
         const legacyName = await ownedName(id, model.model);
         const previous = owned.find((row) => row.model === model.model);
         let match =
           (previous && existing.find((m) => m.id === previous.id)) ||
           existing.find((m) => m.id && m.displayName === legacyName);
+        if (!match && id === "shared_catalog_connection") {
+          const url = new URL(baseUrl);
+          const candidates = existing.filter(
+            (m) =>
+              m.id &&
+              !owned.some((row) => row.id === m.id) &&
+              m.name === model.model &&
+              m.baseUrl === baseUrl &&
+              m.provider === providerType(config.protocol) &&
+              m.displayName === desiredLabels[index],
+          );
+          if (
+            url.protocol === "http:" &&
+            url.hostname === "127.0.0.1" &&
+            url.pathname === "/connections/trae/v1/chat/completions" &&
+            !url.username &&
+            !url.password &&
+            !url.search &&
+            !url.hash &&
+            candidates.length === 1
+          ) {
+            match = candidates[0];
+            used.delete(match.displayName);
+          }
+        }
         const display_name = displayName(model, name, used);
         const fields = {
-          provider: {
-            openai: "custom_openai_compatible",
-            "openai-responses": "custom_responses_compatible",
-            anthropic: "custom_anthropic_compatible",
-          }[config.protocol],
+          provider: providerType(config.protocol),
           model_name: model.model,
           display_name,
           ak: config.apiKey,
@@ -219,6 +312,28 @@ function createBridge(
         owned.filter((row) => wanted.has(row.id)),
       );
       await refreshModels();
+      const native = (await service.getModelList()).model_list;
+      if (!Array.isArray(native)) throw Error("model_list_unavailable");
+      const verification = await Promise.all(
+        config.models.map(async (model) => {
+          const owner = owned.find((row) => row.model === model.model);
+          const row = native.find((row) => row.custom_model_id === owner?.id);
+          if (
+            !row ||
+            modelName(row) !== model.model ||
+            row.base_url !== baseUrl ||
+            row.provider !== providerType(config.protocol) ||
+            !row.ak
+          )
+            throw Error("model_apply_failed");
+          return {
+            id: row.custom_model_id,
+            expected: await expectedProof(config, model.model),
+            native: await nativeProof(row),
+          };
+        }),
+      );
+      storage.setItem(verificationKey(id), JSON.stringify(verification));
       return all.filter((m) => wanted.has(m.id));
     } catch (error) {
       // Roll back newly created entries only. Never remove pre-existing native models.
@@ -273,7 +388,7 @@ function createBridge(
       )?.[0];
       owner ??= /^VaryAI\/([\w-]+)\//.exec(model.display_name || "")?.[1];
       if (!owner || !model.custom_model_id) continue;
-      const wire = model.name || model.model_name;
+      const wire = modelName(model);
       // Recovery credentials stay in this call's memory, never in ownership storage or IPC results.
       if (
         typeof model.ak !== "string" ||
@@ -357,6 +472,17 @@ function createBridge(
     apply,
     replace,
     remove,
+    async select(id, model) {
+      const owned = loadOwned(id).filter((row) => row.model === model);
+      if (owned.length !== 1 || !startingModel)
+        throw Error("starting_model_unavailable");
+      await refreshModels();
+      const rows = (await list()).filter(
+        (row) => row.id === owned[0].id && row.name === model,
+      );
+      if (rows.length !== 1) throw Error("starting_model_unavailable");
+      return startingModel.select(owned[0].id);
+    },
     get enabled() {
       return Boolean(undo);
     },

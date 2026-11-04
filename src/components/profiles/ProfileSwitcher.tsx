@@ -64,12 +64,16 @@ const CURRENT_ID_KEY: Record<ProfileScope, keyof CurrentProfileIds> = {
 interface ProfileSwitcherProps {
   activeApp: AppId;
   selectedApps: AppId[];
+  side?: "top" | "bottom";
+  compact?: boolean;
 }
 
 /** Shared project menu: legacy profiles apply to their scope; bundles preview all selected agents. */
 export function ProfileSwitcher({
   activeApp,
   selectedApps,
+  side = "bottom",
+  compact = false,
 }: ProfileSwitcherProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -214,17 +218,19 @@ export function ProfileSwitcher({
           >
             <FolderOpen className="h-4 w-4 shrink-0 opacity-70" />
             <span className="max-w-[9rem] truncate">
-              {currentProfile?.name ?? t("profiles.none")}
+              {currentProfile?.name ??
+                t(compact ? "trayPanel.schemes" : "profiles.none")}
             </span>
             <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
           </button>
         </PopoverTrigger>
         <PopoverContent
-          side="bottom"
+          side={side}
           align="start"
-          sideOffset={6}
+          sideOffset={compact ? 4 : 6}
+          collisionPadding={compact ? 8 : undefined}
           aria-label={t("profiles.bundle.switcherHint")}
-          className="z-[100] w-64 p-0"
+          className={cn("z-[100] w-64 p-0", compact && "tray-profile-menu")}
         >
           <Command label={t("profiles.searchPlaceholder")}>
             <CommandInput placeholder={t("profiles.searchPlaceholder")} />
@@ -259,7 +265,9 @@ export function ProfileSwitcher({
                   ))}
                 </CommandGroup>
               )}
-              <div className="mx-1 my-1 h-px bg-border" />
+              {profiles.length > 0 && (
+                <div className="mx-1 my-1 h-px bg-border" />
+              )}
               <CommandGroup>
                 <CommandItem
                   value="__create__"

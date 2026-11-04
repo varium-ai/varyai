@@ -3,6 +3,7 @@ use std::{sync::Arc, time::Instant};
 
 fn candidate() -> Candidate {
     Candidate {
+        key_id: None,
         provider_id: "fixture".into(),
         provider_name: "Synthetic".into(),
         model: "model-a".into(),
@@ -11,6 +12,37 @@ fn candidate() -> Candidate {
         account: None,
         scheduling: Default::default(),
     }
+}
+
+#[test]
+fn key_pool_running_counts_follow_attempts_completion_and_cancellation(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(Store::default());
+    let target = observed_target("synthetic-private-key")?;
+    let request = store.begin("codex", "fixture", "Fixture", "ordered", Instant::now());
+    let primary_id = store
+        .candidate(&target)
+        .key_id
+        .ok_or("missing observation")?;
+    let mut backup = store.candidate(&target);
+    backup.key_id = Some("backup".into());
+    request.plan(vec![store.candidate(&target), backup], None);
+    request.step(Kind::Attempt, Some(0), None);
+    assert_eq!(
+        store.key_running("synthetic-provider", &primary_id),
+        Some(1)
+    );
+    request.step(Kind::Attempt, Some(1), None);
+    assert_eq!(
+        store.key_running("synthetic-provider", &primary_id),
+        Some(0)
+    );
+    assert_eq!(store.key_running("synthetic-provider", "backup"), Some(1));
+    let encoded = serde_json::to_string(&store.snapshot())?;
+    assert!(!encoded.contains("keyId") && !encoded.contains("backup"));
+    drop(request);
+    assert_eq!(store.key_running("synthetic-provider", "backup"), Some(0));
+    Ok(())
 }
 
 fn observed_target(key: &str) -> Result<super::Target, Box<dyn std::error::Error>> {

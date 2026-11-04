@@ -94,7 +94,10 @@ fn desktop_profile_refresh_preserves_user_effort_and_unknown_models_remain_plain
         model.reasoning = reasoning;
         model.reasoning_levels = levels.into_iter().map(str::to_owned).collect();
         assert_eq!(desktop_max_effort(&model), None);
-        assert_eq!(shared_model_wire(&model), shared_model_name(&model.id));
+        assert_eq!(
+            shared_model_wire(&model),
+            shared_plain_model_name(&model.id)
+        );
     }
     Ok(())
 }

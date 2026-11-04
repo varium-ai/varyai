@@ -103,14 +103,12 @@ export function ProviderImportDialog({
   }, [open, sourcePath]);
   const current = sources.find((s) => s.id === tab);
   const mine = current?.items.filter(pickable) ?? [];
-  const count = Object.values(choices).filter((choice) => choice.on).length;
-  const mineCount = mine.filter(
-    (it) => choices[keyOf(tab, it.reference)]?.on,
-  ).length;
+  const selected = mine.filter((it) => choices[keyOf(tab, it.reference)]?.on);
+  const count = selected.length;
   useEffect(() => {
     if (allBox.current)
-      allBox.current.indeterminate = mineCount > 0 && mineCount < mine.length;
-  }, [mineCount, mine.length]);
+      allBox.current.indeterminate = count > 0 && count < mine.length;
+  }, [count, mine.length]);
   useEffect(() => {
     document
       .getElementById(`import-tab-${tab}`)
@@ -127,22 +125,16 @@ export function ProviderImportDialog({
     saving.current = true;
     setBusy(true);
     setError("");
-    const picks: ProviderImportPick[] = sources.flatMap((source) =>
-      source.items.flatMap((item) => {
-        const choice = choices[keyOf(source.id, item.reference)];
-        return choice?.on
-          ? [
-              {
-                source: source.id,
-                reference: item.reference,
-                fingerprint: item.fingerprint,
-                mode: choice.mode,
-                ...(choice.name?.trim() ? { name: choice.name.trim() } : {}),
-              },
-            ]
-          : [];
-      }),
-    );
+    const picks: ProviderImportPick[] = selected.map((item) => {
+      const choice = choices[keyOf(tab, item.reference)];
+      return {
+        source: tab,
+        reference: item.reference,
+        fingerprint: item.fingerprint,
+        mode: choice.mode,
+        ...(choice.name?.trim() ? { name: choice.name.trim() } : {}),
+      };
+    });
     try {
       if (sourcePath) await providerImportApi.import(picks, sourcePath);
       else await providerImportApi.import(picks);
@@ -317,7 +309,7 @@ export function ProviderImportDialog({
                         type="checkbox"
                         aria-label={t("providerEditor.selectAll")}
                         disabled={busy}
-                        checked={mineCount === mine.length}
+                        checked={count === mine.length}
                         onChange={(event) => {
                           const on = event.target.checked;
                           setChoices((previous) => {

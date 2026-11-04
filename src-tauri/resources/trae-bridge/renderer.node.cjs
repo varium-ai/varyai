@@ -46,6 +46,191 @@ function fixture() {
   };
   return { service, client, calls, models, proto };
 }
+function encryptedFixture() {
+  const f = fixture();
+  let revision = 0;
+  const nativeRow = (row) => {
+    const { model_name, ...fields } = row;
+    return {
+      ...fields,
+      name: `${row.provider}//${model_name}`,
+      ak: `sealed-fixture-${++revision}`,
+    };
+  };
+  f.service.addCustomModel = async (row) => {
+    if (f.models.some((m) => m.name === `${row.provider}//${row.model_name}`))
+      return { code: 4024 };
+    f.models.push({ ...nativeRow(row), custom_model_id: `native-${revision}` });
+    return { code: 0 };
+  };
+  f.service.updateCustomModel = async (row) => {
+    const index = f.models.findIndex((m) => m.custom_model_id === row.id);
+    if (row.action === "delete") f.models.splice(index, 1);
+    else Object.assign(f.models[index], nativeRow(row));
+    return { code: 0 };
+  };
+  return f;
+}
+test("shared delivery verifies encrypted native credentials across reloads and rejects external changes", async () => {
+  const f = encryptedFixture();
+  const config = {
+    protocol: "openai",
+    baseUrl: "http://127.0.0.1:1/connections/trae/v1",
+    apiKey: "synthetic-local-credential",
+    models: [{ model: "supplier/model-a", displayName: "Model A" }],
+  };
+  const id = "shared_catalog_connection";
+  const bridge = createBridge(f.service, async () => ({}));
+  await bridge.apply(id, "Vary AI", config);
+  assert.equal(await bridge.matches(id, config), true);
+  assert.equal(
+    await createBridge(f.service, async () => ({})).matches(id, config),
+    true,
+  );
+  assert.equal((await bridge.list())[0].name, "supplier/model-a");
+  assert.equal(
+    await bridge.matches(id, { ...config, apiKey: "different-credential" }),
+    false,
+  );
+  const original = { ...f.models[0] };
+  for (const change of [
+    { ak: "externally-replaced-sealed-value" },
+    { base_url: "https://changed.example/v1/chat/completions" },
+    { provider: "custom_anthropic_compatible" },
+    { name: "custom_openai_compatible//different-model" },
+  ]) {
+    Object.assign(f.models[0], original, change);
+    assert.equal(await bridge.matches(id, config), false);
+  }
+  Object.assign(f.models[0], original);
+  await bridge.apply(id, "Vary AI", config);
+  assert.equal(f.models.length, 1);
+  assert.equal(await bridge.matches(id, config), true);
+  stores.get(f.service).setItem(`varyai.trae.verification.${id}`, "[null]");
+  assert.equal(await bridge.matches(id, config), false);
+  await bridge.apply(id, "Vary AI", config);
+  const storage = stores.get(f.service);
+  for (let i = 0; i < storage.length; i++) {
+    const value = storage.getItem(storage.key(i));
+    assert.ok(!value.includes(config.apiKey));
+    assert.ok(!value.includes(f.models[0].ak));
+  }
+});
+
+test("starting selection resolves only an exact owned native model and propagates failures", async () => {
+  const f = fixture();
+  const storage = new Map();
+  const local = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+  };
+  const selected = [];
+  const bridge = nativeBridge(
+    f.service,
+    async () => ({}),
+    async () => {},
+    local,
+    {
+      select: async (id) => {
+        selected.push(id);
+        return true;
+      },
+    },
+  );
+  const config = {
+    protocol: "openai",
+    baseUrl: "http://127.0.0.1:1/v1",
+    apiKey: "synthetic",
+    models: [{ model: "fixture-a" }],
+  };
+  await bridge.apply("fixture", "Fixture", config);
+  await assert.rejects(
+    bridge.select("unowned", "fixture-a"),
+    /starting_model_unavailable/,
+  );
+  await assert.rejects(
+    bridge.select("fixture", "missing"),
+    /starting_model_unavailable/,
+  );
+  assert.deepEqual(selected, []);
+  assert.equal(await bridge.select("fixture", "fixture-a"), true);
+  assert.deepEqual(selected, [f.models[0].custom_model_id]);
+  const unavailable = nativeBridge(
+    f.service,
+    async () => ({}),
+    async () => {},
+    local,
+    {
+      select: async () => {
+        throw Error("starting_model_unavailable");
+      },
+    },
+  );
+  await assert.rejects(
+    unavailable.select("fixture", "fixture-a"),
+    /starting_model_unavailable/,
+  );
+});
+test("shared delivery recovers missing ownership only for its exact native route and readable label", async () => {
+  const f = encryptedFixture();
+  const id = "shared_catalog_connection";
+  const config = {
+    protocol: "openai",
+    baseUrl: "http://127.0.0.1:1/connections/trae/v1",
+    apiKey: "synthetic-local-credential",
+    models: [{ model: "supplier/model-a" }, { model: "supplier/model-b" }],
+  };
+  const bridge = createBridge(f.service, async () => ({}));
+  await bridge.apply(id, "Vary AI", config);
+  const nativeIds = f.models.map((m) => m.custom_model_id);
+  stores.get(f.service).setItem(`varyai.trae.models.${id}`, "[]");
+  f.models.push({
+    custom_model_id: "manual",
+    name: "custom_openai_compatible//manual",
+    display_name: "Manual",
+    provider: "custom_openai_compatible",
+    base_url: `${config.baseUrl}/chat/completions`,
+    ak: "manual-sealed-value",
+  });
+  await createBridge(f.service, async () => ({})).apply(id, "Vary AI", config);
+  assert.deepEqual(
+    f.models.slice(0, 2).map((m) => m.custom_model_id),
+    nativeIds,
+  );
+  assert.equal(f.models.length, 3);
+  assert.equal(await bridge.matches(id, config), true);
+  await bridge.remove(id);
+  assert.deepEqual(
+    f.models.map((m) => m.custom_model_id),
+    ["manual"],
+  );
+});
+test("shared ownership recovery refuses unrelated or ambiguous native models", async () => {
+  for (const change of [
+    { base_url: "https://external.example/v1/chat/completions" },
+    { display_name: "Manual model" },
+    { provider: "custom_anthropic_compatible" },
+    { duplicate: true },
+  ]) {
+    const f = encryptedFixture();
+    const id = "shared_catalog_connection";
+    const config = {
+      protocol: "openai",
+      baseUrl: "http://127.0.0.1:1/connections/trae/v1",
+      apiKey: "synthetic-local-credential",
+      models: [{ model: "supplier/model-a" }],
+    };
+    const bridge = createBridge(f.service, async () => ({}));
+    await bridge.apply(id, "Vary AI", config);
+    stores.get(f.service).setItem(`varyai.trae.models.${id}`, "[]");
+    if (change.duplicate)
+      f.models.push({ ...f.models[0], custom_model_id: "ambiguous" });
+    else Object.assign(f.models[0], change);
+    const before = structuredClone(f.models);
+    await assert.rejects(bridge.apply(id, "Vary AI", config));
+    assert.deepEqual(f.models, before);
+  }
+});
 test("shared catalog verification detects removed or changed native models without exporting credentials", async () => {
   const f = fixture();
   const bridge = createBridge(f.service, async () => ({}));

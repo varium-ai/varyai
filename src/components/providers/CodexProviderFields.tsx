@@ -15,7 +15,7 @@ import {
   type RoutingUpstream,
   type CodexProviderSettings,
 } from "@/lib/api/routingUpstreams";
-import type { SubscriptionQuota } from "@/types/subscription";
+import { useCodexProviderQuotas } from "@/lib/query/codexProviderQuota";
 import { useCodexOauth } from "./forms/hooks/useCodexOauth";
 import { ProviderModelPreferences } from "./ProviderModelPreferences";
 import { copyText } from "@/lib/clipboard";
@@ -46,8 +46,6 @@ export function CodexProviderFields({
     [policy.accounts[0] ?? "native"]: editor.models,
   });
   const catalog = catalogs[policy.accounts[0]] ?? [];
-  const [quotas, setQuotas] = useState<Record<string, SubscriptionQuota>>({});
-  const [reading, setReading] = useState<string | null>(null);
   const [fetching, setFetching] = useState(false);
   const [catalogStatus, setCatalogStatus] = useState<"empty" | "failed" | null>(
     null,
@@ -61,20 +59,16 @@ export function CodexProviderFields({
   const [tests, setTests] = useState<
     Record<string, { ok: boolean; elapsedMs: number }>
   >({});
-  const working =
-    fetching ||
-    importing ||
-    testing ||
-    reading !== null ||
-    auth.isAddingAccount;
+  const working = fetching || importing || testing || auth.isAddingAccount;
   useEffect(() => {
     onBusyChange(working);
   }, [working, onBusyChange]);
   useEffect(() => () => onBusyChange(false), [onBusyChange]);
   const locked = disabled || working;
   const rows = [...editor.accounts];
+  const aliases = new Set(rows.flatMap((row) => row.aliases ?? []));
   for (const account of auth.accounts ?? []) {
-    if (!rows.some((row) => row.id === account.id))
+    if (!aliases.has(account.id) && !rows.some((row) => row.id === account.id))
       rows.push({
         id: account.id,
         login: account.login,
@@ -83,7 +77,7 @@ export function CodexProviderFields({
       });
   }
   for (const id of policy.accounts) {
-    if (!rows.some((row) => row.id === id))
+    if (!aliases.has(id) && !rows.some((row) => row.id === id))
       rows.push({
         id,
         login: t("codexProvider.missingAccount"),
@@ -96,6 +90,7 @@ export function CodexProviderFields({
     ...rows.map((row) => row.id).filter((id) => !policy.accounts.includes(id)),
   ];
   const ordered = ids.flatMap((id) => rows.find((row) => row.id === id) ?? []);
+  const quotas = useCodexProviderQuotas(ordered);
   const all = new Map(
     [...catalog, ...policy.models].map((row) => [String(row.model), row]),
   );
@@ -130,17 +125,6 @@ export function CodexProviderFields({
             ? policy.models
             : [...policy.models, all.get(id) ?? { model: id }],
     });
-  }
-  async function quota(id: string) {
-    setReading(id);
-    try {
-      const value = await routingUpstreamsApi.codexQuota(id);
-      setQuotas((old) => ({ ...old, [id]: value }));
-    } catch {
-      onError();
-    } finally {
-      setReading(null);
-    }
   }
   async function discover() {
     if (!policy.accounts.length) return;
@@ -254,152 +238,197 @@ export function CodexProviderFields({
         <span className="pv-field-label">{t("codexProvider.accounts")}</span>
         <div>
           <div className="cx-accounts" data-routing-list>
-            {ordered.map((account) => (
-              <div
-                key={account.id}
-                className="cx-account"
-                role="group"
-                aria-label={account.login}
-                data-codex-account={
-                  policy.accounts.includes(account.id) ? account.id : undefined
-                }
-                tabIndex={0}
-                onKeyDown={(event) => {
-                  if (
-                    event.altKey &&
-                    ["ArrowUp", "ArrowDown"].includes(event.key)
-                  ) {
-                    event.preventDefault();
-                    move(account.id, event.key === "ArrowUp" ? -1 : 1);
+            {ordered.map((account, index) => {
+              const query = quotas[index];
+              const quota = query.data?.quota;
+              const tiers =
+                account.ready &&
+                quota?.credentialStatus === "valid" &&
+                quota.success
+                  ? quota.tiers.filter((tier) =>
+                      Number.isFinite(tier.utilization),
+                    )
+                  : [];
+              const quotaStatus =
+                quota?.credentialStatus === "expired"
+                  ? "quotaLoginRequired"
+                  : quota?.credentialStatus === "parse_error"
+                    ? "quotaCredentialsInvalid"
+                    : !account.ready || quota?.credentialStatus === "not_found"
+                      ? "quotaCredentialsMissing"
+                      : !query.data
+                        ? "quotaLoading"
+                        : query.data.failed
+                          ? tiers.length
+                            ? "quotaStale"
+                            : "quotaFailed"
+                          : !tiers.length
+                            ? "quotaEmpty"
+                            : null;
+              return (
+                <div
+                  key={account.id}
+                  className="cx-account"
+                  role="group"
+                  aria-label={account.login}
+                  data-codex-account={
+                    policy.accounts.includes(account.id)
+                      ? account.id
+                      : undefined
                   }
-                }}
-              >
-                <div className="cx-account-name">
-                  {policy.accounts.length > 1 &&
-                    policy.accounts.includes(account.id) && (
-                      <button
-                        type="button"
-                        aria-label={`${t("codexProvider.reorder")} ${account.login}`}
-                        disabled={locked}
-                        onPointerDown={(event) => {
-                          if (!locked) drag.start(event, account.id);
-                        }}
-                        onClick={(event) => {
-                          if (drag.consumeClick(account.id))
-                            event.preventDefault();
-                        }}
-                      >
-                        <GripVertical size={12} />
-                      </button>
-                    )}
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={policy.accounts.includes(account.id)}
-                      disabled={
-                        locked ||
-                        (!account.ready &&
-                          !policy.accounts.includes(account.id))
-                      }
-                      onChange={(event) =>
-                        update({
-                          accounts: event.target.checked
-                            ? [...policy.accounts, account.id]
-                            : policy.accounts.filter((id) => id !== account.id),
-                        })
-                      }
-                    />
-                    <b>{account.login}</b>
-                  </label>
-                  {account.plan && (
-                    <span className="cx-plan">{account.plan}</span>
-                  )}
-                  {account.native && (
-                    <span className="cx-plan">{t("codexProvider.native")}</span>
-                  )}
-                  <button
-                    type="button"
-                    title={t("codexProvider.refreshQuota")}
-                    aria-label={`${t("codexProvider.refreshQuota")} ${account.login}`}
-                    disabled={locked || !account.ready}
-                    onClick={() => void quota(account.id)}
-                  >
-                    <RefreshCw size={12} />
-                  </button>
-                  {policy.accounts.length > 1 &&
-                    policy.accounts.includes(account.id) && (
-                      <>
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (
+                      event.altKey &&
+                      ["ArrowUp", "ArrowDown"].includes(event.key)
+                    ) {
+                      event.preventDefault();
+                      move(account.id, event.key === "ArrowUp" ? -1 : 1);
+                    }
+                  }}
+                >
+                  <div className="cx-account-name">
+                    {policy.accounts.length > 1 &&
+                      policy.accounts.includes(account.id) && (
                         <button
                           type="button"
-                          aria-label={`${t("codexProvider.moveUp")} ${account.login}`}
-                          disabled={locked || policy.accounts[0] === account.id}
-                          onClick={() => move(account.id, -1)}
+                          aria-label={`${t("codexProvider.reorder")} ${account.login}`}
+                          disabled={locked}
+                          onPointerDown={(event) => {
+                            if (!locked) drag.start(event, account.id);
+                          }}
+                          onClick={(event) => {
+                            if (drag.consumeClick(account.id))
+                              event.preventDefault();
+                          }}
                         >
-                          <ArrowUp size={12} />
+                          <GripVertical size={12} />
                         </button>
-                        <button
-                          type="button"
-                          aria-label={`${t("codexProvider.moveDown")} ${account.login}`}
-                          disabled={
-                            locked || policy.accounts.at(-1) === account.id
-                          }
-                          onClick={() => move(account.id, 1)}
-                        >
-                          <ArrowDown size={12} />
-                        </button>
-                      </>
-                    )}
-                </div>
-                {!account.ready && (
-                  <p className="pv-hint">{t("codexProvider.reauth")}</p>
-                )}
-                <div className="cx-quota">
-                  {reading === account.id
-                    ? t("common.loading")
-                    : quotas[account.id]?.success
-                      ? quotas[account.id].tiers.map((tier) => (
-                          <div key={tier.name}>
-                            <span>
-                              {t(
-                                `subscription.${tier.name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())}`,
-                                {
-                                  defaultValue: tier.name,
-                                },
-                              )}
-                            </span>
-                            <span className="cx-meter">
-                              <i
-                                style={{
-                                  width: `${Math.max(0, Math.min(100, 100 - tier.utilization))}%`,
-                                }}
-                              />
-                            </span>
-                            <b>
-                              {t("codexProvider.remaining", {
-                                n: Math.max(
-                                  0,
-                                  Math.min(
-                                    100,
-                                    Math.round(100 - tier.utilization),
-                                  ),
+                      )}
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={policy.accounts.includes(account.id)}
+                        disabled={
+                          locked ||
+                          (!account.ready &&
+                            !policy.accounts.includes(account.id))
+                        }
+                        onChange={(event) =>
+                          update({
+                            accounts: event.target.checked
+                              ? [...policy.accounts, account.id]
+                              : policy.accounts.filter(
+                                  (id) => id !== account.id,
                                 ),
-                              })}
-                            </b>
-                            {tier.resetsAt && (
-                              <span>
-                                {t("codexProvider.resets", {
-                                  time: new Date(tier.resetsAt).toLocaleString(
-                                    i18n.language,
-                                  ),
-                                })}
-                              </span>
-                            )}
-                          </div>
-                        ))
-                      : t("codexProvider.quotaUnknown")}
+                          })
+                        }
+                      />
+                      <b>{account.login}</b>
+                    </label>
+                    {account.plan && (
+                      <span className="cx-plan">{account.plan}</span>
+                    )}
+                    {account.native && (
+                      <span className="cx-plan">
+                        {t("codexProvider.native")}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      title={t("codexProvider.refreshQuota")}
+                      aria-label={`${t("codexProvider.refreshQuota")} ${account.login}`}
+                      disabled={locked || !account.ready || query.isFetching}
+                      onClick={() =>
+                        void query.refetch({ cancelRefetch: false })
+                      }
+                    >
+                      <RefreshCw
+                        size={12}
+                        className={
+                          query.isFetching
+                            ? "animate-spin motion-reduce:animate-none"
+                            : undefined
+                        }
+                      />
+                    </button>
+                    {policy.accounts.length > 1 &&
+                      policy.accounts.includes(account.id) && (
+                        <>
+                          <button
+                            type="button"
+                            aria-label={`${t("codexProvider.moveUp")} ${account.login}`}
+                            disabled={
+                              locked || policy.accounts[0] === account.id
+                            }
+                            onClick={() => move(account.id, -1)}
+                          >
+                            <ArrowUp size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`${t("codexProvider.moveDown")} ${account.login}`}
+                            disabled={
+                              locked || policy.accounts.at(-1) === account.id
+                            }
+                            onClick={() => move(account.id, 1)}
+                          >
+                            <ArrowDown size={12} />
+                          </button>
+                        </>
+                      )}
+                  </div>
+                  {!account.ready && (
+                    <p className="pv-hint">{t("codexProvider.reauth")}</p>
+                  )}
+                  <div
+                    className="cx-quota"
+                    role="status"
+                    aria-busy={query.isFetching}
+                  >
+                    {tiers.map((tier) => (
+                      <div key={tier.name}>
+                        <span>
+                          {t(
+                            `subscription.${tier.name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())}`,
+                            {
+                              defaultValue: tier.name,
+                            },
+                          )}
+                        </span>
+                        <span className="cx-meter">
+                          <i
+                            style={{
+                              width: `${Math.max(0, Math.min(100, 100 - tier.utilization))}%`,
+                            }}
+                          />
+                        </span>
+                        <b>
+                          {t("codexProvider.remaining", {
+                            n: Math.max(
+                              0,
+                              Math.min(100, Math.round(100 - tier.utilization)),
+                            ),
+                          })}
+                        </b>
+                        {tier.resetsAt && (
+                          <span>
+                            {t("codexProvider.resets", {
+                              time: new Date(tier.resetsAt).toLocaleString(
+                                i18n.language,
+                              ),
+                            })}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                    {quotaStatus && (
+                      <span>{t(`codexProvider.${quotaStatus}`)}</span>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
             <button
               type="button"
               className="cx-add-account"

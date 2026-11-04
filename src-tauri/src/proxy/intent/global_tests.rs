@@ -9,12 +9,12 @@ use crate::{
 };
 use axum::{routing::post, Json, Router};
 
-fn group() -> RoutingGroup {
+pub(super) fn group() -> RoutingGroup {
     serde_json::from_value(json!({"id":"global-fixture","name":"Synthetic global","revision":0,"client":"codex","enabled":true,
         "members":[{"id":"a","providerId":"fixture","modelId":"exact-model"}],"defaultMemberId":"a","fallbackMemberIds":[],
         "intentRecognitionEnabled":false,"classifierTarget":null,"classificationBudgetMs":2000,"rules":[],"levels":["low","max"]})).unwrap()
 }
-fn menu(url: &str) -> Menu {
+pub(super) fn menu(url: &str) -> Menu {
     let group = group();
     Menu {
         token: "synthetic-local-token".into(),
@@ -1042,6 +1042,303 @@ async fn all_agent_connections_accept_anthropic_sdk_beta_without_leaking_it_acro
         }
         assert!(rx.try_recv().is_err(), "rejected query reached upstream");
     }
+    server.stop().await?;
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn trae_native_origin_chat_preserves_authentication_and_browser_rejection(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use axum::response::IntoResponse;
+    struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for RestoreSecurity {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security = RestoreSecurity((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let task = tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/v1/chat/completions", post(move |headers: http::HeaderMap, Json(body): Json<Value>| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send((headers, body.clone())).await;
+                if body["stream"] == true {
+                    return ([(header::CONTENT_TYPE, "text/event-stream")], concat!(
+                        "data: {\"id\":\"synthetic-chat\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"synthetic answer\"},\"finish_reason\":null}]}\n\n",
+                        "data: {\"id\":\"synthetic-chat\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                        "data: [DONE]\n\n"
+                    )).into_response();
+                }
+                Json(json!({"id":"synthetic-chat","object":"chat.completion","model":"exact-model","choices":[{"index":0,"message":{"role":"assistant","content":"synthetic answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).into_response()
+            }
+        }))).await
+    });
+    let runtime = Arc::new(Runtime::default());
+    let mut published = menu(&format!("http://{address}/v1/chat/completions"));
+    let session = Arc::make_mut(
+        published
+            .groups
+            .values_mut()
+            .next()
+            .ok_or("missing fixture")?,
+    );
+    let mut provider = crate::provider::Provider::with_id(
+        "fixture".into(),
+        "Synthetic TRAE upstream".into(),
+        json!({"env":{"ANTHROPIC_BASE_URL":format!("http://{address}"),"ANTHROPIC_API_KEY":concat!("synthetic", "-upstream")}}),
+        None,
+    );
+    provider.meta = Some(crate::provider::ProviderMeta {
+        api_format: Some("openai_chat".into()),
+        ..Default::default()
+    });
+    session.targets[0].upstream = Some(provider);
+    runtime.set_global(published, 0)?;
+    for app in ["trae", "claude"] {
+        runtime
+            .connections
+            .install(&crate::services::agent_connections::Receipt {
+                app: app.into(),
+                token: format!("synthetic-{app}"),
+                model: group().alias(),
+                model_map: Default::default(),
+                visible_models: None,
+                files: vec![],
+                suspended: false,
+                applied_at_ms: None,
+            })?;
+    }
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime.clone());
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let root = format!("http://127.0.0.1:{}/connections", info.port);
+    let payload = json!({"model":group().alias(),"messages":[{"role":"user","content":"synthetic request"}],"temperature":0.25,"max_tokens":32});
+    for (origin, stream) in [
+        (None, false),
+        (None, true),
+        (Some("vscode-file://vscode-app"), false),
+        (Some("vscode-file://vscode-app"), true),
+    ] {
+        let mut body = payload.clone();
+        body["stream"] = json!(stream);
+        let mut request = client
+            .post(format!("{root}/trae/v1/chat/completions"))
+            .bearer_auth("synthetic-trae")
+            .header("sec-fetch-site", "cross-site")
+            .header("sec-fetch-mode", "cors");
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        let response = request.json(&body).send().await?;
+        let status = response.status();
+        assert!(!response
+            .headers()
+            .contains_key("access-control-allow-origin"));
+        assert!(!response
+            .headers()
+            .contains_key("access-control-allow-credentials"));
+        let reply = response.text().await?;
+        let code = serde_json::from_str::<Value>(&reply)
+            .ok()
+            .and_then(|body| body["error"]["code"].as_str().map(str::to_owned));
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "native TRAE origin={}, stream={stream}, code={code:?}",
+            origin.is_some()
+        );
+        assert!(reply.contains("synthetic answer"));
+        let (headers, forwarded) = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await?
+            .ok_or("missing synthetic request")?;
+        assert_eq!(forwarded["model"], "exact-model");
+        assert_eq!(forwarded["messages"], body["messages"]);
+        assert_eq!(forwarded["temperature"], body["temperature"]);
+        assert_eq!(forwarded["stream"], stream);
+        assert!(!headers.contains_key("origin"));
+        assert!(!headers.contains_key("sec-fetch-site"));
+        assert!(!headers.contains_key("sec-fetch-mode"));
+        assert_eq!(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer synthetic-upstream")
+        );
+    }
+    for (origin, token) in [None, Some("vscode-file://vscode-app")]
+        .into_iter()
+        .flat_map(|origin| {
+            [None, Some("synthetic-wrong"), Some("synthetic-claude")]
+                .into_iter()
+                .map(move |token| (origin, token))
+        })
+    {
+        let mut request = client
+            .post(format!("{root}/trae/v1/chat/completions"))
+            .header("sec-fetch-site", "cross-site");
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.json(&payload).send().await?;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.json::<Value>().await?["error"]["code"],
+            "agent_connection_unavailable"
+        );
+    }
+    for (method, app, endpoint, origin, fetch_site) in [
+        (
+            http::Method::POST,
+            "trae",
+            "chat/completions",
+            Some("https://fixture.invalid"),
+            None,
+        ),
+        (
+            http::Method::POST,
+            "trae",
+            "chat/completions",
+            Some("null"),
+            Some("cross-site"),
+        ),
+        (
+            http::Method::POST,
+            "claude",
+            "chat/completions",
+            None,
+            Some("cross-site"),
+        ),
+        (
+            http::Method::GET,
+            "trae",
+            "models",
+            None,
+            Some("cross-site"),
+        ),
+        (
+            http::Method::OPTIONS,
+            "trae",
+            "chat/completions",
+            None,
+            Some("cross-site"),
+        ),
+        (
+            http::Method::POST,
+            "claude",
+            "chat/completions",
+            Some("vscode-file://vscode-app"),
+            Some("cross-site"),
+        ),
+        (
+            http::Method::GET,
+            "trae",
+            "models",
+            Some("vscode-file://vscode-app"),
+            Some("cross-site"),
+        ),
+        (
+            http::Method::OPTIONS,
+            "trae",
+            "chat/completions",
+            Some("vscode-file://vscode-app"),
+            Some("cross-site"),
+        ),
+    ] {
+        let mut request = client
+            .request(method.clone(), format!("{root}/{app}/v1/{endpoint}"))
+            .bearer_auth(format!("synthetic-{app}"));
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        if let Some(fetch_site) = fetch_site {
+            request = request.header("sec-fetch-site", fetch_site);
+        }
+        if method == http::Method::OPTIONS {
+            request = request
+                .header("access-control-request-method", "POST")
+                .header(
+                    "access-control-request-headers",
+                    "authorization,content-type",
+                );
+        }
+        let response = request.json(&payload).send().await?;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "{method} {app}/{endpoint}"
+        );
+        assert!(!response
+            .headers()
+            .contains_key("access-control-allow-origin"));
+        assert!(!response
+            .headers()
+            .contains_key("access-control-allow-credentials"));
+        assert!(!response
+            .headers()
+            .contains_key("access-control-allow-methods"));
+        assert_eq!(
+            response.json::<Value>().await?["error"]["code"],
+            "routing_local_clients_only"
+        );
+    }
+    let response = client
+        .post(format!("{root}/trae/v1/chat/completions?unsupported=1"))
+        .bearer_auth("synthetic-trae")
+        .header("origin", "vscode-file://vscode-app")
+        .header("sec-fetch-site", "cross-site")
+        .json(&payload)
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response.json::<Value>().await?["error"]["code"],
+        "routing_query_unsupported"
+    );
+    let mut security = crate::proxy::security::SecurityRuntimeConfig::default();
+    security.builtin_action_overrides.insert(
+        "rsa_ssh_private_key".into(),
+        crate::proxy::security::types::AuditAction::Block,
+    );
+    crate::proxy::security::runtime::set_security_runtime_for_test(security);
+    let response = client
+        .post(format!("{root}/trae/v1/chat/completions"))
+        .bearer_auth("synthetic-trae")
+        .header("sec-fetch-site", "cross-site")
+        .json(&json!({"model":group().alias(),"messages":[{"role":"user","content":format!("-----BEGIN {}-----\nsynthetic-only\n-----END {}-----", "RSA PRIVATE KEY", "RSA PRIVATE KEY")}]}))
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response.json::<Value>().await?["error"]["code"],
+        "sensitive_data_blocked"
+    );
+    runtime.connections.revoke("trae");
+    let response = client
+        .post(format!("{root}/trae/v1/chat/completions"))
+        .bearer_auth("synthetic-trae")
+        .header("sec-fetch-site", "cross-site")
+        .json(&payload)
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(rx.try_recv().is_err(), "rejected request reached upstream");
     server.stop().await?;
     task.abort();
     Ok(())

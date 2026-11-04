@@ -14,6 +14,34 @@ fn write(path: &Path, value: Value) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn provider_import_preserves_saved_icons_without_network_requests(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    write(
+        &paths.provider_backup,
+        json!({"providers":[{"id":"relay","icon":"deepseek-color","chat":"https://relay.example/v1","key":"fixture-key"}]}),
+    )?;
+    let db = Database::memory()?;
+    let item = preview(&db, &paths)?.remove(4).items.remove(0);
+    import(
+        &db,
+        &paths,
+        vec![Pick {
+            source: "magpie".into(),
+            reference: item.reference,
+            fingerprint: item.fingerprint,
+            mode: ImportMode::Add,
+            name: None,
+        }],
+    )?;
+    assert_eq!(
+        serde_json::to_value(db.list_routing_upstreams()?.remove(0))?["icon"],
+        "deepseek-color"
+    );
+    Ok(())
+}
+
+#[test]
 fn preview_has_five_sources_and_never_serializes_credentials_or_changes_files(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (_dir, paths) = fixture()?;
@@ -358,7 +386,7 @@ fn provider_backup_backup_endpoints_cannot_point_back_into_the_local_gateway(
         json!({"providers":[{"id":"relay","chat":"https://relay.example/v1","responses":"http://127.0.0.1:15721/connections/codex","baseAPI":"chat","key":"synthetic-key","keys":[{"name":"Backup","key":"synthetic-backup","protocol":"responses"}]}]}),
     )?;
     let sources = preview(&Database::memory()?, &paths)?;
-    assert_eq!(sources[4].items[0].skip.as_deref(), Some("selfRoute"));
+    assert!(sources[4].items.is_empty());
     Ok(())
 }
 
@@ -579,10 +607,250 @@ fn provider_backup_model_context_overrides_and_vendor_catalog_remain_independent
 
 #[test]
 fn provider_import_rejects_both_application_default_gateway_ports() {
+    let gateways = gateways::Gateways::default();
     for port in [15721, crate::proxy::types::DEFAULT_PROXY_PORT] {
-        assert!(self_route(&format!("http://127.0.0.1:{port}/v1")));
+        assert!(gateways.matches_url(&format!("http://127.0.0.1:{port}/v1")));
     }
-    assert!(!self_route("https://synthetic-upstream.example/v1"));
+    assert!(!gateways.matches_url("https://synthetic-upstream.example/v1"));
+}
+
+#[test]
+fn provider_import_rejects_magpie_gateway_and_loopback_aliases() {
+    let gateways = gateways::Gateways::default();
+    for host in [
+        "127.0.0.1",
+        "localhost",
+        "LOCALHOST.",
+        "127.0.0.2",
+        "[::1]",
+        "[::ffff:127.0.0.1]",
+    ] {
+        assert!(
+            gateways.matches_url(&format!("http://{host}:3425/v1")),
+            "gateway alias"
+        );
+    }
+    for url in [
+        "http://localhost:11434/v1",
+        "http://127.0.0.1:1234/v1",
+        "http://192.0.2.1:3425/v1",
+        "https://relay.example:3425/v1",
+    ] {
+        assert!(!gateways.matches_url(url), "independent model service");
+    }
+}
+
+#[test]
+fn provider_import_custom_gateway_ports_are_blocked_across_sources_and_on_confirmation(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    let db = Database::memory()?;
+    write(
+        &paths.provider_backup.with_file_name("settings.json"),
+        json!({"port":43121}),
+    )?;
+    write(
+        &paths.provider_backup,
+        json!({"providers":[
+            {"id":"saved-gateway","chat":"http://localhost:43122/v1","key":"fixture-key"},
+            {"id":"local-model","chat":"http://localhost:11434/v1","key":"fixture-key"}
+        ]}),
+    )?;
+    std::fs::create_dir_all(paths.cc_switch.parent().ok_or("parent")?)?;
+    let cc = rusqlite::Connection::open(&paths.cc_switch)?;
+    cc.execute_batch("CREATE TABLE providers(id TEXT,app_type TEXT,name TEXT,settings_config TEXT); CREATE TABLE proxy_config(listen_port INTEGER); INSERT INTO proxy_config VALUES (43122);")?;
+    cc.execute("INSERT INTO providers VALUES ('saved-relay','claude','Gateway fixture',?1)", [json!({"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:43121","ANTHROPIC_AUTH_TOKEN":"fixture-key"}}).to_string()])?;
+    drop(cc);
+    write(
+        &paths.claude,
+        json!({"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.2:43122","ANTHROPIC_AUTH_TOKEN":"fixture-key"}}),
+    )?;
+    std::fs::create_dir_all(paths.codex.parent().ok_or("parent")?)?;
+    std::fs::write(&paths.codex, "[model_providers.saved]\nbase_url='http://[::1]:43121/v1'\nexperimental_bearer_token='fixture-key'\n")?;
+    write(
+        &paths.opencode,
+        json!({"provider":{"saved":{"options":{"baseURL":"http://localhost:43121/v1","apiKey":"fixture-key"}}}}),
+    )?;
+    let blocked = readers::provider_backup(&paths.provider_backup)?.remove(0);
+    let sources = preview(&db, &paths)?;
+    for source in &sources[..4] {
+        assert!(source.error.is_none());
+        assert!(
+            source.items.is_empty(),
+            "gateway excluded from {}",
+            source.id
+        );
+    }
+    assert_eq!(sources[4].items.len(), 1);
+    let local = &sources[4].items[0];
+    assert_eq!(local.reference, "1/local-model");
+    assert!(local.skip.is_none());
+    let pick = |item: &Item| Pick {
+        source: "magpie".into(),
+        reference: item.reference.clone(),
+        fingerprint: item.fingerprint.clone(),
+        mode: ImportMode::Add,
+        name: None,
+    };
+    let blocked_pick = Pick {
+        source: "magpie".into(),
+        reference: blocked.reference.clone(),
+        fingerprint: fingerprint(&blocked)?,
+        mode: ImportMode::Add,
+        name: None,
+    };
+    assert_eq!(
+        import(&db, &paths, vec![pick(local), blocked_pick]),
+        Err(CONFLICT.into())
+    );
+    assert!(db.list_routing_upstreams()?.is_empty());
+    assert_eq!(import(&db, &paths, vec![pick(local)])?.added, 1);
+    Ok(())
+}
+
+#[test]
+fn provider_import_recognizes_generated_routes_on_arbitrary_ports_and_secondary_endpoints(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    write(
+        &paths.opencode,
+        json!({"provider":{
+            "magpie":{"options":{"baseURL":"http://localhost:43123/v1","apiKey":"fixture-key"}},
+            "cc-switch":{"options":{"baseURL":"http://127.0.0.1:43124/v1","apiKey":"fixture-key"}},
+            "custom":{"options":{"baseURL":"http://127.0.0.1:43125/v1","apiKey":"PROXY_MANAGED"}},
+            "model":{"options":{"baseURL":"http://localhost:1234/v1","apiKey":"fixture-key"}}
+        }}),
+    )?;
+    write(
+        &paths.provider_backup,
+        json!({"providers":[{"id":"relay","chat":"https://relay.example/v1","responses":"http://127.0.0.1:3425/v1","key":"fixture-key"}]}),
+    )?;
+    let sources = preview(&Database::memory()?, &paths)?;
+    assert_eq!(sources[3].items.len(), 1);
+    assert_eq!(sources[3].items[0].reference, "model");
+    assert!(sources[3].items[0].skip.is_none());
+    assert!(sources[4].items.is_empty());
+    Ok(())
+}
+
+#[test]
+fn provider_import_rechecks_gateway_port_changes_before_writing(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    let db = Database::memory()?;
+    write(
+        &paths.claude,
+        json!({"env":{"ANTHROPIC_BASE_URL":"http://localhost:43126","ANTHROPIC_AUTH_TOKEN":"fixture-key"}}),
+    )?;
+    let item = preview(&db, &paths)?.remove(1).items.remove(0);
+    assert!(item.skip.is_none());
+    write(
+        &paths.provider_backup.with_file_name("settings.json"),
+        json!({"port":43126}),
+    )?;
+    assert_eq!(
+        import(
+            &db,
+            &paths,
+            vec![Pick {
+                source: "claude-code".into(),
+                reference: item.reference,
+                fingerprint: item.fingerprint,
+                mode: ImportMode::Add,
+                name: None
+            }]
+        ),
+        Err(CONFLICT.into())
+    );
+    assert!(db.list_routing_upstreams()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn provider_import_excludes_takeover_markers_across_native_and_saved_clients(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    write(
+        &paths.claude,
+        json!({"env":{"ANTHROPIC_BASE_URL":"http://localhost:43127","ANTHROPIC_AUTH_TOKEN":(["magpie", "claude"].join("-"))}}),
+    )?;
+    std::fs::create_dir_all(paths.codex.parent().ok_or("parent")?)?;
+    std::fs::write(
+        &paths.codex,
+        "[model_providers.varyai-routing]\nbase_url='http://127.0.0.1:43128/v1'\nexperimental_bearer_token='fixture-key'\n",
+    )?;
+    std::fs::create_dir_all(paths.cc_switch.parent().ok_or("parent")?)?;
+    let conn = rusqlite::Connection::open(&paths.cc_switch)?;
+    conn.execute_batch(
+        "CREATE TABLE providers(id TEXT,app_type TEXT,name TEXT,settings_config TEXT);",
+    )?;
+    conn.execute("INSERT INTO providers VALUES ('saved','codex','Saved route',?1)", [json!({"config":"model_provider='magpie'\n[model_providers.magpie]\nbase_url='http://localhost:43129/v1'\nexperimental_bearer_token='fixture-key'"}).to_string()])?;
+    drop(conn);
+    write(
+        &paths.provider_backup,
+        json!({"providers":[{"id":"magpie","chat":"https://relay.example/v1","key":"fixture-key"}]}),
+    )?;
+    let sources = preview(&Database::memory()?, &paths)?;
+    for source in &sources[..3] {
+        assert!(source.error.is_none());
+        assert!(
+            source.items.is_empty(),
+            "generated local route excluded from {}",
+            source.id
+        );
+    }
+    assert_eq!(sources[4].items.len(), 1);
+    assert!(sources[4].items[0].skip.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn provider_import_rechecks_current_application_listener_on_confirmation(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
+    use std::sync::Arc;
+    let (dir, paths) = fixture()?;
+    write(
+        &paths.claude,
+        json!({"env":{"ANTHROPIC_BASE_URL":"http://localhost:43130","ANTHROPIC_AUTH_TOKEN":"fixture-key"}}),
+    )?;
+    let before = std::fs::read(&paths.claude)?;
+    let db = Arc::new(Database::memory()?);
+    let manager = Arc::new(CodexOAuthManager::new(dir.path().join("managed")));
+    let item = preview_with_accounts(db.clone(), manager.clone(), paths.clone())
+        .await?
+        .remove(1)
+        .items
+        .remove(0);
+    assert!(item.skip.is_none());
+    let mut config = db.get_global_proxy_config().await?;
+    config.listen_port = 43130;
+    db.update_global_proxy_config(config).await?;
+    let source = preview_with_accounts(db.clone(), manager.clone(), paths.clone())
+        .await?
+        .remove(1);
+    assert!(source.error.is_none());
+    assert!(source.items.is_empty());
+    assert_eq!(
+        import_with_accounts(
+            db.clone(),
+            manager.clone(),
+            paths,
+            vec![Pick {
+                source: "claude-code".into(),
+                reference: item.reference,
+                fingerprint: item.fingerprint,
+                mode: ImportMode::Add,
+                name: None,
+            }]
+        )
+        .await,
+        Err(CONFLICT.into())
+    );
+    assert!(db.list_routing_upstreams()?.is_empty());
+    assert!(manager.list_accounts().await.is_empty());
+    assert!(std::fs::read(dir.path().join(".claude/settings.json"))? == before);
+    Ok(())
 }
 
 #[tokio::test]
