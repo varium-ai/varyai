@@ -5,6 +5,7 @@ import { profilesApi, providersApi } from "@/lib/api";
 import type { AppId } from "@/lib/api/types";
 import type { ProfileScope } from "@/lib/api/profiles";
 import { extractErrorMessage } from "@/utils/errorUtils";
+import { profileErrorMessage } from "@/utils/profileErrors";
 
 const updateTrayMenuSafely = async () => {
   try {
@@ -47,7 +48,7 @@ export const useCreateProfileMutation = () => {
       const message = extractErrorMessage(error);
       const detail = message?.includes("profiles.nameExists")
         ? t("profiles.nameExists")
-        : message || t("common.unknown");
+        : profileErrorMessage(error, t);
       toast.error(t("profiles.createFailed", { detail }), {
         closeButton: true,
       });
