@@ -93,7 +93,7 @@ fn model_string(value: Option<&Value>) -> Result<Option<String>, String> {
         || text.contains("://")
         || text
             .chars()
-            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '?' | '#' | '@' | '\\'))
+            .any(|c| c.is_control() || matches!(c, '?' | '#' | '@' | '\\'))
     {
         return Err(FAILED.into());
     }
@@ -194,8 +194,11 @@ mod tests {
             ("hermes", "model:\n  default: native-hermes\n", "native-hermes"),
             ("pi", r#"{"defaultModel":"native-pi","defaultProvider":"synthetic-provider"}"#, "native-pi"),
             ("kimi", "default_model = 'native-kimi'\n", "native-kimi"),
+            ("kimi", "default_model = 'GPT Example · Test provider · VaryAI'\n", "GPT Example · Test provider · VaryAI"),
             ("qwen", r#"{"model":{"name":"native-qwen"}}"#, "native-qwen"),
+            ("qwen", r#"{"model":{"name":"GPT Example · Test provider · VaryAI"}}"#, "GPT Example · Test provider · VaryAI"),
             ("zcode", r#"{"config":{"defaultModelSelection":{"modelId":"native-zcode"}}}"#, "native-zcode"),
+            ("zcode", r#"{"config":{"defaultModelSelection":{"modelId":"GPT Example · Test provider · VaryAI"}}}"#, "GPT Example · Test provider · VaryAI"),
             ("deepseek-harness", "- id: agent-default-model\n  config:\n    provider: deepseek-official\n    model: native-deepseek\n", "native-deepseek"),
         ] {
             let dir = tempfile::tempdir().map_err(|_| FAILED)?;

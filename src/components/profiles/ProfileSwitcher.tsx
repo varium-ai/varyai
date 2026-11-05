@@ -54,6 +54,7 @@ import { APP_IDS } from "@/config/appConfig";
 import { profilesApi, type ProfileUndo } from "@/lib/api/profiles";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { toast } from "sonner";
+import { profileErrorMessage } from "@/utils/profileErrors";
 
 const CURRENT_ID_KEY: Record<ProfileScope, keyof CurrentProfileIds> = {
   claude: "claude",
@@ -166,6 +167,7 @@ export function ProfileSwitcher({
 
   const closeCreateDialog = () => {
     setIsCreateOpen(false);
+    createMutation.reset();
     setNewName("");
     setBundleApps([]);
     setCreateBundle(false);
@@ -422,6 +424,13 @@ export function ProfileSwitcher({
                   {t("profiles.bundle.captureHint")}
                 </p>
               </fieldset>
+            )}
+            {createMutation.isError && (
+              <p role="alert" className="mt-3 text-sm text-destructive">
+                {t("profiles.createFailed", {
+                  detail: profileErrorMessage(createMutation.error, t),
+                })}
+              </p>
             )}
           </div>
           <DialogFooter className="flex gap-2 border-t-0 bg-transparent pt-2 sm:justify-end">
