@@ -1841,6 +1841,7 @@ pub fn run() {
             commands::remove_workbuddy_checkin_account,
             commands::get_doubao_checkin_accounts,
             commands::get_agent_rewards,
+            commands::connect_qoder_native_rewards,
             commands::claim_agent_rewards,
             commands::set_agent_rewards_auto,
             commands::start_agent_rewards_login,

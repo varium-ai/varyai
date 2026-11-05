@@ -6,6 +6,7 @@ const {
   zcodePlans,
   decryptZcode,
   run,
+  qoderNativeAccount,
 } = require("./agent-rewards.cjs");
 const now = Date.UTC(2026, 10, 5, 4);
 const campaign = {
@@ -16,6 +17,113 @@ const campaign = {
   endAt: Date.UTC(2026, 10, 6, 2),
   benefit: { amount: 100 },
 };
+test("Qoder native credentials use the installed encrypted account without rotating its refresh token", async () => {
+  const fs = require("node:fs/promises"),
+    os = require("node:os"),
+    path = require("node:path"),
+    crypto = require("node:crypto");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "varyai-native-qoder-"));
+  const file = path.join(root, "auth.v1.dat");
+  const password = "synthetic-keychain-secret";
+  const key = crypto.pbkdf2Sync(password, "saltysalt", 1003, 16, "sha1");
+  const payload = {
+    schemaVersion: 1,
+    token: "synthetic-native-token",
+    refreshToken: "must-not-be-used",
+    expiresAt: new Date(Date.now() + 3600000).toISOString(),
+    user: { id: "synthetic-native-user", name: "Native account" },
+  };
+  const cipher = crypto.createCipheriv(
+    "aes-128-cbc",
+    key,
+    Buffer.alloc(16, 32),
+  );
+  const encrypted = Buffer.concat([
+    Buffer.from("v10"),
+    cipher.update(JSON.stringify(payload)),
+    cipher.final(),
+  ]);
+  try {
+    await fs.writeFile(file, encrypted);
+    const native = await qoderNativeAccount({ file, password });
+    assert.equal(native.source, "native");
+    assert.equal(native.uid, payload.user.id);
+    assert.equal(native.token, payload.token);
+    assert.ok(!("refreshToken" in native));
+    assert.equal(
+      (await qoderNativeAccount({ file })).unavailable,
+      "credentials_protected",
+    );
+    assert.equal(
+      (await qoderNativeAccount({ file, password: "wrong-synthetic-secret" }))
+        .unavailable,
+      "credentials_protected",
+    );
+    const result = await run({
+      app: "qoder",
+      mode: "claim",
+      expectedAccountId: "stale-selection",
+      native: { file, password },
+      directory: root,
+    });
+    assert.equal(result.outcome, "switch_required");
+    assert.equal(result.source, "native");
+    assert.ok(!JSON.stringify(result).includes(payload.token));
+    assert.ok(!JSON.stringify(result).includes(payload.refreshToken));
+    assert.deepEqual(await fs.readFile(file), encrypted);
+    const ownGrant = path.join(root, "qoder-auth.json");
+    await fs.writeFile(
+      ownGrant,
+      JSON.stringify({
+        account: {
+          uid: "other-browser-user",
+          token: "synthetic-browser-token",
+          label: "Backup account",
+        },
+      }),
+    );
+    const primary = await run({
+      app: "qoder",
+      mode: "claim",
+      expectedAccountId: "stale-selection",
+      native: { file, password },
+      directory: root,
+    });
+    assert.equal(primary.source, "native");
+    assert.notEqual(primary.accountId, primary.browserAccountId);
+    const backup = await run({
+      app: "qoder",
+      mode: "claim",
+      expectedAccountId: "stale-selection",
+      native: { file },
+      directory: root,
+    });
+    assert.equal(backup.source, "browser");
+    assert.equal(backup.label, "Backup account");
+    assert.equal(backup.nativeAvailable, true);
+    assert.deepEqual(await fs.readFile(file), encrypted);
+    payload.expiresAt = new Date(1).toISOString();
+    const expiredCipher = crypto.createCipheriv(
+      "aes-128-cbc",
+      key,
+      Buffer.alloc(16, 32),
+    );
+    await fs.writeFile(
+      file,
+      Buffer.concat([
+        Buffer.from("v10"),
+        expiredCipher.update(JSON.stringify(payload)),
+        expiredCipher.final(),
+      ]),
+    );
+    assert.equal(
+      (await qoderNativeAccount({ file, password })).unavailable,
+      "own_app_required",
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 test("Qoder status never claims and respects the vendor campaign window", async () => {
   const requests = [];
   const call = async (path, method) => {

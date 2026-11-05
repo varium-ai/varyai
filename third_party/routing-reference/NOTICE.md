@@ -91,10 +91,13 @@ Daily reward protocol behavior was reviewed in `magpie-community/plugins`
 and `packages/zcode/index.mjs` (blob `13cbbe330f3896621e492b4f69f621ed16664f84`).
 VaryAI independently implements campaign-window accounting, official daily-credit
 IPC and explicit gift-plan actions. Native interfaces were additionally checked
-against the installed Qoder CN 0.4.8, TRAE CN 3.4.14/3.4.15 and ZCode 3.16.3 clients and
+against the installed Qoder CN 0.4.8/0.5.3, TRAE CN 3.4.14/3.4.15 and ZCode 3.16.3 clients and
 ZCode's public `docs/marketing-touch-client.md` contract. No plugin implementation
-is copied. Qoder authorization uses an independent browser device grant; native
-refresh tokens are not rotated, and CAPTCHA remains in the official client.
+is copied. Qoder account reuse additionally follows the installed client's
+`product.json`, encrypted auth schema and Electron/Chromium's macOS `v10` format.
+OS-approved native account access is preferred, with an optional independent
+browser grant. Native refresh tokens are not rotated, and CAPTCHA remains in the
+official client.
 
 Additional subscription integrations reference `internal/provider/google.go`,
 `chatgpt_api.go`, `claude_signin.go`, `claude_dirs.go`, `claude_code_models.go`,

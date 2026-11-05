@@ -5757,13 +5757,19 @@
     "hint_antigravity": "使用 Antigravity 账号及其可用模型，支持 Google 登录或导入账号 JSON。"
   },
   "agentRewards": {
+    "readNative": "读取客户端登录",
+    "nativeAccessHint": "已检测到本机 Qoder CN 登录存储。首次读取可能需要允许系统钥匙串访问，无需重新登录 Qoder。",
+    "sources": {
+      "native": "正在使用 Qoder CN 当前登录账号",
+      "browser": "正在使用独立的备用授权账号"
+    },
     "account": "签到账号",
     "title": "签到",
     "refresh": "刷新",
     "claim": "签到",
     "claiming": "正在签到…",
-    "authorize": "授权 Qoder CN 账号",
-    "forget": "移除授权",
+    "authorize": "添加账号",
+    "forget": "移除备用授权",
     "loginWaiting": "请在 Qoder CN 官方页面完成授权。授权不会领取奖励或开启自动领取。",
     "loginFailed": "授权已过期或失败，请取消后重试。",
     "autoLabel": "自动签到",
@@ -5775,7 +5781,7 @@
     "accountChanged": "账号已切换，请刷新后继续。",
     "storageError": "无法读取或保存本地领奖数据，原文件已保留。",
     "descriptions": {
-      "qoder": "每日 Credits 在北京时间 10:00 刷新。需单独授权领奖账号，桌面客户端的登录仍由 Qoder CN 管理。",
+      "qoder": "每日 Credits 在北京时间 10:00 刷新。优先使用 Qoder CN 当前登录账号，独立浏览器授权作为备用。",
       "trae": "领取当前 TRAE CN 账号的官方每日 Credits，请保持已连接的客户端运行。奖励和资格以当前活动为准。",
       "zcode": "领取当前 ZCode 账号获得的活动赠送计划。活动可能不定期开放，试用额度自动刷新不属于签到奖励。"
     },

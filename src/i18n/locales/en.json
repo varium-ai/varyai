@@ -5759,13 +5759,19 @@
     "hint_antigravity": "Uses your Antigravity account and its available models. You can sign in with Google or import an account JSON export."
   },
   "agentRewards": {
+    "readNative": "Read client login",
+    "nativeAccessHint": "A local Qoder CN login was detected. Reading it may require macOS Keychain permission; this does not sign in again.",
+    "sources": {
+      "native": "Using the current Qoder CN login",
+      "browser": "Using independent backup authorization"
+    },
     "account": "Check-in account",
     "title": "Check in",
     "refresh": "Refresh",
     "claim": "Check in",
     "claiming": "Checking in…",
-    "authorize": "Authorize Qoder CN account",
-    "forget": "Remove authorization",
+    "authorize": "Add account",
+    "forget": "Remove backup authorization",
     "loginWaiting": "Complete authorization on the official Qoder CN page. Authorization does not claim rewards or enable automatic claims.",
     "loginFailed": "Authorization expired or failed. Cancel and try again.",
     "autoLabel": "Automatic check-in",
@@ -5777,7 +5783,7 @@
     "accountChanged": "The account changed. Refresh before continuing.",
     "storageError": "Local reward data could not be read or saved. The existing file was preserved.",
     "descriptions": {
-      "qoder": "Daily Credits reset at 10:00 (UTC+8). Authorize an account separately for rewards; the desktop login remains managed by Qoder CN.",
+      "qoder": "Daily Credits reset at 10:00 (UTC+8). Uses the current Qoder CN login when accessible; independent browser authorization is optional.",
       "trae": "Claims the current TRAE CN account’s official daily Credits. Keep the connected client open. Reward amounts and eligibility follow the current campaign.",
       "zcode": "Claims gift plans offered to the current ZCode login. Offers are campaign-based; a trial quota reset is not a check-in reward."
     },

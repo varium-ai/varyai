@@ -1,4 +1,6 @@
 //! Optional vendor rewards, isolated from routing and synchronized configuration.
+#[cfg(target_os = "macos")]
+mod qoder_native;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
@@ -35,6 +37,10 @@ impl Outcome {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Observation {
+    browser_account_id: Option<String>,
+    source: Option<AccountSource>,
+    #[serde(default)]
+    native_available: bool,
     account_id: Option<String>,
     label: Option<String>,
     outcome: Outcome,
@@ -46,6 +52,9 @@ impl Observation {
     #[cfg(test)]
     fn outcome(outcome: Outcome) -> Self {
         Self {
+            browser_account_id: None,
+            source: None,
+            native_available: false,
             account_id: None,
             label: None,
             outcome,
@@ -59,6 +68,10 @@ impl Observation {
             .account_id
             .as_ref()
             .is_some_and(|id| id.len() != 64 || !id.bytes().all(|c| c.is_ascii_hexdigit()))
+            || self
+                .browser_account_id
+                .as_ref()
+                .is_some_and(|id| id.len() != 64 || !id.bytes().all(|c| c.is_ascii_hexdigit()))
             || self
                 .window_key
                 .as_ref()
@@ -97,6 +110,9 @@ struct Store {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Status {
+    browser_account_id: Option<String>,
+    source: Option<AccountSource>,
+    native_available: bool,
     app: String,
     account_id: Option<String>,
     label: Option<String>,
@@ -105,6 +121,12 @@ pub(crate) struct Status {
     credit: Option<f64>,
     checked_at: Option<i64>,
     next_check_at: Option<i64>,
+}
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AccountSource {
+    Native,
+    Browser,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -120,6 +142,8 @@ pub(crate) struct Manager {
     path: PathBuf,
     db: Arc<crate::database::Database>,
     lock: Mutex<()>,
+    #[cfg(target_os = "macos")]
+    native_cache: Arc<std::sync::Mutex<qoder_native::Cache>>,
 }
 fn valid_app(app: &str) -> Result<(), String> {
     APPS.contains(&app)
@@ -144,6 +168,8 @@ impl Manager {
             path,
             db,
             lock: Mutex::new(()),
+            #[cfg(target_os = "macos")]
+            native_cache: Arc::new(std::sync::Mutex::new(qoder_native::Cache::default())),
         }
     }
     async fn read(&self) -> Result<Store, String> {
@@ -178,6 +204,21 @@ impl Manager {
                 .or_else(|_| Ok(json!({"outcome":"connection_required"})));
         }
         let directory = self.path.parent().ok_or(ERROR)?.join("agent-rewards");
+        #[cfg(target_os = "macos")]
+        if app == "qoder" && matches!(input["mode"].as_str(), Some("status" | "claim")) {
+            let cache = self.native_cache.clone();
+            let home = crate::config::get_home_dir();
+            let interactive = input["nativeInteractive"] == true;
+            if let Some(native) = tokio::task::spawn_blocking(move || {
+                let mut cache = cache.lock().ok()?;
+                qoder_native::input(&home, &mut cache, interactive)
+            })
+            .await
+            .map_err(|_| ERROR.to_owned())?
+            {
+                input["native"] = native;
+            }
+        }
         input["app"] = json!(app);
         input["directory"] = json!(directory);
         let runtime = tokio::task::spawn_blocking(crate::commands::reward_node_runtime)
@@ -240,6 +281,9 @@ impl Manager {
         let record = id.as_ref().and_then(|id| store.records.get(id));
         let confirmed = record.filter(|record| cached(record, native, now));
         Status {
+            browser_account_id: native.browser_account_id.clone(),
+            source: native.source,
+            native_available: native.native_available,
             app: app.into(),
             account_id: native.account_id.clone(),
             label: native.label.clone(),
@@ -260,6 +304,17 @@ impl Manager {
         let store = self.read().await?;
         let native = self.observe(app, None).await?;
         Ok(Self::snapshot(app, &store, &native))
+    }
+    pub(crate) async fn connect_qoder_native(&self) -> Result<Status, String> {
+        let _guard = self.lock.lock().await;
+        let store = self.read().await?;
+        let value = self
+            .helper("qoder", json!({"mode":"status","nativeInteractive":true}))
+            .await?;
+        let native = serde_json::from_value::<Observation>(value)
+            .map_err(|_| ERROR.to_owned())?
+            .validate()?;
+        Ok(Self::snapshot("qoder", &store, &native))
     }
     pub(crate) async fn set_auto(
         &self,

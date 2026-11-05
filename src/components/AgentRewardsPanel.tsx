@@ -43,6 +43,10 @@ export function AgentRewardsPanel({
       agentRewardsApi.setAuto(app, id, enabled),
     onSuccess: update,
   });
+  const native = useMutation({
+    mutationFn: agentRewardsApi.nativeAccount,
+    onSuccess: update,
+  });
   const authorize = useMutation({
     mutationFn: async () => {
       const login = await agentRewardsApi.startLogin(app);
@@ -79,12 +83,16 @@ export function AgentRewardsPanel({
     onSuccess: () => client.invalidateQueries({ queryKey }),
   });
   const data = query.data;
+  const browserAccountId =
+    data?.browserAccountId ??
+    (data?.source !== "native" ? data?.accountId : null);
   const busy =
     claim.isPending ||
     auto.isPending ||
     authorize.isPending ||
     cancel.isPending ||
     forget.isPending ||
+    native.isPending ||
     !!loginId;
   const complete =
     data && ["claimed", "already_checked"].includes(data.outcome);
@@ -93,7 +101,8 @@ export function AgentRewardsPanel({
     auto.isError ||
     authorize.isError ||
     cancel.isError ||
-    forget.isError;
+    forget.isError ||
+    native.isError;
   return (
     <section aria-label={t("agentRewards.title")} className="mp-checkin">
       <h3 hidden={embedded} className="mp-checkin-heading">
@@ -160,6 +169,18 @@ export function AgentRewardsPanel({
           </div>
           {app === "qoder" && (
             <>
+              {data?.nativeAvailable &&
+                (data.source !== "native" || !data.accountId) && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mp-checkin-button"
+                    disabled={busy || query.isFetching}
+                    onClick={() => native.mutate()}
+                  >
+                    {t("agentRewards.readNative")}
+                  </Button>
+                )}
               <Button
                 variant="outline"
                 size="sm"
@@ -169,13 +190,13 @@ export function AgentRewardsPanel({
               >
                 {t("agentRewards.authorize")}
               </Button>
-              {data?.accountId && (
+              {browserAccountId && (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="mp-checkin-button mp-checkin-quiet"
                   disabled={busy}
-                  onClick={() => forget.mutate(data.accountId!)}
+                  onClick={() => forget.mutate(browserAccountId)}
                 >
                   {t("agentRewards.forget")}
                 </Button>
@@ -183,6 +204,18 @@ export function AgentRewardsPanel({
             </>
           )}
         </div>
+        {app === "qoder" && data?.source && data.accountId && (
+          <p className="mp-checkin-muted">
+            {t(`agentRewards.sources.${data.source}`)}
+          </p>
+        )}
+        {app === "qoder" &&
+          data?.nativeAvailable &&
+          (data.source !== "native" || !data.accountId) && (
+            <p className="mp-checkin-muted">
+              {t("agentRewards.nativeAccessHint")}
+            </p>
+          )}
         {loginId && (
           <div className="mp-checkin-actions">
             <p role="status">

@@ -18,6 +18,9 @@ export type RewardOutcome =
   | "unsupported"
   | "failed";
 export interface AgentRewardStatus {
+  source?: "native" | "browser" | null;
+  nativeAvailable?: boolean;
+  browserAccountId?: string | null;
   app: RewardApp;
   accountId: string | null;
   label: string | null;
@@ -28,6 +31,8 @@ export interface AgentRewardStatus {
   nextCheckAt: number | null;
 }
 export const agentRewardsApi = {
+  nativeAccount: () =>
+    invoke<AgentRewardStatus>("connect_qoder_native_rewards"),
   status: (app: RewardApp) =>
     invoke<AgentRewardStatus>("get_agent_rewards", { app }),
   claim: (app: RewardApp, accountId: string) =>

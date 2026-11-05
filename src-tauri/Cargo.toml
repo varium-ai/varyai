@@ -112,6 +112,7 @@ windows-sys = { version = "0.61", features = [
 rquickjs = { version = "0.8", features = ["bindgen"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"
 objc2 = "0.6"
 block2 = "0.6"
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter", "block2"] }

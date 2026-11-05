@@ -284,7 +284,72 @@ async function qoderIdentity(uid) {
     "User-Agent": "Qoder",
   };
 }
+async function qoderNativeAccount(native) {
+  if (!native?.file) return null;
+  const unavailable = (outcome) => ({ source: "native", unavailable: outcome });
+  if (!native.password) return unavailable("credentials_protected");
+  let saved;
+  try {
+    const bytes = await fs.readFile(native.file);
+    if (bytes.length > 65536 || bytes.subarray(0, 3).toString() !== "v10")
+      return unavailable("unsupported");
+    const key = crypto.pbkdf2Sync(
+      native.password,
+      "saltysalt",
+      1003,
+      16,
+      "sha1",
+    );
+    const decipher = crypto.createDecipheriv(
+      "aes-128-cbc",
+      key,
+      Buffer.alloc(16, 32),
+    );
+    saved = JSON.parse(
+      Buffer.concat([
+        decipher.update(bytes.subarray(3)),
+        decipher.final(),
+      ]).toString("utf8"),
+    );
+  } catch {
+    return unavailable("credentials_protected");
+  }
+  if (
+    saved?.schemaVersion !== 1 ||
+    typeof saved.token !== "string" ||
+    !saved.token ||
+    typeof saved.user?.id !== "string" ||
+    !saved.user.id ||
+    !stamp(saved.expiresAt)
+  )
+    return unavailable("credentials_unavailable");
+  const account = {
+    uid: saved.user.id,
+    id: hash("qoder|" + saved.user.id),
+    token: saved.token,
+    source: "native",
+    label: String(
+      saved.user.name ??
+        saved.user.nickname ??
+        saved.user.email ??
+        "Qoder CN account",
+    ).slice(0, 256),
+  };
+  if (stamp(saved.expiresAt) <= Date.now() + 60000)
+    return { ...account, unavailable: "own_app_required" };
+  return account;
+}
 async function qoderAccount(input) {
+  const native = await qoderNativeAccount(input.native);
+  if (native && !native.unavailable) return native;
+  try {
+    return { ...(await qoderBrowserAccount(input)), source: "browser" };
+  } catch (error) {
+    if (native && error.outcome === "sign_in_required") return native;
+    throw error;
+  }
+}
+async function qoderBrowserAccount(input) {
   const file = path.join(input.directory, "qoder-auth.json");
   const store = await readJSON(file, {});
   let account = store.account;
@@ -487,12 +552,30 @@ async function run(input) {
         return {
           accountId: hash("qoder|" + saved.uid),
           label: String(saved.label ?? "Qoder CN account").slice(0, 256),
+          source: "browser",
+          nativeAvailable: Boolean(input.native),
           outcome: "sign_in_required",
         };
     }
     throw error;
   }
-  const result = { accountId: account.id, label: account.label };
+  const result = {
+    accountId: account.id,
+    label: account.label,
+    source: account.source,
+    nativeAvailable: input.app === "qoder" && Boolean(input.native),
+  };
+  if (input.app === "qoder") {
+    // Backup authorization can be removed independently of the active native login.
+    const backup = await readJSON(
+      path.join(input.directory, "qoder-auth.json"),
+      {},
+    ).catch(() => null);
+    result.browserAccountId = backup?.account?.uid
+      ? hash("qoder|" + backup.account.uid)
+      : null;
+  }
+  if (account.unavailable) return { ...result, outcome: account.unavailable };
   if (input.mode === "claim" && input.expectedAccountId !== account.id)
     return { ...result, outcome: "switch_required" };
   let status;
@@ -549,5 +632,11 @@ async function main() {
     );
   }
 }
-module.exports = { qoderCampaigns, zcodePlans, decryptZcode, run };
+module.exports = {
+  qoderCampaigns,
+  qoderNativeAccount,
+  zcodePlans,
+  decryptZcode,
+  run,
+};
 if (process.env.VARYAI_AGENT_REWARD_HELPER === "1") void main();

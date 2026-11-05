@@ -2,6 +2,13 @@ use crate::services::agent_rewards::{LoginStart, LoginStatus, Manager, Status};
 use std::sync::Arc;
 
 #[tauri::command]
+pub(crate) async fn connect_qoder_native_rewards(
+    manager: tauri::State<'_, Arc<Manager>>,
+) -> Result<Status, String> {
+    manager.connect_qoder_native().await
+}
+
+#[tauri::command]
 pub(crate) async fn get_agent_rewards(
     app: String,
     manager: tauri::State<'_, Arc<Manager>>,

@@ -17,6 +17,7 @@ vi.mock("@/lib/api/agent-rewards", () => ({
     pollLogin: vi.fn(),
     cancelLogin: vi.fn(),
     forget: vi.fn(),
+    nativeAccount: vi.fn(),
   },
 }));
 vi.mock("react-i18next", () => ({
@@ -145,4 +146,74 @@ it("cancels the pending grant when opening the browser fails and hides private e
   expect(
     screen.queryByText(/synthetic-private-detail/),
   ).not.toBeInTheDocument();
+});
+
+it("reads the native Qoder login without opening a browser or enabling automatic claims", async () => {
+  vi.mocked(agentRewardsApi.status).mockResolvedValue({
+    ...initial,
+    source: "browser",
+    nativeAvailable: true,
+  });
+  vi.mocked(agentRewardsApi.nativeAccount).mockResolvedValue({
+    ...initial,
+    source: "native",
+    label: "Native Qoder account",
+  });
+  mount();
+  await screen.findByText("Synthetic account");
+  fireEvent.click(
+    screen.getByRole("button", { name: "agentRewards.readNative" }),
+  );
+  await screen.findByText("Native Qoder account");
+  expect(agentRewardsApi.nativeAccount).toHaveBeenCalledOnce();
+  expect(agentRewardsApi.startLogin).not.toHaveBeenCalled();
+  expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+  expect(agentRewardsApi.setAuto).not.toHaveBeenCalled();
+  expect(screen.getByText("agentRewards.sources.native")).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "agentRewards.forget" }),
+  ).not.toBeInTheDocument();
+});
+
+it("removes the backup grant independently of the current native account", async () => {
+  const backup = "b".repeat(64);
+  vi.mocked(agentRewardsApi.status).mockResolvedValue({
+    ...initial,
+    source: "native",
+    nativeAvailable: true,
+    browserAccountId: backup,
+  });
+  mount();
+  await screen.findByText("Synthetic account");
+  fireEvent.click(screen.getByRole("button", { name: "agentRewards.forget" }));
+  await waitFor(() =>
+    expect(agentRewardsApi.forget).toHaveBeenCalledWith("qoder", backup),
+  );
+  expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+  expect(agentRewardsApi.setAuto).not.toHaveBeenCalled();
+});
+
+it("offers native access permission when the detected client has no readable account yet", async () => {
+  vi.mocked(agentRewardsApi.status).mockResolvedValue({
+    ...initial,
+    source: "native",
+    nativeAvailable: true,
+    accountId: null,
+    label: null,
+    outcome: "credentials_protected",
+  });
+  vi.mocked(agentRewardsApi.nativeAccount).mockResolvedValue({
+    ...initial,
+    source: "native",
+  });
+  mount();
+  const button = await screen.findByRole("button", {
+    name: "agentRewards.readNative",
+  });
+  await waitFor(() => expect(button).toBeEnabled());
+  fireEvent.click(button);
+  await screen.findByText("Synthetic account");
+  expect(agentRewardsApi.nativeAccount).toHaveBeenCalledOnce();
+  expect(agentRewardsApi.startLogin).not.toHaveBeenCalled();
+  expect(agentRewardsApi.claim).not.toHaveBeenCalled();
 });

@@ -5684,13 +5684,19 @@
     "hint_antigravity": "使用 Antigravity 帳號及其可用模型，支援 Google 登入或匯入帳號 JSON。"
   },
   "agentRewards": {
+    "readNative": "讀取用戶端登入",
+    "nativeAccessHint": "已偵測到本機 Qoder CN 登入儲存。首次讀取可能需要允許系統鑰匙圈存取，無需重新登入 Qoder。",
+    "sources": {
+      "native": "正在使用 Qoder CN 目前登入帳號",
+      "browser": "正在使用獨立的備用授權帳號"
+    },
     "account": "簽到帳號",
     "title": "簽到",
     "refresh": "重新整理",
     "claim": "簽到",
     "claiming": "正在簽到…",
-    "authorize": "授權 Qoder CN 帳號",
-    "forget": "移除授權",
+    "authorize": "新增帳號",
+    "forget": "移除備用授權",
     "loginWaiting": "請在 Qoder CN 官方頁面完成授權。授權不會領取獎勵或開啟自動領取。",
     "loginFailed": "授權已過期或失敗，請取消後重試。",
     "autoLabel": "自動簽到",
@@ -5702,7 +5708,7 @@
     "accountChanged": "帳號已切換，請重新整理後繼續。",
     "storageError": "無法讀取或儲存本機領獎資料，原始檔案已保留。",
     "descriptions": {
-      "qoder": "每日 Credits 在 UTC+8 的 10:00 更新。需單獨授權領獎帳號，桌面用戶端的登入仍由 Qoder CN 管理。",
+      "qoder": "每日 Credits 在 UTC+8 的 10:00 更新。優先使用 Qoder CN 目前登入帳號，獨立瀏覽器授權作為備用。",
       "trae": "領取目前 TRAE CN 帳號的官方每日 Credits，請保持已連接的用戶端執行。獎勵和資格以目前活動為準。",
       "zcode": "領取目前 ZCode 帳號獲得的活動贈送方案。活動可能不定期開放，試用額度自動更新不屬於簽到獎勵。"
     },
