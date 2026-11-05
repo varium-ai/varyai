@@ -2676,6 +2676,7 @@
       "agentApplyFailed": "{{app}} の適用に失敗しました：{{reason}} 切替前の設定に復元しました。",
       "agentPreviewFailed": "{{app}} の設定を準備できませんでした：{{reason}}",
       "providerApplyFailed": "プロバイダー設定の書き込みまたは切替に失敗しました。このエージェントの設定を確認してください。",
+      "sharedGatewayRequired": "共有モデルのプロファイルを適用する前に VaryAI ゲートウェイを起動してください。",
       "nativeSelectionFailed": "クライアントのモデル選択を書き込めませんでした。ファイル権限と他のプログラムによる変更を確認してください。",
       "nativeModelMissing": "保存したモデルまたはプロトコル／接続先が現在の設定と一致しません。このエージェントのモデルを確認し、プロファイルを更新してください。",
       "resourceApplyFailed": "MCP、Skill またはプロンプトを適用できませんでした。このエージェントのリソースを確認してください。",

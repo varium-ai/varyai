@@ -2677,6 +2677,7 @@
       "agentApplyFailed": "{{app}} 套用失敗：{{reason}} 已還原切換前設定。",
       "agentPreviewFailed": "{{app}} 無法準備方案：{{reason}}",
       "providerApplyFailed": "供應商設定寫入或切換失敗，請檢查此 Agent 的供應商設定。",
+      "sharedGatewayRequired": "請先啟動 VaryAI 閘道，再套用共享模型設定方案。",
       "nativeSelectionFailed": "用戶端模型選擇寫入失敗，請檢查設定檔是否可寫或被其他程式修改。",
       "nativeModelMissing": "方案中的模型或協定/位址與目前設定不符，請檢查此 Agent 的模型設定並更新方案。",
       "resourceApplyFailed": "MCP、Skill 或提示詞套用失敗，請檢查此 Agent 的資源設定。",

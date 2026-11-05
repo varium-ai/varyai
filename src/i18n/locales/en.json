@@ -2750,6 +2750,7 @@
       "agentApplyFailed": "{{app}} failed: {{reason}} The previous configuration has been restored.",
       "agentPreviewFailed": "Could not prepare the profile for {{app}}: {{reason}}",
       "providerApplyFailed": "The provider configuration could not be written or selected. Check this agent’s provider settings.",
+      "sharedGatewayRequired": "Start the VaryAI gateway before applying a shared-model profile.",
       "nativeSelectionFailed": "The native model selection could not be written. Check file permissions and concurrent edits.",
       "nativeModelMissing": "The saved model or its protocol/endpoint does not match the current configuration. Check this agent’s models and refresh the profile.",
       "resourceApplyFailed": "MCP, Skill or prompt settings could not be applied. Check this agent’s resources.",

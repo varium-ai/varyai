@@ -6721,6 +6721,209 @@ mod tests {
         Ok(())
     }
 
+    // Profile commands run on a blocking pool while gateway tasks keep progressing.
+    #[tokio::test]
+    #[serial]
+    async fn shared_catalog_profiles_capture_apply_and_undo_without_legacy_providers(
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        tokio::task::spawn_blocking(|| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            use super::super::{
+                agent_connections, profile_bundle,
+                routing_upstreams::{RoutingUpstream, UpstreamSource},
+            };
+            let _home = TempHome::new();
+            crate::settings::reload_settings()?;
+            let db = Arc::new(Database::memory()?);
+            futures::executor::block_on(use_ephemeral_proxy_port(&db));
+            db.save_routing_upstream(RoutingUpstream {
+                icon: None,
+                transport: None,
+                schema_version: 1,
+                preset_id: None,
+                region: None,
+                codex_settings: None,
+                id: String::new(),
+                name: "Profile fixture".into(),
+                revision: 0,
+                has_api_key: false,
+                enabled: true,
+                source: UpstreamSource::Api {
+                    catalog: vec![],
+                    mode: crate::services::codex_provider::ModelMode::Picked,
+                    groups_only: false,
+                    base_url: "https://synthetic.invalid/v1".into(),
+                    api_key: Some("synthetic-profile-secret".into()),
+                    api_format: "openai_responses".into(),
+                    models: vec![json!({"model":"fixture-a"}), json!({"model":"fixture-b"})],
+                    auth_type: None,
+                },
+            })?;
+            let state = crate::store::AppState::new(db);
+            let service = &state.proxy_service;
+            let info = futures::executor::block_on(service.start())?;
+            let menu = service
+                .intent_runtime
+                .global_snapshot()?
+                .ok_or("missing menu")?;
+            let models = agent_connections::models(&menu);
+            let model_a = &models[0].id;
+            let model_b = &models[1].id;
+            let origin = format!("http://127.0.0.1:{}", info.port);
+            let mut apps = vec!["deepseek-harness", "opencode", "openclaw", "hermes", "pi"];
+            if !cfg!(target_os = "linux") {
+                apps.push("claude-desktop");
+            }
+            for app in &apps {
+                assert!(state.db.get_all_providers(app)?.is_empty());
+                let receipt = service
+                    .agent_connections
+                    .build(app, &menu, &origin, model_a)?;
+                service.agent_connections.install(receipt.clone())?;
+                service.intent_runtime.connections.install(&receipt)?;
+                assert!(
+                    profile_bundle::agents(&state)?
+                        .iter()
+                        .any(|agent| agent.app.as_str() == *app && agent.available),
+                    "shared connection must be selectable: {app}"
+                );
+            }
+            let visibility = |id: &str| agent_connections::ModelVisibility {
+                only: true,
+                ids: vec![id.into()],
+                order: vec![],
+            };
+            if apps.contains(&"claude-desktop") {
+                service.agent_connections.set_model_visibility(
+                    "claude-desktop",
+                    &visibility(model_a),
+                    &menu,
+                    &origin,
+                )?;
+            }
+            let saved = profile_bundle::ProfileBundleService::capture(
+                &state,
+                "Shared fixture",
+                &apps.iter().map(|app| (*app).into()).collect::<Vec<_>>(),
+                None,
+            )?;
+            assert!(!saved.payload.contains("synthetic-profile-secret"));
+            assert!(!saved.payload.contains("127.0.0.1"));
+            for app in &apps {
+                let receipt = service
+                    .agent_connections
+                    .update(app, &menu, &origin, Some(model_b))?
+                    .ok_or("missing receipt")?;
+                assert!(!saved.payload.contains(&receipt.token));
+                service.intent_runtime.connections.install(&receipt)?;
+            }
+            if apps.contains(&"claude-desktop") {
+                service.agent_connections.set_model_visibility(
+                    "claude-desktop",
+                    &visibility(model_b),
+                    &menu,
+                    &origin,
+                )?;
+            }
+            let preview = profile_bundle::ProfileBundleService::preview(&state, &saved.id)?;
+            assert_eq!(preview.changes.len(), apps.len());
+            let harness_path = crate::services::agent_clients::config_path("deepseek-harness")?;
+            let live = std::fs::read_to_string(&harness_path)?;
+            std::fs::write(&harness_path, format!("# Synthetic external edit\n{live}"))?;
+            assert!(profile_bundle::ProfileBundleService::apply(
+                &state,
+                &saved.id,
+                &preview.revision
+            )
+            .is_err());
+            let preview = profile_bundle::ProfileBundleService::preview(&state, &saved.id)?;
+            let result =
+                profile_bundle::ProfileBundleService::apply(&state, &saved.id, &preview.revision)?;
+            assert!(result.success);
+            for app in &apps {
+                assert_eq!(
+                    service
+                        .agent_connections
+                        .load(app)?
+                        .ok_or("missing receipt")?
+                        .model,
+                    *model_a
+                );
+                assert!(service.intent_runtime.connections.active(app));
+                assert!(state.db.get_all_providers(app)?.is_empty());
+            }
+            if apps.contains(&"claude-desktop") {
+                assert_eq!(
+                    service
+                        .agent_connections
+                        .model_visibility("claude-desktop")?,
+                    visibility(model_a)
+                );
+            }
+            profile_bundle::ProfileBundleService::undo(
+                &state,
+                result.undo_id.as_deref().ok_or("missing undo")?,
+            )?;
+            for app in &apps {
+                if *app != "claude-desktop" {
+                    assert_eq!(
+                        service
+                            .agent_connections
+                            .load(app)?
+                            .ok_or("missing receipt")?
+                            .model,
+                        *model_b,
+                        "restored starting model for {app}"
+                    );
+                }
+                assert!(service.agent_connections.status(app)?.configured);
+            }
+            if apps.contains(&"claude-desktop") {
+                assert_eq!(
+                    service
+                        .agent_connections
+                        .model_visibility("claude-desktop")?,
+                    visibility(model_b)
+                );
+            }
+            service.agent_connections.disconnect("deepseek-harness")?;
+            service
+                .intent_runtime
+                .connections
+                .revoke("deepseek-harness");
+            let preview = profile_bundle::ProfileBundleService::preview(&state, &saved.id)?;
+            let restored =
+                profile_bundle::ProfileBundleService::apply(&state, &saved.id, &preview.revision)?;
+            assert!(restored.success);
+            assert!(state.db.get_all_providers("deepseek-harness")?.is_empty());
+            assert!(service
+                .intent_runtime
+                .connections
+                .active("deepseek-harness"));
+            profile_bundle::ProfileBundleService::undo(
+                &state,
+                restored.undo_id.as_deref().ok_or("missing undo")?,
+            )?;
+            assert!(service
+                .agent_connections
+                .load("deepseek-harness")?
+                .is_none());
+            assert!(!service
+                .intent_runtime
+                .connections
+                .active("deepseek-harness"));
+            let mut upstream = state.db.list_routing_upstreams()?.remove(0);
+            upstream.enabled = false;
+            state.db.save_routing_upstream(upstream)?;
+            futures::executor::block_on(service.refresh_global_routing())?;
+            let missing = profile_bundle::ProfileBundleService::preview(&state, &saved.id)?;
+            assert!(missing.changes.is_empty());
+            assert_eq!(missing.skipped.len(), apps.len());
+            futures::executor::block_on(service.stop())?;
+            Ok(())
+        })
+        .await?
+    }
+
     #[tokio::test]
     #[serial]
     async fn shared_agents_suspend_resume_and_restore_without_legacy_provider_projection() {

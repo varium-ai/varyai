@@ -73,6 +73,14 @@ fn selection(app: &str) -> Result<Option<String>, String> {
     read_selection(app, &path)
 }
 
+pub(crate) fn starting_model(app: &str) -> Result<Option<String>, String> {
+    if STARTING_MODEL_APPS.contains(&app) {
+        selection(app)
+    } else {
+        Ok(None)
+    }
+}
+
 fn model_string(value: Option<&Value>) -> Result<Option<String>, String> {
     let Some(value) = value.filter(|value| !value.is_null()) else {
         return Ok(None);

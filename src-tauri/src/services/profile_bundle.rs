@@ -1,7 +1,9 @@
 mod files;
 mod library;
 mod native;
+mod shared;
 use super::trae_bridge::selection as trae;
+pub use shared::Connection as SharedConnection;
 // Reviewed cross-agent profiles. Secrets never enter preview DTOs.
 // Undo is bounded to the last operation in this application session.
 use super::{profile::ProfilePayload, ProviderService};
@@ -26,6 +28,8 @@ pub struct ProfileSelection {
     pub provider_id: String,
     /// Only model selectors, never credentials or complete provider settings.
     pub models: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<SharedConnection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub providers: Option<Vec<ProviderModels>>,
     #[serde(
@@ -215,6 +219,9 @@ fn initialize_providers(
     apps: impl IntoIterator<Item = AppType>,
 ) -> Result<(), AppError> {
     for app in apps {
+        if shared::available(state, &app)? {
+            continue;
+        }
         if matches!(
             app,
             AppType::WorkBuddy
@@ -463,6 +470,7 @@ fn with_models(app: &AppType, provider: &Provider, models: &Value) -> Result<Pro
 impl AppSnapshot {
     fn capture(state: &AppState, app: AppType) -> Result<Self, AppError> {
         let mut paths = native::configuration_paths(&app)?;
+        paths.extend(shared::paths(state, &app)?);
         if library::instructions(&app) {
             paths.push(crate::prompt_files::prompt_file_path(&app)?);
         }
@@ -643,6 +651,7 @@ impl AppSnapshot {
             }
             .is_err();
         }
+        failed |= shared::restore(state, &self.app).is_err();
         if failed {
             Err(error("restoreFailed"))
         } else {
@@ -683,6 +692,17 @@ fn resolve_bundle(
     let mut selections = Vec::new();
     let mut skipped = Vec::new();
     for selection in bundle.selections {
+        if let Some(connection) = &selection.connection {
+            if shared::exists(state, &selection.app, connection)? {
+                selections.push(selection);
+            } else {
+                skipped.push(ProfileSkip {
+                    app: selection.app.as_str().into(),
+                    reason: "profiles.bundle.providerMissingSkipped",
+                });
+            }
+            continue;
+        }
         let providers = state.db.get_all_providers(selection.app.as_str())?;
         if !providers.contains_key(&selection.provider_id)
             || selection.providers.as_ref().is_some_and(|saved| {
@@ -809,7 +829,9 @@ pub fn agents(state: &AppState) -> Result<Vec<ProfileAgent>, AppError> {
         .map(|app| {
             let supported = app != AppType::DoubaoWork
                 && !(cfg!(target_os = "linux") && app == AppType::ClaudeDesktop);
-            let available = supported && !state.db.get_all_providers(app.as_str())?.is_empty();
+            let available = supported
+                && (shared::available(state, &app)?
+                    || !state.db.get_all_providers(app.as_str())?.is_empty());
             let reason = if !supported {
                 Some("profiles.bundle.nativeLoginOnly".into())
             } else if !available {
@@ -894,6 +916,7 @@ impl ProfileBundleService {
                     app: app.clone(),
                     provider_id: String::new(),
                     models: Value::Null,
+                    connection: None,
                     providers: None,
                     native_models: None,
                     library: None,
@@ -902,10 +925,25 @@ impl ProfileBundleService {
         };
         let _operation = state.profile_bundles.lock_operation();
         initialize_providers(state, skeleton.selections.iter().map(|s| s.app.clone()))?;
+        shared::prepare(state, &skeleton)?;
         let _locks = lock_apps(state, &skeleton);
         let mut selections = Vec::new();
         for scope in scopes {
             let app = &scope;
+            if let Some(connection) =
+                shared::capture(state, app).map_err(|e| agent_error(app, e))?
+            {
+                selections.push(ProfileSelection {
+                    app: scope.clone(),
+                    provider_id: "varyai-shared-catalog".into(),
+                    models: json!({}),
+                    connection: Some(connection),
+                    providers: None,
+                    native_models: None,
+                    library: Some(library::LibrarySelection::capture(state, app)?),
+                });
+                continue;
+            }
             let current = if captures_current_supplier(app) {
                 state.db.get_current_provider(app.as_str())?
             } else {
@@ -929,6 +967,7 @@ impl ProfileBundleService {
                 app: scope.clone(),
                 provider_id: id.clone(),
                 models: current_models(state, app, &provider)?,
+                connection: None,
                 providers: if app.is_additive_mode() {
                     let ids = native::enabled(state, app)?;
                     Some(
@@ -978,12 +1017,27 @@ impl ProfileBundleService {
     pub fn preview(state: &AppState, id: &str) -> Result<ProfilePreview, AppError> {
         let _operation = state.profile_bundles.lock_operation();
         let (profile, bundle) = load(state, id)?;
+        shared::prepare(state, &bundle)?;
         let (bundle, skipped) = resolve_bundle(state, bundle)?;
-        initialize_providers(state, bundle.selections.iter().map(|s| s.app.clone()))?;
+        initialize_providers(
+            state,
+            bundle
+                .selections
+                .iter()
+                .filter(|s| s.connection.is_none())
+                .map(|s| s.app.clone()),
+        )?;
         let _locks = lock_apps(state, &bundle);
         let before = snapshots(state, &bundle)?;
         let mut changes = Vec::new();
         for (selection, snapshot) in bundle.selections.iter().zip(&before) {
+            if let Some(connection) = &selection.connection {
+                changes.push(
+                    shared::preview(state, selection, connection)
+                        .map_err(|e| agent_error(&snapshot.app, e))?,
+                );
+                continue;
+            }
             let target = snapshot
                 .providers
                 .iter()
@@ -1143,8 +1197,16 @@ impl ProfileBundleService {
         let started = std::time::Instant::now();
         let _operation = state.profile_bundles.lock_operation();
         let (profile, bundle) = load(state, id)?;
+        shared::prepare(state, &bundle)?;
         let (bundle, skipped) = resolve_bundle(state, bundle)?;
-        initialize_providers(state, bundle.selections.iter().map(|s| s.app.clone()))?;
+        initialize_providers(
+            state,
+            bundle
+                .selections
+                .iter()
+                .filter(|s| s.connection.is_none())
+                .map(|s| s.app.clone()),
+        )?;
         let _locks = lock_apps(state, &bundle);
         let before = snapshots(state, &bundle)?;
         let previous_bundle_id = state.db.get_current_profile_id(BUNDLE_SCOPE)?;
@@ -1171,12 +1233,18 @@ impl ProfileBundleService {
             .iter()
             .zip(&before)
             .map(|(s, snapshot)| {
+                if let Some(connection) = &s.connection {
+                    shared::validate(state, &snapshot.app, connection)
+                        .map_err(|e| agent_error(&snapshot.app, e))?;
+                    return Ok(None);
+                }
                 let provider = snapshot
                     .providers
                     .iter()
                     .find(|p| p.id == s.provider_id)
                     .ok_or_else(|| agent_error(&snapshot.app, error("noProvider")))?;
                 with_models(&snapshot.app, provider, &s.models)
+                    .map(Some)
                     .map_err(|e| agent_error(&snapshot.app, e))
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -1213,6 +1281,18 @@ impl ProfileBundleService {
                     reused += 1;
                     return Ok(());
                 }
+                if let Some(connection) = &selection.connection {
+                    shared::apply(state, &snapshot.app, connection)?;
+                    if let Some(library) = &selection.library {
+                        failure_reason = "profiles.bundle.resourceApplyFailed";
+                        library.apply(state, &snapshot.app)?;
+                    }
+                    state
+                        .db
+                        .set_current_profile_id(selection.app.as_str(), Some(id))?;
+                    return Ok(());
+                }
+                let target = target.as_ref().ok_or_else(|| error("noProvider"))?;
                 if snapshot.app == AppType::Trae {
                     trae::select(&state.db, target)?;
                     state
@@ -1306,6 +1386,7 @@ impl ProfileBundleService {
                                     "profiles.bundle.missingResource",
                                     "profiles.bundle.invalidConfig",
                                     "profiles.bundle.readFailed",
+                                    "profiles.bundle.sharedGatewayRequired",
                                 ]
                                 .into_iter()
                                 .find(|key| message == key)

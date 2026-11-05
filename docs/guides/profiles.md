@@ -12,6 +12,8 @@ Profiles capture selected client configuration so you can restore a known setup 
 
 Every newly created profile uses a configuration snapshot, including profiles containing only one agent. Multi-agent selection can also contain just one supported agent; an empty selection cannot be saved. Older single-client profiles retain their existing format and behavior.
 
+Agents connected through the shared model catalog are selectable without a separate per-agent supplier entry. These profiles capture the selected shared model, supported model-list visibility rules, and resource selections. Applying them uses the current gateway connection and credentials; profile data does not copy connection tokens, account credentials or upstream endpoints. Keep the gateway running when applying a shared-connection profile. Preview skips a shared model whose supplier or routing group was removed, rather than substituting another model. Undo restores both native configuration and the preceding gateway connection receipt.
+
 Refreshing replaces the entire bundle with every configured, supported agent currently selected for management. Newly selected agents are included, and agents no longer selected are removed from the snapshot. The refresh reads current agent availability and captures current provider, model and supported resource selections in one operation; it does not reuse the old bundle's agent scope or require another selection dialog.
 
 Some older profiles contain only a single client group. Provider selection for Claude Code and Claude Desktop is independent. An uncaptured category is different from a captured empty category: the former leaves that category untouched; the latter can clear its enabled resources when applied.

@@ -2750,6 +2750,7 @@
       "agentApplyFailed": "{{app}} 应用失败：{{reason}} 已恢复切换前配置。",
       "agentPreviewFailed": "{{app}} 无法准备方案：{{reason}}",
       "providerApplyFailed": "供应商配置写入或切换失败，请检查该 Agent 的供应商配置。",
+      "sharedGatewayRequired": "请先启动 VaryAI 网关，再应用共享模型配置方案。",
       "nativeSelectionFailed": "客户端模型选择写入失败，请检查配置文件是否可写或被其他程序修改。",
       "nativeModelMissing": "方案中的模型或协议/地址与当前配置不匹配，请检查该 Agent 的模型配置并更新方案。",
       "resourceApplyFailed": "MCP、Skill 或提示词应用失败，请检查该 Agent 的资源配置。",
