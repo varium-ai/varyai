@@ -186,6 +186,15 @@ impl CodexChatHistoryStore {
         ) {
             return Ok((0, None));
         }
+        if current_budget.is_none() {
+            return match self.enrich_request_with_budget_mode(body, None, true).await {
+                Err(DlpForwardError::ContextUnavailable) => self
+                    .enrich_request_impl(body, false)
+                    .await
+                    .map(|(changed, _)| (changed, None)),
+                result => result,
+            };
+        }
         self.enrich_request_with_budget(body, current_budget).await
     }
 
@@ -193,6 +202,16 @@ impl CodexChatHistoryStore {
         &self,
         body: &mut Value,
         current_budget: Option<ChatEnrichmentBudget>,
+    ) -> Result<(usize, Option<ChatEnrichmentOwner>), DlpForwardError> {
+        self.enrich_request_with_budget_mode(body, current_budget, false)
+            .await
+    }
+
+    async fn enrich_request_with_budget_mode(
+        &self,
+        body: &mut Value,
+        current_budget: Option<ChatEnrichmentBudget>,
+        degrade_without_current_budget: bool,
     ) -> Result<(usize, Option<ChatEnrichmentOwner>), DlpForwardError> {
         let previous_id = body
             .get("previous_response_id")
@@ -343,6 +362,22 @@ impl CodexChatHistoryStore {
         // Every plan and source borrow remains frozen across both construction passes.
         // The complete candidate is built before one infallible transactional swap.
         let (candidate, owner) = budget.build(body, plan.as_slice())?;
+        if degrade_without_current_budget {
+            // Missing HTTP restoration authority discards guarded cache content, not the request.
+            // Construction errors above remain strict, including capacity and encoding failures.
+            drop(candidate);
+            drop(owner);
+            drop(plan);
+            drop(group);
+            drop(seen);
+            drop(output_ids);
+            drop(existing_ids);
+            drop(lookup);
+            return self
+                .enrich_request_impl(body, false)
+                .await
+                .map(|(changed, _)| (changed, None));
+        }
         *body = candidate;
         Ok((changed, Some(owner)))
     }

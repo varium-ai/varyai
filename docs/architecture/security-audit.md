@@ -16,6 +16,14 @@ Immutable Codex input is classified as `FreshReadable`, `ExplicitDependency`, or
 
 `UnknownPassthrough` covers unrecognized media, fields, item shapes, and unprovable call/output pairing. It forwards the request without granting session, cursor, cached-history, restoration, or tool-execution authority, and it does not fabricate completion evidence. Chat cache enrichment is skipped for this classification. Supported text is still inspected and existing redaction or blocking rules still apply, but unknown fields and media are not guaranteed to be inspected or redacted.
 
+### Missing memory-only completion context
+
+Completion records and their restoration authority are memory-only. At the HTTP recovery boundary, `ContextUnavailable` from completed-context resume or output-call-ID verification degrades to forwarding without that recovery authority instead of rejecting the conversation. This does not relax the lower-level tokenization, cursor, binding, or completion-proof checks, and it never synthesizes a completion record. Unknown historical placeholders remain literal unless an independent exact completed mapping authorizes them; guarded cached tool history is discarded when no current restoration lease exists.
+
+This degradation is limited to missing recovery context. Supported ordinary text, including text in tool results, still undergoes DLP inspection. Images remain opaque and are not decoded for scanning. Capacity, encoding, and necessary-redaction failures still fail closed; an explicit `Block` remains the only security rule that blocks ordinary conversation. Real upstream network, authentication, and HTTP failures retain their existing behavior.
+
+Non-blocking internal processing failures use HTTP 500 with `server_error` / `proxy_processing_failed` and the fixed message `The local proxy could not process the request. Please retry.` Codex SSE failures retain the `response.failed` envelope with the same generic projection and neutral `resp_proxy_failed` ID. Explicit policy blocks retain HTTP 400, `dlp_blocked`, and `Request blocked by local security policy.` Internal codes, checkpoints, stages, and reasons are diagnostic-only and are not projected to the Agent.
+
 ## Prepared-request target boundary
 
 A prepared DLP attempt is bound to its final upstream target and sending authority, even when it has no active token mappings. The reqwest path disables automatic redirects for these attempts. Both reqwest and Hyper reject upstream 3xx responses with a fixed status-only DLP error before parsing the response body; neither follows `Location` with the original request body or inherited history permission. Configure the final upstream endpoint directly. Requests without a prepared DLP attempt retain the existing redirect behavior.
