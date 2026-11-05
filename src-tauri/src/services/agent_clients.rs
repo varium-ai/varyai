@@ -383,6 +383,7 @@ impl Document {
 
     pub fn clear_managed_models(&mut self, app: &str) -> Result<(), AppError> {
         if app == "deepseek-harness" {
+            self.value["legacyProviders"] = json!(false);
             self.value["providers"]
                 .as_object_mut()
                 .ok_or_else(invalid)?

@@ -57,6 +57,16 @@ pub(crate) async fn list_agent_connections(
     })
     .await
     .map_err(|_| FAILED)??;
+    if statuses.iter().any(|status| {
+        status.configured
+            && !state
+                .proxy_service
+                .intent_runtime
+                .connections
+                .active(&status.app)
+    }) {
+        state.proxy_service.sync_shared_agent_catalogs().await;
+    }
     for status in &mut statuses {
         if status.configured
             && !state

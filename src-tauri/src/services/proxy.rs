@@ -6751,7 +6751,10 @@ mod tests {
                 base_url: "https://synthetic.invalid/v1".into(),
                 api_key: Some("synthetic-only".into()),
                 api_format: "openai_responses".into(),
-                models: vec![json!({"model":"synthetic","contextWindow":1_000_000})],
+                models: vec![
+                    json!({"model":"synthetic","contextWindow":1_000_000}),
+                    json!({"model":"synthetic-second"}),
+                ],
                 auth_type: None,
             },
         })
@@ -6784,6 +6787,72 @@ mod tests {
             .connections
             .install(&receipt)
             .expect("auth");
+        for app in ["kimi", "qwen"] {
+            let receipt = service
+                .agent_connections
+                .build(
+                    app,
+                    &menu,
+                    &format!("http://127.0.0.1:{}", info.port),
+                    &alias,
+                )
+                .expect("native projection");
+            let chosen = receipt
+                .model_map
+                .iter()
+                .find(|(_, id)| **id != alias)
+                .map(|(name, _)| name.clone())
+                .expect("second model");
+            service
+                .agent_connections
+                .install(receipt.clone())
+                .expect("native install");
+            service
+                .intent_runtime
+                .connections
+                .install(&receipt)
+                .expect("native auth");
+            let path = super::super::agent_clients::config_path(app).expect("native path");
+            let mut doc = super::super::agent_clients::Document::read(app, &path)
+                .expect("native configuration");
+            let selection = if app == "kimi" {
+                json!(chosen)
+            } else {
+                let mut selection = doc.selection(app);
+                selection["model"] = json!(chosen);
+                selection
+            };
+            doc.set_selection(app, &selection)
+                .expect("native model switch");
+            doc.write(&path).expect("persist native choice");
+            let mut upstream = db.list_routing_upstreams().expect("upstreams").remove(0);
+            if let UpstreamSource::Api { models, .. } = &mut upstream.source {
+                models.push(json!({"model":format!("new-{app}")}));
+            }
+            db.save_routing_upstream(upstream).expect("catalog update");
+            service
+                .refresh_global_routing()
+                .await
+                .expect("refresh menu");
+            service.sync_shared_agent_catalogs().await;
+            assert!(
+                service
+                    .agent_connections
+                    .status(app)
+                    .expect("status")
+                    .configured
+            );
+            assert!(service.intent_runtime.connections.active(app));
+            assert_eq!(
+                super::super::agent_clients::Document::read(app, &path)
+                    .expect("updated configuration")
+                    .selection(app),
+                selection
+            );
+            assert!(std::fs::read_to_string(&path)
+                .expect("updated catalog")
+                .contains(&format!("new-{app}")));
+        }
         assert!(service.set_takeover_for_app("claude", true).await.is_err());
         service.stop().await.expect("suspend without deadlock");
         assert_eq!(std::fs::read_to_string(&path).expect("restored"), original);
@@ -6868,6 +6937,7 @@ mod tests {
         service.agent_connections.install(receipt)?;
         let mut edited: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
         edited["env"]["ANTHROPIC_MODEL"] = json!("external-choice");
+        edited["env"]["ANTHROPIC_BASE_URL"] = json!("https://synthetic-external.invalid");
         edited["env"]["USER_SETTING"] = json!("keep-external");
         std::fs::write(&path, edited.to_string())?;
         assert!(service

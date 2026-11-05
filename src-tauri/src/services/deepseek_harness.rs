@@ -57,11 +57,34 @@ fn foreign_conflict(value: &Value, id: &str) -> bool {
     }
 }
 
+fn provider_config(patches: &Value) -> Value {
+    if patches["id"] == "llm-pi-ai" && patches["config"].is_object() {
+        return patches["config"].clone();
+    }
+    match patches {
+        Value::Array(items) => items
+            .iter()
+            .rev()
+            .map(provider_config)
+            .find(|v| !v.is_null()),
+        Value::Object(items) => items
+            .values()
+            .rev()
+            .map(provider_config)
+            .find(|v| !v.is_null()),
+        _ => None,
+    }
+    .unwrap_or(Value::Null)
+}
+
 pub(crate) fn parse(text: &str) -> Result<Value, String> {
     let (before, managed, after) = sections(text)?;
     let patches = array(&format!("{before}{after}"))?;
     let mut providers = serde_json::Map::new();
     let mut selection = Vec::new();
+    let mut legacy = false;
+    let mut mounted = false;
+    let base_config = provider_config(&json!(patches));
     for entry in array(managed)? {
         if entry["id"] == "agent-default-model" {
             if !selection.is_empty() || !valid_selection(&entry["config"]) {
@@ -70,6 +93,46 @@ pub(crate) fn parse(text: &str) -> Result<Value, String> {
             selection.push(entry);
             continue;
         }
+        if entry["id"] == "llm-pi-ai" {
+            if !providers.is_empty() || entry["name"] != PLUGIN {
+                return Err(FAILED.into());
+            }
+            mounted = true;
+            let mut config = entry["config"].clone();
+            let routes = config["providers"].as_object_mut().ok_or(FAILED)?;
+            let ids = routes
+                .keys()
+                .filter(|id| id.starts_with("varyai-"))
+                .cloned()
+                .collect::<Vec<_>>();
+            if ids.is_empty() {
+                return Err(FAILED.into());
+            }
+            for route in ids {
+                let profile = routes.remove(&route).ok_or(FAILED)?;
+                let id = key(route.trim_start_matches("varyai-"));
+                providers.insert(
+                    id.clone(),
+                    json!({"id":id,"name":PLUGIN,"config":{"providers":{route:profile}}}),
+                );
+            }
+            let mut base = if base_config.is_null() {
+                json!({})
+            } else {
+                base_config.clone()
+            };
+            if base.get("providers").is_none() {
+                base["providers"] = json!({});
+            }
+            if config != base {
+                return Err(FAILED.into());
+            }
+            continue;
+        }
+        if mounted {
+            return Err(FAILED.into());
+        }
+        legacy = true;
         let children = entry["insert"].as_array().ok_or(FAILED)?;
         if children.len() != 1 || entry.as_object().is_none_or(|entry| entry.len() != 1) {
             return Err(FAILED.into());
@@ -93,7 +156,9 @@ pub(crate) fn parse(text: &str) -> Result<Value, String> {
     if !selection.is_empty() && !foreign_selection(&json!(array(after)?)).is_null() {
         return Err(FAILED.into());
     }
-    Ok(json!({"patches":patches,"providers":providers,"selection":selection}))
+    Ok(
+        json!({"patches":patches,"providers":providers,"selection":selection,"legacyProviders":legacy}),
+    )
 }
 
 pub(crate) fn encode(source: &str, next: &Value) -> Result<String, String> {
@@ -140,10 +205,31 @@ pub(crate) fn encode(source: &str, next: &Value) -> Result<String, String> {
     } else {
         foreign
     };
-    let mut entries = providers
-        .values()
-        .map(|provider| json!({"insert":[provider]}))
-        .collect::<Vec<_>>();
+    let mut entries = Vec::new();
+    if next["legacyProviders"] == true {
+        entries.extend(
+            providers
+                .values()
+                .map(|provider| json!({"insert":[provider]})),
+        );
+    } else if !providers.is_empty() {
+        let mut config = provider_config(&next["patches"]);
+        if config.is_null() {
+            config = json!({});
+        }
+        if config.get("providers").is_none() {
+            config["providers"] = json!({});
+        }
+        let routes = config["providers"].as_object_mut().ok_or(FAILED)?;
+        for provider in providers.values() {
+            for (id, profile) in provider["config"]["providers"].as_object().ok_or(FAILED)? {
+                if routes.insert(id.clone(), profile.clone()).is_some() {
+                    return Err(FAILED.into());
+                }
+            }
+        }
+        entries.push(json!({"id":"llm-pi-ai","name":PLUGIN,"config":config}));
+    }
     entries.extend(selection.into_iter().flatten().cloned());
     let text = format!(
         "{}{}{}{}{}",
@@ -246,6 +332,7 @@ pub(crate) fn apply(value: &mut Value, id: &str, name: &str, config: &Value) -> 
         .as_object_mut()
         .ok_or(FAILED)?
         .insert(key(id), provider);
+    value["legacyProviders"] = json!(false);
     set_selection(
         value,
         &json!({"provider":format!("varyai-{id}"),"model":config["models"][0]["model"]}),
@@ -271,6 +358,9 @@ pub(crate) fn remove(value: &mut Value, id: &str, expected: &Value) -> Result<()
             return Err(FAILED.into());
         }
         providers.remove(&key(id));
+    }
+    if providers.is_empty() {
+        value["legacyProviders"] = json!(false);
     }
     if selection(value)["provider"] == format!("varyai-{id}") {
         set_selection(value, &Value::Null)?;
@@ -329,6 +419,50 @@ pub(crate) fn candidates(value: &Value) -> Vec<(String, String, Vec<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_routes_extend_the_existing_adapter_and_keep_native_providers() -> Result<(), String> {
+        let source = "# User provider\n- id: llm-pi-ai\n  config:\n    providers:\n      native:\n        baseURL: https://synthetic.invalid/v1\n        models: [{id: native-model}]\n";
+        let mut doc = parse(source)?;
+        let config = json!({"baseUrl":"http://127.0.0.1:1/v1","protocol":"openai","apiKey":"synthetic-only","models":[{"model":"shared-model"}]});
+        apply(&mut doc, "shared-catalog", "Vary AI", &config)?;
+        let text = encode(source, &doc)?;
+        let patches = array(&text)?;
+        assert!(
+            !patches.iter().any(|entry| entry.get("insert").is_some()),
+            "a second adapter duplicates Harness's provider directory"
+        );
+        let config = &patches
+            .iter()
+            .rev()
+            .find(|entry| entry["id"] == "llm-pi-ai")
+            .ok_or(FAILED)?["config"];
+        assert_eq!(
+            config["providers"]["native"]["baseURL"],
+            "https://synthetic.invalid/v1"
+        );
+        assert!(config["providers"].get("varyai-shared-catalog").is_some());
+        assert_eq!(parse(&text)?, doc);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_adapter_insertions_migrate_without_changing_route_identity() -> Result<(), String> {
+        let config = json!({"baseUrl":"http://127.0.0.1:1/v1","protocol":"openai","apiKey":"synthetic-only","models":[{"model":"shared-model"}]});
+        let mut doc = parse("[]")?;
+        apply(&mut doc, "shared-catalog", "Vary AI", &config)?;
+        doc["legacyProviders"] = json!(true);
+        let old = encode("[]", &doc)?;
+        let mut migrated = parse(&old)?;
+        let old_provider = migrated["providers"].clone();
+        apply(&mut migrated, "shared-catalog", "Vary AI", &config)?;
+        let new = encode(&old, &migrated)?;
+        assert_ne!(new, old);
+        assert!(!new.contains("- insert:"));
+        assert_eq!(migrated["providers"], old_provider);
+        assert_eq!(parse(&new)?, migrated);
+        Ok(())
+    }
 
     #[test]
     fn native_provider_protocols_route_and_restore_without_rewriting_foreign_plugins(

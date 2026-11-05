@@ -6,6 +6,7 @@ mod document;
 pub(crate) mod native;
 mod projections;
 mod reasoning;
+mod selection;
 mod visibility;
 use crate::{config::atomic_write_private, proxy::intent::Menu};
 use document::Format;
@@ -463,6 +464,9 @@ impl FileEdit {
         if matches!(self.format, Format::Cordis) && live.get("selection").is_none() {
             live["selection"] = json!([]);
         }
+        if matches!(self.format, Format::Cordis) && live.get("legacyProviders").is_none() {
+            live["legacyProviders"] = json!(false);
+        }
         if matches!(self.format, Format::Cordis) && keep_changed {
             let selected = crate::services::deepseek_harness::selection(&live);
             let removed = selected["provider"].as_str().is_some_and(|provider| {
@@ -527,6 +531,10 @@ impl Manager {
             return Err(FAILED.into());
         }
         desktop_config::adopt(&mut receipt);
+        let mut adopted = receipt.clone();
+        if selection::adopt(&mut adopted).is_ok() {
+            receipt = adopted;
+        }
         Ok(Some(receipt))
     }
     pub fn status(&self, app: &str) -> Result<Status, String> {
@@ -615,15 +623,8 @@ impl Manager {
                     .contains_key(&old.model)
                     .then_some(old.model.as_str())
             })
-            .or_else(|| {
-                if app == "claude-desktop" {
-                    menu.default_model
-                        .as_deref()
-                        .or_else(|| menu.models.keys().min().map(String::as_str))
-                } else {
-                    None
-                }
-            })
+            .or(menu.default_model.as_deref())
+            .or_else(|| menu.models.keys().min().map(String::as_str))
             .unwrap_or(&old.model);
         let visibility = self.visibility_for(app)?;
         if old.suspended {
@@ -649,6 +650,9 @@ impl Manager {
         let mut next = build_with_token(app, menu, origin, model, old.token.clone(), &visibility)?;
         if next.files.len() != old.files.len() {
             return Err(CONFLICT.into());
+        }
+        if selected.is_none() {
+            selection::preserve(&old, &mut next)?;
         }
         let writes = next.files.clone();
         if writes.iter().all(|file| {

@@ -292,15 +292,21 @@ fn edit(
                             let levels = model
                                 .reasoning_levels
                                 .iter()
-                                .map(|level| {
-                                    if level == "none" {
-                                        ("off".to_owned(), Value::Null)
-                                    } else {
-                                        (level.clone(), json!(level))
+                                .filter_map(|level| {
+                                    match level.as_str() {
+                                        "none" => Some(("off".to_owned(), Value::Null)),
+                                        // Harness has a fixed selector enum; its wire values
+                                        // can still request the upstream's strongest effort.
+                                        "ultra" => Some(("max".to_owned(), json!(level))),
+                                        "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
+                                        | "max" => Some((level.clone(), json!(level))),
+                                        _ => None,
                                     }
                                 })
                                 .collect::<serde_json::Map<_, _>>();
-                            row["reasoningEfforts"] = json!(levels);
+                            if !levels.is_empty() {
+                                row["reasoningEfforts"] = json!(levels);
+                            }
                         }
                     }
                 }
@@ -387,7 +393,7 @@ mod tests {
             context_window: Some(128000),
             compact_at: None,
             group: "supplier".into(),
-            reasoning_levels: vec!["none".into(), "high".into()],
+            reasoning_levels: vec!["none".into(), "high".into(), "max".into(), "ultra".into()],
             reasoning: true,
             default_reasoning_level: Some("high".into()),
             images: true,
@@ -419,7 +425,7 @@ mod tests {
         assert_eq!(provider["models"][0]["input"], json!(["text", "image"]));
         assert_eq!(
             provider["models"][0]["reasoningEfforts"],
-            json!({"off":null,"high":"high"})
+            json!({"off":null,"high":"high","max":"ultra"})
         );
         assert!(projection
             .intact()
@@ -506,7 +512,7 @@ mod tests {
             crate::services::deepseek_harness::encode(&text, &native)?,
         )
         .map_err(|_| FAILED)?;
-        assert!(manager.status("deepseek-harness")?.recovery_pending);
+        assert!(manager.status("deepseek-harness")?.configured);
         manager.release_for_reapply("deepseek-harness")?;
         let restored = crate::services::deepseek_harness::parse(
             &std::fs::read_to_string(&path).map_err(|_| FAILED)?,
