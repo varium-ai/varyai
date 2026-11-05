@@ -82,3 +82,24 @@ client release.
 ## Managed official execution
 
 All shared Agent connections use the same IR adapter when their native Chat, Anthropic or Gemini protocol targets a managed ChatGPT/Codex account. No client-name allowlist controls conversion. The existing account executor retains exact destination selection, refresh and authentication; the static API-key executor is not involved. Native Responses requests retain their original wire requirements. Official streaming replies with an omitted SSE media type still pass the strict event decoder, and each client receives its own JSON or SSE format. Private tool reasoning is scoped to the frozen destination and conversation and restored only for matching inspected tool history.
+
+## Grok tool-schema compatibility
+
+Cross-protocol requests targeting Grok (including namespaced model IDs on
+third-party gateways) escape literal opening brackets and doubled set operators
+inside JSON Schema pattern character classes. This preserves ECMAScript character
+class meaning when the upstream validates patterns with Rust regex. Only tool
+schema keywords are visited; prompts, tool arguments, examples, defaults and
+schemas for other models are unchanged. This does not strip unsupported regex
+features or discard validation constraints.
+
+Grok tool schemas also omit `required: null`, including nested schema nodes,
+because the upstream rejects null instead of treating it as an absent list. Real
+required arrays and user data under examples, defaults and const remain intact.
+
+Intent routing preserves an explicit upstream rejection's HTTP status instead of
+labeling it a connection failure. Raw upstream error bodies remain private; only
+fixed rejection categories are returned for legacy errors (null required lists,
+regex/schema validation and tool-history pairing); no upstream text is included.
+Existing sanitized upstream errors retain their safe response path. Transport failures
+remain distinct, and ambiguous sends are not replayed at another account.

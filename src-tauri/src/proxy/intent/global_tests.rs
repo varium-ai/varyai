@@ -2262,3 +2262,133 @@ async fn readable_native_catalog_ids_and_legacy_routes_remain_compatible(
     task.abort();
     Ok(())
 }
+
+#[tokio::test]
+#[serial_test::serial]
+async fn codex_grok_chat_normalizes_tool_schema_patterns() -> Result<(), Box<dyn std::error::Error>>
+{
+    codex_grok_chat_fixture(false).await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn codex_grok_chat_preserves_rejection_status_without_private_body(
+) -> Result<(), Box<dyn std::error::Error>> {
+    codex_grok_chat_fixture(true).await
+}
+
+async fn codex_grok_chat_fixture(reject: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::provider::{Provider, ProviderMeta};
+    struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for RestoreSecurity {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security = RestoreSecurity((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let task = tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/*path", post(move |Json(body): Json<Value>| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send(body.clone()).await;
+                if reject {
+                    return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error":{"message":"synthetic-private-upstream-echo"}})));
+                }
+                (StatusCode::OK, Json(json!({"id":"synthetic-reply","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"Synthetic answer"},"finish_reason":"stop"}]})))
+            }
+        }))).await
+    });
+    let runtime = Arc::new(Runtime::default());
+    let mut published = menu(&format!("http://{address}/v1/chat/completions"));
+    let session = Arc::make_mut(
+        published
+            .groups
+            .values_mut()
+            .next()
+            .ok_or("missing session")?,
+    );
+    session.group.levels.clear();
+    session.group.members[0].model_id = "grok-4.5".into();
+    session.targets[0].model = "grok-4.5".into();
+    let mut provider = Provider::with_id(
+        "fixture".into(),
+        "Synthetic Grok".into(),
+        json!({"env":{"ANTHROPIC_BASE_URL":format!("http://{address}"),"ANTHROPIC_API_KEY":"synthetic-upstream"}}),
+        None,
+    );
+    provider.meta = Some(ProviderMeta {
+        api_format: Some("openai_chat".into()),
+        ..Default::default()
+    });
+    session.targets[0].upstream = Some(provider);
+    runtime.set_menu(Arc::new(published))?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    for stream in [false, true] {
+        let response = client.post(format!("http://127.0.0.1:{}/intent/v1/responses", info.port))
+            .bearer_auth("synthetic-local-token")
+            .json(&json!({"model":group().alias(),"stream":stream,"input":"Synthetic [a&&b] prompt",
+                "tools":[{"type":"function","name":"synthetic_tool","parameters":{"type":"object","properties":{
+                    "selector":{"allOf":[{"type":"string"},{"pattern":r"^[^\s[\]]+$"}],"required":null},
+                    "pattern":{"type":"string","description":"Synthetic unchanged property"},
+                    "record":{"anyOf":[{"$ref":"#/$defs/SyntheticRecord"},{"type":"null"}]}
+                },"$defs":{"SyntheticRecord":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}},
+                "required":["selector"],"examples":[{"pattern":"[a&&b]"}]}}]}))
+            .send().await?;
+        let status = response.status();
+        let text = response.text().await?;
+        assert_eq!(
+            status,
+            if reject {
+                StatusCode::UNPROCESSABLE_ENTITY
+            } else {
+                StatusCode::OK
+            },
+            "synthetic response: {text}"
+        );
+        let sent = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await?
+            .ok_or("missing upstream request")?;
+        if reject {
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            assert!(text.contains("routing_upstream_rejected"));
+            assert!(!text.contains("synthetic-private-upstream-echo"));
+            assert!(!text.contains("routing_upstream_connection_failed"));
+        } else {
+            assert_eq!(status, StatusCode::OK);
+            assert!(text.contains("Synthetic answer"));
+            let schema = &sent["tools"][0]["function"]["parameters"];
+            assert_eq!(
+                schema["properties"]["selector"]["allOf"][1]["pattern"],
+                r"^[^\s\[\]]+$"
+            );
+            assert!(schema["properties"]["selector"].get("required").is_none());
+            assert_eq!(
+                schema["properties"]["record"]["anyOf"][0],
+                schema["$defs"]["SyntheticRecord"]
+            );
+            assert_eq!(schema["examples"][0]["pattern"], "[a&&b]");
+            assert_eq!(schema["properties"]["pattern"]["type"], "string");
+            assert!(sent["messages"]
+                .to_string()
+                .contains("Synthetic [a&&b] prompt"));
+        }
+    }
+    server.stop().await?;
+    task.abort();
+    Ok(())
+}

@@ -81,6 +81,7 @@ pub(crate) async fn create_codex_provider(
     let db = state.db.clone();
     tokio::task::spawn_blocking(move || {
         db.save_routing_upstream(RoutingUpstream {
+            notes: None,
             icon: None,
             transport: None,
             schema_version: 1,

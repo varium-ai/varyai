@@ -584,6 +584,7 @@ mod tests {
             ),
         ] {
             let record = RoutingUpstream {
+                notes: None,
                 icon: None,
                 transport: None,
                 schema_version: 1,
@@ -638,6 +639,7 @@ mod tests {
             resolve_provider, RoutingUpstream, UpstreamSource,
         };
         let record = RoutingUpstream {
+            notes: None,
             icon: None,
             transport: None,
             schema_version: 1,

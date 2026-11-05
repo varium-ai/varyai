@@ -13,6 +13,7 @@ use serde_json::json;
 use serde_json::Value;
 use std::{pin::Pin, time::Duration};
 
+pub(super) mod grok;
 pub(crate) mod ir;
 type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

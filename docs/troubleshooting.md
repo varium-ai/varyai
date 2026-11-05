@@ -2,6 +2,12 @@
 
 Use synthetic examples when reporting a problem. Logs, provider configuration, client authentication files and database backups may contain credentials or private prompts. Review and redact them before sharing.
 
+## Kimi Code desktop update leaves the installed version unchanged
+
+The official Kimi Code desktop download endpoint on `code.kimi.com` redirects to `cdn.kimi.com`. Builds whose updater trusts only the first host can discover a newer version but reject the redirected download before installation. Use a VaryAI build that explicitly trusts both official HTTPS hosts. Archive checksums, application identity, signing team and code-signature verification remain required; do not disable these checks or allow arbitrary redirect hosts.
+
+The source fix does not modify an already running VaryAI binary or update Kimi Code by itself. Until the corrected VaryAI backend is in use, update Kimi Code through its official application update channel.
+
 ## CC Switch rejects a shared database as too new
 
 This section concerns historical shared-storage builds. Current VaryAI uses an independent native database pair and keeps its files separate from CC Switch. The historical compatibility baseline was CC Switch v4.0.21 shared schema v23; its portable monolithic export and extension formats are distinct.

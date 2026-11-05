@@ -3973,6 +3973,9 @@
     "auditUnavailable": "Configuration saved, but its change history could not be recorded. Local history may have gaps.",
     "policyWriteFailed": "Could not change configuration. Refresh and try again.",
     "policyChanges": {
+      "refreshed": "Policy history refreshed",
+      "refreshFailed": "Could not refresh policy history. Try again.",
+      "currentNamesHint": "Rule names reflect the current configuration. Stable IDs identify renamed or deleted rules.",
       "entry": "Change history",
       "title": "Local configuration change history",
       "description": "Keeps the latest 1000 local records. History can be cleared and is not tamper-proof.",

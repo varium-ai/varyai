@@ -1464,6 +1464,7 @@ impl RequestForwarder {
         } else {
             body["model"] = serde_json::Value::String(model);
         }
+        super::protocol_bridge::grok::normalize_tool_schemas(&mut body);
         if !exact
             && matches!(app_type, AppType::Codex | AppType::GrokBuild)
             && bridge.input == super::protocol_bridge::Protocol::Responses

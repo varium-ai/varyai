@@ -13,6 +13,10 @@ attribution.
   `dots`). Vary uses React-rendered stand-ins for account labels and sanitized
   tooltips, while preserving provider names and logos. No DOM walker or source
   implementation is copied.
+- `1b0340fdbca37d4d202f0cecbb7b9d463942ae2b`: Grok tool-schema regex
+  compatibility reviewed in `internal/gateway/grok_schema.go` and its regression
+  tests. Vary AI implements schema-keyword-scoped normalization independently
+  in Rust, retaining examples, defaults and other non-schema values unchanged.
 - `magpie-community/plugins@f7e87877e0692b669a05125d21348178c40d0240`:
   reviewed `packages/trae/index.mjs` (`conversationID`, `sessionOf` and
   `traeMessages`) and `conversation.test.mjs` for stable conversation identity

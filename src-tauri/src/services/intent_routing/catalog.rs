@@ -899,6 +899,7 @@ mod tests {
         let mut saved = Vec::new();
         for models in [vec![], vec![], vec![json!({"model":"selected-model"})]] {
             saved.push(db.save_routing_upstream(RoutingUpstream {
+                notes: None,
                 icon: None,
                 transport: None,
                 schema_version: 1,

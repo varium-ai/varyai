@@ -391,6 +391,7 @@ mod subscription_tests {
         }
         let db = Database::memory()?;
         let record = |name: &str, accounts: Vec<String>, enabled| RoutingUpstream {
+            notes: None,
             schema_version: 1,
             id: String::new(),
             name: name.into(),

@@ -529,6 +529,7 @@ mod tests {
             ),
         ] {
             db.save_routing_upstream(RoutingUpstream {
+                notes: None,
                 icon: None,
                 schema_version: 1,
                 id: String::new(),
@@ -1199,6 +1200,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
         let record = RoutingUpstream {
+            notes: None,
             icon: None,
             transport: None,
             schema_version: 1,

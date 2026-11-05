@@ -6511,6 +6511,7 @@ mod tests {
         let db = Arc::new(Database::memory()?);
         use_ephemeral_proxy_port(&db).await;
         let mut upstream = RoutingUpstream {
+            notes: None,
             icon: None,
             transport: None,
             schema_version: 1,
@@ -6736,6 +6737,7 @@ mod tests {
             let db = Arc::new(Database::memory()?);
             futures::executor::block_on(use_ephemeral_proxy_port(&db));
             db.save_routing_upstream(RoutingUpstream {
+                notes: None,
                 icon: None,
                 transport: None,
                 schema_version: 1,
@@ -6936,6 +6938,7 @@ mod tests {
         let db = Arc::new(Database::memory().expect("database"));
         use_ephemeral_proxy_port(&db).await;
         db.save_routing_upstream(RoutingUpstream {
+            notes: None,
             icon: None,
             transport: None,
             schema_version: 1,
@@ -7101,6 +7104,7 @@ mod tests {
         let db = Arc::new(Database::memory()?);
         use_ephemeral_proxy_port(&db).await;
         let upstream = db.save_routing_upstream(RoutingUpstream {
+            notes: None,
             icon: None,
             transport: None,
             schema_version: 1,
@@ -7771,6 +7775,7 @@ mod tests {
         let mut upstreams = Vec::new();
         for name in ["First", "Second"] {
             upstreams.push(db.save_routing_upstream(RoutingUpstream {
+                notes: None,
                 icon: None,
                 transport: None,
                 schema_version: 1,
@@ -7863,6 +7868,7 @@ mod tests {
         let db = Arc::new(Database::memory().expect("db"));
         db.set_intent_routing_auto_create(true).expect("on");
         db.save_routing_upstream(RoutingUpstream {
+            notes: None,
             icon: None,
             transport: None,
             schema_version: 1,

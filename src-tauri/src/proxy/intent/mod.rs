@@ -2233,6 +2233,18 @@ async fn execute(
                 ) => {
                     return fail(StatusCode::BAD_REQUEST, "routing_conversion_unsupported");
                 }
+                Err(super::ProxyError::UpstreamError { status, body }) => {
+                    // Classify only into fixed codes. Never log or return the body.
+                    let code = super::protocol_bridge::grok::rejection_code(
+                        body.as_deref().unwrap_or_default().as_bytes(),
+                    );
+                    log::warn!("[Intent] Upstream rejected converted request: status={status}, code={code}");
+                    return fail(
+                        StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+                        code,
+                    );
+                }
+                Err(super::ProxyError::SafeUpstream(error)) => return error.to_response(),
                 Err(_) => {
                     return fail(
                         StatusCode::BAD_GATEWAY,
