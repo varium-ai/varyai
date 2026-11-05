@@ -523,7 +523,7 @@ it("masks recorded key labels in the stage and its tooltip", async () => {
     days: [],
   } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
   show();
-  await screen.findByText("sk-4…766b");
+  await screen.findAllByText("sk-4…766b");
   fireEvent.click(
     screen.getByRole("button", { name: "routingPage.hideAccounts" }),
   );

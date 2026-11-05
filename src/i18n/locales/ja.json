@@ -5118,6 +5118,8 @@
     "groupSettings": "グループ設定"
   },
   "routingPage": {
+    "apiKey": "API キー",
+    "oneKey": "単一キー",
     "accountQuotaLeft": "残りの利用枠",
     "candidateSeats": "候補アカウントとキー",
     "listenerUnknown": "待受アドレスを取得できません",
@@ -5660,5 +5662,24 @@
     "fetchHint": "アカウントを選択し、利用可能なモデルを取得してください。",
     "statusFailed": "アカウントを読み込めません。再試行してください。",
     "openLogin": "ログインページを開く"
+  },
+  "nativeSubscription": {
+    "clientRequired": "アカウント追加前にアプリの環境変数 VARYAI_ANTIGRAVITY_CLIENT_ID と VARYAI_ANTIGRAVITY_CLIENT_SECRET を設定してください。",
+    "failed": "サブスクリプションの操作に失敗しました。再試行するか、再ログインしてください。",
+    "expired": "ログインの有効期限が切れたか、承認が拒否されました。再ログインしてください。",
+    "projectRequired": "Google Cloud プロジェクトが返されませんでした。Code Assist のプロジェクト ID を入力するか、元のアプリで設定を完了してください。",
+    "claudeMissing": "Claude Code をインストールし、claude コマンドを使用できることを確認してください。",
+    "continueChatgpt": "ChatGPT で続ける",
+    "importLocal": "ローカルのログインをインポート",
+    "importFile": "アカウント JSON をインポート",
+    "browserWaiting": "ブラウザーでログインを完了してください。",
+    "claudeWaiting": "Claude Code が開いたブラウザーでログインを完了してください。",
+    "project": "Google Cloud プロジェクト",
+    "projectPlaceholder": "自動取得、またはプロジェクト ID を入力",
+    "removeAccount": "アカウント {{login}} を削除",
+    "hint_claude": "Claude Code 経由でサブスクリプションを使用します。事前に Claude Code をインストールしてください。インポートした認証情報は初回利用時に更新される場合があります。",
+    "hint_chatgpt_api": "OpenAI API と ChatGPT プラン用の独立した認証です。Codex のログインとは別に管理します。",
+    "hint_gemini_cli": "Gemini Code Assist を使用します。Standard と Enterprise では Google Cloud プロジェクトが必要な場合があります。ローカルの Gemini CLI ログインを読み込めます。",
+    "hint_antigravity": "Antigravity アカウントと利用可能なモデルを使用します。Google ログインまたはアカウント JSON のインポートに対応しています。"
   }
 }

@@ -126,7 +126,7 @@ it("renders individual safe key seats, the requested alias, actual listener and 
   expect(document.querySelector(".rt-hub i")).not.toHaveClass("sr-only");
   const seats = document.querySelectorAll(".rt-accts li");
   expect(seats).toHaveLength(3);
-  expect(seats[0]).toHaveTextContent("routingPage.keyLabel");
+  expect(seats[0]).toHaveTextContent("routingPage.apiKey");
   expect(seats[1]).toHaveClass("on", "now");
   expect(seats[1]).toHaveTextContent("routingPage.seatAnswering");
   expect(seats[0].textContent).not.toContain("key-a");
@@ -455,4 +455,58 @@ it("shows one node per shared candidate without duplicating a concurrent branch"
   expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
   expect(document.querySelectorAll(".rt-accts li")).toHaveLength(3);
   expect(document.querySelectorAll(".rt-packet")).toHaveLength(2);
+});
+
+it("uses unnumbered key status without repeating credential ordinals", () => {
+  show({
+    row: {
+      ...row,
+      state: "cancelled",
+      candidates: row.candidates.slice(0, 2).map((candidate, index) => ({
+        ...candidate,
+        account: { ...candidate.account!, label: `Masked key ${index + 1}` },
+      })),
+      steps: [],
+    },
+  });
+  for (const status of document.querySelectorAll(".rt-seat-status")) {
+    expect(status).toHaveTextContent("routingPage.apiKey");
+    expect(status).not.toHaveTextContent("routingPage.keyLabel");
+  }
+});
+
+it("shows recorded subscription plans beside names without guessing a plan for keys", () => {
+  show({
+    row: {
+      ...row,
+      candidates: row.candidates.map((candidate) => ({
+        ...candidate,
+        account: { ...candidate.account!, plan: "ChatGPT Plus" },
+      })),
+    },
+  });
+  const seats = document.querySelectorAll(".rt-accts li");
+  expect(seats[2].querySelector("b")).toHaveTextContent("ChatGPT Plus");
+  expect(seats[0].querySelector("b")).not.toHaveTextContent("ChatGPT Plus");
+});
+
+it("keeps renewal information alongside an answering account's status", () => {
+  show({
+    row: { ...row, steps: [{ kind: "attempt", candidate: 2, atMs: 1 }] },
+  });
+  const status = document.querySelectorAll(".rt-seat-status")[2];
+  expect(status).toHaveTextContent("routingPage.seatAnswering");
+  expect(status).toHaveTextContent("routingPage.resetIn");
+});
+
+it("prioritizes passed-over context before active and quota states", () => {
+  show({
+    row: {
+      ...row,
+      steps: [{ kind: "context", candidate: 2, atMs: 1 }],
+    },
+  });
+  const status = document.querySelectorAll(".rt-seat-status")[2];
+  expect(status).toHaveTextContent("routingPage.step.context");
+  expect(status).not.toHaveTextContent("routingPage.seatQuota");
 });

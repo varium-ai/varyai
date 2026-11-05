@@ -77,3 +77,5 @@ pub(crate) mod agent_connections;
 
 pub(crate) mod provider_icons;
 pub(crate) mod provider_import;
+
+pub(crate) mod native_subscription;

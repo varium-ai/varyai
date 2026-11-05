@@ -2114,7 +2114,10 @@ async fn execute(
             .into_iter()
             .chain(retry_deadline)
             .min();
-        let response = if protocol != output && !official_conversion {
+        let specialized = resolved_subscription
+            .as_ref()
+            .is_some_and(super::native_subscription::specialized);
+        let response = if specialized || (protocol != output && !official_conversion) {
             let Some(upstream) = resolved_subscription.as_ref().or(target.upstream.as_ref()) else {
                 return fail(StatusCode::BAD_REQUEST, "routing_conversion_unsupported");
             };
@@ -2133,19 +2136,35 @@ async fn execute(
                 &parts.headers,
                 &mut caller_headers,
             );
-            let forward = super::group_forward::forward(
-                &state,
-                protocol,
-                upstream,
-                &parts.method,
-                &endpoint,
-                &bridge_body,
-                &caller_headers,
-                &parts.extensions,
-                conversation.as_deref(),
-                scoped.history.clone(),
-                scoped.shadow.clone(),
-            );
+            let forward = async {
+                if specialized {
+                    return super::native_subscription::forward(
+                        upstream,
+                        protocol,
+                        &bridge_body,
+                        &endpoint,
+                        conversation.as_deref(),
+                        scoped.shadow.clone(),
+                        scoped.history.clone(),
+                        session.client.clone(),
+                    )
+                    .await;
+                }
+                super::group_forward::forward(
+                    &state,
+                    protocol,
+                    upstream,
+                    &parts.method,
+                    &endpoint,
+                    &bridge_body,
+                    &caller_headers,
+                    &parts.extensions,
+                    conversation.as_deref(),
+                    scoped.history.clone(),
+                    scoped.shadow.clone(),
+                )
+                .await
+            };
             let forwarded =
                 match wait_for_attempt(attempt_deadline, native_lease.as_deref(), forward).await {
                     Ok(result) => result,

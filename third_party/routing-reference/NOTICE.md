@@ -85,6 +85,14 @@ design guides; an attribution does not establish complete compatibility.
 
 ## Compatibility literals
 
+Additional subscription integrations reference `internal/provider/google.go`,
+`chatgpt_api.go`, `claude_signin.go`, `claude_dirs.go`, `claude_code_models.go`,
+and `internal/gateway/claude_subscription.go` / `codeassist.go` at revision
+`1d0fc2bb08c51d8711759694189b8a1d92ee3a1e`. The Gemini CLI and Antigravity
+SVGs come from that revision's `internal/gui/assets/icons` (Lobe Icons,
+MIT licensed). Vary's Rust implementation uses its own account storage and
+shared protocol bridge; it does not implement Magpie's persistent Claude runs.
+
 Routing candidate names additionally follow `internal/provider/keys.go`
 (`RestKeys` and `severalOn`), `internal/gateway/trace.go` (`weighed`), and the
 routing plugin's `who` / `makeRow` at Magpie revision

@@ -343,12 +343,35 @@ impl DlpRequestLease {
         required_calls: &[CompletedCallSpec<'_>],
         required_opaques: &[&str],
     ) -> Result<(), TokenError> {
+        let mut reason = None;
         self.resume_completed_context_extracted(
             binding,
             previous_response_id,
             required_calls,
             required_opaques,
+            &mut reason,
         )
+    }
+
+    pub(super) fn resume_completed_context_diagnosed(
+        &mut self,
+        binding: &ActualAttemptBinding,
+        previous_response_id: Option<&str>,
+        required_calls: &[CompletedCallSpec<'_>],
+        required_opaques: &[&str],
+        reason: &mut Option<super::restore_diagnostics::ContextResumeReason>,
+    ) -> Result<(), TokenError> {
+        let result = self.resume_completed_context_extracted(
+            binding,
+            previous_response_id,
+            required_calls,
+            required_opaques,
+            reason,
+        );
+        if result == Err(TokenError::ContextUnavailable) && reason.is_none() {
+            *reason = Some(super::restore_diagnostics::ContextResumeReason::Unknown);
+        }
+        result
     }
 
     pub(super) fn resume_completed_tokens(

@@ -45,6 +45,13 @@ navigation, and reduced-motion settings suppress control and stage movement.
   Only configured static API keys supply these labels; OAuth
   tokens and arbitrary authorization headers never do. The original credential
   never enters a trace. Older records without a label retain the provider name.
+  Stage status lines use an unnumbered API-key fallback, or "one key" for a
+  provider seat. Rest and context restrictions precede answering/completion and
+  failure states; quota renewals remain visible alongside those states. Account
+  headers show a recorded subscription plan when known. Only recognized plan
+  types from the bound account's Codex usage response or rate-limit event are
+  recorded; keys and unknown plan values never acquire an inferred subscription.
+  The account list also retains recorded safe names and plan subtitles.
   Connected clients and enabled providers from configuration never supply extra
   nodes or branches. Before any request, the stage shows a generic robot icon, Agent label and
   empty placeholder. A single instruction sits beneath the waiting heading;

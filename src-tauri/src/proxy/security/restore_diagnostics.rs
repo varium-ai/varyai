@@ -150,6 +150,55 @@ impl ContextCheckpoint {
     }
 }
 
+/// Fixed recovery predicates only; never attach identifiers, payloads, or bindings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContextResumeReason {
+    Unknown,
+    LeaseBinding,
+    PrincipalUnavailable,
+    InvalidCursor,
+    InvalidCall,
+    InvalidOpaque,
+    NamespaceUnavailable,
+    PolicyMismatch,
+    ContextsEmpty,
+    CursorNotFound,
+    ProviderMismatch,
+    CallNotFound,
+    CallSnapshotMismatch,
+    AmbiguousCall,
+    OpaqueNotFound,
+}
+
+impl ContextResumeReason {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::LeaseBinding => "lease_binding",
+            Self::PrincipalUnavailable => "principal_unavailable",
+            Self::InvalidCursor => "invalid_cursor",
+            Self::InvalidCall => "invalid_call",
+            Self::InvalidOpaque => "invalid_opaque",
+            Self::NamespaceUnavailable => "namespace_unavailable",
+            Self::PolicyMismatch => "policy_mismatch",
+            Self::ContextsEmpty => "contexts_empty",
+            Self::CursorNotFound => "cursor_not_found",
+            Self::ProviderMismatch => "provider_mismatch",
+            Self::CallNotFound => "call_not_found",
+            Self::CallSnapshotMismatch => "call_snapshot_mismatch",
+            Self::AmbiguousCall => "ambiguous_call",
+            Self::OpaqueNotFound => "opaque_not_found",
+        }
+    }
+}
+
+pub(super) fn log_context_resume_failure(reason: ContextResumeReason) {
+    log::warn!(
+        "[DLP] context failure code=dlp_context_unavailable checkpoint=context_resume reason={}",
+        reason.label()
+    );
+}
+
 pub(super) fn log_context_failure(checkpoint: ContextCheckpoint) {
     log::warn!(
         "[DLP] context failure code=dlp_context_unavailable checkpoint={}",

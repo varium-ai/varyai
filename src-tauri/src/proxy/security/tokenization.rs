@@ -2091,16 +2091,24 @@ impl DlpRequestLease {
         previous_response_id: Option<&str>,
         required_calls: &[super::completed_context::CompletedCallSpec<'_>],
         required_opaques: &[&str],
+        diagnostic: &mut Option<super::restore_diagnostics::ContextResumeReason>,
     ) -> Result<(), TokenError> {
         use super::completed_context::{
             call_id_digest, call_snapshot_digest, opaque_content_digest, response_id_digest,
             valid_external_id, MAX_CALLS_PER_CONTEXT, MAX_CONTEXT_ENTRIES_PER_NAMESPACE,
         };
+        use super::restore_diagnostics::ContextResumeReason;
+        macro_rules! context_unavailable {
+            ($reason:ident) => {{
+                *diagnostic = Some(ContextResumeReason::$reason);
+                TokenError::ContextUnavailable
+            }};
+        }
         if binding.store_id != self.store_id()?
             || binding.namespace != self.namespace
             || binding.generation != self.generation
         {
-            return Err(TokenError::ContextUnavailable);
+            return Err(context_unavailable!(LeaseBinding));
         }
         if previous_response_id.is_none()
             && required_calls.is_empty()
@@ -2109,7 +2117,7 @@ impl DlpRequestLease {
             return Ok(());
         }
         if !binding.reusable_principal {
-            return Err(TokenError::ContextUnavailable);
+            return Err(context_unavailable!(PrincipalUnavailable));
         }
         let limits = &self.store.inner()?.limits;
         if required_calls.len() > MAX_CALLS_PER_CONTEXT
@@ -2121,7 +2129,7 @@ impl DlpRequestLease {
         let prev_digest = match previous_response_id {
             Some(id) => {
                 if !valid_external_id(id) {
-                    return Err(TokenError::ContextUnavailable);
+                    return Err(context_unavailable!(InvalidCursor));
                 }
                 Some(response_id_digest(key, id)?)
             }
@@ -2142,7 +2150,7 @@ impl DlpRequestLease {
                     || !matches!(spec.item_type, "function_call" | "custom_tool_call")
                     || spec.payload.len() > limits.fragment_bytes
                 {
-                    return Err(TokenError::ContextUnavailable);
+                    return Err(context_unavailable!(InvalidCall));
                 }
                 vec.push_without_growth((
                     call_id_digest(key, spec.call_id)?,
@@ -2161,7 +2169,7 @@ impl DlpRequestLease {
             )?;
             for &op in required_opaques {
                 if op.is_empty() || op.len() > limits.fragment_bytes {
-                    return Err(TokenError::ContextUnavailable);
+                    return Err(context_unavailable!(InvalidOpaque));
                 }
                 vec.push_without_growth(opaque_content_digest(key, op)?)?;
             }
@@ -2173,16 +2181,16 @@ impl DlpRequestLease {
             let ns = state
                 .namespaces
                 .get(&self.namespace)
-                .ok_or(TokenError::ContextUnavailable)?;
-            if ns.identity.is_none()
-                || ns.generation != self.generation
-                || ns.policy_revision != binding.policy_revision
-            {
-                return Err(TokenError::ContextUnavailable);
+                .ok_or_else(|| context_unavailable!(NamespaceUnavailable))?;
+            if ns.identity.is_none() || ns.generation != self.generation {
+                return Err(context_unavailable!(NamespaceUnavailable));
+            }
+            if ns.policy_revision != binding.policy_revision {
+                return Err(context_unavailable!(PolicyMismatch));
             }
             let slice = ns.contexts.as_ref().map_or(&[][..], StoreVec::as_slice);
             if slice.is_empty() {
-                return Err(TokenError::ContextUnavailable);
+                return Err(context_unavailable!(ContextsEmpty));
             }
             let mut copied = StoreVec::with_capacity(
                 slice.len(),
@@ -2208,17 +2216,34 @@ impl DlpRequestLease {
         };
 
         let prev_idx = if let Some(target) = prev_digest {
-            let idx = snapshot
-                .as_slice()
-                .iter()
-                .position(|entry| {
-                    entry.get().is_ok_and(|rec| {
-                        rec.response_digest == target
-                            && rec.authorizes_attempt(binding)
-                            && rec.policy_revision == binding.policy_revision
-                    })
+            let idx = snapshot.as_slice().iter().position(|entry| {
+                entry.get().is_ok_and(|rec| {
+                    rec.response_digest == target
+                        && rec.authorizes_attempt(binding)
+                        && rec.policy_revision == binding.policy_revision
                 })
-                .ok_or(TokenError::ContextUnavailable)?;
+            });
+            let idx = match idx {
+                Some(idx) => idx,
+                None => {
+                    let mut cursor_found = false;
+                    for entry in snapshot.as_slice() {
+                        let Ok(rec) = entry.get() else {
+                            continue;
+                        };
+                        if rec.response_digest == target {
+                            cursor_found = true;
+                            if rec.policy_revision != binding.policy_revision {
+                                return Err(context_unavailable!(PolicyMismatch));
+                            }
+                        }
+                    }
+                    if cursor_found {
+                        return Err(context_unavailable!(ProviderMismatch));
+                    }
+                    return Err(context_unavailable!(CursorNotFound));
+                }
+            };
             push_match(idx)?;
             Some(idx)
         } else {
@@ -2231,7 +2256,7 @@ impl DlpRequestLease {
                     let rec = snapshot.as_slice()[pidx].get()?;
                     if let Some(found) = rec.find_call(&call_digest) {
                         if !found.contains_snapshot(&snapshot_digest) {
-                            return Err(TokenError::ContextUnavailable);
+                            return Err(context_unavailable!(CallSnapshotMismatch));
                         }
                         continue;
                     }
@@ -2245,13 +2270,16 @@ impl DlpRequestLease {
                         continue;
                     }
                     if let Some(found) = rec.find_call(&call_digest) {
-                        if !found.contains_snapshot(&snapshot_digest) || found_idx.is_some() {
-                            return Err(TokenError::ContextUnavailable);
+                        if !found.contains_snapshot(&snapshot_digest) {
+                            return Err(context_unavailable!(CallSnapshotMismatch));
+                        }
+                        if found_idx.is_some() {
+                            return Err(context_unavailable!(AmbiguousCall));
                         }
                         found_idx = Some(idx);
                     }
                 }
-                let idx = found_idx.ok_or(TokenError::ContextUnavailable)?;
+                let idx = found_idx.ok_or_else(|| context_unavailable!(CallNotFound))?;
                 push_match(idx)?;
             }
         }
@@ -2278,7 +2306,7 @@ impl DlpRequestLease {
                         break;
                     }
                 }
-                let idx = found_idx.ok_or(TokenError::ContextUnavailable)?;
+                let idx = found_idx.ok_or_else(|| context_unavailable!(OpaqueNotFound))?;
                 push_match(idx)?;
             }
         }
@@ -2341,9 +2369,9 @@ impl DlpRequestLease {
         let ns = state
             .namespaces
             .get_mut(&self.namespace)
-            .ok_or(TokenError::ContextUnavailable)?;
+            .ok_or_else(|| context_unavailable!(NamespaceUnavailable))?;
         if ns.generation != self.generation {
-            return Err(TokenError::ContextUnavailable);
+            return Err(context_unavailable!(NamespaceUnavailable));
         }
         ns.last_used = Instant::now();
         state.committed = committed;

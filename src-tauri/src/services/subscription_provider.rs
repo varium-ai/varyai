@@ -22,10 +22,10 @@ pub(crate) async fn resolve(
     app: Option<&tauri::AppHandle>,
 ) -> Result<Provider, String> {
     let binding = binding(provider).ok_or("routingUpstreams.invalid")?;
-    let app = app.ok_or("routingUpstreams.sourceUnavailable")?;
     let (token, endpoint) = match binding.provider {
         SubscriptionProvider::GithubCopilot => {
             let state = app
+                .ok_or("routingUpstreams.sourceUnavailable")?
                 .try_state::<crate::commands::CopilotAuthState>()
                 .ok_or("routingUpstreams.sourceUnavailable")?;
             let manager = state.0.read().await;
@@ -37,6 +37,7 @@ pub(crate) async fn resolve(
         }
         SubscriptionProvider::XaiOauth => {
             let state = app
+                .ok_or("routingUpstreams.sourceUnavailable")?
                 .try_state::<crate::commands::XaiOAuthState>()
                 .ok_or("routingUpstreams.sourceUnavailable")?;
             let manager = state.0.read().await;
@@ -47,6 +48,16 @@ pub(crate) async fn resolve(
                     .map_err(|_| "routingUpstreams.sourceUnavailable")?,
                 binding.provider.endpoint().into(),
             )
+        }
+        service => {
+            let account = super::native_subscription::resolve(service, &binding.account_id).await?;
+            // Claude is executed by its CLI; this placeholder is never sent.
+            let token = if service == SubscriptionProvider::Claude {
+                "subscription-cli".to_owned()
+            } else {
+                account.token().to_string()
+            };
+            (token, service.endpoint().into())
         }
     };
     if !crate::services::routing_upstreams::valid_url(&endpoint) {
@@ -114,7 +125,14 @@ mod tests {
     #[test]
     fn subscription_registry_round_trip_keeps_catalog_and_binding_without_credentials() {
         let db = crate::database::Database::memory().expect("in-memory registry");
-        for service in ["github_copilot", "xai_oauth"] {
+        for service in [
+            "github_copilot",
+            "xai_oauth",
+            "claude",
+            "chatgpt_api",
+            "gemini_cli",
+            "antigravity",
+        ] {
             let draft = serde_json::from_value(json!({
                 "schemaVersion":1,"id":"","name":service,"revision":0,
                 "source":{"kind":"subscription","provider":service,"accountId":"fixture-account",

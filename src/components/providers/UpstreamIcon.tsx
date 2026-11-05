@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Box } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { hasIcon } from "@/icons/extracted";
+import { subscriptionProviders } from "@/config/subscriptionProviders";
 import { globalProviderPresets } from "@/config/globalProviderPresets";
 import type { RoutingUpstream } from "@/lib/api/routingUpstreams";
 
@@ -26,7 +27,9 @@ export function upstreamIcon(record: RoutingUpstream) {
   if (explicit) return explicit;
   if (record.source.kind === "codex") return "openai";
   if (record.source.kind === "subscription")
-    return record.source.provider === "github_copilot" ? "github" : "xai";
+    return subscriptionProviders.find(
+      (entry) => entry.id === (record.source as { provider: string }).provider,
+    )?.icon;
   const saved = globalProviderPresets.find(
     (preset) => preset.id === record.presetId,
   );

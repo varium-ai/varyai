@@ -36,7 +36,7 @@ use super::{
     request_carriers::CodexRequestCarriers,
     request_detection::detect_spans_with_budget,
     request_plan::{EffectiveAction, PlanError},
-    request_preparation::prepare_codex_request_with_budget,
+    request_preparation::{prepare_codex_request_with_budget, RequestHistoryClassification},
     response_restoration::{
         stage_json_response, ArgumentNormalizationMode, RestoreError, SseRestorationState,
     },
@@ -345,6 +345,10 @@ pub(crate) enum RestorationAdmission {
     Admitted(Box<DlpHttpRequest>),
 }
 
+pub(super) const CLIENT_PROCESSING_ERROR_MESSAGE: &str =
+    "The local proxy could not process the request. Please retry.";
+pub(super) const CLIENT_PROCESSING_ERROR_CODE: &str = "proxy_processing_failed";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DlpForwardError {
     ContextUnavailable,
@@ -453,6 +457,37 @@ impl DlpForwardError {
         }
     }
 
+    pub(crate) fn client_status_code(self) -> StatusCode {
+        match self {
+            Self::UpstreamStatus(status) => status,
+            Self::Blocked => StatusCode::BAD_REQUEST,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    pub(crate) fn client_error_type(self) -> &'static str {
+        match self {
+            Self::UpstreamStatus(_) => "upstream_error",
+            Self::Blocked => "invalid_request_error",
+            _ => "server_error",
+        }
+    }
+
+    pub(crate) fn client_code(self) -> &'static str {
+        match self {
+            Self::UpstreamStatus(_) => "upstream_error",
+            Self::Blocked => "dlp_blocked",
+            _ => CLIENT_PROCESSING_ERROR_CODE,
+        }
+    }
+
+    pub(crate) fn client_message(self) -> &'static str {
+        match self {
+            Self::UpstreamStatus(_) | Self::Blocked => self.message(),
+            _ => CLIENT_PROCESSING_ERROR_MESSAGE,
+        }
+    }
+
     pub(crate) fn failure_class(self) -> &'static str {
         match self {
             Self::UpstreamStatus(_) => "Upstream request failed",
@@ -473,10 +508,10 @@ impl DlpForwardError {
                 super::restore_diagnostics::RestoreStage::Unknown,
             );
         }
-        let status = self.status_code();
-        let code = self.code();
-        let message = self.message();
-        let error_type = self.error_type();
+        let status = self.client_status_code();
+        let code = self.client_code();
+        let message = self.client_message();
+        let error_type = self.client_error_type();
         let payload = match app_type {
             AppType::Claude | AppType::ClaudeDesktop => json!({
                 "type": "error",
@@ -503,7 +538,7 @@ impl DlpForwardError {
             }),
         };
         let bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| {
-            b"{\"error\":{\"message\":\"DLP error\",\"type\":\"server_error\",\"code\":\"dlp_unavailable\",\"param\":null}}".to_vec()
+            b"{\"error\":{\"message\":\"The local proxy could not process the request. Please retry.\",\"type\":\"server_error\",\"code\":\"proxy_processing_failed\",\"param\":null}}".to_vec()
         });
         Response::builder()
             .status(status)
@@ -531,7 +566,7 @@ pub(crate) fn build_codex_json_error(
         }
     });
     let bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| {
-        b"{\"error\":{\"message\":\"DLP error\",\"type\":\"server_error\",\"code\":\"dlp_unavailable\",\"param\":null}}".to_vec()
+        b"{\"error\":{\"message\":\"The local proxy could not process the request. Please retry.\",\"type\":\"server_error\",\"code\":\"proxy_processing_failed\",\"param\":null}}".to_vec()
     });
     Response::builder()
         .status(status)
@@ -553,10 +588,10 @@ pub(crate) fn build_codex_restore_error_response_at(
 ) -> Response {
     super::restore_diagnostics::log_failure_with_reason(err.code(), stage, err.reason_at(stage));
     build_codex_json_error(
-        StatusCode::BAD_GATEWAY,
-        &err.message_at(stage),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        CLIENT_PROCESSING_ERROR_MESSAGE,
         "server_error",
-        err.code(),
+        CLIENT_PROCESSING_ERROR_CODE,
     )
 }
 
@@ -746,6 +781,7 @@ fn extract_request_history(
     body: &Value,
     budget: &PayloadBudget,
     projection: Option<&DlpHistoryProjection<'_>>,
+    classification: RequestHistoryClassification,
 ) -> Result<ExtractedRequestHistory, TokenError> {
     let previous_response_id = match body.get("previous_response_id") {
         Some(Value::String(s)) => {
@@ -770,6 +806,20 @@ fn extract_request_history(
             budget,
         )
     })?;
+
+    // Unknown items remain opaque to recovery while genuine token references stay strict.
+    if matches!(
+        classification,
+        RequestHistoryClassification::UnknownPassthrough
+    ) {
+        return Ok(ExtractedRequestHistory {
+            previous_response_id: None,
+            calls,
+            opaques,
+            orphan_output_call_ids: PayloadVec::new(budget.clone())?,
+            referenced_tokens,
+        });
+    }
 
     if let Some(input) = body.get("input") {
         let items_slice: Vec<&Value> = match input {
@@ -1142,7 +1192,20 @@ pub(crate) fn admit_http_request(
                     DlpForwardError::ContextUnavailable,
                 ))?;
 
-        let history = match extract_request_history(body, &budget, candidate.as_ref()) {
+        let history_classification =
+            super::request_preparation::classify_request_history(body, &budget, candidate.as_ref())
+                .map_err(|error| {
+                    crate::proxy::error::ProxyError::DlpForward(
+                        DlpForwardError::from_token_error(error)
+                            .at_context_checkpoint(ContextCheckpoint::HistoryClassify),
+                    )
+                })?;
+        let history = match extract_request_history(
+            body,
+            &budget,
+            candidate.as_ref(),
+            history_classification,
+        ) {
             Ok(h) => h,
             Err(err) => {
                 return Ok(RestorationAdmission::Intercepted(
@@ -1153,24 +1216,15 @@ pub(crate) fn admit_http_request(
             }
         };
 
-        let fresh_readable_history =
-            super::request_preparation::is_fresh_readable_history_with_history(
-                body,
-                &budget,
-                candidate.as_ref(),
-            )
-            .map_err(|error| {
-                crate::proxy::error::ProxyError::DlpForward(
-                    DlpForwardError::from_token_error(error)
-                        .at_context_checkpoint(ContextCheckpoint::HistoryClassify),
-                )
-            })?;
+        let fresh_readable_history = matches!(
+            history_classification,
+            RequestHistoryClassification::FreshReadable
+        );
         let needs_bound_history_inspection = candidate.is_some();
-        let needs_provider_resume = !fresh_readable_history
-            && (history.previous_response_id.is_some()
-                || !history.calls.as_slice().is_empty()
-                || !history.opaques.as_slice().is_empty()
-                || !history.orphan_output_call_ids.is_slice_empty_helper());
+        let needs_provider_resume = matches!(
+            history_classification,
+            RequestHistoryClassification::ExplicitDependency
+        );
 
         let mut rules_copy = if gw_state.rules.is_empty() {
             StoreVec::new(ledger.clone(), 4096)
@@ -1296,16 +1350,6 @@ pub(crate) fn admit_http_request(
         }
     }
     result
-}
-
-trait SliceEmptyHelper<T> {
-    fn is_slice_empty_helper(&self) -> bool;
-}
-
-impl<T> SliceEmptyHelper<T> for PayloadVec<T> {
-    fn is_slice_empty_helper(&self) -> bool {
-        self.as_slice().is_empty()
-    }
 }
 
 /// Independently owned response-name table. Allocation ownership is not restoration authority.
@@ -1437,7 +1481,7 @@ impl DlpHttpRequest {
         let candidate = self
             .base_lease
             .history_admission_candidate_projection(self.source_body.as_value());
-        let independent = super::request_preparation::is_fresh_readable_history_with_history(
+        let classification = super::request_preparation::classify_request_history(
             self.source_body.as_value(),
             &self.budget,
             candidate.as_ref(),
@@ -1446,10 +1490,16 @@ impl DlpHttpRequest {
             DlpForwardError::from_token_error(error)
                 .at_context_checkpoint(ContextCheckpoint::HistoryClassify)
         })?;
-        Ok(if independent {
-            super::chat_enrichment::ChatHistoryProvenance::IndependentReadable
-        } else {
-            super::chat_enrichment::ChatHistoryProvenance::StrictResume
+        Ok(match classification {
+            RequestHistoryClassification::FreshReadable => {
+                super::chat_enrichment::ChatHistoryProvenance::IndependentReadable
+            }
+            RequestHistoryClassification::ExplicitDependency => {
+                super::chat_enrichment::ChatHistoryProvenance::StrictResume
+            }
+            RequestHistoryClassification::UnknownPassthrough => {
+                super::chat_enrichment::ChatHistoryProvenance::UnknownPassthrough
+            }
         })
     }
 
@@ -1672,11 +1722,26 @@ impl DlpHttpRequest {
                 projection.as_ref(),
             )
             .ok();
-            let history = extract_request_history(enriched_body, &self.budget, projection.as_ref())
+            let attempt_history_classification =
+                super::request_preparation::classify_request_history(
+                    enriched_body,
+                    &self.budget,
+                    projection.as_ref(),
+                )
                 .map_err(|error| {
                     DlpForwardError::from_token_error(error)
-                        .at_context_checkpoint(ContextCheckpoint::AttemptHistory)
+                        .at_context_checkpoint(ContextCheckpoint::HistoryClassify)
                 })?;
+            let history = extract_request_history(
+                enriched_body,
+                &self.budget,
+                projection.as_ref(),
+                attempt_history_classification,
+            )
+            .map_err(|error| {
+                DlpForwardError::from_token_error(error)
+                    .at_context_checkpoint(ContextCheckpoint::AttemptHistory)
+            })?;
 
             let mut opaque_refs =
                 PayloadVec::new(self.budget.clone()).map_err(DlpForwardError::from_token_error)?;
@@ -1724,8 +1789,8 @@ impl DlpHttpRequest {
                 .base_lease
                 .history_admission_candidate_projection(self.source_body.as_value());
             // Freeze dependency obligations with the same candidate used for call selection.
-            let requires_completed_context =
-                !super::request_preparation::is_fresh_readable_history_with_history(
+            let source_history_classification =
+                super::request_preparation::classify_request_history(
                     self.source_body.as_value(),
                     &self.budget,
                     dependency_projection.as_ref(),
@@ -1733,15 +1798,21 @@ impl DlpHttpRequest {
                 .map_err(|error| {
                     DlpForwardError::from_token_error(error)
                         .at_context_checkpoint(ContextCheckpoint::HistoryClassify)
-                })? || !token_refs.as_slice().is_empty();
+                })?;
+            let requires_completed_context = matches!(
+                source_history_classification,
+                RequestHistoryClassification::ExplicitDependency
+            ) || matches!(
+                attempt_history_classification,
+                RequestHistoryClassification::ExplicitDependency
+            ) || !token_refs.as_slice().is_empty();
             // Only unchanged, fully readable client history can separate unrelated calls.
             // Real references, explicit/opaque dependencies and cache contributions keep all witnesses.
             let per_call_readable_history = dependency_projection.is_some()
                 && token_refs.as_slice().is_empty()
-                && history.previous_response_id.is_none()
                 && opaque_refs.as_slice().is_empty()
                 && self.source_body.as_value().get("input") == enriched_body.get("input")
-                && super::request_preparation::is_fresh_readable_history(
+                && super::request_preparation::is_fresh_readable_history_for_call_selection(
                     self.source_body.as_value(),
                     &self.budget,
                 )
@@ -1791,34 +1862,45 @@ impl DlpHttpRequest {
             if requires_completed_context
                 || (per_call_readable_history && !call_specs.as_slice().is_empty())
             {
-                attempt_lease
-                    .resume_completed_context(
-                        &binding,
-                        history
-                            .previous_response_id
-                            .as_ref()
-                            .map(PayloadText::as_str),
-                        call_specs.as_slice(),
-                        opaque_refs.as_slice(),
-                    )
-                    .map_err(|error| {
-                        DlpForwardError::from_token_error(error)
-                            .at_context_checkpoint(ContextCheckpoint::ContextResume)
-                    })?;
+                let mut resume_reason = None;
+                if let Err(error) = attempt_lease.resume_completed_context_diagnosed(
+                    &binding,
+                    history
+                        .previous_response_id
+                        .as_ref()
+                        .map(PayloadText::as_str),
+                    call_specs.as_slice(),
+                    opaque_refs.as_slice(),
+                    &mut resume_reason,
+                ) {
+                    let error = DlpForwardError::from_token_error(error);
+                    if error == DlpForwardError::ContextUnavailable {
+                        super::restore_diagnostics::log_context_resume_failure(
+                            resume_reason.unwrap_or(
+                                super::restore_diagnostics::ContextResumeReason::Unknown,
+                            ),
+                        );
+                        // Restoration authority is optional; missing memory-only history
+                        // must not block the otherwise independently inspected request.
+                    } else {
+                        return Err(error);
+                    }
+                }
 
-                attempt_lease
-                    .verify_output_call_ids(
-                        &binding,
-                        history
-                            .previous_response_id
-                            .as_ref()
-                            .map(PayloadText::as_str),
-                        orphan_refs.as_slice(),
-                    )
-                    .map_err(|error| {
-                        DlpForwardError::from_token_error(error)
-                            .at_context_checkpoint(ContextCheckpoint::OutputCallIds)
-                    })?;
+                if let Err(error) = attempt_lease.verify_output_call_ids(
+                    &binding,
+                    history
+                        .previous_response_id
+                        .as_ref()
+                        .map(PayloadText::as_str),
+                    orphan_refs.as_slice(),
+                ) {
+                    let error = DlpForwardError::from_token_error(error)
+                        .at_context_checkpoint(ContextCheckpoint::OutputCallIds);
+                    if error != DlpForwardError::ContextUnavailable {
+                        return Err(error);
+                    }
+                }
             }
 
             let mut rule_refs =
@@ -4706,7 +4788,7 @@ mod private_correctness_tests {
             .expect("fixed failure");
         assert!(std::str::from_utf8(&frame)
             .expect("utf8")
-            .contains("dlp_restore_failed"));
+            .contains("proxy_processing_failed"));
     }
 
     #[tokio::test]
@@ -4730,7 +4812,7 @@ mod private_correctness_tests {
         assert!(
             std::str::from_utf8(&output)
                 .expect("utf8")
-                .contains("dlp_restore_failed"),
+                .contains("proxy_processing_failed"),
             "EOF cannot complete unfinished frame"
         );
     }

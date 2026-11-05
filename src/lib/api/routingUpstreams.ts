@@ -26,7 +26,13 @@ export type UpstreamSource =
   | { kind: "codex" }
   | {
       kind: "subscription";
-      provider: "github_copilot" | "xai_oauth";
+      provider:
+        | "github_copilot"
+        | "xai_oauth"
+        | "claude"
+        | "chatgpt_api"
+        | "gemini_cli"
+        | "antigravity";
       accountId: string;
       models: unknown[];
       catalog: unknown[];

@@ -101,3 +101,6 @@ pub use workspace::*;
 
 mod agent_connections;
 pub(crate) use agent_connections::*;
+
+mod native_subscription;
+pub(crate) use native_subscription::*;

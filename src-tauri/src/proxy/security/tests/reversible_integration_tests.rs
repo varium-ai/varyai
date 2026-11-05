@@ -184,9 +184,9 @@ async fn reversible_http_unsupported_route_rejects_before_provider_selection() -
             .await;
     let response =
         response.map_err(|_| "unsupported restoration route reached provider selection")?;
-    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
     let body: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
-    assert_eq!(body["error"]["code"], "dlp_restore_unsupported");
+    assert_eq!(body["error"]["code"], "proxy_processing_failed");
     Ok(())
 }
 
@@ -372,11 +372,11 @@ async fn run_matrix_at(
     } else {
         assert_eq!(
             status,
-            http::StatusCode::BAD_GATEWAY,
+            http::StatusCode::INTERNAL_SERVER_ERROR,
             "incomplete source must fail closed before body"
         );
         let value: Value = serde_json::from_slice(&bytes)?;
-        assert_eq!(value["error"]["code"], "dlp_restore_failed");
+        assert_eq!(value["error"]["code"], "proxy_processing_failed");
     }
     Ok(())
 }
@@ -711,11 +711,11 @@ async fn run_wire_policy_with_prompt(
         if streaming && gzip {
             assert_eq!(
                 status,
-                http::StatusCode::BAD_GATEWAY,
+                http::StatusCode::INTERNAL_SERVER_ERROR,
                 "compressed leased SSE must reject before client headers"
             );
             let error: Value = serde_json::from_slice(&bytes)?;
-            assert_eq!(error["error"]["code"], "dlp_restore_failed");
+            assert_eq!(error["error"]["code"], "proxy_processing_failed");
             assert!(!text.contains("response.completed"));
         } else {
             assert_eq!(status, http::StatusCode::OK);
@@ -1018,7 +1018,7 @@ async fn reversible_http_actual_send_audit_is_request_action_not_restoration_suc
         .await;
     assert_eq!(
         restored.status(),
-        http::StatusCode::BAD_GATEWAY,
+        http::StatusCode::INTERNAL_SERVER_ERROR,
         "request audit does not authorize incomplete response restoration"
     );
     assert_eq!(
@@ -1273,7 +1273,7 @@ async fn reversible_http_chat_enrichment_owner_survives_cache_replacement_during
     *candidate_state.lock().expect("synthetic observer") = Default::default();
     let request = http::Request::builder().method("POST").uri("/v1/responses")
         .header("content-type", "application/json").header("session-id", "synthetic-owner-session")
-        .body(Body::from(json!({"model":"synthetic-model","stream":false,"input":[
+        .body(Body::from(json!({"model":"synthetic-model","stream":false,"previous_response_id":"resp_chat_cache_owner","input":[
             {"role":"user","content":FIXTURE_PHONE},
             {"type":"function_call_output","call_id":"call_cache_owner","output":"synthetic result"}]}).to_string()))?;
     let response = handlers::handle_responses(State(proxy_state), request).await?;
@@ -1388,9 +1388,9 @@ async fn reversible_http_ownerless_request_guarded_history_capacity_refuses_befo
         0,
         "capacity refusal must precede every actual provider send"
     );
-    assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(status, http::StatusCode::INTERNAL_SERVER_ERROR);
     let body: Value = serde_json::from_slice(&bytes)?;
-    assert_eq!(body["error"]["code"], "dlp_capacity_exceeded");
+    assert_eq!(body["error"]["code"], "proxy_processing_failed");
     assert_eq!(body["error"]["type"], "server_error");
     assert!(body["error"]["param"].is_null());
     let text = std::str::from_utf8(&bytes)?;
@@ -1815,7 +1815,7 @@ async fn chat_enrichment_refusal_fixture(refusal: EnrichmentRefusal) -> TestResu
         &["chinese_phone_number"],
         budget.clone(),
     );
-    let mut body = json!({"model":"synthetic-model","input":[
+    let mut body = json!({"model":"synthetic-model","previous_response_id":"resp_enrichment_refusal","input":[
         {"role":"user","content":FIXTURE_PHONE},
         {"type":"function_call_output","call_id":"call_enrichment_refusal","output":"ok"}
     ]});
@@ -1984,10 +1984,10 @@ async fn chat_enrichment_refusal_fixture(refusal: EnrichmentRefusal) -> TestResu
         .await
         .is_none());
     let response = error.error.into_response();
-    assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
     let bytes = response.into_body().collect().await?.to_bytes();
     let value: Value = serde_json::from_slice(&bytes)?;
-    assert_eq!(value["error"]["code"], expected.code());
+    assert_eq!(value["error"]["code"], expected.client_code());
     for private in [
         FIXTURE_PHONE,
         "synthetic-enrichment-provider",
@@ -2307,10 +2307,10 @@ async fn source_copy_forwarding_fixture(boundary: SourceBoundary) -> TestResult 
             "source failure must not retry the fallback provider"
         );
         let response = error.error.into_response();
-        assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
         let bytes = response.into_body().collect().await?.to_bytes();
         let value: Value = serde_json::from_slice(&bytes)?;
-        assert_eq!(value["error"]["code"], "dlp_capacity_exceeded");
+        assert_eq!(value["error"]["code"], "proxy_processing_failed");
         let text = std::str::from_utf8(&bytes)?;
         for private in [
             FIXTURE_PHONE,
@@ -2464,10 +2464,10 @@ async fn reversible_http_leased_2xx_error_envelopes_are_fixed_without_diagnostic
                 "leased error envelope must remain fixed for {protocol}"
             );
         }
-        assert_eq!(status, http::StatusCode::BAD_GATEWAY);
+        assert_eq!(status, http::StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(
             serde_json::from_slice::<Value>(&bytes)?["error"]["code"],
-            "dlp_restore_failed"
+            "proxy_processing_failed"
         );
     }
     Ok(())
@@ -2529,10 +2529,10 @@ async fn post_guard_conversion_error_fixture(active_tokens: bool) -> TestResult 
         !text.contains("synthetic-private-diagnostic"),
         "leased conversion errors must not expose upstream diagnostics"
     );
-    assert_eq!(status, http::StatusCode::BAD_GATEWAY);
+    assert_eq!(status, http::StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
         serde_json::from_slice::<Value>(&bytes)?["error"]["code"],
-        "dlp_restore_failed"
+        "proxy_processing_failed"
     );
     for forbidden in [
         FIXTURE_PHONE,
@@ -2610,14 +2610,14 @@ async fn run_unknown_chat_carrier_http(streaming: bool, upstream_sse: bool) -> T
     assert!(!text.contains("response.completed") && !text.contains("[DONE]"));
     if streaming {
         assert!(
-            text.contains("\"code\":\"dlp_restore_unsupported\""),
+            text.contains("\"code\":\"proxy_processing_failed\""),
             "unsupported carrier must retain its fixed classification: {text}"
         );
     } else {
-        assert_eq!(status, http::StatusCode::BAD_GATEWAY);
+        assert_eq!(status, http::StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(
             serde_json::from_slice::<Value>(&bytes)?["error"]["code"],
-            "dlp_restore_unsupported"
+            "proxy_processing_failed"
         );
     }
     Ok(())
@@ -2697,18 +2697,18 @@ async fn run_unknown_anthropic_sibling_http(streaming: bool, upstream_sse: bool)
             "unknown original carrier cannot become apparently complete"
         );
         assert!(
-            text.contains("\"code\":\"dlp_restore_unsupported\""),
+            text.contains("\"code\":\"proxy_processing_failed\""),
             "unknown original carrier needs fixed unsupported classification"
         );
     } else {
         assert_eq!(
             status,
-            http::StatusCode::BAD_GATEWAY,
+            http::StatusCode::INTERNAL_SERVER_ERROR,
             "unknown original carrier must not be dropped by conversion"
         );
         assert_eq!(
             serde_json::from_slice::<Value>(&bytes)?["error"]["code"],
-            "dlp_restore_unsupported"
+            "proxy_processing_failed"
         );
     }
     Ok(())
@@ -3073,9 +3073,9 @@ async fn outbound_retention_fixture_with_prompt(tail: bool, prompt: Option<bool>
     assert_eq!(sends.load(Ordering::SeqCst), 0);
     assert!(observe_first().is_empty() && observe_second().is_empty());
     let response = error.error.into_response();
-    assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
     let value: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
-    assert_eq!(value["error"]["code"], "dlp_capacity_exceeded");
+    assert_eq!(value["error"]["code"], "proxy_processing_failed");
     let breaker_after = state
         .provider_router
         .get_circuit_breaker_stats(&denied.id, "codex")
@@ -3410,9 +3410,9 @@ async fn guarded_namespace_capacity_refuses_actual_forward_before_send() -> Test
         .release_permit_neutral(&provider.id, "codex", true)
         .await;
     let response = error.error.into_response();
-    assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
     let value: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
-    assert_eq!(value["error"]["code"], "dlp_capacity_exceeded");
+    assert_eq!(value["error"]["code"], "proxy_processing_failed");
     drop(forwarder);
     drop(audit);
     drop(filler);
@@ -3779,10 +3779,10 @@ async fn run_guarded_response_namespace_router(mode: &str, compact: bool) -> Tes
     } else {
         let response = pending.await?;
         if mode == "refuse" {
-            assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
             let value: Value =
                 serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
-            assert_eq!(value["error"]["code"], "dlp_capacity_exceeded");
+            assert_eq!(value["error"]["code"], "proxy_processing_failed");
             assert_eq!(sends.load(Ordering::SeqCst), 0);
             let snapshot = probe.snapshot();
             assert_eq!(snapshot.attempts, 1);
@@ -4152,7 +4152,7 @@ async fn run_p1_cache_authorization(mode: &str) -> TestResult {
         !initial_text.contains("rredact-cn_phone-"),
         "control must not expose references"
     );
-    let followup_body = json!({"model":"synthetic-model","stream":false,"input":[{
+    let followup_body = json!({"model":"synthetic-model","stream":false,"previous_response_id":"resp_chat_cache_owner","input":[{
         "type":"function_call_output","call_id":"call_cache_owner","output":"synthetic tool result"}]});
     assert!(
         !followup_body.to_string().contains("rredact-cn_phone-"),
@@ -4223,17 +4223,19 @@ async fn run_p1_cache_authorization(mode: &str) -> TestResult {
     let late_token_sent = requests
         .get(initial_sends)
         .is_some_and(|body| body.to_string().contains("rredact-cn_phone-"));
-    let allowed = matches!(mode, "valid" | "legacy");
+    let late_plaintext_sent = requests
+        .get(initial_sends)
+        .is_some_and(|body| body.to_string().contains(FIXTURE_PHONE));
     eprintln!("P1_CACHE mode={mode} control_success=true initial_followup_token_free=true second_upstream_sends={second_sends} late_token_sent={late_token_sent} followup_status={followup_status:?}");
-    assert_eq!(second_sends, usize::from(allowed), "only currently authorized or ordinary token-free history may reach the second actual upstream send");
-    if allowed {
-        assert_eq!(followup_status, Some(200));
-    } else {
-        assert!(
-            followup_status.is_none_or(|status| status >= 400),
-            "refusal must remain a failure"
-        );
-    }
+    assert_eq!(
+        second_sends, 1,
+        "missing cache authority must not block the second upstream request"
+    );
+    assert_eq!(followup_status, Some(200));
+    assert!(
+        !late_plaintext_sent,
+        "degraded cache history must never restore plaintext into the upstream request"
+    );
     Ok(())
 }
 
@@ -4509,9 +4511,9 @@ async fn p1_acceptance_xai_raw_completion() -> TestResult {
         && control.context_reused && control.followup_sends == 1,
         "fully framed tool-stream control must restore, release tool frames and authorize its continuation");
     let truncated = run("truncated").await?;
-    assert!(truncated.tool_frames == 0 && truncated.followup_sends == 0 && !truncated.context_reused
+    assert!(truncated.tool_frames == 0 && truncated.followup_sends == 1 && truncated.context_reused
         && truncated.failed && !truncated.restored && !truncated.reference_exposed,
-        "original unterminated completed frame must release zero client tool segments and authorize zero reusable completed contexts");
+        "original unterminated frame must release zero tools without blocking a degraded continuation");
     for mode in [
         "crlf",
         "one_byte",
@@ -4534,9 +4536,9 @@ async fn p1_acceptance_xai_raw_completion() -> TestResult {
                 "valid chunked CRLF control must pass"
             );
         } else {
-            assert!(observed.tool_frames == 0 && observed.followup_sends == 0 && !observed.context_reused
+            assert!(observed.tool_frames == 0 && observed.followup_sends == 1 && observed.context_reused
                 && !observed.restored && !observed.reference_exposed && (mode.starts_with("cancel_") || observed.failed),
-                "invalid original bytes must release zero tool frames and authorize zero continuation; mode={mode}");
+                "invalid original bytes must release zero tools without blocking continuation; mode={mode}");
         }
     }
     Ok(())
@@ -5155,8 +5157,8 @@ async fn run_closure_snapshots(mode: &'static str) -> TestResult {
             "failed original snapshots must make zero client submissions"
         );
         assert!(
-            failed && !completed && tools == 0 && !continuation_ok && followup_sends == 0,
-            "contradictory raw snapshot must discard buffered tools and authorize no context"
+            failed && !completed && tools == 0 && continuation_ok && followup_sends == 1,
+            "contradictory snapshots must discard buffered tools without blocking a degraded continuation"
         );
         assert!(
             !wire.contains(FIXTURE_PHONE) && !wire.contains("rredact-cn_phone-"),
@@ -5342,7 +5344,7 @@ async fn run_closure_chat_sibling(
     let wire = std::str::from_utf8(&bytes)?;
     let leaked_tool = wire.contains("response.function_call_arguments")
         || wire.contains("\"type\":\"function_call\"");
-    let unsupported = wire.contains("dlp_restore_unsupported");
+    let processing_failed = wire.contains("proxy_processing_failed");
     let exposed = wire.contains(FIXTURE_PHONE) || wire.contains("rredact-cn_phone-");
     let completed = wire.contains("response.completed") || wire.contains("[DONE]");
     {
@@ -5368,10 +5370,12 @@ async fn run_closure_chat_sibling(
         Ok(response) => response,
         Err(error) => error.into_response(),
     };
-    assert_eq!(
-        followup.status(),
-        http::StatusCode::BAD_REQUEST,
-        "failed original must not publish the independently established converted identity"
+    assert!(
+        matches!(
+            followup.status(),
+            http::StatusCode::OK | http::StatusCode::INTERNAL_SERVER_ERROR
+        ),
+        "missing completion must not block the followup before upstream processing"
     );
     let _ = followup.into_body().collect().await?;
     server.abort();
@@ -5380,10 +5384,10 @@ async fn run_closure_chat_sibling(
         .map_err(|_| "synthetic capture poisoned")?
         .len()
         .saturating_sub(3);
-    assert!(unsupported && !leaked_tool && !exposed && !completed && followup_sends == 0,
-        "original unknown Chat sibling must fail unsupported before tool replay or context publication");
+    assert!(processing_failed && !leaked_tool && !exposed && !completed && followup_sends == 1,
+        "unknown Chat sibling must fail without tool replay; its missing completion must not block followup");
     if !streaming {
-        assert_eq!(status, http::StatusCode::BAD_GATEWAY);
+        assert_eq!(status, http::StatusCode::INTERNAL_SERVER_ERROR);
     }
     Ok(())
 }
@@ -5564,12 +5568,12 @@ async fn run_closure_anthropic_json(mode: &'static str) -> TestResult {
             } else { json!([{"type":"text","text":"synthetic continuation"}]) };
             let value = json!({"id":if initial { "msg_closure_json" } else { "msg_closure_json_followup" },"type":"message","role":"assistant","model":"synthetic-model",
                 "content":content,
-                "stop_reason":if mode == "incomplete" { "max_tokens" } else if tokenized.is_some() { "tool_use" } else { "end_turn" },
+                "stop_reason":if initial && mode == "incomplete" { "max_tokens" } else if tokenized.is_some() { "tool_use" } else { "end_turn" },
                 "usage":{"input_tokens":1,"output_tokens":1}});
             let mut raw = value.to_string();
-            if mode == "truncated" { raw.pop(); }
-            if mode == "duplicate" { raw = raw.replacen("{", "{\"stop_reason\":\"max_tokens\",", 1); }
-            if mode == "error" { raw = json!({"type":"error","error":{"type":"synthetic_error","message":"synthetic safe error"}}).to_string(); }
+            if initial && mode == "truncated" { raw.pop(); }
+            if initial && mode == "duplicate" { raw = raw.replacen("{", "{\"stop_reason\":\"max_tokens\",", 1); }
+            if initial && mode == "error" { raw = json!({"type":"error","error":{"type":"synthetic_error","message":"synthetic safe error"}}).to_string(); }
             if initial && matches!(mode, "io_error" | "cancel_partial" | "cancel_full") {
                 if mode == "cancel_partial" { raw.truncate(raw.len() / 2); }
                 let stream = async_stream::stream! {
@@ -5710,8 +5714,8 @@ async fn run_closure_anthropic_json(mode: &'static str) -> TestResult {
             "invalid or cancelled JSON submits zero tools"
         );
         assert!(
-            !completed && tools == 0 && !continuation_ok && sends == 1,
-            "invalid original JSON must release no tool or context"
+            !completed && tools == 0 && continuation_ok && sends == 2,
+            "invalid original JSON must release no tool; missing completion must not block continuation"
         );
         assert!(!text.contains(FIXTURE_PHONE) && !text.contains("rredact-cn_phone-"));
     }
@@ -5957,6 +5961,7 @@ async fn operation_lineage_fixture(mode: &str) -> TestResult {
         RestorationGateway::with_test_rules(&["chinese_phone_number"], 64 * 1024 * 1024),
     );
     let mut router = proxy.build_router();
+    let mut previous_main_response: Option<String> = None;
     for stage in 1..=3 {
         let compact = stage == 2 && mode != "workspace_same";
         let uri = if compact {
@@ -5966,7 +5971,9 @@ async fn operation_lineage_fixture(mode: &str) -> TestResult {
         };
         let mut body = json!({"model":"synthetic-model","stream":false,"input":format!("Synthetic request {FIXTURE_PHONE}")});
         if stage > 1 {
-            body["previous_response_id"] = json!(format!("resp_lineage_{}", stage - 1));
+            body["previous_response_id"] = json!(previous_main_response
+                .as_deref()
+                .ok_or("missing main lineage response")?);
         }
         if stage == 3 && mode != "workspace_same" {
             body["input"] = json!([{"type":"compaction","id":"cmp_lineage","encrypted_content":"synthetic-lineage-opaque"},
@@ -5975,7 +5982,11 @@ async fn operation_lineage_fixture(mode: &str) -> TestResult {
         if (stage == 2 && matches!(mode, "workspace" | "workspace_same"))
             || (stage == 3 && mode == "workspace_reverse")
         {
-            let refused = router
+            let before = seen
+                .lock()
+                .map_err(|_| "synthetic lineage capture poisoned")?
+                .len();
+            let degraded = router
                 .call(
                     http::Request::builder()
                         .method("POST")
@@ -5986,14 +5997,21 @@ async fn operation_lineage_fixture(mode: &str) -> TestResult {
                         .body(Body::from(body.to_string()))?,
                 )
                 .await?;
-            let status = refused.status();
-            let _ = refused.into_body().collect().await?;
-            let sends = seen
+            let status = degraded.status();
+            let _ = degraded.into_body().collect().await?;
+            let captured = seen
                 .lock()
-                .map_err(|_| "synthetic lineage capture poisoned")?
-                .len();
-            assert!(status == http::StatusCode::BAD_REQUEST && sends == stage - 1,
-                "changed actual workspace must revoke cross-operation lineage before sending; status={status} sends={sends}");
+                .map_err(|_| "synthetic lineage capture poisoned")?;
+            assert!(
+                status == http::StatusCode::OK && captured.len() == before + 1,
+                "changed workspace must degrade without blocking; status={status} sends={}",
+                captured.len()
+            );
+            let outbound = serde_json::to_string(&captured[before].1)?;
+            assert!(
+                !outbound.contains(FIXTURE_PHONE) && outbound.contains("rredact-cn_phone-"),
+                "changed workspace must still redact ordinary request text"
+            );
         }
         if stage > 1 {
             for (negative_uri, session, unknown_opaque) in [
@@ -6014,7 +6032,11 @@ async fn operation_lineage_fixture(mode: &str) -> TestResult {
                     negative_body["input"] = json!([{"type":"compaction","encrypted_content":"synthetic-unknown-opaque"},
                         {"role":"user","content":format!("Synthetic request {FIXTURE_PHONE}")}]);
                 }
-                let refused = router
+                let before = seen
+                    .lock()
+                    .map_err(|_| "synthetic lineage capture poisoned")?
+                    .len();
+                let degraded = router
                     .call(
                         http::Request::builder()
                             .method("POST")
@@ -6025,17 +6047,33 @@ async fn operation_lineage_fixture(mode: &str) -> TestResult {
                             .body(Body::from(negative_body.to_string()))?,
                     )
                     .await?;
-                assert_eq!(refused.status(), http::StatusCode::BAD_REQUEST);
-                let _ = refused.into_body().collect().await?;
+                assert_eq!(degraded.status(), http::StatusCode::OK);
+                let _ = degraded.into_body().collect().await?;
+                let captured = seen
+                    .lock()
+                    .map_err(|_| "synthetic lineage capture poisoned")?;
                 assert_eq!(
-                    seen.lock()
-                        .map_err(|_| "synthetic lineage capture poisoned")?
-                        .len(),
-                    stage - 1,
-                    "changed query/session or unknown opaque must make zero additional sends"
+                    captured.len(),
+                    before + 1,
+                    "changed route/session or unknown opaque must not block the request"
                 );
+                let outbound = serde_json::to_string(&captured[before].1)?;
+                assert!(
+                    !outbound.contains(FIXTURE_PHONE) && outbound.contains("rredact-cn_phone-"),
+                    "degraded lineage must still redact ordinary request text"
+                );
+                if unknown_opaque {
+                    assert!(
+                        outbound.contains("synthetic-unknown-opaque"),
+                        "unknown opaque history must remain opaque"
+                    );
+                }
             }
         }
+        let before = seen
+            .lock()
+            .map_err(|_| "synthetic lineage capture poisoned")?
+            .len();
         let request = http::Request::builder()
             .method("POST")
             .uri(uri)
@@ -6051,17 +6089,23 @@ async fn operation_lineage_fixture(mode: &str) -> TestResult {
             .lock()
             .map_err(|_| "synthetic lineage capture poisoned")?
             .len();
-        assert!(status == http::StatusCode::OK && sends == stage,
+        assert!(status == http::StatusCode::OK && sends == before + 1,
             "approved Responses/compact operation transfer must retain lineage; stage={stage} status={status} sends={sends}");
         assert_eq!(
             value["output"][0]["content"][0]["text"],
             format!("Synthetic request {FIXTURE_PHONE}")
         );
+        previous_main_response = Some(
+            value["id"]
+                .as_str()
+                .ok_or("missing main lineage id")?
+                .to_owned(),
+        );
         let captured = seen
             .lock()
             .map_err(|_| "synthetic lineage capture poisoned")?;
         assert_eq!(
-            captured[stage - 1].0,
+            captured[before].0,
             if mode == "prefix" {
                 format!(
                     "/synthetic-prefix{}",
@@ -6071,8 +6115,8 @@ async fn operation_lineage_fixture(mode: &str) -> TestResult {
                 uri.to_owned()
             }
         );
-        assert_eq!(captured[stage - 1].2, "synthetic-workspace");
-        let outbound = serde_json::to_string(&captured[stage - 1].1)?;
+        assert_eq!(captured[before].2, "synthetic-workspace");
+        let outbound = serde_json::to_string(&captured[before].1)?;
         assert!(
             !outbound.contains(FIXTURE_PHONE) && outbound.contains("rredact-cn_phone-"),
             "every lineage operation must send only tokenized supported text"
@@ -6143,6 +6187,114 @@ fn assert_history_literal_has_no_authority(
             .contains(&literal),
         "literal history must not enter the authorized proof"
     );
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn responses_valid_cursor_mixed_history_forwards_recorded_calls() -> TestResult {
+    let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+    runtime::set_security_runtime_for_test(Default::default());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let captured = seen.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let upstream = Router::new().fallback(post(move |Json(body): Json<Value>| {
+        let seen = seen.clone();
+        async move {
+            let index = {
+                let mut requests = seen.lock().expect("synthetic cursor capture");
+                requests.push(body);
+                requests.len() - 1
+            };
+            if index == 0 {
+                Json(json!({"id":"resp_cursor_mixed","object":"response","status":"completed","model":"synthetic-model","output":[
+                    {"id":"fc_cursor_first","type":"function_call","call_id":"call_cursor_first","name":"synthetic_first","arguments":"{}","status":"completed"},
+                    {"id":"fc_cursor_second","type":"function_call","call_id":"call_cursor_second","name":"synthetic_second","arguments":"{}","status":"completed"}
+                ]}))
+            } else {
+                Json(json!({"id":format!("resp_cursor_followup_{index}"),"object":"response","status":"completed","model":"synthetic-model","output":[
+                    {"id":format!("msg_cursor_followup_{index}"),"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Synthetic continuation","annotations":[]}]}
+                ]}))
+            }
+        }
+    }));
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await });
+    let db = Arc::new(Database::memory()?);
+    let provider = Provider::with_id(
+        "synthetic-cursor-mixed".into(),
+        "Synthetic cursor mixed history".into(),
+        json!({"base_url":format!("http://{address}"),"api_key":"synthetic-cursor-key","api_format":"responses"}),
+        None,
+    );
+    db.save_provider("codex", &provider)?;
+    db.set_current_provider("codex", &provider.id)?;
+    let proxy = ProxyServer::new(ProxyConfig::default(), db, None).with_restoration_gateway(
+        RestorationGateway::with_test_rules(&["chinese_phone_number"], 64 * 1024 * 1024),
+    );
+    let mut router = proxy.build_router();
+    let initial = http::Request::builder()
+        .method("POST")
+        .uri("/v1/responses")
+        .header("content-type", "application/json")
+        .header("session-id", "synthetic-cursor-mixed-session")
+        .body(Body::from(
+            json!({"model":"synthetic-model","stream":false,"input":format!("Synthetic initial {FIXTURE_PHONE}")})
+                .to_string(),
+        ))?;
+    let response = router.call(initial).await?;
+    assert_eq!(response.status(), http::StatusCode::OK);
+    let completed: Value =
+        serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+    let continuation = json!({"model":"synthetic-model","stream":false,"previous_response_id":completed["id"],"input":[
+        {"type":"function_call","call_id":"call_cursor_prior","name":"synthetic_prior","arguments":"{}"},
+        {"type":"function_call_output","call_id":"call_cursor_prior","output":"Synthetic prior result"},
+        completed["output"][0].clone(),
+        {"type":"function_call_output","call_id":"call_cursor_first","output":"Synthetic first result"},
+        completed["output"][1].clone(),
+        {"type":"function_call_output","call_id":"call_cursor_second","output":"Synthetic second result"},
+        {"role":"user","content":format!("Synthetic continue {FIXTURE_PHONE}")}
+    ]});
+    for case in 0..3 {
+        let mut body = continuation.clone();
+        match case {
+            1 => {
+                body.as_object_mut()
+                    .ok_or("synthetic cursor body missing")?
+                    .remove("previous_response_id");
+            }
+            2 => body["previous_response_id"] = json!("resp_cursor_forged"),
+            _ => {}
+        }
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("/v1/responses")
+            .header("content-type", "application/json")
+            .header("session-id", "synthetic-cursor-mixed-session")
+            .body(Body::from(body.to_string()))?;
+        let response = router.call(request).await?;
+        assert_eq!(
+            response.status(),
+            http::StatusCode::OK,
+            "missing or forged cursor must not block continuation; case={case}"
+        );
+        let _ = response.into_body().collect().await?;
+    }
+    let requests = captured
+        .lock()
+        .map_err(|_| "synthetic cursor capture poisoned")?;
+    assert_eq!(requests.len(), 4, "degraded cursor must reach upstream");
+    for body in &requests[1..] {
+        assert_eq!(body["input"][2]["call_id"], "call_cursor_first");
+        assert_eq!(body["input"][4]["call_id"], "call_cursor_second");
+        assert!(!body.to_string().contains(FIXTURE_PHONE));
+    }
+    assert_eq!(
+        requests[3]["previous_response_id"], "resp_cursor_forged",
+        "degradation must preserve the unknown cursor without fabricating a replacement"
+    );
+    drop(requests);
+    server.abort();
     Ok(())
 }
 
@@ -6259,10 +6411,10 @@ async fn fresh_readable_history_fixture(
     let mut old = body.clone();
     old["input"][0]["content"] = json!(old_token);
     negative_bodies.push(old);
-    let mut literal_sends = 0;
+    let mut passthrough_sends = 0;
     for (case_index, negative) in negative_bodies.into_iter().enumerate() {
-        let literal_case = case_index == 8 && !unsupported_reasoning;
-        if literal_case {
+        let passthrough_case = !unsupported_reasoning || case_index == 0;
+        if case_index == 8 && !unsupported_reasoning {
             assert_history_literal_has_no_authority(
                 &gateway,
                 &negative,
@@ -6282,36 +6434,42 @@ async fn fresh_readable_history_fixture(
             .await?;
         assert_eq!(
             response.status(),
-            if literal_case {
+            if passthrough_case {
                 http::StatusCode::OK
             } else {
-                http::StatusCode::BAD_REQUEST
+                http::StatusCode::INTERNAL_SERVER_ERROR
             },
-            "fresh history outcome; case_index={case_index}"
+            "recovery context must degrade while unsupported carriers stay internal errors; case_index={case_index}"
         );
         let bytes = response.into_body().collect().await?.to_bytes();
-        literal_sends += usize::from(literal_case);
+        passthrough_sends += usize::from(passthrough_case);
         let captured = seen
             .lock()
             .map_err(|_| "synthetic fresh capture poisoned")?;
         assert_eq!(
             captured.len(),
-            literal_sends,
-            "malformed/incomplete history must send nothing; case_index={case_index}"
+            passthrough_sends,
+            "only unknown history and literal passthrough may send; case_index={case_index}"
         );
-        if literal_case {
+        if passthrough_case {
             let outbound = captured
                 .last()
-                .ok_or("synthetic literal send missing")?
+                .ok_or("synthetic passthrough send missing")?
                 .to_string();
             assert!(
-                outbound.contains(&old_token) && !outbound.contains(FIXTURE_PHONE),
-                "unknown literal must survive while fresh PII stays tokenized"
+                !outbound.contains(FIXTURE_PHONE) && outbound.contains("rredact-cn_phone-"),
+                "known text must remain inspected during unknown-history passthrough"
             );
-            assert!(
-                !std::str::from_utf8(&bytes)?.contains("synthetic-old-generation-secret"),
-                "unknown literal must not resolve its foreign mapping"
-            );
+            if case_index == 8 {
+                assert!(
+                    outbound.contains(&old_token),
+                    "unknown literal must survive without acquiring authority"
+                );
+                assert!(
+                    !std::str::from_utf8(&bytes)?.contains("synthetic-old-generation-secret"),
+                    "unknown literal must not resolve its foreign mapping"
+                );
+            }
         }
     }
     let response = router
@@ -6331,12 +6489,12 @@ async fn fresh_readable_history_fixture(
         .map_err(|_| "synthetic fresh capture poisoned")?
         .len();
     if unsupported_reasoning {
-        assert!(status == http::StatusCode::BAD_REQUEST && sends == 0,
-            "unsupported call reasoning must not bypass fresh-input reinspection; status={status} sends={sends}");
+        assert!(status == http::StatusCode::INTERNAL_SERVER_ERROR && sends == passthrough_sends,
+            "unsupported call reasoning must remain an internal error without sending; status={status} sends={sends}");
         server.abort();
         return Ok(());
     }
-    assert!(status == http::StatusCode::OK && sends == literal_sends + 1,
+    assert!(status == http::StatusCode::OK && sends == passthrough_sends + 1,
         "complete original readable history must be reinspected as fresh input; status={status} sends={sends}");
     let response: Value = serde_json::from_slice(&bytes)?;
     let serialized = serde_json::to_string(&response)?;
@@ -6344,7 +6502,7 @@ async fn fresh_readable_history_fixture(
     let captured = seen
         .lock()
         .map_err(|_| "synthetic fresh capture poisoned")?;
-    let outbound = serde_json::to_string(&captured[literal_sends])?;
+    let outbound = serde_json::to_string(&captured[passthrough_sends])?;
     assert!(
         !outbound.contains(FIXTURE_PHONE) && outbound.contains("rredact-cn_phone-"),
         "all supported fresh history text must be tokenized before the only send"
@@ -6437,11 +6595,14 @@ async fn reversible_closure_req3_original_history_ignores_cached_completion() ->
     assert!(legacy_probe
         .to_string()
         .contains("synthetic-cache-only-reasoning"));
-    for negative in [
+    for (case_index, negative) in [
         json!({"model":"synthetic-model","stream":false,"input":[body["input"][1].clone()]}),
         json!({"model":"synthetic-model","stream":false,"input":[
             {"type":"function_call","call_id":"synthetic_provenance_call","name":"synthetic_lookup"},body["input"][1].clone()]}),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let response = handlers::handle_responses(
             State(proxy_state.clone()),
             http::Request::builder()
@@ -6452,13 +6613,17 @@ async fn reversible_closure_req3_original_history_ignores_cached_completion() ->
                 .body(Body::from(negative.to_string()))?,
         )
         .await?;
-        assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), http::StatusCode::OK);
         let _ = response.into_body().collect().await?;
-        assert_eq!(
-            seen.lock()
-                .map_err(|_| "synthetic cache capture poisoned")?
-                .len(),
-            0
+        let captured = seen
+            .lock()
+            .map_err(|_| "synthetic cache capture poisoned")?;
+        assert_eq!(captured.len(), case_index + 1);
+        assert!(
+            !captured[captured.len() - 1]
+                .to_string()
+                .contains("synthetic-cache-only-reasoning"),
+            "unknown history must not inherit cached data or recovery authority"
         );
     }
     let response = handlers::handle_responses(
@@ -6467,18 +6632,24 @@ async fn reversible_closure_req3_original_history_ignores_cached_completion() ->
             .method("POST")
             .uri("/v1/responses")
             .header("content-type", "application/json")
-            .header("session-id", "synthetic-new-cache-generation")
+            .header("session-id", "synthetic-original-cache-control")
             .body(Body::from(body.to_string()))?,
     )
     .await?;
-    assert_eq!(response.status(), http::StatusCode::OK);
+    let status = response.status();
     let bytes = response.into_body().collect().await?.to_bytes();
+    assert_eq!(
+        status,
+        http::StatusCode::OK,
+        "complete original history failed after unknown passthrough: {}",
+        std::str::from_utf8(&bytes)?
+    );
     assert!(std::str::from_utf8(&bytes)?.contains(FIXTURE_PHONE));
     let captured = seen
         .lock()
         .map_err(|_| "synthetic cache capture poisoned")?;
-    assert_eq!(captured.len(), 1);
-    let outbound = captured[0].to_string();
+    assert_eq!(captured.len(), 3);
+    let outbound = captured[2].to_string();
     assert!(
         !outbound.contains("synthetic-cache-only-reasoning")
             && !outbound.contains(FIXTURE_PHONE)
@@ -6616,17 +6787,39 @@ async fn fresh_history_boundary_fixture(boundary: &str) -> TestResult {
         }
         _ => return Err("unknown synthetic boundary".into()),
     }
-    let mut literal_sends = 0;
-    for (case_index, (case, negative)) in negatives.into_iter().enumerate() {
+    let mut passthrough_sends = 0;
+    for (case_index, (case, mut negative)) in negatives.into_iter().enumerate() {
         let literal_case =
             boundary == "escaped_argument_key" && case == "escaped_unknown_argument_key";
+        let unknown_case = matches!(
+            boundary,
+            "message_type"
+                | "reasoning_shape"
+                | "result_shape"
+                | "message_shape"
+                | "mixed_reasoning_shape"
+        );
+        let degraded_token = boundary == "token_key" && case != "key";
+        let passthrough_case = literal_case || unknown_case || degraded_token;
+        let unknown_session = format!("synthetic-unknown-{boundary}-{case_index}");
         let session = if literal_case {
             "synthetic-unleased-boundary-session"
+        } else if unknown_case {
+            unknown_session.as_str()
         } else {
             "synthetic-boundary-session"
         };
         if literal_case {
             assert_history_literal_has_no_authority(&gateway, &negative, session, &token)?;
+        }
+        if unknown_case {
+            negative["input"]
+                .as_array_mut()
+                .ok_or("synthetic input missing")?
+                .insert(
+                    0,
+                    json!({"role":"user","content":"Synthetic passthrough continue"}),
+                );
         }
         let response = router
             .call(
@@ -6640,17 +6833,17 @@ async fn fresh_history_boundary_fixture(boundary: &str) -> TestResult {
             .await?;
         let status = response.status();
         let _ = response.into_body().collect().await?;
-        literal_sends += usize::from(literal_case);
+        passthrough_sends += usize::from(passthrough_case);
         let captured = seen
             .lock()
             .map_err(|_| "synthetic boundary capture poisoned")?;
-        let expected_status = if literal_case {
+        let expected_status = if passthrough_case {
             http::StatusCode::OK
         } else {
-            http::StatusCode::BAD_REQUEST
+            http::StatusCode::INTERNAL_SERVER_ERROR
         };
         assert!(
-            status == expected_status && captured.len() == 1 + literal_sends,
+            status == expected_status && captured.len() == 1 + passthrough_sends,
             "history authority boundary; case_index={case_index} case={case} status={status}"
         );
         if literal_case {
@@ -6659,6 +6852,21 @@ async fn fresh_history_boundary_fixture(boundary: &str) -> TestResult {
                     == negative["input"][1]["arguments"],
                 "escaped unknown argument key must preserve encoded bytes"
             );
+        } else if unknown_case || degraded_token {
+            let outbound = captured
+                .last()
+                .ok_or("synthetic degraded send missing")?
+                .to_string();
+            assert!(
+                !outbound.contains(FIXTURE_PHONE),
+                "known text must remain inspected during degraded history forwarding"
+            );
+            if degraded_token {
+                assert!(
+                    outbound.contains(token.as_str()),
+                    "old placeholders must remain byte-identical without gaining authority"
+                );
+            }
         }
     }
     if boundary == "escaped_argument_key" {
@@ -6705,7 +6913,7 @@ async fn fresh_history_boundary_fixture(boundary: &str) -> TestResult {
         seen.lock()
             .map_err(|_| "synthetic boundary capture poisoned")?
             .len(),
-        2 + literal_sends
+        2 + passthrough_sends
     );
     server.abort();
     Ok(())
@@ -6719,25 +6927,25 @@ async fn reversible_closure_req3_old_token_object_key_refused() -> TestResult {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn reversible_closure_req3_malformed_reasoning_part_refused() -> TestResult {
+async fn reversible_closure_req3_unknown_reasoning_part_passthrough() -> TestResult {
     fresh_history_boundary_fixture("reasoning_shape").await
 }
 
 #[tokio::test]
 #[serial_test::serial]
-async fn reversible_closure_req3_malformed_result_part_refused() -> TestResult {
+async fn reversible_closure_req3_unknown_result_part_passthrough() -> TestResult {
     fresh_history_boundary_fixture("result_shape").await
 }
 
 #[tokio::test]
 #[serial_test::serial]
-async fn reversible_closure_req3_malformed_message_part_refused() -> TestResult {
+async fn reversible_closure_req3_unknown_message_part_passthrough() -> TestResult {
     fresh_history_boundary_fixture("message_shape").await
 }
 
 #[tokio::test]
 #[serial_test::serial]
-async fn reversible_closure_req3_mixed_reasoning_shape_refused() -> TestResult {
+async fn reversible_closure_req3_unknown_mixed_reasoning_shape_passthrough() -> TestResult {
     fresh_history_boundary_fixture("mixed_reasoning_shape").await
 }
 
@@ -6829,7 +7037,7 @@ async fn reversible_closure_req3_escaped_argument_key_reference_refused() -> Tes
 
 #[tokio::test]
 #[serial_test::serial]
-async fn reversible_closure_req3_present_nonstring_message_type_refused() -> TestResult {
+async fn reversible_closure_req3_unknown_nonstring_message_type_passthrough() -> TestResult {
     fresh_history_boundary_fixture("message_type").await
 }
 
@@ -7035,8 +7243,8 @@ async fn official_duplicate_authorization_fixture(
                     "the changed vector must reach the real listener before counting a binding RED"
                 );
             }
-            assert!(status == http::StatusCode::BAD_REQUEST && sends == 2,
-                "changed actual credential vector must refuse historical continuation before another send; derived={derived_key_change} status={status} sends={sends}");
+            assert!(status == http::StatusCode::OK && sends == 3,
+                "changed credential vector must degrade without blocking; derived={derived_key_change} status={status} sends={sends}");
         } else {
             let mut result = result.map_err(|_| "synthetic unchanged vector send refused")?;
             let attempt = result
@@ -7213,26 +7421,28 @@ async fn core_failure_http_fixture(mode: &'static str) -> TestResult {
         0,
         "core failure must precede all actual HTTP sends; case={mode}"
     );
-    let expected = match mode {
-        "entropy" => "dlp_unavailable",
-        "collision" => "dlp_token_collision",
-        "redaction" => "dlp_redaction_failed",
-        "unsupported" => "dlp_restore_unsupported",
-        _ => "dlp_capacity_exceeded",
-    };
-    assert!(
-        status.is_client_error() || status.is_server_error(),
-        "core failure cannot succeed; case={mode}"
+    assert_eq!(
+        status,
+        http::StatusCode::INTERNAL_SERVER_ERROR,
+        "core failure must use the generic server status; case={mode}"
     );
-    assert!(
-        value.pointer("/error/code").and_then(Value::as_str) == Some(expected),
-        "fixed core failure code must survive auxiliary degradation; case={mode}"
+    assert_eq!(
+        value.pointer("/error/code").and_then(Value::as_str),
+        Some("proxy_processing_failed"),
+        "core failure must use the generic client code; case={mode}"
+    );
+    assert_eq!(
+        value.pointer("/error/message").and_then(Value::as_str),
+        Some("The local proxy could not process the request. Please retry."),
+        "core failure must not expose internal diagnostics; case={mode}"
     );
     let text = std::str::from_utf8(&wire)?;
     assert!(
         !text.contains(FIXTURE_PHONE)
             && !text.contains("rredact-cn_phone-")
             && !text.contains("synthetic-core-credential")
+            && !text.contains("dlp_")
+            && !text.contains("Reversible DLP")
     );
     assert_eq!(
         store.stats()?.entries,
@@ -7436,18 +7646,15 @@ async fn run_closure_client_budget(xai: bool, exhaust: bool) -> TestResult {
     server.abort();
     assert_eq!(
         followup_status,
-        if exhaust {
-            http::StatusCode::BAD_REQUEST
-        } else {
-            http::StatusCode::OK
-        }
+        http::StatusCode::OK,
+        "missing completion after a response-stage failure must not block continuation"
     );
     assert_eq!(
         seen.lock()
             .map_err(|_| "synthetic budget capture poisoned")?
             .len(),
-        if exhaust { 1 } else { 2 },
-        "failed buffered response publishes no reusable context even after budget recovery"
+        2,
+        "degraded continuation must reach upstream after budget recovery"
     );
     assert_eq!(
         budget.used(),
@@ -8101,7 +8308,7 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
             );
         }
     }
-    assert_eq!(status, if mode == "refuse" { http::StatusCode::BAD_GATEWAY } else { http::StatusCode::OK },
+    assert_eq!(status, if mode == "refuse" { http::StatusCode::INTERNAL_SERVER_ERROR } else { http::StatusCode::OK },
         "target xAI JSON wire serialization must fail closed when its independent budget reservation is refused");
     let value: Value = serde_json::from_slice(&wire)?;
     let observations_after = observation_queue.counters.snapshot();
@@ -8135,7 +8342,7 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
         "final client must not expose restoration references"
     );
     if mode == "refuse" {
-        assert_eq!(value["error"]["code"], "dlp_restore_failed");
+        assert_eq!(value["error"]["code"], "proxy_processing_failed");
         assert!(
             !text.contains(FIXTURE_PHONE),
             "fixed failure must not expose fixture plaintext"
@@ -8246,22 +8453,15 @@ async fn run_reversible_wire_xai_json(mode: &'static str) -> TestResult {
         .await?;
         let response = response.unwrap_or_else(IntoResponse::into_response);
         let followup_status = response.status();
-        let followup_wire = tokio::time::timeout_at(deadline, response.into_body().collect())
+        let _followup_wire = tokio::time::timeout_at(deadline, response.into_body().collect())
             .await??
             .to_bytes();
         let sends = seen.lock().map_err(|_| "synthetic capture poisoned")?.len();
-        if mode == "refuse" {
-            assert_eq!(followup_status, http::StatusCode::BAD_REQUEST);
-            let error: Value = serde_json::from_slice(&followup_wire)?;
-            assert_eq!(error["error"]["code"], "dlp_context_unavailable");
-            assert_eq!(sends, 1, "budget recovery must not authorize an additional upstream send for refused context");
-        } else {
-            assert_eq!(followup_status, http::StatusCode::OK);
-            assert_eq!(
-                sends, 2,
-                "successful completed context must authorize one continuation"
-            );
-        }
+        assert_eq!(followup_status, http::StatusCode::OK);
+        assert_eq!(
+            sends, 2,
+            "missing completion after an original failure must not block an independent continuation"
+        );
     }
     drain_xai_json_observations(&mut observation_queue, deadline).await?;
     server.finish_at(deadline).await?;
@@ -8334,7 +8534,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         tokenization::{DlpTokenStore, TokenCategory},
     };
     use crate::app_config::AppType;
-    const CHECKPOINTS: [(&str, &str); 20] = [
+    const CHECKPOINTS: [(&str, &str); 21] = [
         (
             "reference_scan",
             concat!(
@@ -8424,6 +8624,13 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
             concat!(
                 "[DLP] context failure code=dlp_context_unavailable checkpoint=",
                 "attempt_history"
+            ),
+        ),
+        (
+            "context_resume_contexts_empty",
+            concat!(
+                "[DLP] context failure code=dlp_context_unavailable checkpoint=",
+                "context_resume reason=contexts_empty"
             ),
         ),
         (
@@ -8640,8 +8847,11 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         &mut with_call,
         |_| Err(DlpForwardError::Blocked),
     );
-    response_contract(result.err().ok_or("missing call context was accepted")?);
-    check("context_resume")?;
+    assert!(
+        result.err() == Some(DlpForwardError::Blocked),
+        "missing completion must degrade without concealing an explicit policy block"
+    );
+    check("context_resume_contexts_empty")?;
 
     let mut orphan = json!({"model":"synthetic-model", "input":[
         {"type":"function_call_output","call_id":"synthetic-orphan-call","output":format!("Synthetic document sample {reference}")}
@@ -8665,8 +8875,11 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         &mut orphan,
         |_| Err(DlpForwardError::Blocked),
     );
-    response_contract(result.err().ok_or("orphan output was accepted")?);
-    check("output_call_ids")?;
+    assert!(
+        result.err() == Some(DlpForwardError::Blocked),
+        "orphan literal must pass through without authority and preserve explicit policy blocks"
+    );
+    no_context_log()?;
 
     validate_unleased_enriched_body(&json!({"input":reference}))
         .map_err(|_| "synthetic unleased literal validation unexpectedly refused")?;
@@ -8717,14 +8930,14 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         RestorationAdmission::Intercepted(response) => response,
         _ => return Err("invalid encoded tool JSON was accepted".into()),
     };
-    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
     let bytes = response.into_body().collect().await?.to_bytes();
     let payload: Value = serde_json::from_slice(&bytes)?;
     assert!(
         payload
             == json!({"error":{
-                "message":"Reversible DLP request preparation failed.", "type":"invalid_request_error",
-                "code":"dlp_redaction_failed", "param":null
+                "message":"The local proxy could not process the request. Please retry.", "type":"server_error",
+                "code":"proxy_processing_failed", "param":null
             }}),
         "encoded JSON refusal contract changed"
     );
@@ -8741,7 +8954,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         RestorationAdmission::Intercepted(response) => response,
         _ => return Err("synthetic invalid cursor was accepted".into()),
     };
-    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
     check("history_extract")?;
     let mut disabled = (*runtime::get_security_runtime()).clone();
     disabled.enabled = false;
@@ -9629,7 +9842,11 @@ mod text_fallback_http_tests {
                         "authorized immutable/unsupported carrier completed; case={case_index}"
                     );
                 } else {
-                    assert_eq!(status, http::StatusCode::BAD_GATEWAY, "case={case_index}");
+                    assert_eq!(
+                        status,
+                        http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "case={case_index}"
+                    );
                 }
                 assert!(
                     observer
@@ -9921,8 +10138,11 @@ async fn run_output_text_exact_http(
         );
         if scenario == "authorized_immutable" {
             assert!(
-                wire.contains("reason=token_context"),
-                "current authorized reference in a tool name must be rejected"
+                wire.contains("proxy_processing_failed")
+                    && !wire.contains("reason=")
+                    && !wire.contains("[stage=")
+                    && !wire.contains("dlp_restore"),
+                "current authorized reference must fail without exposing diagnostics"
             );
         }
         drop(bytes);
@@ -10258,7 +10478,7 @@ async fn reversible_http_upstream_error_fixed_logging() -> TestResult {
     std::process::exit(87);
 }
 
-async fn image_history_http_fixture(custom: bool) -> TestResult {
+async fn image_history_http_fixture(custom: bool, protocol: &'static str) -> TestResult {
     let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
     runtime::set_security_runtime_for_test(Default::default());
     let transport = crate::proxy::forwarder::final_send_binding_test_support::install(|_, _| {});
@@ -10272,7 +10492,7 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
     let upstream = Router::new()
         .fallback(post(matrix_upstream))
         .with_state(MatrixFixture {
-            protocol: "native",
+            protocol,
             compact: false,
             streaming: false,
             complete: true,
@@ -10285,7 +10505,8 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
     let provider = Provider::with_id(
         "synthetic-image-history".into(),
         "Synthetic image history".into(),
-        json!({"base_url":format!("http://{address}"),"api_key":"synthetic-image-key","api_format":"responses"}),
+        json!({"base_url":format!("http://{address}"),"api_key":"synthetic-image-key",
+            "api_format":if protocol == "chat" {"chat_completions"} else {"responses"}}),
         None,
     );
     db.save_provider("codex", &provider)?;
@@ -10312,10 +10533,13 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
         .as_array_mut()
         .ok_or("synthetic input missing")?
         .push(json!({"role":"user","content":"Synthetic continue"}));
+    let mut tool_image_continued = continued.clone();
+    tool_image_continued["input"][2]["output"] = json!([image.clone()]);
     for body in [
         json!({"model":"synthetic-model","stream":false,"input":[message]}),
         paired.clone(),
         continued,
+        tool_image_continued,
     ] {
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -10330,9 +10554,11 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
         )
         .await
         .map_err(|_| "synthetic image router deadline exceeded")??;
+        let tool_image_case = body["input"][2]["output"].is_array();
+        let status = response.status();
         assert!(
-            response.status() == http::StatusCode::OK,
-            "supported user image history must reach upstream before and after paired tool results"
+            status == http::StatusCode::OK,
+            "image history must reach upstream; tool_image_case={tool_image_case} status={status}"
         );
         let bytes = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -10351,18 +10577,47 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
             .lock()
             .map_err(|_| "synthetic image capture poisoned")?;
         assert!(
-            captured.len() == 3,
+            captured.len() == 4,
             "each valid image history request must send exactly once"
         );
         for body in captured.iter() {
-            assert!(
-                body["input"][0]["content"][1] == image,
-                "opaque image fields must reach upstream unchanged"
-            );
+            if protocol == "chat" {
+                assert!(
+                    body["messages"][0]["content"][1]["image_url"]["url"] == image["image_url"],
+                    "Chat conversion must preserve the opaque user image"
+                );
+            } else {
+                assert!(
+                    body["input"][0]["content"][1] == image,
+                    "opaque image fields must reach upstream unchanged"
+                );
+            }
             let wire = body.to_string();
             assert!(
                 !wire.contains(FIXTURE_PHONE) && wire.contains("rredact-cn_phone-"),
                 "all readable image history text and tool input must remain inspected"
+            );
+        }
+        let delivered = captured.last().ok_or("synthetic tool image send missing")?;
+        if protocol == "chat" {
+            let marker = "[cc-switch: media output of tool call synthetic_image_call]";
+            assert!(
+                delivered["messages"].as_array().is_some_and(|messages| {
+                    messages.iter().any(|message| {
+                        message["content"].as_array().is_some_and(|parts| {
+                            parts.iter().any(|part| part["text"] == marker)
+                                && parts
+                                    .iter()
+                                    .any(|part| part["image_url"]["url"] == image["image_url"])
+                        })
+                    })
+                }),
+                "Chat conversion must retain the tool-result image in its synthetic user carrier"
+            );
+        } else {
+            assert!(
+                delivered["input"][2]["output"] == json!([image.clone()]),
+                "native forwarding must retain the tool-result image unchanged"
             );
         }
     }
@@ -10426,7 +10681,7 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
         }
         negatives.push(body);
     }
-    let mut expected_sends = 3;
+    let mut expected_sends = 4;
     for (case_index, body) in negatives.into_iter().enumerate() {
         let literal_case = case_index < 6;
         for session in [
@@ -10451,12 +10706,8 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
             .map_err(|_| "synthetic image router deadline exceeded")??;
             assert_eq!(
                 response.status(),
-                if literal_case {
-                    http::StatusCode::OK
-                } else {
-                    http::StatusCode::BAD_REQUEST
-                },
-                "image history outcome; case_index={case_index} session={session}"
+                http::StatusCode::OK,
+                "missing image history context must not block the request; case_index={case_index} session={session}"
             );
             let bytes = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -10465,46 +10716,35 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
             .await
             .map_err(|_| "synthetic image response deadline exceeded")??
             .to_bytes();
-            expected_sends += usize::from(literal_case);
+            expected_sends += 1;
             let captured = seen
                 .lock()
                 .map_err(|_| "synthetic image capture poisoned")?;
             assert_eq!(captured.len(), expected_sends,
-                "rejected image history must send nothing; case_index={case_index} session={session}");
+                "each degraded image history must send exactly once; case_index={case_index} session={session}");
+            let outbound = captured
+                .last()
+                .ok_or("synthetic degraded image send missing")?;
+            let wire = outbound.to_string();
+            assert!(
+                !wire.contains(FIXTURE_PHONE),
+                "known text must remain inspected during degraded image forwarding; case_index={case_index}"
+            );
             if literal_case {
-                let outbound = captured
-                    .last()
-                    .ok_or("synthetic literal image send missing")?;
-                let preserved = match case_index {
-                    0 => {
-                        outbound["input"][0]["content"][0]["text"]
-                            == body["input"][0]["content"][0]["text"]
-                    }
-                    1 => outbound["input"][0]["content"][1] == body["input"][0]["content"][1],
-                    2 => {
-                        outbound["input"][1][if custom { "input" } else { "arguments" }]
-                            == body["input"][1][if custom { "input" } else { "arguments" }]
-                    }
-                    3 => outbound["input"][2]["output"] == body["input"][2]["output"],
-                    4 => outbound["metadata"] == body["metadata"],
-                    _ => outbound["input"][0]["content"][0] == body["input"][0]["content"][0],
-                };
-                assert!(preserved && !outbound.to_string().contains(FIXTURE_PHONE),
-                    "literal bytes must survive independently of fresh PII inspection; case_index={case_index}");
+                assert!(
+                    wire.contains(reference.as_str()),
+                    "literal bytes must survive protocol conversion; case_index={case_index}"
+                );
                 assert!(
                     !std::str::from_utf8(&bytes)?.contains("synthetic-foreign-image-secret"),
                     "image literal must not resolve a foreign mapping; case_index={case_index}"
                 );
-            } else {
-                let error: Value = serde_json::from_slice(&bytes)?;
-                assert!(error["error"]["code"] == "dlp_context_unavailable",
-                    "invalid image history must retain the fixed context error; case_index={case_index}");
             }
         }
     }
     assert!(
         transport.transport_counts() == (expected_sends, 0),
-        "only valid image history and literal cases may reach the no-proxy transport"
+        "all degraded image history must retain the explicit no-proxy transport"
     );
     server.finish().await?;
     Ok(())
@@ -10513,13 +10753,25 @@ async fn image_history_http_fixture(custom: bool) -> TestResult {
 #[tokio::test]
 #[serial_test::serial]
 async fn image_history_http_function_before_results_and_continue() -> TestResult {
-    image_history_http_fixture(false).await
+    image_history_http_fixture(false, "native").await
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn image_history_http_custom_before_results_and_continue() -> TestResult {
-    image_history_http_fixture(true).await
+    image_history_http_fixture(true, "native").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn image_history_http_function_chat_before_results_and_continue() -> TestResult {
+    image_history_http_fixture(false, "chat").await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn image_history_http_custom_chat_before_results_and_continue() -> TestResult {
+    image_history_http_fixture(true, "chat").await
 }
 
 async fn empty_lease_handler_json_fixture(protocol: &'static str) -> TestResult {
@@ -10645,9 +10897,16 @@ async fn empty_lease_handler_json_fixture(protocol: &'static str) -> TestResult 
                 "only final successful delivery may publish complete typed-item proof"
             );
         } else {
-            assert!(
-                status == http::StatusCode::BAD_GATEWAY,
-                "missing original completion must not be repaired into authority"
+            assert_eq!(
+                status,
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                "missing original completion must remain a failed response"
+            );
+            assert_eq!(delivered["error"]["code"], "proxy_processing_failed");
+            assert_eq!(delivered["error"]["type"], "server_error");
+            assert_eq!(
+                delivered["error"]["message"],
+                "The local proxy could not process the request. Please retry."
             );
             assert!(
                 observer
@@ -12102,15 +12361,12 @@ mod delivered_chat_history_reqwest_failover {
     use super::super::{
         completion_json::JsonCompletionProtocol,
         history_provenance::DlpHistoryLeafField,
-        http_restoration::{
-            admit_http_request, source_copy_test_support, DlpForwardError, RestorationAdmission,
-        },
+        http_restoration::{admit_http_request, source_copy_test_support, RestorationAdmission},
         response_restoration::ArgumentNormalizationMode,
     };
     use crate::{
         app_config::AppType,
         proxy::{
-            error::ProxyError,
             forwarder::{final_send_binding_test_support, RequestForwarder},
             providers::transform_codex_chat::chat_completion_to_response,
         },
@@ -12474,40 +12730,27 @@ mod delivered_chat_history_reqwest_failover {
                     "synthetic failover must prepare both providers after one complete send".into(),
                 );
             }
-            if replay_old_proof {
-                if !(matches!(&result,
-                    Err(failure) if failure.provider.is_none()
-                        && matches!(failure.error,
-                            ProxyError::DlpForward(DlpForwardError::ContextUnavailable)))
-                    && transport.transport_counts() == (1, 0)
-                    && hits_b.load(Ordering::SeqCst) == 0
-                    && valid_b.load(Ordering::SeqCst) == 0)
-                {
-                    return Err(format!(
-                        "synthetic old proof boundary mismatch: refusal={} transports={:?} backup_hits={} backup_valid={}",
-                        result.is_err(), transport.transport_counts(), hits_b.load(Ordering::SeqCst), valid_b.load(Ordering::SeqCst)
-                    ).into());
-                }
-            } else {
-                let result = result.map_err(|_| "synthetic safe failover refused")?;
-                if !(result.provider.id == provider_b.id
-                    && result.response.status() == http::StatusCode::OK
-                    && transport.transport_counts() == (2, 0)
-                    && hits_b.load(Ordering::SeqCst) == 1
-                    && valid_b.load(Ordering::SeqCst) == 1)
-                {
-                    return Err("synthetic safe failover must reach the backup once".into());
-                }
-                let bytes = result
-                    .response
-                    .bytes_with_limit(64 * 1024)
-                    .await
-                    .map_err(|_| "synthetic safe backup response incomplete")?;
-                let response: Value = serde_json::from_slice(&bytes)
-                    .map_err(|_| "synthetic safe backup response invalid")?;
-                if response["choices"][0]["message"]["content"] != OUTPUT {
-                    return Err("synthetic safe backup response unexpected".into());
-                }
+            let result = result.map_err(|_| "synthetic degraded failover refused")?;
+            if !(result.provider.id == provider_b.id
+                && result.response.status() == http::StatusCode::OK
+                && transport.transport_counts() == (2, 0)
+                && hits_b.load(Ordering::SeqCst) == 1
+                && valid_b.load(Ordering::SeqCst) == 1)
+            {
+                return Err(
+                    "old provider proof must degrade to a newly bound, independently redacted request"
+                        .into(),
+                );
+            }
+            let bytes = result
+                .response
+                .bytes_with_limit(64 * 1024)
+                .await
+                .map_err(|_| "synthetic safe backup response incomplete")?;
+            let response: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| "synthetic safe backup response invalid")?;
+            if response["choices"][0]["message"]["content"] != OUTPUT {
+                return Err("synthetic safe backup response unexpected".into());
             }
             Ok::<(), Box<dyn std::error::Error>>(())
         })
@@ -12523,7 +12766,7 @@ mod delivered_chat_history_reqwest_failover {
 
     #[tokio::test]
     #[serial_test::serial]
-    async fn reversible_http_delivered_chat_history_reqwest_retry_rejects_old_provider_proof(
+    async fn reversible_http_delivered_chat_history_reqwest_retry_degrades_old_provider_proof(
     ) -> TestResult {
         fixture(true).await
     }

@@ -93,7 +93,7 @@ async fn json_final_serialization_capacity_failure_does_not_publish_cursor() {
         reached.get(),
         "failure must occur at final serialization capacity validation"
     );
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let mut next = store
         .admit("codex", Some("json-owner-session"), 1)
         .expect("next lease");
@@ -217,7 +217,7 @@ async fn reasoning_history_json_final_encoding_failure_never_publishes(
                     "eligible pending proof must precede encoding"
                 );
                 assert!(
-                    response.status() == StatusCode::BAD_GATEWAY,
+                    response.status() == StatusCode::INTERNAL_SERVER_ERROR,
                     "failed encoding must not release a successful response"
                 );
                 assert!(
