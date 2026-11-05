@@ -2128,7 +2128,7 @@ async fn readable_native_catalog_ids_and_legacy_routes_remain_compatible(
         },
     );
     runtime.set_global(published, 0)?;
-    for app in ["kimi", "qwen", "zcode"] {
+    for app in ["pi", "hermes", "grokbuild", "kimi", "qwen", "zcode"] {
         runtime
             .connections
             .install(&crate::services::agent_connections::Receipt {
@@ -2153,7 +2153,7 @@ async fn readable_native_catalog_ids_and_legacy_routes_remain_compatible(
     .with_intent_runtime(runtime);
     let info = proxy.start().await?;
     let client = reqwest::Client::builder().no_proxy().build()?;
-    for app in ["kimi", "qwen", "zcode"] {
+    for app in ["pi", "hermes", "grokbuild", "kimi", "qwen", "zcode"] {
         let url = format!("http://127.0.0.1:{}/connections/{app}/v1", info.port);
         let catalog: Value = client
             .get(format!("{url}/models"))

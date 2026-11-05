@@ -44,6 +44,13 @@ though their transport deliberately has no static upstream configuration.
 Routing mutations invalidate the Agent model catalog as well as the gateway
 catalog, so opening a picker after a group edit does not reuse an obsolete list.
 
+Pi, Hermes, Grok Build, Kimi, Qwen and ZCode use readable native model selectors
+with the same model, supplier and VaryAI labels as the shared catalog. Equal labels
+receive numeric suffixes while retaining distinct internal routes. Catalog refresh
+migrates earlier hash selectors and Pi model scopes without changing native model
+choices. Both readable selectors and earlier internal aliases remain routable, so
+existing conversations can continue after the display names are upgraded.
+
 The Codex provider editor reconciles native and managed account rows using the
 stable token subject together with the ChatGPT workspace ID. Email addresses do
 not establish identity: a personal seat and a team seat may share an email.

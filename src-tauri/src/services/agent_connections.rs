@@ -857,6 +857,7 @@ fn build_with_token(
             put(value, &["env".into(), "ANTHROPIC_API_KEY".into()], None)
         })?),
         "pi" => {
+            let (catalog, selected) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
             receipt.files.push(FileEdit::prepare(crate::pi_config::get_pi_models_path().map_err(|_| FAILED)?, |value| {
                 let models = catalog.iter().map(pi_model).collect::<Vec<_>>();
                 put(value, &["providers".into(), "varyai".into()], Some(json!({"baseUrl":format!("{base}/v1"),"apiKey":token,"api":"openai-completions","models":models})))
@@ -865,6 +866,13 @@ fn build_with_token(
                 put(value, &["defaultProvider".into()], Some(json!("varyai")))?;
                 put(value, &["defaultModel".into()], Some(json!(selected)))?;
                 if let Some(scope) = value.get_mut("enabledModels").and_then(Value::as_array_mut) {
+                    for entry in scope.iter_mut() {
+                        if let Some(alias) = entry.as_str().and_then(|id| id.strip_prefix("varyai/")) {
+                            if let Some((name, _)) = receipt.model_map.iter().find(|(_, internal)| internal.as_str() == alias) {
+                                *entry = json!(format!("varyai/{name}"));
+                            }
+                        }
+                    }
                     if !scope.is_empty() { let reference = json!(format!("varyai/{selected}")); if !scope.contains(&reference) { scope.push(reference); } }
                 }
                 Ok(())

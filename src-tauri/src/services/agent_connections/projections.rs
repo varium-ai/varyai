@@ -1,6 +1,33 @@
 use super::{put, FileEdit, Format, Model, Receipt, CONFLICT, FAILED};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+pub(super) fn named_catalog(
+    catalog: &[Model],
+    selected: &str,
+    model_map: &mut BTreeMap<String, String>,
+) -> (Vec<Model>, String) {
+    model_map.clear();
+    let mut projected = catalog.to_vec();
+    let mut chosen = selected.to_owned();
+    for model in &mut projected {
+        let internal = model.id.clone();
+        let mut name = model.name.clone();
+        let mut duplicate = 2;
+        while model_map.contains_key(&name) {
+            name = format!("{} ({duplicate})", model.name);
+            duplicate += 1;
+        }
+        if internal == selected {
+            chosen = name.clone();
+        }
+        model_map.insert(name.clone(), internal);
+        model.id = name.clone();
+        model.name = name;
+    }
+    (projected, chosen)
+}
 
 pub(super) fn build(
     app: &str,
@@ -22,25 +49,12 @@ pub(super) fn build(
         _ => return Err(FAILED.into()),
     };
     receipt.model_map.clear();
-    let mut projected = catalog.to_vec();
-    let mut chosen = selected.to_owned();
-    if ["kimi", "qwen", "zcode"].contains(&app) {
-        for model in &mut projected {
-            let internal = model.id.clone();
-            let mut name = model.name.clone();
-            let mut duplicate = 2;
-            while receipt.model_map.contains_key(&name) {
-                name = format!("{} ({duplicate})", model.name);
-                duplicate += 1;
-            }
-            if internal == selected {
-                chosen = name.clone();
-            }
-            receipt.model_map.insert(name.clone(), internal);
-            model.id = name.clone();
-            model.name = name;
-        }
-    } else if app == "gemini" {
+    let (projected, chosen) = if ["grokbuild", "hermes", "kimi", "qwen", "zcode"].contains(&app) {
+        named_catalog(catalog, selected, &mut receipt.model_map)
+    } else {
+        (catalog.to_vec(), selected.to_owned())
+    };
+    if app == "gemini" {
         receipt.model_map = catalog
             .iter()
             .map(|m| (wire_id(&m.id), m.id.clone()))
@@ -111,7 +125,7 @@ fn edit(
             "grokbuild" => {
                 let mut desired = serde_json::Map::new();
                 for m in catalog {
-                    let profile = wire_id(&m.id);
+                    let profile = m.name.clone();
                     owned(
                         value.get("model").and_then(|v| v.get(&profile)),
                         token,
@@ -134,7 +148,12 @@ fn edit(
                 rows.retain(|_, row| row["api_key"].as_str() != Some(token));
                 rows.extend(desired);
                 value["model"] = json!(rows);
-                set(value, &["models", "default"], json!(wire_id(selected)))?;
+                let profile = catalog
+                    .iter()
+                    .find(|m| m.id == selected)
+                    .map(|m| m.name.as_str())
+                    .unwrap_or(selected);
+                set(value, &["models", "default"], json!(profile))?;
             }
             "openclaw" => {
                 owned(value.pointer("/models/providers/varyai"), token, "apiKey")?;
@@ -714,7 +733,7 @@ mod tests {
             "synthetic-local",
             &catalog[0].id,
         )?;
-        let key = wire_id(&catalog[0].id);
+        let key = catalog[0].name.clone();
         assert_eq!(
             projection.installed["model"][&key]["context_window"],
             272_000
@@ -782,7 +801,7 @@ mod tests {
             let installed = &projection.installed;
             match app {
                 "grokbuild" => assert_eq!(
-                    installed["model"][wire_id(&catalog[0].id)]["reasoning_efforts"],
+                    installed["model"][&catalog[0].name]["reasoning_efforts"],
                     json!(["none", "low", "high"])
                 ),
                 "openclaw" => assert_eq!(

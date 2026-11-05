@@ -104,18 +104,64 @@ fn contains(value: &Value, needle: &str) -> bool {
     }
 }
 
+fn renamed_model(
+    old: &Receipt,
+    names: &std::collections::BTreeMap<String, String>,
+    file: &super::FileEdit,
+    wire: &str,
+) -> Option<String> {
+    let alias = old
+        .model_map
+        .get(wire)
+        .map(String::as_str)
+        .or_else(|| {
+            (old.app == "grokbuild")
+                .then(|| {
+                    file.installed
+                        .get("model")?
+                        .get(wire)?
+                        .get("model")?
+                        .as_str()
+                })
+                .flatten()
+        })
+        .unwrap_or(wire);
+    names
+        .iter()
+        .find(|(_, alias_id)| alias_id.as_str() == alias)
+        .map(|(name, _)| name.clone())
+}
+
 pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> {
     let catalogs = next
         .files
         .iter()
         .map(|file| file.installed.clone())
         .collect::<Vec<_>>();
+    let names = &next.model_map;
     for file in &mut next.files {
         let prior = old
             .files
             .iter()
             .find(|prior| prior.path == file.path)
             .ok_or(FAILED)?;
+        if old.app == "pi" {
+            if let Some(models) = file
+                .installed
+                .get_mut("enabledModels")
+                .and_then(Value::as_array_mut)
+            {
+                for model in models {
+                    if let Some(name) = model
+                        .as_str()
+                        .and_then(|wire| wire.strip_prefix("varyai/"))
+                        .and_then(|wire| renamed_model(old, names, prior, wire))
+                    {
+                        *model = Value::String(format!("varyai/{name}"));
+                    }
+                }
+            }
+        }
         for path in paths(&old.app) {
             let path = path
                 .iter()
@@ -124,6 +170,16 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
             let Some(choice) = at(&prior.installed, &path).filter(|choice| valid(choice)) else {
                 continue;
             };
+            let renamed = ["pi", "hermes", "grokbuild"]
+                .contains(&old.app.as_str())
+                .then(|| {
+                    choice
+                        .as_str()
+                        .and_then(|wire| renamed_model(old, names, prior, wire))
+                })
+                .flatten()
+                .map(Value::String);
+            let choice = renamed.as_ref().unwrap_or(choice);
             // Retain native choices and surviving shared models. Deleted shared models
             // use the newly projected default instead of a dangling model reference.
             let model = choice
@@ -151,6 +207,64 @@ mod tests {
     use crate::services::agent_connections::{FileEdit, Manager, CONFLICT};
     use serde_json::json;
     use std::{collections::BTreeMap, fs};
+
+    #[test]
+    fn readable_catalog_upgrade_preserves_native_selection_and_pi_scope() -> Result<(), String> {
+        let alias = "vary-provider/model-b";
+        let name = "Model B · Supplier · VaryAI";
+        for app in ["pi", "hermes", "grokbuild"] {
+            let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+            let path = dir.path().join("config");
+            let choice_path = paths(app)
+                .last()
+                .ok_or(FAILED)?
+                .iter()
+                .map(|key| (*key).into())
+                .collect::<Vec<String>>();
+            let wire = if app == "grokbuild" {
+                "vary-old-hash"
+            } else {
+                alias
+            };
+            let file = FileEdit::prepare(path, |value| {
+                put(value, &choice_path, Some(json!(wire)))?;
+                value["model"][wire] = json!({"model":alias});
+                value["enabledModels"] = json!(["native/model", format!("varyai/{alias}")]);
+                Ok(())
+            })?;
+            let old = Receipt {
+                app: app.into(),
+                token: "synthetic-token".into(),
+                model: "vary-provider/model-a".into(),
+                model_map: BTreeMap::new(),
+                visible_models: None,
+                files: vec![file],
+                suspended: false,
+                applied_at_ms: None,
+            };
+            let mut next = old.clone();
+            next.model_map.insert(name.into(), alias.into());
+            next.files[0].installed["catalog"] = json!([name]);
+            put(
+                &mut next.files[0].installed,
+                &choice_path,
+                Some(json!("Model A")),
+            )?;
+            preserve(&old, &mut next)?;
+            assert_eq!(
+                at(&next.files[0].installed, &choice_path),
+                Some(&json!(name)),
+                "{app}"
+            );
+            if app == "pi" {
+                assert_eq!(
+                    next.files[0].installed["enabledModels"],
+                    json!(["native/model", format!("varyai/{name}")])
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn native_model_switches_keep_connections_active_without_reapply() -> Result<(), String> {

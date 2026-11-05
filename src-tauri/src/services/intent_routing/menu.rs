@@ -711,6 +711,7 @@ mod tests {
         Ok(())
     }
     #[tokio::test]
+    #[serial_test::serial]
     async fn provider_model_preferences_reach_every_shared_client(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -728,6 +729,32 @@ mod tests {
         assert_eq!(pi["name"], "My model · a · VaryAI");
         assert_eq!(pi["reasoning"], false);
         assert_eq!(pi["input"], json!(["text"]));
+        {
+            let _agent = crate::pi_config::test_support::TestAgentDir::at(dir.path());
+            let path = crate::pi_config::get_pi_settings_path()?;
+            let original = json!({"enabledModels":["native/model",format!("varyai/{}", model.id)]});
+            std::fs::write(&path, original.to_string())?;
+            let manager = crate::services::agent_connections::Manager {
+                root: dir.path().join("pi-receipts"),
+            };
+            let receipt = manager.build("pi", &menu, "http://127.0.0.1:1", &model.id)?;
+            manager.install(receipt.clone())?;
+            let native: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(crate::pi_config::get_pi_models_path()?)?)?;
+            assert_eq!(native["providers"]["varyai"]["models"][0]["id"], model.name);
+            assert_eq!(receipt.model_map.get(&model.name), Some(&model.id));
+            let settings: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+            assert_eq!(settings["defaultModel"], model.name);
+            assert_eq!(
+                settings["enabledModels"],
+                json!(["native/model", format!("varyai/{}", model.name)])
+            );
+            manager.disconnect("pi")?;
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path)?)?,
+                original
+            );
+        }
         let codex = super::super::client::menu_catalog(&menu, "")?;
         assert_eq!(codex["models"][0]["display_name"], model.name);
         crate::qoder_config::with_test_dir(dir.path(), || -> Result<(), String> {
