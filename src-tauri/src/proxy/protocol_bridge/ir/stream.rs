@@ -35,6 +35,11 @@ fn named(v: &Value) -> Bytes {
         v["type"].as_str().unwrap_or("message")
     ))
 }
+fn response_frame(mut value: Value, sequence: &mut u64) -> Bytes {
+    value["sequence_number"] = json!(*sequence);
+    *sequence += 1;
+    named(&value)
+}
 fn index(v: &Value) -> Result<usize, io::Error> {
     v.as_u64().unwrap_or(0).try_into().map_err(|_| invalid())
 }
@@ -852,6 +857,7 @@ struct Encoder {
     closed: std::collections::HashSet<usize>,
     started: bool,
     ended: bool,
+    sequence: u64,
 }
 impl Encoder {
     fn new(protocol: Protocol) -> Self {
@@ -875,6 +881,7 @@ impl Encoder {
             closed: Default::default(),
             started: false,
             ended: false,
+            sequence: 0,
         }
     }
     fn response_part(&self, part: &Part, index: usize) -> Option<Value> {
@@ -915,7 +922,7 @@ impl Encoder {
         match self.protocol{
         Protocol::Chat=>out.push(frame(&self.chat(json!({"role":"assistant","content":""}),Value::Null))),
         Protocol::Anthropic=>out.push(named(&json!({"type":"message_start","message":{"id":self.reply.id,"type":"message","role":"assistant","model":self.reply.model,"content":[],"stop_reason":null,"stop_sequence":null,"usage":reply::render_usage(self.protocol,&self.reply.usage)}}))),
-        Protocol::Responses=>{out.push(named(&json!({"type":"response.created","response":self.response("in_progress",vec![])})));out.push(named(&json!({"type":"response.in_progress","response":self.response("in_progress",vec![])})));},Protocol::Gemini=>{},
+        Protocol::Responses=>{out.push(response_frame(json!({"type":"response.created","response":self.response("in_progress",vec![])}), &mut self.sequence));out.push(response_frame(json!({"type":"response.in_progress","response":self.response("in_progress",vec![])}), &mut self.sequence));},Protocol::Gemini=>{},
     }
     }
     fn open(&mut self, i: usize, part: Part, out: &mut Vec<Bytes>) -> Result<usize, io::Error> {
@@ -971,11 +978,11 @@ impl Encoder {
                     } else if let Part::ToolCall { .. } = part {
                         item["arguments"] = json!("");
                     }
-                    out.push(named(&json!({"type":"response.output_item.added","output_index":index,"item":item})));
+                    out.push(response_frame(json!({"type":"response.output_item.added","output_index":index,"item":item}), &mut self.sequence));
                     if matches!(part, Part::Text { .. }) {
-                        out.push(named(&json!({"type":"response.content_part.added","output_index":index,"content_index":0,"item_id":format!("msg_{index}"),"part":{"type":"output_text","text":"","annotations":[]}})));
+                        out.push(response_frame(json!({"type":"response.content_part.added","output_index":index,"content_index":0,"item_id":format!("msg_{index}"),"part":{"type":"output_text","text":"","annotations":[]}}), &mut self.sequence));
                     } else if matches!(part, Part::Thinking { .. }) {
-                        out.push(named(&json!({"type":"response.reasoning_summary_part.added","output_index":index,"summary_index":0,"item_id":format!("rs_{index}"),"part":{"type":"summary_text","text":""}})));
+                        out.push(response_frame(json!({"type":"response.reasoning_summary_part.added","output_index":index,"summary_index":0,"item_id":format!("rs_{index}"),"part":{"type":"summary_text","text":""}}), &mut self.sequence));
                     }
                 }
             }
@@ -1013,17 +1020,17 @@ impl Encoder {
             Protocol::Responses => {
                 if let Some(item) = self.response_part(part, index) {
                     match part {
-                        Part::Text{text,..}=>{out.push(named(&json!({"type":"response.output_text.done","output_index":index,"content_index":0,"item_id":format!("msg_{index}"),"text":text})));out.push(named(&json!({"type":"response.content_part.done","output_index":index,"content_index":0,"item_id":format!("msg_{index}"),"part":{"type":"output_text","text":text,"annotations":[]}})));},
-                        Part::Thinking{text,..}=>out.push(named(&json!({"type":"response.reasoning_summary_text.done","output_index":index,"summary_index":0,"item_id":format!("rs_{index}"),"text":text}))),
+                        Part::Text{text,..}=>{out.push(response_frame(json!({"type":"response.output_text.done","output_index":index,"content_index":0,"item_id":format!("msg_{index}"),"text":text}), &mut self.sequence));out.push(response_frame(json!({"type":"response.content_part.done","output_index":index,"content_index":0,"item_id":format!("msg_{index}"),"part":{"type":"output_text","text":text,"annotations":[]}}), &mut self.sequence));},
+                        Part::Thinking{text,..}=>out.push(response_frame(json!({"type":"response.reasoning_summary_text.done","output_index":index,"summary_index":0,"item_id":format!("rs_{index}"),"text":text}), &mut self.sequence)),
                         Part::ToolCall{arguments,..}=>{
                             if item["type"]=="custom_tool_call" {
                                 let input=item["input"].as_str().unwrap_or_default();
-                                out.push(named(&json!({"type":"response.custom_tool_call_input.delta","output_index":index,"item_id":format!("fc_{index}"),"delta":input})));
-                                out.push(named(&json!({"type":"response.custom_tool_call_input.done","output_index":index,"item_id":format!("fc_{index}"),"input":input})));
-                            }else if item["type"]=="function_call"{out.push(named(&json!({"type":"response.function_call_arguments.done","output_index":index,"item_id":format!("fc_{index}"),"arguments":arguments.to_string()})));}
+                                out.push(response_frame(json!({"type":"response.custom_tool_call_input.delta","output_index":index,"item_id":format!("fc_{index}"),"delta":input}), &mut self.sequence));
+                                out.push(response_frame(json!({"type":"response.custom_tool_call_input.done","output_index":index,"item_id":format!("fc_{index}"),"input":input}), &mut self.sequence));
+                            }else if item["type"]=="function_call"{out.push(response_frame(json!({"type":"response.function_call_arguments.done","output_index":index,"item_id":format!("fc_{index}"),"arguments":arguments.to_string()}), &mut self.sequence));}
                         },_=>{}
                     }
-                    out.push(named(&json!({"type":"response.output_item.done","output_index":index,"item":item})));
+                    out.push(response_frame(json!({"type":"response.output_item.done","output_index":index,"item":item}), &mut self.sequence));
                 }
             }
             Protocol::Gemini => {
@@ -1088,7 +1095,7 @@ impl Encoder {
                     match self.protocol{
                     Protocol::Chat=>out.push(frame(&self.chat(if thinking{json!({"reasoning_content":text})}else{json!({"content":text})},Value::Null))),
                     Protocol::Anthropic=>out.push(named(&json!({"type":"content_block_delta","index":n,"delta":if thinking{json!({"type":"thinking_delta","thinking":text})}else{json!({"type":"text_delta","text":text})}}))),
-                    Protocol::Responses=>out.push(named(&if thinking{json!({"type":"response.reasoning_summary_text.delta","output_index":n,"summary_index":0,"item_id":format!("rs_{n}"),"delta":text})}else{json!({"type":"response.output_text.delta","output_index":n,"content_index":0,"item_id":format!("msg_{n}"),"delta":text})})),
+                    Protocol::Responses=>out.push(response_frame(if thinking{json!({"type":"response.reasoning_summary_text.delta","output_index":n,"summary_index":0,"item_id":format!("rs_{n}"),"delta":text})}else{json!({"type":"response.output_text.delta","output_index":n,"content_index":0,"item_id":format!("msg_{n}"),"delta":text})}, &mut self.sequence)),
                     Protocol::Gemini=>out.push(frame(&self.gemini(vec![if thinking{json!({"text":text,"thought":true})}else{json!({"text":text})}]))),
                 }
                 }
@@ -1119,7 +1126,7 @@ impl Encoder {
                 match self.protocol {
                     Protocol::Chat=>{let ti=*self.tool_indices.get(&i).ok_or_else(invalid)?;out.push(frame(&self.chat(json!({"tool_calls":[{"index":ti,"function":{"arguments":args}}]}),Value::Null)));},
                     Protocol::Anthropic=>out.push(named(&json!({"type":"content_block_delta","index":n,"delta":{"type":"input_json_delta","partial_json":args}}))),
-                    Protocol::Responses=>{if self.parts.get(&i).and_then(|part|self.response_part(part,n)).is_some_and(|item|item["type"]=="function_call"){out.push(named(&json!({"type":"response.function_call_arguments.delta","output_index":n,"item_id":format!("fc_{n}"),"delta":args})));}},Protocol::Gemini=>{}
+                    Protocol::Responses=>{if self.parts.get(&i).and_then(|part|self.response_part(part,n)).is_some_and(|item|item["type"]=="function_call"){out.push(response_frame(json!({"type":"response.function_call_arguments.delta","output_index":n,"item_id":format!("fc_{n}"),"delta":args}), &mut self.sequence));}},Protocol::Gemini=>{}
                 }
             }
             Event::Signature {
@@ -1348,7 +1355,10 @@ impl Encoder {
                         } else {
                             "response.completed"
                         };
-                        out.push(named(&json!({"type":kind,"response":full})));
+                        out.push(response_frame(
+                            json!({"type":kind,"response":full}),
+                            &mut self.sequence,
+                        ));
                     }
                     Protocol::Gemini => {
                         let mut chunk = self.gemini(vec![]);
@@ -1381,7 +1391,7 @@ fn event_stream(
         let mut events=Vec::new();decoder.finish(&mut events)?;for event in events{yield event;}
     }
 }
-fn error_frame(protocol: Protocol) -> Bytes {
+fn error_frame(protocol: Protocol, sequence: &mut u64) -> Bytes {
     let error = match protocol {
         Protocol::Anthropic => {
             json!({"type":"error","error":{"type":"api_error","message":"Invalid or incomplete upstream protocol stream"}})
@@ -1396,7 +1406,9 @@ fn error_frame(protocol: Protocol) -> Bytes {
             json!({"error":{"message":"Invalid or incomplete upstream protocol stream","type":"upstream_error","code":"protocol_stream_error"}})
         }
     };
-    if matches!(protocol, Protocol::Anthropic | Protocol::Responses) {
+    if protocol == Protocol::Responses {
+        response_frame(error, sequence)
+    } else if protocol == Protocol::Anthropic {
         named(&error)
     } else {
         frame(&error)
@@ -1437,7 +1449,7 @@ pub(crate) fn transcode_with_observer(
                 if end{if let (Some(observer),Some(collector))=(&observer,&collector){observer(&collector.reply);}}
                 Ok(frames)
             });
-            match result{Ok(frames)=>{for frame in frames{yield Ok(frame);}},Err(_)=>{yield Ok(error_frame(client));return;}}
+            match result{Ok(frames)=>{for frame in frames{yield Ok(frame);}},Err(_)=>{yield Ok(error_frame(client, &mut encoder.sequence));return;}}
         }
     })
 }
@@ -1507,6 +1519,22 @@ pub(crate) fn from_reply_with_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn assert_responses_sequence(bytes: &[u8]) {
+        #[derive(serde::Deserialize)]
+        struct ResponseEvent {
+            sequence_number: u64,
+        }
+        let text = std::str::from_utf8(bytes).unwrap();
+        let events = text
+            .lines()
+            .filter_map(|line| strip_sse_field(line, "data"))
+            .map(|data| serde_json::from_str::<ResponseEvent>(data).unwrap())
+            .collect::<Vec<_>>();
+        assert!(!events.is_empty());
+        for (index, event) in events.iter().enumerate() {
+            assert_eq!(event.sequence_number, index as u64);
+        }
+    }
     fn source(s: impl Into<Bytes>) -> ByteStream {
         let bytes = s.into();
         Box::pin(futures::stream::iter(
@@ -1603,11 +1631,22 @@ mod tests {
         ];
         for upstream in protocols {
             let s = from_reply(&input, upstream).unwrap();
+            if upstream == Protocol::Responses {
+                assert_responses_sequence(&s);
+            }
             for target in protocols {
                 if upstream == target {
                     continue;
                 }
-                let actual = collect(transcode(source(s.clone()), upstream, target), target)
+                let mut stream = transcode(source(s.clone()), upstream, target);
+                let mut bytes = Vec::new();
+                while let Some(chunk) = stream.next().await {
+                    bytes.extend_from_slice(&chunk.unwrap());
+                }
+                if target == Protocol::Responses {
+                    assert_responses_sequence(&bytes);
+                }
+                let actual = collect(source(bytes), target)
                     .await
                     .unwrap_or_else(|_| panic!("buffered {upstream:?} -> {target:?} failed"));
                 assert_eq!(actual.stop, "tool");
@@ -1637,6 +1676,7 @@ mod tests {
         while let Some(bytes) = stream.next().await {
             output.extend_from_slice(&bytes.unwrap());
         }
+        assert_responses_sequence(&output);
         let text = String::from_utf8(output).unwrap();
         assert!(text.contains("protocol_stream_error"));
         assert!(!text.contains("response.completed"));

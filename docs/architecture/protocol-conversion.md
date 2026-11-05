@@ -63,6 +63,12 @@ transport chunk boundaries and fragmented UTF-8 do not define event boundaries.
 Truncated streams cannot synthesize a successful completion, and cancellation
 must drop the upstream stream.
 
+Converted Responses streams number every emitted event from zero, including
+reasoning, text, tool calls, terminal events and sanitized errors. Each stream
+owns its counter. Buffered replies use the same event encoder, while native
+Responses forwarding preserves the upstream stream. Strict consumers such as
+Grok Build require these sequence numbers even for the first reply.
+
 Coverage includes the twelve cross-protocol pairs among Chat Completions,
 Responses, Anthropic Messages and native Gemini; native paths remain separately
 covered. Synthetic HTTP fixtures inspect actual outbound endpoint, JSON, model
