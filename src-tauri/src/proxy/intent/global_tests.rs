@@ -715,7 +715,7 @@ fn chat_visible_reasoning_is_portable_but_signed_or_encrypted_state_is_not() {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn workbuddy_switch_to_responses_model_keeps_visible_reasoning_history_portable(
+async fn agent_model_switch_keeps_unsigned_reasoning_history_portable(
 ) -> Result<(), Box<dyn std::error::Error>> {
     struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
     impl Drop for RestoreSecurity {
@@ -750,18 +750,25 @@ async fn workbuddy_switch_to_responses_model_keeps_visible_reasoning_history_por
     session.targets[0].model = "grok-4.5".into();
     session.targets[0].upstream = Some(upstream);
     runtime.set_global(shared, 0)?;
-    runtime
-        .connections
-        .install(&crate::services::agent_connections::Receipt {
-            app: "workbuddy".into(),
-            token: "synthetic-local".into(),
-            model: group().alias(),
-            model_map: Default::default(),
-            visible_models: None,
-            files: vec![],
-            suspended: false,
-            applied_at_ms: None,
-        })?;
+    for app in crate::services::agent_connections::APPS
+        .iter()
+        .copied()
+        .filter(|app| *app != "codex")
+        .chain(std::iter::once("trae"))
+    {
+        runtime
+            .connections
+            .install(&crate::services::agent_connections::Receipt {
+                app: app.into(),
+                token: format!("synthetic-{app}"),
+                model: group().alias(),
+                model_map: Default::default(),
+                visible_models: None,
+                files: vec![],
+                suspended: false,
+                applied_at_ms: None,
+            })?;
+    }
     let proxy = ProxyServer::new(
         ProxyConfig {
             listen_port: 0,
@@ -773,38 +780,89 @@ async fn workbuddy_switch_to_responses_model_keeps_visible_reasoning_history_por
     .with_intent_runtime(runtime);
     let info = proxy.start().await?;
     let client = reqwest::Client::builder().no_proxy().build()?;
-    for (stream, reasoning) in [false, true].into_iter().flat_map(|stream| {
-        [Value::Null, json!(""), json!("Synthetic visible thought")]
-            .into_iter()
-            .map(move |reasoning| (stream, reasoning))
-    }) {
-        let response=client.post(format!("http://127.0.0.1:{}/connections/workbuddy/v1/chat/completions",info.port)).bearer_auth("synthetic-local").json(&json!({
-            "model":group().alias(),"stream":stream,"messages":[{"role":"user","content":"Synthetic greeting"},{"role":"assistant","content":"Synthetic previous answer","reasoning_content":reasoning,"model":"gemini-synthetic","usage":{"tokens":1}},{"role":"user","content":"Synthetic next question"}]
-        })).send().await?;
-        assert_eq!(
-            response.status(),
-            StatusCode::OK,
-            "visible reasoning cannot require an opaque binding"
-        );
-        let text = response.text().await?;
-        assert!(text.contains("Synthetic Grok reply"));
-        if stream {
-            assert!(text.contains("[DONE]"));
+    for app in crate::services::agent_connections::APPS
+        .iter()
+        .copied()
+        .filter(|app| *app != "codex")
+        .chain(std::iter::once("trae"))
+    {
+        for protocol in [Protocol::Chat, Protocol::Anthropic] {
+            let endpoint = if protocol == Protocol::Chat {
+                "chat/completions"
+            } else {
+                "messages"
+            };
+            let url = format!(
+                "http://127.0.0.1:{}/connections/{app}/v1/{endpoint}",
+                info.port
+            );
+            for (stream, reasoning) in [false, true].into_iter().flat_map(|stream| {
+                [Value::Null, json!(""), json!("Synthetic visible thought")]
+                    .into_iter()
+                    .map(move |reasoning| (stream, reasoning))
+            }) {
+                let mut payload = json!({
+                    "model":group().alias(),"stream":stream,"messages":[{"role":"user","content":"Synthetic greeting"},{"role":"assistant","content":"Synthetic previous answer","reasoning_content":reasoning,"model":"gemini-synthetic","usage":{"tokens":1}},{"role":"user","content":"Synthetic next question"}]
+                });
+                if protocol == Protocol::Anthropic {
+                    let mut thought =
+                        json!({"type":"thinking","thinking":"Synthetic visible thought"});
+                    if !reasoning.is_null() {
+                        thought["signature"] = if reasoning == "" {
+                            Value::Null
+                        } else {
+                            json!("")
+                        };
+                    }
+                    payload["max_tokens"] = json!(32);
+                    payload["messages"][1] = json!({"role":"assistant","content":[thought,{"type":"text","text":"Synthetic previous answer"}]});
+                }
+                let response = client
+                    .post(&url)
+                    .bearer_auth(format!("synthetic-{app}"))
+                    .header("user-agent", "claude-cli/2.1.0 (external, cli)")
+                    .header("x-claude-code-session-id", "synthetic-desktop-session")
+                    .json(&payload)
+                    .send()
+                    .await?;
+                assert_eq!(
+                    response.status(),
+                    StatusCode::OK,
+                    "visible reasoning cannot require an opaque binding: {app}, {protocol:?}"
+                );
+                let text = response.text().await?;
+                assert!(text.contains("Synthetic Grok reply"));
+                if stream && protocol == Protocol::Chat {
+                    assert!(text.contains("[DONE]"));
+                }
+                let body = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                    .await?
+                    .ok_or("missing request")?;
+                assert_eq!(body["model"], "grok-4.5");
+                assert!(body["input"]
+                    .to_string()
+                    .contains("Synthetic previous answer"));
+            }
+            let opaque = if protocol == Protocol::Chat {
+                vec![
+                    json!({"role":"assistant","content":"Synthetic answer","reasoning_details":[{"type":"reasoning.encrypted","data":"synthetic-opaque"}]}),
+                ]
+            } else {
+                vec![
+                    json!({"role":"assistant","content":[{"type":"thinking","thinking":"Synthetic thought","signature":"synthetic-seal"},{"type":"text","text":"Synthetic answer"}]}),
+                    json!({"role":"assistant","content":[{"type":"redacted_thinking","data":"synthetic-opaque"},{"type":"text","text":"Synthetic answer"}]}),
+                ]
+            };
+            for assistant in opaque {
+                let blocked=client.post(&url).bearer_auth(format!("synthetic-{app}")).json(&json!({"model":group().alias(),"max_tokens":32,"messages":[assistant,{"role":"user","content":"Synthetic next question"}]})).send().await?;
+                assert_eq!(blocked.status(), StatusCode::CONFLICT);
+                assert!(
+                    rx.try_recv().is_err(),
+                    "unknown encrypted state must not reach upstream"
+                );
+            }
         }
-        let body = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-            .await?
-            .ok_or("missing request")?;
-        assert_eq!(body["model"], "grok-4.5");
-        assert!(body["input"]
-            .to_string()
-            .contains("Synthetic previous answer"));
     }
-    let blocked=client.post(format!("http://127.0.0.1:{}/connections/workbuddy/v1/chat/completions",info.port)).bearer_auth("synthetic-local").json(&json!({"model":group().alias(),"messages":[{"role":"assistant","content":"Synthetic answer","reasoning_details":[{"type":"reasoning.encrypted","data":"synthetic-opaque"}]}]})).send().await?;
-    assert_eq!(blocked.status(), StatusCode::CONFLICT);
-    assert!(
-        rx.try_recv().is_err(),
-        "unknown encrypted state must not reach upstream"
-    );
     proxy.stop().await?;
     task.abort();
     Ok(())

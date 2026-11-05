@@ -154,6 +154,12 @@ hashed aliases remain routable.
 The native alias changes which model identity Desktop's embedded Claude Code
 recognizes; it never changes the actual upstream model or provider.
 
+Anthropic history with unsigned thinking text, including a missing, null or empty
+signature replayed by Claude Desktop, does not require an opaque continuation
+binding when selecting another model. This rule applies at the shared Agent
+ingress. Nonempty signatures and redacted thinking still require their original
+continuation owner; their validation is not bypassed by a model selection.
+
 Desktop's automatically generated titles follow the lead model. The gateway
 recognizes Desktop's short tool-free requests and Claude Code's explicit title
 system prompt, preserving intentional classifier and subagent model choices.

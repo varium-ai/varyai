@@ -2810,10 +2810,13 @@ fn opaque_continuation(protocol: Protocol, body: &Value) -> bool {
             messages.iter().any(|message| {
                 message["content"].as_array().is_some_and(|blocks| {
                     blocks.iter().any(|block| {
-                        matches!(
-                            block["type"].as_str(),
-                            Some("thinking" | "redacted_thinking")
-                        ) || block.get("signature").is_some()
+                        // Unsigned thinking is visible text, including the empty
+                        // signature replayed by Claude Desktop's embedded CLI.
+                        block["type"] == "redacted_thinking"
+                            || block.get("signature").is_some_and(|signature| {
+                                !signature.is_null()
+                                    && signature.as_str().is_none_or(|text| !text.is_empty())
+                            })
                     })
                 })
             })
