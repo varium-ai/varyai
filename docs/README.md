@@ -3,13 +3,17 @@
 ## Use the application
 
 - [Usage guide](usage.md)
+- [Agent updates and background progress](guides/agent-updates.md)
 - [Provider setup and local routing](guides/provider-routing.md)
+- [Subscription accounts and provider execution](guides/subscription-providers.md)
 - [Global upstreams and routing groups](guides/intent-routing.md)
 - [Routing page and live observations](architecture/routing-observations.md)
 - [Codex model catalogs](guides/codex-model-catalog.md)
 - [Qoder integration](guides/qoder.md)
 - [WorkBuddy integration](guides/workbuddy.md)
 - [Doubao Work integration](guides/doubao-work.md)
+- [DeepSeek Harness Desktop integration](guides/deepseek-harness.md)
+- [Daily rewards and account selection](guides/daily-checkin.md)
 - [Multi-client profiles](guides/profiles.md)
 - [Gateway keys and token budgets](guides/gateway-keys.md)
 - [Local gateway and VPN bypass](guides/proxy-configs/README.md)
@@ -28,6 +32,7 @@
 
 ## Implementation references
 
+- [Protocol conversion and the shared IR](architecture/protocol-conversion.md)
 - [DLP architecture](architecture/security-audit.md)
 - [Tool observations and risk evaluation](architecture/tool-risk.md)
 - [Independent storage, recovery and backups](architecture/storage.md)

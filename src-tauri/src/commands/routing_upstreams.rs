@@ -1,6 +1,56 @@
-//! Control-plane operations for global upstream resources. Never return stored credentials.
-use crate::{services::routing_upstreams::RoutingUpstream, store::AppState};
-use tauri::State;
+//! Control-plane operations for global upstream resources. Secret retrieval is explicit.
+use crate::{
+    proxy::providers::codex_oauth_auth::CodexOAuthManager,
+    services::routing_upstreams::{RoutingUpstream, UpstreamSource},
+    store::AppState,
+};
+use tauri::{Manager, State};
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderSummary {
+    #[serde(flatten)]
+    upstream: RoutingUpstream,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subscription_plans: Option<Vec<Option<String>>>,
+}
+
+async fn subscription_summaries(
+    records: Vec<RoutingUpstream>,
+    manager: &CodexOAuthManager,
+    native_plan: Option<&str>,
+) -> Vec<ProviderSummary> {
+    let mut plans = std::collections::HashMap::<String, Option<String>>::new();
+    let mut summaries = Vec::with_capacity(records.len());
+    for upstream in records {
+        let subscription_plans = if matches!(upstream.source, UpstreamSource::Codex) {
+            let settings = upstream.codex_settings.clone().unwrap_or_default();
+            let mut selected = Vec::new();
+            for account in settings.accounts {
+                let plan = if account == "native" {
+                    native_plan.map(str::to_owned)
+                } else if let Some(plan) = plans.get(&account) {
+                    plan.clone()
+                } else {
+                    let plan = manager.editor_plan(&account).await;
+                    plans.insert(account, plan.clone());
+                    plan
+                };
+                if !selected.contains(&plan) {
+                    selected.push(plan);
+                }
+            }
+            Some(selected)
+        } else {
+            None
+        };
+        summaries.push(ProviderSummary {
+            upstream,
+            subscription_plans,
+        });
+    }
+    summaries
+}
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -11,6 +61,46 @@ pub(crate) struct CopySource {
 
 async fn refresh(state: &AppState) {
     crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
+}
+
+#[tauri::command]
+pub(crate) async fn routing_upstream_keys(
+    state: State<'_, AppState>,
+    id: String,
+    revision: u32,
+) -> Result<Vec<crate::services::routing_upstreams::KeySummary>, String> {
+    let db = state.db.clone();
+    let record_id = id.clone();
+    let mut keys =
+        tokio::task::spawn_blocking(move || db.routing_upstream_keys(&record_id, revision))
+            .await
+            .map_err(|_| "routingUpstreams.failed")??;
+    for key in &mut keys {
+        key.running = state
+            .proxy_service
+            .intent_runtime
+            .traces
+            .key_running(&id, &key.observation);
+    }
+    Ok(keys)
+}
+
+#[tauri::command]
+pub(crate) async fn reveal_routing_upstream_key(
+    state: State<'_, AppState>,
+    id: String,
+    revision: u32,
+    key_id: String,
+) -> Result<String, String> {
+    let db = state.db.clone();
+    tokio::task::spawn_blocking(move || db.reveal_routing_upstream_key(&id, revision, &key_id))
+        .await
+        .map_err(|_| "routingUpstreams.failed")?
+}
+
+#[tauri::command]
+pub(crate) async fn fetch_provider_icon(url: String, automatic: bool) -> Result<String, String> {
+    crate::services::provider_icons::fetch(&url, automatic).await
 }
 
 #[tauri::command]
@@ -59,19 +149,69 @@ pub(crate) async fn routing_upstream_editor(
 #[tauri::command]
 pub(crate) async fn list_routing_upstreams(
     state: State<'_, AppState>,
-) -> Result<Vec<RoutingUpstream>, String> {
+) -> Result<Vec<ProviderSummary>, String> {
     let db = state.db.clone();
-    tokio::task::spawn_blocking(move || db.list_routing_upstreams())
+    let records = tokio::task::spawn_blocking(move || db.list_routing_upstreams())
         .await
-        .map_err(|_| "routingUpstreams.failed")?
+        .map_err(|_| "routingUpstreams.failed")??;
+    let native_plan = if records.iter().any(|record| {
+        matches!(record.source, UpstreamSource::Codex)
+            && record
+                .codex_settings
+                .as_ref()
+                .is_none_or(|settings| settings.accounts.iter().any(|account| account == "native"))
+    }) {
+        tokio::task::spawn_blocking(|| {
+            crate::services::intent_routing::catalog::native_editor_info()
+                .and_then(|info| info.plan)
+        })
+        .await
+        .ok()
+        .flatten()
+    } else {
+        None
+    };
+    Ok(subscription_summaries(records, &state.codex_oauth_manager, native_plan.as_deref()).await)
 }
 
 #[tauri::command]
 pub(crate) async fn save_routing_upstream(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     upstream: RoutingUpstream,
     copy_from: Option<CopySource>,
 ) -> Result<RoutingUpstream, String> {
+    if let UpstreamSource::Subscription {
+        provider,
+        account_id,
+        ..
+    } = &upstream.source
+    {
+        let available = match provider {
+            crate::services::routing_upstreams::SubscriptionProvider::GithubCopilot => {
+                let manager = app
+                    .try_state::<super::CopilotAuthState>()
+                    .ok_or("routingUpstreams.sourceUnavailable")?;
+                let manager = manager.0.read().await;
+                manager.get_account(account_id).await.is_some()
+            }
+            crate::services::routing_upstreams::SubscriptionProvider::XaiOauth => {
+                let manager = app
+                    .try_state::<super::XaiOAuthState>()
+                    .ok_or("routingUpstreams.sourceUnavailable")?;
+                let manager = manager.0.read().await;
+                manager
+                    .list_accounts()
+                    .await
+                    .iter()
+                    .any(|account| &account.id == account_id && !account.requires_reauth)
+            }
+            service => crate::services::native_subscription::exists(*service, account_id).await,
+        };
+        if !available {
+            return Err("routingUpstreams.sourceUnavailable".into());
+        }
+    }
     let db = state.db.clone();
     let saved = tokio::task::spawn_blocking(move || match copy_from {
         Some(source) => db.save_routing_upstream_copy(upstream, &source.id, source.revision),
@@ -98,6 +238,10 @@ pub(crate) async fn probe_routing_upstream(
         tokio::task::spawn_blocking(move || db.routing_discovery_provider(&id, revision))
             .await
             .map_err(|_| "routingUpstreams.failed")??;
+    if crate::services::subscription_provider::binding(&provider).is_some() {
+        return Err("routingUpstreams.invalid".into());
+    }
+    let provider = crate::services::routing_upstreams::first_enabled(&provider)?;
     let (base_url, api_key) =
         provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
     let config = crate::services::provider_protocol_detection::DetectionConfig {
@@ -142,6 +286,10 @@ pub(crate) async fn discover_routing_upstream_models(
         tokio::task::spawn_blocking(move || db.routing_discovery_provider(&id, revision))
             .await
             .map_err(|_| "routingUpstreams.failed")??;
+    if crate::services::subscription_provider::binding(&provider).is_some() {
+        return Err("routingUpstreams.invalid".into());
+    }
+    let provider = crate::services::routing_upstreams::first_enabled(&provider)?;
     let (base, key) = provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
     let format = provider
         .meta
@@ -196,4 +344,113 @@ pub(crate) async fn discover_routing_upstream_models(
     )
     .await
     .map_err(|_| "routingUpstreams.failed".into())
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::*;
+    use crate::{
+        database::Database,
+        proxy::providers::codex_oauth_auth::CodexOAuthManager,
+        services::{codex_provider::Settings, routing_upstreams::UpstreamSource},
+    };
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    #[tokio::test]
+    async fn provider_list_reports_only_selected_local_subscription_plans(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let manager = CodexOAuthManager::new(temp.path().to_owned());
+        let mut ids = Vec::new();
+        for (user, plan) in [
+            ("plus-user", "plus"),
+            ("pro-user", "pro"),
+            ("unknown-user", "unknown"),
+        ] {
+            let claims = serde_json::json!({
+                "sub": user,
+                "email": format!("{user}@example.test"),
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": format!("workspace-{user}"),
+                    "chatgpt_plan_type": plan,
+                }
+            });
+            let token = format!(
+                "{}.{}.",
+                URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#),
+                URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims)?)
+            );
+            let account = manager
+                .import_editor_account(serde_json::json!({"tokens": {
+                    "id_token": token,
+                    "refresh_token": format!("synthetic-refresh-{user}"),
+                    "account_id": format!("workspace-{user}"),
+                }}))
+                .await?;
+            ids.push(account.id);
+        }
+        let db = Database::memory()?;
+        let record = |name: &str, accounts: Vec<String>, enabled| RoutingUpstream {
+            schema_version: 1,
+            id: String::new(),
+            name: name.into(),
+            icon: None,
+            revision: 0,
+            source: UpstreamSource::Codex,
+            has_api_key: false,
+            enabled,
+            preset_id: None,
+            region: None,
+            transport: None,
+            codex_settings: Some(Settings {
+                accounts,
+                ..Default::default()
+            }),
+        };
+        let plus = db.save_routing_upstream(record("Plus fixture", vec![ids[0].clone()], true))?;
+        let mixed = db.save_routing_upstream(record(
+            "Mixed fixture",
+            vec![ids[0].clone(), ids[1].clone()],
+            false,
+        ))?;
+        let unknown = db.save_routing_upstream(record(
+            "Unknown fixture",
+            vec![ids[2].clone(), "missing".into()],
+            true,
+        ))?;
+        let native =
+            db.save_routing_upstream(record("Native fixture", vec!["native".into()], true))?;
+        let rows = subscription_summaries(
+            db.list_routing_upstreams()?,
+            &manager,
+            Some("ChatGPT Business"),
+        )
+        .await;
+        let plans = |id: &str| -> Result<&Vec<Option<String>>, Box<dyn std::error::Error>> {
+            rows.iter()
+                .find(|row| row.upstream.id == id)
+                .and_then(|row| row.subscription_plans.as_ref())
+                .ok_or_else(|| "missing summary".into())
+        };
+        assert_eq!(plans(&plus.id)?, &vec![Some("ChatGPT Plus".into())]);
+        assert_eq!(
+            plans(&mixed.id)?,
+            &vec![Some("ChatGPT Plus".into()), Some("ChatGPT Pro".into())]
+        );
+        assert_eq!(plans(&unknown.id)?, &vec![None]);
+        assert_eq!(plans(&native.id)?, &vec![Some("ChatGPT Business".into())]);
+        let serialized = serde_json::to_string(&rows)?;
+        for private in [
+            "id_token",
+            "refresh_token",
+            "synthetic-refresh",
+            "example.test",
+        ] {
+            assert!(!serialized.contains(private));
+        }
+        assert!(serde_json::to_value(db.list_routing_upstreams()?)?[0]
+            .get("subscriptionPlans")
+            .is_none());
+        Ok(())
+    }
 }

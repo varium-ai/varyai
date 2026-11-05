@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { AccountLabel } from "@/components/AccountLabel";
 import { ChevronDown, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
@@ -115,6 +116,7 @@ export function RoutingAccounts({
     );
   }
   function row(account: FoldedRoutingAccount, index: number, count: number) {
+    const recorded = account.observations[0];
     const rests = account.observations.filter(
       (reading) => reading.restUntil > now,
     );
@@ -128,15 +130,23 @@ export function RoutingAccounts({
       <div key={account.id} className="rt-act" data-account-row>
         <div className="rt-account-name">
           <b>
-            {account.kind === "provider"
-              ? account.observations[0]?.model
-              : t(
-                  account.kind === "account"
-                    ? "routingPage.accountLabel"
-                    : "routingPage.keyLabel",
-                  { n: count > 1 ? index + 1 : "" },
-                ).trim()}
+            {account.kind === "provider" ? (
+              account.observations[0]?.model
+            ) : recorded?.label ? (
+              <AccountLabel>{recorded.label}</AccountLabel>
+            ) : (
+              t(
+                account.kind === "account"
+                  ? "routingPage.accountLabel"
+                  : "routingPage.keyLabel",
+                { n: count > 1 ? index + 1 : "" },
+              ).trim()
+            )}
           </b>
+          {account.kind === "account" && recorded?.plan && (
+            <span>{recorded.plan}</span>
+          )}
+          {account.kind === "key" && <span>{t("routingPage.apiKey")}</span>}
         </div>
         {rests.length > 0 && (
           <div className="rt-account-rest">
@@ -222,7 +232,12 @@ export function RoutingAccounts({
         {[...providers].map(([providerId, rows]) => (
           <div key={providerId} className="rt-account-provider">
             <h3 className="rt-account-provider-name">
-              {accountName({ providerId, providerName: rows[0].providerName })}
+              <AccountLabel>
+                {accountName({
+                  providerId,
+                  providerName: rows[0].providerName,
+                })}
+              </AccountLabel>
             </h3>
             {(["account", "key", "provider"] as const).map((kind) => {
               const entries = rows.filter((row) => row.kind === kind);

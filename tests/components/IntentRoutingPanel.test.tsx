@@ -74,17 +74,92 @@ function mount(
   client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   }),
+  maskAccounts = false,
 ) {
   return render(
     <QueryClientProvider client={client}>
       <div role="tabpanel" tabIndex={0}>
-        <IntentRoutingPanel />
+        <IntentRoutingPanel maskAccounts={maskAccounts} />
       </div>
     </QueryClientProvider>,
   );
 }
 
 describe("IntentRoutingPanel", () => {
+  it("masks account addresses without renaming vendors or replacing their icons", async () => {
+    const options = [
+      {
+        id: "provider",
+        name: "Fixture provider",
+        taskEligible: true,
+        classifierEligible: false,
+      },
+      {
+        id: "official",
+        name: "Codex · fixture.account@example.test",
+        icon: "openai",
+        appType: "codex",
+        taskEligible: true,
+        classifierEligible: false,
+      },
+    ];
+    vi.mocked(intentRoutingApi.providers).mockResolvedValue(options);
+    vi.mocked(intentRoutingApi.list).mockResolvedValue({
+      groups: [
+        {
+          ...group,
+          members: [
+            ...group.members,
+            { id: "official", providerId: "official", modelId: "model-b" },
+          ],
+        },
+      ],
+      autoCreate: true,
+      omittedGroups: 0,
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const view = mount(client, true);
+    await screen.findByText("Fixture group");
+    const summary = document.querySelector(".rt-group-summary");
+    expect(summary).toHaveTextContent("Fixture provider · fixture-model");
+    expect(summary).toHaveTextContent("Codex ·");
+    expect(summary).not.toHaveTextContent("fixture.account@example.test");
+    expect(summary?.querySelector(".account-mask")).not.toBeNull();
+    expect(
+      summary?.querySelector("[title]")?.getAttribute("title"),
+    ).not.toContain("fixture.account@example.test");
+    expect(document.querySelector(".mp-icon-stack")).toHaveTextContent("FP");
+    expect(document.querySelectorAll(".mp-icon-disc svg")).toHaveLength(1);
+    expect(view.container.innerHTML).not.toContain(
+      "fixture.account@example.test",
+    );
+    expect(view.container.innerHTML).not.toContain("routingPage.maskedAccount");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "intentRouting.skipProviders" }),
+    );
+    expect(await screen.findByText("Fixture provider")).toBeVisible();
+    expect(document.body.innerHTML).not.toContain(
+      "fixture.account@example.test",
+    );
+    fireEvent.keyDown(document.activeElement ?? document.body, {
+      key: "Escape",
+    });
+
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <IntentRoutingPanel maskAccounts={false} />
+      </QueryClientProvider>,
+    );
+    expect(document.querySelector(".rt-group-summary")).toHaveTextContent(
+      "fixture.account@example.test",
+    );
+    expect(client.getQueryData(["intent-routing-providers"])).toEqual(options);
+    expect(intentRoutingApi.save).not.toHaveBeenCalled();
+  });
+
   it("loads missing account catalogs on entry and reloads groups after discovery", async () => {
     vi.mocked(intentRoutingApi.list).mockResolvedValue({
       groups: [],

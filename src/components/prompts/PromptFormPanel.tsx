@@ -42,6 +42,7 @@ const PromptFormPanel: React.FC<PromptFormPanelProps> = ({
     kimi: "",
     qwen: "",
     zcode: "",
+    "deepseek-harness": "",
   };
   const filename = filenameMap[appId];
   const [name, setName] = useState("");

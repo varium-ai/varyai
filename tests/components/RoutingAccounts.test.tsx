@@ -225,3 +225,31 @@ it("does not count model-only cooldowns as resting accounts in a folded pool", (
   );
   expect(screen.queryByText(/routingPage.accountsResting/)).toBeNull();
 });
+
+it("shows safe recorded names and plans rather than account ordinals", () => {
+  const { accounts, request } = fixtures(1, "account");
+  const recorded = {
+    ...accounts[0],
+    label: "Synthetic member",
+    plan: "ChatGPT Pro",
+  };
+  render(
+    <RoutingAccounts
+      requests={[
+        {
+          ...request,
+          candidates: [{ ...request.candidates[0], account: recorded }],
+        },
+      ]}
+      current={[]}
+      live={false}
+      refreshing={false}
+      refresh={() => {}}
+      accountName={(candidate) => candidate.providerName}
+    />,
+  );
+  const name = document.querySelector(".rt-account-name")!;
+  expect(name).toHaveTextContent("Synthetic member");
+  expect(name).toHaveTextContent("ChatGPT Pro");
+  expect(name).not.toHaveTextContent("routingPage.accountLabel");
+});

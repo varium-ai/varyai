@@ -16,7 +16,7 @@ Content stays centered within 1200px, plus 16px side gutters.
 Routing uses the same palette for the stage, selected requests, account
 observations and inline group editors. Request rows adapt to their own column
 width; accounts move beside requests only when the content has at least 1150px.
-The stage folds below 560px of its own width. Narrow windows retain icon
+The stage retains a compact horizontal flow below 560px of its own width. Narrow windows retain icon
 navigation, and reduced-motion settings suppress control and stage movement.
 
 ## Page structure
@@ -29,9 +29,55 @@ navigation, and reduced-motion settings suppress control and stage movement.
   the name of a fallback member. Missing metadata is labeled unavailable.
 - The header links to groups, opens a new inline group, and masks provider names
   in the stage, request list, account observations, and group editor.
-- The stage shows the selected request's Agent, gateway, and candidate order.
-  Moving paths indicate an active request or playback of recorded decisions.
-  A completed request has stationary paths.
+- The workspace stage uses a centered compact flow, with Agent icons above names,
+  a circular Vary gateway and bounded candidate labels joined by curved paths.
+  The gateway exposes its actual listener and strategy in its tooltip. The compact
+  tray keeps horizontal client labels and its own gateway dimensions. Live requests
+  retain independent packet players, including a response already returning when
+  a newer request arrives. Up to four recorded Agents share the stage; identical
+  candidate seats share one branch, matched by provider, account, model and effort.
+  Selected requests, historical days and replay show only that request's nodes.
+  A supplier with one distinct enabled API key displays its provider name.
+  With multiple distinct enabled keys, candidates display their configured key
+  name or a backend-masked credential label (four leading and four trailing
+  characters, or bullets for short keys). Disabled and duplicate keys do not
+  make a shared pool. This follows Magpie's `RestKeys`, `weighed` and `who` rules.
+  Only configured static API keys supply these labels; OAuth
+  tokens and arbitrary authorization headers never do. The original credential
+  never enters a trace. Older records without a label retain the provider name.
+  Stage status lines use an unnumbered API-key fallback, or "one key" for a
+  provider seat. Rest and context restrictions precede answering/completion and
+  failure states; quota renewals remain visible alongside those states. Account
+  headers show a recorded subscription plan when known. Only recognized plan
+  types from the bound account's Codex usage response or rate-limit event are
+  recorded; keys and unknown plan values never acquire an inferred subscription.
+  The account list also retains recorded safe names and plan subtitles.
+  Connected clients and enabled providers from configuration never supply extra
+  nodes or branches. Before any request, the stage shows a generic robot icon, Agent label and
+  empty placeholder. A single instruction sits beneath the waiting heading;
+  the footer contains only the aligned counters until a request has a status.
+  A direct request has only its recorded destination; a group retains every
+  recorded candidate, including untried fallbacks. A request that fails before
+  recording any candidates shows its failure state and status without borrowing
+  providers from configuration or earlier requests.
+  The live selected destination receives the Agent's color;
+  moving paths and packets follow actual attempts and fallback decisions. A solid
+  point travels to the provider and waits for completion; a hollow ring returns
+  through Vary to its original Agent. Failed attempts return in red, stopping at
+  the hub if another candidate follows; a final failure returns to the Agent.
+  Cancellation returns in muted gray, including HTTP 499, and never implies an
+  upstream error. The workspace and tray omit the synthetic HTTP 499 status code
+  from candidate labels, decision steps and request rows; cancellation steps keep
+  neutral styling. Recorded traces retain the original status for diagnostics.
+  Shared-provider waits are slightly offset so concurrent packets
+  remain visible. Finished players are removed once the return ends and never
+  restart on polling. Newly completed long requests use their finish time for
+  admission; initial history does not introduce unrelated completed branches.
+  Completed requests have stationary paths. Listener and strategy details remain
+  on the gateway's tooltip, and branch status appears on hover or keyboard focus.
+  Client and provider lists have bounded scrolling, and paths are recalculated
+  when either list scrolls or a node resizes. Recorded masked key labels identify
+  static credentials; candidates without them retain the safe ordinal fallback.
 - Selecting a request shows the decisions recorded while forwarding it:
   strategy order, continuation pinning, conversation affinity, intent preference,
   attempts, context/image exclusions, rejection status, acceptance, and completion
@@ -98,7 +144,8 @@ credential identity. Static identities include the configured provider namespace
 endpoint and authentication, but never the model or fixed reasoning level.
 Native account identities use frozen sign-in provenance, surviving access-token
 refresh while separating account switches. Only the salted digest leaves the
-runtime; no key, endpoint or workspace is exposed. Configured provider display
+runtime, together with a masked display label for configured static keys; no full
+key, endpoint or workspace is exposed. Configured provider display
 names are retained for native accounts as well as static providers, avoiding
 internal-ID fallbacks. Weak scheduler references let live readings update only
 observed candidates, without retaining credentials or enumerating the catalog.

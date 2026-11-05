@@ -217,6 +217,7 @@ impl Provider {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => (
                 str_at(settings.get("baseUrl")),

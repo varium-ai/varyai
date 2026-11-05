@@ -6,6 +6,7 @@ import { RoutingPage } from "@/components/routing/RoutingPage";
 import { routingTraceApi } from "@/lib/api/routingTrace";
 import { usageApi } from "@/lib/api/usage";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
+import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 
 vi.mock("@/components/routing/IntentRoutingPanel", () => ({
   IntentRoutingPanel: () => <div>Group editor</div>,
@@ -14,7 +15,10 @@ vi.mock("@/lib/api/routingTrace", () => ({
   routingTraceApi: { snapshot: vi.fn(), history: vi.fn() },
 }));
 vi.mock("@/lib/api/agentConnections", () => ({
-  agentConnectionsApi: { models: vi.fn() },
+  agentConnectionsApi: { models: vi.fn(), list: vi.fn() },
+}));
+vi.mock("@/lib/api/routingUpstreams", () => ({
+  routingUpstreamsApi: { list: vi.fn() },
 }));
 vi.mock("@/lib/api/proxy", () => ({
   proxyApi: {
@@ -93,6 +97,8 @@ beforeEach(() => {
   });
   vi.mocked(usageApi.getRequestLogs).mockClear();
   vi.mocked(agentConnectionsApi.models).mockResolvedValue([]);
+  vi.mocked(agentConnectionsApi.list).mockResolvedValue([]);
+  vi.mocked(routingUpstreamsApi.list).mockResolvedValue([]);
   vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
     requests: [route],
     accounts: [],
@@ -100,6 +106,198 @@ beforeEach(() => {
     running: true,
     days: ["2026-11-02"],
   } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
+});
+
+function configuredCatalog() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const providers = ["primary", "secondary", "unrelated"].map((id) => ({
+    schemaVersion: 1 as const,
+    id,
+    name: `Synthetic ${id}`,
+    enabled: true,
+    revision: 1,
+    hasApiKey: false,
+    source: { kind: "codex" as const },
+  }));
+  const connections = ["codex", "gemini"].map((app) => ({
+    app,
+    enabled: true,
+    configured: true,
+    recoveryPending: false,
+    model: null,
+    restartRequired: false,
+  }));
+  vi.mocked(agentConnectionsApi.list).mockResolvedValue(connections);
+  vi.mocked(routingUpstreamsApi.list).mockResolvedValue(providers);
+  client.setQueryData(["agent-connections"], connections);
+  client.setQueryData(["routing-upstreams"], providers);
+  return client;
+}
+
+it("loads supplier icons by provider ID for recorded candidates", async () => {
+  vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+    {
+      schemaVersion: 1,
+      id: "provider-a",
+      name: "Configured supplier",
+      revision: 1,
+      hasApiKey: true,
+      icon: "deepseek",
+      source: { kind: "codex" },
+    },
+  ]);
+  show();
+  await screen.findByTitle("Configured supplier");
+  expect(
+    document.querySelector('.rt-seat-icon [title="Configured supplier"] svg'),
+  ).not.toBeNull();
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(2);
+});
+
+it("keeps idle topology empty even when connected clients and providers are configured", async () => {
+  vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+    requests: [],
+    accounts: [],
+    capacity: 60,
+    running: true,
+    days: [],
+  });
+  show(configuredCatalog());
+  await screen.findByText("routingPage.emptyCandidates");
+  expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
+  expect(document.querySelector(".rt-src")).toHaveTextContent(
+    "routingPage.agent",
+  );
+  expect(document.querySelectorAll(".rt-accts li:not(.idle)")).toHaveLength(0);
+  expect(routingUpstreamsApi.list).not.toHaveBeenCalled();
+  expect(agentConnectionsApi.list).not.toHaveBeenCalled();
+  const stage = screen.getByRole("region", { name: "routingPage.stage" });
+  expect(within(stage).getByText("routingPage.waiting").tagName).toBe("B");
+  expect(
+    within(stage).queryByText("routingPage.stageHint"),
+  ).not.toBeInTheDocument();
+  expect(within(stage).getByText("routingPage.emptyStage")).toHaveClass(
+    "rt-mode",
+  );
+  expect(stage.querySelector(".rt-cap")).not.toBeInTheDocument();
+  expect(stage.querySelector(".rt-foot")).toHaveClass("idle");
+});
+
+it("shows only the recorded destination for a direct request", async () => {
+  vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+    requests: [
+      {
+        ...route,
+        candidates: [route.candidates[0]],
+        steps: [
+          { kind: "attempt", candidate: 0, atMs: 1 },
+          { kind: "completed", candidate: 0, atMs: 20 },
+        ],
+      },
+    ],
+    accounts: [],
+    capacity: 60,
+    running: true,
+    days: [],
+  } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
+  show(configuredCatalog());
+  await screen.findByRole("button", { name: /group\/research/ });
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(1);
+  expect(document.querySelector(".rt-accts")).toHaveTextContent(
+    "Synthetic primary",
+  );
+  expect(document.querySelector(".rt-accts")).not.toHaveTextContent(
+    "Synthetic secondary",
+  );
+  expect(document.querySelector(".rt-accts")).not.toHaveTextContent(
+    "Synthetic unrelated",
+  );
+  expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
+});
+
+it("keeps cancellation neutral and hides HTTP 499 while retaining actual upstream errors", async () => {
+  vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+    requests: [
+      {
+        ...route,
+        state: "cancelled",
+        status: 499,
+        steps: [
+          ...route.steps.slice(0, -1),
+          { kind: "cancelled", candidate: 1, atMs: 1240, status: 499 },
+        ],
+      },
+    ],
+    accounts: [],
+    capacity: 60,
+    running: true,
+    days: [],
+  } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
+  show();
+  const cancelled = await screen.findByText("routingPage.step.cancelled");
+  expect(cancelled.closest("li")).not.toHaveClass("bad");
+  expect(document.querySelector(".rt-log")).not.toHaveTextContent("499");
+  expect(document.querySelector(".rt-log")).toHaveTextContent("429");
+});
+
+it("does not replace a candidate-free failure with configured providers or earlier destinations", async () => {
+  vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+    requests: [
+      {
+        ...route,
+        id: "early-failure",
+        state: "failed",
+        status: 409,
+        candidates: [],
+        steps: [{ kind: "failed", atMs: 0, status: 409 }],
+      },
+      route,
+    ],
+    accounts: [
+      {
+        providerId: "older",
+        providerName: "Synthetic earlier destination",
+        model: "model-a",
+        restUntil: 0,
+        windows: [],
+      },
+    ],
+    capacity: 60,
+    running: true,
+    days: [],
+  } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
+  show(configuredCatalog());
+  await screen.findByText("routingPage.noCandidatesFailed");
+  expect(document.querySelectorAll(".rt-accts li:not(.idle)")).toHaveLength(0);
+  expect(document.querySelector(".rt-accts")).toHaveTextContent("409");
+  expect(document.querySelector(".rt-accts")).not.toHaveTextContent(
+    "Synthetic",
+  );
+});
+
+it("keeps fallback branches tied to the request in live view, selection, replay and history", async () => {
+  vi.mocked(routingTraceApi.history).mockResolvedValue({
+    requests: [route],
+    cut: false,
+  } as Awaited<ReturnType<typeof routingTraceApi.history>>);
+  show(configuredCatalog());
+  await screen.findByRole("button", { name: /group\/research/ });
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(2);
+  expect(document.querySelector(".rt-accts")).not.toHaveTextContent(
+    "Synthetic unrelated",
+  );
+  fireEvent.click(screen.getByRole("button", { name: /group\/research/ }));
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(2);
+  fireEvent.click(screen.getByRole("button", { name: "routingPage.replay" }));
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(2);
+  fireEvent.click(document.querySelectorAll(".rt-days > button")[1]);
+  await screen.findByRole("button", { name: /group\/research/ });
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(2);
+  expect(document.querySelector(".rt-accts")).not.toHaveTextContent(
+    "Synthetic unrelated",
+  );
 });
 
 it("shows the catalog model name throughout a direct request, retaining the internal alias only in tooltips", async () => {
@@ -146,7 +344,7 @@ it("shows the catalog model name throughout a direct request, retaining the inte
   fireEvent.click(
     screen.getByRole("button", { name: "routingPage.hideAccounts" }),
   );
-  expect(screen.queryByText(/Synthetic vendor/)).not.toBeInTheDocument();
+  expect(screen.getAllByText(/Synthetic vendor/).length).toBeGreaterThan(0);
   expect(screen.getAllByText("Friendly Flash")).toHaveLength(4);
 });
 
@@ -297,14 +495,77 @@ it("selects a real request and links the stage to its recorded fallback decision
   expect(screen.getByText("Group editor")).toBeInTheDocument();
 });
 
-it("masks account names throughout the trace and persists the request grouping preference", async () => {
+it("masks recorded key labels in the stage and its tooltip", async () => {
+  vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+    requests: [
+      {
+        ...route,
+        candidates: [
+          {
+            ...route.candidates[0],
+            account: {
+              id: "opaque-key",
+              kind: "key",
+              label: "sk-4…766b",
+              providerId: "provider-a",
+              providerName: "Synthetic primary",
+              model: "model-a",
+              restUntil: 0,
+              windows: [],
+            },
+          },
+        ],
+      },
+    ],
+    accounts: [],
+    capacity: 60,
+    running: true,
+    days: [],
+  } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
+  show();
+  await screen.findAllByText("sk-4…766b");
+  fireEvent.click(
+    screen.getByRole("button", { name: "routingPage.hideAccounts" }),
+  );
+  expect(document.querySelector(".rt-accts")?.innerHTML).not.toContain(
+    "sk-4…766b",
+  );
+  expect(document.querySelector(".rt-accts .account-mask")).not.toBeNull();
+});
+
+it("preserves vendor names while masking account addresses and persists the request grouping preference", async () => {
+  const name = "Codex · fixture.account@example.test";
+  vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+    requests: [
+      {
+        ...route,
+        candidates: route.candidates.map((candidate, index) =>
+          index ? candidate : { ...candidate, providerName: name },
+        ),
+      },
+    ],
+    accounts: [],
+    capacity: 60,
+    running: true,
+    days: ["2026-11-02"],
+  } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
   const view = show();
   await screen.findAllByText("Synthetic fallback");
   fireEvent.click(
     screen.getByRole("button", { name: "routingPage.hideAccounts" }),
   );
-  expect(screen.queryByText("Synthetic fallback")).not.toBeInTheDocument();
-  expect(screen.queryByText("Synthetic primary")).not.toBeInTheDocument();
+  expect(screen.getAllByText("Synthetic fallback").length).toBeGreaterThan(0);
+  expect(document.querySelector(".account-mask")).not.toBeNull();
+  expect(view.container.innerHTML).not.toContain(
+    "fixture.account@example.test",
+  );
+  expect(
+    document.querySelector(".rt-accts li")?.getAttribute("title"),
+  ).toContain("Codex ·");
+  fireEvent.click(
+    screen.getByRole("button", { name: "routingPage.showAccounts" }),
+  );
+  expect(screen.getAllByText(name).length).toBeGreaterThan(0);
   fireEvent.click(
     screen.getByRole("button", { name: "routingPage.bySession" }),
   );

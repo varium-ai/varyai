@@ -770,21 +770,8 @@ pub(crate) async fn query_codex_quota(
 
     let status = resp.status();
 
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return Ok(SubscriptionQuota::error(
-            tool_label,
-            CredentialStatus::Expired,
-            format!("{expired_message} (HTTP {status})"),
-        ));
-    }
-
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Ok(SubscriptionQuota::error(
-            tool_label,
-            CredentialStatus::Valid,
-            format!("API error (HTTP {status}): {body}"),
-        ));
+        return Ok(codex_quota_http_error(status, tool_label, expired_message));
     }
 
     let raw = match resp.bytes().await {
@@ -834,6 +821,25 @@ pub(crate) async fn query_codex_quota(
         error: None,
         queried_at: Some(now_millis()),
     })
+}
+
+fn codex_quota_http_error(
+    status: reqwest::StatusCode,
+    tool: &str,
+    expired_message: &str,
+) -> SubscriptionQuota {
+    let (credential_status, message) = if status == reqwest::StatusCode::UNAUTHORIZED {
+        (
+            CredentialStatus::Expired,
+            format!("{expired_message} (HTTP {status})"),
+        )
+    } else {
+        (
+            CredentialStatus::Valid,
+            format!("Allowance unavailable (HTTP {status})"),
+        )
+    };
+    SubscriptionQuota::error(tool, credential_status, message)
 }
 
 // ── Gemini 凭据读取 ──────────────────────────────────────
@@ -1038,9 +1044,9 @@ fn parse_gemini_file_json(content: &str) -> GeminiCredentials {
 // ── Gemini Token 刷新 ──────────────────────────────────────
 
 /// Gemini OAuth Client 凭据（公开值，来自 Gemini CLI 源码 google-gemini/gemini-cli）
-const GEMINI_OAUTH_CLIENT_ID: &str =
+pub(crate) const GEMINI_OAUTH_CLIENT_ID: &str =
     "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
-const GEMINI_OAUTH_CLIENT_SECRET: &str = "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";
+pub(crate) const GEMINI_OAUTH_CLIENT_SECRET: &str = "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";
 
 /// 使用 refresh_token 刷新 Gemini access token
 ///
@@ -1433,6 +1439,28 @@ fn now_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_allowance_http_denials_do_not_all_mean_expired_sign_in() {
+        for status in [
+            reqwest::StatusCode::FORBIDDEN,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::BAD_GATEWAY,
+        ] {
+            let quota = codex_quota_http_error(status, "codex", "Sign-in rejected");
+            assert!(matches!(quota.credential_status, CredentialStatus::Valid));
+            assert!(!quota.success);
+        }
+        assert!(matches!(
+            codex_quota_http_error(
+                reqwest::StatusCode::UNAUTHORIZED,
+                "codex",
+                "Sign-in rejected"
+            )
+            .credential_status,
+            CredentialStatus::Expired
+        ));
+    }
 
     fn scoped_limit(model: &str, percent: f64) -> serde_json::Value {
         serde_json::json!({

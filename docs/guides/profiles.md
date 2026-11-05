@@ -5,12 +5,16 @@ Profiles capture selected client configuration so you can restore a known setup 
 ## Capture and apply
 
 1. Configure each client normally and back up its files.
-2. Open the profile controls from a client page and create a named profile. By default, capture only that client. Enable **Multi-agent profile** to preselect the configured, supported agents currently selected in the main window; adjust that selection before saving if needed.
+2. Open **Profiles** in the main window's bottom bar or the tray panel and create a named profile. Both entry points use the same saved profiles and controls. By default, capture the first connected client. Enable **Multi-agent profile** to preselect the connected, supported agents; adjust that selection before saving if needed. The existing **Show profile switcher** preference controls the main-window entry.
 3. Review the selected scope before applying a saved profile. Read any validation errors or warnings instead of assuming every category was restored.
 4. After applying, follow the client restart or new-session instructions in the completion notification. A successful apply updates saved configuration; running clients may still need to reload it.
 5. Use the explicit refresh/update action to replace a saved snapshot with the current configuration. Renaming or deleting a profile affects the shared profile entity.
 
 Every newly created profile uses a configuration snapshot, including profiles containing only one agent. Multi-agent selection can also contain just one supported agent; an empty selection cannot be saved. Older single-client profiles retain their existing format and behavior.
+
+Agents connected through the shared model catalog are selectable without a separate per-agent supplier entry. These profiles capture the selected shared model, supported model-list visibility rules, and resource selections. Applying them uses the current gateway connection and credentials; profile data does not copy connection tokens, account credentials or upstream endpoints. Keep the gateway running when applying a shared-connection profile. Preview skips a shared model whose supplier or routing group was removed, rather than substituting another model. Undo restores both native configuration and the preceding gateway connection receipt.
+
+Native model keys can contain spaces, including readable model and supplier labels in Kimi, Qwen and ZCode. These selections can be captured and restored without renaming them. If capture fails, the creation dialog keeps the error visible so the affected agent and reason can be reviewed before retrying.
 
 Refreshing replaces the entire bundle with every configured, supported agent currently selected for management. Newly selected agents are included, and agents no longer selected are removed from the snapshot. The refresh reads current agent availability and captures current provider, model and supported resource selections in one operation; it does not reuse the old bundle's agent scope or require another selection dialog.
 

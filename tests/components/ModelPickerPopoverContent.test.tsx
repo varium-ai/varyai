@@ -45,3 +45,15 @@ it("keeps a short list below when it fits even if there is more room above", () 
   expect(placed.side).toBe("bottom");
   expect(placed.originX).toBe(35);
 });
+
+it("uses the Agent menu's height limit when choosing the side", () => {
+  expect(
+    modelPickerPlacement({
+      trigger: { left: 300, top: 550, bottom: 580, width: 196 },
+      viewport: { width: 1120, height: 1060 },
+      width: 490,
+      height: 900,
+      maxHeight: 420,
+    }),
+  ).toMatchObject({ side: "bottom", maxHeight: 420 });
+});

@@ -6,6 +6,7 @@ mod document;
 pub(crate) mod native;
 mod projections;
 mod reasoning;
+mod selection;
 mod visibility;
 use crate::{config::atomic_write_private, proxy::intent::Menu};
 use document::Format;
@@ -36,6 +37,7 @@ pub(crate) const APPS: &[&str] = &[
     "kimi",
     "qwen",
     "zcode",
+    "deepseek-harness",
 ];
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -456,6 +458,29 @@ impl FileEdit {
         for field in fields {
             put(&mut live, field, at(&original, field).cloned())?;
         }
+        if matches!(self.format, Format::Cordis) && live.get("providers").is_none() {
+            live["providers"] = json!({});
+        }
+        if matches!(self.format, Format::Cordis) && live.get("selection").is_none() {
+            live["selection"] = json!([]);
+        }
+        if matches!(self.format, Format::Cordis) && live.get("legacyProviders").is_none() {
+            live["legacyProviders"] = json!(false);
+        }
+        if matches!(self.format, Format::Cordis) && keep_changed {
+            let selected = crate::services::deepseek_harness::selection(&live);
+            let removed = selected["provider"].as_str().is_some_and(|provider| {
+                provider.starts_with("varyai-")
+                    && !live["providers"].as_object().is_some_and(|entries| {
+                        entries
+                            .values()
+                            .any(|entry| entry["config"]["providers"].get(provider).is_some())
+                    })
+            });
+            if removed {
+                live["selection"] = original["selection"].clone();
+            }
+        }
         let restored = if live == original {
             self.original.clone()
         } else {
@@ -506,6 +531,10 @@ impl Manager {
             return Err(FAILED.into());
         }
         desktop_config::adopt(&mut receipt);
+        let mut adopted = receipt.clone();
+        if selection::adopt(&mut adopted).is_ok() {
+            receipt = adopted;
+        }
         Ok(Some(receipt))
     }
     pub fn status(&self, app: &str) -> Result<Status, String> {
@@ -594,15 +623,8 @@ impl Manager {
                     .contains_key(&old.model)
                     .then_some(old.model.as_str())
             })
-            .or_else(|| {
-                if app == "claude-desktop" {
-                    menu.default_model
-                        .as_deref()
-                        .or_else(|| menu.models.keys().min().map(String::as_str))
-                } else {
-                    None
-                }
-            })
+            .or(menu.default_model.as_deref())
+            .or_else(|| menu.models.keys().min().map(String::as_str))
             .unwrap_or(&old.model);
         let visibility = self.visibility_for(app)?;
         if old.suspended {
@@ -628,6 +650,9 @@ impl Manager {
         let mut next = build_with_token(app, menu, origin, model, old.token.clone(), &visibility)?;
         if next.files.len() != old.files.len() {
             return Err(CONFLICT.into());
+        }
+        if selected.is_none() {
+            selection::preserve(&old, &mut next)?;
         }
         let writes = next.files.clone();
         if writes.iter().all(|file| {
@@ -702,14 +727,24 @@ impl Manager {
             if let Some(kind) = file.desktop {
                 desktop_config::restoration(file, kind, true)?;
             }
-            if file
-                .fields
-                .iter()
-                .any(|field| at(&file.installed, field).is_some_and(Value::is_array))
-                && file.desktop.is_none()
-                && !file.restorable()?
-            {
-                return Err(CONFLICT.into());
+            let has_catalog_array = file.fields.iter().any(|field| {
+                at(&file.installed, field).is_some_and(Value::is_array)
+                    && !(matches!(file.format, Format::Cordis) && field.as_slice() == ["selection"])
+            });
+            if has_catalog_array && file.desktop.is_none() {
+                // Keep a changed Harness default while still guarding its model catalog.
+                let restorable = if matches!(file.format, Format::Cordis) {
+                    let mut catalog = file.clone();
+                    catalog
+                        .fields
+                        .retain(|field| field.as_slice() != ["selection"]);
+                    catalog.restorable()?
+                } else {
+                    file.restorable()?
+                };
+                if !restorable {
+                    return Err(CONFLICT.into());
+                }
             }
         }
         desktop_config::save_settings(&self.root, &receipt)?;
@@ -822,6 +857,7 @@ fn build_with_token(
             put(value, &["env".into(), "ANTHROPIC_API_KEY".into()], None)
         })?),
         "pi" => {
+            let (catalog, selected) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
             receipt.files.push(FileEdit::prepare(crate::pi_config::get_pi_models_path().map_err(|_| FAILED)?, |value| {
                 let models = catalog.iter().map(pi_model).collect::<Vec<_>>();
                 put(value, &["providers".into(), "varyai".into()], Some(json!({"baseUrl":format!("{base}/v1"),"apiKey":token,"api":"openai-completions","models":models})))
@@ -830,21 +866,41 @@ fn build_with_token(
                 put(value, &["defaultProvider".into()], Some(json!("varyai")))?;
                 put(value, &["defaultModel".into()], Some(json!(selected)))?;
                 if let Some(scope) = value.get_mut("enabledModels").and_then(Value::as_array_mut) {
+                    for entry in scope.iter_mut() {
+                        if let Some(alias) = entry.as_str().and_then(|id| id.strip_prefix("varyai/")) {
+                            if let Some((name, _)) = receipt.model_map.iter().find(|(_, internal)| internal.as_str() == alias) {
+                                *entry = json!(format!("varyai/{name}"));
+                            }
+                        }
+                    }
                     if !scope.is_empty() { let reference = json!(format!("varyai/{selected}")); if !scope.contains(&reference) { scope.push(reference); } }
                 }
                 Ok(())
             })?);
         }
-        "workbuddy" => receipt.files.push(FileEdit::prepare_document(crate::workbuddy_config::get_workbuddy_config_path(), true, |value| {
+        "workbuddy" => {
+            let mut named_models = Vec::new();
+            for model in &catalog {
+                let mut name = model.name.clone();
+                let mut duplicate = 2;
+                while receipt.model_map.contains_key(&name) {
+                    name = format!("{} ({duplicate})", model.name);
+                    duplicate += 1;
+                }
+                receipt.model_map.insert(name.clone(), model.id.clone());
+                named_models.push((name, model));
+            }
+            receipt.files.push(FileEdit::prepare_document(crate::workbuddy_config::get_workbuddy_config_path(), true, |value| {
             let array = value.is_array();
             if array { *value = json!({"models":value.take()}); }
             if value.get("models").is_some_and(|rows| !rows.is_array()) { return Err(FAILED.into()); }
             let mut rows = value.get("models").and_then(Value::as_array).cloned().unwrap_or_default();
             let previous = rows.iter().filter(|row| row["apiKey"].as_str() == Some(&token)).filter_map(|row| row["id"].as_str().map(str::to_owned)).collect::<Vec<_>>();
             rows.retain(|row| row["apiKey"].as_str() != Some(&token));
-            if rows.iter().any(|row| catalog.iter().any(|model| row["id"] == model.id)) { return Err(CONFLICT.into()); }
-            for model in &catalog {
-                let mut row = json!({"id":model.id,"name":model.name,"vendor":"Vary AI","apiKey":token,"url":format!("{base}/v1/chat/completions"),"supportsToolCall":true});
+            if rows.iter().any(|row| named_models.iter().any(|(name, _)| row["id"] == *name)) { return Err(CONFLICT.into()); }
+            for (name, model) in &named_models {
+                // WorkBuddy appends the ID unless it exactly matches the name.
+                let mut row = json!({"id":name,"name":name,"vendor":"Vary AI","apiKey":token,"url":format!("{base}/v1/chat/completions"),"supportsToolCall":true});
                 reasoning::workbuddy(&mut row, model);
                 if let Some(context) = model.context_window {
                     row["maxInputTokens"] = json!(context);
@@ -853,10 +909,11 @@ fn build_with_token(
                 rows.push(row);
             }
             value["models"] = json!(rows);
-            if let Some(available) = value.get_mut("availableModels") { let available = available.as_array_mut().ok_or(FAILED)?; available.retain(|id| !id.as_str().is_some_and(|id| previous.iter().any(|old| old == id))); for model in &catalog { let id = json!(model.id); if !available.contains(&id) { available.push(id); } } }
+            if let Some(available) = value.get_mut("availableModels") { let available = available.as_array_mut().ok_or(FAILED)?; available.retain(|id| !id.as_str().is_some_and(|id| previous.iter().any(|old| old == id))); for (name, _) in &named_models { let id = json!(name); if !available.contains(&id) { available.push(id); } } }
             if array { *value = value["models"].take(); }
             Ok(())
-        })?),
+        })?);
+        },
         "opencode" => receipt.files.push(FileEdit::prepare(crate::opencode_config::get_opencode_config_path(), |value| {
             let models = catalog.iter().map(|m| (m.id.clone(), opencode_model(m))).collect::<serde_json::Map<_,_>>();
             put(value, &["provider".into(), "varyai".into()], Some(json!({"npm":"@ai-sdk/openai-compatible","name":"Vary AI","options":{"baseURL":format!("{base}/v1"),"apiKey":token},"models":models})))?;

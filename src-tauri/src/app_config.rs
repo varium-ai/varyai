@@ -38,6 +38,7 @@ impl McpApps {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => false, // MCP is not managed for these apps.
             AppType::ClaudeDesktop => false,
@@ -60,6 +61,7 @@ impl McpApps {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => {} // MCP is not managed for these apps.
             AppType::ClaudeDesktop => {} // Claude Desktop 3P provider config doesn't support MCP here
@@ -136,6 +138,7 @@ impl SkillApps {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => false,
             AppType::OpenClaw => false, // OpenClaw doesn't support Skills
@@ -158,6 +161,7 @@ impl SkillApps {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => {}
             AppType::OpenClaw => {} // OpenClaw doesn't support Skills, ignore
@@ -425,6 +429,8 @@ pub enum AppType {
     Kimi,
     Qwen,
     ZCode,
+    #[serde(rename = "deepseek-harness")]
+    DeepSeekHarness,
     Trae,
     DoubaoWork,
 }
@@ -446,6 +452,7 @@ impl AppType {
             AppType::Kimi => "kimi",
             AppType::Qwen => "qwen",
             AppType::ZCode => "zcode",
+            AppType::DeepSeekHarness => "deepseek-harness",
             AppType::Trae => "trae",
             AppType::DoubaoWork => "doubaowork",
         }
@@ -468,6 +475,7 @@ impl AppType {
                 | AppType::Kimi
                 | AppType::Qwen
                 | AppType::ZCode
+                | AppType::DeepSeekHarness
                 | AppType::Trae
         )
     }
@@ -496,6 +504,7 @@ impl AppType {
             AppType::Kimi,
             AppType::Qwen,
             AppType::ZCode,
+            AppType::DeepSeekHarness,
             AppType::Trae,
             AppType::DoubaoWork,
         ]
@@ -523,6 +532,7 @@ impl FromStr for AppType {
             "kimi" => Ok(AppType::Kimi),
             "qwen" => Ok(AppType::Qwen),
             "zcode" => Ok(AppType::ZCode),
+            "deepseek-harness" | "deepseek_harness" => Ok(AppType::DeepSeekHarness),
             "trae" => Ok(AppType::Trae),
             "doubaowork" => Ok(AppType::DoubaoWork),
             other => Err(AppError::localized(
@@ -574,6 +584,7 @@ impl CommonConfigSnippets {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => None,
         }
@@ -596,6 +607,7 @@ impl CommonConfigSnippets {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => {}
         }
@@ -929,6 +941,7 @@ impl MultiAppConfig {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => return Ok(false),
         };
@@ -980,6 +993,7 @@ impl MultiAppConfig {
                 | AppType::Kimi
                 | AppType::Qwen
                 | AppType::ZCode
+                | AppType::DeepSeekHarness
                 | AppType::Trae
                 | AppType::DoubaoWork => continue, // Pi didn't exist in v3.6.x, skip
             };

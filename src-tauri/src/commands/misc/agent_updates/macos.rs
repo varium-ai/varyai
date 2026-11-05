@@ -41,16 +41,11 @@ fn signing_team(bundle: &Path) -> Result<String, String> {
 }
 
 fn installed_bundle(app: &str) -> Result<PathBuf, String> {
-    for root in [
-        PathBuf::from("/Applications"),
-        crate::config::get_home_dir().join("Applications"),
-    ] {
-        for name in agent_desktop_bundles(app) {
-            let path = root.join(name);
-            if path.is_dir() && !path.is_symlink() {
-                return Ok(path);
-            }
+    if let Some(path) = desktop_apps::find(app).filter(|path| !path.is_symlink()) {
+        if !desktop_apps::update_channel_matches(app, &path) {
+            return Err("unsupported".into());
         }
+        return Ok(path);
     }
     Err("notInstalled".to_owned())
 }

@@ -43,6 +43,11 @@ const APP_CONFIG: Array<{
   { id: "kimi", icon: APP_ICON_NAME.kimi, nameKey: "apps.kimi" },
   { id: "qwen", icon: APP_ICON_NAME.qwen, nameKey: "apps.qwen" },
   { id: "zcode", icon: APP_ICON_NAME.zcode, nameKey: "apps.zcode" },
+  {
+    id: "deepseek-harness",
+    icon: "deepseek",
+    nameKey: "apps.deepseek-harness",
+  },
 ];
 
 export function AppVisibilitySettings({

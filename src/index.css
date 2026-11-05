@@ -1,4 +1,5 @@
 @import "./components/layout/workspace.css";
+@import "./components/ui/dialog.css";
 
 @tailwind base;
 @tailwind components;
@@ -164,46 +165,31 @@ html[data-window-active="false"] .status-heartbeat {
   transition-duration: 0s;
 }
 
-/* Preserve Tailwind centering while Radix Presence waits for the exit animation. */
+/* Center through layout so animation and focus cannot replace the position. */
+.vary-dialog-centered {
+  inset: 0;
+  margin: auto;
+}
+
 @keyframes vary-dialog-in {
   from {
     opacity: 0;
-    transform: translate3d(
-        var(--tw-translate-x, 0),
-        var(--tw-translate-y, 0),
-        0
-      )
-      scale(0.95);
+    transform: scale(0.95);
   }
   to {
     opacity: 1;
-    transform: translate3d(
-        var(--tw-translate-x, 0),
-        var(--tw-translate-y, 0),
-        0
-      )
-      scale(1);
+    transform: scale(1);
   }
 }
 
 @keyframes vary-dialog-out {
   from {
     opacity: 1;
-    transform: translate3d(
-        var(--tw-translate-x, 0),
-        var(--tw-translate-y, 0),
-        0
-      )
-      scale(1);
+    transform: scale(1);
   }
   to {
     opacity: 0;
-    transform: translate3d(
-        var(--tw-translate-x, 0),
-        var(--tw-translate-y, 0),
-        0
-      )
-      scale(0.95);
+    transform: scale(0.95);
   }
 }
 

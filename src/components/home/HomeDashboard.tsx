@@ -22,6 +22,8 @@ import { resolveCodexOfficialIdentity } from "@/utils/providerCapabilities";
 import { cn } from "@/lib/utils";
 import { QoderCertificatePanel } from "@/components/QoderCertificatePanel";
 import { DoubaoWorkPanel } from "@/components/DoubaoWorkPanel";
+import { DoubaoWorkCheckinPanel } from "@/components/DoubaoWorkCheckinPanel";
+import { WorkBuddyCheckinPanel } from "@/components/WorkBuddyCheckinPanel";
 import { ProviderList } from "@/components/providers/ProviderList";
 import { ManagedAppTabs } from "@/components/home/ManagedAppTabs";
 import { DEFAULT_PROXY_PORT } from "@/types/proxy";
@@ -64,7 +66,9 @@ function getProviderModel(
   const firstModel = models[0];
 
   if (
-    ["qoder", "trae", "kimi", "qwen", "zcode"].includes(appId) &&
+    ["qoder", "trae", "kimi", "qwen", "zcode", "deepseek-harness"].includes(
+      appId,
+    ) &&
     models.length > 0
   )
     return models
@@ -297,8 +301,15 @@ function ProviderIdentity({
   const model = getProviderModel(provider, appId);
   const endpoint = getProviderEndpoint(provider, appId);
   const credentialStatus =
-    ["workbuddy", "qoder", "trae", "kimi", "qwen", "zcode"].includes(appId) &&
-    provider.category === "official"
+    [
+      "workbuddy",
+      "qoder",
+      "trae",
+      "kimi",
+      "qwen",
+      "zcode",
+      "deepseek-harness",
+    ].includes(appId) && provider.category === "official"
       ? t("desktopModels.officialLogin")
       : hasProviderCredential(provider)
         ? t("homeAudit.credentialConfigured")
@@ -482,6 +493,8 @@ export function HomeDashboard({
                 </aside>
               )}
               {activeApp === "qoder" && <QoderCertificatePanel />}
+              {activeApp === "workbuddy" && <WorkBuddyCheckinPanel />}
+              {activeApp === "doubaowork" && <DoubaoWorkCheckinPanel />}
 
               {activeApp === "doubaowork" ? (
                 <DoubaoWorkPanel />

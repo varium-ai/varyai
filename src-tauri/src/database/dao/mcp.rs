@@ -99,6 +99,7 @@ impl Database {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => None,
         };

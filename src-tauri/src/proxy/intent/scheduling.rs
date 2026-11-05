@@ -27,6 +27,8 @@ pub(crate) struct Health {
     windows: Vec<Window>,
     rest_until: i64,
     account: bool,
+    plan: Option<String>,
+    plan_at: i64,
     credits: bool,
     credits_at: i64,
     tokens: f64,
@@ -90,6 +92,7 @@ impl Scheduling {
         let state = self.account.try_lock().ok()?;
         let speed = self.speed.try_lock().ok()?;
         Some(super::trace::Telemetry {
+            plan: state.plan.clone(),
             rest_until: speed.rest_until,
             sunk_at: (state.sunk > 0).then_some(state.sunk_at),
             windows: state
@@ -147,6 +150,10 @@ impl Scheduling {
             if other.credits_at > state.credits_at {
                 state.credits = other.credits;
                 state.credits_at = other.credits_at;
+            }
+            if other.plan_at > state.plan_at {
+                state.plan = other.plan;
+                state.plan_at = other.plan_at;
             }
         }
     }
@@ -231,6 +238,7 @@ impl Scheduling {
         {
             return;
         }
+        self.observe_plan(value.get("plan_type"), now);
         self.observe_windows(
             &value["rate_limits"],
             ["primary", "secondary"],
@@ -244,6 +252,24 @@ impl Scheduling {
                 .or_else(|| value["rate_limits"].get("credits")),
             now,
         );
+    }
+    // Publish only recognized subscription names, never arbitrary upstream strings.
+    fn observe_plan(&self, value: Option<&Value>, now: i64) {
+        let plan = match value.and_then(Value::as_str) {
+            Some("free") => "ChatGPT Free",
+            Some("plus") => "ChatGPT Plus",
+            Some("pro") => "ChatGPT Pro",
+            Some("team" | "business") => "ChatGPT Business",
+            Some("enterprise") => "ChatGPT Enterprise",
+            Some("edu") => "ChatGPT Edu",
+            _ => return,
+        };
+        if let Ok(mut state) = self.account.try_lock() {
+            if state.account && now >= state.plan_at {
+                state.plan = Some(plan.into());
+                state.plan_at = now;
+            }
+        }
     }
     fn observe_windows(&self, value: &Value, fields: [&str; 2], span: &str, scale: i64, now: i64) {
         let mut windows = Vec::new();
@@ -370,6 +396,7 @@ impl Scheduling {
         }
         if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
             let now = chrono::Utc::now().timestamp();
+            self.observe_plan(value.get("plan_type"), now);
             self.observe_windows(
                 &value["rate_limit"],
                 ["primary_window", "secondary_window"],
@@ -689,6 +716,37 @@ fn order(
 mod tests {
     use super::*;
     use crate::services::intent_routing::RoutingStrategy;
+
+    #[test]
+    fn subscription_plan_observation_uses_only_known_account_metadata() {
+        let state = Scheduling::new(true);
+        state.observe_event(
+            &serde_json::json!({
+                "type":"codex.rate_limits", "plan_type":"plus", "rate_limits":{}
+            }),
+            100,
+        );
+        let observed = serde_json::to_value(state.trace_account()).unwrap();
+        assert_eq!(observed["plan"], "ChatGPT Plus");
+        state.observe_event(&serde_json::json!({
+            "type":"codex.rate_limits", "plan_type":"synthetic-private-unknown", "rate_limits":{}
+        }), 200);
+        assert_eq!(
+            serde_json::to_value(state.trace_account()).unwrap()["plan"],
+            "ChatGPT Plus"
+        );
+        let key = Scheduling::new(false);
+        key.observe_event(
+            &serde_json::json!({
+                "type":"codex.rate_limits", "plan_type":"pro", "rate_limits":{}
+            }),
+            100,
+        );
+        assert!(serde_json::to_value(key.trace_account())
+            .unwrap()
+            .get("plan")
+            .is_none());
+    }
 
     #[test]
     fn trace_observation_never_waits_for_scheduler_locks() -> Result<(), Box<dyn std::error::Error>>

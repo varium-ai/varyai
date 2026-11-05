@@ -151,6 +151,7 @@ impl McpService {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => {}
         }
@@ -195,6 +196,7 @@ impl McpService {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => {}
         }
@@ -251,6 +253,7 @@ impl McpService {
                 | AppType::Kimi
                 | AppType::Qwen
                 | AppType::ZCode
+                | AppType::DeepSeekHarness
                 | AppType::Trae
                 | AppType::DoubaoWork
         ) {

@@ -12,6 +12,7 @@ const STARTING_MODEL_APPS: &[&str] = &[
     "kimi",
     "qwen",
     "zcode",
+    "deepseek-harness",
 ];
 
 #[derive(Serialize)]
@@ -64,12 +65,20 @@ fn selection(app: &str) -> Result<Option<String>, String> {
         }
         "openclaw" => crate::openclaw_config::get_openclaw_config_path(),
         "hermes" => crate::hermes_config::get_hermes_config_path(),
-        "kimi" | "qwen" | "zcode" => {
+        "kimi" | "qwen" | "zcode" | "deepseek-harness" => {
             crate::services::agent_clients::config_path(app).map_err(|_| FAILED)?
         }
         _ => return Err(FAILED.into()),
     };
     read_selection(app, &path)
+}
+
+pub(crate) fn starting_model(app: &str) -> Result<Option<String>, String> {
+    if STARTING_MODEL_APPS.contains(&app) {
+        selection(app)
+    } else {
+        Ok(None)
+    }
 }
 
 fn model_string(value: Option<&Value>) -> Result<Option<String>, String> {
@@ -84,7 +93,7 @@ fn model_string(value: Option<&Value>) -> Result<Option<String>, String> {
         || text.contains("://")
         || text
             .chars()
-            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '?' | '#' | '@' | '\\'))
+            .any(|c| c.is_control() || matches!(c, '?' | '#' | '@' | '\\'))
     {
         return Err(FAILED.into());
     }
@@ -109,6 +118,7 @@ fn read_selection(app: &str, path: &Path) -> Result<Option<String>, String> {
     let format = match app {
         "codex" | "grokbuild" | "kimi" => Format::Toml,
         "hermes" => Format::Yaml,
+        "deepseek-harness" => Format::Cordis,
         "opencode" | "openclaw" | "pi" => Format::Json5,
         _ => Format::Json,
     };
@@ -117,6 +127,9 @@ fn read_selection(app: &str, path: &Path) -> Result<Option<String>, String> {
         return Err(FAILED.into());
     }
     match app {
+        "deepseek-harness" => {
+            model_string(crate::services::deepseek_harness::selection(&value).get("model"))
+        }
         "claude" => model_string(field(&value, &["env", "ANTHROPIC_MODEL"])?)?
             .map_or_else(|| model_string(value.get("model")), |model| Ok(Some(model))),
         "codex" => {
@@ -181,8 +194,12 @@ mod tests {
             ("hermes", "model:\n  default: native-hermes\n", "native-hermes"),
             ("pi", r#"{"defaultModel":"native-pi","defaultProvider":"synthetic-provider"}"#, "native-pi"),
             ("kimi", "default_model = 'native-kimi'\n", "native-kimi"),
+            ("kimi", "default_model = 'GPT Example · Test provider · VaryAI'\n", "GPT Example · Test provider · VaryAI"),
             ("qwen", r#"{"model":{"name":"native-qwen"}}"#, "native-qwen"),
+            ("qwen", r#"{"model":{"name":"GPT Example · Test provider · VaryAI"}}"#, "GPT Example · Test provider · VaryAI"),
             ("zcode", r#"{"config":{"defaultModelSelection":{"modelId":"native-zcode"}}}"#, "native-zcode"),
+            ("zcode", r#"{"config":{"defaultModelSelection":{"modelId":"GPT Example · Test provider · VaryAI"}}}"#, "GPT Example · Test provider · VaryAI"),
+            ("deepseek-harness", "- id: agent-default-model\n  config:\n    provider: deepseek-official\n    model: native-deepseek\n", "native-deepseek"),
         ] {
             let dir = tempfile::tempdir().map_err(|_| FAILED)?;
             let path = dir.path().join("config");

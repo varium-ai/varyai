@@ -756,35 +756,39 @@ fn test_chinese_id_card_checksum() {
 }
 
 #[test]
-fn test_large_payload_fast_passthrough() {
+fn test_large_payload_inspection_and_redaction() {
     let large_code = "fn fibonacci(n: u64) -> u64 { match n { 0 => 0, 1 => 1, _ => fibonacci(n - 1) + fibonacci(n - 2) } }\n".repeat(5000);
     assert!(large_code.len() > 400_000, "Text size is > 400KB");
 
-    let body = json!({
+    let mut body = json!({
         "messages": [
             {
                 "role": "user",
-                "content": large_code
+                "content": large_code.clone()
             }
         ]
     });
 
-    // Measure steady-state payload inspection, not process-wide lazy regex compilation.
-    let warmup = SecurityAuditEngine::inspect_request(&json!({"messages":[{
-        "role":"user", "content":"synthetic warmup"
-    }]}));
-    assert!(!warmup.blocked && warmup.findings.is_empty());
-    let start = std::time::Instant::now();
-    let res = SecurityAuditEngine::inspect_request(&body);
-    let elapsed = start.elapsed();
+    let runtime = SecurityRuntimeConfig::default();
+    let res = SecurityAuditEngine::inspect_request_with_runtime(&body, &runtime);
 
     assert!(!res.blocked);
     assert!(res.findings.is_empty());
-    assert!(
-        elapsed.as_millis() < 50,
-        "Large payload inspection must be ultra-fast (was {:?})",
-        elapsed
-    );
+
+    // A large clean prefix must not cause inspection to skip trailing credentials.
+    let secret = format!("ghp_{}", "a".repeat(36));
+    body["messages"][0]["content"] = json!(format!("{large_code}{secret}"));
+    let res = SecurityAuditEngine::inspect_and_redact_with_runtime(&mut body, &runtime);
+
+    assert!(!res.blocked);
+    assert_eq!(res.findings.len(), 1);
+    assert_eq!(res.findings[0].rule_id, "github_token");
+    assert!(!res.findings[0].matched_snippet_masked.contains(&secret));
+    let Some(content) = body["messages"][0]["content"].as_str() else {
+        panic!("Redacted message must retain string content");
+    };
+    assert!(content.starts_with(&large_code));
+    assert!(!content.contains(&secret));
 }
 
 #[tokio::test]

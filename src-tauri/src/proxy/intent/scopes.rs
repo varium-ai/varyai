@@ -20,6 +20,8 @@ pub(super) struct Conversation {
     pub bindings: Arc<tokio::sync::Mutex<Bindings>>,
     pub history: Arc<CodexChatHistoryStore>,
     pub shadow: Arc<GeminiShadowStore>,
+    // The scope identity freezes the exact ordered destination set.
+    pub official: Arc<super::official_bridge::History>,
 }
 
 pub(super) struct Durable {
@@ -70,8 +72,13 @@ fn references_with(body: &Value, contains: impl Fn(&str, &str) -> bool) -> bool 
         })
     })
 }
-fn references(snapshot: &continuation::Snapshot, body: &Value) -> bool {
-    references_with(body, |kind, id| {
+fn references(snapshot: &continuation::Snapshot, body: &Value, consumer: &str) -> bool {
+    let projection = (consumer == "agent:trae").then(|| {
+        trae::projection(body, |id| {
+            snapshot.calls.contains_key(&continuation::hash("call", id))
+        })
+    });
+    references_with(projection.as_ref().unwrap_or(body), |kind, id| {
         let map = match kind {
             "response" => &snapshot.responses,
             "call" => &snapshot.calls,
@@ -91,8 +98,29 @@ impl Conversations {
         body: &Value,
         store: Option<Arc<continuation::Store>>,
     ) -> Result<Arc<Conversation>, &'static str> {
+        self.acquire_durable_with_history(consumer, session, name, body, store, false)
+    }
+
+    pub fn acquire_durable_with_history(
+        &self,
+        consumer: &str,
+        session: &Session,
+        name: Option<&str>,
+        body: &Value,
+        store: Option<Arc<continuation::Store>>,
+        portable_history: bool,
+    ) -> Result<Arc<Conversation>, &'static str> {
         let Some(store) = store else {
-            return self.acquire(consumer, &session.bindings, name, body);
+            if !portable_history {
+                return self.acquire(consumer, &session.bindings, name, body);
+            }
+            return self.acquire_with_history(
+                consumer,
+                &session.bindings,
+                name,
+                body,
+                portable_history,
+            );
         };
         let Some(targets) = session
             .targets
@@ -100,7 +128,13 @@ impl Conversations {
             .map(Target::continuation_destination)
             .collect::<Option<Vec<_>>>()
         else {
-            return self.acquire(consumer, &session.bindings, name, body);
+            return self.acquire_with_history(
+                consumer,
+                &session.bindings,
+                name,
+                body,
+                portable_history,
+            );
         };
         if targets
             .iter()
@@ -129,7 +163,7 @@ impl Conversations {
             if name.as_ref().is_some_and(|name| name != &id) {
                 continue;
             }
-            if name.is_none() && !references(&snapshot, body) {
+            if name.is_none() && !references(&snapshot, body, consumer) {
                 continue;
             }
             if entries
@@ -187,6 +221,7 @@ impl Conversations {
             &session.bindings,
             name.as_deref(),
             body,
+            portable_history,
         )?;
         if let Ok(mut bindings) = state.bindings.try_lock() {
             if bindings.durable.is_none() {
@@ -217,11 +252,29 @@ impl Conversations {
         name: Option<&str>,
         body: &Value,
     ) -> Result<Arc<Conversation>, &'static str> {
+        self.acquire_with_history(consumer, identity, name, body, false)
+    }
+
+    fn acquire_with_history(
+        &self,
+        consumer: &str,
+        identity: &Arc<tokio::sync::Mutex<Bindings>>,
+        name: Option<&str>,
+        body: &Value,
+        portable_history: bool,
+    ) -> Result<Arc<Conversation>, &'static str> {
         let mut entries = self.0.lock().map_err(|_| "routing_state_unavailable")?;
         entries
             .retain(|e| e.touched.elapsed() < CONVERSATION_TTL || Arc::strong_count(&e.state) > 1);
         let name = name.map(|name| continuation::hash("conversation", name));
-        Self::select(&mut entries, consumer, identity, name.as_deref(), body)
+        Self::select(
+            &mut entries,
+            consumer,
+            identity,
+            name.as_deref(),
+            body,
+            portable_history,
+        )
     }
 
     fn select(
@@ -230,6 +283,7 @@ impl Conversations {
         identity: &Arc<tokio::sync::Mutex<Bindings>>,
         name: Option<&str>,
         body: &Value,
+        portable_history: bool,
     ) -> Result<Arc<Conversation>, &'static str> {
         let matches = |e: &Entry| e.consumer == consumer && Arc::ptr_eq(&e.identity, identity);
         let continuation = body
@@ -262,7 +316,8 @@ impl Conversations {
             let mut found = None;
             for (index, entry) in entries.iter().enumerate().filter(|(_, e)| matches(e)) {
                 if let Ok(bindings) = entry.state.bindings.try_lock() {
-                    let evidence = references_with(body, |kind, id| {
+                    let projection = bindings.continuation_projection(consumer, body);
+                    let evidence = references_with(&projection, |kind, id| {
                         let map = match kind {
                             "response" => &bindings.responses,
                             "call" => &bindings.calls,
@@ -271,7 +326,7 @@ impl Conversations {
                         };
                         map.contains_key(&continuation::hash(kind, id))
                     });
-                    match bindings.resolve(body, None) {
+                    match bindings.resolve(&projection, None) {
                         Ok(Some(_)) => {
                             if found.is_some() {
                                 return Err("routing_ambiguous_continuation");
@@ -295,7 +350,9 @@ impl Conversations {
             entries[index].touched = Instant::now();
             return Ok(entries[index].state.clone());
         }
-        if continuation && name.is_none() {
+        // Full ownership discovery and durable destination checks run first.
+        // Only a self-contained transcript with no known owner may start fresh.
+        if continuation && name.is_none() && !portable_history {
             return Err("routing_unknown_continuation");
         }
         if entries.len() >= MAX_CONVERSATIONS {

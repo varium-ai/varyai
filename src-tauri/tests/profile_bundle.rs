@@ -27,6 +27,7 @@ fn seed() -> cc_switch_lib::AppState {
         ".kimi-code",
         ".qwen",
         ".zcode",
+        ".dsh",
         "Library",
         "AppData",
     ] {
@@ -437,8 +438,9 @@ fn captures_every_provider_capable_agent_instead_of_only_the_original_three() {
     let payload: serde_json::Value = serde_json::from_str(&profile.payload).unwrap();
     assert_eq!(
         payload["bundle"]["selections"].as_array().unwrap().len(),
-        15
+        apps.len()
     );
+    assert!(apps.contains(&AppType::DeepSeekHarness));
     for selection in payload["bundle"]["selections"].as_array().unwrap() {
         assert!(
             selection.get("library").is_some(),
@@ -1205,7 +1207,7 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
                 .unwrap();
             let request: serde_json::Value = serde_json::from_str(&line).unwrap();
             let result=match request["op"].as_str().unwrap(){
-            "health"=>json!({"ready":true,"enabled":false,"revision":2,"modelReplacement":true}),
+            "health"=>json!({"ready":true,"enabled":false,"revision":9,"modelVerification":1,"startingModel":1,"modelReplacement":true}),
             "list"=>json!(server_models.lock().unwrap().iter().map(|(id,c)|json!({"id":id,"name":c["models"][0]["model"],"displayName":format!("VaryAI/{id}/{}",c["models"][0]["model"].as_str().unwrap()),"baseUrl":c["baseUrl"]})).collect::<Vec<_>>()),
             "replace"=>{
                 let mut models = server_models.lock().unwrap();
@@ -1391,13 +1393,10 @@ fn supported_file_based_agents_apply_as_one_bundle_and_undo_together() {
         .filter(|app| !matches!(app, AppType::DoubaoWork | AppType::Trae))
         .filter(|app| *app != AppType::ClaudeDesktop || cfg!(any(target_os = "macos", windows)))
         .collect();
+    assert!(apps.contains(&AppType::DeepSeekHarness));
     assert_eq!(
         apps.len(),
-        if cfg!(any(target_os = "macos", windows)) {
-            14
-        } else {
-            13
-        }
+        AppType::all().count() - 2 - usize::from(!cfg!(any(target_os = "macos", windows)))
     );
     if apps.contains(&AppType::ClaudeDesktop) {
         let mut official = Provider::with_id(

@@ -132,6 +132,8 @@ pub struct ProxyTakeoverStatus {
     pub qwen: bool,
     #[serde(default)]
     pub zcode: bool,
+    #[serde(default, rename = "deepseek-harness")]
+    pub deepseek_harness: bool,
     #[serde(default)]
     pub trae: bool,
     #[serde(default)]
@@ -168,6 +170,7 @@ impl ProxyTakeoverStatus {
             || self.kimi
             || self.qwen
             || self.zcode
+            || self.deepseek_harness
             || self.pi
             || self.trae
             || self.trae_waiting
@@ -436,6 +439,7 @@ mod tests {
         for field in [
             "claude-desktop",
             "zcode",
+            "deepseek-harness",
             "kimi",
             "qwen",
             "pi",

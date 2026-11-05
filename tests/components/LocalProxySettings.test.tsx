@@ -8,6 +8,9 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalProxySettings } from "@/components/settings/LocalProxySettings";
 import type { SettingsFormState } from "@/hooks/useSettings";
+import { ROUTING_APP_IDS } from "@/config/appConfig";
+
+const bulkApps = ROUTING_APP_IDS.filter((app) => app !== "doubaowork");
 
 const { startProxyServer, stopWithRestore, setTakeoverForApp } = vi.hoisted(
   () => ({
@@ -112,55 +115,14 @@ describe("LocalProxySettings", () => {
         screen.getByText(enabled ? "Enable routing" : "Disable routing"),
       );
 
-      await waitFor(() => expect(setTakeoverForApp).toHaveBeenCalledTimes(12));
+      await waitFor(() =>
+        expect(setTakeoverForApp).toHaveBeenCalledTimes(bulkApps.length),
+      );
       expect(
         setTakeoverForApp.mock.calls.map(([variables]) => variables),
-      ).toEqual([
-        { appType: "claude", enabled },
-        { appType: "codex", enabled },
-        { appType: "gemini", enabled },
-        { appType: "grokbuild", enabled },
-        { appType: "claude-desktop", enabled },
-        { appType: "workbuddy", enabled },
-        { appType: "qoder", enabled },
-        { appType: "trae", enabled },
-        { appType: "kimi", enabled },
-        { appType: "qwen", enabled },
-        { appType: "zcode", enabled },
-        { appType: "pi", enabled },
-      ]);
+      ).toEqual(bulkApps.map((appType) => ({ appType, enabled })));
       expect(operations).toEqual(
-        enabled
-          ? [
-              "start",
-              "claude",
-              "codex",
-              "gemini",
-              "grokbuild",
-              "claude-desktop",
-              "workbuddy",
-              "qoder",
-              "trae",
-              "kimi",
-              "qwen",
-              "zcode",
-              "pi",
-            ]
-          : [
-              "claude",
-              "codex",
-              "gemini",
-              "grokbuild",
-              "claude-desktop",
-              "workbuddy",
-              "qoder",
-              "trae",
-              "kimi",
-              "qwen",
-              "zcode",
-              "pi",
-              "stop",
-            ],
+        enabled ? ["start", ...bulkApps] : [...bulkApps, "stop"],
       );
       await waitFor(() =>
         expect(screen.getByText("Enable routing")).toBeEnabled(),
@@ -180,7 +142,9 @@ describe("LocalProxySettings", () => {
     expect(startProxyServer).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText("Confirm routing"));
 
-    await waitFor(() => expect(setTakeoverForApp).toHaveBeenCalledTimes(12));
+    await waitFor(() =>
+      expect(setTakeoverForApp).toHaveBeenCalledTimes(bulkApps.length),
+    );
     expect(onAutoSave).toHaveBeenCalledWith({ proxyConfirmed: true });
     expect(startProxyServer).toHaveBeenCalledOnce();
   });
@@ -201,7 +165,9 @@ describe("LocalProxySettings", () => {
       />,
     );
     fireEvent.click(screen.getByText("Enable routing"));
-    await waitFor(() => expect(setTakeoverForApp).toHaveBeenCalledTimes(12));
+    await waitFor(() =>
+      expect(setTakeoverForApp).toHaveBeenCalledTimes(bulkApps.length),
+    );
     expect(screen.getByText("Enable routing")).toBeDisabled();
     expect(screen.getByText("Disable routing")).toBeDisabled();
     await act(async () => finishLastApp());

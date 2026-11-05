@@ -1,6 +1,11 @@
-import { useRef, useState } from "react";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { settingsApi } from "@/lib/api/settings";
+import { useSyncExternalStore } from "react";
+import {
+  useQueries,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
+import { settingsApi, type AgentVersion } from "@/lib/api/settings";
 import { compareVersions, isUpdateAvailable } from "@/lib/version";
 import type { AppId } from "@/lib/api";
 import { proxyApi } from "@/lib/api/proxy";
@@ -23,26 +28,25 @@ export type AgentUpdateResult = {
   outcome: "changed" | "failed" | "unverified" | "preflightFailed";
 };
 const cliKey = (tool: string) => ["agent-cli-version", tool];
+const desktopKey = ["agent-desktop-versions"];
 
-export function useAgentUpdates(installed: AppId[]) {
-  const client = useQueryClient();
-  const locked = useRef(false);
-  const executing = useRef(false);
-  const [busy, setBusy] = useState(false);
-  const [current, setCurrent] = useState<AppId | null>(null);
-  const [progress, setProgress] = useState({ index: 0, total: 0 });
-  const [pending, setPending] = useState<{
+type LifecycleState = {
+  busy: boolean;
+  reserved: AppId[];
+  active: AppId[];
+  progress: { index: number; total: number };
+  pending: {
     apps: AppId[];
     ambiguous: AppId[];
-  } | null>(null);
-  const [results, setResults] = useState<AgentUpdateResult[]>([]);
-  const [barShown, setBarShown] = useState(false);
-  const [installTarget, setInstallTarget] = useState<{
+  } | null;
+  results: AgentUpdateResult[];
+  barShown: boolean;
+  installTarget: {
     app: AppId;
     website: string;
-  } | null>(null);
-  const [installing, setInstalling] = useState<AppId | null>(null);
-  const [installResult, setInstallResult] = useState<{
+  } | null;
+  installing: AppId | null;
+  installResult: {
     app: AppId;
     outcome:
       | "installed"
@@ -51,7 +55,82 @@ export function useAgentUpdates(installed: AppId[]) {
       | "checkFailed"
       | "alreadyInstalled"
       | "websiteOpened";
-  } | null>(null);
+  } | null;
+};
+function createLifecycleStore() {
+  let state: LifecycleState = {
+    busy: false,
+    reserved: [],
+    active: [],
+    progress: { index: 0, total: 0 },
+    pending: null,
+    results: [],
+    barShown: false,
+    installTarget: null,
+    installing: null,
+    installResult: null,
+  };
+  const listeners = new Set<() => void>();
+  return {
+    locked: { current: false },
+    executing: { current: false },
+    snapshot: () => state,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    set: <K extends keyof LifecycleState>(key: K, value: LifecycleState[K]) => {
+      state = { ...state, [key]: value };
+      listeners.forEach((listener) => listener());
+    },
+  };
+}
+// Keep tasks and their guards alive when the workspace page unmounts.
+const lifecycleStores = new WeakMap<
+  QueryClient,
+  ReturnType<typeof createLifecycleStore>
+>();
+
+export function useAgentUpdates(installed: AppId[]) {
+  const client = useQueryClient();
+  let existingStore = lifecycleStores.get(client);
+  if (!existingStore) {
+    existingStore = createLifecycleStore();
+    lifecycleStores.set(client, existingStore);
+  }
+  const store = existingStore;
+  const state = useSyncExternalStore(store.subscribe, store.snapshot);
+  const { locked, executing } = store;
+  const {
+    busy,
+    active,
+    progress,
+    pending,
+    results,
+    barShown,
+    installTarget,
+    installing,
+    installResult,
+  } = state;
+  const setBusy = (value: LifecycleState["busy"]) => store.set("busy", value);
+  const setActive = (value: LifecycleState["active"]) =>
+    store.set("active", value);
+  const setProgress = (value: LifecycleState["progress"]) =>
+    store.set("progress", value);
+  const setPending = (value: LifecycleState["pending"]) =>
+    store.set("pending", value);
+  const setResults = (value: LifecycleState["results"]) =>
+    store.set("results", value);
+  const setBarShown = (value: LifecycleState["barShown"]) =>
+    store.set("barShown", value);
+  const setInstallTarget = (value: LifecycleState["installTarget"]) =>
+    store.set("installTarget", value);
+  const setInstalling = (value: LifecycleState["installing"]) =>
+    store.set("installing", value);
+  const setInstallResult = (value: LifecycleState["installResult"]) =>
+    store.set("installResult", value);
   const apps = installed.filter((app) => !!cliTools[app]);
   const queries = useQueries({
     queries: apps.map((app) => ({
@@ -67,20 +146,27 @@ export function useAgentUpdates(installed: AppId[]) {
   });
   const cli = new Map(apps.map((app, i) => [app, queries[i].data]));
   const desktop = useQuery({
-    queryKey: ["agent-desktop-versions"],
+    queryKey: desktopKey,
     queryFn: settingsApi.getAgentVersions,
     staleTime: 300_000,
     retry: false,
     refetchOnWindowFocus: false,
   });
-  const updatable = apps.filter((app) =>
-    isUpdateAvailable(cli.get(app)?.version, cli.get(app)?.latest_version),
-  );
+  const updatable = installed.filter((app) => {
+    const info = desktop.data?.[app];
+    return cliTools[app]
+      ? isUpdateAvailable(cli.get(app)?.version, cli.get(app)?.latest_version)
+      : info?.supported &&
+          info.installed &&
+          info.source === "desktop" &&
+          isUpdateAvailable(info.version, info.latest_version);
+  });
 
   function unlock() {
     locked.current = false;
     setBusy(false);
-    setCurrent(null);
+    store.set("reserved", []);
+    setActive([]);
   }
   async function execute(selected: AppId[]) {
     if (executing.current) return;
@@ -88,42 +174,79 @@ export function useAgentUpdates(installed: AppId[]) {
     setPending(null);
     const completed: AgentUpdateResult[] = [];
     try {
-      // Global package managers must never write concurrently, even for different tools.
-      for (const [index, app] of selected.entries()) {
-        setCurrent(app);
-        setProgress({ index: index + 1, total: selected.length });
-        const tool = cliTools[app]!;
-        const from = cli.get(app)?.version;
-        let failed = false;
-        try {
-          await settingsApi.runToolLifecycleAction([tool], "update");
-        } catch {
-          failed = true;
-        }
-        let fresh:
-          | Awaited<ReturnType<typeof settingsApi.getToolVersions>>[number]
-          | undefined;
-        try {
-          fresh = (await settingsApi.getToolVersions([tool])).find(
-            (v) => v.name === tool,
+      setActive(selected);
+      await Promise.allSettled(
+        selected.map(async (app) => {
+          const tool = cliTools[app];
+          const from = tool
+            ? cli.get(app)?.version
+            : desktop.data?.[app]?.version;
+          let failed = false;
+          try {
+            if (tool) {
+              await settingsApi.runToolLifecycleAction([tool], "update");
+            } else {
+              await settingsApi.updateDesktopAgent(app);
+            }
+          } catch {
+            failed = true;
+          }
+          let to: string | null | undefined;
+          if (tool) {
+            try {
+              const fresh = (await settingsApi.getToolVersions([tool])).find(
+                (v) => v.name === tool,
+              );
+              client.setQueryData(cliKey(tool), fresh ?? null);
+              to = fresh?.version;
+            } catch {
+              // Never retain a stale version as evidence that the upgrade succeeded.
+              client.setQueryData(cliKey(tool), null);
+            }
+          } else {
+            let fresh: AgentVersion | undefined;
+            try {
+              fresh = (await settingsApi.getAgentVersions())[app];
+              if (
+                fresh?.supported &&
+                fresh.installed &&
+                fresh.source === "desktop"
+              ) {
+                to = fresh.version;
+              }
+            } catch {
+              // A failed post-update probe must clear the selected app's stale snapshot.
+            }
+            client.setQueryData<Record<string, AgentVersion>>(
+              desktopKey,
+              (current) => {
+                const next = { ...current };
+                if (fresh) next[app] = fresh;
+                else delete next[app];
+                return next;
+              },
+            );
+          }
+          const verified = !!to && !!from && compareVersions(to, from) > 0;
+          completed.push({
+            app,
+            from,
+            to,
+            outcome: failed ? "failed" : verified ? "changed" : "unverified",
+          });
+          setResults(
+            selected.flatMap((id) =>
+              completed.filter((result) => result.app === id),
+            ),
           );
-          client.setQueryData(cliKey(tool), fresh ?? null);
-        } catch {
-          // Never retain a stale version as evidence that the upgrade succeeded.
-          client.setQueryData(cliKey(tool), null);
-        }
-        const verified =
-          !!fresh?.version &&
-          !!from &&
-          compareVersions(fresh.version, from) > 0;
-        completed.push({
-          app,
-          from,
-          to: fresh?.version,
-          outcome: failed ? "failed" : verified ? "changed" : "unverified",
-        });
-        setResults([...completed]);
-      }
+          setActive(store.snapshot().active.filter((id) => id !== app));
+          store.set(
+            "reserved",
+            store.snapshot().reserved.filter((id) => id !== app),
+          );
+          setProgress({ index: completed.length, total: selected.length });
+        }),
+      );
     } finally {
       executing.current = false;
       unlock();
@@ -138,15 +261,20 @@ export function useAgentUpdates(installed: AppId[]) {
     if (!selected.length) return;
     // The ref also guards the preflight and confirmation windows before React commits.
     locked.current = true;
+    // Reserve the selected tools before preflight so connection writes cannot race it.
+    store.set("reserved", selected);
     setBusy(true);
     setBarShown(true);
     setResults([]);
     setProgress({ index: 0, total: selected.length });
     try {
-      const plans = await settingsApi.probeToolInstallations(
-        selected.map((app) => cliTools[app]!),
-      );
-      const ambiguous = selected.filter((app) => {
+      const selectedCli = selected.filter((app) => !!cliTools[app]);
+      const plans = selectedCli.length
+        ? await settingsApi.probeToolInstallations(
+            selectedCli.map((app) => cliTools[app]!),
+          )
+        : [];
+      const ambiguous = selectedCli.filter((app) => {
         const plan = plans.find((p) => p.tool === cliTools[app]);
         return !plan || plan.needs_confirmation || !plan.anchored;
       });
@@ -237,7 +365,16 @@ export function useAgentUpdates(installed: AppId[]) {
     desktop: desktop.data,
     updatable,
     busy,
-    current,
+    isBusy: (app: AppId | null) => {
+      const state = store.snapshot();
+      return (
+        app !== null &&
+        (state.reserved.includes(app) ||
+          state.installTarget?.app === app ||
+          state.installing === app)
+      );
+    },
+    active,
     progress,
     pending,
     results,

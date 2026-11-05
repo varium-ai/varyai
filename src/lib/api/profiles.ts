@@ -26,6 +26,10 @@ export interface ProfilePayload {
       app: AppId;
       providerId: string;
       models: Record<string, unknown>;
+      connection?: {
+        model: string;
+        visibility?: { only: boolean; ids: string[]; order?: string[] };
+      };
       providers?: { id: string; models: Record<string, unknown> }[];
       nativeModels?: unknown;
       library?: ProfileLibrary;

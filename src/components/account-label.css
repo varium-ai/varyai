@@ -1,0 +1,6 @@
+.account-mask {
+  display: inline-block;
+  filter: blur(3px);
+  user-select: none;
+  pointer-events: none;
+}

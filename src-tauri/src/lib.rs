@@ -47,6 +47,7 @@ mod telemetry;
 mod tool_risk_events;
 
 mod tray;
+mod tray_panel;
 mod usage_events;
 mod usage_script;
 mod workbuddy_config;
@@ -436,6 +437,10 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         // 拦截窗口关闭：根据设置决定是否最小化到托盘
         .on_window_event(|window, event| {
+            if window.label() == tray_panel::LABEL {
+                tray_panel::window_event(window, event);
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // 数据库版本过新的恢复模式下没有托盘可唤回，关闭即退出，避免应用隐身后台
                 let in_db_recovery = crate::init_status::get_init_error().is_some();
@@ -473,6 +478,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::default()
+                .with_denylist(&[tray_panel::LABEL])
                 .with_state_flags(window_state_flags())
                 .build(),
         )
@@ -1091,28 +1097,30 @@ pub fn run() {
             macos_quit::install(app.handle())?;
 
             // 创建动态托盘菜单
+            app.manage(tray_panel::PanelState::default());
             let menu = tray::create_tray_menu(app.handle(), &app_state)?;
 
             // 构建托盘
             let mut tray_builder = TrayIconBuilder::with_id(tray::TRAY_ID)
                 .tooltip("Vary AI") // 鼠标悬停提示
-                .on_tray_icon_event(|tray, event| match event {
-                    // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
-                    // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
-                    // refresh_all_usage_in_tray 内部有 10 秒防抖。
-                    TrayIconEvent::Enter { .. } | TrayIconEvent::Click { .. } => {
-                        let app = tray.app_handle().clone();
-                        tauri::async_runtime::spawn(async move {
-                            crate::tray::refresh_all_usage_in_tray(&app).await;
-                        });
+                .on_tray_icon_event(|tray, event| {
+                    if matches!(
+                        event,
+                        TrayIconEvent::Click {
+                            button: tauri::tray::MouseButton::Left,
+                            button_state: tauri::tray::MouseButtonState::Up,
+                            ..
+                        }
+                    ) && tray_panel::toggle(tray.app_handle()).is_err()
+                    {
+                        log::warn!("Unable to open tray panel");
                     }
-                    _ => log::debug!("unhandled event {event:?}"),
                 })
                 .menu(&menu)
                 .on_menu_event(|app, event| {
                     tray::handle_tray_menu_event(app, &event.id.0);
                 })
-                .show_menu_on_left_click(true);
+                .show_menu_on_left_click(false);
 
             #[cfg(target_os = "macos")]
             {
@@ -1165,6 +1173,20 @@ pub fn run() {
             let telemetry = Arc::new(crate::telemetry::TelemetryManager::load(telemetry_path));
             app.manage(telemetry.clone());
             telemetry.clone().start_worker();
+
+            if let Ok(directory) = app.path().app_local_data_dir() {
+                let checkin = Arc::new(services::workbuddy_checkin::Manager::new(
+                    directory.join("workbuddy-checkin.json"),
+                ));
+                app.manage(checkin.clone());
+                checkin.start_worker();
+                let doubao_checkin = Arc::new(services::doubao_checkin::Manager::new(
+                    directory.join("doubao-checkin.json"),
+                    app.state::<AppState>().db.clone(),
+                ));
+                app.manage(doubao_checkin.clone());
+                doubao_checkin.start_worker();
+            }
 
             // 初始化 SkillService
             let skill_service = SkillService::new();
@@ -1258,6 +1280,23 @@ pub fn run() {
                         log::error!("恢复 Live 配置失败: {e}");
                     } else {
                         log::info!("Live 配置已恢复");
+                    }
+                }
+
+                // Rename legacy Kimi groups after recovery and before routes are rebuilt.
+                {
+                    let _guard = state.proxy_service.lock_switch_for_app("kimi").await;
+                    let db = state.db.clone();
+                    match tauri::async_runtime::spawn_blocking(move || {
+                        crate::services::agent_clients::migrate_legacy_kimi_provider_names(&db)
+                    })
+                    .await
+                    {
+                        Ok(Ok(count)) if count > 0 => {
+                            log::info!("[Kimi] Migrated {count} legacy provider group names");
+                        }
+                        Ok(Ok(_)) => {}
+                        _ => log::warn!("[Kimi] Legacy provider name migration deferred"),
                     }
                 }
 
@@ -1416,6 +1455,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            tray_panel::tray_panel_resize,
+            tray_panel::tray_panel_hide,
+            tray_panel::tray_panel_open,
+            tray_panel::take_workspace_navigation,
+            tray_panel::broadcast_workspace_change,
+            tray_panel::tray_panel_quit,
             commands::list_agent_connections,
             commands::get_agent_model_catalog,
             commands::get_agent_native_models,
@@ -1426,9 +1471,19 @@ pub fn run() {
             commands::restart_agent_connection,
             commands::list_gateway_keys,
             commands::list_routing_upstreams,
+            commands::native_subscription_accounts,
+            commands::native_subscription_start,
+            commands::native_subscription_poll,
+            commands::native_subscription_cancel,
+            commands::native_subscription_import,
+            commands::native_subscription_remove,
+            commands::native_subscription_project,
+            commands::native_subscription_models,
             commands::preview_provider_import,
             commands::import_provider_sources,
             commands::routing_upstream_editor,
+            commands::routing_upstream_keys,
+            commands::reveal_routing_upstream_key,
             commands::save_codex_provider,
             commands::create_codex_provider,
             commands::codex_provider_models,
@@ -1438,6 +1493,7 @@ pub fn run() {
             commands::discover_routing_upstream_models,
             commands::probe_routing_upstream,
             commands::save_routing_upstream,
+            commands::fetch_provider_icon,
             commands::delete_routing_upstream,
             commands::list_intent_routing_providers,
             commands::routing_trace_snapshot,
@@ -1769,6 +1825,17 @@ pub fn run() {
             commands::save_qoder_settings,
             commands::get_workbuddy_live_provider_ids,
             commands::get_workbuddy_settings,
+            commands::get_workbuddy_checkin_status,
+            commands::check_in_workbuddy,
+            commands::set_workbuddy_auto_checkin,
+            commands::get_workbuddy_checkin_accounts,
+            commands::start_workbuddy_checkin_login,
+            commands::poll_workbuddy_checkin_login,
+            commands::cancel_workbuddy_checkin_login,
+            commands::remove_workbuddy_checkin_account,
+            commands::get_doubao_checkin_accounts,
+            commands::check_in_doubao,
+            commands::set_doubao_auto_checkin,
             commands::save_workbuddy_settings,
             commands::get_workbuddy_default_config_dir,
             // OpenClaw specific

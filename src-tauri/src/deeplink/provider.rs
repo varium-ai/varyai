@@ -157,6 +157,7 @@ pub(crate) fn build_provider_from_request(
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
         | AppType::DoubaoWork => {
             return Err(AppError::InvalidInput(

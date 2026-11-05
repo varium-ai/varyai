@@ -19,7 +19,7 @@ describe("dialog animation CSS", () => {
   });
 
   it.each(["vary-dialog-in", "vary-dialog-out"])(
-    "emits %s with scale, opacity and preserved centering",
+    "emits %s with scale and opacity without animating layout translation",
     (name) => {
       const frames = root.nodes.find(
         (node) =>
@@ -27,13 +27,24 @@ describe("dialog animation CSS", () => {
           node.name === "keyframes" &&
           node.params === name,
       );
-      expect(frames?.toString()).toContain("var(--tw-translate-x, 0)");
-      expect(frames?.toString()).toContain("var(--tw-translate-y, 0)");
+      expect(frames?.toString()).not.toContain("translate");
+      expect(frames?.toString()).not.toContain("--tw-translate");
       expect(frames?.toString()).toContain("scale(0.95)");
       expect(frames?.toString()).toContain("scale(1)");
       expect(frames?.toString()).toContain("opacity: 0");
     },
   );
+
+  it("centers through layout without percentage transforms or translations", () => {
+    const centering = root.nodes.find(
+      (node) =>
+        node.type === "rule" && node.selector === ".vary-dialog-centered",
+    );
+    expect(centering?.toString()).toContain("inset: 0");
+    expect(centering?.toString()).toContain("margin: auto");
+    expect(centering?.toString()).not.toContain("translate");
+    expect(centering?.toString()).not.toContain("transform");
+  });
 
   it("emits actual entry/exit animations and disables them for reduced motion", () => {
     const css = root.toString();

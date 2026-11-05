@@ -41,6 +41,7 @@ export interface ProxyTakeoverStatus {
   kimi?: boolean;
   qwen?: boolean;
   zcode?: boolean;
+  "deepseek-harness"?: boolean;
   claude: boolean;
   "claude-desktop"?: boolean;
   codex: boolean;

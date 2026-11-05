@@ -261,7 +261,7 @@ pub(crate) async fn prepare(
                 })
                 .and_then(super::model_preferences::name)
                 .unwrap_or(&model);
-            let label = format!("{} · {}", display, provider.name);
+            let label = format!("{} · {} · VaryAI", display, provider.name);
             if menu.default_model.is_none() || (current && Some(&model) == default.as_ref()) {
                 menu.default_model = Some(alias.clone());
             }
@@ -348,7 +348,7 @@ pub(crate) async fn prepare(
             group.id.clone(),
             MenuModel {
                 alias: alias.clone(),
-                label: format!("{} · routing group", group.name),
+                label: format!("{} · routing group · VaryAI", group.name),
                 description: "VaryAI routing group",
                 order: group_order.get(&group.id).copied().unwrap_or(usize::MAX),
             },
@@ -490,6 +490,7 @@ mod tests {
             .add_test_account_with_user_identity("account", "synthetic-access", "user")
             .await?;
         let db = Arc::new(crate::database::Database::memory()?);
+        db.set_intent_routing_auto_create(true)?;
         for (name, source, codex_settings) in [
             (
                 "Subscription",
@@ -528,6 +529,7 @@ mod tests {
             ),
         ] {
             db.save_routing_upstream(RoutingUpstream {
+                icon: None,
                 schema_version: 1,
                 id: String::new(),
                 revision: 0,
@@ -574,7 +576,7 @@ mod tests {
             ])
         );
         assert!(models.iter().any(|model| model.group == "Subscription"
-            && model.name == "Shared 0 · Subscription"
+            && model.name == "Shared 0 · Subscription · VaryAI"
             && model.context_window == Some(500000)));
         assert!(models.iter().any(|model| model.group == "Relay"));
         let official_alias = models
@@ -709,6 +711,7 @@ mod tests {
         Ok(())
     }
     #[tokio::test]
+    #[serial_test::serial]
     async fn provider_model_preferences_reach_every_shared_client(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -719,13 +722,56 @@ mod tests {
         let menu = prepare(manager, vec![source], vec![], None).await?;
         let models = crate::services::agent_connections::models(&menu);
         let model = models.first().ok_or("missing model")?;
-        assert_eq!(model.name, "My model · a");
+        assert_eq!(model.name, "My model · a · VaryAI");
         assert!(!model.images);
         assert!(model.reasoning_levels.is_empty());
         let pi = crate::services::agent_connections::pi_model(model);
-        assert_eq!(pi["name"], "My model · a");
+        assert_eq!(pi["name"], "My model · a · VaryAI");
         assert_eq!(pi["reasoning"], false);
         assert_eq!(pi["input"], json!(["text"]));
+        {
+            let _agent = crate::pi_config::test_support::TestAgentDir::at(dir.path());
+            let path = crate::pi_config::get_pi_settings_path()?;
+            let original = json!({"enabledModels":["native/model",format!("varyai/{}", model.id)]});
+            std::fs::write(&path, original.to_string())?;
+            let manager = crate::services::agent_connections::Manager {
+                root: dir.path().join("pi-receipts"),
+            };
+            let receipt = manager.build("pi", &menu, "http://127.0.0.1:1", &model.id)?;
+            manager.install(receipt.clone())?;
+            let native: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(crate::pi_config::get_pi_models_path()?)?)?;
+            assert_eq!(native["providers"]["varyai"]["models"][0]["id"], model.name);
+            assert_eq!(receipt.model_map.get(&model.name), Some(&model.id));
+            let settings: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+            assert_eq!(settings["defaultModel"], model.name);
+            assert_eq!(
+                settings["enabledModels"],
+                json!(["native/model", format!("varyai/{}", model.name)])
+            );
+            manager.disconnect("pi")?;
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path)?)?,
+                original
+            );
+        }
+        let codex = super::super::client::menu_catalog(&menu, "")?;
+        assert_eq!(codex["models"][0]["display_name"], model.name);
+        crate::qoder_config::with_test_dir(dir.path(), || -> Result<(), String> {
+            let manager = crate::services::agent_connections::Manager {
+                root: dir.path().join("receipts"),
+            };
+            manager.install(manager.build("qoder", &menu, "http://127.0.0.1:1", &model.id)?)?;
+            let config: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(crate::qoder_config::path()).map_err(|_| "fixture read")?,
+            )
+            .map_err(|_| "fixture JSON")?;
+            assert_eq!(
+                config["providers"]["varyai"]["models"][0]["displayName"],
+                model.name
+            );
+            manager.disconnect("qoder")
+        })?;
         let target = &menu
             .groups
             .values()
@@ -740,6 +786,84 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&wire)?;
         assert!(body.get("reasoning_effort").is_none());
         Ok(())
+    }
+    #[tokio::test]
+    async fn workbuddy_picker_uses_readable_names_and_preserves_distinct_routes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::services::agent_connections;
+        let dir = tempfile::tempdir()?;
+        let oauth = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let mut first = provider("first");
+        first.name = "Synthetic supplier".into();
+        let mut second = provider("second");
+        second.name = first.name.clone();
+        let menu = prepare(oauth, vec![first, second], vec![], None).await?;
+        let selected = menu.default_model.as_deref().ok_or("missing default")?;
+        crate::workbuddy_config::with_test_dir(
+            dir.path(),
+            || -> Result<(), Box<dyn std::error::Error>> {
+                let path = crate::workbuddy_config::get_workbuddy_config_path();
+                let native = json!({"id":"native","name":"Native","url":"https://synthetic.example/v1/chat/completions","apiKey":"synthetic"});
+                for original in [
+                    json!([native.clone()]),
+                    json!({"models":[native.clone()],"availableModels":["native"],"theme":"light"}),
+                ] {
+                    std::fs::write(&path, original.to_string())?;
+                    let manager = agent_connections::Manager {
+                        root: dir.path().join("receipts"),
+                    };
+                    let receipt =
+                        manager.build("workbuddy", &menu, "http://127.0.0.1:1", selected)?;
+                    manager.install(receipt.clone())?;
+                    let rows = crate::workbuddy_config::read_models()?;
+                    assert_eq!(rows[0], native);
+                    let expected = [
+                        "shared-model · Synthetic supplier · VaryAI",
+                        "shared-model · Synthetic supplier · VaryAI (2)",
+                    ];
+                    for (row, name) in rows[1..].iter().zip(expected) {
+                        assert_eq!(row["name"], name);
+                        assert_eq!(row["id"], name);
+                        let alias = receipt.model_map.get(name).ok_or("missing route")?;
+                        assert!(menu.groups.contains_key(alias));
+                        assert_eq!(row["supportsImages"], true);
+                        assert_eq!(
+                            row["reasoning"]["supportedEfforts"],
+                            json!(["low", "medium", "high"])
+                        );
+                    }
+                    assert_eq!(receipt.model_map.len(), 2);
+                    assert_eq!(
+                        receipt
+                            .model_map
+                            .values()
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len(),
+                        2
+                    );
+                    let installed: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(&path)?)?;
+                    if original.is_object() {
+                        assert_eq!(
+                            installed["availableModels"],
+                            json!(["native", expected[0], expected[1]])
+                        );
+                        assert_eq!(installed["theme"], "light");
+                    }
+                    let refreshed = manager
+                        .refresh("workbuddy", &menu, "http://127.0.0.1:1")?
+                        .ok_or("missing receipt")?;
+                    assert_eq!(refreshed.model_map, receipt.model_map);
+                    assert_eq!(crate::workbuddy_config::read_models()?, rows);
+                    manager.disconnect("workbuddy")?;
+                    assert_eq!(
+                        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path)?)?,
+                        original
+                    );
+                }
+                Ok(())
+            },
+        )
     }
     #[tokio::test]
     async fn named_reasoning_levels_reach_shared_clients_without_disabling_images(
@@ -807,8 +931,14 @@ mod tests {
             .await
             .expect("global direct menu");
         assert_eq!(menu.groups.len(), 2);
-        assert!(menu.models.values().any(|m| m.label.ends_with(" · a")));
-        assert!(menu.models.values().any(|m| m.label.ends_with(" · b")));
+        assert!(menu
+            .models
+            .values()
+            .any(|m| m.label.ends_with(" · a · VaryAI")));
+        assert!(menu
+            .models
+            .values()
+            .any(|m| m.label.ends_with(" · b · VaryAI")));
         assert!(menu.default_model.is_some());
     }
 
@@ -843,14 +973,14 @@ mod tests {
         let entries = projection["models"].as_array().expect("models");
         let direct = entries
             .iter()
-            .find(|e| e["display_name"] == "shared-model · a")
+            .find(|e| e["display_name"] == "shared-model · a · VaryAI")
             .expect("direct");
         assert_eq!(direct["context_window"], 1000000);
         assert_eq!(direct["max_context_window"], 1200000);
         assert_eq!(direct["auto_compact_token_limit"], 200000);
         let other = entries
             .iter()
-            .find(|e| e["display_name"] == "other-model · a")
+            .find(|e| e["display_name"] == "other-model · a · VaryAI")
             .expect("retargeted");
         assert_eq!(other["context_window"], 262144);
         assert_eq!(other["effective_context_window_percent"], 90);
@@ -909,7 +1039,7 @@ mod tests {
         assert_eq!(entries.len(), 3);
         for entry in entries {
             if entry["slug"] == "vary-auto/mixed-unknown"
-                || entry["display_name"] == "shared-model · known"
+                || entry["display_name"] == "shared-model · known · VaryAI"
             {
                 assert_eq!(entry["context_window"], 500000);
             } else {
@@ -1069,6 +1199,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
         let record = RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -1169,9 +1300,9 @@ mod tests {
         assert_eq!(menu.groups["vary-auto/saved"].targets.len(), 2);
         assert_eq!(
             menu.models[&direct_id("b", "shared-model")].label,
-            "shared-model · b"
+            "shared-model · b · VaryAI"
         );
-        assert_eq!(menu.models["saved"].label, "Saved · routing group");
+        assert_eq!(menu.models["saved"].label, "Saved · routing group · VaryAI");
         assert!(!Arc::ptr_eq(
             &menu.groups[&alias].bindings,
             &menu.groups["vary-auto/saved"].bindings
@@ -1342,14 +1473,17 @@ mod tests {
             .expect("direct entry");
         assert_eq!(
             direct["display_name"],
-            format!("{exact_model} · fixture-provider")
+            format!("{exact_model} · fixture-provider · VaryAI")
         );
         assert_eq!(direct["description"], "VaryAI direct provider model");
         let saved = models
             .iter()
             .find(|m| m["slug"] == group_alias)
             .expect("group entry");
-        assert_eq!(saved["display_name"], "Saved single member · routing group");
+        assert_eq!(
+            saved["display_name"],
+            "Saved single member · routing group · VaryAI"
+        );
         assert_eq!(saved["description"], "VaryAI routing group");
         manager.restore().expect("restore");
         assert_eq!(

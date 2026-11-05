@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowUpRight, Check, Server } from "lucide-react";
+import { ArrowUpRight, Check } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -10,7 +10,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { ProviderIcon } from "@/components/ProviderIcon";
+import { UpstreamIcon } from "./UpstreamIcon";
+import { ProviderIconField } from "./ProviderIconField";
 import { settingsApi } from "@/lib/api/settings";
 import type { RoutingUpstream } from "@/lib/api/routingUpstreams";
 import type { FetchedModel } from "@/lib/api/model-fetch";
@@ -18,6 +19,8 @@ import type { ProtocolDetection } from "@/lib/api/provider-protocol-detection";
 import type { GlobalProviderPreset } from "@/config/globalProviderPresets";
 import { ProviderModelPreferences } from "./ProviderModelPreferences";
 import { CodexProviderFields } from "./CodexProviderFields";
+import { ProviderKeysField } from "./ProviderKeysField";
+import { SubscriptionProviderFields } from "./SubscriptionProviderFields";
 
 type Format = GlobalProviderPreset["apiFormat"];
 export function providerModelId(value: unknown): string {
@@ -126,10 +129,10 @@ export function ProviderEditorDialog({
   const modelSearchInput = useRef<HTMLInputElement>(null);
   const wasLoading = useRef(loading);
   useEffect(() => {
-    if (wasLoading.current && !loading) name.current?.focus();
+    if (wasLoading.current && !loading)
+      name.current?.focus({ preventScroll: true });
     wasLoading.current = loading;
   }, [loading]);
-  const [showKey, setShowKey] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [typedModel, setTypedModel] = useState(() => {
     if (draft.revision) return "";
@@ -143,9 +146,11 @@ export function ProviderEditorDialog({
   const [probeModel, setProbeModel] = useState("");
   const [probing, setProbing] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
+  const [iconBusy, setIconBusy] = useState(false);
+  const [keyBusy, setKeyBusy] = useState(false);
   useEffect(() => {
-    onProbingChange(probing || accountBusy);
-  }, [probing, accountBusy, onProbingChange]);
+    onProbingChange(probing || accountBusy || iconBusy || keyBusy);
+  }, [probing, accountBusy, iconBusy, keyBusy, onProbingChange]);
   const [results, setResults] = useState<
     Array<{ model: string; results: ProtocolDetection[] }>
   >([]);
@@ -271,11 +276,17 @@ export function ProviderEditorDialog({
     }
   }
   const source = draft.source.kind === "api" ? draft.source : null;
-  const disabled = busy || probing || accountBusy;
+  const disabled = busy || probing || accountBusy || iconBusy || keyBusy;
   let site = "";
   try {
     const url = new URL(
-      draft.codex ? "https://chatgpt.com" : (source?.baseUrl ?? ""),
+      draft.codex
+        ? "https://chatgpt.com"
+        : draft.source.kind === "subscription"
+          ? draft.source.provider === "github_copilot"
+            ? "https://github.com"
+            : "https://grok.com"
+          : (source?.baseUrl ?? ""),
     );
     if (["https:", "http:"].includes(url.protocol)) site = url.origin;
   } catch {
@@ -296,11 +307,17 @@ export function ProviderEditorDialog({
     >
       <DialogContent
         className={`mp-dialog pv-provider-dialog${draft.codex ? " pv-codex-dialog" : ""}`}
-        overlayClassName="pv-provider-backdrop"
         aria-busy={loading}
         onOpenAutoFocus={(event) => {
           event.preventDefault();
-          (draft.revision || !icon ? name.current : key.current)?.focus();
+          const target =
+            (draft.revision || !draft.presetId ? name.current : key.current) ??
+            (event.currentTarget instanceof HTMLElement
+              ? event.currentTarget
+              : null);
+          target?.focus({
+            preventScroll: true,
+          });
         }}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
@@ -324,11 +341,7 @@ export function ProviderEditorDialog({
         >
           <header className="pv-editor-head">
             <span className="pv-editor-logo" aria-hidden>
-              {icon ? (
-                <ProviderIcon icon={icon} name={draft.name} size={20} />
-              ) : (
-                <Server size={20} />
-              )}
+              <UpstreamIcon icon={icon} name={draft.name} size={20} />
             </span>
             <DialogTitle>{draft.name || t("providerFlow.custom")}</DialogTitle>
             {site && (
@@ -392,7 +405,7 @@ export function ProviderEditorDialog({
                   </div>
                 </div>
               )}
-              {!draft.codex && (!icon || !!draft.revision) && (
+              {!draft.codex && (!draft.presetId || !!draft.revision) && (
                 <div className="pv-field">
                   <label htmlFor={`${id}-name`}>
                     {t("modelProviders.name")}
@@ -415,10 +428,23 @@ export function ProviderEditorDialog({
                   {t("common.loading")}
                 </p>
               )}
-              {!source && !draft.codex && !loading && !error && (
-                <p className="pv-hint" role="status">
-                  {t("providerEditor.importedAccountHint")}
-                </p>
+              {!source &&
+                draft.source.kind !== "subscription" &&
+                !draft.codex &&
+                !loading &&
+                !error && (
+                  <p className="pv-hint" role="status">
+                    {t("providerEditor.importedAccountHint")}
+                  </p>
+                )}
+              {draft.source.kind === "subscription" && (
+                <SubscriptionProviderFields
+                  draft={draft}
+                  disabled={busy || probing}
+                  onChange={onDraftChange}
+                  onError={onError}
+                  onBusyChange={setAccountBusy}
+                />
               )}
               {draft.codex && (
                 <CodexProviderFields
@@ -570,43 +596,25 @@ export function ProviderEditorDialog({
                       )}
                     </div>
                   </div>
-                  <div className="pv-field">
-                    <label htmlFor={`${id}-key`}>
-                      {t("modelProviders.apiKey")}
-                    </label>
-                    <div className="pv-key-input">
-                      <Input
-                        ref={key}
-                        id={`${id}-key`}
-                        type={showKey ? "text" : "password"}
-                        autoComplete="new-password"
-                        required={!draft.hasApiKey}
-                        disabled={disabled}
-                        value={apiKey}
-                        onChange={(event) => {
-                          setResults([]);
-                          onKeyChange(event.target.value);
-                        }}
-                        placeholder={
-                          draft.hasApiKey
-                            ? t("modelProviders.keepKey")
-                            : t("providerEditor.keyPlaceholder")
-                        }
-                      />
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        disabled={disabled || !apiKey}
-                        onClick={() => setShowKey(!showKey)}
-                      >
-                        {t(
-                          showKey
-                            ? "providerEditor.hideKey"
-                            : "providerEditor.showKey",
-                        )}
-                      </Button>
-                    </div>
-                  </div>
+                  <ProviderKeysField
+                    draft={draft}
+                    apiKey={apiKey}
+                    inputRef={key}
+                    disabled={disabled}
+                    onDraftChange={onDraftChange}
+                    onKeyChange={(value) => {
+                      setResults([]);
+                      onKeyChange(value);
+                    }}
+                    onBusyChange={setKeyBusy}
+                  />
+                  <ProviderIconField
+                    draft={draft}
+                    icon={icon}
+                    disabled={disabled}
+                    onChange={onDraftChange}
+                    onBusyChange={setIconBusy}
+                  />
                   <div className="pv-field">
                     <label htmlFor={`${id}-model-ids`}>
                       {t("modelPicker.models")}

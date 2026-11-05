@@ -54,6 +54,7 @@ import { APP_IDS } from "@/config/appConfig";
 import { profilesApi, type ProfileUndo } from "@/lib/api/profiles";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { toast } from "sonner";
+import { profileErrorMessage } from "@/utils/profileErrors";
 
 const CURRENT_ID_KEY: Record<ProfileScope, keyof CurrentProfileIds> = {
   claude: "claude",
@@ -64,12 +65,16 @@ const CURRENT_ID_KEY: Record<ProfileScope, keyof CurrentProfileIds> = {
 interface ProfileSwitcherProps {
   activeApp: AppId;
   selectedApps: AppId[];
+  side?: "top" | "bottom";
+  compact?: boolean;
 }
 
 /** Shared project menu: legacy profiles apply to their scope; bundles preview all selected agents. */
 export function ProfileSwitcher({
   activeApp,
   selectedApps,
+  side = "bottom",
+  compact = false,
 }: ProfileSwitcherProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -162,6 +167,7 @@ export function ProfileSwitcher({
 
   const closeCreateDialog = () => {
     setIsCreateOpen(false);
+    createMutation.reset();
     setNewName("");
     setBundleApps([]);
     setCreateBundle(false);
@@ -208,23 +214,25 @@ export function ProfileSwitcher({
             title={t("profiles.bundle.switcherHint")}
             className={cn(
               "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium transition-colors",
-              "hover:bg-black/5 dark:hover:bg-white/5",
+              "hover:bg-[var(--mp-hover)]",
               currentProfile ? "text-foreground" : "text-muted-foreground",
             )}
           >
             <FolderOpen className="h-4 w-4 shrink-0 opacity-70" />
             <span className="max-w-[9rem] truncate">
-              {currentProfile?.name ?? t("profiles.none")}
+              {currentProfile?.name ??
+                t(compact ? "trayPanel.schemes" : "profiles.none")}
             </span>
             <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
           </button>
         </PopoverTrigger>
         <PopoverContent
-          side="bottom"
+          side={side}
           align="start"
-          sideOffset={6}
+          sideOffset={compact ? 4 : 6}
+          collisionPadding={compact ? 8 : undefined}
           aria-label={t("profiles.bundle.switcherHint")}
-          className="z-[100] w-64 p-0"
+          className={cn("z-[100] w-64 p-0", compact && "tray-profile-menu")}
         >
           <Command label={t("profiles.searchPlaceholder")}>
             <CommandInput placeholder={t("profiles.searchPlaceholder")} />
@@ -259,7 +267,9 @@ export function ProfileSwitcher({
                   ))}
                 </CommandGroup>
               )}
-              <div className="mx-1 my-1 h-px bg-border" />
+              {profiles.length > 0 && (
+                <div className="mx-1 my-1 h-px bg-border" />
+              )}
               <CommandGroup>
                 <CommandItem
                   value="__create__"
@@ -414,6 +424,13 @@ export function ProfileSwitcher({
                   {t("profiles.bundle.captureHint")}
                 </p>
               </fieldset>
+            )}
+            {createMutation.isError && (
+              <p role="alert" className="mt-3 text-sm text-destructive">
+                {t("profiles.createFailed", {
+                  detail: profileErrorMessage(createMutation.error, t),
+                })}
+              </p>
             )}
           </div>
           <DialogFooter className="flex gap-2 border-t-0 bg-transparent pt-2 sm:justify-end">

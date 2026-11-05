@@ -1,14 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
-import { Sparkles } from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { AppDialog } from "@/components/ui/app-dialog";
 import { Button } from "@/components/ui/button";
 import { useSettingsQuery } from "@/lib/query";
 import { settingsApi } from "@/lib/api";
@@ -35,33 +27,24 @@ export function FirstRunNoticeDialog() {
   };
 
   return (
-    <Dialog
+    <AppDialog
       open={isOpen}
       onOpenChange={(open) => {
         if (!open) void handleAcknowledge();
       }}
-    >
-      <DialogContent className="max-w-md" zIndex="top">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-blue-500" />
-            {t("firstRunNotice.title")}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="space-y-3 px-6 py-5">
-          <DialogDescription className="whitespace-pre-line leading-relaxed">
-            {t("firstRunNotice.bodyDefault")}
-          </DialogDescription>
-          <DialogDescription className="whitespace-pre-line leading-relaxed">
-            {t("firstRunNotice.bodyOfficial")}
-          </DialogDescription>
-        </div>
-        <DialogFooter>
-          <Button onClick={handleAcknowledge}>
-            {t("firstRunNotice.confirm")}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      zIndex="top"
+      title={t("firstRunNotice.title")}
+      description={
+        <>
+          <span className="block">{t("firstRunNotice.bodyDefault")}</span>
+          <span className="mt-3 block">{t("firstRunNotice.bodyOfficial")}</span>
+        </>
+      }
+      footer={
+        <Button onClick={handleAcknowledge}>
+          {t("firstRunNotice.confirm")}
+        </Button>
+      }
+    />
   );
 }

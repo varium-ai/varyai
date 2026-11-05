@@ -155,7 +155,7 @@ Internal token-restoration diagnostics also include a fixed reason. The warning 
 
 | Reason                                      | Failed checkpoint or grouped error                                                                                                                                                       |
 | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `token_format`                              | A strict internal restoration operation rejected malformed input. Ordinary request and response placeholder literals do not require strict resolution.                                |
+| `token_format`                              | A strict internal restoration operation rejected malformed input. Ordinary request and response placeholder literals do not require strict resolution.                                   |
 | `token_context`                             | Request-lease authorization, exact stored category, namespace/generation or storage-context lookup. The diagnostic does not distinguish these checks.                                    |
 | `restore_capacity`                          | A restoration scan/reference/count/length limit, payload budget, allocation or copy-capacity failure. Ordinary text without tokens can also reach this checkpoint.                       |
 | `arguments_empty` / `arguments_size`        | Empty/whitespace-only tool arguments or arguments over the existing byte limit.                                                                                                          |
@@ -263,6 +263,8 @@ Settings > About > Local environment check lists every supported agent. The eigh
 
 Claude Desktop, WorkBuddy, Qoder CN, Doubao Work, TRAE CN, Kimi Code, Qwen Code and ZCode also display their installed version. On macOS, desktop cards read the product version from the installed application's bundle metadata without launching it. Desktop installations take precedence over CLI installations and are labeled explicitly; an embedded editor's version is not the desktop product version. Kimi can instead run a bounded `--version` check when only its CLI is installed. Qwen Code uses the same version checks, installation diagnostics and upgrade pipeline as the other managed CLI tools. A WorkBuddy launcher alone establishes presence but is not executed as a version-only CLI. Missing metadata or failed version commands leave the installation marked present and show a version-read failure. Desktop application detection currently supports macOS; unsupported checks on other platforms are labeled explicitly.
 
+All supported Agents are checked for installation when the Tools page opens, every 30 seconds while it is active, and when its window becomes active again. Detection adds an installed Agent to the main list without enabling its connection. On macOS, presence and version checks share discovery across `/Applications`, `~/Applications`, one folder level below each, and Spotlight results for known application identities. Renamed bundles are recognized by their identity; leftover configuration directories do not establish installation. Both `WorkBuddy.app` and `WorkBuddy AI.app` are recognized. The international WorkBuddy build is kept separate from the domestic update feed. CLI detection retains the existing installer-directory and PATH search for every supported CLI Agent.
+
 The About page uses one shared card layout for CLI and desktop agents: current version, latest version and an Upgrade button when a newer version is available. On macOS, Claude Desktop, WorkBuddy, Qoder CN, Doubao Work, TRAE CN, Kimi Desktop and ZCode query verified publisher release sources. Missing or older remote metadata is not evidence that an installation is current. Refresh reruns detection.
 
 Desktop upgrades run inside Vary AI and are included in Upgrade All. They download the matching official package to a temporary directory, verify any published checksum, product identity, product version, CPU architecture, code signature and the installed publisher's signing team. The updater stages the new application beside the existing installation before requesting a normal quit. It replaces only the application bundle at its existing location and restores the previous bundle if replacement fails; configuration and user data are not removed. A previously running application is reopened. Unsaved-work dialogs can prevent quitting; save and fully quit the agent, then retry. Folder permission failures do not trigger elevation or installation to a different location. If both replacement and recovery fail, the previous bundle remains in a `.varyai-agent-update-` folder beside the installation for recovery. Desktop automatic upgrades currently support macOS. Installation or upgrade failures show fixed localized reasons without exposing raw command output.
@@ -270,6 +272,26 @@ Desktop upgrades run inside Vary AI and are included in Upgrade All. They downlo
 TRAE's displayed product version is distinct from its editor/build version. Doubao Work packages are distinct from the standard Doubao desktop app; Kimi Code Desktop packages are distinct from the Kimi chat app. The updater preserves these identities and never substitutes a similarly named product.
 
 ## Client takeover and recovery
+
+### Agent switches report configuration conflicts after an upgrade
+
+Older installations can retain per-Agent takeover flags and private recovery
+backups. The shared workspace previously displayed those tools as disconnected
+and rejected attempts to connect them because the legacy owner still existed.
+An explicit connection now validates the chosen shared model and current native
+configuration, restores that Agent's legacy connection under its switch lock,
+and journals the restored baseline before installing the shared connection.
+Disconnecting restores that baseline. Saved providers and other Agents are not
+removed or reconfigured, and the gateway stays available during the transition.
+
+Invalid model selections, unreadable recovery data and conflicting shared
+ownership still fail without discarding the legacy recovery record. Do not
+delete recovery files or database backups to clear this error. TRAE retains
+pending native model and endpoint restoration until its bridge is available;
+the shared catalog is delivered only after that restoration succeeds. A closed
+TRAE client therefore shows a pending connection instead of a legacy-owner
+conflict. The transition does not change the global security-audit setting or
+launch an Agent.
 
 ### Claude Desktop refuses a shared connection
 
@@ -333,13 +355,38 @@ Common configuration locations include:
 
 Local proxy configuration can refer to `http://127.0.0.1:15722` or its `/v1` endpoint. If a client still points at that endpoint after an abnormal exit, review the application's takeover state and recovery options. A normal disable/exit path can restore the saved configuration; inspect the relevant backup before manual recovery. Back up the current files before editing them and preserve unrelated client settings. Do not publish authentication files or entire backups in an issue.
 
+### The Codex connection switch stays on and its model picker is disabled
+
+When Tools reports **Connection recovery record is missing**, Codex still has a
+Vary provider section, but Vary no longer has the receipt needed to restore the
+earlier configuration. Older builds treated that recovery warning as an enabled
+connection. Disconnect revoked the runtime and cleared the saved enablement, but
+the next status refresh turned the switch on again because the provider section
+remained. The same warning also disabled the starting-model picker.
+
+A missing receipt alone no longer enables the switch. Explicit disconnect saves
+a private backup before removing recognized Vary routing fields at the top level
+and in the selected profile. It removes a native compatibility URL only when its
+local origin matches the recognized Vary menu endpoint. User-selected models,
+catalogs, other endpoints and inactive profiles remain unchanged. The provider
+definition stays available for sessions that name it, so its presence alone is
+not an enabled connection. Unknown or modified provider definitions are refused.
+Backup failure prevents configuration writes. Background recovery without a
+receipt still leaves configuration untouched.
+
+The confirmation explains that removed settings use Codex defaults; the missing
+historical settings cannot be recovered. Choose a shared model or use **Apply
+again** to back up the current configuration and reconnect with a new receipt.
+Configuration drift with an existing receipt still requires the normal recovery
+flow. Authentication files and unrelated settings are preserved.
+
 ### Codex stays on "Loading models..." after enabling routing
 
 Keep Vary AI and its local proxy running. After enabling the unified Codex model menu, fully quit and reopen Codex rather than only closing its window. Start a new conversation and select a published provider model or routing group. Existing conversations may keep their previous provider.
 
 The current Codex routing switch represents a live connection, not a persisted startup preference. Normal application shutdown restores its configuration and removes its recovery receipt/catalogs; startup also recovers an interrupted projection without automatically reconnecting the menu. Consequently this switch returns to off after restart even when other agents resume ordinary proxy takeover. This is a lifecycle limitation, not evidence that routing groups or model windows were erased.
 
-A partial leftover configuration can select `model_provider = "varyai-routing"` without a valid `model_catalog_json`, while retaining a raw upstream model ID instead of a published alias. The provider label alone does not prove that model-menu takeover is active. If explicit reconnect adopted this partial configuration as its baseline, disconnect correctly restores that same baseline rather than guessing a different provider; the orphan hint can therefore return on every reopen. The original writer of such a baseline must be established separately. Use VaryAI's explicit Codex reconnect/recovery flow to publish a complete catalog and current local credential; automatic refresh must not claim receiptless configuration. Reconnect keeps a private baseline backup and does not change the login file. If configuration was repaired after Codex's last model-list load, fully quit/reopen Codex so it reads the new projection. Do not manually invent a catalog path or delete recovery files.
+A partial leftover configuration can select `model_provider = "varyai-routing"` without a valid `model_catalog_json`, while retaining a raw upstream model ID instead of a published alias. The provider label alone does not prove that model-menu takeover is active. Older disconnects restored a partial baseline adopted during reconnect, so the orphan hint could return on every reopen. Explicit disconnect now also detaches recognized Vary routes from that restored baseline after making a private backup; automatic recovery continues to preserve it. The original writer of such a baseline must be established separately. Use VaryAI's explicit Codex reconnect/recovery flow to publish a complete catalog and current local credential; automatic refresh must not claim receiptless configuration. Reconnect keeps a private baseline backup and does not change the login file. If configuration was repaired after Codex's last model-list load, fully quit/reopen Codex so it reads the new projection. Do not manually invent a catalog path or delete recovery files.
 
 An older unified-menu writer always set `requires_openai_auth = false`. Codex then hid a preserved OpenAI login from account discovery even though `auth.json` was unchanged. Desktop authentication and workspace initialization could fail while the model picker stayed on "Loading models...". The writer now derives this flag from the effective authentication store: file-backed OpenAI login material keeps it enabled, absent or unsupported login material leaves it disabled, and keyring/auto stores preserve the active provider's policy because disk alone cannot establish their login state. An ephemeral store remains signed out.
 
@@ -403,11 +450,81 @@ The certificate lasts 30 days and is retained across normal restarts. An older t
 
 ### Kimi shows an internal ID as the provider group
 
-Apply the saved provider again to migrate its Kimi group to the provider name shown in Vary AI. Renaming it also updates model references while preserving model aliases and the selected model. Choose a unique provider name: Vary AI refuses to overwrite an existing native group with the same name. Restart Kimi when it needs to reload its configuration.
+When Vary AI starts after an upgrade, it automatically renames recognized legacy `varyai-<provider-id>` groups to the corresponding saved provider names. The old display names disappear while model aliases, the selected model, credentials, custom options and unrelated native models remain intact. Repeated starts do not rewrite an already-migrated configuration. Restart Kimi if its open model list still shows a cached name.
+
+Migration runs after route recovery and before saved routing is restored. If an old group contains unrecognized model references, uses official login, conflicts with an existing native group, or still has a routing backup awaiting recovery, Vary AI leaves the configuration unchanged and retries on a later start. Groups without a matching saved provider are preserved. Resolve any naming conflict or recovery issue before restarting Vary AI; reapplying the saved provider also retains the existing explicit migration path.
+
+### Qwen Responses reports an invalid or inactive route
+
+Qwen appends `/v1/responses` when its configured base URL does not end in `/v1`. Vary AI now accepts this native request path with both root and prefixed base URLs, preserving the resulting upstream path, model checks and text inspection. Older builds rejected the added `/v1` before forwarding. Load a build containing this fix and restart Qwen after applying a provider or changing its protocol so it reloads the current route.
+
+### WorkBuddy refuses to save an alternative with an existing model ID
+
+Saving a provider keeps it as an inactive alternative and does not require its model IDs to be unique in the native WorkBuddy configuration. Multiple saved providers can use the same model. Native conflicts are checked when applying a provider; an unrelated, differently configured native model still requires explicit conflict resolution before it can be replaced. Saving an alternative also works while the native configuration is temporarily unreadable.
+
+### Profile management shows an action hint immediately on opening
+
+The management dialog now focuses its heading on opening. Refresh snapshot, Rename and Delete use the same immediate tooltip style, shown on hover or keyboard focus. Opening the dialog does not refresh a snapshot or display an action tooltip automatically.
+
+### TRAE CN stays pending after opening the client
+
+A reachable local helper does not establish that message inspection is enabled. TRAE CN 3.4.13 renamed its private request converter, so an older bridge can connect while failing to enable inspection. The current bridge retains support for the original method and can identify a renamed converter from the native request envelope, checking the expected protocol keys in its source before attaching. Unknown or ambiguous layouts remain unsupported; they are not reported as protected.
+
+Load a Vary AI build containing this fix. Vary AI refreshes the older resident helper and restores already-enabled auditing without restarting TRAE. The first local debugging configuration still requires one complete client restart. This integration depends on internal TRAE interfaces: method renaming alone no longer requires a name-specific patch, but structural client changes may require another compatibility update.
+
+Agent mode also discovers the unique known container export instead of using a fixed internal module number. This preserves the archived 3.4.4 entry point and handles the renumbered 3.4.13 bundle. Interface checks and synthetic regressions do not establish complete acceptance of every client version; see the [historical compatibility evidence](qa/2026-11-03-pending-bug-review.md#historical-trae-compatibility-audit).
+
+The helper also enables native target discovery before scanning. Without that handshake, an open workbench can be missing from the native target list and appear disconnected. A build containing the discovery fix replaces older resident helpers automatically.
+
+TRAE may return namespaced model names and protected credential representations from its native model API. The shared catalog verifies the model suffix, owned native ID and local endpoint, then compares a one-way digest bound to the submitted connection credential and the protected native representation recorded after delivery. Plaintext credentials and protected credential values are not persisted in this verification record. External model, endpoint or credential changes still invalidate the connection. After updating an older catalog without this verification record, use **Reapply** once to record delivery without replacing the native model IDs or changing global auditing.
+
+If a catalog write was interrupted before all ownership records were saved, **Reapply** can reuse a unique native model with the expected label, request model, provider type and exact local TRAE shared endpoint. It writes the current connection configuration to that entry and retains its native ID. Ambiguous matches and models at other endpoints are not adopted.
+
+### TRAE CN reports HTTP 502 with security auditing off
+
+The local-routing switch and the global security-audit policy are separate. A reproduced TRAE CN 3.4.13 failure affected follow-up turns using Responses: TRAE replayed a reasoning history item without its `summary` array. The first turn succeeded, while the next request returned upstream HTTP 502. Adding only the missing `summary: []` restored forwarding; the original reasoning text and other history fields were retained.
+
+The same missing-summary repair applies to TRAE's shared Agent connection endpoint. It does not relax the shared router's existing continuation checks or modify other Agents' reasoning history. Replayed item IDs and opaque state must still belong to a known conversation.
+
+The shared connection adds models whose labels end in `Vary AI`. Older provider models can remain in TRAE and in existing conversations with direct upstream addresses. Those entries do not pass through the shared gateway or its compatibility repairs. Check the conversation's selected model and the routing page before treating a repeated HTTP 502 as a missing repair; select the corresponding shared model to use Vary routing.
+
+TRAE CN 3.4.14 also sends native requests with `Sec-Fetch-Site: none` and `Sec-Fetch-Mode: no-cors`. The shared connection accepts that combination only for TRAE on a verified loopback connection without an `Origin` header, and still requires its independent connection credential. Browser origins, cross-site requests, navigation requests, and invalid credentials remain rejected. This prevents native shared models from incorrectly returning `routing_local_clients_only` while keeping browser access restricted.
+
+Legacy provider routing sends managed native Responses models through the local compatibility route, including when global auditing is off. It preserves native model IDs so existing conversations can continue. Turning legacy routing off restores the saved upstream address and credential. Delivery to a closed client remains pending until it connects; keep Vary AI running until restoration finishes. Official models remain unchanged. Load a build containing the fix and verify multiple turns in the failed conversation. A single successful probe or usage-accounting row with status 200 does not establish that a conversation works. See the [reproduction and regression evidence](qa/2026-11-03-pending-bug-review.md#route-only-http-502-follow-up).
 
 ### TRAE CN switching reports a model configuration failure
 
-TRAE can keep an older model-list cache after a custom model is added. Older Vary AI bridges may then report a failed switch even though the model was saved; retrying can return a native duplicate-model error. The bridge now refreshes TRAE's native model store before matching existing models and after each addition. It recovers models carrying the provider's legacy ownership label and retains readable labels without duplicating or adopting unrelated user models. Fully quit and reopen TRAE CN after loading a build containing this fix so its in-memory bridge uses the updated script, then apply the provider again. Direct custom-provider switches also withdraw the previous managed models before adding the target, because TRAE rejects overlapping request model IDs under different labels. A failed switch attempts to restore the previous models and retains the previous provider selection; an incomplete restoration is reported explicitly.
+Shared catalog additions publish their final readable label immediately. Older bridges briefly published `VaryAI/shared_catalog_connection/<hash>` while discovering a new native model ID, then renamed it after refreshing the model list. This caused the picker to alternate between an internal marker and the readable label during synchronization. Load a build containing this fix to refresh the resident helper; shared model request IDs remain unchanged, and interrupted writes still recover through a unique native model at the exact local shared endpoint.
+
+TRAE can keep an older model-list cache after a custom model is added. Older Vary AI bridges may then report a failed switch even though the model was saved; retrying can return a native duplicate-model error. The bridge now refreshes TRAE's native model store before matching existing models and after each addition. It recovers models carrying the provider's legacy ownership label and retains readable labels without duplicating or adopting unrelated user models. Load a build containing this fix so Vary AI refreshes the resident helper, then apply the provider again. Direct custom-provider switches also withdraw the previous managed models before adding the target, because TRAE rejects overlapping request model IDs under different labels. A failed switch attempts to restore the previous models and retains the previous provider selection; an incomplete restoration is reported explicitly.
+
+### TRAE CN reports `routing_local_clients_only` with HTTP 403
+
+This response comes from Vary AI's local ingress before connection authentication or an upstream model request. A native TRAE transport can attach Fetch Metadata headers with no `Origin`, or with `Origin: vscode-file://vscode-app`. Older builds reject any request carrying those browser-like headers, even over loopback. An earlier fix covered only the explicit native origin, so native requests carrying `Sec-Fetch-Site` without an origin still returned 403.
+
+The Agent ingress permits native Fetch Metadata with either no origin or this exact, single origin only for `POST /connections/trae/v1/chat/completions` with a verified loopback TCP peer. The TRAE connection must still be enabled and its credential valid. Other origins, including the literal `null`, duplicate origin values, nonloopback callers, other Agent routes and browser preflight requests remain rejected; this does not enable CORS or identify a caller by its user agent. Fetch Metadata is not authentication. Rejection diagnostics record only fixed categories for the peer, method, route and origin, plus the presence of Fetch Metadata; they omit header values, credentials, query strings and request bodies.
+
+Run a Vary AI build containing this fix, then retry the request. Editing an upstream key or changing models does not resolve this ingress rejection. Source changes do not update an already running installed application; installing or replacing that application is a separate explicit action. Synthetic proxy tests cover JSON and streaming requests, not live TRAE acceptance.
+
+### TRAE CN reports `agent_connection_unavailable` with HTTP 401
+
+This response comes from Vary AI's authenticated local Agent endpoint before an upstream model request is sent. Check the TRAE entry under Agent connections and retry delivery if it is pending. A visible Vary AI model in TRAE does not establish that its current connection has been verified.
+
+TRAE can return provider-prefixed model names and sealed API keys in its native model list. Vary AI normalizes the model names and verifies sealed values against fingerprints captured after its own successful configuration write. The verification records contain hashes, not API keys or sealed credentials; changes to the requested credential, native credential, endpoint, protocol or model invalidate verification. Older helpers are refreshed automatically. If ownership metadata is missing, shared catalog delivery can recover an unambiguous native entry only when its model ID, protocol, full loopback Agent endpoint and expected readable label all match. Unrelated or ambiguous models are retained and require explicit resolution.
+
+### TRAE CN reports `routing_unknown_continuation` with HTTP 409 after a tool call
+
+TRAE can send Chat Completions history without a stable session header. Earlier builds could locate the observed tool-call owner but still reject the next request because the native Chat path required an explicit session binding. A text-only connection check does not exercise this failure: the request that returns a tool result, and later messages replaying that history, can return 409 before contacting the upstream.
+
+TRAE also replaces upstream tool-call IDs before submitting the assistant/tool history. For the authenticated TRAE Chat endpoint, an unnamed continuation can resume through observed call IDs or hashes of complete observed function names and JSON arguments. A rewritten ID requires its matching assistant function payload in the same history; a tool result alone cannot establish ownership. Streamed arguments are assembled by choice and tool index and recorded only when the choice finishes. Only hashes enter the existing bounded, encrypted ownership store. Every call must resolve to the same exact destination within the same Agent and model-alias scope; conflicting payload owners remain rejected. The wire request retains its original IDs, tool calls, tool results, reasoning and other fields. Queued encrypted ownership records allow a compatible restart to restore that owner, including when target order or the preferred member changes. No conversation identity is guessed from prompt text. Other native protocols keep their existing session requirements.
+
+Retry the affected conversation after the updated backend has loaded. Older records contain only the original IDs; those records cannot recover a rewritten ID whose function payload was never observed by the updated backend. Synthetic regressions cover rewritten IDs in JSON and fragmented streaming responses, interleaved tools, changed arguments, result submission, later user messages, restart recovery and rejection of foreign or ambiguous calls.
+
+### TRAE CN reports `Connection timeout` with HTTP 500
+
+TRAE can abandon a custom-model request after roughly 90 seconds without response headers. Its UI reports HTTP 500, while Vary AI records status 499 when the client disconnects. A routing trace containing an attempt without a connected step means the upstream has not returned its response headers; it is distinct from a continuation rejection or a completed model response.
+
+Authenticated TRAE streaming Chat requests now open an SSE response after five seconds of waiting and send comment heartbeats every five seconds until routing supplies a response. This keeps the native connection alive while the selected upstream prepares its answer. It does not speed up the upstream, extend its existing request deadline, or retry ambiguous dispatches. Immediate validation and upstream errors retain their HTTP status. Once the waiting stream opens, a late failure is a sanitized SSE error followed by `[DONE]`, since HTTP headers have already been sent. Upstream SSE bytes are forwarded unchanged once available, and cancellation drops the pending forwarding future. Nonstreaming requests and other clients retain their existing behavior.
 
 ## Windows VC++ runtime errors
 
@@ -428,3 +545,14 @@ If events and in-app messages appear but system banners do not, check the notifi
 The macOS implementation uses `UNUserNotificationCenter` for permission and delivery; it does not fall back to legacy notification APIs when the application identity is unavailable. Source changes require a rebuilt development instance or a newly packaged application. Development builds use a separate temporary app bundle and do not replace an installed application. Exit an existing instance normally before starting a separate one.
 
 Screen sharing or mirroring can suppress notification banners and sound. Check the macOS setting that permits notifications during sharing. In-app warnings are independent of system delivery; a recorded warning does not prove that the user saw a banner.
+
+## TRAE starting-model selection
+
+The TRAE CN row uses the shared model picker to choose a starting model for new
+conversations in native modes that support that model. The bridge keeps explicit
+selections in existing conversations. A pending bridge status means the saved
+selection has not yet been acknowledged by native persistence and selection
+readback. Open TRAE CN yourself, and restart it once after the initial bridge
+setup if requested. The floating assistant alone is not a supported chat window.
+Ordinary catalog refreshes preserve subsequent model choices made inside TRAE;
+explicit reapplication applies the preference saved in Vary again.

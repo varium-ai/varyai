@@ -15,4 +15,5 @@ export type AppId =
   | "trae"
   | "kimi"
   | "qwen"
-  | "zcode";
+  | "zcode"
+  | "deepseek-harness";

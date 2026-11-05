@@ -14,6 +14,8 @@ use tauri_plugin_opener::OpenerExt;
 
 mod agent_updates;
 mod agent_versions;
+mod desktop_apps;
+mod tool_lifecycle;
 #[tauri::command]
 pub async fn update_desktop_agent(app: String) -> Result<(), String> {
     agent_updates::update_desktop_agent(app).await
@@ -116,7 +118,8 @@ const VALID_TOOLS: [&str; 9] = [
     "claude", "codex", "gemini", "grok", "opencode", "openclaw", "hermes", "pi", "qwen",
 ];
 
-static TOOL_LIFECYCLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static TOOL_LIFECYCLE: Lazy<tool_lifecycle::LifecycleCoordinator> =
+    Lazy::new(tool_lifecycle::LifecycleCoordinator::default);
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -197,15 +200,18 @@ pub async fn run_tool_lifecycle_action(
         ToolLifecycleAction::Update => "tool_update",
     };
 
-    // build 阶段含锚定探测（对每个工具跑 `--version` 定位命令行实际命中那处），
-    // 与执行一并放进 blocking 线程，避免阻塞 async runtime。
+    let reservation = TOOL_LIFECYCLE.reserve(&requested)?;
+    let planning_tools = requested.clone();
+    // Installation probes and subprocesses must not block the async runtime.
+    let (command_line, shared_packages) = tokio::task::spawn_blocking(move || {
+        build_tool_lifecycle_command(&planning_tools, action, wsl_shell_by_tool.as_ref())
+    })
+    .await
+    .map_err(|_| "Tool update planning failed.".to_string())??;
+    let package_permit = TOOL_LIFECYCLE.package_permit(shared_packages).await;
     tokio::task::spawn_blocking(move || {
-        let _guard = TOOL_LIFECYCLE_LOCK.try_lock().map_err(|_| {
-            "A tool installation or update is already running. Wait for it to finish and try again."
-                .to_string()
-        })?;
-        let command_line =
-            build_tool_lifecycle_command(&requested, action, wsl_shell_by_tool.as_ref())?;
+        let _reservation = reservation;
+        let _package_permit = package_permit;
         run_tool_update_with_retry(
             &requested,
             action,
@@ -246,16 +252,19 @@ fn run_tool_lifecycle_silently(command_line: &str, label: &str) -> Result<(), St
     use std::os::windows::process::CommandExt;
     use std::process::Command;
 
-    let bat_file =
-        std::env::temp_dir().join(format!("cc_switch_{}_{}.bat", label, std::process::id()));
-    std::fs::write(&bat_file, command_line).map_err(|e| format!("写入批处理文件失败: {e}"))?;
+    let script = tempfile::Builder::new()
+        .prefix(&format!("cc_switch_{label}_"))
+        .suffix(".bat")
+        .tempfile()
+        .map_err(|_| "Could not create update script.".to_string())?;
+    let bat_file = script.path();
+    std::fs::write(bat_file, command_line).map_err(|e| format!("写入批处理文件失败: {e}"))?;
 
     let output = Command::new("cmd")
         .arg("/C")
-        .arg(&bat_file)
+        .arg(bat_file)
         .creation_flags(CREATE_NO_WINDOW)
         .output();
-    let _ = std::fs::remove_file(&bat_file);
 
     finish_lifecycle_output(&output.map_err(|e| format!("启动安装进程失败: {e}"))?)
 }
@@ -418,8 +427,9 @@ fn build_tool_lifecycle_command(
     tools: &[&str],
     action: ToolLifecycleAction,
     wsl_shell_by_tool: Option<&HashMap<String, WslShellPreferenceInput>>,
-) -> Result<String, String> {
+) -> Result<(String, bool), String> {
     let mut lines = Vec::new();
+    let mut shared_packages = false;
 
     #[cfg(not(target_os = "windows"))]
     {
@@ -438,13 +448,14 @@ fn build_tool_lifecycle_command(
         lines.push(format!("echo ========== {label} =========="));
 
         let pref = wsl_shell_by_tool.and_then(|m| m.get(*tool));
-        let line = build_tool_action_line(
+        let (line, needs_packages) = build_tool_action_line(
             tool,
             action,
             pref.and_then(|p| p.wsl_shell.as_deref()),
             pref.and_then(|p| p.wsl_shell_flag.as_deref()),
         )?;
         lines.push(line);
+        shared_packages |= needs_packages;
 
         #[cfg(target_os = "windows")]
         lines.push("if errorlevel 1 exit /b %errorlevel%".to_string());
@@ -453,11 +464,14 @@ fn build_tool_lifecycle_command(
         lines.push(String::new());
     }
 
-    Ok(lines.join(if cfg!(target_os = "windows") {
-        "\r\n"
-    } else {
-        "\n"
-    }))
+    Ok((
+        lines.join(if cfg!(target_os = "windows") {
+            "\r\n"
+        } else {
+            "\n"
+        }),
+        shared_packages,
+    ))
 }
 
 fn tool_display_name(tool: &str) -> &'static str {
@@ -673,7 +687,7 @@ fn build_tool_action_line(
     action: ToolLifecycleAction,
     wsl_shell: Option<&str>,
     wsl_shell_flag: Option<&str>,
-) -> Result<String, String> {
+) -> Result<(String, bool), String> {
     #[cfg(target_os = "windows")]
     {
         // ① WSL 工具(override 是 UNC `\\wsl$\<distro>\...`):锚定的绝对路径是 Windows
@@ -686,16 +700,24 @@ fn build_tool_action_line(
         if let Some(distro) = wsl_distro_for_tool(tool) {
             let command = wsl_tool_action_shell_command(tool, action)
                 .ok_or_else(|| format!("Unsupported tool action target: {tool}"))?;
-            return build_wsl_tool_action_line(&distro, &command, wsl_shell, wsl_shell_flag);
+            return build_wsl_tool_action_line(&distro, &command, wsl_shell, wsl_shell_flag)
+                .map(|line| (line, true));
         }
         // ② Windows 原生 update 锚定;install 走静态(install.sh 是 bash 脚本,Windows
         //    无意义)。**`enumerate_tool_installations` 在这里 per-tool 重做、与前端
         //    probe 阶段算过的结果不共享是 by design**:run_tool_lifecycle_action 是
         //    独立 IPC 调用,不信任前端回传的命令字符串(避免命令注入面扩大);前端是
         //    逐工具触发 lifecycle,batch 化会破坏"逐工具独立成败"的 UX。
+        let mut shared_packages = true;
         let command = match action {
             ToolLifecycleAction::Update => {
                 let installs = enumerate_tool_installations(tool);
+                shared_packages = tool_lifecycle::uses_shared_packages(
+                    tool,
+                    action,
+                    default_install(&installs)
+                        .map(|inst| (inst.path.as_str(), inst.real.to_str().unwrap_or_default())),
+                );
                 installs_anchored_command(tool, &installs)
                     .unwrap_or_else(|| static_fallback_command(tool))
             }
@@ -711,7 +733,7 @@ fn build_tool_action_line(
         // (npm/pnpm)或 .exe(volta),静态命令头部是 `npm`(也是 .cmd)、`py` 等——
         // 全部加 `call ` 前缀,风格统一且语义正确。含空格的头部已被 `win_quote_path_for_batch`
         // 加上双引号,call 对带引号的路径解析正常。
-        Ok(format!("call {command}"))
+        Ok((format!("call {command}"), shared_packages))
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -720,9 +742,16 @@ fn build_tool_action_line(
         // update 锚定到命令行实际命中的那处（写回同一个 node / brew / 原生安装器），
         // 而非裸 `npm` 落到 PATH 第一个 npm；install 走「上游推荐 || npm 兜底」短路链
         // （有 native installer 的工具如 claude/opencode/hermes），其余仍裸 npm。
+        let mut shared_packages = true;
         let command = match action {
             ToolLifecycleAction::Update => {
                 let installs = enumerate_tool_installations(tool);
+                shared_packages = tool_lifecycle::uses_shared_packages(
+                    tool,
+                    action,
+                    default_install(&installs)
+                        .map(|inst| (inst.path.as_str(), inst.real.to_str().unwrap_or_default())),
+                );
                 installs_anchored_command(tool, &installs)
                     .unwrap_or_else(|| static_fallback_command(tool))
             }
@@ -731,7 +760,7 @@ fn build_tool_action_line(
         if command.is_empty() {
             return Err(format!("Unsupported tool action target: {tool}"));
         }
-        Ok(command)
+        Ok((command, shared_packages))
     }
 }
 
@@ -3758,22 +3787,19 @@ fn agent_desktop_bundles(app: &str) -> &'static [&'static str] {
     match app {
         "claude-desktop" => &["Claude.app"],
         "codex" => &["Codex.app", "ChatGPT.app"],
-        "workbuddy" => &["WorkBuddy.app"],
+        "workbuddy" => &["WorkBuddy AI.app", "WorkBuddy.app"],
         "qoder" => &["Qoder CN.app"],
         "trae" => &["Trae CN.app"],
         "doubaowork" => &["DoubaoWork.app"],
         "zcode" => &["ZCode.app"],
         "kimi" => &["Kimi Code.app"],
+        "deepseek-harness" => &["DeepSeek Harness.app"],
         _ => &[],
     }
 }
 
 fn agent_installed_in(app: &str, desktop_roots: &[PathBuf], cli_dirs: &[PathBuf]) -> bool {
-    let bundles = agent_desktop_bundles(app);
-    if desktop_roots
-        .iter()
-        .any(|root| bundles.iter().any(|name| root.join(name).is_dir()))
-    {
+    if desktop_apps::find_in(app, desktop_roots).is_some() {
         return true;
     }
     let tool = match app {
@@ -3791,14 +3817,8 @@ fn agent_installed_in(app: &str, desktop_roots: &[PathBuf], cli_dirs: &[PathBuf]
 
 pub(crate) fn is_agent_installed(app: &str) -> bool {
     let tool = if app == "grokbuild" { "grok" } else { app };
-    #[cfg(target_os = "macos")]
-    let roots = vec![
-        PathBuf::from("/Applications"),
-        crate::config::get_home_dir().join("Applications"),
-    ];
-    #[cfg(not(target_os = "macos"))]
-    let roots = Vec::new();
-    agent_installed_in(app, &roots, &build_tool_search_paths(tool))
+    desktop_apps::find(app).is_some()
+        || agent_installed_in(app, &[], &build_tool_search_paths(tool))
 }
 
 /// Presence-only checks: do not run clients, create configs, or prompt for certificates.
@@ -3825,11 +3845,23 @@ mod agent_installation_tests {
     #[test]
     fn all_installable_cli_agents_are_detected_without_running_them() {
         let root = tempfile::tempdir().unwrap();
-        for app in ["opencode", "pi", "openclaw", "hermes"] {
+        for (app, tool) in [
+            ("claude", "claude"),
+            ("codex", "codex"),
+            ("gemini", "gemini"),
+            ("workbuddy", "workbuddy"),
+            ("kimi", "kimi"),
+            ("qwen", "qwen"),
+            ("grokbuild", "grok"),
+            ("opencode", "opencode"),
+            ("pi", "pi"),
+            ("openclaw", "openclaw"),
+            ("hermes", "hermes"),
+        ] {
             let binary = root.path().join(if cfg!(windows) {
-                format!("{app}.exe")
+                format!("{tool}.exe")
             } else {
-                app.to_owned()
+                tool.to_owned()
             });
             assert!(!agent_installed_in(app, &[], &[root.path().to_owned()]));
             std::fs::write(&binary, "synthetic non-executable presence fixture").unwrap();
@@ -4979,6 +5011,57 @@ mod tests {
 
     const CLAUDE_UPDATE_BUSY: &str =
         "Error: Another instance is currently performing an update Please wait and try again later";
+
+    #[test]
+    fn only_known_native_updates_bypass_shared_package_writes() {
+        assert_eq!(
+            tool_lifecycle::uses_shared_packages(
+                "claude",
+                ToolLifecycleAction::Update,
+                Some((
+                    "/synthetic/.local/bin/claude",
+                    "/synthetic/.local/share/claude/versions/1.0.0"
+                ))
+            ),
+            cfg!(target_os = "windows")
+        );
+        assert_eq!(
+            tool_lifecycle::uses_shared_packages(
+                "opencode",
+                ToolLifecycleAction::Update,
+                Some((
+                    "/synthetic/.opencode/bin/opencode",
+                    "/synthetic/.opencode/bin/opencode"
+                ))
+            ),
+            cfg!(target_os = "windows")
+        );
+        for (tool, path) in [
+            ("claude", "/synthetic/.nvm/versions/node/v22/bin/claude"),
+            ("codex", "/synthetic/.nvm/versions/node/v22/bin/codex"),
+            ("opencode", "/opt/homebrew/Cellar/opencode/1.0/bin/opencode"),
+            ("grok", "/synthetic/.grok/bin/grok"),
+        ] {
+            assert!(tool_lifecycle::uses_shared_packages(
+                tool,
+                ToolLifecycleAction::Update,
+                Some((path, path))
+            ));
+        }
+        assert!(tool_lifecycle::uses_shared_packages(
+            "claude",
+            ToolLifecycleAction::Update,
+            None
+        ));
+        assert!(tool_lifecycle::uses_shared_packages(
+            "claude",
+            ToolLifecycleAction::Install,
+            Some((
+                "/synthetic/.local/bin/claude",
+                "/synthetic/.local/share/claude/versions/1.0.0"
+            ))
+        ));
+    }
 
     #[test]
     fn qwen_uses_the_existing_version_and_lifecycle_pipeline() {

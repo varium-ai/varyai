@@ -5,6 +5,11 @@
   border-top: 1px solid var(--long-border);
   font-size: 12px;
 }
+.mp-agent-expanded > .mp-long-conversations:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
 .mp-long-heading,
 .mp-long-controls {
   display: flex;

@@ -320,6 +320,9 @@ pub fn provider_mode(provider: &Provider) -> ClaudeDesktopMode {
 
 pub fn is_claude_safe_model_id(model: &str) -> bool {
     let normalized = model.trim().to_ascii_lowercase();
+    if let Some(hash) = normalized.strip_prefix("anthropic/vary-") {
+        return hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
+    }
     if normalized.contains(ONE_M_CONTEXT_MARKER) {
         return false;
     }
@@ -1585,7 +1588,7 @@ mod tests {
             default_reasoning_level: None,
             images: true,
         };
-        let wire = shared_model_name(&model.id);
+        let wire = shared_model_wire(&model);
         let (files, mapping) = shared_catalog_edits_at(
             paths.clone(),
             "http://127.0.0.1:1/connections/claude-desktop",
@@ -2610,6 +2613,14 @@ pub(crate) fn shared_model_name(id: &str) -> String {
     )
 }
 
+pub(crate) fn shared_plain_model_name(id: &str) -> String {
+    let legacy = legacy_shared_model_name(id);
+    format!(
+        "anthropic/vary-{}",
+        legacy.trim_start_matches("claude-vary-")
+    )
+}
+
 pub(crate) fn shared_reasoning_model_name(id: &str) -> String {
     let legacy = legacy_shared_model_name(id);
     format!(
@@ -2622,7 +2633,7 @@ pub(crate) fn shared_model_wire(model: &crate::services::agent_connections::Mode
     if desktop_max_effort(model).is_some() {
         shared_reasoning_model_name(&model.id)
     } else {
-        shared_model_name(&model.id)
+        shared_plain_model_name(&model.id)
     }
 }
 
@@ -2637,6 +2648,15 @@ pub(crate) fn desktop_max_effort(
 pub(crate) fn legacy_shared_model_name(id: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("claude-vary-{:x}", Sha256::digest(id.as_bytes()))
+}
+
+#[cfg(not(test))]
+pub(crate) fn selector_roots() -> Vec<PathBuf> {
+    current_platform_paths()
+        .ok()
+        .and_then(|paths| paths.threep_config_path.parent().map(Path::to_path_buf))
+        .into_iter()
+        .collect()
 }
 
 /// Publish the visible shared menu through Desktop's native gateway profile.

@@ -6307,6 +6307,7 @@ impl ProviderService {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => Ok(String::new()),
         }
@@ -6332,6 +6333,7 @@ impl ProviderService {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => Ok(String::new()),
         }
@@ -6990,7 +6992,11 @@ impl ProviderService {
                     "Doubao Work does not expose custom provider settings".into(),
                 ))
             }
-            AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::Trae => {
+            AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::DeepSeekHarness
+            | AppType::Trae => {
                 if provider.category.as_deref() != Some("official") {
                     crate::services::agent_clients::validate(&provider.settings_config)?;
                 }
@@ -7334,6 +7340,7 @@ impl ProviderService {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => {
                 // These native formats use apiKey and baseUrl directly on the object.

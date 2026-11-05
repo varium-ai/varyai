@@ -263,3 +263,125 @@ it("does not schedule motion before layout or when reduced motion was already re
   view.rerender(<RoutingPackets row={request} paths={[]} active />);
   expect(point(view.container)).toHaveAttribute("visibility", "hidden");
 });
+
+it("finishes an older response while a newer request starts its own flight", () => {
+  const view = render(<RoutingPackets row={request} paths={paths} active />);
+  finishFlights();
+  const first = point(view.container);
+  const completed: RoutingTrace = {
+    ...request,
+    state: "completed",
+    durationMs: 2000,
+    steps: [...request.steps, { kind: "completed", atMs: 2000, candidate: 0 }],
+  };
+  const next = { ...request, id: "next-flight" };
+  const finished = vi.fn();
+  view.rerender(
+    <RoutingPackets
+      row={next}
+      paths={paths}
+      flights={[
+        { row: completed, paths },
+        { row: next, paths },
+      ]}
+      onFinished={finished}
+      active
+    />,
+  );
+  frame(0);
+  frame(300);
+  const packets = [...view.container.querySelectorAll(".rt-packet")];
+  expect(packets).toHaveLength(2);
+  expect(packets.includes(first!)).toBe(true);
+  expect(first).toHaveClass("back");
+  expect(first).toHaveAttribute("visibility", "visible");
+  expect(packets.find((packet) => packet !== first)).toHaveAttribute(
+    "visibility",
+    "visible",
+  );
+  finishFlights();
+  expect(finished).toHaveBeenCalledExactlyOnceWith(request.id);
+  expect(packets.find((packet) => packet !== first)).toHaveClass("held");
+  const nextPacket = packets.find((packet) => packet !== first);
+  const completedNext: RoutingTrace = {
+    ...next,
+    state: "completed",
+    steps: [...next.steps, { kind: "completed", atMs: 2000, candidate: 0 }],
+  };
+  view.rerender(
+    <RoutingPackets
+      row={completedNext}
+      paths={paths}
+      flights={[{ row: completedNext, paths }]}
+      onFinished={finished}
+      active
+    />,
+  );
+  frame(0);
+  frame(300);
+  expect(nextPacket).toHaveClass("back");
+  expect(nextPacket).toHaveAttribute("visibility", "visible");
+});
+
+it("keeps different requests visible while they wait for the same provider", () => {
+  const view = render(
+    <RoutingPackets
+      paths={paths}
+      flights={[
+        { row: request, paths, holdOffset: 0 },
+        { row: { ...request, id: "second-request" }, paths, holdOffset: 12 },
+      ]}
+      active
+    />,
+  );
+  finishFlights();
+  const packets = [...view.container.querySelectorAll(".rt-packet")];
+  expect(packets).toHaveLength(2);
+  expect(packets.every((packet) => packet.classList.contains("held"))).toBe(
+    true,
+  );
+  expect(packets[0].getAttribute("transform")).not.toBe(
+    packets[1].getAttribute("transform"),
+  );
+  expect(callbacks.size).toBe(0);
+});
+
+it("animates a recently completed long request based on its finish time", () => {
+  const finished: RoutingTrace = {
+    ...request,
+    startedAt: Date.now() - 61000,
+    durationMs: 60000,
+    state: "completed",
+    steps: [...request.steps, { kind: "completed", atMs: 60000, candidate: 0 }],
+  };
+  const view = render(<RoutingPackets row={finished} paths={paths} active />);
+  frame(0);
+  frame(700);
+  expect(point(view.container)).toHaveAttribute("visibility", "visible");
+  frame(800);
+  expect(point(view.container)).toHaveClass("back");
+});
+
+it("returns a cancelled request as a neutral ring rather than an upstream error", () => {
+  const view = render(<RoutingPackets row={request} paths={paths} active />);
+  finishFlights();
+  view.rerender(
+    <RoutingPackets
+      row={{
+        ...request,
+        state: "cancelled",
+        status: 499,
+        steps: [
+          ...request.steps,
+          { kind: "cancelled", candidate: 0, atMs: 1000, status: 499 },
+        ],
+      }}
+      paths={paths}
+      active
+    />,
+  );
+  frame(0);
+  frame(300);
+  expect(point(view.container)).toHaveClass("back", "cancelled");
+  expect(point(view.container)).not.toHaveClass("err");
+});

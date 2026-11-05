@@ -8,12 +8,44 @@ attribution.
 
 ## Pinned source revisions
 
+- `e17b6cefc7b25c19d1e522f9e8a9626bf68912d9`: account-visibility behavior
+  reviewed in `internal/gui/assets/app.js` (`hideAccounts`, `names` and
+  `dots`). Vary uses React-rendered stand-ins for account labels and sanitized
+  tooltips, while preserving provider names and logos. No DOM walker or source
+  implementation is copied.
+- `magpie-community/plugins@f7e87877e0692b669a05125d21348178c40d0240`:
+  reviewed `packages/trae/index.mjs` (`conversationID`, `sessionOf` and
+  `traeMessages`) and `conversation.test.mjs` for stable conversation identity
+  and preservation of native tool-call/result pairs. That plugin sends requests
+  to TRAE's service; Vary receives TRAE client requests. Vary's independent
+  implementation resumes unnamed Chat tool history through existing observed
+  call ownership instead of deriving a session from the first user message.
+  No plugin source is copied.
+- `6d1e3f1e29ebe7d862cda8fa4fa842842f3acb49`: explicit Codex disconnect
+  behavior reviewed in `internal/agent/codex.go` and `internal/agent/applied.go`.
+  Vary uses its own private backup, recognition checks and atomic writes when
+  disconnecting a configuration whose recovery receipt is missing. Background
+  recovery remains separate from that explicit action. Agent model-picker
+  geometry, search, icon navigation, source badges, and row styling additionally
+  follow `internal/gui/assets/app.js` and `internal/gui/assets/app.css` at this
+  revision; Vary retains its existing connection and disconnect confirmation APIs.
+- `c7bbd3faf6de7c59ff65848450b0640a7ee2ecb1`: protocol-neutral request,
+  reply and streaming-event architecture, typed wire readers and target builders
+  under `internal/gateway/{ir,chat,responses,anthropic,gemini,codeassist}.go`.
+  The Rust implementation keeps Vary AI's routing, authentication and security
+  boundaries; see `docs/architecture/protocol-conversion.md` for verification.
+
 - `3bce283df43c3ce733e457daa16a69ac38bbb5fd`: resource-oriented provider and
   Agent management, the routing workspace, and provider/import artwork under
   `internal/gui/assets/icons/`. Original vendor files are `groq.svg`,
   `together-color.svg`, `fireworks-color.svg`, `ai302-color.svg`, and `zai.svg`.
   Original import files are `app-cc-switch.png`, `claudecode-color.svg`,
   `codex-color.svg`, and `magpie.svg`.
+  Routing motion additionally follows `plugins/routing/client.js` (`play`,
+  `home`, `staged`, `playing` and `flying`): independent concurrent request
+  lifetimes, provider waits, fallback returns and the final response journey.
+  Vary uses its React packet players and recorded trace metadata; no bird artwork
+  is copied. Cancellation has a separate neutral presentation.
 - `c4551dfcacf67536180291da402ded1d1316a2d8`: protocol review and Gemini
   tool-result role/image adaptation. Reviewed sources under `internal/gateway/`
   are `ir.go`, `gateway.go`, `gemini.go`, `translate_severed_test.go`, and
@@ -39,6 +71,12 @@ attribution.
   gateway identities and old-session alias compatibility, reviewed in
   `internal/gateway/desktop.go` and `desktop_effort_test.go`. Profile effort caps
   additionally follow the installed Desktop 4.4212 native configuration schema.
+  Desktop auxiliary routing also follows `desktopTurn`, `desktopChosen`,
+  `desktopTitle`, `desktopProbe` and `servedBeside`, with behavior checked against
+  `desktop_turn_test.go`, `desktop_probe_test.go` and
+  `desktop_tier_provider_test.go`. Vary additionally keeps bounded in-memory
+  bindings when requests include a session identifier and queues persistence
+  outside forwarding.
 
 Other adapted catalog helpers include `internal/catalog/family.go`,
 `catalog.SameModel`, `internal/provider/grouptemplate.go`, and the usage-purpose
@@ -46,6 +84,20 @@ catalog. The behavioral limits remain documented in Vary's architecture and
 design guides; an attribution does not establish complete compatibility.
 
 ## Compatibility literals
+
+Additional subscription integrations reference `internal/provider/google.go`,
+`chatgpt_api.go`, `claude_signin.go`, `claude_dirs.go`, `claude_code_models.go`,
+and `internal/gateway/claude_subscription.go` / `codeassist.go` at revision
+`1d0fc2bb08c51d8711759694189b8a1d92ee3a1e`. The Gemini CLI and Antigravity
+SVGs come from that revision's `internal/gui/assets/icons` (Lobe Icons,
+MIT licensed). Vary's Rust implementation uses its own account storage and
+shared protocol bridge; it does not implement Magpie's persistent Claude runs.
+
+Routing candidate names additionally follow `internal/provider/keys.go`
+(`RestKeys` and `severalOn`), `internal/gateway/trace.go` (`weighed`), and the
+routing plugin's `who` / `makeRow` at Magpie revision
+`1d0fc2bb08c51d8711759694189b8a1d92ee3a1e`: one enabled key uses the supplier
+name, while a shared pool uses key names with masked-key fallbacks.
 
 Internal selectors, variable names, assets, and design filenames use Vary or
 descriptive names. A few external format identifiers remain literal so existing
@@ -63,3 +115,9 @@ files and integrations continue to work:
 The renderer labels the portable source **Magpie** and places it first. Import reads
 the original source files, keeps credentials in the backend, and does not modify
 the source application.
+
+- `c3593dc4944b91819ed12c601b0f2e844b804b5e`: desktop discovery behavior
+  reviewed in `internal/agent/desktopapp.go`, `workbuddy.go` and
+  `workbuddy_app_test.go`: application identities, both WorkBuddy builds,
+  application subfolders and Spotlight fallback. Vary uses its own Rust
+  discovery and React window-activation refresh implementation.

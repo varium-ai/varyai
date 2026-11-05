@@ -216,7 +216,7 @@ pub(crate) fn catalog(
         .map(|(index, group)| {
             let mut model = template.clone();
             model["slug"] = json!(group.alias());
-            model["display_name"] = json!(format!("{} · routing group", group.name));
+            model["display_name"] = json!(format!("{} · routing group · VaryAI", group.name));
             model["description"] = json!("VaryAI routing group");
             model["priority"] = json!(index);
             // Never infer capability from an alias or a model-family name.
@@ -712,6 +712,26 @@ impl Manager {
         }
         Ok(())
     }
+    pub(crate) fn disconnect(&self) -> Result<(), String> {
+        self.runtime.native.revoke();
+        if self.load()?.is_some() {
+            self.restore()?;
+        }
+        self.runtime.clear_menu();
+        let Some(current) = read(&self.config)? else {
+            return Ok(());
+        };
+        let Some(disconnected) = disconnect_orphan_text(&current)? else {
+            return Ok(());
+        };
+        // An explicit disconnect can remove recognized routing fields without
+        // inventing the lost baseline. Background recovery never takes this path.
+        self.backup_orphan(&current)?;
+        if self.receipt.exists() {
+            return Err(CONFLICT.into());
+        }
+        replace_checked(&self.config, Some(&current), Some(&disconnected))
+    }
     pub fn restore(&self) -> Result<(), String> {
         // Revoke before fallible recovery, including missing or unreadable receipts.
         self.runtime.native.revoke();
@@ -737,6 +757,143 @@ impl Manager {
         Ok(())
     }
 }
+
+fn recognized_orphan_provider(table: &toml::map::Map<String, toml::Value>) -> bool {
+    table.keys().all(|key| {
+        matches!(
+            key.as_str(),
+            "name"
+                | "wire_api"
+                | "requires_openai_auth"
+                | "supports_websockets"
+                | "supports_standalone_web_search"
+                | "experimental_bearer_token"
+                | "base_url"
+        )
+    }) && matches!(
+        table.get("name").and_then(toml::Value::as_str),
+        Some("VaryAI models and routing groups" | "VaryAI routing groups")
+    ) && table.get("wire_api").and_then(toml::Value::as_str) == Some("responses")
+        && table
+            .get("requires_openai_auth")
+            .and_then(toml::Value::as_bool)
+            .is_some()
+        && ["supports_websockets", "supports_standalone_web_search"]
+            .iter()
+            .all(|key| {
+                table
+                    .get(*key)
+                    .is_none_or(|value| value.as_bool() == Some(false))
+            })
+        && table
+            .get("experimental_bearer_token")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|token| {
+                token.len() >= 16
+                    && token.len() <= 256
+                    && token
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+            })
+        && table
+            .get("base_url")
+            .and_then(toml::Value::as_str)
+            .and_then(|url| url::Url::parse(url).ok())
+            .is_some_and(|url| {
+                url.scheme() == "http"
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+                    && url.port().is_some()
+                    && url.path() == "/intent/v1"
+                    && url.query().is_none()
+                    && url.fragment().is_none()
+            })
+}
+
+fn disconnect_orphan_fields(table: &mut dyn toml_edit::TableLike) {
+    if table.get("model_provider").and_then(|v| v.as_str()) == Some(PROVIDER) {
+        table.remove("model_provider");
+    }
+    if table
+        .get("model")
+        .and_then(|v| v.as_str())
+        .is_some_and(|model| {
+            ["vary-auto/", "vary-provider/", "auto/"]
+                .iter()
+                .any(|prefix| model.starts_with(prefix))
+        })
+    {
+        table.remove("model");
+    }
+    if table
+        .get("model_catalog_json")
+        .and_then(|v| v.as_str())
+        .and_then(|path| Path::new(path).file_name()?.to_str())
+        .and_then(|name| {
+            name.strip_prefix("vary-routing-catalog-")?
+                .strip_suffix(".json")
+        })
+        .is_some_and(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        table.remove("model_catalog_json");
+    }
+}
+
+fn disconnect_orphan_text(current: &str) -> Result<Option<String>, String> {
+    let value: toml::Value = current.parse().map_err(|_| CONFLICT)?;
+    let top_routed = value.get("model_provider").and_then(toml::Value::as_str) == Some(PROVIDER);
+    let profile = value.get("profile").and_then(toml::Value::as_str);
+    let profile_routed = profile
+        .and_then(|name| value.get("profiles")?.get(name)?.get("model_provider"))
+        .and_then(toml::Value::as_str)
+        == Some(PROVIDER);
+    let provider = value
+        .get("model_providers")
+        .and_then(|providers| providers.get(PROVIDER))
+        .and_then(toml::Value::as_table);
+    let native_routed = value
+        .get("openai_base_url")
+        .and_then(toml::Value::as_str)
+        .filter(|url| valid_native_url(url))
+        .and_then(|url| url::Url::parse(url).ok())
+        .zip(
+            provider
+                .and_then(|provider| provider.get("base_url"))
+                .and_then(toml::Value::as_str)
+                .and_then(|url| url::Url::parse(url).ok()),
+        )
+        .is_some_and(|(native, menu)| native.origin() == menu.origin());
+    if !provider.is_some_and(recognized_orphan_provider) {
+        return if top_routed || profile_routed || native_routed {
+            Err(CONFLICT.into())
+        } else {
+            Ok(None)
+        };
+    }
+    let mut doc: DocumentMut = current.parse().map_err(|_| CONFLICT)?;
+    if top_routed || native_routed {
+        disconnect_orphan_fields(doc.as_table_mut());
+    }
+    if profile_routed || (top_routed && profile.is_some()) {
+        if let Some(table) = profile
+            .and_then(|name| doc.get_mut("profiles")?.get_mut(name))
+            .and_then(toml_edit::Item::as_table_like_mut)
+        {
+            let provider = table.get("model_provider").and_then(|v| v.as_str());
+            if provider.is_none() || provider == Some(PROVIDER) {
+                disconnect_orphan_fields(table);
+            }
+        }
+    }
+    if native_routed {
+        doc.as_table_mut().remove("openai_base_url");
+    }
+    // Retain the provider table and inactive profiles for sessions that name them.
+    let disconnected = doc.to_string();
+    Ok((disconnected != current).then_some(disconnected))
+}
+
 fn orphan_state(current: Option<&str>) -> Result<(bool, bool), String> {
     let Some(current) = current else {
         return Ok((false, false));
@@ -745,45 +902,9 @@ fn orphan_state(current: Option<&str>) -> Result<(bool, bool), String> {
     let Some(provider) = doc.get("model_providers").and_then(|p| p.get(PROVIDER)) else {
         return Ok((false, false));
     };
-    let known = provider.as_table().is_some_and(|table| {
-        table.len() == 7
-            && matches!(
-                table.get("name").and_then(toml::Value::as_str),
-                Some("VaryAI models and routing groups" | "VaryAI routing groups")
-            )
-            && table.get("wire_api").and_then(toml::Value::as_str) == Some("responses")
-            && table
-                .get("requires_openai_auth")
-                .and_then(toml::Value::as_bool)
-                .is_some()
-            && ["supports_websockets", "supports_standalone_web_search"]
-                .iter()
-                .all(|k| table.get(*k).and_then(toml::Value::as_bool) == Some(false))
-            && table
-                .get("experimental_bearer_token")
-                .and_then(toml::Value::as_str)
-                .is_some_and(|token| {
-                    token.len() >= 16
-                        && token.len() <= 256
-                        && token
-                            .bytes()
-                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
-                })
-            && table
-                .get("base_url")
-                .and_then(toml::Value::as_str)
-                .and_then(|url| url::Url::parse(url).ok())
-                .is_some_and(|url| {
-                    url.scheme() == "http"
-                        && url.username().is_empty()
-                        && url.password().is_none()
-                        && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
-                        && url.port().is_some()
-                        && url.path() == "/intent/v1"
-                        && url.query().is_none()
-                        && url.fragment().is_none()
-                })
-    });
+    let known = provider
+        .as_table()
+        .is_some_and(|table| table.len() == 7 && recognized_orphan_provider(table));
     Ok((true, known && !references_projection(&doc)))
 }
 fn references_projection(value: &toml::Value) -> bool {

@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "tray-panel",
+  "description": "Local quick panel with shared agent, routing and security controls",
+  "windows": ["tray-panel"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "updater:default",
+    "log:default",
+    "dialog:default"
+  ]
+}

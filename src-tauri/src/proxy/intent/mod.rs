@@ -6,6 +6,7 @@ mod compaction;
 mod continuation;
 pub(super) mod length;
 pub(crate) mod native;
+mod official_bridge;
 #[cfg(test)]
 mod resume_tests;
 pub(crate) mod scheduling;
@@ -13,6 +14,13 @@ mod scopes;
 pub(crate) mod trace;
 #[cfg(test)]
 mod trace_tests;
+mod trae;
+#[cfg(test)]
+mod trae_tests;
+#[cfg(test)]
+mod workbuddy_history_tests;
+#[cfg(test)]
+mod workbuddy_official_tests;
 use super::protocol_bridge::Protocol;
 use crate::services::intent_routing::{classifier, RoutingGroup};
 use axum::{
@@ -245,6 +253,19 @@ impl Target {
             && self.same_account(other)
     }
     pub(crate) fn same_account(&self, other: &Self) -> bool {
+        let subscription = |target: &Self| {
+            target
+                .upstream
+                .as_ref()
+                .and_then(crate::services::subscription_provider::binding)
+        };
+        match (subscription(self), subscription(other)) {
+            (Some(a), Some(b)) if a.provider != b.provider || a.account_id != b.account_id => {
+                return false
+            }
+            (Some(_), None) | (None, Some(_)) => return false,
+            _ => {}
+        }
         let same_url = if let (Some(a), Some(b)) = (&self.upstream, &other.upstream) {
             let gemini = |provider: &crate::provider::Provider| {
                 provider
@@ -583,6 +604,15 @@ fn remember(map: &mut HashMap<String, usize>, kind: &str, key: &str, target: usi
     }
 }
 impl Bindings {
+    fn continuation_projection(&self, consumer: &str, body: &Value) -> Value {
+        if consumer == "agent:trae" {
+            trae::projection(body, |id| {
+                self.calls.contains_key(&continuation::hash("call", id))
+            })
+        } else {
+            body.clone()
+        }
+    }
     fn persist(&self) {
         if let Some(durable) = &self.durable {
             durable.persist(self);
@@ -762,6 +792,20 @@ impl Bindings {
             .into_iter()
             .flatten()
             .chain(value.get("item"));
+        for id in response["candidates"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|candidate| candidate["content"]["parts"].as_array())
+            .flatten()
+            .filter_map(|part| part["functionCall"]["id"].as_str())
+            .filter(|id| !id.is_empty() && id.len() <= 256)
+        {
+            if self.full() {
+                break;
+            }
+            changed |= remember(&mut self.calls, "call", id, target);
+        }
         for item in items {
             if self.full() {
                 break;
@@ -788,6 +832,8 @@ impl Bindings {
 }
 #[derive(Default)]
 struct Observer {
+    trae: bool,
+    trae_calls: trae::Calls,
     scheduling: Option<Arc<scheduling::Scheduling>>,
     started: Option<Instant>,
     first_content: Option<Instant>,
@@ -849,6 +895,9 @@ impl Observer {
             scheduling.observe_event(value, chrono::Utc::now().timestamp());
         }
         bindings.observe(value, target);
+        if self.trae {
+            self.trae_calls.observe(value, bindings, target);
+        }
         let kind = value["type"].as_str().unwrap_or("");
         self.pending_tools |= value.get("response").unwrap_or(value)["output"]
             .as_array()
@@ -867,6 +916,13 @@ impl Observer {
                     })
                 })
             });
+        self.pending_tools |= value["candidates"].as_array().is_some_and(|candidates| {
+            candidates.iter().any(|candidate| {
+                candidate["content"]["parts"]
+                    .as_array()
+                    .is_some_and(|parts| parts.iter().any(|part| part["functionCall"].is_object()))
+            })
+        });
         self.completed |= matches!(kind, "response.completed" | "message_stop");
         self.trace_terminal |= value["choices"].as_array().is_some_and(|choices| {
             choices.iter().any(|choice| {
@@ -1210,7 +1266,13 @@ pub(crate) async fn handle_global(
         .extensions
         .get::<super::connections::Agent>()
         .is_none();
-    execute(
+    let keep_trae_waiting = protocol == Protocol::Chat
+        && original["stream"] == true
+        && parts
+            .extensions
+            .get::<super::connections::Agent>()
+            .is_some_and(|agent| agent.0 == "trae");
+    let pending = execute(
         state,
         session,
         parts,
@@ -1223,8 +1285,12 @@ pub(crate) async fn handle_global(
         external,
         Some(generation),
         Instant::now(),
-    )
-    .await
+    );
+    if keep_trae_waiting {
+        trae::waiting_response(pending).await
+    } else {
+        pending.await
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1272,6 +1338,13 @@ async fn execute(
     let count_tokens =
         protocol == Protocol::Anthropic && parts.uri.path() == "/v1/messages/count_tokens";
     trace.purpose(&parts.headers, compact.is_some());
+    let desktop_purpose = parts
+        .extensions
+        .get::<super::connections::desktop::Purpose>()
+        .copied();
+    if let Some(purpose) = desktop_purpose {
+        trace.auxiliary_purpose(purpose.label());
+    }
     let fail = |status: StatusCode, code| {
         trace.finish(status.as_u16(), trace::State::Failed);
         error(status, code)
@@ -1331,17 +1404,38 @@ async fn execute(
     } else {
         None
     };
+    let portable_tool_history = (agent == "workbuddy"
+        || session.targets.iter().all(|target| target.official))
+        && protocol != Protocol::Responses
+        && session.targets.len() == 1
+        && !opaque_continuation(protocol, &original)
+        && completed_tool_history(&projection);
     // Counting history must not claim or change its generation continuation.
     let scoped = if count_tokens {
         Arc::new(scopes::Conversation::default())
     } else {
-        match state.intent_runtime.conversations.acquire_durable(
-            &consumer,
-            &session,
-            conversation.as_deref(),
-            &projection,
-            durable,
-        ) {
+        let scoped = if portable_tool_history {
+            state
+                .intent_runtime
+                .conversations
+                .acquire_durable_with_history(
+                    &consumer,
+                    &session,
+                    conversation.as_deref(),
+                    &projection,
+                    durable,
+                    true,
+                )
+        } else {
+            state.intent_runtime.conversations.acquire_durable(
+                &consumer,
+                &session,
+                conversation.as_deref(),
+                &projection,
+                durable,
+            )
+        };
+        match scoped {
             Ok(scoped) => scoped,
             Err(code) => return fail(StatusCode::CONFLICT, code),
         }
@@ -1370,7 +1464,18 @@ async fn execute(
                     )
                 })
             });
-        if (tools || opaque_continuation(protocol, &original)) && pinned.is_none() {
+        if portable_tool_history {
+            // An existing named scope still pins its destination. A self-contained
+            // transcript can start a new single-target scope after a model switch.
+            Ok(pinned)
+        } else if tools && pinned.is_none() && conversation.is_none() {
+            // Clients can omit session headers. The scope already matched observed call IDs;
+            // resolve every call again so unknown, colliding or mixed owners still fail closed.
+            bindings.resolve(
+                &bindings.continuation_projection(&consumer, &projection),
+                None,
+            )
+        } else if (tools || opaque_continuation(protocol, &original)) && pinned.is_none() {
             Err(())
         } else {
             Ok(pinned)
@@ -1513,6 +1618,7 @@ async fn execute(
     let classifier_candidates =
         crate::services::intent_routing::rules::classifier_candidates(&session.group, &facts);
     let classified = if inspected_projection["_group_projection_incomplete"] != true
+        && desktop_purpose != Some(super::connections::desktop::Purpose::Probe)
         && !count_tokens
         && pinned.is_none()
         && session.group.uses_classifier()
@@ -1824,13 +1930,9 @@ async fn execute(
             trace.finish(200, trace::State::Completed);
             return axum::Json(json!({"input_tokens":tokens})).into_response();
         }
-        if target.official && protocol != Protocol::Responses {
-            return fail(
-                StatusCode::BAD_REQUEST,
-                "routing_official_protocol_unsupported",
-            );
-        }
+        let official_conversion = target.official && protocol != Protocol::Responses;
         if target.official
+            && !official_conversion
             && !compact.is_some_and(|c| c.native && c.operation == compaction::Operation::Legacy)
             && (body["stream"] != true || body["store"] != false)
         {
@@ -1876,7 +1978,64 @@ async fn execute(
                 Err(code) => return fail(StatusCode::BAD_REQUEST, code),
             }
         };
-        let mut headers = target.headers.clone();
+        let payload = if official_conversion {
+            match official_bridge::request_wire(
+                &payload,
+                protocol,
+                &endpoint,
+                &target.model,
+                &scoped.official,
+                index,
+                agent == "workbuddy",
+            ) {
+                Ok(payload) => payload,
+                Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_conversion_unsupported"),
+            }
+        } else {
+            payload
+        };
+        let resolved_subscription = if let Some(provider) = target
+            .upstream
+            .as_ref()
+            .filter(|p| crate::services::subscription_provider::binding(p).is_some())
+        {
+            match tokio::time::timeout(
+                Duration::from_secs(30),
+                crate::services::subscription_provider::resolve(
+                    provider,
+                    state.app_handle.as_ref(),
+                ),
+            )
+            .await
+            {
+                Ok(Ok(provider)) => Some(provider),
+                _ => {
+                    return fail(
+                        StatusCode::UNAUTHORIZED,
+                        "routing_account_changed_or_expired",
+                    )
+                }
+            }
+        } else {
+            None
+        };
+        let resolved_transport = match resolved_subscription
+            .as_ref()
+            .map(|provider| {
+                crate::services::intent_routing::execution::static_transport(
+                    provider,
+                    &target.model,
+                )
+            })
+            .transpose()
+        {
+            Ok(value) => value,
+            Err(_) => return fail(StatusCode::UNAUTHORIZED, "routing_account_unavailable"),
+        };
+        let mut headers = resolved_transport
+            .as_ref()
+            .map(|(_, headers)| headers.clone())
+            .unwrap_or_else(|| target.headers.clone());
         if target.official && crate::codex_client::apply_identity(&mut headers).is_err() {
             return fail(
                 StatusCode::BAD_GATEWAY,
@@ -1919,6 +2078,12 @@ async fn execute(
             header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("identity"),
         );
+        if official_conversion {
+            headers.insert(
+                header::ACCEPT,
+                http::HeaderValue::from_static("text/event-stream"),
+            );
+        }
         if generation.is_some_and(|generation| generation != state.db.routing_generation()) {
             return fail(StatusCode::SERVICE_UNAVAILABLE, "routing_catalog_stale");
         }
@@ -1949,8 +2114,11 @@ async fn execute(
             .into_iter()
             .chain(retry_deadline)
             .min();
-        let response = if protocol != output {
-            let Some(upstream) = &target.upstream else {
+        let specialized = resolved_subscription
+            .as_ref()
+            .is_some_and(super::native_subscription::specialized);
+        let response = if specialized || (protocol != output && !official_conversion) {
+            let Some(upstream) = resolved_subscription.as_ref().or(target.upstream.as_ref()) else {
                 return fail(StatusCode::BAD_REQUEST, "routing_conversion_unsupported");
             };
             let mut bridge_body = match super::pi::json::parse(&payload) {
@@ -1958,6 +2126,9 @@ async fn execute(
                 Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_invalid_json"),
             };
             bridge_body["model"] = Value::String(target.model.clone());
+            if agent == "workbuddy" && protocol == Protocol::Chat {
+                super::workbuddy::normalize_chat_for_conversion(&mut bridge_body);
+            }
             // Protocol helpers see only allowed caller protocol metadata, never caller credentials.
             let mut caller_headers = http::HeaderMap::new();
             super::protocol_bridge::copy_caller_headers(
@@ -1965,19 +2136,35 @@ async fn execute(
                 &parts.headers,
                 &mut caller_headers,
             );
-            let forward = super::group_forward::forward(
-                &state,
-                protocol,
-                upstream,
-                &parts.method,
-                &endpoint,
-                &bridge_body,
-                &caller_headers,
-                &parts.extensions,
-                conversation.as_deref(),
-                scoped.history.clone(),
-                scoped.shadow.clone(),
-            );
+            let forward = async {
+                if specialized {
+                    return super::native_subscription::forward(
+                        upstream,
+                        protocol,
+                        &bridge_body,
+                        &endpoint,
+                        conversation.as_deref(),
+                        scoped.shadow.clone(),
+                        scoped.history.clone(),
+                        session.client.clone(),
+                    )
+                    .await;
+                }
+                super::group_forward::forward(
+                    &state,
+                    protocol,
+                    upstream,
+                    &parts.method,
+                    &endpoint,
+                    &bridge_body,
+                    &caller_headers,
+                    &parts.extensions,
+                    conversation.as_deref(),
+                    scoped.history.clone(),
+                    scoped.shadow.clone(),
+                )
+                .await
+            };
             let forwarded =
                 match wait_for_attempt(attempt_deadline, native_lease.as_deref(), forward).await {
                     Ok(result) => result,
@@ -2047,7 +2234,18 @@ async fn execute(
                 }
             }
         } else {
-            let mut url = target.url.clone();
+            let mut url = match resolved_transport.as_ref() {
+                Some((url, _)) => match reqwest::Url::parse(url) {
+                    Ok(url) => url,
+                    Err(_) => {
+                        return fail(
+                            StatusCode::BAD_GATEWAY,
+                            "routing_upstream_connection_failed",
+                        )
+                    }
+                },
+                None => target.url.clone(),
+            };
             if count_tokens {
                 let Some(base) = url.path().strip_suffix("/messages") else {
                     return fail(StatusCode::BAD_REQUEST, "routing_token_count_unsupported");
@@ -2088,12 +2286,14 @@ async fn execute(
                 }
                 url.query_pairs_mut().append_pair("alt", "sse");
             }
-            let dispatch = session
-                .client
-                .post(url)
-                .headers(headers)
-                .body(payload)
-                .send();
+            let mut request = session.client.post(url).headers(headers).body(payload);
+            if !streaming {
+                request = request.timeout(super::http_client::UPSTREAM_HEADER_WAIT);
+            }
+            let dispatch = super::http_client::send_with_header_timeout(
+                request,
+                super::http_client::UPSTREAM_HEADER_WAIT,
+            );
             let dispatched =
                 match wait_for_attempt(attempt_deadline, native_lease.as_deref(), dispatch).await {
                     Ok(result) => result,
@@ -2196,6 +2396,82 @@ async fn execute(
         {
             trace.record(Some(&target.model));
         }
+        let response = if official_conversion {
+            // The official request always asks for SSE. Some successful replies
+            // omit its media type; the wire decoder still verifies every event
+            // and requires a terminal response before reporting completion.
+            let response = if !response.is_sse() && !response.is_json() {
+                let status = response.status();
+                let mut headers = response.headers().clone();
+                headers.insert(
+                    header::CONTENT_TYPE,
+                    http::HeaderValue::from_static("text/event-stream"),
+                );
+                super::hyper_client::ProxyResponse::streamed(
+                    status,
+                    headers,
+                    response.bytes_stream(),
+                )
+            } else {
+                response
+            };
+            let upstream_sse = response.is_sse();
+            let upstream_json = response.is_json();
+            let timeout = Duration::from_secs(state.config.read().await.non_streaming_timeout);
+            let context = super::protocol_bridge::BridgeContext {
+                tool_context: Default::default(),
+                history: scoped.history.clone(),
+                shadow: scoped.shadow.clone(),
+                provider_id: target.provider_id.clone(),
+                session_id: conversation.clone(),
+                observation: Some(super::tool_observation::mount::metadata(
+                    super::tool_observation::parsers::PROTOCOL_OPENAI_RESPONSES,
+                    agent,
+                    super::tool_observation::channel::Transport::Sse,
+                    super::tool_observation::channel::OutputQuality::Native,
+                    super::tool_observation::mount::collect_tool_schemas(
+                        &body,
+                        match protocol {
+                            Protocol::Chat => "openai",
+                            Protocol::Anthropic => "claude",
+                            Protocol::Gemini => "gemini",
+                            Protocol::Responses => "codex",
+                        },
+                    ),
+                )),
+                reply_observer: Some({
+                    let history = scoped.official.clone();
+                    Arc::new(move |reply| history.record(reply, index))
+                }),
+            };
+            let convert = super::protocol_bridge::Bridge {
+                input: protocol,
+                output,
+            }
+            .response(response, streaming, timeout, context);
+            match wait_for_attempt(attempt_deadline, native_lease.as_deref(), convert).await {
+                Ok(Ok(response)) => response,
+                Err(AttemptWait::Revoked) => {
+                    return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable")
+                }
+                Err(AttemptWait::Deadline) => {
+                    log::warn!("[Intent] Official bridge response deadline elapsed");
+                    return fail(StatusCode::BAD_GATEWAY, "routing_upstream_response_invalid");
+                }
+                Ok(Err(error)) => {
+                    let kind = match error {
+                        super::ProxyError::TransformError(_) => "transform",
+                        super::ProxyError::InvalidRequest(_) => "invalid",
+                        super::ProxyError::Timeout(_) => "timeout",
+                        _ => "other",
+                    };
+                    log::warn!("[Intent] Official bridge response failed sse={upstream_sse} json={upstream_json} kind={kind}");
+                    return fail(StatusCode::BAD_GATEWAY, "routing_upstream_response_invalid");
+                }
+            }
+        } else {
+            response
+        };
         let response_headers = public_response_headers(response.headers());
         let mut upstream = Box::pin(response.bytes_stream());
         if count_tokens {
@@ -2281,6 +2557,7 @@ async fn execute(
             bindings.bind_session(key, index);
         }
         let mut observer = Observer::default();
+        observer.trae = agent == "trae" && protocol == Protocol::Chat;
         observer.scheduling = Some(target.scheduling.clone());
         observer.started = streaming.then_some(attempt_started);
         observer.first_content = observed_first_content;
@@ -2371,6 +2648,18 @@ async fn execute(
                 }
             }
             observer.finish(&mut bindings, index);
+            if portable_tool_history && observer.completed && !observer.failed && !observer.oversized {
+                // Keep imported calls with the scope that accepted them, so a
+                // later round can resolve old and newly generated calls together.
+                let mut changed = false;
+                if let Some(items) = projection["input"].as_array() {
+                    for id in items.iter().filter(|item| item["type"] == "function_call").filter_map(|item| item["call_id"].as_str()) {
+                        if bindings.full() { break; }
+                        changed |= remember(&mut bindings.calls, "call", id, index);
+                    }
+                }
+                if changed { bindings.persist(); }
+            }
             if observer.completed && !observer.failed && !observer.pending_tools && !observer.oversized {
                 if let Some(key) = conversation.as_ref() { bindings.complete_session(key); }
             }
@@ -2465,23 +2754,91 @@ fn public_response_headers(source: &http::HeaderMap) -> http::HeaderMap {
     }
     output
 }
+fn completed_tool_history(projection: &Value) -> bool {
+    if projection["_group_projection_incomplete"] == true
+        || projection
+            .get("previous_response_id")
+            .is_some_and(|v| !v.is_null())
+        || projection.get("conversation").is_some_and(|v| !v.is_null())
+    {
+        return false;
+    }
+    let Some(items) = projection["input"].as_array() else {
+        return false;
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut pending = std::collections::HashSet::new();
+    for item in items {
+        match item["type"].as_str() {
+            Some("message") => {}
+            Some("function_call") => {
+                let Some(id) = item["call_id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty() && id.len() <= 256)
+                else {
+                    return false;
+                };
+                if item["name"].as_str().is_none_or(|name| name.is_empty())
+                    || !item["arguments"]
+                        .as_str()
+                        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                        .is_some_and(|value| value.is_object())
+                    || !seen.insert(id)
+                    || seen.len() >= 4096
+                {
+                    return false;
+                }
+                pending.insert(id);
+            }
+            Some("function_call_output") => {
+                let Some(id) = item["call_id"].as_str() else {
+                    return false;
+                };
+                if item.get("output").is_none_or(Value::is_null) || !pending.remove(id) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    !seen.is_empty() && pending.is_empty()
+}
+
 fn opaque_continuation(protocol: Protocol, body: &Value) -> bool {
     match protocol {
         Protocol::Anthropic => body["messages"].as_array().is_some_and(|messages| {
             messages.iter().any(|message| {
                 message["content"].as_array().is_some_and(|blocks| {
                     blocks.iter().any(|block| {
-                        matches!(
-                            block["type"].as_str(),
-                            Some("thinking" | "redacted_thinking")
-                        ) || block.get("signature").is_some()
+                        // Unsigned thinking is visible text, including the empty
+                        // signature replayed by Claude Desktop's embedded CLI.
+                        block["type"] == "redacted_thinking"
+                            || block.get("signature").is_some_and(|signature| {
+                                !signature.is_null()
+                                    && signature.as_str().is_none_or(|text| !text.is_empty())
+                            })
                     })
                 })
             })
         }),
         Protocol::Chat => body["messages"].as_array().is_some_and(|messages| {
             messages.iter().any(|message| {
-                message.get("reasoning_content").is_some() || message.get("reasoning").is_some()
+                ["reasoning_content", "reasoning", "reasoning_details"]
+                    .into_iter()
+                    .filter_map(|key| message.get(key))
+                    .any(sealed_chat_reasoning)
+                    || message["content"].as_array().is_some_and(|parts| {
+                        parts
+                            .iter()
+                            .any(|part| part.get("thoughtSignature").is_some())
+                    })
+                    || message["tool_calls"].as_array().is_some_and(|calls| {
+                        calls.iter().any(|call| {
+                            call.pointer("/extra_content/google/thought_signature")
+                                .and_then(Value::as_str)
+                                .is_some_and(|signature| !signature.is_empty())
+                        })
+                    })
             })
         }),
         Protocol::Gemini => body["contents"].as_array().is_some_and(|contents| {
@@ -2496,6 +2853,32 @@ fn opaque_continuation(protocol: Protocol, body: &Value) -> bool {
             })
         }),
         Protocol::Responses => false,
+    }
+}
+
+/// Visible Chat reasoning is replayable text. Only sealed vendor state requires
+/// a previously established target binding, including when switching models.
+fn sealed_chat_reasoning(value: &Value) -> bool {
+    match value {
+        Value::String(text) => {
+            text.starts_with(super::providers::reasoning_bridge::OPENAI_REASONING_ITEM_PREFIX)
+        }
+        Value::Array(parts) => parts.iter().any(sealed_chat_reasoning),
+        Value::Object(fields) => {
+            fields
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.contains("encrypted"))
+                || ["signature", "encrypted_content", "data"]
+                    .into_iter()
+                    .any(|key| {
+                        fields.get(key).is_some_and(|value| {
+                            !value.is_null() && value.as_str().is_none_or(|text| !text.is_empty())
+                        })
+                    })
+                || fields.values().any(sealed_chat_reasoning)
+        }
+        _ => false,
     }
 }
 fn request_has_images(protocol: Protocol, body: &Value, projection: &Value) -> bool {

@@ -98,7 +98,7 @@ async fn prepare_inner(
             .get(&target.provider_id)
             .filter(|p| eligible_provider(p, true))
             .ok_or("intentRouting.providerUnavailable")?;
-        Some(provider.clone())
+        Some(crate::services::routing_upstreams::first_enabled(provider)?)
     } else {
         None
     };
@@ -233,10 +233,11 @@ async fn prepare_inner(
             return Err("intentRouting.providerUnavailable".into());
         }
     }
-    let client = tokio::task::spawn_blocking(crate::proxy::http_client::get_without_redirects)
-        .await
-        .map_err(|_| "intentRouting.failed")?
-        .map_err(|_| "intentRouting.failed")?;
+    let client =
+        tokio::task::spawn_blocking(crate::proxy::http_client::get_forwarding_without_redirects)
+            .await
+            .map_err(|_| "intentRouting.failed")?
+            .map_err(|_| "intentRouting.failed")?;
     #[cfg(not(test))]
     for (index, target) in targets.iter().enumerate() {
         if enforce_account_models
@@ -295,7 +296,7 @@ pub(super) fn retarget(target: &mut Target, model: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn static_transport(
+pub(crate) fn static_transport(
     provider: &crate::provider::Provider,
     model: &str,
 ) -> Result<(String, http::HeaderMap), String> {
@@ -583,6 +584,7 @@ mod tests {
             ),
         ] {
             let record = RoutingUpstream {
+                icon: None,
                 transport: None,
                 schema_version: 1,
                 preset_id: None,
@@ -636,6 +638,7 @@ mod tests {
             resolve_provider, RoutingUpstream, UpstreamSource,
         };
         let record = RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -731,7 +734,7 @@ mod tests {
         assert!(model["display_name"]
             .as_str()
             .expect("label")
-            .ends_with(" · routing group"));
+            .ends_with(" · routing group · VaryAI"));
         assert_eq!(model["visibility"], "list");
         assert_eq!(model["supported_in_api"], true);
         assert_eq!(model["input_modalities"], json!(["text", "image"]));

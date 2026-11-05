@@ -10,6 +10,10 @@ pub(super) struct Outbox {
     token: String,
     provider: Option<Provider>,
     delivered: bool,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    selection_pending: bool,
 }
 impl Manager {
     fn bridge_path(&self) -> std::path::PathBuf {
@@ -40,20 +44,35 @@ impl Manager {
         Ok(Status {
             app: "trae".into(),
             enabled,
-            configured: enabled && delivered,
-            recovery_pending: outbox.is_some() && !delivered,
-            recovery_reason: (outbox.is_some() && !delivered)
+            configured: enabled
+                && delivered
+                && !outbox.as_ref().is_some_and(|o| o.selection_pending),
+            recovery_pending: outbox
+                .as_ref()
+                .is_some_and(|o| !delivered || o.selection_pending),
+            recovery_reason: outbox
+                .as_ref()
+                .is_some_and(|o| !delivered || o.selection_pending)
                 .then_some(RecoveryReason::BridgePending),
-            model: None,
+            model: outbox.and_then(|o| o.model),
             restart_required: enabled && !delivered,
             desktop_state: None,
         })
     }
     pub(crate) fn bridge_select(&self, enabled: bool) -> Result<(), String> {
+        self.bridge_select_model(enabled, None)
+    }
+    pub(crate) fn bridge_select_model(
+        &self,
+        enabled: bool,
+        model: Option<String>,
+    ) -> Result<(), String> {
         let old = self.bridge_load()?;
         if !enabled && old.is_none() {
             return Ok(());
         }
+        let selected = model.or_else(|| old.as_ref().and_then(|o| o.model.clone()));
+        let delivered = enabled && old.as_ref().is_some_and(|o| o.enabled && o.delivered);
         self.bridge_save(&Outbox {
             enabled,
             token: old.as_ref().map(|o| o.token.clone()).unwrap_or_else(|| {
@@ -64,12 +83,15 @@ impl Manager {
                 )
             }),
             provider: old.and_then(|o| o.provider),
-            delivered: false,
+            delivered,
+            selection_pending: enabled && selected.is_some(),
+            model: selected,
         })
     }
     pub(crate) fn bridge_retry(&self) -> Result<(), String> {
         let mut outbox = self.bridge_load()?.ok_or(CONFLICT)?;
         outbox.delivered = false;
+        outbox.selection_pending = outbox.model.is_some();
         self.bridge_save(&outbox)
     }
     pub(crate) fn bridge_sync(
@@ -89,9 +111,14 @@ impl Manager {
                 crate::services::trae_bridge::remove(ID).map_err(|_| FAILED)?;
                 crate::services::trae_bridge::restore_shared().map_err(|_| FAILED.into())
             },
+            |model| {
+                crate::services::trae_bridge::select_starting_model(ID, model)
+                    .map_err(|_| FAILED.into())
+            },
             crate::services::trae_bridge::shared_matches,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn bridge_sync_with(
         &self,
         menu: Option<&Menu>,
@@ -99,6 +126,7 @@ impl Manager {
         suspend: bool,
         apply: impl FnOnce(&Provider) -> Result<(), String>,
         remove: impl FnOnce() -> Result<(), String>,
+        select: impl FnOnce(&str) -> Result<(), String>,
         ready: impl FnOnce(&Provider) -> bool,
     ) -> Result<Option<Receipt>, String> {
         let Some(mut outbox) = self.bridge_load()? else {
@@ -107,6 +135,7 @@ impl Manager {
         let catalog = menu.map(models).unwrap_or_default();
         if !outbox.enabled || suspend || catalog.is_empty() {
             outbox.delivered = false;
+            outbox.selection_pending = outbox.enabled && outbox.model.is_some();
             self.bridge_save(&outbox)?;
             remove()?;
             if !outbox.enabled {
@@ -120,7 +149,15 @@ impl Manager {
             &outbox.token,
             &catalog[0].id,
         );
-        let provider = Provider::with_id(ID.into(), "Vary AI".into(), config, None);
+        if outbox
+            .model
+            .as_ref()
+            .is_some_and(|selected| !catalog.iter().any(|m| &m.id == selected))
+        {
+            outbox.model = Some(catalog[0].id.clone());
+            outbox.selection_pending = true;
+        }
+        let provider = Provider::with_id(ID.into(), "VaryAI".into(), config, None);
         let unchanged = outbox.delivered
             && outbox
                 .provider
@@ -130,10 +167,18 @@ impl Manager {
             if !ready(&provider) {
                 return Err(CONFLICT.into());
             }
+            if outbox.selection_pending {
+                self.bridge_save(&outbox)?;
+                if let Some(model) = &outbox.model {
+                    select(model)?;
+                }
+                outbox.selection_pending = false;
+                self.bridge_save(&outbox)?;
+            }
             return Ok(Some(Receipt {
                 app: "trae".into(),
                 token: outbox.token,
-                model: catalog[0].id.clone(),
+                model: outbox.model.unwrap_or_else(|| catalog[0].id.clone()),
                 model_map: Default::default(),
                 visible_models: None,
                 files: vec![],
@@ -145,12 +190,18 @@ impl Manager {
         outbox.delivered = false;
         self.bridge_save(&outbox)?;
         apply(&provider)?;
+        if outbox.selection_pending {
+            if let Some(model) = &outbox.model {
+                select(model)?;
+            }
+            outbox.selection_pending = false;
+        }
         outbox.delivered = true;
         self.bridge_save(&outbox)?;
         Ok(Some(Receipt {
             app: "trae".into(),
             token: outbox.token,
-            model: catalog[0].id.clone(),
+            model: outbox.model.unwrap_or_else(|| catalog[0].id.clone()),
             model_map: Default::default(),
             visible_models: None,
             files: vec![],
@@ -222,6 +273,7 @@ mod tests {
                 false,
                 |_| Err(FAILED.into()),
                 || Ok(()),
+                |_| Ok(()),
                 |_| true
             )
             .is_err());
@@ -240,17 +292,49 @@ mod tests {
                     Ok(())
                 },
                 || Ok(()),
+                |_| Ok(()),
                 |_| true,
             )?
             .ok_or(FAILED)?;
         assert_eq!(receipt.app, "trae");
         assert!(manager.bridge_status()?.configured);
+        manager.bridge_select_model(true, Some(alias.clone()))?;
+        assert_eq!(manager.bridge_status()?.model, Some(alias.clone()));
+        assert!(manager.bridge_status()?.recovery_pending);
+        assert!(manager
+            .bridge_sync_with(
+                Some(&menu),
+                "http://127.0.0.1:1",
+                false,
+                |_| panic!("selection must not rewrite a delivered catalog"),
+                || Ok(()),
+                |_| Err(FAILED.into()),
+                |_| true,
+            )
+            .is_err());
+        assert!(!manager.bridge_status()?.configured);
+        assert!(manager.bridge_status()?.recovery_pending);
+        manager.bridge_sync_with(
+            Some(&menu),
+            "http://127.0.0.1:1",
+            false,
+            |_| panic!("selection retry must not rewrite the catalog"),
+            || Ok(()),
+            |selected| {
+                assert_eq!(selected, alias);
+                Ok(())
+            },
+            |_| true,
+        )?;
+        assert!(manager.bridge_status()?.configured);
+        assert!(!manager.bridge_status()?.recovery_pending);
         manager.bridge_sync_with(
             Some(&menu),
             "http://127.0.0.1:1",
             false,
             |_| panic!("unchanged catalog must not be rewritten"),
             || Ok(()),
+            |_| panic!("ordinary refresh must preserve the native selection"),
             |_| true,
         )?;
         assert!(manager
@@ -260,6 +344,7 @@ mod tests {
                 false,
                 |_| panic!("external edits require explicit retry"),
                 || Ok(()),
+                |_| Ok(()),
                 |_| false
             )
             .is_err());
@@ -270,6 +355,7 @@ mod tests {
             false,
             |_| Ok(()),
             || Ok(()),
+            |_| Ok(()),
             |_| false,
         )?;
         menu.models.get_mut(&alias).ok_or(FAILED)?.label = "Renamed".into();
@@ -285,6 +371,7 @@ mod tests {
                 Ok(())
             },
             || Ok(()),
+            |_| Ok(()),
             |_| true,
         )?;
         manager.bridge_sync_with(
@@ -293,10 +380,29 @@ mod tests {
             true,
             |_| panic!("suspension cannot publish"),
             || Ok(()),
+            |_| Ok(()),
             |_| true,
         )?;
         assert!(manager.bridge_enabled());
         assert!(!manager.bridge_status()?.configured);
+        assert_eq!(manager.bridge_status()?.model, Some(alias.clone()));
+        assert!(manager.bridge_load()?.is_some_and(|o| o.selection_pending));
+        Ok(())
+    }
+    #[test]
+    fn legacy_outbox_does_not_invent_a_starting_selection() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().into(),
+        };
+        std::fs::write(
+            manager.bridge_path(),
+            r#"{"enabled":true,"token":"fixture","provider":null,"delivered":true}"#,
+        )
+        .map_err(|_| FAILED)?;
+        assert!(manager.bridge_status()?.configured);
+        assert!(manager.bridge_status()?.model.is_none());
+        assert!(!manager.bridge_load()?.is_some_and(|o| o.selection_pending));
         Ok(())
     }
     #[test]
@@ -316,6 +422,7 @@ mod tests {
                 false,
                 |_| Ok(()),
                 || Err(FAILED.into()),
+                |_| Ok(()),
                 |_| true
             )
             .is_err());
@@ -327,6 +434,7 @@ mod tests {
             false,
             |_| Ok(()),
             || Ok(()),
+            |_| Ok(()),
             |_| true,
         )?;
         assert!(!manager.bridge_owned());

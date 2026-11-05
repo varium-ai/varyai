@@ -1,4 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import postcss from "postcss";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   Dialog,
@@ -38,6 +40,31 @@ afterEach(() => {
 });
 
 describe("shared dialog motion", () => {
+  it.each([false, true])(
+    "applies static centering only to ordinary dialogs (fullscreen: %s)",
+    (fullscreen) => {
+      render(<Fixture open fullscreen={fullscreen} />);
+      const sheet = document.createElement("style");
+      sheet.textContent = postcss
+        .parse(readFileSync("src/index.css", "utf8"))
+        .nodes.filter(
+          (node) =>
+            node.type === "rule" && node.selector === ".vary-dialog-centered",
+        )
+        .map((node) => node.toString())
+        .join("\n");
+      document.head.appendChild(sheet);
+      try {
+        const style = getComputedStyle(screen.getByRole("dialog"));
+        expect(style.translate || "none").toBe("none");
+        expect(style.margin).toBe(fullscreen ? "" : "auto");
+        expect(style.inset).toBe(fullscreen ? "" : "0");
+      } finally {
+        sheet.remove();
+      }
+    },
+  );
+
   it.each([false, true])(
     "animates the surface and backdrop (fullscreen: %s)",
     (fullscreen) => {

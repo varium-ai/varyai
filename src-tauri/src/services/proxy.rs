@@ -452,6 +452,11 @@ impl ProxyService {
         let mut runtime = crate::proxy::intent::Runtime::default();
         #[cfg(not(test))]
         {
+            runtime.connections = crate::proxy::connections::Connections::with_desktop(
+                crate::config::get_app_config_dir().join("claude-desktop.model"),
+                crate::claude_desktop_config::selector_roots(),
+            )
+            .unwrap_or_default();
             runtime.traces = Arc::new(
                 crate::proxy::intent::trace::Store::with_history(
                     crate::config::get_app_config_dir().join("routing-history"),
@@ -1366,6 +1371,7 @@ impl ProxyService {
             kimi: self.native_agent_active("kimi").await,
             qwen: self.native_agent_active("qwen").await,
             zcode: self.native_agent_active("zcode").await,
+            deepseek_harness: self.native_agent_active("deepseek-harness").await,
             trae,
             pi: self.pi_routing.enabled()?,
             qoder: self.qoder.is_active()
@@ -1403,19 +1409,71 @@ impl ProxyService {
                     .enabled
             }
             "pi" => self.pi_routing.enabled()?,
-            "workbuddy" => self.workbuddy_active().await,
-            "kimi" | "qwen" | "zcode" => self.native_agent_active(app).await,
-            "qoder" => {
-                self.qoder.is_active()
-                    && self
-                        .db
-                        .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
-                        .map_err(|_| super::agent_connections::FAILED)?
-            }
+            "workbuddy" => self
+                .db
+                .get_bool_flag(super::workbuddy_proxy::ENABLED_KEY)
+                .map_err(|_| super::agent_connections::FAILED)?,
+            "kimi" | "qwen" | "zcode" | "deepseek-harness" => self
+                .db
+                .get_bool_flag(&super::agent_clients::enabled_key(app))
+                .map_err(|_| super::agent_connections::FAILED)?,
+            "qoder" => self
+                .db
+                .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
+                .map_err(|_| super::agent_connections::FAILED)?,
             // Desktop's shared adapter snapshots profiles rather than using legacy takeover.
             "claude-desktop" | "opencode" | "openclaw" | "hermes" => false,
             _ => return Err(super::agent_connections::FAILED.into()),
         })
+    }
+
+    // Caller holds this Agent's switch lock and has validated the shared projection.
+    pub(crate) async fn release_legacy_agent_connection(&self, app: &str) -> Result<(), String> {
+        match app {
+            "claude" | "gemini" | "grokbuild" => {
+                let kind = AppType::from_str(app).map_err(|_| super::agent_connections::FAILED)?;
+                if self
+                    .db
+                    .get_proxy_config_for_app(app)
+                    .await
+                    .map_err(|_| super::agent_connections::FAILED)?
+                    .enabled
+                {
+                    self.set_ordinary_takeover_inner(&kind, false, false)
+                        .await?;
+                } else {
+                    self.restore_live_config_for_app_with_fallback_inner(&kind)
+                        .await?;
+                    self.db
+                        .delete_live_backup(app)
+                        .await
+                        .map_err(|_| super::agent_connections::FAILED)?;
+                }
+            }
+            "workbuddy" => {
+                self.restore_workbuddy_live_inner().await?;
+                self.db
+                    .set_setting(super::workbuddy_proxy::ENABLED_KEY, "false")
+                    .map_err(|_| super::agent_connections::FAILED)?;
+            }
+            "kimi" | "qwen" | "zcode" | "deepseek-harness" => {
+                super::agent_clients::restore(&self.db, app)
+                    .await
+                    .map_err(|_| super::agent_connections::FAILED)?;
+                self.db
+                    .set_setting(&super::agent_clients::enabled_key(app), "false")
+                    .map_err(|_| super::agent_connections::FAILED)?;
+            }
+            "qoder" => {
+                self.qoder.restore().await?;
+                self.db
+                    .set_setting(super::qoder_proxy::ENABLED_KEY, "false")
+                    .map_err(|_| super::agent_connections::FAILED)?;
+            }
+            "pi" => self.pi_routing.disable()?,
+            _ => return Err(super::agent_connections::CONFLICT.into()),
+        }
+        Ok(())
     }
 
     async fn workbuddy_active(&self) -> bool {
@@ -1635,6 +1693,63 @@ impl ProxyService {
                         .await;
             }
         }
+        let pending = super::trae_bridge::selection::ROUTE_PENDING_KEY;
+        if !self.agent_connections.bridge_owned() && self.db.get_bool_flag(pending).unwrap_or(false)
+        {
+            let _guard = self.lock_switch_for_app("trae").await;
+            if self.db.get_bool_flag(pending).unwrap_or(false) {
+                let db = self.db.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    if super::trae_bridge::selection::sync_response_route(&db)
+                        && !db
+                            .get_bool_flag(super::trae_bridge::ENABLED_KEY)
+                            .unwrap_or(true)
+                    {
+                        // Preserve the existing connection setup until an offline
+                        // client's native endpoint has been restored.
+                        let _ = super::trae_bridge::finish_disconnect();
+                    }
+                })
+                .await;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn select_shared_trae_connection(&self, enabled: bool) -> Result<(), String> {
+        self.select_shared_trae_connection_model(enabled, None)
+            .await
+    }
+
+    pub(crate) async fn select_shared_trae_connection_model(
+        &self,
+        enabled: bool,
+        model: Option<String>,
+    ) -> Result<(), String> {
+        let _guard = self.lock_switch_for_app("trae").await;
+        let _audit_guard = self.lock_trae_audit().await;
+        self.agent_connections.bridge_status()?;
+        if enabled
+            && self
+                .db
+                .get_bool_flag(super::trae_bridge::ENABLED_KEY)
+                .map_err(|_| super::agent_connections::FAILED)?
+        {
+            tokio::task::spawn_blocking(super::trae_bridge::suspend_inspection)
+                .await
+                .map_err(|_| super::agent_connections::FAILED)?
+                .map_err(|_| super::agent_connections::CONFLICT)?;
+            self.db
+                .set_setting(super::trae_bridge::selection::ROUTE_PENDING_KEY, "true")
+                .map_err(|_| super::agent_connections::FAILED)?;
+            self.db
+                .set_setting(super::trae_bridge::ENABLED_KEY, "false")
+                .map_err(|_| super::agent_connections::FAILED)?;
+        }
+        let manager = self.agent_connections.clone();
+        tokio::task::spawn_blocking(move || manager.bridge_select_model(enabled, model))
+            .await
+            .map_err(|_| super::agent_connections::FAILED)?
     }
 
     pub(crate) async fn sync_shared_trae(&self, suspend: bool) {
@@ -1657,10 +1772,26 @@ impl ProxyService {
         let port = self.get_status().await.map(|s| s.port).unwrap_or(0);
         let manager = self.agent_connections.clone();
         let runtime = self.intent_runtime.clone();
+        let db = self.db.clone();
         let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
             if running {
                 super::trae_bridge::prepare_shared()
                     .map_err(|_| super::agent_connections::FAILED)?;
+                // Restore pending legacy models before the shared catalog captures its baseline.
+                if db
+                    .get_bool_flag(super::trae_bridge::selection::PENDING_KEY)
+                    .map_err(|_| super::agent_connections::FAILED)?
+                    && !super::trae_bridge::selection::sync(&db)
+                {
+                    return Err(super::agent_connections::CONFLICT.into());
+                }
+                if db
+                    .get_bool_flag(super::trae_bridge::selection::ROUTE_PENDING_KEY)
+                    .map_err(|_| super::agent_connections::FAILED)?
+                    && !super::trae_bridge::selection::sync_response_route(&db)
+                {
+                    return Err(super::agent_connections::CONFLICT.into());
+                }
             }
             if let Some(receipt) = manager.bridge_sync(
                 menu.as_deref(),
@@ -1766,6 +1897,9 @@ impl ProxyService {
         }
         if app_type == "trae" {
             let _guard = self.lock_trae_audit().await;
+            if self.agent_connections.bridge_owned() {
+                return Err(super::agent_connections::CONFLICT.into());
+            }
             if enabled {
                 if !self
                     .db
@@ -1783,7 +1917,7 @@ impl ProxyService {
                     .map_err(|_| "TRAE bridge unavailable".to_string())?
                     .map_err(|e| e.to_string())?;
             } else {
-                tokio::task::spawn_blocking(super::trae_bridge::disable)
+                tokio::task::spawn_blocking(super::trae_bridge::suspend_inspection)
                     .await
                     .map_err(|_| "TRAE bridge unavailable".to_string())?
                     .map_err(|e| e.to_string())?;
@@ -1794,6 +1928,11 @@ impl ProxyService {
                     if enabled { "true" } else { "false" },
                 )
                 .map_err(|e| e.to_string())?;
+            self.db
+                .set_setting(super::trae_bridge::selection::ROUTE_PENDING_KEY, "true")
+                .map_err(|e| e.to_string())?;
+            drop(_guard);
+            self.refresh_trae_takeover().await;
             return Ok(());
         }
         if super::agent_clients::supported(app_type) {
@@ -2609,13 +2748,27 @@ impl ProxyService {
     }
 
     pub(crate) async fn disable_intent_client(&self) -> Result<(), String> {
+        self.restore_codex_connection(false).await
+    }
+
+    pub(crate) async fn disconnect_codex_agent(&self) -> Result<(), String> {
+        self.restore_codex_connection(true).await
+    }
+
+    async fn restore_codex_connection(&self, explicit: bool) -> Result<(), String> {
         self.revoke_native_compatibility();
         self.intent_runtime.flush_continuations().await;
         let _guard = self.lock_switch_for_app("codex").await;
         let manager = self.intent_client.clone();
-        tokio::task::spawn_blocking(move || manager.restore())
-            .await
-            .map_err(|_| "intentRouting.clientFailed")?
+        tokio::task::spawn_blocking(move || {
+            if explicit {
+                manager.disconnect()
+            } else {
+                manager.restore()
+            }
+        })
+        .await
+        .map_err(|_| "intentRouting.clientFailed")?
     }
 
     /// Publish enabled global resources without changing any client's live configuration.
@@ -3768,7 +3921,19 @@ impl ProxyService {
         }
         {
             let _guard = self.lock_trae_audit().await;
-            match tokio::task::spawn_blocking(super::trae_bridge::disable).await {
+            let pending = self
+                .db
+                .get_bool_flag(super::trae_bridge::selection::ROUTE_PENDING_KEY)
+                .unwrap_or(true);
+            match tokio::task::spawn_blocking(move || {
+                if pending {
+                    super::trae_bridge::suspend_inspection()
+                } else {
+                    super::trae_bridge::disable()
+                }
+            })
+            .await
+            {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => errors.push(format!("TRAE bridge recovery: {error}")),
                 Err(error) => errors.push(format!("TRAE bridge recovery: {error}")),
@@ -5994,7 +6159,7 @@ mod tests {
                 let mut models = native_models.lock().unwrap();
                 let response = match request["op"].as_str().unwrap() {
                     "health" => {
-                        json!({"result":{"ready":true,"enabled":false,"revision":2,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
+                        json!({"result":{"ready":true,"enabled":false,"revision":9,"modelVerification":1,"startingModel":1,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
                     }
                     "list" => json!({"result":[]}),
                     "remove" => {
@@ -6346,6 +6511,7 @@ mod tests {
         let db = Arc::new(Database::memory()?);
         use_ephemeral_proxy_port(&db).await;
         let mut upstream = RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -6393,7 +6559,7 @@ mod tests {
         assert_eq!(
             receipt
                 .model_map
-                .get(&crate::claude_desktop_config::shared_model_name(
+                .get(&crate::claude_desktop_config::shared_plain_model_name(
                     &catalog[1].id
                 )),
             Some(&catalog[1].id)
@@ -6555,6 +6721,209 @@ mod tests {
         Ok(())
     }
 
+    // Profile commands run on a blocking pool while gateway tasks keep progressing.
+    #[tokio::test]
+    #[serial]
+    async fn shared_catalog_profiles_capture_apply_and_undo_without_legacy_providers(
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        tokio::task::spawn_blocking(|| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            use super::super::{
+                agent_connections, profile_bundle,
+                routing_upstreams::{RoutingUpstream, UpstreamSource},
+            };
+            let _home = TempHome::new();
+            crate::settings::reload_settings()?;
+            let db = Arc::new(Database::memory()?);
+            futures::executor::block_on(use_ephemeral_proxy_port(&db));
+            db.save_routing_upstream(RoutingUpstream {
+                icon: None,
+                transport: None,
+                schema_version: 1,
+                preset_id: None,
+                region: None,
+                codex_settings: None,
+                id: String::new(),
+                name: "Profile fixture".into(),
+                revision: 0,
+                has_api_key: false,
+                enabled: true,
+                source: UpstreamSource::Api {
+                    catalog: vec![],
+                    mode: crate::services::codex_provider::ModelMode::Picked,
+                    groups_only: false,
+                    base_url: "https://synthetic.invalid/v1".into(),
+                    api_key: Some("synthetic-profile-secret".into()),
+                    api_format: "openai_responses".into(),
+                    models: vec![json!({"model":"fixture-a"}), json!({"model":"fixture-b"})],
+                    auth_type: None,
+                },
+            })?;
+            let state = crate::store::AppState::new(db);
+            let service = &state.proxy_service;
+            let info = futures::executor::block_on(service.start())?;
+            let menu = service
+                .intent_runtime
+                .global_snapshot()?
+                .ok_or("missing menu")?;
+            let models = agent_connections::models(&menu);
+            let model_a = &models[0].id;
+            let model_b = &models[1].id;
+            let origin = format!("http://127.0.0.1:{}", info.port);
+            let mut apps = vec!["deepseek-harness", "opencode", "openclaw", "hermes", "pi"];
+            if !cfg!(target_os = "linux") {
+                apps.push("claude-desktop");
+            }
+            for app in &apps {
+                assert!(state.db.get_all_providers(app)?.is_empty());
+                let receipt = service
+                    .agent_connections
+                    .build(app, &menu, &origin, model_a)?;
+                service.agent_connections.install(receipt.clone())?;
+                service.intent_runtime.connections.install(&receipt)?;
+                assert!(
+                    profile_bundle::agents(&state)?
+                        .iter()
+                        .any(|agent| agent.app.as_str() == *app && agent.available),
+                    "shared connection must be selectable: {app}"
+                );
+            }
+            let visibility = |id: &str| agent_connections::ModelVisibility {
+                only: true,
+                ids: vec![id.into()],
+                order: vec![],
+            };
+            if apps.contains(&"claude-desktop") {
+                service.agent_connections.set_model_visibility(
+                    "claude-desktop",
+                    &visibility(model_a),
+                    &menu,
+                    &origin,
+                )?;
+            }
+            let saved = profile_bundle::ProfileBundleService::capture(
+                &state,
+                "Shared fixture",
+                &apps.iter().map(|app| (*app).into()).collect::<Vec<_>>(),
+                None,
+            )?;
+            assert!(!saved.payload.contains("synthetic-profile-secret"));
+            assert!(!saved.payload.contains("127.0.0.1"));
+            for app in &apps {
+                let receipt = service
+                    .agent_connections
+                    .update(app, &menu, &origin, Some(model_b))?
+                    .ok_or("missing receipt")?;
+                assert!(!saved.payload.contains(&receipt.token));
+                service.intent_runtime.connections.install(&receipt)?;
+            }
+            if apps.contains(&"claude-desktop") {
+                service.agent_connections.set_model_visibility(
+                    "claude-desktop",
+                    &visibility(model_b),
+                    &menu,
+                    &origin,
+                )?;
+            }
+            let preview = profile_bundle::ProfileBundleService::preview(&state, &saved.id)?;
+            assert_eq!(preview.changes.len(), apps.len());
+            let harness_path = crate::services::agent_clients::config_path("deepseek-harness")?;
+            let live = std::fs::read_to_string(&harness_path)?;
+            std::fs::write(&harness_path, format!("# Synthetic external edit\n{live}"))?;
+            assert!(profile_bundle::ProfileBundleService::apply(
+                &state,
+                &saved.id,
+                &preview.revision
+            )
+            .is_err());
+            let preview = profile_bundle::ProfileBundleService::preview(&state, &saved.id)?;
+            let result =
+                profile_bundle::ProfileBundleService::apply(&state, &saved.id, &preview.revision)?;
+            assert!(result.success);
+            for app in &apps {
+                assert_eq!(
+                    service
+                        .agent_connections
+                        .load(app)?
+                        .ok_or("missing receipt")?
+                        .model,
+                    *model_a
+                );
+                assert!(service.intent_runtime.connections.active(app));
+                assert!(state.db.get_all_providers(app)?.is_empty());
+            }
+            if apps.contains(&"claude-desktop") {
+                assert_eq!(
+                    service
+                        .agent_connections
+                        .model_visibility("claude-desktop")?,
+                    visibility(model_a)
+                );
+            }
+            profile_bundle::ProfileBundleService::undo(
+                &state,
+                result.undo_id.as_deref().ok_or("missing undo")?,
+            )?;
+            for app in &apps {
+                if *app != "claude-desktop" {
+                    assert_eq!(
+                        service
+                            .agent_connections
+                            .load(app)?
+                            .ok_or("missing receipt")?
+                            .model,
+                        *model_b,
+                        "restored starting model for {app}"
+                    );
+                }
+                assert!(service.agent_connections.status(app)?.configured);
+            }
+            if apps.contains(&"claude-desktop") {
+                assert_eq!(
+                    service
+                        .agent_connections
+                        .model_visibility("claude-desktop")?,
+                    visibility(model_b)
+                );
+            }
+            service.agent_connections.disconnect("deepseek-harness")?;
+            service
+                .intent_runtime
+                .connections
+                .revoke("deepseek-harness");
+            let preview = profile_bundle::ProfileBundleService::preview(&state, &saved.id)?;
+            let restored =
+                profile_bundle::ProfileBundleService::apply(&state, &saved.id, &preview.revision)?;
+            assert!(restored.success);
+            assert!(state.db.get_all_providers("deepseek-harness")?.is_empty());
+            assert!(service
+                .intent_runtime
+                .connections
+                .active("deepseek-harness"));
+            profile_bundle::ProfileBundleService::undo(
+                &state,
+                restored.undo_id.as_deref().ok_or("missing undo")?,
+            )?;
+            assert!(service
+                .agent_connections
+                .load("deepseek-harness")?
+                .is_none());
+            assert!(!service
+                .intent_runtime
+                .connections
+                .active("deepseek-harness"));
+            let mut upstream = state.db.list_routing_upstreams()?.remove(0);
+            upstream.enabled = false;
+            state.db.save_routing_upstream(upstream)?;
+            futures::executor::block_on(service.refresh_global_routing())?;
+            let missing = profile_bundle::ProfileBundleService::preview(&state, &saved.id)?;
+            assert!(missing.changes.is_empty());
+            assert_eq!(missing.skipped.len(), apps.len());
+            futures::executor::block_on(service.stop())?;
+            Ok(())
+        })
+        .await?
+    }
+
     #[tokio::test]
     #[serial]
     async fn shared_agents_suspend_resume_and_restore_without_legacy_provider_projection() {
@@ -6567,6 +6936,7 @@ mod tests {
         let db = Arc::new(Database::memory().expect("database"));
         use_ephemeral_proxy_port(&db).await;
         db.save_routing_upstream(RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -6584,7 +6954,10 @@ mod tests {
                 base_url: "https://synthetic.invalid/v1".into(),
                 api_key: Some("synthetic-only".into()),
                 api_format: "openai_responses".into(),
-                models: vec![json!({"model":"synthetic","contextWindow":1_000_000})],
+                models: vec![
+                    json!({"model":"synthetic","contextWindow":1_000_000}),
+                    json!({"model":"synthetic-second"}),
+                ],
                 auth_type: None,
             },
         })
@@ -6617,6 +6990,72 @@ mod tests {
             .connections
             .install(&receipt)
             .expect("auth");
+        for app in ["kimi", "qwen"] {
+            let receipt = service
+                .agent_connections
+                .build(
+                    app,
+                    &menu,
+                    &format!("http://127.0.0.1:{}", info.port),
+                    &alias,
+                )
+                .expect("native projection");
+            let chosen = receipt
+                .model_map
+                .iter()
+                .find(|(_, id)| **id != alias)
+                .map(|(name, _)| name.clone())
+                .expect("second model");
+            service
+                .agent_connections
+                .install(receipt.clone())
+                .expect("native install");
+            service
+                .intent_runtime
+                .connections
+                .install(&receipt)
+                .expect("native auth");
+            let path = super::super::agent_clients::config_path(app).expect("native path");
+            let mut doc = super::super::agent_clients::Document::read(app, &path)
+                .expect("native configuration");
+            let selection = if app == "kimi" {
+                json!(chosen)
+            } else {
+                let mut selection = doc.selection(app);
+                selection["model"] = json!(chosen);
+                selection
+            };
+            doc.set_selection(app, &selection)
+                .expect("native model switch");
+            doc.write(&path).expect("persist native choice");
+            let mut upstream = db.list_routing_upstreams().expect("upstreams").remove(0);
+            if let UpstreamSource::Api { models, .. } = &mut upstream.source {
+                models.push(json!({"model":format!("new-{app}")}));
+            }
+            db.save_routing_upstream(upstream).expect("catalog update");
+            service
+                .refresh_global_routing()
+                .await
+                .expect("refresh menu");
+            service.sync_shared_agent_catalogs().await;
+            assert!(
+                service
+                    .agent_connections
+                    .status(app)
+                    .expect("status")
+                    .configured
+            );
+            assert!(service.intent_runtime.connections.active(app));
+            assert_eq!(
+                super::super::agent_clients::Document::read(app, &path)
+                    .expect("updated configuration")
+                    .selection(app),
+                selection
+            );
+            assert!(std::fs::read_to_string(&path)
+                .expect("updated catalog")
+                .contains(&format!("new-{app}")));
+        }
         assert!(service.set_takeover_for_app("claude", true).await.is_err());
         service.stop().await.expect("suspend without deadlock");
         assert_eq!(std::fs::read_to_string(&path).expect("restored"), original);
@@ -6662,6 +7101,7 @@ mod tests {
         let db = Arc::new(Database::memory()?);
         use_ephemeral_proxy_port(&db).await;
         let upstream = db.save_routing_upstream(RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -6700,6 +7140,7 @@ mod tests {
         service.agent_connections.install(receipt)?;
         let mut edited: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
         edited["env"]["ANTHROPIC_MODEL"] = json!("external-choice");
+        edited["env"]["ANTHROPIC_BASE_URL"] = json!("https://synthetic-external.invalid");
         edited["env"]["USER_SETTING"] = json!("keep-external");
         std::fs::write(&path, edited.to_string())?;
         assert!(service
@@ -7255,6 +7696,7 @@ mod tests {
     async fn global_refresh_requires_explicit_import_and_preserves_deletions() {
         let _home = TempHome::new();
         let db = Arc::new(Database::memory().expect("db"));
+        db.set_intent_routing_auto_create(true).expect("on");
         let mut provider = crate::provider::Provider::with_id(
             "fixture".into(),
             "Synthetic source".into(),
@@ -7325,9 +7767,11 @@ mod tests {
         use crate::services::routing_upstreams::{RoutingUpstream, UpstreamSource};
         let _home = TempHome::new();
         let db = Arc::new(Database::memory()?);
+        db.set_intent_routing_auto_create(true)?;
         let mut upstreams = Vec::new();
         for name in ["First", "Second"] {
             upstreams.push(db.save_routing_upstream(RoutingUpstream {
+                icon: None,
                 transport: None,
                 schema_version: 1,
                 preset_id: None,
@@ -7417,7 +7861,9 @@ mod tests {
     async fn global_groups_publish_without_codex_activation_and_revoke_on_resource_changes() {
         use crate::services::routing_upstreams::{RoutingUpstream, UpstreamSource};
         let db = Arc::new(Database::memory().expect("db"));
+        db.set_intent_routing_auto_create(true).expect("on");
         db.save_routing_upstream(RoutingUpstream {
+            icon: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -7517,6 +7963,7 @@ mod tests {
         let _home = TempHome::new();
         crate::settings::reload_settings().expect("settings");
         let db = Arc::new(Database::memory().expect("db"));
+        db.set_intent_routing_auto_create(true).expect("on");
         use_ephemeral_proxy_port(&db).await;
         let mut provider = crate::provider::Provider::with_id(
             "fixture".into(),

@@ -135,7 +135,7 @@ it("keeps a long provider containing the current single choice expanded and disa
   expect(pick).not.toHaveBeenCalled();
 });
 
-it("searches the exact model ID and exposes real capabilities without guessing unknown images", () => {
+it("searches the exact model ID without adding reasoning or image badges", () => {
   render(
     <SharedModelPicker
       models={[
@@ -153,10 +153,10 @@ it("searches the exact model ID and exposes real capabilities without guessing u
       onPick={vi.fn()}
     />,
   );
-  expect(screen.getByText("low–high")).toBeInTheDocument();
+  expect(screen.queryByText("low–high")).not.toBeInTheDocument();
   expect(
-    screen.getByRole("img", { name: "modelProviders.acceptsImages" }),
-  ).toBeInTheDocument();
+    screen.queryByRole("img", { name: "modelProviders.acceptsImages" }),
+  ).not.toBeInTheDocument();
   fireEvent.change(screen.getByRole("searchbox"), {
     target: { value: "exact-vendor-model" },
   });
@@ -164,6 +164,72 @@ it("searches the exact model ID and exposes real capabilities without guessing u
   expect(
     screen.queryByRole("radio", { name: /Unknown model/ }),
   ).not.toBeInTheDocument();
+});
+
+it("uses a search-first Agent menu with icon navigation and explicit routing sources", () => {
+  const pick = vi.fn();
+  const disconnect = vi.fn();
+  const { container } = render(
+    <SharedModelPicker
+      variant="agent"
+      description="Configuration recovery information"
+      models={[
+        {
+          id: "native",
+          name: "Native model",
+          source: "native",
+          disabled: true,
+        },
+        { id: "route", name: "Smart · routing group", group: "routing" },
+        { id: "a", name: "Alpha", group: "Vendor" },
+      ]}
+      selected={["native"]}
+      onPick={pick}
+      onDisconnect={disconnect}
+    />,
+  );
+  const panel = container.querySelector(".mp-agent-model-picker")!;
+  expect(panel.firstElementChild).toContainElement(
+    screen.getByRole("searchbox"),
+  );
+  expect(panel.lastElementChild).toHaveTextContent(
+    "Configuration recovery information",
+  );
+  const rail = screen.getByRole("navigation");
+  expect(within(rail).getByRole("button", { name: "Vendor" })).toHaveAttribute(
+    "title",
+    "Vendor",
+  );
+  expect(within(rail).queryByText("Vendor")).not.toBeInTheDocument();
+  expect(
+    within(screen.getByRole("radio", { name: "Smart" })).getByText(
+      "agentConnections.viaVary",
+    ),
+  ).toBeInTheDocument();
+  expect(
+    within(screen.getByRole("radio", { name: "Native model" })).queryByText(
+      "agentConnections.viaVary",
+    ),
+  ).not.toBeInTheDocument();
+  fireEvent.click(
+    screen.getByRole("button", { name: "agentConnections.restore" }),
+  );
+  expect(disconnect).toHaveBeenCalledOnce();
+  expect(pick).not.toHaveBeenCalled();
+  fireEvent.click(within(rail).getByRole("button", { name: "Vendor" }));
+  expect(screen.getByRole("radio", { name: "Alpha" })).toBeInTheDocument();
+  expect(
+    screen.queryByRole("radio", { name: "Smart" }),
+  ).not.toBeInTheDocument();
+  fireEvent.change(screen.getByRole("searchbox"), {
+    target: { value: "Smart" },
+  });
+  fireEvent.keyDown(screen.getByRole("searchbox"), { key: "ArrowDown" });
+  expect(screen.getByRole("radio", { name: "Smart" })).toHaveFocus();
+  fireEvent.keyDown(screen.getByRole("radio", { name: "Smart" }), {
+    key: "Enter",
+  });
+  expect(pick).toHaveBeenCalledExactlyOnceWith("route");
 });
 
 it("moves through available choices with the keyboard and keeps the multi-picker open", () => {

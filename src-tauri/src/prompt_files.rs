@@ -18,6 +18,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork
     ) {
@@ -43,6 +44,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
         | AppType::DoubaoWork => {
             unreachable!("handled above")
@@ -62,6 +64,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
         | AppType::DoubaoWork => {
             unreachable!("handled above")

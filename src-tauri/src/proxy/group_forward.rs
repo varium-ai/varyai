@@ -33,6 +33,13 @@ pub(crate) async fn forward(
     history: Arc<CodexChatHistoryStore>,
     shadow: Arc<GeminiShadowStore>,
 ) -> Result<ProxyResponse, ProxyError> {
+    if crate::services::subscription_provider::binding(upstream).is_some()
+        && upstream.settings_config["routingSubscriptionResolved"] != true
+    {
+        return Err(ProxyError::AuthError(
+            "Subscription account is unavailable".into(),
+        ));
+    }
     if upstream.uses_managed_account_auth()
         || upstream
             .meta
@@ -468,6 +475,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn subscription_bridge_requires_resolution_and_preserves_bearer_and_client_headers() {
+        let (base, mut captured, task) = upstream(Protocol::Chat).await;
+        let mut provider = provider(&base, Protocol::Chat);
+        provider.settings_config["routingSubscription"] =
+            json!({"provider":"github_copilot","accountId":"fixture-account"});
+        let body = json!({"model":"exact-subscription-model","messages":[{"role":"user","content":"synthetic"}],"max_tokens":32});
+        let rejected = forward(
+            &state(),
+            Protocol::Anthropic,
+            &provider,
+            &http::Method::POST,
+            "/v1/messages",
+            &body,
+            &HeaderMap::new(),
+            &http::Extensions::new(),
+            None,
+            Arc::default(),
+            Arc::default(),
+        )
+        .await;
+        assert!(matches!(rejected, Err(ProxyError::AuthError(_))));
+        assert!(captured.try_recv().is_err());
+        provider.settings_config["routingSubscriptionResolved"] = json!(true);
+        provider
+            .meta
+            .as_mut()
+            .expect("fixture metadata")
+            .local_proxy_request_overrides = Some(crate::provider::LocalProxyRequestOverrides {
+            headers: [("copilot-integration-id".into(), "vscode-chat".into())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        });
+        let response = forward(
+            &state(),
+            Protocol::Anthropic,
+            &provider,
+            &http::Method::POST,
+            "/v1/messages",
+            &body,
+            &HeaderMap::new(),
+            &http::Extensions::new(),
+            None,
+            Arc::default(),
+            Arc::default(),
+        )
+        .await
+        .expect("resolved bridge");
+        assert!(response.status().is_success());
+        let (_, headers, sent) = captured.recv().await.expect("synthetic request");
+        assert_eq!(headers["authorization"], "Bearer synthetic-source-key");
+        assert_eq!(headers["copilot-integration-id"], "vscode-chat");
+        assert_eq!(sent["model"], "exact-subscription-model");
+        assert!(!headers.contains_key("x-api-key"));
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn explicit_bridge_keeps_exact_model_and_source_auth_without_app_mapping() {
         let (base, mut captured, task) = upstream(Protocol::Anthropic).await;
         let state = state();
@@ -511,6 +576,41 @@ mod tests {
         assert!(!headers.contains_key("anthropic-beta"));
         assert!(state.current_providers.read().await.is_empty());
         assert_eq!(state.status.read().await.total_requests, 0);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn workbuddy_gemini_reasoning_reaches_the_selected_upstream() {
+        let (base, mut captured, task) = upstream(Protocol::Gemini).await;
+        let provider = provider(&base, Protocol::Gemini);
+        let body = json!({"model":"gemini-3.6-flash","messages":[{"role":"user","content":"Synthetic prompt"}],"reasoning_effort":"high","tools":[{"type":"function","function":{"name":"synthetic_tool","parameters":{"type":"object","properties":{"value":{"type":"string"}}}}}]});
+        let response = forward(
+            &state(),
+            Protocol::Chat,
+            &provider,
+            &http::Method::POST,
+            "/v1/chat/completions",
+            &body,
+            &HeaderMap::new(),
+            &http::Extensions::new(),
+            None,
+            Arc::default(),
+            Arc::default(),
+        )
+        .await
+        .expect("WorkBuddy Gemini forwarding");
+        assert!(response.status().is_success());
+        let (uri, headers, sent) = captured.recv().await.expect("synthetic request");
+        assert!(uri.path().ends_with("gemini-3.6-flash:generateContent"));
+        assert_eq!(headers["x-goog-api-key"], SOURCE_KEY);
+        assert_eq!(
+            sent["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "HIGH"
+        );
+        assert_eq!(
+            sent["tools"][0]["functionDeclarations"][0]["name"],
+            "synthetic_tool"
+        );
         task.abort();
     }
 
@@ -577,7 +677,7 @@ mod tests {
             &provider(&base, Protocol::Anthropic),
             &http::Method::POST,
             "/v1/chat/completions",
-            &json!({"model":"exact","messages":[],"response_format":{"type":"json_object"}}),
+            &json!({"model":"exact","messages":[{"role":"assistant","tool_calls":[{"id":"synthetic-call","type":"function","function":{"name":"synthetic_tool","arguments":"[]"}}]}]}),
             &HeaderMap::new(),
             &http::Extensions::new(),
             None,

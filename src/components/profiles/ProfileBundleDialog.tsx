@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { APP_IDS } from "@/config/appConfig";
+import { profileErrorMessage } from "@/utils/profileErrors";
 
 export function ProfileBundleDialog({
   open = true,
@@ -47,35 +47,7 @@ export function ProfileBundleDialog({
   const [preview, setPreview] = useState<ProfilePreview>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const describeError = (value: unknown) => {
-    const message = value instanceof Error ? value.message : String(value);
-    if (message.startsWith("profiles.bundle.agentError:")) {
-      const match = message.match(
-        /^profiles\.bundle\.agentError:([a-z-]+):(profiles\.bundle\.[a-zA-Z]+)$/,
-      );
-      const reasons = [
-        "noProvider",
-        "missingResource",
-        "invalidConfig",
-        "readFailed",
-        "nativeModelMissing",
-        "operationFailed",
-      ].map((key) => `profiles.bundle.${key}`);
-      if (
-        match &&
-        (APP_IDS as readonly string[]).includes(match[1]) &&
-        reasons.includes(match[2])
-      ) {
-        return t("profiles.bundle.agentPreviewFailed", {
-          app: t(`apps.${match[1]}`),
-          reason: t(match[2]),
-        });
-      }
-      return t("profiles.bundle.operationFailed");
-    }
-    const key = message.match(/profiles\.bundle\.[a-zA-Z]+/)?.[0];
-    return t(key ?? "profiles.bundle.operationFailed");
-  };
+  const describeError = (value: unknown) => profileErrorMessage(value, t);
 
   useEffect(() => {
     let active = true;

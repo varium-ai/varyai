@@ -13,7 +13,7 @@ impl ModelVisibility {
     pub fn visible(&self, id: &str) -> bool {
         self.ids.iter().any(|known| known == id) == self.only
     }
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if self.ids.len() > 256
             || self.order.len() > 256
             || self
@@ -40,6 +40,13 @@ impl ModelVisibility {
     }
 }
 impl Manager {
+    pub(crate) fn profile_paths(&self, app: &str) -> Result<Vec<PathBuf>, String> {
+        let mut paths = vec![self.path(app)?];
+        if app == "claude-desktop" {
+            paths.push(self.visibility_path(app)?);
+        }
+        Ok(paths)
+    }
     fn visibility_path(&self, app: &str) -> Result<PathBuf, String> {
         if app != "claude-desktop" {
             return Err(FAILED.into());

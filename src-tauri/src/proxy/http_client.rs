@@ -214,20 +214,46 @@ pub(crate) fn get_without_redirects() -> Result<Client, String> {
     build_client_with_redirects(
         get_current_proxy_url().as_deref(),
         reqwest::redirect::Policy::none(),
+        Some(Duration::from_secs(600)),
     )
 }
 
-fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
-    build_client_with_redirects(proxy_url, reqwest::redirect::Policy::default())
+/// Model streams retain redirect restrictions without a fixed total lifetime.
+pub(crate) fn get_forwarding_without_redirects() -> Result<Client, String> {
+    build_client_with_redirects(
+        get_current_proxy_url().as_deref(),
+        reqwest::redirect::Policy::none(),
+        None,
+    )
 }
 
-fn build_client_with_redirects(
-    proxy_url: Option<&str>,
+pub(crate) const UPSTREAM_HEADER_WAIT: Duration = Duration::from_secs(600);
+
+/// Dropping the header timer after send completes leaves the body free to stream.
+pub(crate) async fn send_with_header_timeout(
+    request: reqwest::RequestBuilder,
+    wait: Duration,
+) -> Result<reqwest::Response, super::ProxyError> {
+    tokio::time::timeout(wait, request.send())
+        .await
+        .map_err(|_| super::ProxyError::Timeout("Upstream response headers timed out".into()))?
+        .map_err(|_| super::ProxyError::ForwardFailed("Upstream request failed".into()))
+}
+
+fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
+    build_client_with_redirects(
+        proxy_url,
+        reqwest::redirect::Policy::default(),
+        Some(Duration::from_secs(600)),
+    )
+}
+
+fn client_builder(
     redirects: reqwest::redirect::Policy,
-) -> Result<Client, String> {
-    let mut builder = Client::builder()
+    total_timeout: Option<Duration>,
+) -> reqwest::ClientBuilder {
+    let builder = Client::builder()
         .redirect(redirects)
-        .timeout(Duration::from_secs(600))
         .connect_timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(10)
         .tcp_keepalive(Duration::from_secs(60))
@@ -237,6 +263,18 @@ fn build_client_with_redirects(
         .no_brotli()
         .no_deflate()
         .no_zstd();
+    match total_timeout {
+        Some(timeout) => builder.timeout(timeout),
+        None => builder,
+    }
+}
+
+fn build_client_with_redirects(
+    proxy_url: Option<&str>,
+    redirects: reqwest::redirect::Policy,
+    total_timeout: Option<Duration>,
+) -> Result<Client, String> {
+    let mut builder = client_builder(redirects, total_timeout);
 
     #[cfg(test)]
     let isolated_loopback = super::forwarder::final_send_binding_test_support::is_active();
@@ -364,6 +402,117 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[tokio::test]
+    async fn forwarding_header_deadline_does_not_expire_an_open_stream() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release, wait) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            socket.read(&mut request).await.unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 15\r\n\r\ndata: first\n\n").await.unwrap();
+            wait.await.unwrap();
+            socket.write_all(b"\n\n").await.unwrap();
+        });
+        let client = forwarding_client_for_test();
+        let mut response = send_with_header_timeout(
+            client.get(format!("http://{address}")),
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.chunk().await.unwrap().unwrap(), "data: first\n\n");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        release.send(()).unwrap();
+        assert_eq!(response.bytes().await.unwrap(), "\n\n");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn forwarding_header_deadline_rejects_a_silent_upstream() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let result = send_with_header_timeout(
+            forwarding_client_for_test().get(format!("http://{address}")),
+            Duration::from_millis(50),
+        )
+        .await;
+        server.abort();
+        assert!(matches!(result, Err(super::super::ProxyError::Timeout(_))));
+    }
+
+    #[tokio::test]
+    async fn forwarding_header_wait_cancels_when_dropped() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted, ready) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = [0; 4096];
+            assert!(socket.read(&mut bytes).await.unwrap() > 0);
+            accepted.send(()).unwrap();
+            matches!(socket.read(&mut bytes).await, Ok(0) | Err(_))
+        });
+        let request = tokio::spawn(send_with_header_timeout(
+            forwarding_client_for_test().get(format!("http://{address}")),
+            Duration::from_secs(600),
+        ));
+        ready.await.unwrap();
+        request.abort();
+        assert!(tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn forwarding_client_does_not_follow_redirects() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let destination = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let redirect = destination.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = [0; 4096];
+            socket.read(&mut bytes).await.unwrap();
+            socket
+                .write_all(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{redirect}/\r\nContent-Length: 0\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+        });
+        let response = send_with_header_timeout(
+            forwarding_client_for_test().get(format!("http://{address}")),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), http::StatusCode::TEMPORARY_REDIRECT);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), destination.accept())
+                .await
+                .is_err()
+        );
+        server.await.unwrap();
+    }
+
+    fn forwarding_client_for_test() -> Client {
+        client_builder(reqwest::redirect::Policy::none(), None)
+            .no_proxy()
+            .build()
+            .unwrap()
     }
 
     #[test]

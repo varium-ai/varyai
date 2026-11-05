@@ -99,12 +99,12 @@ describe("WorkspaceNavigation", () => {
   });
 
   it.each([
-    ["en", en, ["Tools", "Routing", "Models"]],
-    ["zh", zh, ["工具", "路由", "模型"]],
-    ["ja", ja, ["ツール", "ルーティング", "モデル"]],
-    ["zh-TW", zhTW, ["工具", "路由", "模型"]],
+    ["en", en, ["Tools/Agent", "Plans/Routing", "Models/Providers"]],
+    ["zh", zh, ["工具/Agent", "切换方案/路由", "模型/供应商"]],
+    ["ja", ja, ["ツール/Agent", "プラン/ルート", "モデル/提供元"]],
+    ["zh-TW", zhTW, ["工具/Agent", "切換方案/路由", "模型/供應商"]],
   ] as const)(
-    "uses concise resource labels in %s without changing navigation",
+    "uses paired resource labels in %s without changing navigation",
     async (language, locale, labels) => {
       const i18n = createInstance();
       await i18n.use(initReactI18next).init({

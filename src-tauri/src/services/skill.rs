@@ -575,6 +575,7 @@ impl SkillService {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => {
                 return Err(anyhow!(
@@ -642,6 +643,7 @@ impl SkillService {
             | AppType::Kimi
             | AppType::Qwen
             | AppType::ZCode
+            | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::DoubaoWork => {
                 return Err(anyhow!(
@@ -712,6 +714,7 @@ impl SkillService {
                     | AppType::Kimi
                     | AppType::Qwen
                     | AppType::ZCode
+                    | AppType::DeepSeekHarness
                     | AppType::Trae
                     | AppType::DoubaoWork
             )
@@ -1076,6 +1079,7 @@ impl SkillService {
                                 | AppType::Kimi
                                 | AppType::Qwen
                                 | AppType::ZCode
+                                | AppType::DeepSeekHarness
                                 | AppType::Trae
                                 | AppType::DoubaoWork
                         )
@@ -1726,6 +1730,7 @@ impl SkillService {
                     | AppType::Kimi
                     | AppType::Qwen
                     | AppType::ZCode
+                    | AppType::DeepSeekHarness
                     | AppType::Trae
                     | AppType::DoubaoWork
             )
@@ -1938,6 +1943,7 @@ impl SkillService {
                     | AppType::Kimi
                     | AppType::Qwen
                     | AppType::ZCode
+                    | AppType::DeepSeekHarness
                     | AppType::Trae
                     | AppType::DoubaoWork
             )
@@ -2020,6 +2026,7 @@ impl SkillService {
                     | AppType::Kimi
                     | AppType::Qwen
                     | AppType::ZCode
+                    | AppType::DeepSeekHarness
                     | AppType::Trae
                     | AppType::DoubaoWork
             )
@@ -2547,6 +2554,7 @@ impl SkillService {
                 | AppType::Kimi
                 | AppType::Qwen
                 | AppType::ZCode
+                | AppType::DeepSeekHarness
                 | AppType::Trae
                 | AppType::DoubaoWork
         ) {
@@ -3567,6 +3575,7 @@ impl SkillService {
                     | AppType::Kimi
                     | AppType::Qwen
                     | AppType::ZCode
+                    | AppType::DeepSeekHarness
                     | AppType::Trae
                     | AppType::DoubaoWork
             )
@@ -4316,6 +4325,7 @@ pub fn migrate_skills_to_ssot(db: &Arc<Database>) -> Result<usize> {
                 | AppType::Kimi
                 | AppType::Qwen
                 | AppType::ZCode
+                | AppType::DeepSeekHarness
                 | AppType::Trae
                 | AppType::DoubaoWork
         )

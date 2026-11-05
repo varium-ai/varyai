@@ -90,7 +90,15 @@ export function supportsOfficialProxyTakeover(
   provider: Pick<Provider, "id" | "category" | "meta" | "settingsConfig">,
 ): boolean {
   if (
-    ["workbuddy", "qoder", "trae", "kimi", "qwen", "zcode"].includes(appId) &&
+    [
+      "workbuddy",
+      "qoder",
+      "trae",
+      "kimi",
+      "qwen",
+      "zcode",
+      "deepseek-harness",
+    ].includes(appId) &&
     provider.category === "official"
   )
     return true;

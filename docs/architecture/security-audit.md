@@ -50,6 +50,8 @@ The Chat-to-Responses streaming converter's dropped-tool warning records only st
 
 The detector itself executes locally. That statement does not describe the whole application's network behavior: see the [statistics and update review](../data-and-network.md). No performance benchmark is asserted here.
 
+Large-payload regression tests verify clean-text passthrough and detection/redaction of trailing credentials. They do not assert wall-clock thresholds, which vary with shared CI runner load; performance measurement requires a separate controlled benchmark.
+
 ## Implementation references
 
 - [Rules](../../src-tauri/src/proxy/security/builtin_rules.rs)

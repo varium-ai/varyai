@@ -42,6 +42,7 @@ pub fn build_blocked_response(app_type: &AppType, reason: &str) -> Result<Respon
         | AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
+        | AppType::DeepSeekHarness
         | AppType::Trae
         | AppType::DoubaoWork => {
             json!({

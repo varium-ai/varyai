@@ -14,6 +14,12 @@ const agentIcons = [
 ] as const;
 
 describe("official agent icons", () => {
+  it("renders DeepSeek Harness with the existing DeepSeek vector mark", () => {
+    expect(APP_ICON_NAME["deepseek-harness"]).toBe("deepseek");
+    const { container } = render(<>{APP_ICON_MAP["deepseek-harness"].icon}</>);
+    expect(container.querySelector("svg")).toBeInTheDocument();
+    expect(container.querySelector("svg path")).toBeInTheDocument();
+  });
   it.each(agentIcons)(
     "renders %s with its client asset instead of initials",
     (app, icon) => {
