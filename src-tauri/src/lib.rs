@@ -1186,6 +1186,12 @@ pub fn run() {
                 ));
                 app.manage(doubao_checkin.clone());
                 doubao_checkin.start_worker();
+                let rewards = Arc::new(services::agent_rewards::Manager::new(
+                    directory.join("agent-rewards.json"),
+                    app.state::<AppState>().db.clone(),
+                ));
+                app.manage(rewards.clone());
+                rewards.start_worker();
             }
 
             // 初始化 SkillService
@@ -1834,6 +1840,14 @@ pub fn run() {
             commands::cancel_workbuddy_checkin_login,
             commands::remove_workbuddy_checkin_account,
             commands::get_doubao_checkin_accounts,
+            commands::get_agent_rewards,
+            commands::connect_qoder_native_rewards,
+            commands::claim_agent_rewards,
+            commands::set_agent_rewards_auto,
+            commands::start_agent_rewards_login,
+            commands::poll_agent_rewards_login,
+            commands::cancel_agent_rewards_login,
+            commands::forget_agent_rewards_account,
             commands::check_in_doubao,
             commands::set_doubao_auto_checkin,
             commands::save_workbuddy_settings,

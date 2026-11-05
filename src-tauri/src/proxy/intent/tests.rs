@@ -301,6 +301,34 @@ fn response_and_tool_ids_pin_exact_candidate() {
 }
 
 #[test]
+fn visible_reasoning_ids_do_not_claim_opaque_continuation_ownership() {
+    let summary = json!({"type":"reasoning","id":"rs_0","status":"completed","summary":[{"type":"summary_text","text":"Synthetic visible thought"}]});
+    let mut bindings = Bindings::default();
+    remember(&mut bindings.items, "item", "rs_0", usize::MAX);
+    let body = json!({"input":[summary]});
+    assert_eq!(bindings.resolve(&body, None), Ok(None));
+    assert!(bindings.known_opaque(&body));
+    assert!(length::portable(&body));
+    for item in [
+        json!({"encrypted_content":"synthetic-seal"}),
+        json!({"summary":[]}),
+        json!({"summary":[{"type":"summary_text","text":"Synthetic text","signature":"synthetic-seal"}]}),
+        json!({"status":"in_progress"}),
+    ] {
+        let mut invalid = body.clone();
+        for (key, value) in item.as_object().unwrap() {
+            invalid["input"][0][key] = value.clone();
+        }
+        assert!(bindings.resolve(&invalid, None).is_err());
+        assert!(!bindings.known_opaque(&invalid));
+        assert!(!length::portable(&invalid));
+    }
+    let mut reference = body;
+    reference["previous_response_id"] = json!("synthetic-unknown");
+    assert!(bindings.resolve(&reference, None).is_err());
+}
+
+#[test]
 fn fragmented_sse_records_ids_without_rewriting_frames() {
     let mut bindings = Bindings::default();
     let mut observer = Observer::default();

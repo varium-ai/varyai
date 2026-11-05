@@ -12,7 +12,7 @@ use std::{
 use std::{path::PathBuf, sync::Mutex};
 pub(crate) const ENABLED_KEY: &str = "trae_audit_enabled";
 pub(crate) const CONSENT_KEY: &str = "trae_local_connection_consent";
-const HELPER_REVISION: u64 = 9;
+const HELPER_REVISION: u64 = 10;
 static AUDIT_TOKEN: Mutex<Option<String>> = Mutex::new(None);
 fn unavailable() -> AppError {
     AppError::localized(
@@ -247,6 +247,10 @@ fn install_runtime(directory: &std::path::Path) -> Result<PathBuf, AppError> {
             "starting-model.cjs",
             include_str!("../../resources/trae-bridge/starting-model.cjs"),
         ),
+        (
+            "rewards.cjs",
+            include_str!("../../resources/trae-bridge/rewards.cjs"),
+        ),
     ] {
         let path = runtime.join(name);
         std::fs::write(&path, source).map_err(|_| unavailable())?;
@@ -464,6 +468,11 @@ pub(crate) fn disable() -> Result<(), AppError> {
 }
 pub(crate) fn profile_models() -> Result<Value, AppError> {
     request(&json!({"op":"list"}), false)
+}
+
+pub(crate) fn rewards(input: Value) -> Result<Value, AppError> {
+    ensure_ready()?;
+    request(&json!({"op":"rewards", "input":input}), false)
 }
 /// Deliver configuration without preparing, starting or enabling the bridge.
 pub(crate) fn apply_connected(provider: &Provider) -> Result<(), AppError> {
@@ -845,8 +854,9 @@ mod tests {
         assert!(script.is_file());
         assert_eq!(
             std::fs::read_dir(script.parent().unwrap()).unwrap().count(),
-            3
+            4
         );
+        assert!(script.parent().unwrap().join("rewards.cjs").is_file());
         let source = std::fs::read_to_string(&script).unwrap();
         assert!(!source.contains("command.expression"));
         #[cfg(unix)]

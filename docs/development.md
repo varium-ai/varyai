@@ -35,6 +35,7 @@ pnpm test:dev
 pnpm test:trae-bridge
 pnpm test:workbuddy-checkin-auth
 pnpm test:doubao-checkin
+pnpm test:agent-rewards
 pnpm test:qoder-codec
 python3 -B scripts/tests/recover-shared-v23.test.py
 pnpm audit --prod

@@ -4256,12 +4256,12 @@
   },
   "workbuddy": {
     "checkin": {
-      "title": "WorkBuddy 毎日チェックイン",
+      "title": "チェックイン",
       "description": "WorkBuddy 中国版のアカウントを選択して公式の毎日の報酬を受け取ります。公式のブラウザログインで複数のアカウントを追加できます。",
-      "checkNow": "今すぐチェックイン",
+      "checkNow": "チェックイン",
       "checking": "チェックイン中…",
-      "reload": "アカウントを更新",
-      "autoLabel": "毎日自動チェックイン",
+      "reload": "更新",
+      "autoLabel": "自動チェックイン",
       "autoHint": "このアカウントのみに適用されます。VaryAI の実行中、有効な各アカウントで毎日チェックインします。",
       "reward": "クレジット：{{credit}}",
       "streak": "連続日数：{{count}} 日",
@@ -5621,15 +5621,15 @@
   },
   "doubaowork": {
     "checkin": {
-      "title": "Doubao Work の毎日のチェックイン",
+      "title": "チェックイン",
       "description": "公式 Doubao Work クライアントのアカウントを表示します。追加のアカウントはクライアントでログイン後、一覧を更新してください。",
       "account": "チェックインアカウント",
       "selectAccount": "アカウントを選択",
       "currentAccount": "現在のログイン",
-      "reload": "アカウントを更新",
-      "checkNow": "今すぐチェックイン",
+      "reload": "更新",
+      "checkNow": "チェックイン",
       "checking": "チェックイン中…",
-      "autoLabel": "毎日自動チェックイン",
+      "autoLabel": "自動チェックイン",
       "autoHint": "両方のアプリを起動し接続した状態で、有効なアカウントを順番にチェックインします。最後に処理したアカウントが選択されたままになります。",
       "loadFailed": "チェックイン状態を取得できませんでした。",
       "operationFailed": "操作を完了できませんでした。もう一度お試しください。",
@@ -5681,5 +5681,50 @@
     "hint_chatgpt_api": "OpenAI API と ChatGPT プラン用の独立した認証です。Codex のログインとは別に管理します。",
     "hint_gemini_cli": "Gemini Code Assist を使用します。Standard と Enterprise では Google Cloud プロジェクトが必要な場合があります。ローカルの Gemini CLI ログインを読み込めます。",
     "hint_antigravity": "Antigravity アカウントと利用可能なモデルを使用します。Google ログインまたはアカウント JSON のインポートに対応しています。"
+  },
+  "agentRewards": {
+    "readNative": "クライアントのログインを読み取る",
+    "nativeAccessHint": "Qoder CN のローカル認証情報を検出しました。初回は macOS キーチェーンの許可が必要になる場合があります。再ログインは不要です。",
+    "sources": {
+      "native": "現在の Qoder CN ログインを使用中",
+      "browser": "独立した予備の認証を使用中"
+    },
+    "account": "アカウント",
+    "title": "チェックイン",
+    "refresh": "更新",
+    "claim": "チェックイン",
+    "claiming": "チェックイン中…",
+    "authorize": "アカウントを追加",
+    "forget": "予備の認証を削除",
+    "loginWaiting": "Qoder CN 公式ページで認証してください。認証だけでは報酬取得や自動取得は有効になりません。",
+    "loginFailed": "認証が期限切れか失敗しました。キャンセルして再試行してください。",
+    "autoLabel": "自動チェックイン",
+    "autoHint": "VaryAI の起動が必要です。公式の対象報酬のみ取得します。本人確認は公式クライアントで行ってください。",
+    "reward": "報酬：{{credit}} Credits",
+    "available": "取得可能：{{credit}} Credits",
+    "lastChecked": "最終確認：{{time}}",
+    "operationFailed": "報酬の操作に失敗しました。状態を更新して再試行してください。",
+    "accountChanged": "アカウントが変わりました。更新してください。",
+    "storageError": "ローカル報酬データを読み書きできません。既存ファイルは保持されました。",
+    "descriptions": {
+      "qoder": "毎日の Credits は UTC+8 の 10:00 に更新されます。現在の Qoder CN ログインを優先します。ブラウザでの独立した認証は任意です。",
+      "trae": "現在の TRAE CN アカウントの公式日次 Credits を受け取ります。接続済みクライアントを起動してください。報酬と資格は開催中のキャンペーンに従います。",
+      "zcode": "現在の ZCode アカウントに提供されたギフトプランを受け取ります。不定期キャンペーンが対象です。試用枠の自動更新はチェックインではありません。"
+    },
+    "outcomes": {
+      "not_checked": "取得可能な報酬があります",
+      "claimed": "報酬を取得しました",
+      "already_checked": "この開催期間では取得済み",
+      "inactive": "現在取得可能なキャンペーンはありません",
+      "ineligible": "このアカウントは対象外です",
+      "own_app_required": "公式クライアントで確認または受け取りを完了してください",
+      "sign_in_required": "ログインまたは認証して更新してください",
+      "credentials_protected": "認証情報が保護されています。公式クライアントでログインしてください",
+      "credentials_unavailable": "アカウント情報を取得できません。公式クライアントでログインして更新してください",
+      "connection_required": "TRAE CN を開き、VaryAI でローカルブリッジを接続してください",
+      "switch_required": "アカウントが変わりました。更新してください",
+      "unsupported": "このクライアントのバージョンまたは実行環境は未対応です",
+      "failed": "公式サービスで結果を確認できません。更新して再試行してください"
+    }
   }
 }

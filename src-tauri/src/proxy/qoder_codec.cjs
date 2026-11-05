@@ -21,14 +21,34 @@ function main() {
     };
   }
   const source = fs.readFileSync(process.env.VARYAI_QODER_WORKER, "utf8");
-  if (
-    crypto.createHash("sha256").update(source).digest("hex") !==
-    "b1494b39ecb713e06d3c8fb9b4aab9dff571942557d750be33870d06eb8e8b5a"
-  )
-    throw new Error();
+  const bindings = {
+    b1494b39ecb713e06d3c8fb9b4aab9dff571942557d750be33870d06eb8e8b5a: {
+      start: "var jic,",
+      end: "uii=F(",
+      xor: "_$d",
+      salt: "qInfTBqB6D3R",
+      exports: "dn",
+      once: "S",
+      bootstrap:
+        'Aii();cii();aoc({module:Buffer.from(jic,"base64")});module.exports=aii;',
+    },
+    "76936c0212abd18ac762f2ab69d2449ef426bc48c5685a87bf2bab7653f7713b": {
+      start: "var Yel,",
+      end: "g1i=",
+      xor: "_$d1",
+      salt: "nj1pvEdtIHlt",
+      exports: "Qt",
+      once: "w",
+      bootstrap:
+        'n1i();u1i();sAl({module:Buffer.from(Yel,"base64")});module.exports=l1i;',
+    },
+  };
+  const binding =
+    bindings[crypto.createHash("sha256").update(source).digest("hex")];
+  if (!binding) throw new Error();
   if (input.operation === "check") return { supported: true };
-  const start = source.indexOf("var jic,");
-  const end = source.indexOf("uii=F(", start);
+  const start = source.indexOf(binding.start);
+  const end = source.indexOf(binding.end, start);
   if (start < 0 || end < start) throw new Error();
   const block = source
     .slice(start, end)
@@ -37,17 +57,15 @@ function main() {
       "import.meta.url",
       'require("node:url").pathToFileURL(__filename).href',
     );
-  const pre = `const _$d=(s,k="qInfTBqB6D3R")=>{const b=Buffer.from(s,"base64");for(let i=0;i<b.length;i++)b[i]^=k.charCodeAt(i%k.length);return b.toString()};
-    const dn=(o,p)=>{for(const [k,get] of Object.entries(p))Object.defineProperty(o,k,{get});};
-    const S=f=>{let done=false;return()=>{if(!done){done=true;f();}}};`;
+  const pre = `const ${binding.xor}=(s,k=${JSON.stringify(binding.salt)})=>{const b=Buffer.from(s,"base64");for(let i=0;i<b.length;i++)b[i]^=k.charCodeAt(i%k.length);return b.toString()};
+    const ${binding.exports}=(o,p)=>{for(const [k,get] of Object.entries(p))Object.defineProperty(o,k,{get});};
+    const ${binding.once}=f=>{let done=false;return()=>{if(!done){done=true;f();}}};`;
   const mod = { exports: {} };
   new Function(
     "require",
     "module",
     "__filename",
-    pre +
-      block +
-      '\nAii();cii();aoc({module:Buffer.from(jic,"base64")});module.exports=aii;',
+    pre + block + "\n" + binding.bootstrap,
   )(require, mod, process.env.VARYAI_QODER_WORKER);
   const sdk = mod.exports;
   globalThis.crypto ??= crypto.webcrypto;

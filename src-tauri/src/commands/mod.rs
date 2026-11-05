@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 
+mod agent_rewards;
 mod auth;
 mod balance;
 mod codex_oauth;
@@ -50,6 +51,7 @@ mod webdav_sync;
 mod workbuddy_checkin;
 mod workspace;
 
+pub(crate) use agent_rewards::*;
 pub use auth::*;
 pub use balance::*;
 pub use codex_oauth::*;

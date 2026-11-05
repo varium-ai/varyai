@@ -78,8 +78,8 @@ describe("WorkBuddy home configuration", () => {
     );
     expect(screen.getByText("Handled 5, warned 4")).toBeInTheDocument();
     expect(
-      screen.getByRole("region", { name: "workbuddy.checkin.title" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("region", { name: "workbuddy.checkin.title" }),
+    ).not.toBeInTheDocument();
     expect(useSecurityEventsSummary).toHaveBeenCalledWith(
       expect.objectContaining({
         view: "security_events",

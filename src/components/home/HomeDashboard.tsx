@@ -22,8 +22,6 @@ import { resolveCodexOfficialIdentity } from "@/utils/providerCapabilities";
 import { cn } from "@/lib/utils";
 import { QoderCertificatePanel } from "@/components/QoderCertificatePanel";
 import { DoubaoWorkPanel } from "@/components/DoubaoWorkPanel";
-import { DoubaoWorkCheckinPanel } from "@/components/DoubaoWorkCheckinPanel";
-import { WorkBuddyCheckinPanel } from "@/components/WorkBuddyCheckinPanel";
 import { ProviderList } from "@/components/providers/ProviderList";
 import { ManagedAppTabs } from "@/components/home/ManagedAppTabs";
 import { DEFAULT_PROXY_PORT } from "@/types/proxy";
@@ -493,8 +491,6 @@ export function HomeDashboard({
                 </aside>
               )}
               {activeApp === "qoder" && <QoderCertificatePanel />}
-              {activeApp === "workbuddy" && <WorkBuddyCheckinPanel />}
-              {activeApp === "doubaowork" && <DoubaoWorkCheckinPanel />}
 
               {activeApp === "doubaowork" ? (
                 <DoubaoWorkPanel />

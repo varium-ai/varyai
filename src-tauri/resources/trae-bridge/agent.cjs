@@ -6,8 +6,9 @@ const net = require("node:net");
 const { PassThrough } = require("node:stream");
 const { createBridge } = require("./renderer.cjs");
 const { createStartingModelAdapter } = require("./starting-model.cjs");
+const { createTraeRewards } = require("./rewards.cjs");
 const SLOT = "__varyaiTraeNativeBridge";
-const REVISION = 9;
+const REVISION = 10;
 // Keep the renderer API compatible so an older resident helper cannot replace the new hook.
 const RENDERER_REVISION = 2;
 // Older helpers remain resident; their disabled audit callbacks must not receive new events.
@@ -153,11 +154,11 @@ function bootstrapSource() {
         di.resolve('iICubeModelManagementService').notifyModelChanges({source:'varyai'});
       };
     }
-    const pending=new Map(),createBridge=${createBridge.toString()},createStartingModelAdapter=${createStartingModelAdapter.toString()};
+    const pending=new Map(),createBridge=${createBridge.toString()},createStartingModelAdapter=${createStartingModelAdapter.toString()},createTraeRewards=${createTraeRewards.toString()};
     const bridge=createBridge(service,value=>new Promise((resolve,reject)=>{
       const id=crypto.randomUUID(),timer=setTimeout(()=>{pending.delete(id);reject(Error('audit_unavailable'));},5000);
       pending.set(id,{resolve,reject,timer});globalThis.${AUDIT_BINDING}(JSON.stringify({id,value}));
-    }),refresh,globalThis.localStorage,createStartingModelAdapter(req));
+    }),refresh,globalThis.localStorage,createStartingModelAdapter(req),createTraeRewards());
     // An installed IDE extension may still be present. This helper now owns the window's hook.
     const legacy=document.querySelector('varyai-trae-bridge-v1');
     if(legacy)await legacy.receive({op:'disable',request:'native-pipe-takeover'});
@@ -540,6 +541,7 @@ async function run(endpoint, directory) {
     }
     const first = sessions.keys().next().value;
     if (!first) throw Error("no_chat_window");
+    if (command.op === "rewards") return invoke(first, "rewards", command.input);
     if (command.op === "list") return invoke(first, "list");
     if (command.op === "matches")
       return invoke(first, "matches", command.id, command.config);

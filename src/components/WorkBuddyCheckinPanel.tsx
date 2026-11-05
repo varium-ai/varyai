@@ -14,7 +14,11 @@ import "./daily-checkin.css";
 
 const queryKey = ["workbuddyCheckin", "accounts"];
 
-export function WorkBuddyCheckinPanel() {
+export function WorkBuddyCheckinPanel({
+  embedded = false,
+}: {
+  embedded?: boolean;
+}) {
   const { t } = useTranslation();
   const toggleId = useId();
   const accountSelectId = useId();
@@ -104,7 +108,7 @@ export function WorkBuddyCheckinPanel() {
 
   return (
     <section aria-label={t("workbuddy.checkin.title")} className="mp-checkin">
-      <h3 className="mp-checkin-heading">
+      <h3 hidden={embedded} className="mp-checkin-heading">
         <button
           type="button"
           aria-expanded={expanded}
@@ -116,7 +120,11 @@ export function WorkBuddyCheckinPanel() {
           <ChevronDown aria-hidden="true" />
         </button>
       </h3>
-      <div id={detailsId} hidden={!expanded} className="mp-checkin-body">
+      <div
+        id={detailsId}
+        hidden={!embedded && !expanded}
+        className="mp-checkin-body"
+      >
         <div className="mp-checkin-intro">
           <p>{t("workbuddy.checkin.description")}</p>
           <div className="mp-checkin-actions">

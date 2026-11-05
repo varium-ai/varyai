@@ -1,6 +1,32 @@
 //! Read-only size hints; never rewrite a request or move opaque continuation state.
 use serde_json::Value;
 
+/// A completed visible summary carries text, not a server-owned item reference.
+pub(super) fn visible_reasoning(item: &Value) -> bool {
+    item["type"] == "reasoning"
+        && item.as_object().is_some_and(|fields| {
+            fields
+                .keys()
+                .all(|key| ["type", "id", "status", "summary"].contains(&key.as_str()))
+        })
+        && item
+            .get("status")
+            .is_none_or(|status| status == "completed")
+        && item["summary"].as_array().is_some_and(|parts| {
+            parts.iter().all(|part| {
+                part["type"] == "summary_text"
+                    && part["text"].is_string()
+                    && part.as_object().is_some_and(|fields| {
+                        fields
+                            .keys()
+                            .all(|key| ["type", "text"].contains(&key.as_str()))
+                    })
+            }) && parts
+                .iter()
+                .any(|part| part["text"].as_str().is_some_and(|text| !text.is_empty()))
+        })
+}
+
 pub(super) fn portable(body: &Value) -> bool {
     if body["_group_projection_incomplete"] == true
         || body
@@ -13,6 +39,9 @@ pub(super) fn portable(body: &Value) -> bool {
     match &body["input"] {
         Value::String(_) => true,
         Value::Array(items) => items.iter().all(|item| {
+            if visible_reasoning(item) {
+                return true;
+            }
             matches!(item["type"].as_str(), None | Some("message"))
                 && item.get("encrypted_content").is_none()
                 && match &item["content"] {

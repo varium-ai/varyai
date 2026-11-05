@@ -85,6 +85,20 @@ design guides; an attribution does not establish complete compatibility.
 
 ## Compatibility literals
 
+Daily reward protocol behavior was reviewed in `magpie-community/plugins`
+`packages/qoder/index.mjs` (Git blob `5785a7c0c8f68493d16d315c1063d1514da09a76`),
+`packages/trae/index.mjs` (blob `15d2389db8ebb07fcb30b46fd5f0c65f4a11da5f`),
+and `packages/zcode/index.mjs` (blob `13cbbe330f3896621e492b4f69f621ed16664f84`).
+VaryAI independently implements campaign-window accounting, official daily-credit
+IPC and explicit gift-plan actions. Native interfaces were additionally checked
+against the installed Qoder CN 0.4.8/0.5.3, TRAE CN 3.4.14/3.4.15 and ZCode 3.16.3 clients and
+ZCode's public `docs/marketing-touch-client.md` contract. No plugin implementation
+is copied. Qoder account reuse additionally follows the installed client's
+`product.json`, encrypted auth schema and Electron/Chromium's macOS `v10` format.
+OS-approved native account access is preferred, with an optional independent
+browser grant. Native refresh tokens are not rotated, and CAPTCHA remains in the
+official client.
+
 Additional subscription integrations reference `internal/provider/google.go`,
 `chatgpt_api.go`, `claude_signin.go`, `claude_dirs.go`, `claude_code_models.go`,
 and `internal/gateway/claude_subscription.go` / `codeassist.go` at revision

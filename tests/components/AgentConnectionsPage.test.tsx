@@ -482,18 +482,65 @@ describe("Agent connections", () => {
           }),
         ).not.toBeInTheDocument();
       }
-      const panel = await within(row).findByRole("region", {
+      expect(api.accounts).not.toHaveBeenCalled();
+      fireEvent.click(
+        within(row).getByRole("button", {
+          name: `agentRewards.title apps.${app}`,
+        }),
+      );
+      const panel = await screen.findByRole("region", {
         name: `${prefix}.title`,
       });
-      fireEvent.click(
-        within(panel).getByRole("button", { name: `${prefix}.title` }),
-      );
       expect(
         within(panel).getByRole("combobox", { name: `${prefix}.account` }),
       ).toBeVisible();
       await waitFor(() => expect(api.accounts).toHaveBeenCalledTimes(1));
+      const trigger = within(row).getByRole("button", {
+        name: `agentRewards.title apps.${app}`,
+      });
+      fireEvent.click(trigger);
+      expect(panel).not.toBeVisible();
+      fireEvent.click(trigger);
+      expect(panel).toBeVisible();
+      expect(api.accounts).toHaveBeenCalledTimes(1);
       expect(api.checkIn).not.toHaveBeenCalled();
       expect(api.setAutoEnabled).not.toHaveBeenCalled();
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["qoder", "trae", "zcode"] as const)(
+    "places %s check-in before its model picker",
+    async (app) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      } as Awaited<ReturnType<typeof proxyApi.getAgentInstallations>>);
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([]);
+      mount();
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      const trigger = within(row).getByRole("button", {
+        name: `agentRewards.title apps.${app}`,
+      });
+      const picker = within(row).getByLabelText(
+        `agentConnections.${app === "qoder" ? "modelList" : "model"} apps.${app}`,
+      );
+      expect(
+        trigger.compareDocumentPosition(picker) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(
+        screen.queryByRole("region", { name: "agentRewards.title" }),
+      ).not.toBeInTheDocument();
+      fireEvent.click(trigger);
+      const panel = await screen.findByRole("region", {
+        name: "agentRewards.title",
+      });
+      expect(
+        within(panel).getByRole("button", { name: "agentRewards.claim" }),
+      ).toBeVisible();
+      expect(
+        within(panel).queryByRole("button", { name: "agentRewards.title" }),
+      ).not.toBeInTheDocument();
       expect(agentConnectionsApi.set).not.toHaveBeenCalled();
     },
   );

@@ -31,6 +31,8 @@ import { WorkspaceDragOverlay } from "@/components/WorkspaceDragOverlay";
 import { restrictWorkspaceSort } from "@/lib/workspaceSorting";
 import { WorkBuddyCheckinPanel } from "@/components/WorkBuddyCheckinPanel";
 import { DoubaoWorkCheckinPanel } from "@/components/DoubaoWorkCheckinPanel";
+import { AgentRewardsPanel } from "@/components/AgentRewardsPanel";
+import { hasAgentRewards } from "@/lib/api/agent-rewards";
 import { proxyApi } from "@/lib/api/proxy";
 import { settingsApi } from "@/lib/api/settings";
 import { useAgentUpdates } from "@/hooks/useAgentUpdates";
@@ -142,6 +144,8 @@ export function AgentConnectionsPage({
   const busy = Object.keys(operations).length > 0;
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<AppId | null>(null);
+  const [checkinApp, setCheckinApp] = useState<AppId | null>(null);
+  const [openedCheckins, setOpenedCheckins] = useState<AppId[]>([]);
   const [appOrder, setAppOrder] = useState(readAgentOrder);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -462,7 +466,7 @@ export function AgentConnectionsPage({
                 if (
                   event.currentTarget.contains(event.target as Node) &&
                   !(event.target as Element).closest(
-                    "button, a, input, label, select, textarea, [role='button'], [role='switch'], [role='combobox'], .mp-agent-expanded",
+                    "button, a, input, label, select, textarea, [role='button'], [role='switch'], [role='combobox'], .mp-agent-expanded, .mp-agent-checkin",
                   ) &&
                   window.getSelection()?.isCollapsed !== false
                 )
@@ -622,6 +626,26 @@ export function AgentConnectionsPage({
                 value ? beginOperation(app, "visibility") : endOperation(app)
               }
             />
+          )}
+          {(app === "workbuddy" ||
+            app === "doubaowork" ||
+            hasAgentRewards(app)) && (
+            <button
+              type="button"
+              className="mp-agent-start mp-agent-checkin-trigger"
+              aria-label={`${t("agentRewards.title")} ${name(app)}`}
+              aria-expanded={checkinApp === app}
+              aria-controls={`${detailsId}-checkin`}
+              onClick={() => {
+                setOpenedCheckins((previous) =>
+                  previous.includes(app) ? previous : [...previous, app],
+                );
+                setCheckinApp((previous) => (previous === app ? null : app));
+              }}
+            >
+              {t("agentRewards.title")}
+              <ChevronDown size={11} aria-hidden="true" />
+            </button>
           )}
           {app !== "trae" && modelCatalog}
           {app === "doubaowork" && (
@@ -800,20 +824,26 @@ export function AgentConnectionsPage({
                 <div className="mp-agent-detail-actions">{modelCatalog}</div>
               </>
             )}
-            {app === "workbuddy" && <WorkBuddyCheckinPanel />}
-            {app === "doubaowork" && <DoubaoWorkCheckinPanel />}
           </div>
         )}
-        {!compact && (app === "workbuddy" || app === "doubaowork") && (
+        {!compact && doubaoLauncher && (
           <div className="mp-agent-checkin">
-            {doubaoLauncher && (
-              <div className="mp-agent-detail-actions">{doubaoLauncher}</div>
-            )}
+            <div className="mp-agent-detail-actions">{doubaoLauncher}</div>
+          </div>
+        )}
+        {openedCheckins.includes(app) && (
+          <div
+            id={`${detailsId}-checkin`}
+            className="mp-agent-checkin"
+            hidden={checkinApp !== app || (compact && expanded !== app)}
+          >
             {app === "workbuddy" ? (
-              <WorkBuddyCheckinPanel />
-            ) : (
-              <DoubaoWorkCheckinPanel />
-            )}
+              <WorkBuddyCheckinPanel embedded />
+            ) : app === "doubaowork" ? (
+              <DoubaoWorkCheckinPanel embedded />
+            ) : hasAgentRewards(app) ? (
+              <AgentRewardsPanel app={app} embedded />
+            ) : null}
           </div>
         )}
       </SortableAgentRow>

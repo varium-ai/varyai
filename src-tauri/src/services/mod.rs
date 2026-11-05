@@ -1,3 +1,4 @@
+pub(crate) mod agent_rewards;
 pub mod balance;
 pub mod codex_oauth_models;
 pub(crate) mod codex_provider;

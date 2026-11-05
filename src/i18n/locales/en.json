@@ -4330,12 +4330,12 @@
   },
   "workbuddy": {
     "checkin": {
-      "title": "WorkBuddy daily check-in",
+      "title": "Check in",
       "description": "Select a WorkBuddy China account to claim its official daily reward. Add accounts through the official browser sign-in.",
-      "checkNow": "Check in now",
+      "checkNow": "Check in",
       "checking": "Checking in…",
-      "reload": "Refresh accounts",
-      "autoLabel": "Automatic daily check-in",
+      "reload": "Refresh",
+      "autoLabel": "Automatic check-in",
       "autoHint": "Applies only to this account. While VaryAI is open, enabled accounts are checked separately each day.",
       "reward": "Credits: {{credit}}",
       "streak": "Consecutive days: {{count}}",
@@ -5697,15 +5697,15 @@
   },
   "doubaowork": {
     "checkin": {
-      "title": "Doubao Work daily check-in",
+      "title": "Check in",
       "description": "Accounts come from the official Doubao Work client. Sign in to additional accounts there, then refresh this list.",
       "account": "Check-in account",
       "selectAccount": "Select an account",
       "currentAccount": "Current login",
-      "reload": "Refresh accounts",
-      "checkNow": "Check in now",
+      "reload": "Refresh",
+      "checkNow": "Check in",
       "checking": "Checking in…",
-      "autoLabel": "Automatic daily check-in",
+      "autoLabel": "Automatic check-in",
       "autoHint": "Enabled accounts are checked in sequence while both applications remain open and connected. Doubao Work stays on the last processed account.",
       "loadFailed": "Could not load check-in status.",
       "operationFailed": "Could not complete the action. Please try again.",
@@ -5757,5 +5757,50 @@
     "hint_chatgpt_api": "Uses a separate Sign in with ChatGPT authorization for the OpenAI API and your ChatGPT plan. Codex sign-in is managed separately.",
     "hint_gemini_cli": "Uses Gemini Code Assist. Standard and Enterprise accounts may need a Google Cloud project. Import reads your local Gemini CLI sign-in.",
     "hint_antigravity": "Uses your Antigravity account and its available models. You can sign in with Google or import an account JSON export."
+  },
+  "agentRewards": {
+    "readNative": "Read client login",
+    "nativeAccessHint": "A local Qoder CN login was detected. Reading it may require macOS Keychain permission; this does not sign in again.",
+    "sources": {
+      "native": "Using the current Qoder CN login",
+      "browser": "Using independent backup authorization"
+    },
+    "account": "Check-in account",
+    "title": "Check in",
+    "refresh": "Refresh",
+    "claim": "Check in",
+    "claiming": "Checking in…",
+    "authorize": "Add account",
+    "forget": "Remove backup authorization",
+    "loginWaiting": "Complete authorization on the official Qoder CN page. Authorization does not claim rewards or enable automatic claims.",
+    "loginFailed": "Authorization expired or failed. Cancel and try again.",
+    "autoLabel": "Automatic check-in",
+    "autoHint": "Requires VaryAI to remain open. Only eligible official rewards are claimed; verification must be completed in the official client.",
+    "reward": "Reward: {{credit}} Credits",
+    "available": "Available: {{credit}} Credits",
+    "lastChecked": "Last checked: {{time}}",
+    "operationFailed": "Unable to complete the reward operation. Refresh the status and try again.",
+    "accountChanged": "The account changed. Refresh before continuing.",
+    "storageError": "Local reward data could not be read or saved. The existing file was preserved.",
+    "descriptions": {
+      "qoder": "Daily Credits reset at 10:00 (UTC+8). Uses the current Qoder CN login when accessible; independent browser authorization is optional.",
+      "trae": "Claims the current TRAE CN account’s official daily Credits. Keep the connected client open. Reward amounts and eligibility follow the current campaign.",
+      "zcode": "Claims gift plans offered to the current ZCode login. Offers are campaign-based; a trial quota reset is not a check-in reward."
+    },
+    "outcomes": {
+      "not_checked": "Reward available to claim",
+      "claimed": "Reward claimed",
+      "already_checked": "Already claimed for this activity window",
+      "inactive": "No claimable activity at present",
+      "ineligible": "This account is not eligible for the current offer",
+      "own_app_required": "Open the official client to complete verification or claim the offer",
+      "sign_in_required": "Sign in or authorize an account, then refresh",
+      "credentials_protected": "The native credential store is protected; use the official client to sign in",
+      "credentials_unavailable": "Native account details are unavailable; sign in to the official client and refresh",
+      "connection_required": "Open TRAE CN and connect its local bridge in VaryAI",
+      "switch_required": "The account changed; refresh before claiming",
+      "unsupported": "This client version or local runtime is not supported",
+      "failed": "The official service did not confirm the result; refresh and retry"
+    }
   }
 }
