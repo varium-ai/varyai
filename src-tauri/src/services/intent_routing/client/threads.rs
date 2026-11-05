@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use std::{
     collections::HashSet,
-    fs::{self, File, FileTimes, OpenOptions},
+    fs::{self, FileTimes, OpenOptions},
     io::{self, Read},
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
@@ -1143,7 +1143,7 @@ fn durable_write(path: &Path, replacement: &[u8], expected: Option<&[u8]>) -> Re
 
 #[cfg(unix)]
 fn sync_parent(parent: &Path) -> Result<(), String> {
-    File::open(parent)
+    std::fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|_| FAILED.into())
 }
