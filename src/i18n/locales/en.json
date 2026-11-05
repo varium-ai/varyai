@@ -1152,7 +1152,7 @@
       "geminiDesc": "Google Gemini CLI",
       "opencodeDesc": "OpenCode CLI",
       "showProfileSwitcher": "Show profile switcher",
-      "showProfileSwitcherDescription": "Show the profile switcher in the main page header"
+      "showProfileSwitcherDescription": "Show the profile switcher in the main window bottom bar"
     },
     "skillStorage": {
       "title": "Skill Storage Location",

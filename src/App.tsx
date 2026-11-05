@@ -14,6 +14,9 @@ import { StatisticsPage } from "@/components/statistics/StatisticsPage";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
 import { UpdateBadge } from "@/components/UpdateBadge";
+import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
+import { APP_IDS } from "@/config/appConfig";
+import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { useSettingsQuery } from "@/lib/query";
 import { proxyApi } from "@/lib/api/proxy";
 import { useUsageCacheBridge } from "@/hooks/useUsageCacheBridge";
@@ -57,6 +60,18 @@ export default function App() {
     if (next) navigation.current(next);
   });
   const settings = useSettingsQuery();
+  const showProfiles = settings.data?.showProfileSwitcher !== false;
+  const connections = useQuery({
+    queryKey: ["agent-connections"],
+    queryFn: agentConnectionsApi.list,
+    enabled: showProfiles,
+    refetchInterval: showProfiles ? 5000 : false,
+  });
+  const selectedApps = APP_IDS.filter((app) =>
+    connections.data?.some(
+      (connection) => connection.enabled && connection.app === app,
+    ),
+  );
   const gateway = useQuery({
     queryKey: ["proxyStatus"],
     queryFn: proxyApi.getProxyStatus,
@@ -137,7 +152,17 @@ export default function App() {
         </main>
       </div>
       <footer className="workspace-footer">
-        <span>Vary AI</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <span>Vary AI</span>
+          {showProfiles && (
+            <ProfileSwitcher
+              compact
+              side="top"
+              activeApp={selectedApps[0] ?? "claude"}
+              selectedApps={selectedApps}
+            />
+          )}
+        </div>
         <div className="flex items-center gap-4">
           <span className="flex items-center gap-1.5">
             <span

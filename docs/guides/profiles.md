@@ -5,7 +5,7 @@ Profiles capture selected client configuration so you can restore a known setup 
 ## Capture and apply
 
 1. Configure each client normally and back up its files.
-2. Open the profile controls from a client page and create a named profile. By default, capture only that client. Enable **Multi-agent profile** to preselect the configured, supported agents currently selected in the main window; adjust that selection before saving if needed.
+2. Open **Profiles** in the main window's bottom bar or the tray panel and create a named profile. Both entry points use the same saved profiles and controls. By default, capture the first connected client. Enable **Multi-agent profile** to preselect the connected, supported agents; adjust that selection before saving if needed. The existing **Show profile switcher** preference controls the main-window entry.
 3. Review the selected scope before applying a saved profile. Read any validation errors or warnings instead of assuming every category was restored.
 4. After applying, follow the client restart or new-session instructions in the completion notification. A successful apply updates saved configuration; running clients may still need to reload it.
 5. Use the explicit refresh/update action to replace a saved snapshot with the current configuration. Renaming or deleting a profile affects the shared profile entity.

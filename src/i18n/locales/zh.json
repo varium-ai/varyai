@@ -1152,7 +1152,7 @@
       "geminiDesc": "Google Gemini CLI",
       "opencodeDesc": "OpenCode CLI",
       "showProfileSwitcher": "显示配置方案切换",
-      "showProfileSwitcherDescription": "在主页面顶部显示配置方案切换入口"
+      "showProfileSwitcherDescription": "在主面板底部显示配置方案切换入口"
     },
     "skillStorage": {
       "title": "Skills 存储位置",

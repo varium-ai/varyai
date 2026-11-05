@@ -251,6 +251,13 @@
   color: var(--mp-muted);
   font-size: 11px;
 }
+html:has(.vary-workspace) .tray-profile-menu {
+  --tray-menu-bg: hsl(var(--popover));
+  --tray-menu-fg: hsl(var(--popover-foreground));
+  --tray-menu-muted: hsl(var(--muted-foreground));
+  --tray-menu-line: hsl(var(--border));
+  --tray-menu-highlight: hsl(var(--accent));
+}
 .vary-agents,
 .vary-routing,
 .vary-providers {

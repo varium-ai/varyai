@@ -1078,7 +1078,7 @@
       "geminiDesc": "Google Gemini CLI",
       "opencodeDesc": "OpenCode CLI",
       "showProfileSwitcher": "設定プロファイル切り替えを表示",
-      "showProfileSwitcherDescription": "メイン画面上部に設定プロファイル切り替えを表示します"
+      "showProfileSwitcherDescription": "メイン画面の下部に設定プロファイル切り替えを表示します"
     },
     "skillStorage": {
       "title": "スキル保存場所",

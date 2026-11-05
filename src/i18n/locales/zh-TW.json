@@ -1078,7 +1078,7 @@
       "geminiDesc": "Google Gemini CLI",
       "opencodeDesc": "OpenCode CLI",
       "showProfileSwitcher": "顯示設定方案切換",
-      "showProfileSwitcherDescription": "在主頁面頂部顯示設定方案切換入口"
+      "showProfileSwitcherDescription": "在主面板底部顯示設定方案切換入口"
     },
     "skillStorage": {
       "title": "Skills 儲存位置",

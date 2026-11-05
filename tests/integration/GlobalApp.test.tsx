@@ -1,7 +1,27 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  within,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "@/App";
+import { profilesApi } from "@/lib/api/profiles";
+import { resetProviderState, setSettings } from "../msw/state";
+vi.mock("@/lib/api/profiles", () => ({
+  profilesApi: { list: vi.fn(), captureBundle: vi.fn() },
+}));
+vi.mock("@/lib/api/agentConnections", () => ({
+  agentConnectionsApi: {
+    list: async () => [
+      { app: "codex", enabled: true },
+      { app: "kimi", enabled: true },
+      { app: "claude", enabled: false },
+    ],
+  },
+}));
 vi.mock("@/components/agents/AgentConnectionsPage", () => ({
   AgentConnectionsPage: () => <div data-testid="agents" />,
 }));
@@ -41,6 +61,73 @@ vi.mock("@/hooks/useUsageCacheBridge", () => ({
   useUsageCacheBridge: () => {},
 }));
 describe("Global application shell", () => {
+  beforeEach(() => {
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    resetProviderState();
+    setSettings({ showProfileSwitcher: true });
+    vi.mocked(profilesApi.list).mockResolvedValue({
+      profiles: [],
+      currentIds: { claude: null, claudeDesktop: null, codex: null },
+      agents: ["codex", "kimi"].map((app) => ({
+        app,
+        available: true,
+        provider: true,
+        mcp: false,
+        skills: false,
+        instructions: false,
+        reason: null,
+      })),
+    } as never);
+    vi.mocked(profilesApi.captureBundle)
+      .mockReset()
+      .mockResolvedValue({} as never);
+  });
+  it("creates a multi-agent profile from the main footer using connected agents", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <App />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(
+      await within(screen.getByRole("contentinfo")).findByRole("combobox"),
+    );
+    fireEvent.click(await screen.findByText("profiles.createFromCurrent"));
+    fireEvent.change(screen.getByPlaceholderText("profiles.namePlaceholder"), {
+      target: { value: "Work setup" },
+    });
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "profiles.bundle.create" }),
+    );
+    expect(screen.getByRole("checkbox", { name: /apps.codex/ })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /apps.kimi/ })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "common.confirm" }));
+    await waitFor(() =>
+      expect(profilesApi.captureBundle).toHaveBeenCalledWith("Work setup", [
+        "codex",
+        "kimi",
+      ]),
+    );
+  });
+  it("honors the existing profile-switcher visibility preference", async () => {
+    setSettings({ showProfileSwitcher: false });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <App />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(client.getQueryState(["settings"])?.status).toBe("success"),
+    );
+    expect(
+      within(screen.getByRole("contentinfo")).queryByRole("combobox"),
+    ).not.toBeInTheDocument();
+  });
   it("keeps the current page until discarding an unsaved draft is confirmed", async () => {
     render(
       <QueryClientProvider client={new QueryClient()}>
