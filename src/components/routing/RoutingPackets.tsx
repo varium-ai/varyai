@@ -1,4 +1,4 @@
-// The reference implementation's request/hold/return sequence (MIT), rendered as packets without birds.
+// Magpie's workspace and compact tray motion, rendered only as small dots (MIT).
 // See third_party/routing-reference/LICENSE.
 import { useEffect, useRef, type CSSProperties } from "react";
 import type { RoutingTrace } from "@/lib/api/routingTrace";
@@ -12,6 +12,7 @@ type Flight = {
   error?: boolean;
   cancelled?: boolean;
   to: Position;
+  still?: boolean;
 };
 type Trace = RoutingTrace;
 
@@ -23,6 +24,7 @@ export function RoutingPackets({
   active,
   replay = false,
   speed = 1,
+  compact = false,
 }: {
   row?: Trace;
   paths: string[];
@@ -35,14 +37,16 @@ export function RoutingPackets({
   active: boolean;
   replay?: boolean;
   speed?: number;
+  compact?: boolean;
 }) {
   const entries = flights ?? [{ row, paths }];
   return (
-    <svg className="rt-sky" aria-hidden="true">
+    <svg className={`rt-sky${compact ? " compact" : ""}`} aria-hidden="true">
       {entries.map((entry) => (
         <PacketFlight
           key={entry.row?.id ?? "idle"}
           {...entry}
+          compact={compact}
           active={active}
           replay={replay}
           speed={speed}
@@ -61,10 +65,12 @@ function PacketFlight({
   replay,
   speed,
   onFinished,
+  compact,
 }: {
   row?: Trace;
   paths: string[];
   color?: string;
+  compact: boolean;
   active: boolean;
   replay: boolean;
   speed: number;
@@ -76,19 +82,23 @@ function PacketFlight({
   finished.current = onFinished;
   useEffect(() => {
     if (!svg.current) return;
-    const current = packetPlayer(svg.current, (id) => finished.current?.(id));
+    const current = packetPlayer(
+      svg.current,
+      (id) => finished.current?.(id),
+      compact,
+    );
     player.current = current;
     return () => {
       current.dispose();
       player.current = undefined;
     };
-  }, []);
+  }, [compact]);
   useEffect(() => {
     player.current?.update(row, active, replay, speed);
-  }, [row, active, replay, speed]);
+  }, [row, active, replay, speed, compact]);
   useEffect(() => {
     player.current?.layout();
-  }, [paths]);
+  }, [paths, compact]);
   return (
     <g
       ref={svg}
@@ -96,16 +106,7 @@ function PacketFlight({
       style={color ? ({ "--rt-agent": color } as CSSProperties) : undefined}
     >
       <g className="rt-packet" visibility="hidden">
-        <circle className="rt-packet-halo" r="10" />
-        <circle className="pkt" r="4.5" />
-        <g
-          className="rt-packet-count"
-          visibility="hidden"
-          transform="translate(0 -18)"
-        >
-          <rect x="-12" y="-8" width="24" height="16" rx="8" />
-          <text textAnchor="middle" dominantBaseline="central" />
-        </g>
+        <circle className="pkt" r={compact ? 3.5 : 4.5} />
       </g>
       {paths.map((path, index) => (
         <path className="rt-packet-path" d={path} key={index} />
@@ -114,32 +115,13 @@ function PacketFlight({
   );
 }
 
-// Only waiting packets share a marker; each request keeps its own flight lifecycle.
-function syncWaitingPackets(sky: SVGSVGElement | null) {
-  if (!sky) return;
-  const groups = new Map<string, SVGGElement[]>();
-  for (const packet of sky.querySelectorAll<SVGGElement>("[data-held-wire]")) {
-    const key = packet.getAttribute("data-held-wire")!;
-    const group = groups.get(key) ?? [];
-    group.push(packet);
-    groups.set(key, group);
-  }
-  for (const group of groups.values()) {
-    group.forEach((packet, index) => {
-      packet.setAttribute("visibility", index === 0 ? "visible" : "hidden");
-      const badge = packet.querySelector(".rt-packet-count")!;
-      badge.setAttribute(
-        "visibility",
-        index === 0 && group.length > 1 ? "visible" : "hidden",
-      );
-      badge.querySelector("text")!.textContent = String(group.length);
-    });
-  }
-}
-
-function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
+function packetPlayer(
+  svg: SVGGElement,
+  onFinished: (id: string) => void,
+  compact: boolean,
+) {
   const packet = svg.querySelector<SVGGElement>(".rt-packet")!;
-  const sky = svg.ownerSVGElement;
+  const dot = packet.querySelector(".pkt")!;
   const media = window.matchMedia?.("(prefers-reduced-motion: reduce)");
   let reduced = media?.matches ?? false;
   let id: string | undefined;
@@ -162,17 +144,7 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
     ...svg.querySelectorAll<SVGPathElement>(".rt-packet-path"),
   ];
 
-  function leaveHold() {
-    const wasHeld = packet.hasAttribute("data-held-wire");
-    packet.removeAttribute("data-held-wire");
-    packet.classList.remove("held");
-    packet
-      .querySelector(".rt-packet-count")!
-      .setAttribute("visibility", "hidden");
-    if (wasHeld) syncWaitingPackets(sky);
-  }
   function hide() {
-    leaveHold();
     packet.setAttribute("visibility", "hidden");
     packet.classList.remove("held", "back", "err", "cancelled");
   }
@@ -196,7 +168,7 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
     destination = "source";
     hide();
   }
-  function pose(legs: Leg[], progress: number, waiting = false) {
+  function pose(legs: Leg[], progress: number) {
     const paths = wires();
     if (
       !legs.length ||
@@ -216,39 +188,48 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
     }
     const total = lengths.reduce((sum, length) => sum + length, 0);
     if (!Number.isFinite(total) || total <= 0) return false;
-    let distance = total * Math.max(0, Math.min(progress, 1));
-    // Keep the halo outside the destination card, even in the compact tray.
-    if (waiting) distance = Math.max(total / 2, total - 14);
-    let index = 0;
-    while (index < legs.length - 1 && distance > lengths[index]) {
-      distance -= lengths[index++];
-    }
-    let point: DOMPoint;
-    try {
-      point = paths[legs[index].wire].getPointAtLength(
+    function pointAt(distance: number) {
+      distance = Math.max(0, Math.min(total, distance));
+      let index = 0;
+      while (
+        index < legs.length - 1 &&
+        (distance > lengths[index] || !lengths[index])
+      )
+        distance -= lengths[index++];
+      return paths[legs[index].wire].getPointAtLength(
         legs[index].reverse ? lengths[index] - distance : distance,
       );
+    }
+    // Magpie's workspace pose clears each card by a dot; its tray uses the wire tips.
+    const edge = compact ? 0 : Math.min(6, total / 4);
+    const distance =
+      edge + Math.max(0, Math.min(progress, 1)) * (total - 2 * edge);
+    try {
+      const point = pointAt(distance);
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
+      packet.setAttribute("transform", `translate(${point.x} ${point.y})`);
+      packet.setAttribute("visibility", "visible");
     } catch {
       return false;
     }
-    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
-    packet.setAttribute("transform", `translate(${point.x} ${point.y})`);
-    packet.setAttribute("visibility", "visible");
     return true;
   }
   function hold() {
     if (ended && position === "source") reportFinished();
     if (!allowed || reduced || ended || position === "source") return hide();
     const wire = position === "hub" ? 0 : position + 1;
-    if (pose([{ wire }], 1, true)) {
-      packet.classList.add("held");
-      packet.setAttribute(
-        "data-held-wire",
-        wires()[wire].getAttribute("d") ?? "",
-      );
-      syncWaitingPackets(sky);
-    } else hide();
+    if (pose([{ wire }], 1)) packet.classList.add("held");
+    else hide();
   }
+  function progress(value: number) {
+    const k = Math.max(0, Math.min(1, value));
+    return compact
+      ? k < 0.5
+        ? 2 * k * k
+        : 1 - (-2 * k + 2) ** 2 / 2
+      : (1 - Math.cos(Math.PI * k)) / 2;
+  }
+
   function schedule() {
     if (
       disposed ||
@@ -268,9 +249,24 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
       packet.classList.toggle("back", !!flight.back);
       packet.classList.toggle("err", !!flight.error);
       packet.classList.toggle("cancelled", !!flight.cancelled);
-      leaveHold();
+      packet.classList.remove("held");
+      dot.setAttribute(
+        "r",
+        String(
+          compact
+            ? 3.5
+            : flight.back && !flight.error && !flight.cancelled
+              ? 4
+              : 4.5,
+        ),
+      );
       elapsed = (time - started) * rate;
-      if (!pose(flight.legs, elapsed / flight.duration)) {
+      if (
+        !pose(
+          flight.legs,
+          flight.still ? 0 : progress(elapsed / flight.duration),
+        )
+      ) {
         // Geometry may arrive a render later. Layout resumes the same flight.
         started = undefined;
         elapsed = 0;
@@ -290,6 +286,38 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
     }
   }
   function home(error: boolean, cancelled = false) {
+    if (compact) {
+      if (typeof destination === "number") {
+        if (error)
+          queue.push({
+            legs: [{ wire: destination + 1, reverse: true }],
+            duration: 260,
+            back: true,
+            error,
+            to: destination,
+            still: true,
+          });
+        queue.push({
+          legs: [{ wire: destination + 1, reverse: true }],
+          duration: error ? 360 : 420,
+          back: true,
+          error,
+          cancelled,
+          to: "hub",
+        });
+      }
+      if (destination !== "source")
+        queue.push({
+          legs: [{ wire: 0, reverse: true }],
+          duration: 420,
+          back: true,
+          error,
+          cancelled,
+          to: "source",
+        });
+      destination = "source";
+      return;
+    }
     const legs: Leg[] = [];
     if (typeof destination === "number")
       legs.push({ wire: destination + 1, reverse: true });
@@ -297,7 +325,7 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
     if (legs.length)
       queue.push({
         legs,
-        duration: legs.length > 1 ? 1400 : 620,
+        duration: legs.length > 1 ? (error ? 1350 : 1400) : 620,
         back: true,
         error,
         cancelled,
@@ -338,7 +366,11 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
           row.state === "streaming" ||
           row.startedAt + row.durationMs >= Date.now() - 5000);
       if (allowed) {
-        queue.push({ legs: [{ wire: 0 }], duration: 620, to: "hub" });
+        queue.push({
+          legs: [{ wire: 0 }],
+          duration: compact ? 420 : 620,
+          to: "hub",
+        });
         destination = "hub";
       }
     }
@@ -356,14 +388,24 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
         if (typeof destination === "number") {
           queue.push({
             legs: [{ wire: destination + 1, reverse: true }],
-            duration: 620,
+            duration: compact ? 360 : 620,
             back: true,
             to: "hub",
           });
         }
+        const fromSource =
+          !compact &&
+          !flight &&
+          position === "source" &&
+          queue.length === 1 &&
+          queue[0].to === "hub";
+        if (fromSource) queue.pop();
         queue.push({
-          legs: [{ wire: step.candidate + 1 }],
-          duration: 780,
+          legs: [
+            ...(fromSource ? [{ wire: 0 }] : []),
+            { wire: step.candidate + 1 },
+          ],
+          duration: compact ? 460 : fromSource ? 1400 : 900,
           to: step.candidate,
         });
         destination = step.candidate;
@@ -371,9 +413,18 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
         ["rejected", "first_token_timeout"].includes(step.kind) &&
         typeof destination === "number"
       ) {
+        if (compact)
+          queue.push({
+            legs: [{ wire: destination + 1, reverse: true }],
+            duration: 260,
+            back: true,
+            error: true,
+            to: destination,
+            still: true,
+          });
         queue.push({
           legs: [{ wire: destination + 1, reverse: true }],
-          duration: 620,
+          duration: compact ? 360 : 620,
           back: true,
           error: true,
           to: "hub",
@@ -412,7 +463,10 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
     update,
     layout() {
       if (flight) {
-        pose(flight.legs, elapsed / flight.duration);
+        pose(
+          flight.legs,
+          flight.still ? 0 : progress(elapsed / flight.duration),
+        );
         schedule();
       } else if (queue.length) schedule();
       else hold();

@@ -1,5 +1,9 @@
 # Routing packet alignment verification — 2026-11-05
 
+> Historical verification only. The aggregated marker, numeric badge and 14px
+> inset described here were superseded by [the Magpie dot-only correction](2026-11-05-routing-dots-magpie.md).
+> Current behavior is specified in the routing observations architecture document.
+
 ## Scope and checked tree
 
 Base revision: `a30e86d1d11641cf40dbbdaf02c11985d3e34df0`, with the working-tree

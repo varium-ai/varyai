@@ -12,6 +12,10 @@ attribution.
   precision reviewed in `internal/gui/assets/plugins/routing/client.js` (`dur`).
   Vary applies the same second/minute/hour/day thresholds and rounding in its
   shared React stage, with translations for its four runtime languages.
+  Packet geometry and motion additionally follow `holdAll`, `pose`, `frame`,
+  `pLayout`, `pTick` and `pPlay`: independent dots at the same waiting endpoint,
+  original endpoint clearances, easing and workspace/tray timings. Vary keeps
+  only the small circular packets; the bird artwork is not copied.
 - `465928bccea4fec3537edd6280f7cabb9a0c5bad`: Codex provider identity,
   ChatGPT sign-in coexistence, model catalog publication, and recoverable thread
   provider transitions reviewed in `internal/agent/codex.go`,

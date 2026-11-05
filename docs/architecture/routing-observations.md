@@ -67,12 +67,13 @@ navigation, and reduced-motion settings suppress control and stage movement.
   The live selected destination receives the Agent's color;
   moving paths and packets follow actual attempts and fallback decisions. A solid
   point travels to the provider and waits for completion; a hollow ring returns
-  through Vary to its original Agent. Waiting requests on the same measured wire
-  share one on-wire marker and a numeric badge when more than one is waiting.
-  Keep its halo inset from the destination; never stack markers vertically or
-  spread them back toward the gateway when the compact tray runs out of space.
-  Only packets that have arrived are counted. Departures and removals update the
-  count without resetting other requests' outgoing, retry or return animations.
+  through Vary to its original Agent. The workspace and compact tray keep only
+  small circular packets: no birds, count badges, halo discs, aggregation or
+  per-request offsets. Concurrent requests waiting at the same destination
+  overlap at the same wire tip, as Magpie's `holdAll` does. Workspace positions
+  use Magpie's `min(6, length / 4)` clearance at each end and cosine easing;
+  compact tray positions use its wire tips and quadratic easing. The compact
+  tray also retains its 3.5px dots, 420/460ms outgoing legs and green/red replies.
   Failed attempts return in red, stopping at
   the hub if another candidate follows; a final failure returns to the Agent.
   Cancellation returns in muted gray, including HTTP 499, and never implies an
