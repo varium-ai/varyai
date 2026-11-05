@@ -466,6 +466,18 @@ export const handlers = [
       accounts: [],
     }),
   ),
+  http.post(`${TAURI_ENDPOINT}/get_agent_rewards`, () =>
+    success({
+      app: "qoder",
+      accountId: null,
+      label: null,
+      autoEnabled: false,
+      outcome: "sign_in_required",
+      checkedAt: null,
+      credit: null,
+      nextCheckAt: null,
+    }),
+  ),
   http.post(`${TAURI_ENDPOINT}/is_live_takeover_active`, () => success(false)),
 
   // Failover / circuit breaker defaults

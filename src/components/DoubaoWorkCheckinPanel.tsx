@@ -12,7 +12,11 @@ import "./daily-checkin.css";
 
 const queryKey = ["doubaoCheckin"];
 
-export function DoubaoWorkCheckinPanel() {
+export function DoubaoWorkCheckinPanel({
+  embedded = false,
+}: {
+  embedded?: boolean;
+}) {
   const { t } = useTranslation();
   const accountId = useId();
   const autoId = useId();
@@ -51,7 +55,7 @@ export function DoubaoWorkCheckinPanel() {
 
   return (
     <section aria-label={t("doubaowork.checkin.title")} className="mp-checkin">
-      <h3 className="mp-checkin-heading">
+      <h3 hidden={embedded} className="mp-checkin-heading">
         <button
           type="button"
           aria-expanded={expanded}
@@ -63,7 +67,11 @@ export function DoubaoWorkCheckinPanel() {
           <ChevronDown aria-hidden="true" />
         </button>
       </h3>
-      <div id={detailsId} hidden={!expanded} className="mp-checkin-body">
+      <div
+        id={detailsId}
+        hidden={!embedded && !expanded}
+        className="mp-checkin-body"
+      >
         <div className="mp-checkin-intro">
           <p>{t("doubaowork.checkin.description")}</p>
           <div className="mp-checkin-actions">

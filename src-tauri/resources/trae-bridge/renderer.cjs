@@ -6,6 +6,7 @@ function createBridge(
   refreshModels = async () => {},
   storage = globalThis.localStorage,
   startingModel,
+  rewards,
 ) {
   let undo;
   const sessions = new Map(),
@@ -561,6 +562,9 @@ function createBridge(
     },
     get enabled() {
       return Boolean(undo);
+    },
+    rewards(input) {
+      return rewards ? rewards(input) : { outcome: "unsupported" };
     },
     disable() {
       undo?.();

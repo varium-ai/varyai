@@ -145,3 +145,10 @@
   color: var(--mp-red);
   overflow-wrap: anywhere;
 }
+.mp-agent-start.mp-agent-checkin-trigger {
+  width: auto;
+  justify-content: center;
+}
+.mp-agent-checkin[hidden] {
+  display: none;
+}

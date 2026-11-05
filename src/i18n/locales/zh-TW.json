@@ -4257,12 +4257,12 @@
   },
   "workbuddy": {
     "checkin": {
-      "title": "WorkBuddy 每日簽到",
+      "title": "簽到",
       "description": "選擇 WorkBuddy 中國版帳號領取官方每日獎勵。可透過官方瀏覽器登入新增多個帳號。",
-      "checkNow": "立即簽到",
+      "checkNow": "簽到",
       "checking": "正在簽到…",
-      "reload": "重新整理帳號",
-      "autoLabel": "每日自動簽到",
+      "reload": "重新整理",
+      "autoLabel": "自動簽到",
       "autoHint": "僅對此帳號生效。VaryAI 執行期間，會分別為已開啟的帳號自動簽到。",
       "reward": "領取額度：{{credit}}",
       "streak": "連續簽到：{{count}} 天",
@@ -5622,15 +5622,15 @@
   },
   "doubaowork": {
     "checkin": {
-      "title": "豆包 Work 每日簽到",
+      "title": "簽到",
       "description": "帳號來自豆包 Work 官方用戶端。請在用戶端登入其他帳號，再重新整理此清單。",
       "account": "簽到帳號",
       "selectAccount": "請選擇帳號",
       "currentAccount": "目前登入",
-      "reload": "重新整理帳號",
-      "checkNow": "立即簽到",
+      "reload": "重新整理",
+      "checkNow": "簽到",
       "checking": "正在簽到…",
-      "autoLabel": "自動每日簽到",
+      "autoLabel": "自動簽到",
       "autoHint": "保持兩個應用程式執行並連線，會依序為已開啟的帳號簽到，豆包 Work 最後保留在最後處理的帳號。",
       "loadFailed": "無法讀取簽到狀態。",
       "operationFailed": "操作未能完成，請重試。",
@@ -5682,5 +5682,44 @@
     "hint_chatgpt_api": "單獨授權使用 OpenAI API 和 ChatGPT 方案，與 Codex 登入獨立管理。",
     "hint_gemini_cli": "透過 Gemini Code Assist 使用訂閱。Standard 和 Enterprise 帳號可能需要 Google Cloud 專案；支援讀取本機 Gemini CLI 登入。",
     "hint_antigravity": "使用 Antigravity 帳號及其可用模型，支援 Google 登入或匯入帳號 JSON。"
+  },
+  "agentRewards": {
+    "account": "簽到帳號",
+    "title": "簽到",
+    "refresh": "重新整理",
+    "claim": "簽到",
+    "claiming": "正在簽到…",
+    "authorize": "授權 Qoder CN 帳號",
+    "forget": "移除授權",
+    "loginWaiting": "請在 Qoder CN 官方頁面完成授權。授權不會領取獎勵或開啟自動領取。",
+    "loginFailed": "授權已過期或失敗，請取消後重試。",
+    "autoLabel": "自動簽到",
+    "autoHint": "需要 VaryAI 保持執行，僅領取官方可領的獎勵；如需驗證，請到官方用戶端完成。",
+    "reward": "獎勵：{{credit}} Credits",
+    "available": "可領取：{{credit}} Credits",
+    "lastChecked": "上次檢查：{{time}}",
+    "operationFailed": "未能完成領獎操作，請重新整理狀態後重試。",
+    "accountChanged": "帳號已切換，請重新整理後繼續。",
+    "storageError": "無法讀取或儲存本機領獎資料，原始檔案已保留。",
+    "descriptions": {
+      "qoder": "每日 Credits 在 UTC+8 的 10:00 更新。需單獨授權領獎帳號，桌面用戶端的登入仍由 Qoder CN 管理。",
+      "trae": "領取目前 TRAE CN 帳號的官方每日 Credits，請保持已連接的用戶端執行。獎勵和資格以目前活動為準。",
+      "zcode": "領取目前 ZCode 帳號獲得的活動贈送方案。活動可能不定期開放，試用額度自動更新不屬於簽到獎勵。"
+    },
+    "outcomes": {
+      "not_checked": "有獎勵可領取",
+      "claimed": "獎勵已領取",
+      "already_checked": "本活動期間已領取",
+      "inactive": "目前沒有可領取活動",
+      "ineligible": "此帳號不符合目前活動資格",
+      "own_app_required": "請到官方用戶端完成驗證或領取",
+      "sign_in_required": "請登入或授權帳號後重新整理",
+      "credentials_protected": "用戶端憑證儲存受保護，請在官方用戶端登入",
+      "credentials_unavailable": "無法取得用戶端帳號資訊，請登入官方用戶端後重新整理",
+      "connection_required": "請開啟 TRAE CN，並在 VaryAI 中連接本機橋接",
+      "switch_required": "帳號已切換，請重新整理後領取",
+      "unsupported": "目前用戶端版本或本機執行環境暫不支援",
+      "failed": "官方服務尚未確認結果，請重新整理後重試"
+    }
   }
 }

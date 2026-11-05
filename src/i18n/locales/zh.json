@@ -4330,12 +4330,12 @@
   },
   "workbuddy": {
     "checkin": {
-      "title": "WorkBuddy 每日签到",
+      "title": "签到",
       "description": "选择 WorkBuddy 国内版账号领取官方每日奖励。可通过官方浏览器登录添加多个账号。",
-      "checkNow": "立即签到",
+      "checkNow": "签到",
       "checking": "正在签到…",
-      "reload": "刷新账号",
-      "autoLabel": "每日自动签到",
+      "reload": "刷新",
+      "autoLabel": "自动签到",
       "autoHint": "仅对此账号生效。VaryAI 运行期间，会分别为已开启的账号自动签到。",
       "reward": "领取额度：{{credit}}",
       "streak": "连续签到：{{count}} 天",
@@ -5695,15 +5695,15 @@
   },
   "doubaowork": {
     "checkin": {
-      "title": "豆包 Work 每日签到",
+      "title": "签到",
       "description": "账号来自豆包 Work 官方客户端。请在客户端登录其他账号，再刷新此列表。",
       "account": "签到账号",
       "selectAccount": "请选择账号",
       "currentAccount": "当前登录",
-      "reload": "刷新账号",
-      "checkNow": "立即签到",
+      "reload": "刷新",
+      "checkNow": "签到",
       "checking": "正在签到…",
-      "autoLabel": "自动每日签到",
+      "autoLabel": "自动签到",
       "autoHint": "保持两个应用运行并连接，会依次为已开启的账号签到，豆包 Work 最后保留在最后处理的账号。",
       "loadFailed": "无法读取签到状态。",
       "operationFailed": "操作未能完成，请重试。",
@@ -5755,5 +5755,44 @@
     "hint_chatgpt_api": "单独授权使用 OpenAI API 和 ChatGPT 套餐，与 Codex 登录独立管理。",
     "hint_gemini_cli": "通过 Gemini Code Assist 使用订阅。Standard 和 Enterprise 账号可能需要 Google Cloud 项目；支持读取本机 Gemini CLI 登录。",
     "hint_antigravity": "使用 Antigravity 账号及其可用模型，支持 Google 登录或导入账号 JSON。"
+  },
+  "agentRewards": {
+    "account": "签到账号",
+    "title": "签到",
+    "refresh": "刷新",
+    "claim": "签到",
+    "claiming": "正在签到…",
+    "authorize": "授权 Qoder CN 账号",
+    "forget": "移除授权",
+    "loginWaiting": "请在 Qoder CN 官方页面完成授权。授权不会领取奖励或开启自动领取。",
+    "loginFailed": "授权已过期或失败，请取消后重试。",
+    "autoLabel": "自动签到",
+    "autoHint": "需要 VaryAI 保持运行，仅领取官方可领的奖励；如需验证，请到官方客户端完成。",
+    "reward": "奖励：{{credit}} Credits",
+    "available": "可领取：{{credit}} Credits",
+    "lastChecked": "上次检查：{{time}}",
+    "operationFailed": "未能完成领奖操作，请刷新状态后重试。",
+    "accountChanged": "账号已切换，请刷新后继续。",
+    "storageError": "无法读取或保存本地领奖数据，原文件已保留。",
+    "descriptions": {
+      "qoder": "每日 Credits 在北京时间 10:00 刷新。需单独授权领奖账号，桌面客户端的登录仍由 Qoder CN 管理。",
+      "trae": "领取当前 TRAE CN 账号的官方每日 Credits，请保持已连接的客户端运行。奖励和资格以当前活动为准。",
+      "zcode": "领取当前 ZCode 账号获得的活动赠送计划。活动可能不定期开放，试用额度自动刷新不属于签到奖励。"
+    },
+    "outcomes": {
+      "not_checked": "有奖励可领取",
+      "claimed": "奖励已领取",
+      "already_checked": "本活动窗口已领取",
+      "inactive": "目前没有可领取活动",
+      "ineligible": "此账号不符合当前活动资格",
+      "own_app_required": "请到官方客户端完成验证或领取",
+      "sign_in_required": "请登录或授权账号后刷新",
+      "credentials_protected": "客户端凭据存储受保护，请在官方客户端登录",
+      "credentials_unavailable": "无法获取客户端账号信息，请登录官方客户端后刷新",
+      "connection_required": "请打开 TRAE CN，并在 VaryAI 中连接本地桥接",
+      "switch_required": "账号已切换，请刷新后领取",
+      "unsupported": "当前客户端版本或本地运行环境暂不支持",
+      "failed": "官方服务尚未确认结果，请刷新后重试"
+    }
   }
 }

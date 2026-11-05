@@ -2020,6 +2020,14 @@ fn build_tool_search_paths(tool: &str) -> Vec<std::path::PathBuf> {
     search_paths
 }
 
+/// Locate the installed Node runtime without opening a shell or starting an Agent.
+pub(crate) fn reward_node_runtime() -> Option<std::path::PathBuf> {
+    build_tool_search_paths("node")
+        .into_iter()
+        .map(|directory| directory.join(if cfg!(windows) { "node.exe" } else { "node" }))
+        .find(|path| path.is_file())
+}
+
 #[cfg(target_os = "windows")]
 fn is_windows_command_script(path: &Path) -> bool {
     path.extension()
