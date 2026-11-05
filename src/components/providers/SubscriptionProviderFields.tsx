@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Copy, ExternalLink, Plus, RefreshCw } from "lucide-react";
 import { useManagedAuth } from "./forms/hooks/useManagedAuth";
@@ -10,27 +10,53 @@ import { copyText } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
 import { ProviderModelPreferences } from "./ProviderModelPreferences";
 
-export function SubscriptionProviderFields({
-  draft,
-  disabled,
-  onChange,
-  onError,
-  onBusyChange,
-}: {
+import { NativeSubscriptionAccounts } from "./NativeSubscriptionAccounts";
+import {
+  nativeSubscriptionApi,
+  type NativeSubscriptionProvider,
+} from "@/lib/api/nativeSubscription";
+
+type Props = {
   draft: RoutingUpstream;
   disabled: boolean;
   onChange: (value: RoutingUpstream) => void;
   onError: () => void;
   onBusyChange: (value: boolean) => void;
-}) {
+};
+export function SubscriptionProviderFields(props: Props) {
+  const source = props.draft.source;
+  if (source.kind !== "subscription")
+    throw new Error("Invalid subscription editor");
+  if (source.provider === "github_copilot" || source.provider === "xai_oauth")
+    return <ManagedSubscriptionFields {...props} provider={source.provider} />;
+  return <SubscriptionFields {...props} />;
+}
+function ManagedSubscriptionFields(
+  props: Props & { provider: "github_copilot" | "xai_oauth" },
+) {
+  const auth = useManagedAuth(props.provider);
+  return <SubscriptionFields {...props} auth={auth} />;
+}
+function SubscriptionFields({
+  draft,
+  disabled,
+  onChange,
+  onError,
+  onBusyChange,
+  auth,
+}: Props & { auth?: ReturnType<typeof useManagedAuth> }) {
   const { t } = useTranslation();
   if (draft.source.kind !== "subscription")
     throw new Error("Invalid subscription editor");
   const source = draft.source;
-  const auth = useManagedAuth(source.provider);
+  const [nativeBusy, setNativeBusy] = useState(false);
+  const nativeBusyChange = useCallback(
+    (busy: boolean) => setNativeBusy(busy),
+    [],
+  );
   const [fetching, setFetching] = useState(false);
   const [catalogFailed, setCatalogFailed] = useState(false);
-  const working = fetching || auth.isAddingAccount;
+  const working = fetching || nativeBusy || !!auth?.isAddingAccount;
   useEffect(() => {
     onBusyChange(working);
   }, [working, onBusyChange]);
@@ -57,9 +83,14 @@ export function SubscriptionProviderFields({
           ? (await copilotGetModelsForAccount(source.accountId)).map(
               (model) => ({ model: model.id, displayName: model.name }),
             )
-          : (await fetchXaiOauthModels(source.accountId)).map((model) => ({
-              model: model.id,
-            }));
+          : source.provider === "xai_oauth"
+            ? (await fetchXaiOauthModels(source.accountId)).map((model) => ({
+                model: model.id,
+              }))
+            : await nativeSubscriptionApi.models(
+                source.provider as NativeSubscriptionProvider,
+                source.accountId,
+              );
       onChange({ ...draft, source: { ...source, catalog: models } });
     } catch {
       setCatalogFailed(true);
@@ -71,119 +102,142 @@ export function SubscriptionProviderFields({
   // A binding is explicit; a changed manager default never chooses an account here.
   return (
     <>
-      <div className="pv-field">
-        <span className="pv-field-label">{t("codexProvider.accounts")}</span>
-        <div className="pv-stack">
-          {auth.isStatusError && (
-            <p role="alert" className="pv-error">
-              {t("subscriptionProvider.statusFailed")}{" "}
-              <Button
-                type="button"
-                variant="ghost"
-                disabled={locked}
-                onClick={() => void auth.refetchStatus()}
-              >
-                {t("common.retry")}
-              </Button>
-            </p>
-          )}
-          {auth.isLoadingStatus && (
-            <p role="status" className="pv-hint">
-              {t("common.loading")}
-            </p>
-          )}
-          <div
-            className="cx-accounts"
-            role="radiogroup"
-            aria-label={t("codexProvider.accounts")}
-          >
-            {auth.accounts.map((account) => (
-              <label key={account.id} className="cx-account cx-check">
-                <input
-                  type="radio"
-                  name={`subscription-${draft.id || "new"}`}
-                  checked={source.accountId === account.id}
-                  disabled={locked || account.requires_reauth}
-                  onChange={() => {
-                    setCatalogFailed(false);
-                    onChange({
-                      ...draft,
-                      source: {
-                        ...source,
-                        accountId: account.id,
-                        models: [],
-                        catalog: [],
-                        mode: "vendor",
-                      },
-                    });
-                  }}
-                />
-                <span>{account.login}</span>
-                {account.requires_reauth && (
-                  <span className="cx-plan">{t("codexProvider.reauth")}</span>
-                )}
-              </label>
-            ))}
-          </div>
-          {source.accountId &&
-            auth.isStatusSuccess &&
-            !auth.accounts.some(
-              (account) =>
-                account.id === source.accountId && !account.requires_reauth,
-            ) && (
+      {!auth ? (
+        <NativeSubscriptionAccounts
+          provider={source.provider as NativeSubscriptionProvider}
+          accountId={source.accountId}
+          disabled={disabled || fetching}
+          onBusyChange={nativeBusyChange}
+          onError={onError}
+          onSelect={(accountId) => {
+            setCatalogFailed(false);
+            onChange({
+              ...draft,
+              source: {
+                ...source,
+                accountId,
+                models: [],
+                catalog: [],
+                mode: "vendor",
+              },
+            });
+          }}
+        />
+      ) : (
+        <div className="pv-field">
+          <span className="pv-field-label">{t("codexProvider.accounts")}</span>
+          <div className="pv-stack">
+            {auth.isStatusError && (
               <p role="alert" className="pv-error">
-                {t("codexProvider.reauth")}
+                {t("subscriptionProvider.statusFailed")}{" "}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={locked}
+                  onClick={() => void auth.refetchStatus()}
+                >
+                  {t("common.retry")}
+                </Button>
               </p>
             )}
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={locked}
-            className="pv-subscription-action"
-            onClick={auth.addAccount}
-          >
-            <Plus size={14} />
-            {t("subscriptionProvider.addAccount")}
-          </Button>
-          {auth.deviceCode && (
-            <div className="cx-login">
-              <p>{t("subscriptionProvider.deviceHint")}</p>
-              <code>{auth.deviceCode.user_code}</code>
-              <Button
-                type="button"
-                variant="ghost"
-                aria-label={t("common.copy")}
-                onClick={() =>
-                  void copyText(auth.deviceCode!.user_code).catch(onError)
-                }
-              >
-                <Copy size={13} />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                aria-label={t("subscriptionProvider.openLogin")}
-                onClick={() =>
-                  void settingsApi
-                    .openExternal(auth.deviceCode!.verification_uri)
-                    .catch(onError)
-                }
-              >
-                <ExternalLink size={13} />
-              </Button>
-              <Button type="button" variant="ghost" onClick={auth.cancelAuth}>
-                {t("common.cancel")}
-              </Button>
+            {auth.isLoadingStatus && (
+              <p role="status" className="pv-hint">
+                {t("common.loading")}
+              </p>
+            )}
+            <div
+              className="cx-accounts"
+              role="radiogroup"
+              aria-label={t("codexProvider.accounts")}
+            >
+              {auth.accounts.map((account) => (
+                <label key={account.id} className="cx-account cx-check">
+                  <input
+                    type="radio"
+                    name={`subscription-${draft.id || "new"}`}
+                    checked={source.accountId === account.id}
+                    disabled={locked || account.requires_reauth}
+                    onChange={() => {
+                      setCatalogFailed(false);
+                      onChange({
+                        ...draft,
+                        source: {
+                          ...source,
+                          accountId: account.id,
+                          models: [],
+                          catalog: [],
+                          mode: "vendor",
+                        },
+                      });
+                    }}
+                  />
+                  <span>{account.login}</span>
+                  {account.requires_reauth && (
+                    <span className="cx-plan">{t("codexProvider.reauth")}</span>
+                  )}
+                </label>
+              ))}
             </div>
-          )}
-          {auth.error && (
-            <p role="alert" className="pv-error">
-              {t("codexProvider.loginFailed")}
-            </p>
-          )}
-          <p className="pv-hint">{t("subscriptionProvider.accountHint")}</p>
+            {source.accountId &&
+              auth.isStatusSuccess &&
+              !auth.accounts.some(
+                (account) =>
+                  account.id === source.accountId && !account.requires_reauth,
+              ) && (
+                <p role="alert" className="pv-error">
+                  {t("codexProvider.reauth")}
+                </p>
+              )}
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={locked}
+              className="pv-subscription-action"
+              onClick={auth.addAccount}
+            >
+              <Plus size={14} />
+              {t("subscriptionProvider.addAccount")}
+            </Button>
+            {auth.deviceCode && (
+              <div className="cx-login">
+                <p>{t("subscriptionProvider.deviceHint")}</p>
+                <code>{auth.deviceCode.user_code}</code>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  aria-label={t("common.copy")}
+                  onClick={() =>
+                    void copyText(auth.deviceCode!.user_code).catch(onError)
+                  }
+                >
+                  <Copy size={13} />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  aria-label={t("subscriptionProvider.openLogin")}
+                  onClick={() =>
+                    void settingsApi
+                      .openExternal(auth.deviceCode!.verification_uri)
+                      .catch(onError)
+                  }
+                >
+                  <ExternalLink size={13} />
+                </Button>
+                <Button type="button" variant="ghost" onClick={auth.cancelAuth}>
+                  {t("common.cancel")}
+                </Button>
+              </div>
+            )}
+            {auth.error && (
+              <p role="alert" className="pv-error">
+                {t("codexProvider.loginFailed")}
+              </p>
+            )}
+            <p className="pv-hint">{t("subscriptionProvider.accountHint")}</p>
+          </div>
         </div>
-      </div>
+      )}
       <div className="pv-field">
         <span className="pv-field-label">{t("codexProvider.models")}</span>
         <div className="pv-stack">

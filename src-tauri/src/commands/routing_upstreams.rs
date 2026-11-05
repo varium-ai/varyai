@@ -206,6 +206,7 @@ pub(crate) async fn save_routing_upstream(
                     .iter()
                     .any(|account| &account.id == account_id && !account.requires_reauth)
             }
+            service => crate::services::native_subscription::exists(*service, account_id).await,
         };
         if !available {
             return Err("routingUpstreams.sourceUnavailable".into());

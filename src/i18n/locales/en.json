@@ -5194,6 +5194,8 @@
     "groupSettings": "Group settings"
   },
   "routingPage": {
+    "apiKey": "API key",
+    "oneKey": "One key",
     "accountQuotaLeft": "Allowance remaining",
     "candidateSeats": "Candidate accounts and keys",
     "listenerUnknown": "Listener unavailable",
@@ -5736,5 +5738,24 @@
     "fetchHint": "Choose an account, then fetch its available models.",
     "statusFailed": "Unable to load accounts. Please retry.",
     "openLogin": "Open sign-in page"
+  },
+  "nativeSubscription": {
+    "clientRequired": "Set VARYAI_ANTIGRAVITY_CLIENT_ID and VARYAI_ANTIGRAVITY_CLIENT_SECRET in the application environment before adding this account.",
+    "failed": "Unable to complete the subscription operation. Retry or sign in again.",
+    "expired": "The sign-in expired or was declined. Please sign in again.",
+    "projectRequired": "Google did not provide a Cloud project. Enter your Code Assist project ID or complete account setup in the original application.",
+    "claudeMissing": "Install Claude Code and make sure the claude command is available.",
+    "continueChatgpt": "Continue with ChatGPT",
+    "importLocal": "Import local sign-in",
+    "importFile": "Import account JSON",
+    "browserWaiting": "Complete sign-in in your browser.",
+    "claudeWaiting": "Complete the Claude Code sign-in opened in your browser.",
+    "project": "Google Cloud project",
+    "projectPlaceholder": "Automatic, or enter your project ID",
+    "removeAccount": "Remove account {{login}}",
+    "hint_claude": "Uses Claude Code to run your subscription. Install Claude Code first. Imported credentials are copied; Claude Code may rotate the sign-in on first use.",
+    "hint_chatgpt_api": "Uses a separate Sign in with ChatGPT authorization for the OpenAI API and your ChatGPT plan. Codex sign-in is managed separately.",
+    "hint_gemini_cli": "Uses Gemini Code Assist. Standard and Enterprise accounts may need a Google Cloud project. Import reads your local Gemini CLI sign-in.",
+    "hint_antigravity": "Uses your Antigravity account and its available models. You can sign in with Google or import an account JSON export."
   }
 }

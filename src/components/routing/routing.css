@@ -462,6 +462,16 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.vary-routing .rt-seat-plan {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--rt-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
 .vary-routing .rt-seat-icon {
   display: inline-flex;
   align-items: center;

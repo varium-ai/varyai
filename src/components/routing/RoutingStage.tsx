@@ -459,30 +459,11 @@ export function RoutingStage({
           const accountKind = singleKey
             ? "provider"
             : (candidate.account?.kind ?? "provider");
-          const siblings = candidates
-            .map((entry) => entry.candidate)
-            .filter(
-              (c) =>
-                c.providerId === candidate.providerId &&
-                c.account?.kind === accountKind,
-            );
-          const identities = [...new Set(siblings.map((c) => c.account?.id))];
-          const number =
-            identities.length > 1
-              ? identities.indexOf(candidate.account?.id) + 1
-              : "";
-          const kindLabel =
-            accountKind === "provider"
-              ? ""
-              : t(
-                  accountKind === "key"
-                    ? "routingPage.keyLabel"
-                    : "routingPage.accountLabel",
-                  { n: number },
-                ).trim();
           const displayName =
             (accountKind !== "provider" && candidate.account?.label) ||
             accountName(candidate);
+          const plan =
+            accountKind === "account" ? observation?.plan : undefined;
           const windows =
             observation?.windows.filter(
               (w) => Number.isFinite(w.usedPercent) && w.resetsAt > observedAt,
@@ -502,7 +483,7 @@ export function RoutingStage({
               minutes: minutes % 60,
             });
           };
-          const status = resting
+          const baseStatus = resting
             ? t("routingPage.seatResting", {
                 time: remaining(observation!.restUntil),
               })
@@ -529,7 +510,16 @@ export function RoutingStage({
                           })
                         : accountKind === "account"
                           ? t("routingPage.accountQuotaUnknown")
-                          : kindLabel || t("routingPage.standby");
+                          : t(
+                              accountKind === "key"
+                                ? "routingPage.apiKey"
+                                : "routingPage.oneKey",
+                            );
+          // Keep the renewal visible when another state takes the status line.
+          const status =
+            quota && !resting && !baseStatus.includes(remaining(quota.resetsAt))
+              ? `${baseStatus} · ${remaining(quota.resetsAt)}`
+              : baseStatus;
           return (
             <li
               key={candidateKey(candidate)}
@@ -553,10 +543,8 @@ export function RoutingStage({
                 </span>
                 <span className="who">
                   <AccountLabel>{displayName}</AccountLabel>
-                  {!candidate.account?.label && number
-                    ? ` \u00b7 ${kindLabel}`
-                    : ""}
                 </span>
+                {plan && <span className="rt-seat-plan">{plan}</span>}
                 <code className="mdl" title={candidate.model}>
                   {candidate.model}
                   {candidate.fixedEffort ? ` :${candidate.fixedEffort}` : ""}

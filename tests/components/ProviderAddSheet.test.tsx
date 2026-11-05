@@ -331,7 +331,15 @@ it("clears the vendor search with Escape before returning to the list", async ()
 
 it("offers managed subscription accounts separately from API vendors and searches their aliases", async () => {
   mount(true);
-  for (const name of ["ChatGPT / Codex", "GitHub Copilot", "Grok"]) {
+  for (const name of [
+    "Claude",
+    "ChatGPT / Codex",
+    "ChatGPT API",
+    "GitHub Copilot",
+    "Gemini CLI",
+    "Antigravity",
+    "Grok",
+  ]) {
     expect(screen.getByRole("button", { name })).toBeVisible();
   }
   const search = screen.getByRole("searchbox", {

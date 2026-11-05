@@ -637,6 +637,8 @@ pub(crate) struct Account {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Telemetry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
     pub rest_until: i64,
     pub sunk_at: Option<i64>,
     pub windows: Vec<Allowance>,

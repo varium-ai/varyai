@@ -5119,6 +5119,8 @@
     "groupSettings": "路由群組設定"
   },
   "routingPage": {
+    "apiKey": "API 金鑰",
+    "oneKey": "單一金鑰",
     "accountQuotaLeft": "剩餘額度",
     "candidateSeats": "候選帳戶與金鑰",
     "listenerUnknown": "監聽位址無法取得",
@@ -5661,5 +5663,24 @@
     "fetchHint": "選擇帳號後，取得該帳號可用的模型。",
     "statusFailed": "無法載入帳號，請重試。",
     "openLogin": "開啟登入頁面"
+  },
+  "nativeSubscription": {
+    "clientRequired": "請先在應用程式環境中設定 VARYAI_ANTIGRAVITY_CLIENT_ID 和 VARYAI_ANTIGRAVITY_CLIENT_SECRET，再新增帳號。",
+    "failed": "訂閱帳號操作失敗，請重試或重新登入。",
+    "expired": "登入已過期或授權遭拒，請重新登入。",
+    "projectRequired": "Google 未提供 Cloud 專案，請填寫 Code Assist 專案 ID，或先在原應用程式完成帳號設定。",
+    "claudeMissing": "請先安裝 Claude Code，並確認可使用 claude 命令。",
+    "continueChatgpt": "使用 ChatGPT 繼續",
+    "importLocal": "匯入本機登入",
+    "importFile": "匯入帳號 JSON",
+    "browserWaiting": "請在瀏覽器中完成登入。",
+    "claudeWaiting": "請在 Claude Code 開啟的瀏覽器頁面中完成登入。",
+    "project": "Google Cloud 專案",
+    "projectPlaceholder": "自動取得，或填寫專案 ID",
+    "removeAccount": "移除帳號 {{login}}",
+    "hint_claude": "透過 Claude Code 使用訂閱，請先安裝 Claude Code。匯入會複製憑證；首次使用時，Claude Code 可能更新登入憑證。",
+    "hint_chatgpt_api": "單獨授權使用 OpenAI API 和 ChatGPT 方案，與 Codex 登入獨立管理。",
+    "hint_gemini_cli": "透過 Gemini Code Assist 使用訂閱。Standard 和 Enterprise 帳號可能需要 Google Cloud 專案；支援讀取本機 Gemini CLI 登入。",
+    "hint_antigravity": "使用 Antigravity 帳號及其可用模型，支援 Google 登入或匯入帳號 JSON。"
   }
 }

@@ -2376,13 +2376,13 @@ pub(super) fn failed_sse_frame_at(err: RestoreError, stage: RestoreStage) -> Byt
     let payload = json!({
         "type": "response.failed",
         "response": {
-            "id": "resp_dlp_failed",
+            "id": "resp_proxy_failed",
             "object": "response",
             "status": "failed",
             "error": {
-                "message": err.message_at(stage),
+                "message": super::http_restoration::CLIENT_PROCESSING_ERROR_MESSAGE,
                 "type": "server_error",
-                "code": err.code(),
+                "code": super::http_restoration::CLIENT_PROCESSING_ERROR_CODE,
                 "param": Value::Null,
             }
         }

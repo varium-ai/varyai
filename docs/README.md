@@ -5,6 +5,7 @@
 - [Usage guide](usage.md)
 - [Agent updates and background progress](guides/agent-updates.md)
 - [Provider setup and local routing](guides/provider-routing.md)
+- [Subscription accounts and provider execution](guides/subscription-providers.md)
 - [Global upstreams and routing groups](guides/intent-routing.md)
 - [Routing page and live observations](architecture/routing-observations.md)
 - [Codex model catalogs](guides/codex-model-catalog.md)

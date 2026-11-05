@@ -26,6 +26,7 @@ pub mod log_codes;
 pub mod media_sanitizer;
 pub mod model_mapper;
 mod native_protocol;
+mod native_subscription;
 mod protocol_bridge;
 pub mod provider_router;
 pub mod providers;

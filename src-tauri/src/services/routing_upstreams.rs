@@ -143,18 +143,28 @@ pub(crate) enum UpstreamSource {
 pub(crate) enum SubscriptionProvider {
     GithubCopilot,
     XaiOauth,
+    Claude,
+    ChatgptApi,
+    GeminiCli,
+    Antigravity,
 }
 impl SubscriptionProvider {
     pub(crate) fn endpoint(self) -> &'static str {
         match self {
             Self::GithubCopilot => "https://api.githubcopilot.com",
             Self::XaiOauth => "https://api.x.ai/v1",
+            Self::Claude => "https://api.anthropic.com",
+            Self::ChatgptApi => "https://api.openai.com/v1",
+            Self::GeminiCli => "https://cloudcode-pa.googleapis.com",
+            Self::Antigravity => "https://daily-cloudcode-pa.googleapis.com",
         }
     }
     pub(crate) fn format(self) -> &'static str {
         match self {
             Self::GithubCopilot => "openai_chat",
-            Self::XaiOauth => "openai_responses",
+            Self::XaiOauth | Self::ChatgptApi => "openai_responses",
+            Self::Claude => "anthropic",
+            Self::GeminiCli | Self::Antigravity => "gemini_native",
         }
     }
 }
@@ -630,7 +640,14 @@ mod tests {
     use crate::app_config::AppType;
     #[test]
     fn subscription_sources_bind_accounts_without_storing_tokens() {
-        for service in ["github_copilot", "xai_oauth"] {
+        for service in [
+            "github_copilot",
+            "xai_oauth",
+            "claude",
+            "chatgpt_api",
+            "gemini_cli",
+            "antigravity",
+        ] {
             let record: RoutingUpstream = serde_json::from_value(json!({
                 "schemaVersion":1,"id":"fixture","name":"Subscription","revision":1,
                 "source":{"kind":"subscription","provider":service,"accountId":"fixture-account",
