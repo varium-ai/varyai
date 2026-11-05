@@ -710,16 +710,20 @@ async fn query_provider_usage_inner(
                 .await
                 .map_err(|e| format!("Failed to fetch Copilot usage: {e}"))?,
         };
-        let premium = &usage.quota_snapshots.premium_interactions;
-        let used = premium.entitlement - premium.remaining;
+        let premium = usage.quota_snapshots.premium_interactions.as_ref();
+        let remaining = premium.and_then(|p| p.remaining);
+        let total = premium.and_then(|p| p.entitlement);
+        let used = total
+            .zip(remaining)
+            .map(|(total, remaining)| (total - remaining).max(0.0));
 
         return Ok(crate::provider::UsageResult {
             success: true,
             data: Some(vec![crate::provider::UsageData {
                 plan_name: Some(usage.copilot_plan),
-                remaining: Some(premium.remaining as f64),
-                total: Some(premium.entitlement as f64),
-                used: Some(used as f64),
+                remaining,
+                total,
+                used,
                 unit: Some(COPILOT_UNIT_PREMIUM.to_string()),
                 is_valid: Some(true),
                 invalid_message: None,

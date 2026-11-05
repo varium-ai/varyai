@@ -594,6 +594,23 @@ html:has(.vary-workspace) .tray-profile-menu {
   cursor: default;
   opacity: 0.7;
 }
+.mp-agent-placeholder > span {
+  height: 12px;
+  border-radius: 4px;
+  background: var(--mp-faint);
+  opacity: 0.2;
+}
+.mp-agent-placeholder > .mp-agent-placeholder-icon {
+  width: 32px;
+  height: 32px;
+}
+.mp-agent-placeholder-name {
+  width: 112px;
+}
+.mp-agent-placeholder-control {
+  width: min(28%, 200px);
+  margin-left: auto;
+}
 .mp-agent-status {
   display: flex;
   align-items: center;
@@ -613,6 +630,20 @@ html:has(.vary-workspace) .tray-profile-menu {
 }
 .mp-agent-status.wait > .mp-agent-dot {
   background: var(--mp-amber);
+}
+.mp-agent-status.checking > .mp-agent-dot {
+  background: var(--mp-muted);
+  animation: mp-agent-checking 1.4s ease-in-out infinite;
+}
+@keyframes mp-agent-checking {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mp-agent-status.checking > .mp-agent-dot {
+    animation: none;
+  }
 }
 .mp-agent-status.bad {
   color: var(--mp-red);

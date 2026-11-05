@@ -41,8 +41,59 @@
 }
 .vary-providers .pv-head {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
   margin: 0 0 12px;
+}
+.vary-providers .pv-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: auto;
+  padding-left: 24px;
+  color: var(--mp-fg-2);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+}
+.vary-providers .pv-select-all input,
+.vary-providers .pv-select-check {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--mp-accent);
+  cursor: pointer;
+}
+.vary-providers .pv-row .mp-sortable-handle:disabled {
+  display: none;
+}
+.vary-providers .pv-manage,
+.vary-providers .pv-batch-delete {
+  flex: none;
+  height: 30px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--mp-fg-2);
+  font-size: 13px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.vary-providers .pv-manage:hover:not(:disabled) {
+  color: var(--mp-fg);
+}
+.vary-providers .pv-batch-delete {
+  color: var(--mp-red);
+}
+.vary-providers .pv-batch-delete:hover:not(:disabled) {
+  filter: brightness(0.9);
+}
+.vary-providers .pv-manage:disabled,
+.vary-providers .pv-batch-delete:disabled {
+  color: var(--mp-faint);
 }
 .vary-providers input.pv-query {
   width: 220px;
@@ -214,6 +265,30 @@
 }
 .vary-providers .pv-key.imported::before {
   background: var(--mp-faint);
+}
+.vary-providers .pv-key:has(+ .pv-reauth) {
+  width: auto;
+}
+.vary-providers .pv-reauth {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  height: 22px;
+  margin-left: -4px;
+  padding: 0 8px;
+  border: 1px solid var(--mp-line);
+  border-radius: 6px;
+  background: var(--mp-card);
+  color: var(--mp-fg);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.vary-providers .pv-reauth:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--mp-accent) 45%, var(--mp-line));
+  background: var(--mp-hover);
+  color: var(--mp-accent);
 }
 .vary-providers .pv-chevron {
   flex: none;
@@ -666,7 +741,11 @@
     grid-row: 1;
   }
   .vary-providers input.pv-query {
-    width: 100%;
+    flex: 1;
+    min-width: 140px;
+  }
+  .vary-providers .pv-select-all {
+    padding-left: 20px;
   }
   .vary-providers .pv-row {
     --mp-sortable-handle-left: 4px;
@@ -684,6 +763,9 @@
     height: 18px;
     margin: 0;
     padding: 0;
+  }
+  .vary-providers .pv-reauth {
+    margin-left: 0;
   }
   .vary-providers .pv-name {
     flex-wrap: wrap;
@@ -1577,4 +1659,151 @@
 
 .pv-stack > .pv-subscription-action {
   align-self: flex-start;
+}
+
+.pv-provider-dialog .cx-plan.cx-reauth {
+  color: var(--mp-amber, #b45309);
+}
+
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing {
+  display: flex;
+  gap: 14px;
+  padding: 16px;
+  border-top: 1px solid var(--mp-line, #e1e2e8);
+  background: var(--mp-card-2, #f8f8fa);
+  font-size: 12px;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-spinner {
+  flex: none;
+  margin-top: 2px;
+  color: var(--mp-muted, #898a94);
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-content {
+  flex: 1;
+  min-width: 0;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-head,
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-url,
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-callback {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-head {
+  justify-content: space-between;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-head b {
+  font-weight: 600;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-note {
+  color: var(--mp-muted, #898a94);
+  line-height: 1.6;
+  margin: 5px 0 10px;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-url input {
+  font-family: ui-monospace, monospace;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin: 10px 0;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-proxy {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-proxy-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-proxy-control > svg {
+  position: absolute;
+  right: 4px;
+  color: var(--mp-muted);
+  pointer-events: none;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-proxy select {
+  -webkit-appearance: none;
+  appearance: none;
+  width: auto;
+  height: 24px;
+  max-width: 135px;
+  padding: 2px 20px 2px 5px;
+  background: transparent;
+  background-image: none;
+  border: 0;
+  border-radius: 5px;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  line-height: 20px;
+  cursor: pointer;
+  transition: background-color 120ms;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-proxy select:hover {
+  background-color: var(--mp-hover);
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-proxy select:focus-visible {
+  outline: 2px solid var(--mp-accent);
+  outline-offset: 2px;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-callback input {
+  min-width: 0;
+  flex: 1;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-callback button {
+  flex: none;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-code {
+  display: block;
+  font-size: 17px;
+  margin: 8px 0;
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing button:disabled {
+  opacity: 0.5;
+}
+
+.pv-sheet .cx-signing {
+  border: 1px solid var(--mp-line);
+  border-radius: 10px;
+  margin-top: 14px;
+  color: var(--mp-fg);
+}
+.pv-sheet .cx-signing button {
+  font-size: inherit;
+}
+.pv-sheet .cx-signing .mp-primary {
+  background: var(--mp-accent);
+  color: #fff;
+}
+.pv-sheet .cx-signing input {
+  height: 30px;
+  border-radius: 7px;
+  font-size: 12px;
+  background: var(--mp-card);
+}
+.pv-sheet .pv-tile.on {
+  background: var(--mp-pill);
+  color: var(--mp-accent);
+}
+.pv-sheet .pv-signed-in-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--mp-green);
+}
+:is(.pv-provider-dialog, .pv-sheet) .cx-signing-code {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }

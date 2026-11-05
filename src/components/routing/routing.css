@@ -2107,6 +2107,17 @@
   fill: var(--rt-agent, var(--rt-accent));
   filter: drop-shadow(0 0 3px var(--rt-agent, var(--rt-accent)));
 }
+.vary-routing .rt-packet-count rect {
+  fill: var(--rt-card);
+  stroke: var(--rt-agent, var(--rt-accent));
+  stroke-width: 1;
+}
+.vary-routing .rt-packet-count text {
+  fill: var(--rt-agent, var(--rt-accent));
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
 .vary-routing .rt-packet.back .pkt {
   fill: var(--rt-card);
   stroke: var(--rt-agent, var(--rt-accent));

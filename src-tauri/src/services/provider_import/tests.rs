@@ -1,6 +1,34 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn parity_source_limits_are_never_silently_dropped() -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, paths) = fixture()?;
+    for limit in [
+        json!({"keySpendCaps":{"0123456789":{"usd":1,"period":"month"}}}),
+        json!({"maxRPM":1}),
+        json!({"maxConcurrency":1}),
+        json!({"queueLimit":2}),
+        json!({"queueWait":1}),
+        json!({"maxAccounts":1}),
+        json!({"accountWeights":{"synthetic":2}}),
+        json!({"accountCaps":{"synthetic":1}}),
+        json!({"accountWindowCaps":{"synthetic":{"week":1}}}),
+        json!({"keyWeight":2}),
+        json!({"keys":[{"key":"synthetic-backup","weight":2}]}),
+    ] {
+        let mut provider = json!({"id":"synthetic","chat":"https://synthetic.invalid/v1","key":"synthetic-only","models":["synthetic"]});
+        provider
+            .as_object_mut()
+            .ok_or("fixture")?
+            .extend(limit.as_object().ok_or("fixture")?.clone());
+        write(&paths.provider_backup, json!({"providers":[provider]}))?;
+        let candidates = readers::provider_backup(&paths.provider_backup)?;
+        assert_eq!(candidates[0].skip.as_deref(), Some("unsupported"));
+    }
+    Ok(())
+}
+
 fn fixture() -> Result<(tempfile::TempDir, ImportPaths), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let paths = ImportPaths::at(dir.path());
@@ -784,7 +812,7 @@ fn provider_import_excludes_takeover_markers_across_native_and_saved_clients(
     std::fs::create_dir_all(paths.codex.parent().ok_or("parent")?)?;
     std::fs::write(
         &paths.codex,
-        "[model_providers.varyai-routing]\nbase_url='http://127.0.0.1:43128/v1'\nexperimental_bearer_token='fixture-key'\n",
+        "[model_providers.varyai]\nbase_url='http://127.0.0.1:43128/v1'\nexperimental_bearer_token='fixture-key'\n",
     )?;
     std::fs::create_dir_all(paths.cc_switch.parent().ok_or("parent")?)?;
     let conn = rusqlite::Connection::open(&paths.cc_switch)?;
@@ -931,7 +959,7 @@ async fn provider_backup_imports_saved_reasoning_preferences_into_shared_agent_c
     let models = crate::services::agent_connections::models(&menu);
     let exact = models
         .iter()
-        .find(|model| model.name == "Custom · Synthetic · VaryAI")
+        .find(|model| model.name == "Custom · Synthetic")
         .ok_or("missing imported model")?;
     assert_eq!(
         crate::services::agent_connections::pi_model(exact)["thinkingLevelMap"]["max"],

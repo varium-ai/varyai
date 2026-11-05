@@ -1,0 +1,207 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
+import { RefreshCw } from "lucide-react";
+import {
+  nativeSubscriptionApi,
+  type NativeSubscriptionProvider,
+} from "@/lib/api/nativeSubscription";
+import { copilotGetUsageForAccount } from "@/lib/api/copilot";
+import { subscriptionApi } from "@/lib/api/subscription";
+import type { SubscriptionQuota, QuotaTier } from "@/types/subscription";
+
+type Provider = NativeSubscriptionProvider | "github_copilot" | "xai_oauth";
+type Snapshot = {
+  quota?: Pick<SubscriptionQuota, "credentialStatus" | "success" | "tiers">;
+  failed: boolean;
+};
+
+export function SubscriptionAccountQuota({
+  provider,
+  id,
+  login,
+  ready,
+  disabled,
+}: {
+  provider: Provider;
+  id: string;
+  login: string;
+  ready: boolean;
+  disabled: boolean;
+}) {
+  const { t, i18n } = useTranslation();
+  const client = useQueryClient();
+  const queryKey = ["subscription-account-quota", provider, id];
+  const query = useQuery({
+    queryKey,
+    enabled: ready && provider !== "chatgpt_api",
+    staleTime: 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    queryFn: async (): Promise<Snapshot> => {
+      const previous = client.getQueryData<Snapshot>(queryKey);
+      const good = previous?.quota?.success ? previous.quota : undefined;
+      try {
+        let quota: Snapshot["quota"];
+        if (provider === "github_copilot") {
+          const usage = await copilotGetUsageForAccount(id);
+          const tiers: QuotaTier[] = Object.entries(
+            usage.quota_snapshots,
+          ).flatMap(([name, detail]) => {
+            if (!detail) return [];
+            const exhaustedPool =
+              name === "premium_interactions" && detail.has_quota === false;
+            const percent = detail.percent_remaining;
+            if (
+              !exhaustedPool &&
+              (detail.unlimited ||
+                typeof percent !== "number" ||
+                !Number.isFinite(percent))
+            )
+              return [];
+            return [
+              {
+                name,
+                utilization: exhaustedPool
+                  ? 100
+                  : Math.max(0, Math.min(100, 100 - (percent as number))),
+                resetsAt: usage.quota_reset_date || null,
+              },
+            ];
+          });
+          quota = { credentialStatus: "valid", success: true, tiers };
+        } else {
+          const value =
+            provider === "xai_oauth"
+              ? await subscriptionApi.getXaiOauthQuota(id)
+              : await nativeSubscriptionApi.quota(provider, id);
+          quota = {
+            credentialStatus: value.credentialStatus,
+            success: value.success,
+            tiers: value.tiers,
+          };
+        }
+        if (quota.credentialStatus === "expired") {
+          void client.invalidateQueries({
+            queryKey: ["native-subscription-accounts", provider],
+          });
+          void client.invalidateQueries({
+            queryKey: ["managed-auth-status", provider],
+          });
+          void client.invalidateQueries({ queryKey: ["routing-upstreams"] });
+        }
+        return {
+          quota:
+            !quota.success && quota.credentialStatus === "valid"
+              ? (good ?? quota)
+              : quota,
+          failed: !quota.success,
+        };
+      } catch {
+        void client.invalidateQueries({
+          queryKey: ["managed-auth-status", provider],
+        });
+        return { quota: good, failed: true };
+      }
+    },
+  });
+  const quota = query.data?.quota;
+  const tiers =
+    ready && quota?.credentialStatus === "valid" && quota.success
+      ? quota.tiers.filter((tier) => Number.isFinite(tier.utilization))
+      : [];
+  const tierLabel = (name: string) => {
+    const known: Record<string, string> = {
+      premium_interactions: t("usageScript.premiumRequests"),
+      chat: t("subscriptionProvider.chatQuota"),
+      completions: t("subscriptionProvider.completionQuota"),
+    };
+    return (
+      known[name] ??
+      t(
+        `subscription.${name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())}`,
+        { defaultValue: name },
+      )
+    );
+  };
+  const status =
+    !ready || quota?.credentialStatus === "expired"
+      ? "quotaLoginRequired"
+      : quota?.credentialStatus === "not_found"
+        ? "quotaCredentialsMissing"
+        : quota?.credentialStatus === "parse_error"
+          ? "quotaCredentialsInvalid"
+          : !query.data
+            ? "quotaLoading"
+            : query.data.failed
+              ? tiers.length
+                ? "quotaStale"
+                : "quotaFailed"
+              : tiers.length
+                ? null
+                : "quotaEmpty";
+  return (
+    <div
+      className="cx-quota"
+      role="status"
+      aria-label={`${t("subscriptionProvider.allowance")} ${login}`}
+      aria-busy={query.isFetching}
+    >
+      {provider === "chatgpt_api" ? (
+        <span>
+          {t(
+            ready
+              ? "subscriptionProvider.quotaUnavailable"
+              : "codexProvider.quotaLoginRequired",
+          )}
+        </span>
+      ) : (
+        <>
+          <button
+            type="button"
+            aria-label={`${t("codexProvider.refreshQuota")} ${login}`}
+            disabled={disabled || !ready || query.isFetching}
+            onClick={() => void query.refetch({ cancelRefetch: false })}
+          >
+            <RefreshCw
+              size={12}
+              className={
+                query.isFetching
+                  ? "animate-spin motion-reduce:animate-none"
+                  : undefined
+              }
+            />
+          </button>
+          {tiers.map((tier, index) => (
+            <div key={`${tier.name}-${index}`}>
+              <span>{tierLabel(tier.name)}</span>
+              <span className="cx-meter">
+                <i
+                  style={{
+                    width: `${Math.max(0, Math.min(100, 100 - tier.utilization))}%`,
+                  }}
+                />
+              </span>
+              <b>
+                {t("codexProvider.remaining", {
+                  n: Math.max(
+                    0,
+                    Math.min(100, Math.round(100 - tier.utilization)),
+                  ),
+                })}
+              </b>
+              {tier.resetsAt && Number.isFinite(Date.parse(tier.resetsAt)) && (
+                <span>
+                  {t("codexProvider.resets", {
+                    time: new Date(tier.resetsAt).toLocaleString(i18n.language),
+                  })}
+                </span>
+              )}
+            </div>
+          ))}
+          {status && <span>{t(`codexProvider.${status}`)}</span>}
+        </>
+      )}
+    </div>
+  );
+}

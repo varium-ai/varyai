@@ -16,14 +16,17 @@ fn codex_connection_status(
 ) -> Status {
     Status {
         app: "codex".into(),
-        enabled: status.enabled
-            || (status.recovery_pending && !status.orphaned_config)
-            || desired.is_some(),
+        // Desired intent and recovery receipts are not proof of live ownership.
+        // A stopped gateway keeps its switch on only while its configuration
+        // still belongs to VaryAI; an external takeover must show it as off.
+        enabled: status.configuration_owned && status.configuration_issue.is_none(),
         configured: status.enabled && !status.recovery_pending,
         recovery_pending: status.recovery_pending || (desired.is_some() && !status.enabled),
         recovery_reason: if status.orphaned_config {
             Some(RecoveryReason::Orphaned)
-        } else if status.recovery_pending && !status.configuration_owned {
+        } else if status.recovery_pending
+            && (!status.configuration_owned || status.configuration_issue.is_some())
+        {
             Some(RecoveryReason::ConfigurationChanged)
         } else if !status.enabled && (status.recovery_pending || desired.is_some()) {
             Some(RecoveryReason::ConnectionInactive)
@@ -33,6 +36,8 @@ fn codex_connection_status(
         model: selected.or(desired.flatten()),
         restart_required: status.enabled,
         desktop_state: None,
+        native_compatibility: Some(status.native_compatibility),
+        configuration_issue: status.configuration_issue,
     }
 }
 
@@ -43,6 +48,86 @@ pub(crate) async fn get_agent_native_models(
         .await
         .map_err(|_| FAILED.to_owned())
 }
+/// Read one Agent without waiting for other Agents' configuration or repair work.
+#[tauri::command]
+pub(crate) async fn get_agent_connection(
+    state: State<'_, AppState>,
+    app: String,
+) -> Result<Status, String> {
+    if app == "doubaowork" {
+        let (active, waiting) = state.proxy_service.doubaowork_connection_status();
+        return Ok(Status {
+            app,
+            enabled: active || waiting,
+            configured: active,
+            recovery_pending: false,
+            recovery_reason: None,
+            model: None,
+            restart_required: waiting,
+            desktop_state: None,
+            native_compatibility: None,
+            configuration_issue: None,
+        });
+    }
+    if app == "codex" {
+        state.proxy_service.sync_codex_configuration().await;
+        let client = state.proxy_service.intent_client.clone();
+        let manager = state.proxy_service.agent_connections.clone();
+        return tokio::task::spawn_blocking(move || {
+            Ok(codex_connection_status(
+                client.status()?,
+                client.selected_model()?,
+                manager.codex_intent()?,
+            ))
+        })
+        .await
+        .map_err(|_| FAILED)?;
+    }
+    if app != "trae" && !agent_connections::APPS.contains(&app.as_str()) {
+        return Err(FAILED.into());
+    }
+    let manager = state.proxy_service.agent_connections.clone();
+    let app_id = app.clone();
+    let mut status = tokio::task::spawn_blocking(move || {
+        if app_id == "trae" {
+            manager.bridge_status()
+        } else {
+            manager.status(&app_id)
+        }
+    })
+    .await
+    .map_err(|_| FAILED)??;
+    if status.configured && !state.proxy_service.intent_runtime.connections.active(&app) {
+        if app == "trae" {
+            state.proxy_service.sync_shared_trae(false).await;
+        } else {
+            state.proxy_service.sync_shared_agent_catalog(&app).await;
+        }
+    }
+    let active = state.proxy_service.intent_runtime.connections.active(&app);
+    if app == "trae" {
+        status.configured &= active;
+        if status.enabled && !status.configured {
+            status.recovery_pending = true;
+            status.recovery_reason = Some(RecoveryReason::BridgePending);
+        }
+    } else if status.configured && !active {
+        status.configured = false;
+        status.recovery_pending = true;
+        status.recovery_reason = Some(RecoveryReason::ConnectionInactive);
+    }
+    Ok(status)
+}
+
+#[tauri::command]
+pub(crate) async fn get_agent_native_model(
+    app: String,
+) -> Result<agent_connections::native::NativeModel, String> {
+    tokio::task::spawn_blocking(move || agent_connections::native::get(&app))
+        .await
+        .map_err(|_| FAILED)?
+}
+
 #[tauri::command]
 pub(crate) async fn list_agent_connections(
     state: State<'_, AppState>,
@@ -57,6 +142,7 @@ pub(crate) async fn list_agent_connections(
     })
     .await
     .map_err(|_| FAILED)??;
+    state.proxy_service.sync_codex_configuration().await;
     if statuses.iter().any(|status| {
         status.configured
             && !state
@@ -115,6 +201,8 @@ pub(crate) async fn list_agent_connections(
         model: None,
         restart_required: audit_waiting,
         desktop_state: None,
+        native_compatibility: None,
+        configuration_issue: None,
     });
     Ok(statuses)
 }
@@ -966,6 +1054,58 @@ mod tests {
                     fs::read(&profile_path)? == sealed_profile,
                     "refresh must retain Desktop's encrypted key without rewriting its file"
                 );
+            }
+            // A rejected plaintext credential in our gateway profile is repaired on sync.
+            let mut invalid_key: Value = crate::config::read_json_file(&profile_path)?;
+            invalid_key["inferenceGatewayApiKey"] = json!("synthetic-retired-local");
+            write_json_file(&profile_path, &invalid_key)?;
+            assert!(!manager.status("claude-desktop")?.configured);
+            let repaired = manager
+                .refresh("claude-desktop", &menu, &format!("http://127.0.0.1:{port}"))?
+                .ok_or("missing repaired receipt")?;
+            let repaired_profile: Value = crate::config::read_json_file(&profile_path)?;
+            assert!(repaired_profile["inferenceGatewayApiKey"].as_str() == Some(&receipt.token));
+            assert!(
+                repaired.token == receipt.token,
+                "repair must preserve the active connection"
+            );
+            assert_eq!(repaired_profile["customSetting"], true);
+            assert!(manager.status("claude-desktop")?.configured);
+            assert_eq!(
+                client
+                    .get(&endpoint)
+                    .bearer_auth("synthetic-retired-local")
+                    .send()
+                    .await?
+                    .status(),
+                reqwest::StatusCode::UNAUTHORIZED,
+                "credential repair must not accept the retired key"
+            );
+            assert!(client
+                .get(&endpoint)
+                .bearer_auth(&repaired.token)
+                .send()
+                .await?
+                .status()
+                .is_success());
+            for field in [
+                "inferenceGatewayBaseUrl",
+                "inferenceProvider",
+                "inferenceGatewayAuthScheme",
+            ] {
+                let mut external = repaired_profile.clone();
+                external[field] = json!("synthetic-external");
+                write_json_file(&profile_path, &external)?;
+                let before = fs::read(&profile_path)?;
+                assert!(matches!(
+                    manager.refresh("claude-desktop", &menu, &format!("http://127.0.0.1:{port}")),
+                    Err(error) if error == agent_connections::CONFLICT
+                ));
+                assert!(
+                    fs::read(&profile_path)? == before,
+                    "credential repair must not overwrite an external gateway change"
+                );
+                write_json_file(&profile_path, &repaired_profile)?;
             }
             if cycle == 0 {
                 let ordered = agent_connections::models(&menu)

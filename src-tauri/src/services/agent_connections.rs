@@ -1,9 +1,12 @@
 //! Agents consume a shared catalog. Receipts own only explicitly changed fields.
 mod bridge;
+mod claude_policy;
 pub(crate) mod desktop;
 pub(crate) mod desktop_config;
 mod document;
 pub(crate) mod native;
+#[cfg(test)]
+mod parity_tests;
 mod projections;
 mod reasoning;
 mod selection;
@@ -42,6 +45,8 @@ pub(crate) const APPS: &[&str] = &[
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Model {
+    pub output_tokens: Option<u64>,
+    pub cost: Option<Value>,
     pub id: String,
     pub name: String,
     pub context_window: Option<u64>,
@@ -69,6 +74,20 @@ pub(crate) fn models(menu: &Menu) -> Vec<Model> {
                 &mut published,
             );
             Some(Model {
+                output_tokens: session
+                    .menu_targets()
+                    .map(|target| target.effort.output_tokens)
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|values| values.into_iter().min()),
+                cost: {
+                    let mut values = session
+                        .menu_targets()
+                        .map(|target| target.effort.cost.as_ref());
+                    let first = values.next().flatten();
+                    first
+                        .filter(|first| values.all(|next| next == Some(*first)))
+                        .cloned()
+                },
                 id: model.alias.clone(),
                 name: model.label.clone(),
                 context_window: metadata.context_window,
@@ -117,10 +136,24 @@ fn working_window(model: &Model) -> Option<u64> {
         .map(|window| model.compact_at.map_or(window, |at| at.min(window)))
 }
 
+fn output_limit(model: &Model) -> Option<u64> {
+    model.output_tokens.map(|tokens| {
+        model
+            .context_window
+            .map_or(tokens, |window| tokens.min(window))
+    })
+}
+
 pub(crate) fn pi_model(model: &Model) -> Value {
     let mut row = json!({"id":model.id,"name":model.name,"api":"openai-completions","input":if model.images { vec!["text", "image"] } else { vec!["text"] },"reasoning":model.reasoning || model.reasoning_levels.iter().any(|level| level != "none")});
     if let Some(context) = model.context_window {
         row["contextWindow"] = json!(context);
+    }
+    if let Some(tokens) = output_limit(model) {
+        row["maxTokens"] = json!(tokens);
+    }
+    if let Some(cost) = &model.cost {
+        row["cost"] = cost.clone();
     }
     if !model.reasoning_levels.is_empty() {
         row["thinkingLevelMap"] =
@@ -144,10 +177,17 @@ pub(crate) fn pi_model(model: &Model) -> Value {
 
 pub(crate) fn opencode_model(model: &Model) -> Value {
     let mut row = json!({"name":model.name});
+    row["modalities"] = json!({"input":if model.images {vec!["text", "image"]} else {vec!["text"]},"output":["text"]});
     row["reasoning"] =
         json!(model.reasoning || model.reasoning_levels.iter().any(|level| level != "none"));
     if let Some(context) = model.context_window {
         row["limit"] = json!({"context":context});
+    }
+    if let Some(tokens) = output_limit(model) {
+        row["limit"]["output"] = json!(tokens);
+    }
+    if let Some(cost) = &model.cost {
+        row["cost"] = json!({"input":cost["input"],"output":cost["output"],"cache_read":cost["cacheRead"],"cache_write":cost["cacheWrite"]});
     }
     if !model.reasoning_levels.is_empty() {
         row["variants"] = json!(model
@@ -169,6 +209,10 @@ pub(crate) struct Status {
     pub model: Option<String>,
     pub restart_required: bool,
     pub desktop_state: Option<desktop::State>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_compatibility: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configuration_issue: Option<super::intent_routing::client::ConfigurationIssue>,
 }
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -204,6 +248,8 @@ pub(crate) struct FileEdit {
     fields: Vec<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     desktop: Option<desktop_config::Kind>,
+    #[serde(default)]
+    desktop_carried: bool,
 }
 fn read(path: &Path) -> Result<Option<String>, String> {
     match fs::symlink_metadata(path) {
@@ -372,10 +418,22 @@ impl FileEdit {
             previous: None,
             fields,
             desktop: None,
+            desktop_carried: false,
         })
     }
     pub(crate) fn for_desktop(mut self, kind: desktop_config::Kind) -> Self {
         self.desktop = Some(kind);
+        self.desktop_carried = matches!(
+            kind,
+            desktop_config::Kind::Mode | desktop_config::Kind::Carry
+        );
+        for field in &mut self.fields {
+            if field.first().is_some_and(|key| key == "mcpServers") && field.len() > 2 {
+                field.truncate(2);
+            }
+        }
+        self.fields.sort();
+        self.fields.dedup();
         self
     }
     fn intact(&self) -> Result<bool, String> {
@@ -508,6 +566,7 @@ impl Manager {
             selected,
             new_token(),
             &self.visibility_for(app)?,
+            None,
         )
     }
     pub fn owns(&self, app: &str) -> bool {
@@ -551,7 +610,7 @@ impl Manager {
             .flatten();
         Ok(Status {
             app: app.into(),
-            enabled: receipt.is_some(),
+            enabled: configured,
             configured,
             recovery_pending: receipt.as_ref().is_some_and(|r| !r.suspended) && !configured,
             recovery_reason: (receipt.as_ref().is_some_and(|r| !r.suspended) && !configured)
@@ -560,6 +619,8 @@ impl Manager {
             restart_required: configured
                 && desktop_state.is_none_or(|state| state == desktop::State::RestartRequired),
             desktop_state,
+            native_compatibility: None,
+            configuration_issue: None,
         })
     }
     pub fn restart_desktop(&self, app: &str) -> Result<(), String> {
@@ -631,8 +692,15 @@ impl Manager {
             for file in old.files.iter().rev() {
                 file.restore()?;
             }
-            let mut next =
-                build_with_token(app, menu, origin, model, old.token.clone(), &visibility)?;
+            let mut next = build_with_token(
+                app,
+                menu,
+                origin,
+                model,
+                old.token.clone(),
+                &visibility,
+                Some(&old),
+            )?;
             desktop_config::restore_settings(&self.root, &mut next)?;
             atomic_write_private(
                 &self.path(app)?,
@@ -644,30 +712,55 @@ impl Manager {
             }
             return Ok(Some(next));
         }
-        if !old.files.iter().all(|file| file.intact().unwrap_or(false)) {
+        if !old.files.iter().all(|file| {
+            if app == "claude-desktop" {
+                desktop_config::refreshable(file).unwrap_or(false)
+            } else {
+                file.intact().unwrap_or(false)
+            }
+        }) {
             return Err(CONFLICT.into());
         }
-        let mut next = build_with_token(app, menu, origin, model, old.token.clone(), &visibility)?;
-        if next.files.len() != old.files.len() {
+        let mut next = build_with_token(
+            app,
+            menu,
+            origin,
+            model,
+            old.token.clone(),
+            &visibility,
+            Some(&old),
+        )?;
+        if next.files.len() != old.files.len()
+            && !(app == "claude-desktop"
+                && old
+                    .files
+                    .iter()
+                    .all(|prior| next.files.iter().any(|file| file.path == prior.path))
+                && next
+                    .files
+                    .iter()
+                    .filter(|file| !old.files.iter().any(|prior| prior.path == file.path))
+                    .all(|file| matches!(file.desktop, Some(desktop_config::Kind::Carry))))
+        {
             return Err(CONFLICT.into());
         }
         if selected.is_none() {
             selection::preserve(&old, &mut next)?;
         }
         let writes = next.files.clone();
-        if writes.iter().all(|file| {
+        let unchanged = writes.iter().all(|file| {
             file.format
                 .parse(file.original.as_deref())
                 .is_ok_and(|original| original == file.installed)
-        }) {
+        });
+        if unchanged {
             next.applied_at_ms = old.applied_at_ms;
         }
         for file in &mut next.files {
-            let prior = old
-                .files
-                .iter()
-                .find(|prior| prior.path == file.path)
-                .ok_or(CONFLICT)?;
+            let prior = old.files.iter().find(|prior| prior.path == file.path);
+            let Some(prior) = prior else {
+                continue;
+            };
             file.original = prior.original.clone();
             file.previous = Some(prior.installed.clone());
             file.fields.extend(prior.fields.iter().cloned());
@@ -681,7 +774,8 @@ impl Manager {
             }
             file.fields = owned;
         }
-        if next.model_map == old.model_map
+        if unchanged
+            && next.model_map == old.model_map
             && next.visible_models == old.visible_models
             && next
                 .files
@@ -733,15 +827,13 @@ impl Manager {
             });
             if has_catalog_array && file.desktop.is_none() {
                 // Keep a changed Harness default while still guarding its model catalog.
-                let restorable = if matches!(file.format, Format::Cordis) {
-                    let mut catalog = file.clone();
-                    catalog
-                        .fields
-                        .retain(|field| field.as_slice() != ["selection"]);
-                    catalog.restorable()?
-                } else {
-                    file.restorable()?
-                };
+                let mut catalog = file.clone();
+                catalog.fields.retain(|field| {
+                    at(&file.installed, field).is_some_and(Value::is_array)
+                        && !(matches!(file.format, Format::Cordis)
+                            && field.as_slice() == ["selection"])
+                });
+                let restorable = catalog.restorable()?;
                 if !restorable {
                     return Err(CONFLICT.into());
                 }
@@ -812,6 +904,7 @@ pub(crate) fn build(
         selected,
         new_token(),
         &ModelVisibility::default(),
+        None,
     )
 }
 fn new_token() -> String {
@@ -828,17 +921,23 @@ fn build_with_token(
     selected: &str,
     token: String,
     visibility: &ModelVisibility,
+    previous: Option<&Receipt>,
 ) -> Result<Receipt, String> {
     let catalog = models(menu);
     if !catalog.iter().any(|m| m.id == selected) {
         return Err(EMPTY.into());
     }
     let base = format!("{origin}/connections/{app}");
+    if app == "claude" {
+        claude_policy::check()?;
+    }
     let mut receipt = Receipt {
         app: app.into(),
         token: token.clone(),
         model: selected.into(),
-        model_map: BTreeMap::new(),
+        model_map: previous
+            .map(|old| old.model_map.clone())
+            .unwrap_or_default(),
         visible_models: None,
         files: vec![],
         suspended: false,
@@ -846,10 +945,19 @@ fn build_with_token(
     };
     match app {
         "claude" => receipt.files.push(FileEdit::prepare(crate::config::get_claude_settings_path(), |value| {
-            for key in ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"] {
+            for key in ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"] {
                 let next = if key == "ANTHROPIC_BASE_URL" { base.as_str() } else if key == "ANTHROPIC_AUTH_TOKEN" { &token } else { selected };
                 put(value, &["env".into(), key.into()], Some(json!(next)))?;
             }
+            for &key in claude_policy::CLOUD_SWITCHES {
+                put(value, &["env".into(), key.into()], Some(json!("0")))?;
+            }
+            put(value, &["env".into(), "ANTHROPIC_MODEL".into()], None)?;
+            put(value, &["model".into()], Some(json!(selected)))?;
+            let mut options = value.pointer("/modelPicker/options").and_then(Value::as_array).cloned().unwrap_or_default();
+            options.retain(|row| !row["model"].as_str().is_some_and(|id| id.starts_with("vary-provider/") || id.starts_with("vary-auto/")));
+            options.extend(catalog.iter().map(|model| json!({"model":model.id,"label":model.name,"description":"via VaryAI"})));
+            put(value, &["modelPicker".into(), "options".into()], Some(json!(options)))?;
             let context = catalog.iter().find(|m| m.id == selected).and_then(working_window);
             put(value, &["env".into(), "CLAUDE_CODE_MAX_CONTEXT_TOKENS".into()], context.map(|n| json!(n.to_string())))?;
             let capabilities = reasoning::claude_capabilities(&catalog);
@@ -879,17 +987,8 @@ fn build_with_token(
             })?);
         }
         "workbuddy" => {
-            let mut named_models = Vec::new();
-            for model in &catalog {
-                let mut name = model.name.clone();
-                let mut duplicate = 2;
-                while receipt.model_map.contains_key(&name) {
-                    name = format!("{} ({duplicate})", model.name);
-                    duplicate += 1;
-                }
-                receipt.model_map.insert(name.clone(), model.id.clone());
-                named_models.push((name, model));
-            }
+            let (named, _) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
+            let named_models = named.iter().map(|model| (model.id.clone(), model)).collect::<Vec<_>>();
             receipt.files.push(FileEdit::prepare_document(crate::workbuddy_config::get_workbuddy_config_path(), true, |value| {
             let array = value.is_array();
             if array { *value = json!({"models":value.take()}); }
@@ -914,7 +1013,7 @@ fn build_with_token(
             Ok(())
         })?);
         },
-        "opencode" => receipt.files.push(FileEdit::prepare(crate::opencode_config::get_opencode_config_path(), |value| {
+        "opencode" => receipt.files.push(FileEdit::prepare_format(crate::opencode_config::get_opencode_projection_path(), Format::Json5, |value| {
             let models = catalog.iter().map(|m| (m.id.clone(), opencode_model(m))).collect::<serde_json::Map<_,_>>();
             put(value, &["provider".into(), "varyai".into()], Some(json!({"npm":"@ai-sdk/openai-compatible","name":"Vary AI","options":{"baseURL":format!("{base}/v1"),"apiKey":token},"models":models})))?;
             put(value, &["model".into()], Some(json!(format!("varyai/{selected}"))))
@@ -922,7 +1021,9 @@ fn build_with_token(
         "claude-desktop" => {
             let mut visible = catalog.iter().filter(|m| visibility.visible(&m.id)).cloned().collect::<Vec<_>>();
             visibility.apply_order(&mut visible);
-            let (files, _) = crate::claude_desktop_config::shared_catalog_edits(&base, &token, &visible)?;
+            let (mut files, _) = crate::claude_desktop_config::shared_catalog_edits(&base, &token, previous.filter(|old| !old.suspended).map(|old| old.token.as_str()), &visible)?;
+            desktop_config::seed_tool_search(&mut files, previous);
+            desktop_config::preserve_carried(&mut files, previous)?;
             receipt.files = files;
             receipt.visible_models = Some(visible.iter().map(|m| m.id.clone()).collect());
             // Keep hidden models addressable by existing Desktop conversations.

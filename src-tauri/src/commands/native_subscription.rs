@@ -9,8 +9,10 @@ pub(crate) async fn native_subscription_accounts(
 #[tauri::command]
 pub(crate) async fn native_subscription_start(
     provider: SubscriptionProvider,
+    target_account_id: Option<String>,
+    proxy: Option<String>,
 ) -> Result<accounts::Flow, String> {
-    accounts::start(provider).await
+    accounts::start(provider, target_account_id, proxy).await
 }
 #[tauri::command]
 pub(crate) async fn native_subscription_poll(id: String) -> Result<accounts::Flow, String> {
@@ -19,6 +21,10 @@ pub(crate) async fn native_subscription_poll(id: String) -> Result<accounts::Flo
 #[tauri::command]
 pub(crate) async fn native_subscription_cancel(id: String) {
     accounts::cancel(&id).await
+}
+#[tauri::command]
+pub(crate) async fn native_subscription_callback(id: String, url: String) -> Result<(), String> {
+    accounts::submit_callback(&id, &url).await
 }
 #[tauri::command]
 pub(crate) async fn native_subscription_import(
@@ -48,4 +54,15 @@ pub(crate) async fn native_subscription_models(
     id: String,
 ) -> Result<Vec<serde_json::Value>, String> {
     accounts::models(provider, &id).await
+}
+
+#[tauri::command]
+pub(crate) async fn native_subscription_quota(
+    provider: SubscriptionProvider,
+    id: String,
+) -> Result<crate::services::subscription::SubscriptionQuota, String> {
+    let mut quota = accounts::quota(provider, &id).await?;
+    quota.error = None;
+    quota.credential_message = None;
+    Ok(quota)
 }

@@ -3,6 +3,7 @@
 ## Use the application
 
 - [Usage guide](usage.md)
+- [First-run connection guide](guides/onboarding.md)
 - [Agent updates and background progress](guides/agent-updates.md)
 - [Provider setup and local routing](guides/provider-routing.md)
 - [Subscription accounts and provider execution](guides/subscription-providers.md)

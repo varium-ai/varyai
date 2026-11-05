@@ -1588,8 +1588,15 @@ fn codex_catalog_model_entry(
     entry_obj.insert("context_window".to_string(), json!(context_window));
     entry_obj.insert("max_context_window".to_string(), json!(context_window));
     entry_obj.insert("priority".to_string(), json!(1000 + priority));
-    entry_obj.insert("additional_speed_tiers".to_string(), json!([]));
-    entry_obj.insert("service_tiers".to_string(), json!([]));
+    let tiers = crate::services::intent_routing::speed::for_model(
+        spec.service_tiers.as_deref(),
+        &spec.model,
+    );
+    let mut speeds = json!({});
+    crate::services::intent_routing::speed::advertise(&mut speeds, &tiers);
+    if let Some(speeds) = speeds.as_object() {
+        entry_obj.extend(speeds.clone());
+    }
     entry_obj.insert("availability_nux".to_string(), Value::Null);
     entry_obj.insert("upgrade".to_string(), Value::Null);
 
@@ -1689,6 +1696,7 @@ struct CodexCatalogModelSpec {
     /// template default is kept if it is still in the list, otherwise the last
     /// (highest) declared level wins.
     default_reasoning_level: Option<String>,
+    service_tiers: Option<Vec<crate::services::intent_routing::speed::Tier>>,
 }
 
 fn codex_catalog_model_specs(settings: &Value) -> Vec<CodexCatalogModelSpec> {
@@ -1778,6 +1786,7 @@ fn codex_catalog_model_specs(settings: &Value) -> Vec<CodexCatalogModelSpec> {
             .map(str::to_string);
 
         specs.push(CodexCatalogModelSpec {
+            service_tiers: crate::services::intent_routing::speed::parse(model_config),
             model: model.to_string(),
             display_name,
             context_window,
@@ -2176,6 +2185,17 @@ fn codex_vendor_catalog_model_entry(
         .filter(|text| !text.is_empty())
     {
         entry_obj.insert("base_instructions".to_string(), json!(base_instructions));
+    }
+
+    if let Some(tiers) = &spec.service_tiers {
+        let mut speeds = json!({});
+        crate::services::intent_routing::speed::advertise(&mut speeds, tiers);
+        if let Some(speeds) = speeds.as_object() {
+            entry_obj.extend(speeds.clone());
+        }
+    } else if matched.is_none() {
+        entry_obj.remove("service_tiers");
+        entry_obj.remove("additional_speed_tiers");
     }
 
     // Per-model reasoning levels win over the official vendor entry too.
@@ -6751,6 +6771,7 @@ base_url = "https://production.api/v1"
         let mut template = json!({ "slug": "gpt-5.5" });
         fill_template_fields_from_static(&mut template);
         let specs = vec![CodexCatalogModelSpec {
+            service_tiers: None,
             model: "k3".to_string(),
             display_name: Some("Kimi K3".to_string()),
             context_window: Some(262_144),
@@ -6845,6 +6866,35 @@ base_url = "https://production.api/v1"
             assert_eq!(catalog["models"][0]["priority"], 1000);
             assert_eq!(catalog["models"][1]["priority"], 1001);
         }
+    }
+
+    #[test]
+    fn speed_tiers_in_generated_catalog_follow_the_model_not_the_template() {
+        let settings = json!({"modelCatalog":{"models":[
+            {"model":"relay/gpt-6.1-sol"},
+            {"model":"synthetic-model", "service_tiers":[
+                {"id":"priority","name":"Fast","description":"Higher usage"}
+            ]},
+            {"model":"gpt-explicitly-disabled", "service_tiers":[]},
+            {"model":"synthetic-ordinary"}
+        ]}});
+        let catalog = codex_model_catalog_from_specs(
+            &codex_catalog_model_specs(&settings),
+            &json!({"service_tiers":[{"id":"ultrafast","name":"Ultrafast"}], "additional_speed_tiers":["ultrafast"]}),
+            CodexCatalogToolProfile::NativeResponses,
+            128_000,
+        );
+        assert_eq!(catalog["models"][0]["service_tiers"][0]["id"], "priority");
+        assert_eq!(
+            catalog["models"][0]["additional_speed_tiers"],
+            json!(["fast"])
+        );
+        assert_eq!(
+            catalog["models"][1]["service_tiers"][0]["description"],
+            "Higher usage"
+        );
+        assert_eq!(catalog["models"][2]["service_tiers"], json!([]));
+        assert_eq!(catalog["models"][3]["service_tiers"], json!([]));
     }
 
     #[test]
@@ -7282,6 +7332,7 @@ base_url = "https://production.api/v1"
         });
         let specs = vec![
             CodexCatalogModelSpec {
+                service_tiers: None,
                 model: "gpt-5.4".to_string(),
                 display_name: Some("GPT 5.4".to_string()),
                 context_window: Some(128_000),
@@ -7292,6 +7343,7 @@ base_url = "https://production.api/v1"
                 default_reasoning_level: None,
             },
             CodexCatalogModelSpec {
+                service_tiers: None,
                 model: "qwen/qwen3-coder-plus".to_string(),
                 display_name: Some("Qwen3 Coder Plus".to_string()),
                 context_window: Some(128_000),
@@ -7302,6 +7354,7 @@ base_url = "https://production.api/v1"
                 default_reasoning_level: None,
             },
             CodexCatalogModelSpec {
+                service_tiers: None,
                 model: "glm-5.2v".to_string(),
                 display_name: Some("GLM 5.2V".to_string()),
                 context_window: Some(128_000),
@@ -7312,6 +7365,7 @@ base_url = "https://production.api/v1"
                 default_reasoning_level: None,
             },
             CodexCatalogModelSpec {
+                service_tiers: None,
                 model: "deepseek-v4-flash".to_string(),
                 display_name: Some("Explicit Visual Override".to_string()),
                 context_window: Some(128_000),
@@ -7322,6 +7376,7 @@ base_url = "https://production.api/v1"
                 default_reasoning_level: None,
             },
             CodexCatalogModelSpec {
+                service_tiers: None,
                 model: "custom-text-alias".to_string(),
                 display_name: Some("Explicit Text Override".to_string()),
                 context_window: Some(128_000),
@@ -7633,6 +7688,7 @@ wire_api = "responses"
         // freeform apply_patch tool (the proxy rewrites custom<->function).
         let template = load_codex_native_responses_template();
         let specs = vec![CodexCatalogModelSpec {
+            service_tiers: None,
             model: "x".to_string(),
             display_name: Some("x".to_string()),
             context_window: Some(128_000),

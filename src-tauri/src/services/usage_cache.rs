@@ -129,6 +129,7 @@ mod tests {
             success: true,
             tiers: vec![],
             extra_usage: None,
+            codex: None,
             error: None,
             queried_at: Some(0),
         }

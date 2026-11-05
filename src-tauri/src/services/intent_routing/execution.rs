@@ -98,13 +98,20 @@ async fn prepare_inner(
             .get(&target.provider_id)
             .filter(|p| eligible_provider(p, true))
             .ok_or("intentRouting.providerUnavailable")?;
-        Some(crate::services::routing_upstreams::first_enabled(provider)?)
+        Some(
+            crate::services::routing_upstreams::variants(provider)
+                .into_iter()
+                .find(|variant| eligible_provider(variant, true))
+                .ok_or("intentRouting.providerUnavailable")?,
+        )
     } else {
         None
     };
     let mut targets: Vec<Target> = Vec::new();
     for member in &group.members {
-        if !providers.contains_key(&member.provider_id) && !group.includes_in_menu(member) {
+        if !providers.contains_key(&member.provider_id)
+            && (group.routing != super::RoutingStrategy::Manual || !group.includes_in_menu(member))
+        {
             continue;
         }
         let source = providers
@@ -113,13 +120,15 @@ async fn prepare_inner(
         if !crate::services::codex_provider::serves(source, &member.model_id)
             || !crate::services::routing_upstreams::serves(source, &member.model_id)
         {
-            if group.includes_in_menu(member) {
+            if group.includes_in_menu(member) && group.routing == super::RoutingStrategy::Manual {
                 return Err("intentRouting.providerUnavailable".into());
             }
             continue;
         }
         let before = targets.len();
         for provider in crate::services::routing_upstreams::variants(source) {
+            let provider =
+                crate::services::subscription_provider::for_model(&provider, &member.model_id)?;
             if enforce_account_models
                 && !crate::services::codex_provider::account_serves(&provider, &member.model_id)
             {
@@ -226,12 +235,19 @@ async fn prepare_inner(
                         .settings_config
                         .get(crate::services::codex_provider::POLICY)
                         .is_some() => {}
+                Err(_) if group.routing != super::RoutingStrategy::Manual => {}
                 Err(error) => return Err(error),
             }
         }
-        if targets.len() == before && group.includes_in_menu(member) {
+        if targets.len() == before
+            && group.includes_in_menu(member)
+            && group.routing == super::RoutingStrategy::Manual
+        {
             return Err("intentRouting.providerUnavailable".into());
         }
+    }
+    if targets.is_empty() {
+        return Err("intentRouting.providerUnavailable".into());
     }
     let client =
         tokio::task::spawn_blocking(crate::proxy::http_client::get_forwarding_without_redirects)
@@ -290,8 +306,10 @@ fn normalized_static_provider(
 pub(super) fn retarget(target: &mut Target, model: &str) -> Result<(), String> {
     target.model = model.into();
     if let Some(provider) = &target.upstream {
-        let (url, _) = static_transport(provider, model)?;
+        let provider = crate::services::subscription_provider::for_model(provider, model)?;
+        let (url, _) = static_transport(&provider, model)?;
         target.url = reqwest::Url::parse(&url).map_err(|_| "intentRouting.providerUnavailable")?;
+        target.upstream = Some(provider);
     }
     Ok(())
 }
@@ -430,6 +448,45 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn copilot_shared_targets_and_retargeting_use_each_models_supported_endpoint(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let record: crate::services::routing_upstreams::RoutingUpstream = serde_json::from_value(
+            serde_json::json!({"schemaVersion":1,"id":"fixture","name":"Fixture","revision":1,"source":{"kind":"subscription","provider":"github_copilot","accountId":"synthetic","mode":"vendor","catalog":[{"model":"responses-only","supported_endpoints":["/responses"]},{"model":"chat-only","supported_endpoints":["/chat/completions"]}]}}),
+        )?;
+        let provider = crate::services::routing_upstreams::resolve_provider(&record)?;
+        let mut group = super::super::tests::fixture();
+        group.members.truncate(1);
+        group.members[0].provider_id = "fixture".into();
+        group.members[0].model_id = "responses-only".into();
+        group.fallback_member_ids.clear();
+        group.rules.clear();
+        group.intent_recognition_enabled = false;
+        let mut session = prepare_with_providers(manager, group, vec![provider]).await?;
+        let target = &mut session.targets[0];
+        assert!(target.url.path().ends_with("/responses"));
+        assert_eq!(
+            target
+                .upstream
+                .as_ref()
+                .and_then(|p| p.meta.as_ref())
+                .and_then(|m| m.api_format.as_deref()),
+            Some("openai_responses")
+        );
+        retarget(target, "chat-only")?;
+        assert!(target.url.path().ends_with("/chat/completions"));
+        assert_eq!(
+            target
+                .upstream
+                .as_ref()
+                .and_then(|p| p.meta.as_ref())
+                .and_then(|m| m.api_format.as_deref()),
+            Some("openai_chat")
+        );
+        Ok(())
+    }
     #[tokio::test]
     async fn codex_editor_pools_keep_account_order_and_do_not_expand_a_disabled_model(
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -734,7 +791,7 @@ mod tests {
         assert!(model["display_name"]
             .as_str()
             .expect("label")
-            .ends_with(" · routing group · VaryAI"));
+            .ends_with(" · routing group"));
         assert_eq!(model["visibility"], "list");
         assert_eq!(model["supported_in_api"], true);
         assert_eq!(model["input_modalities"], json!(["text", "image"]));

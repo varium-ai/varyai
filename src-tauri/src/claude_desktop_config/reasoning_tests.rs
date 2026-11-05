@@ -19,6 +19,8 @@ fn shared_desktop_profile_exposes_native_effort_controls_and_caps() -> Result<()
     let home = tempfile::tempdir().map_err(|_| "fixture")?;
     let paths = paths_from_dirs(home.path().join("Claude"), home.path().join("Claude-3p"));
     let model = Model {
+        output_tokens: None,
+        cost: None,
         id: "synthetic/first".into(),
         name: "Synthetic reasoning model".into(),
         context_window: None,
@@ -35,6 +37,7 @@ fn shared_desktop_profile_exposes_native_effort_controls_and_caps() -> Result<()
         paths,
         "http://127.0.0.1:1/connections/claude-desktop",
         "synthetic-local",
+        None,
         std::slice::from_ref(&model),
     )?;
     let payload = serde_json::to_value(&files).map_err(|_| "fixture")?;
@@ -70,6 +73,8 @@ fn desktop_profile_refresh_preserves_user_effort_and_unknown_models_remain_plain
     write_json_file(&paths.profile_path, &json!({"defaultModelEffort":"high"}))
         .map_err(|_| "fixture")?;
     let mut model = Model {
+        output_tokens: None,
+        cost: None,
         id: "synthetic/first".into(),
         name: "Synthetic".into(),
         context_window: None,
@@ -85,6 +90,7 @@ fn desktop_profile_refresh_preserves_user_effort_and_unknown_models_remain_plain
         paths,
         "http://127.0.0.1:1/connections/claude-desktop",
         "synthetic-local",
+        None,
         std::slice::from_ref(&model),
     )?;
     let payload = serde_json::to_value(&files).map_err(|_| "fixture")?;

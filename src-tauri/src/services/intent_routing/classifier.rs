@@ -2,7 +2,6 @@
 
 use super::{eligible_provider, PlanPreview, RoutingGroup};
 use crate::{
-    app_config::AppType,
     provider::Provider,
     proxy::security::{AuditAction, SecurityAuditEngine, SecurityRuntimeConfig},
 };
@@ -189,13 +188,13 @@ fn decode_result(group: &RoutingGroup, value: Value) -> (Option<String>, &'stati
 async fn send(
     client: &reqwest::Client,
     url: reqwest::Url,
-    key: &str,
+    headers: http::HeaderMap,
     payload: &Value,
     group: &RoutingGroup,
 ) -> Result<(Option<String>, &'static str), &'static str> {
     let mut response = client
         .post(url)
-        .bearer_auth(key)
+        .headers(headers)
         .json(payload)
         .send()
         .await
@@ -271,12 +270,18 @@ async fn trial_with_runtime(
             tauri::async_runtime::spawn_blocking(move || prepare_payload(&config, &text, &runtime))
                 .await
                 .map_err(|_| "privacy")??;
-        let (endpoint, key) = provider.resolve_usage_credentials(&AppType::Codex);
-        let url = reqwest::Url::parse(&format!(
-            "{}/chat/completions",
-            endpoint.trim_end_matches('/')
-        ))
-        .map_err(|_| "unavailable")?;
+        let provider = crate::services::routing_upstreams::variants(&provider)
+            .into_iter()
+            .find(|variant| eligible_provider(variant, true))
+            .ok_or("unavailable")?;
+        let model = &group
+            .classifier_target
+            .as_ref()
+            .ok_or("unavailable")?
+            .model_id;
+        let (endpoint, headers) =
+            super::execution::static_transport(&provider, model).map_err(|_| "unavailable")?;
+        let url = reqwest::Url::parse(&endpoint).map_err(|_| "unavailable")?;
         let client = match client {
             Some(client) => client,
             None => tauri::async_runtime::spawn_blocking(
@@ -286,7 +291,7 @@ async fn trial_with_runtime(
             .map_err(|_| "unavailable")?
             .map_err(|_| "unavailable")?,
         };
-        send(&client, url, &key, &payload, &group).await
+        send(&client, url, headers, &payload, &group).await
     };
     let (intent_id, outcome) = match tokio::time::timeout(
         std::time::Duration::from_millis(group.classification_budget_ms.into()),
@@ -310,6 +315,49 @@ async fn trial_with_runtime(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn parity_classifier_uses_enabled_backup_exact_url_and_headers(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use axum::{routing::post, Json, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/exact",
+                    post(|headers: http::HeaderMap| async move {
+                        assert_eq!(
+                            headers.get("authorization").and_then(|v| v.to_str().ok()),
+                            Some("Bearer synthetic-backup")
+                        );
+                        assert_eq!(
+                            headers
+                                .get("x-synthetic-scope")
+                                .and_then(|v| v.to_str().ok()),
+                            Some("fixture")
+                        );
+                        Json(
+                            json!({"choices":[{"message":{"content":"{\"intentId\":\"debug\"}"}}]}),
+                        )
+                    }),
+                ),
+            )
+            .await
+        });
+        let record = serde_json::from_value(
+            json!({"schemaVersion":1,"id":"classifier","name":"Synthetic","revision":1,
+                "source":{"kind":"api","baseUrl":format!("http://{address}/exact"),"apiKey":"synthetic-disabled","apiFormat":"openai_chat"},
+                "transport":{"primaryOff":true,"fullUrl":true,"headers":{"x-synthetic-scope":"fixture"},"keys":[{"id":"backup","name":"Backup","key":"synthetic-backup","enabled":true}]}
+            }),
+        )?;
+        let provider = crate::services::routing_upstreams::resolve_provider(&record)?;
+        let result = test_trial(group(), provider, "Synthetic classification".into()).await?;
+        task.abort();
+        assert_eq!(result.outcome, "matched");
+        Ok(())
+    }
 
     fn group() -> RoutingGroup {
         let mut group = super::super::tests::fixture();

@@ -1,3 +1,4 @@
+import { useCodexBrowserLogin } from "./useCodexBrowserLogin";
 import { useManagedAuth } from "./useManagedAuth";
 
 /**
@@ -6,5 +7,7 @@ import { useManagedAuth } from "./useManagedAuth";
  * 复用通用 useManagedAuth，仅指定 provider 为 "codex_oauth"
  */
 export function useCodexOauth() {
-  return useManagedAuth("codex_oauth");
+  const managed = useManagedAuth("codex_oauth");
+  const browser = useCodexBrowserLogin();
+  return { ...managed, browser };
 }

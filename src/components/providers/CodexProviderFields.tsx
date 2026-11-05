@@ -6,7 +6,6 @@ import {
   RefreshCw,
   ArrowUp,
   ArrowDown,
-  Copy,
   Check,
   GripVertical,
 } from "lucide-react";
@@ -17,7 +16,9 @@ import {
 } from "@/lib/api/routingUpstreams";
 import { useCodexProviderQuotas } from "@/lib/query/codexProviderQuota";
 import { useCodexOauth } from "./forms/hooks/useCodexOauth";
+import { CodexLoginPanel } from "./CodexLoginPanel";
 import { ProviderModelPreferences } from "./ProviderModelPreferences";
+import { settingsApi } from "@/lib/api/settings";
 import { copyText } from "@/lib/clipboard";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useRoutingRowDrag } from "@/hooks/useRoutingRowDrag";
@@ -25,12 +26,18 @@ import { useRoutingRowDrag } from "@/hooks/useRoutingRowDrag";
 export function CodexProviderFields({
   draft,
   disabled,
+  editorOpen = true,
+  startReauth = false,
+  onReauthStarted,
   onChange,
   onError,
   onBusyChange,
 }: {
   draft: RoutingUpstream;
   disabled: boolean;
+  editorOpen?: boolean;
+  startReauth?: boolean;
+  onReauthStarted?: () => void;
   onChange: (value: RoutingUpstream) => void;
   onError: () => void;
   onBusyChange: (value: boolean) => void;
@@ -55,17 +62,112 @@ export function CodexProviderFields({
   const [typed, setTyped] = useState("");
   const [showOthers, setShowOthers] = useState(false);
   const [managing, setManaging] = useState(false);
+  const [loginWay, setLoginWay] = useState<"browser" | "device">("browser");
+  const [loginProxy, setLoginProxy] = useState("");
+  const [loginActionError, setLoginActionError] = useState<string>();
+  const loginTarget = useRef<string>();
+  const loginActionGeneration = useRef(0);
+  const editorOpenRef = useRef(editorOpen);
+  editorOpenRef.current = editorOpen;
+  const browser = auth.browser;
+  const completion =
+    loginWay === "browser" && browser
+      ? browser.completion
+      : auth.loginCompletion;
+  useEffect(
+    () => () => {
+      loginActionGeneration.current += 1;
+    },
+    [],
+  );
+  useEffect(() => {
+    if (!editorOpen) {
+      loginActionGeneration.current += 1;
+      void auth.cancelAuth();
+      void browser?.cancel();
+      setManaging(false);
+    }
+  }, [editorOpen, auth.cancelAuth, browser?.cancel]);
+  const reauthSource = useRef<string>();
+  const handledLogin = useRef<number>();
+  useEffect(() => {
+    if (
+      !managing ||
+      !completion ||
+      handledLogin.current === completion.generation
+    )
+      return;
+    handledLogin.current = completion.generation;
+    const accountId = completion.accountId;
+    const source = reauthSource.current;
+    reauthSource.current = undefined;
+    // Keep unsaved model choices when switching an explicitly reauthenticated credential source.
+    if (source && source !== accountId) {
+      onChange({
+        ...draft,
+        codex: {
+          ...editor,
+          settings: {
+            ...policy,
+            accounts: [
+              ...new Set(
+                policy.accounts.map((id) => (id === source ? accountId : id)),
+              ),
+            ],
+          },
+          accounts: editor.accounts
+            .filter((row) => row.id !== source)
+            .map((row) => ({
+              ...row,
+              aliases: row.aliases?.filter((id) => id !== source),
+            })),
+        },
+      });
+    }
+    if (!source && !policy.accounts.includes(accountId)) {
+      onChange({
+        ...draft,
+        codex: {
+          ...editor,
+          settings: { ...policy, accounts: [...policy.accounts, accountId] },
+        },
+      });
+    }
+    setManaging(false);
+    autoFetched.current.delete(accountId);
+    setCatalogs((old) => {
+      const next = { ...old };
+      delete next[accountId];
+      return next;
+    });
+    void client.resetQueries({ queryKey: ["codex-provider-quota", accountId] });
+    for (const key of [
+      "routing-upstreams",
+      "intent-routing-providers",
+      "agent-model-catalog",
+      "routing-catalog-discovery",
+    ]) {
+      void client.invalidateQueries({ queryKey: [key] });
+    }
+  }, [completion, managing, client, draft, editor, policy, onChange]);
   const [testing, setTesting] = useState(false);
   const [tests, setTests] = useState<
     Record<string, { ok: boolean; elapsedMs: number }>
   >({});
-  const working = fetching || importing || testing || auth.isAddingAccount;
+  const working = fetching || importing || testing;
+  const authenticating = auth.isAddingAccount || !!browser?.isPending;
   useEffect(() => {
     onBusyChange(working);
   }, [working, onBusyChange]);
   useEffect(() => () => onBusyChange(false), [onBusyChange]);
   const locked = disabled || working;
-  const rows = [...editor.accounts];
+  const rows = editor.accounts.map((row) => {
+    const current =
+      !row.native && auth.accounts?.find((account) => account.id === row.id);
+    return current
+      ? { ...row, login: current.login, ready: !current.reauth_required }
+      : row;
+  });
   const aliases = new Set(rows.flatMap((row) => row.aliases ?? []));
   for (const account of auth.accounts ?? []) {
     if (!aliases.has(account.id) && !rows.some((row) => row.id === account.id))
@@ -91,6 +193,85 @@ export function CodexProviderFields({
   ];
   const ordered = ids.flatMap((id) => rows.find((row) => row.id === id) ?? []);
   const quotas = useCodexProviderQuotas(ordered);
+  function reauthIdFor(account: (typeof ordered)[number]) {
+    return account.native
+      ? account.aliases?.find(
+          (id) =>
+            id !== "native" &&
+            (auth.accounts?.some((row) => row.id === id) ||
+              (!auth.isStatusSuccess &&
+                editor.accounts.some(
+                  (row) =>
+                    (!row.native && row.id === id) || row.aliases?.includes(id),
+                ))),
+        )
+      : auth.accounts?.some((row) => row.id === account.id) ||
+          (!auth.isStatusSuccess &&
+            editor.accounts.some((row) => !row.native && row.id === account.id))
+        ? account.id
+        : undefined;
+  }
+  async function beginLogin(way: "browser" | "device", proxy = loginProxy) {
+    const attempt = ++loginActionGeneration.current;
+    handledLogin.current =
+      way === "browser" && browser
+        ? browser.completion?.generation
+        : auth.loginCompletion?.generation;
+    setLoginWay(way);
+    setLoginActionError(undefined);
+    setManaging(true);
+    if (way === "browser" && browser) {
+      await auth.cancelAuth();
+      if (editorOpenRef.current && attempt === loginActionGeneration.current)
+        await browser.start(loginTarget.current, proxy);
+    } else {
+      if (!browser) {
+        if (loginTarget.current) auth.reauthAccount(loginTarget.current);
+        else auth.addAccount();
+        return;
+      }
+      await browser.cancel();
+      if (!editorOpenRef.current || attempt !== loginActionGeneration.current)
+        return;
+      if (loginTarget.current)
+        auth.reauthAccount(loginTarget.current, ...(browser ? [proxy] : []));
+      else if (browser) auth.addAccountWithProxy(proxy);
+      else auth.addAccount();
+    }
+  }
+  function startAccountReauth(account?: (typeof ordered)[number]) {
+    reauthSource.current = account?.id;
+    loginTarget.current = account ? reauthIdFor(account) : undefined;
+    void beginLogin("browser");
+  }
+  async function cancelLogin() {
+    loginActionGeneration.current += 1;
+    setManaging(false);
+    await Promise.all([auth.cancelAuth(), browser?.cancel()]);
+  }
+  const autoReauthed = useRef(false);
+  useEffect(() => {
+    if (!startReauth) {
+      autoReauthed.current = false;
+      return;
+    }
+    if (!editorOpen || autoReauthed.current || locked || authenticating) return;
+    autoReauthed.current = true;
+    onReauthStarted?.();
+    const target =
+      ordered.find(
+        (account) => policy.accounts.includes(account.id) && !account.ready,
+      ) ?? ordered.find((account) => !account.ready);
+    startAccountReauth(target);
+  }, [
+    startReauth,
+    editorOpen,
+    locked,
+    authenticating,
+    ordered,
+    policy.accounts,
+    onReauthStarted,
+  ]);
   const all = new Map(
     [...catalog, ...policy.models].map((row) => [String(row.model), row]),
   );
@@ -158,6 +339,7 @@ export function CodexProviderFields({
   const accountReady = rows.some((row) => row.id === firstAccount && row.ready);
   useEffect(() => {
     if (
+      !editorOpen ||
       !firstAccount ||
       !accountReady ||
       catalog.length ||
@@ -167,7 +349,7 @@ export function CodexProviderFields({
       return;
     autoFetched.current.add(firstAccount);
     void discover();
-  }, [firstAccount, accountReady, catalog.length, locked]);
+  }, [editorOpen, firstAccount, accountReady, catalog.length, locked]);
   async function importAccount() {
     setImporting(true);
     try {
@@ -249,6 +431,16 @@ export function CodexProviderFields({
                       Number.isFinite(tier.utilization),
                     )
                   : [];
+              const needsLogin =
+                !account.ready ||
+                quota?.credentialStatus === "expired" ||
+                quota?.credentialStatus === "parse_error" ||
+                quota?.credentialStatus === "not_found";
+              const quotaHeld =
+                quota?.codex?.allowed === false ||
+                quota?.codex?.limitReached === true ||
+                quota?.codex?.spendControl?.reached === true;
+              const creditBalance = quota?.codex?.credits?.balance;
               const quotaStatus =
                 quota?.credentialStatus === "expired"
                   ? "quotaLoginRequired"
@@ -262,7 +454,7 @@ export function CodexProviderFields({
                           ? tiers.length
                             ? "quotaStale"
                             : "quotaFailed"
-                          : !tiers.length
+                          : !tiers.length && !quotaHeld && creditBalance == null
                             ? "quotaEmpty"
                             : null;
               return (
@@ -329,6 +521,11 @@ export function CodexProviderFields({
                     {account.plan && (
                       <span className="cx-plan">{account.plan}</span>
                     )}
+                    {needsLogin && (
+                      <span className="cx-plan cx-reauth">
+                        {t("codexOauth.reauthBadge")}
+                      </span>
+                    )}
                     {account.native && (
                       <span className="cx-plan">
                         {t("codexProvider.native")}
@@ -352,6 +549,16 @@ export function CodexProviderFields({
                         }
                       />
                     </button>
+                    {needsLogin && (
+                      <button
+                        type="button"
+                        aria-label={`${t("codexOauth.reauthLogin")} ${account.login}`}
+                        disabled={locked || authenticating}
+                        onClick={() => startAccountReauth(account)}
+                      >
+                        {t("codexOauth.reauthLogin")}
+                      </button>
+                    )}
                     {policy.accounts.length > 1 &&
                       policy.accounts.includes(account.id) && (
                         <>
@@ -422,6 +629,14 @@ export function CodexProviderFields({
                         )}
                       </div>
                     ))}
+                    {quotaHeld && <span>{t("codexProvider.quotaHeld")}</span>}
+                    {creditBalance != null && (
+                      <span>
+                        {t("codexProvider.creditBalance", {
+                          balance: creditBalance,
+                        })}
+                      </span>
+                    )}
                     {quotaStatus && (
                       <span>{t(`codexProvider.${quotaStatus}`)}</span>
                     )}
@@ -429,54 +644,96 @@ export function CodexProviderFields({
                 </div>
               );
             })}
-            <button
-              type="button"
-              className="cx-add-account"
-              disabled={locked}
-              onClick={() => {
-                setManaging(true);
-                auth.addAccount();
-              }}
-            >
-              <PlusCircle size={16} />
-              {t("codexProvider.addAccount")}
-            </button>
-            <button
-              type="button"
-              className="cx-add-account"
-              disabled={locked}
-              onClick={() => void importAccount()}
-            >
-              <PlusCircle size={16} />
-              {t("codexProvider.importAccount")}
-            </button>
+            {!authenticating && !managing && (
+              <>
+                <button
+                  type="button"
+                  className="cx-add-account"
+                  disabled={locked}
+                  onClick={() => {
+                    startAccountReauth();
+                  }}
+                >
+                  <PlusCircle size={16} />
+                  {t("codexProvider.addAccount")}
+                </button>
+                <button
+                  type="button"
+                  className="cx-add-account"
+                  disabled={locked}
+                  onClick={() => void importAccount()}
+                >
+                  <PlusCircle size={16} />
+                  {t("codexProvider.importAccount")}
+                </button>
+              </>
+            )}
+            {managing && (
+              <CodexLoginPanel
+                key={`${loginWay}-${browser?.flow?.id ?? auth.deviceCode?.device_code ?? "starting"}`}
+                mode={loginWay}
+                proxy={loginProxy}
+                url={
+                  loginWay === "browser" && browser
+                    ? browser.flow?.url
+                    : auth.deviceCode?.verification_uri
+                }
+                code={
+                  loginWay === "device" || !browser
+                    ? auth.deviceCode?.user_code
+                    : undefined
+                }
+                starting={
+                  !!browser?.starting ||
+                  (!browser?.flow &&
+                    !auth.deviceCode &&
+                    !browser?.error &&
+                    !auth.error)
+                }
+                submitting={browser?.submitting}
+                submitted={browser?.submitted}
+                callbackBlocked={browser?.flow?.callbackBlocked}
+                openFailed={browser?.openFailed}
+                error={
+                  loginWay === "browser" && browser
+                    ? (browser.error ?? loginActionError)
+                    : auth.error
+                      ? "codexProvider.loginFailed"
+                      : loginActionError
+                }
+                onCancel={() => void cancelLogin()}
+                onReopen={() => {
+                  if (loginWay === "browser" && browser) void browser.reopen();
+                  else if (auth.deviceCode)
+                    void settingsApi
+                      .openExternal(auth.deviceCode.verification_uri)
+                      .catch(() => {});
+                }}
+                onCopy={() => {
+                  const value =
+                    loginWay === "browser" && browser
+                      ? browser.flow?.url
+                      : auth.deviceCode?.verification_uri;
+                  if (value)
+                    void copyText(value).catch(() =>
+                      setLoginActionError("nativeSubscription.copyFailed"),
+                    );
+                }}
+                onDevice={() =>
+                  void beginLogin(loginWay === "browser" ? "device" : "browser")
+                }
+                onImport={() => void cancelLogin().then(importAccount)}
+                onProxy={(proxy) => {
+                  setLoginProxy(proxy);
+                  void beginLogin(loginWay, proxy);
+                }}
+                onSubmit={(url) => {
+                  if (browser) void browser.submit(url);
+                }}
+              />
+            )}
           </div>
           <p className="pv-hint">{t("codexProvider.accountHint")}</p>
-          {managing && auth.deviceCode && (
-            <div className="cx-login">
-              <p>{t("codexProvider.loginHint")}</p>
-              <code>{auth.deviceCode.user_code}</code>
-              <button
-                type="button"
-                onClick={() => void copyText(auth.deviceCode!.user_code)}
-                aria-label={t("common.copy")}
-              >
-                <Copy size={13} />
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  auth.cancelAuth();
-                  setManaging(false);
-                }}
-              >
-                {t("common.cancel")}
-              </button>
-            </div>
-          )}
-          {managing && auth.error && (
-            <p role="alert">{t("codexProvider.loginFailed")}</p>
-          )}
         </div>
       </div>
       <div className="pv-field">

@@ -21,7 +21,34 @@ export interface ExtraUsage {
   currency: string | null;
 }
 
+export interface CodexQuotaDetails {
+  allowed?: boolean | null;
+  limitReached?: boolean | null;
+  modelUsage: Record<
+    string,
+    {
+      available?: boolean | null;
+      available_at?: unknown;
+      credits_would_enable?: boolean | null;
+    }
+  >;
+  credits?: {
+    has_credits?: boolean | null;
+    unlimited?: boolean | null;
+    overage_limit_reached?: boolean | null;
+    balance?: string | null;
+  } | null;
+  resetCredits?: {
+    available_count?: number | null;
+    applicable_available_count?: number | null;
+  } | null;
+  spendControl?: {
+    reached?: boolean | null;
+    individual_limit?: number | null;
+  } | null;
+}
 export interface SubscriptionQuota {
+  codex?: CodexQuotaDetails | null;
   tool: string;
   credentialStatus: CredentialStatus;
   credentialMessage: string | null;

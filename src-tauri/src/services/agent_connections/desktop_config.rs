@@ -22,12 +22,121 @@ pub(crate) enum Kind {
     Mode,
     Profile,
     Meta,
+    Carry,
+}
+
+pub(super) fn seed_tool_search(files: &mut [FileEdit], previous: Option<&Receipt>) {
+    for file in files
+        .iter_mut()
+        .filter(|file| matches!(file.desktop, Some(Kind::Profile)))
+    {
+        let marker = vec!["toolSearchEnabled".to_owned()];
+        let seen = previous.is_some_and(|receipt| {
+            receipt.files.iter().any(|prior| {
+                prior.path == file.path
+                    && (prior.fields.contains(&marker)
+                        || prior.installed.get("toolSearchEnabled").is_some())
+            })
+        });
+        if !seen && file.installed.get("toolSearchEnabled").is_none() {
+            file.installed["toolSearchEnabled"] = json!(true);
+        }
+        if !file.fields.contains(&marker) {
+            file.fields.push(marker);
+        }
+    }
+}
+
+pub(super) fn preserve_carried(
+    files: &mut Vec<FileEdit>,
+    previous: Option<&Receipt>,
+) -> Result<(), String> {
+    if let Some(previous) = previous {
+        for prior in &previous.files {
+            if matches!(prior.desktop, Some(Kind::Carry))
+                && !files.iter().any(|file| file.path == prior.path)
+            {
+                files.push(
+                    FileEdit::prepare(prior.path.clone(), |_| Ok(()))?.for_desktop(Kind::Carry),
+                );
+            }
+        }
+    }
+    for file in files.iter_mut().filter(|file| file.desktop_carried) {
+        if previous.is_some_and(|receipt| {
+            receipt
+                .files
+                .iter()
+                .any(|prior| prior.path == file.path && prior.desktop_carried)
+        }) {
+            let current = parse(file.original.as_deref())?;
+            for key in if matches!(file.desktop, Some(Kind::Mode)) {
+                vec!["mcpServers"]
+            } else {
+                vec!["locale"]
+            } {
+                put(
+                    &mut file.installed,
+                    &[key.into()],
+                    current.get(key).cloned(),
+                )?;
+            }
+            file.fields.clear();
+            changes(
+                Some(&current),
+                Some(&file.installed),
+                vec![],
+                &mut file.fields,
+            );
+        }
+    }
+    Ok(())
 }
 
 // Upgrade pre-compatibility receipts in memory without changing their recovery baseline.
 pub(super) fn adopt(receipt: &mut Receipt) {
     if receipt.app != "claude-desktop" {
         return;
+    }
+    // A carried connector or locale becomes native ownership when the user
+    // edits or removes it. Refresh must not adopt it as a new gateway value.
+    for file in &mut receipt.files {
+        let profile_setting =
+            matches!(file.desktop, Some(Kind::Profile)) && file.original.is_some();
+        if !file.desktop_carried && !profile_setting {
+            continue;
+        }
+        let Ok(live) = read(&file.path).and_then(|text| parse(text.as_deref())) else {
+            continue;
+        };
+        let Ok(mut baseline) = parse(file.original.as_deref()) else {
+            continue;
+        };
+        if live == baseline {
+            continue;
+        }
+        let mut released = vec![];
+        let mut changed = false;
+        for field in &file.fields {
+            if field.first().is_some_and(|key| {
+                (file.desktop_carried && (key == "mcpServers" || key == "locale"))
+                    || (profile_setting && key == "toolSearchEnabled")
+            }) && at(&live, field) != at(&file.installed, field)
+                && put(&mut baseline, field, at(&live, field).cloned()).is_ok()
+                && put(&mut file.installed, field, at(&live, field).cloned()).is_ok()
+            {
+                changed = true;
+                if !profile_setting {
+                    released.push(field.clone());
+                }
+            }
+        }
+        if changed {
+            if let Ok(text) = file.format.encode(file.original.as_deref(), &baseline) {
+                file.original = Some(text);
+                file.fields.retain(|field| !released.contains(field));
+            }
+        }
     }
     let profile = receipt
         .files
@@ -41,6 +150,9 @@ pub(super) fn adopt(receipt: &mut Receipt) {
         return;
     };
     for file in &mut receipt.files {
+        if file.desktop.is_some() {
+            continue;
+        }
         file.desktop = if file.path == profile {
             Some(Kind::Profile)
         } else if file.path == profile.with_file_name("_meta.json") {
@@ -133,6 +245,31 @@ pub(crate) fn key_matches(value: &Value, expected: &Value) -> bool {
     }
 }
 
+pub(crate) fn keep_key(value: &Value, token: &str, previous_token: Option<&str>) -> bool {
+    value.as_str().is_some_and(|value| match open_key(value) {
+        Some(open) => open == token,
+        // Only an existing connection can vouch for an unreadable seal on refresh.
+        None => previous_token == Some(token),
+    })
+}
+
+pub(super) fn refreshable(file: &FileEdit) -> Result<bool, String> {
+    if !matches!(file.desktop, Some(Kind::Profile)) {
+        return file.intact();
+    }
+    let live = parse(read(&file.path)?.as_deref())?;
+    if !live.is_object() {
+        return Err(FAILED.into());
+    }
+    // Repair credentials only in the same journaled gateway profile. Endpoint,
+    // provider, protocol, model and active-profile changes still require recovery.
+    Ok(CONNECTION
+        .iter()
+        .filter(|key| **key != KEY)
+        .chain([&"inferenceModels"])
+        .all(|key| matches(&live, &file.installed, key)))
+}
+
 fn matches(live: &Value, expected: &Value, key: &str) -> bool {
     if key == KEY {
         live.get(KEY).zip(expected.get(KEY)).is_some_and(|(a, b)| {
@@ -160,6 +297,7 @@ pub(super) fn intact(file: &FileEdit, live: &Value, kind: Kind) -> Result<bool, 
     }
     match kind {
         Kind::Mode => Ok(live["deploymentMode"] == "3p"),
+        Kind::Carry => Ok(true),
         Kind::Profile => Ok(CONNECTION
             .iter()
             .chain([&"inferenceModels"])
@@ -203,7 +341,9 @@ pub(super) fn restoration(
                     original.get("deploymentMode").cloned(),
                 )?;
             }
+            restore_carried(file, &original, &mut live)?;
         }
+        Kind::Carry => restore_carried(file, &original, &mut live)?,
         Kind::Meta => {
             let current = entries(&live)?;
             let baseline = entries(&original)?;
@@ -301,6 +441,18 @@ pub(super) fn restoration(
     })
 }
 
+fn restore_carried(file: &FileEdit, original: &Value, live: &mut Value) -> Result<(), String> {
+    for field in &file.fields {
+        if field.first().is_some_and(|key| key == "deploymentMode") {
+            continue;
+        }
+        if at(live, field) == at(&file.installed, field) {
+            put(live, field, at(original, field).cloned())?;
+        }
+    }
+    Ok(())
+}
+
 fn settings(profile: &Value) -> Value {
     let mut kept = profile.clone();
     if let Some(obj) = kept.as_object_mut() {
@@ -340,9 +492,21 @@ pub(super) fn restore_settings(root: &Path, receipt: &mut Receipt) -> Result<(),
     let kept = settings(&parse(Some(&text))?);
     let kept = kept.as_object().ok_or(FAILED)?;
     for file in &mut receipt.files {
-        if matches!(file.desktop, Some(Kind::Profile)) && file.original.is_none() {
-            let profile = file.installed.as_object_mut().ok_or(FAILED)?;
-            profile.extend(kept.clone());
+        if !matches!(file.desktop, Some(Kind::Profile)) {
+            continue;
+        }
+        let original = parse(file.original.as_deref())?;
+        if !kept.contains_key("toolSearchEnabled") && original.get("toolSearchEnabled").is_none() {
+            file.installed
+                .as_object_mut()
+                .ok_or(FAILED)?
+                .remove("toolSearchEnabled");
+        }
+        if file.original.is_none() {
+            file.installed
+                .as_object_mut()
+                .ok_or(FAILED)?
+                .extend(kept.clone());
             file.fields.clear();
             changes(
                 Some(&json!({})),
@@ -350,6 +514,10 @@ pub(super) fn restore_settings(root: &Path, receipt: &mut Receipt) -> Result<(),
                 vec![],
                 &mut file.fields,
             );
+        }
+        let marker = vec!["toolSearchEnabled".to_owned()];
+        if !file.fields.contains(&marker) {
+            file.fields.push(marker);
         }
     }
     Ok(())

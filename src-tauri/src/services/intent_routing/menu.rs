@@ -122,6 +122,7 @@ pub(crate) async fn prepare(
         .collect();
     let mut http_client = None;
     let mut accounts: Vec<Target> = Vec::new();
+    let mut direct_labels = HashMap::new();
     // Leave capacity for every saved/discovered routing group, even with large catalogs.
     let direct_limit = MAX_MENU_ENTRIES.saturating_sub(groups.len());
     for provider in &providers {
@@ -233,7 +234,10 @@ pub(crate) async fn prepare(
                 .filter_map(|template| {
                     let mut target = template.clone();
                     execution::retarget(&mut target, &model).ok()?;
-                    target.effort = declared_capability(provider, &model);
+                    target.effort = target.credentials.as_ref().map_or_else(
+                        || declared_capability(provider, &model),
+                        |credentials| credentials.capability(&model),
+                    );
                     target.scheduling = Arc::new(template.scheduling.for_model());
                     Some(target)
                 })
@@ -261,7 +265,8 @@ pub(crate) async fn prepare(
                 })
                 .and_then(super::model_preferences::name)
                 .unwrap_or(&model);
-            let label = format!("{} · {} · VaryAI", display, provider.name);
+            let label = format!("{} · {}", display, provider.name);
+            direct_labels.insert(group.id.clone(), (provider.id.clone(), display.to_owned()));
             if menu.default_model.is_none() || (current && Some(&model) == default.as_ref()) {
                 menu.default_model = Some(alias.clone());
             }
@@ -307,7 +312,16 @@ pub(crate) async fn prepare(
             .members
             .iter()
             .zip(&available)
-            .all(|(member, target)| !group.includes_in_menu(member) || target.is_some());
+            .all(|(member, target)| {
+                group.routing != super::RoutingStrategy::Manual
+                    || !group.includes_in_menu(member)
+                    || target.is_some()
+            })
+            && group
+                .members
+                .iter()
+                .zip(&available)
+                .any(|(member, target)| group.includes_in_menu(member) && target.is_some());
         let classifier = if group.uses_classifier() {
             group
                 .classifier_target
@@ -317,7 +331,11 @@ pub(crate) async fn prepare(
                         .iter()
                         .find(|p| p.id == t.provider_id && eligible_provider(p, true))
                 })
-                .cloned()
+                .and_then(|provider| {
+                    crate::services::routing_upstreams::variants(provider)
+                        .into_iter()
+                        .find(|variant| eligible_provider(variant, true))
+                })
         } else {
             None
         };
@@ -348,7 +366,7 @@ pub(crate) async fn prepare(
             group.id.clone(),
             MenuModel {
                 alias: alias.clone(),
-                label: format!("{} · routing group · VaryAI", group.name),
+                label: format!("{} · routing group", group.name),
                 description: "VaryAI routing group",
                 order: group_order.get(&group.id).copied().unwrap_or(usize::MAX),
             },
@@ -394,6 +412,22 @@ pub(crate) async fn prepare(
     }
     if menu.groups.is_empty() {
         return Err("intentRouting.providerUnavailable".into());
+    }
+    let visible_sources = direct_labels
+        .iter()
+        .filter(|(id, _)| menu.models.contains_key(*id))
+        .map(|(_, (provider, _))| provider.as_str())
+        .collect::<HashSet<_>>();
+    let source_names = super::menu_labels::provider_names(
+        providers
+            .iter()
+            .filter(|provider| visible_sources.contains(provider.id.as_str())),
+    );
+    for (id, (provider, display)) in direct_labels {
+        if let (Some(entry), Some(source)) = (menu.models.get_mut(&id), source_names.get(&provider))
+        {
+            entry.label = format!("{display} · {source}");
+        }
     }
     Ok(menu)
 }
@@ -446,6 +480,100 @@ pub(crate) async fn prepare_with_stand_ins(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn parity_each_account_retains_its_own_model_capabilities(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::services::codex_provider::{self, ModelMode, Settings};
+        let dir = tempfile::tempdir()?;
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        for account in ["one", "two"] {
+            manager
+                .add_test_account_with_user_identity(
+                    account,
+                    &format!("synthetic-{account}"),
+                    account,
+                )
+                .await?;
+        }
+        let mut provider = provider("account-pool");
+        provider.name = "Codex · synthetic-personal-account@example.test".into();
+        provider.category = Some("official".into());
+        provider
+            .settings_config
+            .as_object_mut()
+            .ok_or("fixture")?
+            .remove("auth");
+        provider
+            .settings_config
+            .as_object_mut()
+            .ok_or("fixture")?
+            .remove("config");
+        codex_provider::attach(
+            &mut provider,
+            &Settings {
+                accounts: vec!["one".into(), "two".into()],
+                mode: ModelMode::Vendor,
+                models: vec![],
+                groups_only: false,
+            },
+        )?;
+        provider.settings_config[codex_provider::CATALOGS] = json!({
+            "one":[{"model":"shared-model","input_modalities":["text","image"],"reasoningLevels":["high"],"contextWindow":1000000}],
+            "two":[{"model":"shared-model","input_modalities":["text"],"reasoningLevels":["low"],"contextWindow":128000}]
+        });
+        provider.settings_config["modelCatalog"]["models"] =
+            provider.settings_config[codex_provider::CATALOGS]["one"].clone();
+        let menu = prepare(manager, vec![provider], vec![], None).await?;
+        let entry = menu.models.values().next().ok_or("fixture")?;
+        assert_eq!(entry.label, "shared-model · Codex");
+        assert_eq!(
+            entry.alias,
+            format!(
+                "vary-provider/{}",
+                direct_id("account-pool", "shared-model")
+            )
+        );
+        let targets = &menu.groups.values().next().ok_or("fixture")?.targets;
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].effort.images, Some(true));
+        assert_eq!(targets[1].effort.images, Some(false));
+        assert_eq!(targets[0].effort.context.context_window, Some(1000000));
+        assert_eq!(targets[1].effort.context.context_window, Some(128000));
+        assert_eq!(targets[1].effort.levels, vec!["low"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn parity_saved_group_keeps_available_members_when_a_provider_is_disabled(
+    ) -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| "fixture")?;
+        let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
+        let a = provider("a");
+        let mut group = direct_group(&a, "shared-model");
+        group.enabled = true;
+        group.id = "saved-parity-group".into();
+        group.members.push(Member {
+            id: "disabled".into(),
+            provider_id: "disabled".into(),
+            model_id: "shared-model".into(),
+            weight: 1,
+            free: None,
+            effort: None,
+        });
+        let alias = group.alias();
+        let prepared = prepare(manager, vec![a], vec![group], None).await?;
+        assert_eq!(
+            prepared
+                .groups
+                .get(&alias)
+                .ok_or("group omitted")?
+                .targets
+                .len(),
+            1
+        );
+        Ok(())
+    }
     fn provider(id: &str) -> Provider {
         Provider::with_id(
             id.into(),
@@ -576,7 +704,7 @@ mod tests {
             ])
         );
         assert!(models.iter().any(|model| model.group == "Subscription"
-            && model.name == "Shared 0 · Subscription · VaryAI"
+            && model.name == "Shared 0 · Subscription"
             && model.context_window == Some(500000)));
         assert!(models.iter().any(|model| model.group == "Relay"));
         let official_alias = models
@@ -673,10 +801,28 @@ mod tests {
         let catalog = db.intent_routing_catalog_with_providers(Some(providers.clone()))?;
         let menu = prepare(manager, providers, catalog.groups, None).await?;
         let models = agent_connections::models(&menu);
-        assert_eq!(models.len(), 17);
+        assert_eq!(
+            models
+                .iter()
+                .filter(|model| model.group != "routing")
+                .count(),
+            17
+        );
+        assert_eq!(
+            models
+                .iter()
+                .filter(|model| model.group == "routing")
+                .count(),
+            8
+        );
         assert!(models
             .iter()
-            .all(|model| matches!(model.group.as_str(), "Relay" | "Other vendor")));
+            .all(|model| matches!(model.group.as_str(), "Relay" | "Other vendor" | "routing")));
+        assert!(menu
+            .groups
+            .values()
+            .flat_map(|session| &session.targets)
+            .all(|target| !target.official && target.credentials.is_none()));
         Ok(())
     }
     #[tokio::test]
@@ -722,11 +868,11 @@ mod tests {
         let menu = prepare(manager, vec![source], vec![], None).await?;
         let models = crate::services::agent_connections::models(&menu);
         let model = models.first().ok_or("missing model")?;
-        assert_eq!(model.name, "My model · a · VaryAI");
+        assert_eq!(model.name, "My model · a");
         assert!(!model.images);
         assert!(model.reasoning_levels.is_empty());
         let pi = crate::services::agent_connections::pi_model(model);
-        assert_eq!(pi["name"], "My model · a · VaryAI");
+        assert_eq!(pi["name"], "My model · a");
         assert_eq!(pi["reasoning"], false);
         assert_eq!(pi["input"], json!(["text"]));
         {
@@ -818,8 +964,8 @@ mod tests {
                     let rows = crate::workbuddy_config::read_models()?;
                     assert_eq!(rows[0], native);
                     let expected = [
-                        "shared-model · Synthetic supplier · VaryAI",
-                        "shared-model · Synthetic supplier · VaryAI (2)",
+                        "shared-model · Synthetic supplier",
+                        "shared-model · Synthetic supplier (2)",
                     ];
                     for (row, name) in rows[1..].iter().zip(expected) {
                         assert_eq!(row["name"], name);
@@ -931,14 +1077,8 @@ mod tests {
             .await
             .expect("global direct menu");
         assert_eq!(menu.groups.len(), 2);
-        assert!(menu
-            .models
-            .values()
-            .any(|m| m.label.ends_with(" · a · VaryAI")));
-        assert!(menu
-            .models
-            .values()
-            .any(|m| m.label.ends_with(" · b · VaryAI")));
+        assert!(menu.models.values().any(|m| m.label.ends_with(" · a")));
+        assert!(menu.models.values().any(|m| m.label.ends_with(" · b")));
         assert!(menu.default_model.is_some());
     }
 
@@ -973,14 +1113,14 @@ mod tests {
         let entries = projection["models"].as_array().expect("models");
         let direct = entries
             .iter()
-            .find(|e| e["display_name"] == "shared-model · a · VaryAI")
+            .find(|e| e["display_name"] == "shared-model · a")
             .expect("direct");
         assert_eq!(direct["context_window"], 1000000);
         assert_eq!(direct["max_context_window"], 1200000);
         assert_eq!(direct["auto_compact_token_limit"], 200000);
         let other = entries
             .iter()
-            .find(|e| e["display_name"] == "other-model · a · VaryAI")
+            .find(|e| e["display_name"] == "other-model · a")
             .expect("retargeted");
         assert_eq!(other["context_window"], 262144);
         assert_eq!(other["effective_context_window_percent"], 90);
@@ -1039,7 +1179,7 @@ mod tests {
         assert_eq!(entries.len(), 3);
         for entry in entries {
             if entry["slug"] == "vary-auto/mixed-unknown"
-                || entry["display_name"] == "shared-model · known · VaryAI"
+                || entry["display_name"] == "shared-model · known"
             {
                 assert_eq!(entry["context_window"], 500000);
             } else {
@@ -1300,9 +1440,9 @@ mod tests {
         assert_eq!(menu.groups["vary-auto/saved"].targets.len(), 2);
         assert_eq!(
             menu.models[&direct_id("b", "shared-model")].label,
-            "shared-model · b · VaryAI"
+            "shared-model · b"
         );
-        assert_eq!(menu.models["saved"].label, "Saved · routing group · VaryAI");
+        assert_eq!(menu.models["saved"].label, "Saved · routing group");
         assert!(!Arc::ptr_eq(
             &menu.groups[&alias].bindings,
             &menu.groups["vary-auto/saved"].bindings
@@ -1473,17 +1613,14 @@ mod tests {
             .expect("direct entry");
         assert_eq!(
             direct["display_name"],
-            format!("{exact_model} · fixture-provider · VaryAI")
+            format!("{exact_model} · fixture-provider")
         );
         assert_eq!(direct["description"], "VaryAI direct provider model");
         let saved = models
             .iter()
             .find(|m| m["slug"] == group_alias)
             .expect("group entry");
-        assert_eq!(
-            saved["display_name"],
-            "Saved single member · routing group · VaryAI"
-        );
+        assert_eq!(saved["display_name"], "Saved single member · routing group");
         assert_eq!(saved["description"], "VaryAI routing group");
         manager.restore().expect("restore");
         assert_eq!(

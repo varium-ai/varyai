@@ -1,5 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import { expect, it } from "vitest";
+import { createInstance } from "i18next";
+import { I18nextProvider } from "react-i18next";
+import zh from "@/i18n/locales/zh.json";
 import { RoutingStage } from "@/components/routing/RoutingStage";
 import type { RoutingTrace } from "@/lib/api/routingTrace";
 
@@ -510,3 +513,53 @@ it("prioritizes passed-over context before active and quota states", () => {
   expect(status).toHaveTextContent("routingPage.step.context");
   expect(status).not.toHaveTextContent("routingPage.seatQuota");
 });
+
+it.each(["responsive", "compact"] as const)(
+  "shows a rounded multi-day reset in the %s stage and tooltip",
+  async (layout) => {
+    const locale = createInstance();
+    await locale.init({ lng: "zh", resources: { zh: { translation: zh } } });
+    const candidate = row.candidates[2];
+    const trace: RoutingTrace = {
+      ...row,
+      startedAt: now,
+      durationMs: 0,
+      candidates: [
+        {
+          ...candidate,
+          account: {
+            ...candidate.account!,
+            windows: [
+              {
+                usedPercent: 25,
+                windowSeconds: 604800,
+                resetsAt: now / 1000 + (88 * 60 + 46) * 60,
+              },
+            ],
+          },
+        },
+      ],
+      steps: [{ kind: "attempt", candidate: 0, atMs: 1 }],
+    };
+    render(
+      <I18nextProvider i18n={locale}>
+        <RoutingStage
+          row={trace}
+          layout={layout}
+          now={now}
+          liveObservations
+          accountName={(c) => c.providerName}
+          animate={false}
+          replay={false}
+          speed={1}
+        />
+      </I18nextProvider>,
+    );
+    const seat = document.querySelector(".rt-accts li")!;
+    expect(seat.querySelector(".rt-seat-status")).toHaveTextContent(
+      "4 天后重置",
+    );
+    expect(seat.getAttribute("title")).toContain("4 天后重置");
+    expect(seat).not.toHaveTextContent("88 小时");
+  },
+);

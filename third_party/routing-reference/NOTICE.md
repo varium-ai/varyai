@@ -8,6 +8,18 @@ attribution.
 
 ## Pinned source revisions
 
+- `1d0fc2bb08c51d8711759694189b8a1d92ee3a1e`: routing reset countdown
+  precision reviewed in `internal/gui/assets/plugins/routing/client.js` (`dur`).
+  Vary applies the same second/minute/hour/day thresholds and rounding in its
+  shared React stage, with translations for its four runtime languages.
+- `465928bccea4fec3537edd6280f7cabb9a0c5bad`: Codex provider identity,
+  ChatGPT sign-in coexistence, model catalog publication, and recoverable thread
+  provider transitions reviewed in `internal/agent/codex.go`,
+  `internal/sessions/codex_provider.go`, `internal/sessions/codex_portable.go`,
+  and the corresponding
+  `codex_threads_over`, `codex_threads_back`, and `codex_beside_threads` tests.
+  Vary implements these behaviors in Rust using its existing configuration
+  receipts, native authentication leases, and isolated recovery records.
 - `e17b6cefc7b25c19d1e522f9e8a9626bf68912d9`: account-visibility behavior
   reviewed in `internal/gui/assets/app.js` (`hideAccounts`, `names` and
   `dots`). Vary uses React-rendered stand-ins for account labels and sanitized
@@ -83,6 +95,15 @@ Other adapted catalog helpers include `internal/catalog/family.go`,
 catalog. The behavioral limits remain documented in Vary's architecture and
 design guides; an attribution does not establish complete compatibility.
 
+Claude Desktop credential synchronization additionally references
+`internal/agent/claudedesktop.go` (`desktopKeyApplied`, `desktopKeyTaken`) and
+`internal/agent/desktopseal.go` at revision
+`1d0fc2bb08c51d8711759694189b8a1d92ee3a1e`. Vary repairs readable credentials
+only within its journaled gateway profile. It retains independent random
+connection tokens, so an opaque seal is preserved only when refreshing the
+existing token; a new connection writes its new token. No fixed Magpie token or
+cross-agent credential acceptance is adopted.
+
 ## Compatibility literals
 
 Daily reward protocol behavior was reviewed in `magpie-community/plugins`
@@ -135,3 +156,46 @@ the source application.
   `workbuddy_app_test.go`: application identities, both WorkBuddy builds,
   application subfolders and Spotlight fallback. Vary uses its own Rust
   discovery and React window-activation refresh implementation.
+
+## Codex service-tier publication
+
+At `465928bccea4fec3537edd6280f7cabb9a0c5bad`, the `ownTiers`, `namedTiers`, and
+entry-tier publication behavior in `internal/codexcat/codexcat.go`, together with
+`internal/agent/codex_catalog_tiers_test.go`, inform VaryAI's independent Rust
+service-tier adapter. VaryAI normalizes supported public fields, keeps local and
+served catalogs consistent, and uses common tiers for routing groups rather than
+Magpie's any-fast-member rule because group routing is not tier-aware. No upstream
+source implementation is copied.
+
+At the same revision, `internal/provider/modelprefs.go` (`Label`, `Labels`) and
+`internal/provider/codex_models.go` (`codexApart`) inform the separation of short
+picker labels from stable source/model identity and visible-list disambiguation.
+VaryAI independently abbreviates automatically named personal-account sources,
+keeps explicit custom names, and numbers colliding visible sources without adding
+account email addresses to model labels.
+
+## Subscription protocol repairs
+
+The managed Grok subscription transport independently follows
+[magpie-community/plugins](https://github.com/magpie-community/plugins),
+`packages/grok/index.mjs` at
+`41e90a18d3affc7487460d032b0cdc5e09b20ebb`: CLI proxy endpoints, client headers,
+model/context-window identities, credit billing and rejected-token renewal.
+Copyright (c) 2026 magpie-community contributors; MIT License. The complete
+permission notice is retained in [PLUGIN-LICENSE](PLUGIN-LICENSE).
+
+At Magpie revision `465928bccea4fec3537edd6280f7cabb9a0c5bad`,
+`internal/gateway/claude_replay.go`, `internal/provider/claude_usage_cli.go`,
+`internal/provider/copilot_usage_test.go` and the Google/Codex subscription
+adapters inform VaryAI's typed temporary replay, quota compatibility and
+account/project observations. VaryAI uses its own Rust account coordination,
+configuration receipts and shared protocol bridge.
+
+Codex paginated-provider migration was compared with
+`internal/sessions/codex_provider.go` (`RetagPagedCodexThreads`) and
+`internal/agent/codex.go` at Magpie revision
+`8c733bb36232e04d74a47ff2b3e05f71c3c6fa7b`. VaryAI independently implements
+the SQLite-only transition using its private recovery journal, writer-lock
+coordination, and checked provider/history-mode updates. Paginated rollout
+contents and byte offsets remain unchanged. The Magpie MIT notice and license
+listed above apply to this behavior reference.

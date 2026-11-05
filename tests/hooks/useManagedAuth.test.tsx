@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { settingsApi } from "@/lib/api";
 import { useManagedAuth } from "@/components/providers/forms/hooks/useManagedAuth";
 import { CODEX_OAUTH_DUPLICATE_ACCOUNT_ERROR } from "@/lib/api/auth";
 
@@ -163,7 +164,9 @@ describe("useManagedAuth", () => {
     act(() => result.current.reauthAccount("acct-1"));
     await waitFor(() => expect(result.current.deviceCode).not.toBeNull());
 
-    act(() => result.current.cancelAuth());
+    act(() => {
+      void result.current.cancelAuth();
+    });
 
     await waitFor(() =>
       expect(apiMocks.authCancelLogin).toHaveBeenCalledWith(
@@ -218,7 +221,9 @@ describe("useManagedAuth", () => {
       ],
     });
 
-    act(() => result.current.cancelAuth());
+    act(() => {
+      void result.current.cancelAuth();
+    });
     await waitFor(() => expect(apiMocks.authCancelLogin).toHaveBeenCalled());
     act(() => {
       resolvePoll({ id: "acct-2" });
@@ -277,4 +282,65 @@ describe("useManagedAuth", () => {
       expect(toastMocks.success).toHaveBeenCalledWith("账号已移除"),
     );
   });
+});
+
+it("publishes the completed target only after refreshing account status", async () => {
+  apiMocks.authStartLogin.mockResolvedValue({
+    provider: "codex_oauth",
+    device_code: "device-complete",
+    user_code: "ABCD-EFGH",
+    verification_uri: "https://example.test/device",
+    expires_in: 600,
+    interval: 5,
+  });
+  apiMocks.authPollForAccount.mockResolvedValue({ id: "acct-1" });
+  const { result } = renderHook(() => useManagedAuth("codex_oauth"), {
+    wrapper: createWrapper(),
+  });
+  await waitFor(() => expect(result.current.isStatusSuccess).toBe(true));
+  expect(result.current.loginCompletion).toBeNull();
+  act(() => result.current.reauthAccount("acct-1"));
+  await waitFor(() =>
+    expect(result.current.loginCompletion).toEqual({
+      accountId: "acct-1",
+      generation: expect.any(Number),
+    }),
+  );
+  expect(result.current.isAddingAccount).toBe(false);
+  expect(apiMocks.authGetStatus.mock.calls.length).toBeGreaterThan(1);
+});
+
+it("cancels a late login-start response after the editor closes without opening a browser", async () => {
+  let finish!: (value: unknown) => void;
+  apiMocks.authStartLogin.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  vi.mocked(settingsApi.openExternal).mockClear();
+  const { result, unmount } = renderHook(() => useManagedAuth("codex_oauth"), {
+    wrapper: createWrapper(),
+  });
+  await waitFor(() => expect(result.current.isStatusSuccess).toBe(true));
+  act(() => result.current.addAccount());
+  await waitFor(() => expect(apiMocks.authStartLogin).toHaveBeenCalled());
+  unmount();
+  await act(async () =>
+    finish({
+      device_code: "synthetic-late-flow",
+      user_code: "SYNTHETIC",
+      verification_uri: "https://example.test/device",
+      expires_in: 300,
+      interval: 5,
+    }),
+  );
+  await waitFor(() =>
+    expect(apiMocks.authCancelLogin).toHaveBeenCalledWith(
+      "codex_oauth",
+      "synthetic-late-flow",
+    ),
+  );
+  expect(settingsApi.openExternal).not.toHaveBeenCalled();
+  expect(apiMocks.authPollForAccount).not.toHaveBeenCalled();
 });

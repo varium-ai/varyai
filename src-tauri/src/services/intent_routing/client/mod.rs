@@ -10,7 +10,14 @@ use std::{
 };
 use toml_edit::DocumentMut;
 
-const PROVIDER: &str = "varyai-routing";
+mod health;
+mod thread_lifecycle;
+mod threads;
+pub(crate) use health::ConfigurationIssue;
+#[cfg(test)]
+mod mode_tests;
+
+const PROVIDER: &str = "varyai";
 const FIELDS: &[&str] = &[
     "model",
     "model_provider",
@@ -19,6 +26,13 @@ const FIELDS: &[&str] = &[
 ];
 const FAILED: &str = "intentRouting.clientFailed";
 const CONFLICT: &str = "intentRouting.clientConflict";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ApplyIntent {
+    Refresh,
+    Connect,
+    Reapply,
+}
 
 pub(crate) struct Manager {
     config: PathBuf,
@@ -37,6 +51,7 @@ pub(crate) struct Status {
     pub group_ids: Vec<String>,
     pub omitted_entries: usize,
     pub native_compatibility: String,
+    pub configuration_issue: Option<ConfigurationIssue>,
 }
 #[derive(Serialize, Deserialize)]
 struct Receipt {
@@ -57,12 +72,20 @@ struct Receipt {
     native: Option<NativeOwnership>,
     #[serde(default)]
     pre_write: Option<ConfigSnapshot>,
+    #[serde(default)]
+    thread_recovery_id: Option<String>,
+    #[serde(default)]
+    thread_sync_pending: bool,
+    #[serde(default)]
+    thread_restore_pending: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct NativeOwnership {
     // A present baseline proves explicit acquisition, even when the file was absent.
     #[serde(default)]
     acquisition_baseline: Option<String>,
+    #[serde(default)]
+    replaced_url: Option<String>,
     #[serde(default)]
     installed: Option<String>,
     #[serde(default)]
@@ -104,7 +127,13 @@ impl Receipt {
         let baseline: toml::Value = native.acquisition_baseline.as_ref()?.parse().ok()?;
         let installed: toml::Value = self.installed.parse().ok()?;
         let url = native.installed.as_deref()?;
-        (baseline.get("openai_base_url").is_none()
+        let baseline_owned = match baseline.get("openai_base_url") {
+            None => native.replaced_url.is_none(),
+            Some(value) => value
+                .as_str()
+                .is_some_and(|url| native.replaced_url.as_deref() == Some(url)),
+        };
+        (baseline_owned
             && valid_native_url(url)
             && installed
                 .get("openai_base_url")
@@ -128,31 +157,117 @@ fn read(path: &Path) -> Result<Option<String>, String> {
     }
 }
 fn requires_openai_auth(config: &Path, doc: &DocumentMut) -> bool {
-    use crate::codex_config::{codex_config_auth_store_mode, CodexAuthStoreMode};
-
-    match codex_config_auth_store_mode(&doc.to_string()) {
-        CodexAuthStoreMode::File => config
-            .parent()
-            .and_then(|parent| read(&parent.join("auth.json")).ok().flatten())
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-            .is_some_and(|auth| {
-                auth["OPENAI_API_KEY"].as_str() != Some("PROXY_MANAGED")
-                    && crate::codex_config::codex_auth_has_openai_account_material(&auth)
-            }),
-        CodexAuthStoreMode::Ephemeral => false,
-        CodexAuthStoreMode::Keyring | CodexAuthStoreMode::Auto | CodexAuthStoreMode::Unknown => {
-            // Disk cannot establish keyring login state; preserve the active provider's policy.
+    match chatgpt_sign_in(config, doc) {
+        Some(signed_in) => signed_in,
+        None => {
             let provider = doc
                 .get("model_provider")
-                .and_then(|value| value.as_str())
+                .and_then(|v| v.as_str())
                 .unwrap_or("openai");
             doc.get("model_providers")
-                .and_then(|providers| providers.get(provider))
+                .and_then(|providers| providers.get(PROVIDER).or_else(|| providers.get(provider)))
                 .and_then(|provider| provider.get("requires_openai_auth"))
                 .and_then(|value| value.as_bool())
-                .unwrap_or(provider == "openai")
+                .unwrap_or(
+                    provider == "openai"
+                        && crate::codex_config::codex_config_auth_store_mode(&doc.to_string())
+                            != crate::codex_config::CodexAuthStoreMode::File,
+                )
         }
     }
+}
+
+/// Unknown reads preserve the installed mode while Codex rotates its login file.
+fn chatgpt_sign_in(config: &Path, doc: &DocumentMut) -> Option<bool> {
+    use crate::codex_config::{codex_config_auth_store_mode, CodexAuthStoreMode};
+    if doc
+        .get("forced_login_method")
+        .and_then(|v| v.as_str())
+        .is_some_and(|v| v.eq_ignore_ascii_case("api"))
+    {
+        return Some(false);
+    }
+    match codex_config_auth_store_mode(&doc.to_string()) {
+        CodexAuthStoreMode::File => {
+            let path = config.parent()?.join("auth.json");
+            let Some(text) = read(&path).ok()? else {
+                return Some(false);
+            };
+            let auth: Value = serde_json::from_str(&text).ok()?;
+            let object = auth.as_object()?;
+            let mode = object.get("auth_mode").and_then(Value::as_str);
+            Some(
+                matches!(mode, None | Some("chatgpt" | "chatgptAuthTokens"))
+                    && object.get("OPENAI_API_KEY").is_none_or(Value::is_null)
+                    && auth
+                        .pointer("/tokens/access_token")
+                        .and_then(Value::as_str)
+                        .is_some_and(|token| !token.trim().is_empty()),
+            )
+        }
+        CodexAuthStoreMode::Ephemeral => Some(false),
+        CodexAuthStoreMode::Keyring | CodexAuthStoreMode::Auto | CodexAuthStoreMode::Unknown => {
+            None
+        }
+    }
+}
+
+fn openai_mode(doc: &toml::Value) -> bool {
+    doc.get("model_provider")
+        .and_then(toml::Value::as_str)
+        .unwrap_or("openai")
+        == "openai"
+}
+
+fn beside_sign_in(config: &Path, doc: &DocumentMut, old: Option<&Receipt>, native: bool) -> bool {
+    if !native {
+        return false;
+    }
+    // A user's named provider remains a standalone takeover until disconnected.
+    let baseline = old
+        .map(|r| r.original.as_deref().unwrap_or(""))
+        .map(str::to_owned)
+        .unwrap_or_else(|| doc.to_string());
+    let Ok(baseline) = baseline.parse::<toml::Value>() else {
+        return false;
+    };
+    if !openai_mode(&baseline)
+        && baseline.get("model_provider").and_then(toml::Value::as_str) != Some(PROVIDER)
+    {
+        return false;
+    }
+    match chatgpt_sign_in(config, doc) {
+        Some(signed_in) => signed_in,
+        None => old
+            .and_then(|r| r.installed.parse::<toml::Value>().ok())
+            .is_some_and(|doc| openai_mode(&doc)),
+    }
+}
+
+fn provider_table(
+    base: &str,
+    token: &str,
+    keep_login: bool,
+    previous: Option<&toml_edit::Item>,
+) -> Result<toml_edit::Table, String> {
+    let mut provider = toml_edit::Table::new();
+    provider["name"] = toml_edit::value("VaryAI models and routing groups");
+    provider["base_url"] = toml_edit::value(base);
+    provider["wire_api"] = toml_edit::value("responses");
+    provider["requires_openai_auth"] = toml_edit::value(keep_login);
+    provider["experimental_bearer_token"] = toml_edit::value(token);
+    provider["supports_websockets"] = toml_edit::value(false);
+    provider["supports_standalone_web_search"] = toml_edit::value(false);
+    if let Some(capabilities) = previous.and_then(|table| table.get("capabilities")) {
+        provider["capabilities"] = capabilities.clone();
+    }
+    if let Some(headers) = previous.and_then(|table| table.get("http_headers")) {
+        if !headers.is_table_like() {
+            return Err(CONFLICT.into());
+        }
+        provider["http_headers"] = headers.clone();
+    }
+    Ok(provider)
 }
 /// Install through a no-clobber hard link. A concurrent editor's replacement wins.
 /// Quarantined originals are retained on a conflict that prevents safe rollback.
@@ -216,7 +331,7 @@ pub(crate) fn catalog(
         .map(|(index, group)| {
             let mut model = template.clone();
             model["slug"] = json!(group.alias());
-            model["display_name"] = json!(format!("{} · routing group · VaryAI", group.name));
+            model["display_name"] = json!(format!("{} · routing group", group.name));
             model["description"] = json!("VaryAI routing group");
             model["priority"] = json!(index);
             // Never infer capability from an alias or a model-family name.
@@ -283,6 +398,7 @@ pub(crate) fn menu_catalog(
     if let Some(models) = projection["models"].as_array_mut() {
         for (model, group) in models.iter_mut().zip(&groups) {
             if let Some(session) = menu.groups.values().find(|s| s.group.id == group.id) {
+                super::speed::advertise(model, &session.service_tiers());
                 if chosen.is_empty() {
                     super::effort::advertise(
                         model,
@@ -326,27 +442,32 @@ impl Manager {
     pub fn status(&self) -> Result<Status, String> {
         let receipt = self.load()?;
         let live = self.runtime.menu_active();
+        let current = read(&self.config)?;
+        let configuration_issue = health::configuration_issue(&self.config, current.as_deref())?;
         let orphan = if receipt.is_none() {
-            orphan_state(read(&self.config)?.as_deref())?
+            orphan_state(current.as_deref())?
         } else {
             (false, false)
         };
         let owned = receipt.as_ref().is_some_and(|r| {
-            read(&self.config)
-                .ok()
-                .flatten()
-                .is_some_and(|s| projection_owned(&s, &r.installed))
+            current
+                .as_ref()
+                .is_some_and(|s| projection_owned(s, &r.installed))
         });
+        let enabled = live && owned && configuration_issue.is_none();
         Ok(Status {
             native_compatibility: self.runtime.native.status().into(),
-            enabled: live && owned,
+            configuration_issue,
+            enabled,
             configuration_owned: owned,
             provider_enabled: false,
             omitted_entries: self
                 .runtime
                 .menu_snapshot()?
                 .map_or(0, |m| m.omitted_entries),
-            recovery_pending: receipt.is_some() && !(live && owned) || orphan.0,
+            recovery_pending: receipt.is_some() && !enabled
+                || orphan.0
+                || configuration_issue.is_some(),
             orphaned_config: orphan.0,
             orphan_cleanup_available: orphan.1 && !live,
             group_ids: receipt.map(|r| r.group_ids).unwrap_or_default(),
@@ -451,6 +572,37 @@ impl Manager {
         reconnect: bool,
         selected: Option<&str>,
     ) -> Result<(), String> {
+        self.activate_menu_with_intent(
+            menu,
+            base,
+            native_url,
+            if reconnect {
+                ApplyIntent::Connect
+            } else {
+                ApplyIntent::Refresh
+            },
+            selected,
+        )
+    }
+
+    pub(crate) fn reapply_menu_with_selection(
+        &self,
+        menu: Arc<crate::proxy::intent::Menu>,
+        base: &str,
+        native_url: Option<&str>,
+        selected: Option<&str>,
+    ) -> Result<(), String> {
+        self.activate_menu_with_intent(menu, base, native_url, ApplyIntent::Reapply, selected)
+    }
+
+    fn activate_menu_with_intent(
+        &self,
+        menu: Arc<crate::proxy::intent::Menu>,
+        base: &str,
+        native_url: Option<&str>,
+        intent: ApplyIntent,
+        selected: Option<&str>,
+    ) -> Result<(), String> {
         if selected.is_some_and(|alias| !menu.groups.contains_key(alias)) {
             return Err("agentConnections.noModels".into());
         }
@@ -470,7 +622,7 @@ impl Manager {
         let token = menu.token.clone();
         let previous = self.runtime.set_menu(menu)?;
         if let Err(error) =
-            self.write_projection_inner(&groups, &token, base, native_url, reconnect, selected)
+            self.write_projection_for_intent(&groups, &token, base, native_url, intent, selected)
         {
             self.runtime.restore_menu(previous);
             return Err(error);
@@ -496,6 +648,7 @@ impl Manager {
     ) -> Result<(), String> {
         self.write_projection_inner(groups, token, base, native_url, false, None)
     }
+    #[cfg(test)]
     fn write_projection_inner(
         &self,
         groups: &[RoutingGroup],
@@ -503,6 +656,29 @@ impl Manager {
         base: &str,
         native_url: Option<&str>,
         reconnect: bool,
+        selected: Option<&str>,
+    ) -> Result<(), String> {
+        self.write_projection_for_intent(
+            groups,
+            token,
+            base,
+            native_url,
+            if reconnect {
+                ApplyIntent::Connect
+            } else {
+                ApplyIntent::Refresh
+            },
+            selected,
+        )
+    }
+
+    fn write_projection_for_intent(
+        &self,
+        groups: &[RoutingGroup],
+        token: &str,
+        base: &str,
+        native_url: Option<&str>,
+        intent: ApplyIntent,
         selected: Option<&str>,
     ) -> Result<(), String> {
         if native_url.is_some_and(|url| !valid_native_url(url)) {
@@ -515,26 +691,31 @@ impl Manager {
             group.validate()?;
         }
         let current = read(&self.config)?;
-        let old = self.load()?;
+        let mut old = self.load()?;
+        let mut baseline = current.clone();
+        let mut superseded = None;
         if let Some(receipt) = &old {
             if !current
                 .as_ref()
                 .is_some_and(|s| projection_owned(s, &receipt.installed))
             {
-                return Err(CONFLICT.into());
+                if intent != ApplyIntent::Reapply {
+                    return Err(CONFLICT.into());
+                }
+                // An explicit reapply adopts external edits as the next baseline.
+                // Archive the old recovery record; do not move busy histories as
+                // a prerequisite for updating the connection's configuration.
+                baseline = restore_text(current.as_deref(), receipt)?;
+                superseded = old.take();
             }
         }
-        let mut doc: DocumentMut = current
+        let mut doc: DocumentMut = baseline
             .as_deref()
             .unwrap_or("")
             .parse()
             .map_err(|_| FAILED)?;
-        let orphan = old.is_none()
-            && doc
-                .get("model_providers")
-                .and_then(|v| v.get(PROVIDER))
-                .is_some();
-        if orphan && !reconnect {
+        let orphan = old.is_none() && orphan_state(current.as_deref())?.0;
+        if orphan && intent == ApplyIntent::Refresh {
             return Err(CONFLICT.into());
         }
         let previous_native = old
@@ -545,14 +726,26 @@ impl Manager {
                     == native.installed.as_deref()
             });
         let native = if let Some(url) = native_url {
-            if doc.get("openai_base_url").is_some() && previous_native.is_none() {
-                return Err("intentRouting.nativeConflict".into());
-            }
+            let replaced_url = if previous_native.is_none() {
+                match doc.get("openai_base_url") {
+                    Some(value) if intent == ApplyIntent::Reapply => Some(
+                        value
+                            .as_str()
+                            .ok_or("intentRouting.nativeConflict")?
+                            .to_owned(),
+                    ),
+                    Some(_) => return Err("intentRouting.nativeConflict".into()),
+                    None => None,
+                }
+            } else {
+                previous_native.and_then(|native| native.replaced_url.clone())
+            };
             let ownership = NativeOwnership {
+                replaced_url,
                 acquisition_baseline: Some(
                     previous_native
                         .and_then(|native| native.acquisition_baseline.clone())
-                        .unwrap_or_else(|| current.clone().unwrap_or_default()),
+                        .unwrap_or_else(|| baseline.clone().unwrap_or_default()),
                 ),
                 installed: Some(url.into()),
                 previous_owned: previous_native.and_then(|native| native.installed.clone()),
@@ -593,6 +786,17 @@ impl Manager {
             .collect::<Vec<_>>();
         let first_alias = aliases.first().ok_or("agentConnections.noModels")?;
         let catalog_bytes = serde_json::to_vec_pretty(&projection).map_err(|_| FAILED)?;
+        if let Some(receipt) = &superseded {
+            let backup = self.receipt.parent().ok_or(FAILED)?.join(format!(
+                "codex-reapply-recovery-{}.json",
+                uuid::Uuid::new_v4().simple()
+            ));
+            crate::config::atomic_write_private(
+                &backup,
+                &serde_json::to_vec(receipt).map_err(|_| FAILED)?,
+            )
+            .map_err(|_| FAILED)?;
+        }
         if orphan {
             // Explicit reconnect replaces the reserved section, not the restored baseline.
             // Background refresh must never acquire receiptless configuration.
@@ -619,13 +823,19 @@ impl Manager {
             crate::config::atomic_write_private(&path, &catalog_bytes).map_err(|_| FAILED)?;
             path
         };
+        let native_mode = beside_sign_in(&self.config, &doc, old.as_ref(), native.is_some());
         let current_model = doc.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        let keep_native_model = native_mode
+            && !current_model.is_empty()
+            && !["vary-auto/", "vary-provider/", "auto/"]
+                .iter()
+                .any(|prefix| current_model.starts_with(prefix));
         if let Some(selected) = selected {
             if !aliases.iter().any(|alias| alias == selected) {
                 return Err("agentConnections.noModels".into());
             }
             doc["model"] = toml_edit::value(selected);
-        } else if !aliases.iter().any(|alias| alias == current_model) {
+        } else if !keep_native_model && !aliases.iter().any(|alias| alias == current_model) {
             let stand_in = menu.as_ref().and_then(|m| m.stand_in_direct(current_model));
             let default = stand_in
                 .or_else(|| {
@@ -638,18 +848,40 @@ impl Manager {
             doc["model"] = toml_edit::value(default);
         }
         let keep_login = requires_openai_auth(&self.config, &doc);
-        doc["model_provider"] = toml_edit::value(PROVIDER);
-        doc["model_catalog_json"] = toml_edit::value(catalog_path.to_string_lossy().as_ref());
-        doc["web_search"] = toml_edit::value("disabled");
-        let mut provider = toml_edit::Table::new();
-        provider["name"] = toml_edit::value("VaryAI models and routing groups");
-        provider["base_url"] = toml_edit::value(base);
-        provider["wire_api"] = toml_edit::value("responses");
+        if native_mode {
+            doc.as_table_mut().remove("model_provider");
+            doc.as_table_mut().remove("model_catalog_json");
+            if let Some(old) = &old {
+                let previous: DocumentMut = old.installed.parse().map_err(|_| FAILED)?;
+                if doc.get("web_search").and_then(|value| value.as_str())
+                    == previous.get("web_search").and_then(|value| value.as_str())
+                {
+                    let original: DocumentMut = old
+                        .original
+                        .as_deref()
+                        .unwrap_or("")
+                        .parse()
+                        .map_err(|_| FAILED)?;
+                    if let Some(value) = original.get("web_search") {
+                        doc["web_search"] = value.clone();
+                    } else {
+                        doc.as_table_mut().remove("web_search");
+                    }
+                }
+            }
+        } else {
+            doc["model_provider"] = toml_edit::value(PROVIDER);
+            doc["model_catalog_json"] = toml_edit::value(catalog_path.to_string_lossy().as_ref());
+            doc["web_search"] = toml_edit::value("disabled");
+        }
         // Keep account discovery alive; the local bearer token still owns request authentication.
-        provider["requires_openai_auth"] = toml_edit::value(keep_login);
-        provider["experimental_bearer_token"] = toml_edit::value(token);
-        provider["supports_websockets"] = toml_edit::value(false);
-        provider["supports_standalone_web_search"] = toml_edit::value(false);
+        let provider = provider_table(
+            base,
+            token,
+            keep_login,
+            doc.get("model_providers")
+                .and_then(|providers| providers.get(PROVIDER)),
+        )?;
         if doc.get("model_providers").is_none() {
             doc["model_providers"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
@@ -659,13 +891,13 @@ impl Manager {
         if new_catalog {
             catalogs.push(catalog_path);
         }
-        let receipt = Receipt {
+        let mut receipt = Receipt {
             version: 2,
             config: self.config.clone(),
             original: old
                 .as_ref()
                 .map(|r| r.original.clone())
-                .unwrap_or_else(|| current.clone()),
+                .unwrap_or_else(|| baseline.clone()),
             installed: doc.to_string(),
             previous: old.as_ref().map(|r| r.installed.clone()),
             group_ids: groups
@@ -691,6 +923,9 @@ impl Manager {
             pre_write: Some(ConfigSnapshot {
                 text: current.clone(),
             }),
+            thread_recovery_id: old.as_ref().and_then(|r| r.thread_recovery_id.clone()),
+            thread_sync_pending: false,
+            thread_restore_pending: false,
         };
         if crate::config::atomic_write_private(
             &self.receipt,
@@ -710,6 +945,7 @@ impl Manager {
                 .publish_menu(menu, projection)
                 .map_err(|_| FAILED)?;
         }
+        self.reconcile_thread_receipt(&mut receipt, false)?;
         Ok(())
     }
     pub(crate) fn disconnect(&self) -> Result<(), String> {
@@ -718,6 +954,9 @@ impl Manager {
             self.restore()?;
         }
         self.runtime.clear_menu();
+        if self.thread_sync_pending() {
+            return Ok(());
+        }
         let Some(current) = read(&self.config)? else {
             return Ok(());
         };
@@ -735,14 +974,42 @@ impl Manager {
     pub fn restore(&self) -> Result<(), String> {
         // Revoke before fallible recovery, including missing or unreadable receipts.
         self.runtime.native.revoke();
-        let Some(receipt) = self.load()? else {
+        let Some(mut receipt) = self.load()? else {
             self.runtime.clear_menu();
             return Ok(());
         };
         let current = read(&self.config)?;
         let restored = restore_text(current.as_deref(), &receipt)?;
+        self.reconcile_thread_receipt(&mut receipt, true)?;
+        let restored = if receipt.thread_sync_pending {
+            // An active rollout still names this provider until its deferred recovery.
+            let mut doc: DocumentMut = restored
+                .as_deref()
+                .unwrap_or("")
+                .parse()
+                .map_err(|_| FAILED)?;
+            let installed: DocumentMut = receipt.installed.parse().map_err(|_| FAILED)?;
+            if let Some(provider) = installed
+                .get("model_providers")
+                .and_then(|v| v.get(PROVIDER))
+            {
+                if doc.get("model_providers").is_none() {
+                    doc["model_providers"] = toml_edit::table();
+                }
+                let table = doc["model_providers"].as_table_like_mut().ok_or(CONFLICT)?;
+                if table.get(PROVIDER).is_none() {
+                    table.insert(PROVIDER, provider.clone());
+                }
+            }
+            Some(doc.to_string())
+        } else {
+            restored
+        };
         replace_checked(&self.config, current.as_deref(), restored.as_deref())?;
         self.runtime.clear_menu();
+        if receipt.thread_sync_pending {
+            return Ok(());
+        }
         fs::remove_file(&self.receipt).map_err(|_| FAILED)?;
         for path in receipt.catalogs {
             if path.parent() == self.receipt.parent()
@@ -769,6 +1036,7 @@ fn recognized_orphan_provider(table: &toml::map::Map<String, toml::Value>) -> bo
                 | "supports_standalone_web_search"
                 | "experimental_bearer_token"
                 | "base_url"
+                | "http_headers"
         )
     }) && matches!(
         table.get("name").and_then(toml::Value::as_str),
@@ -785,6 +1053,15 @@ fn recognized_orphan_provider(table: &toml::map::Map<String, toml::Value>) -> bo
                     .get(*key)
                     .is_none_or(|value| value.as_bool() == Some(false))
             })
+        && table.get("http_headers").is_none_or(|value| {
+            value.as_table().is_some_and(|headers| {
+                headers.len() == 1
+                    && headers
+                        .get("x-openai-actor-authorization")
+                        .and_then(toml::Value::as_str)
+                        == Some(PROVIDER)
+            })
+        })
         && table
             .get("experimental_bearer_token")
             .and_then(toml::Value::as_str)
@@ -899,13 +1176,14 @@ fn orphan_state(current: Option<&str>) -> Result<(bool, bool), String> {
         return Ok((false, false));
     };
     let doc: toml::Value = current.parse().map_err(|_| FAILED)?;
+    let referenced = references_projection(&doc);
     let Some(provider) = doc.get("model_providers").and_then(|p| p.get(PROVIDER)) else {
-        return Ok((false, false));
+        return Ok((referenced, false));
     };
     let known = provider
         .as_table()
-        .is_some_and(|table| table.len() == 7 && recognized_orphan_provider(table));
-    Ok((true, known && !references_projection(&doc)))
+        .is_some_and(|table| matches!(table.len(), 7 | 8) && recognized_orphan_provider(table));
+    Ok((true, known && !referenced))
 }
 fn references_projection(value: &toml::Value) -> bool {
     match value {
@@ -943,7 +1221,10 @@ fn projection_owned(current: &str, installed: &str) -> bool {
     ) else {
         return false;
     };
-    current.get("model_provider").and_then(toml::Value::as_str) == Some(PROVIDER)
+    current.get("model_provider") == installed.get("model_provider")
+        && (!openai_mode(&installed)
+            || (installed.get("openai_base_url").is_some()
+                && current.get("openai_base_url") == installed.get("openai_base_url")))
         && current.get("model_catalog_json") == installed.get("model_catalog_json")
         && current.get("model_providers").and_then(|v| v.get(PROVIDER))
             == installed

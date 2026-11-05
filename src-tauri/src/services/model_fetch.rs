@@ -16,6 +16,8 @@ use std::time::Duration;
 pub struct FetchedModel {
     pub id: String,
     pub owned_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     #[serde(flatten, default)]
     pub(crate) context: crate::services::intent_routing::context::Metadata,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -24,6 +26,8 @@ pub struct FetchedModel {
     pub reasoning: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_modalities: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) service_tiers: Option<Vec<crate::services::intent_routing::speed::Tier>>,
 }
 
 impl FetchedModel {
@@ -37,7 +41,12 @@ impl FetchedModel {
         Self {
             id,
             owned_by,
+            display_name: entry["display_name"]
+                .as_str()
+                .or_else(|| entry["name"].as_str())
+                .map(str::to_owned),
             context: capability.context,
+            service_tiers: capability.service_tiers,
             reasoning_levels: Capability::has_reasoning_declaration(entry)
                 .then_some(capability.levels.clone()),
             reasoning: if capability.quiet {
@@ -59,6 +68,9 @@ impl FetchedModel {
 
     pub(crate) fn capability_entry(&self) -> serde_json::Value {
         let mut entry = serde_json::json!({});
+        if let Some(tiers) = &self.service_tiers {
+            entry["service_tiers"] = serde_json::json!(tiers);
+        }
         if let Some(levels) = &self.reasoning_levels {
             entry["reasoningLevels"] = serde_json::json!(levels);
         }

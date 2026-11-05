@@ -330,6 +330,29 @@ load the shared menu. Configuration success alone does not verify an upstream
 model; send a new message and inspect request statistics. No login credentials
 need to be deleted to resolve the inactive-profile conflict.
 
+The **Couldn't sign in to Gateway** notice can come from Desktop's startup
+connection check as well as a conversation request. Its wording alone does not
+establish whether the local credential or the upstream account was rejected.
+Expand **Details** and inspect the corresponding request's sanitized status
+before replacing an upstream key.
+
+Catalog synchronization repairs a missing or rejected readable key only in the
+journaled Desktop gateway profile, while retaining the active connection token.
+A changed gateway address, provider, authentication scheme, model list or applied
+profile still requires explicit recovery. On macOS an encrypted key cannot be
+verified from its saved ciphertext: ordinary refresh retains it only for the
+existing connection. A new connection writes its own token instead of reusing a
+seal that may contain a retired token. **Reapply** in Tools rebuilds that
+connection; fully quit and reopen Claude Desktop to load the new credential.
+Reapplying does not restart Desktop automatically.
+
+Like Magpie, the local gateway recognizes Desktop's one-token `.` connection
+probe, routes it to the current menu choice or the first visible model, and
+requests at least 16 output tokens for compatible GPT endpoints. The probe still
+calls the real upstream; an authentication failure is not replaced with a
+successful response. Encrypted-profile refresh and disconnect recovery retain
+user settings and the original restoration baseline.
+
 TRAE CN does not need to be open to select or edit a provider. Vary AI saves the selection locally and shows that client delivery is pending; keep Vary AI running and connect TRAE to apply it automatically. Switching to Official while offline also queues withdrawal of previously managed models. A successful local selection does not mean the closed client has already received it. Connection setup and auditing retain their existing consent requirements.
 
 In Settings → Advanced → Local routing, a selected TRAE CN or Doubao Work switch can be waiting for its client connection. The waiting hint means enablement was saved, but traffic is not yet protected. Open the client and follow the displayed connection instructions; deselecting the switch cancels the pending request. Waiting enablement does not show an active-routing success notification.
@@ -382,13 +405,15 @@ flow. Authentication files and unrelated settings are preserved.
 
 ### Codex stays on "Loading models..." after enabling routing
 
-Keep Vary AI and its local proxy running. After enabling the unified Codex model menu, fully quit and reopen Codex rather than only closing its window. Start a new conversation and select a published provider model or routing group. Existing conversations may keep their previous provider.
+Keep Vary AI and its local proxy running. After enabling the unified Codex model menu, fully quit and reopen Codex rather than only closing its window. With supported ChatGPT authentication, the connection keeps the native OpenAI provider; API-only or custom-provider connections use the VaryAI provider. Existing conversation provider records are synchronized in the background, separately from the model menu. Busy conversations are retried without changing the connection status or disabling model selection. If Codex itself reports a provider mismatch, close that conversation and let the background retry finish before reopening it.
 
-The current Codex routing switch represents a live connection, not a persisted startup preference. Normal application shutdown restores its configuration and removes its recovery receipt/catalogs; startup also recovers an interrupted projection without automatically reconnecting the menu. Consequently this switch returns to off after restart even when other agents resume ordinary proxy takeover. This is a lifecycle limitation, not evidence that routing groups or model windows were erased.
+Tools retains the requested Codex connection and selected shared model for startup recovery. Configuration receipts track ownership separately from that preference. Automatic startup recovery completes interrupted projection or conversation recovery before restoring the saved connection. A pending recovery receipt remains available until quiet conversation files and their SQLite provider rows agree. Turning a connection off restores its owned configuration fields without deleting conversation history.
 
-A partial leftover configuration can select `model_provider = "varyai-routing"` without a valid `model_catalog_json`, while retaining a raw upstream model ID instead of a published alias. The provider label alone does not prove that model-menu takeover is active. Older disconnects restored a partial baseline adopted during reconnect, so the orphan hint could return on every reopen. Explicit disconnect now also detaches recognized Vary routes from that restored baseline after making a private backup; automatic recovery continues to preserve it. The original writer of such a baseline must be established separately. Use VaryAI's explicit Codex reconnect/recovery flow to publish a complete catalog and current local credential; automatic refresh must not claim receiptless configuration. Reconnect keeps a private baseline backup and does not change the login file. If configuration was repaired after Codex's last model-list load, fully quit/reopen Codex so it reads the new projection. Do not manually invent a catalog path or delete recovery files.
+If **Apply again** reports that the connection cannot be safely updated, the live configuration and the saved ownership record differ; this does not establish that the user edited them manually. An older reapply implementation disconnected first, then rejected its own deferred recovery record when reconnecting while a conversation remained busy. The corrected explicit action writes the projection directly. When adopting changed configuration, it keeps a private copy of the old recovery record and preserves external settings as the next restore baseline. Busy conversation migration remains independent of configuration reapplication. Use a build containing this fix; do not delete the configuration, history, or recovery records to bypass the check.
 
-An older unified-menu writer always set `requires_openai_auth = false`. Codex then hid a preserved OpenAI login from account discovery even though `auth.json` was unchanged. Desktop authentication and workspace initialization could fail while the model picker stayed on "Loading models...". The writer now derives this flag from the effective authentication store: file-backed OpenAI login material keeps it enabled, absent or unsupported login material leaves it disabled, and keyring/auto stores preserve the active provider's policy because disk alone cannot establish their login state. An ephemeral store remains signed out.
+A partial leftover configuration can select `model_provider = "varyai"` without a valid `model_catalog_json`, while retaining a raw upstream model ID instead of a published alias. The provider label alone does not prove that model-menu takeover is active. Older disconnects restored a partial baseline adopted during reconnect, so the orphan hint could return on every reopen. Explicit disconnect now also detaches recognized Vary routes from that restored baseline after making a private backup; automatic recovery continues to preserve it. The original writer of such a baseline must be established separately. Use VaryAI's explicit Codex reconnect/recovery flow to publish a complete catalog and current local credential; automatic refresh must not claim receiptless configuration. Reconnect keeps a private baseline backup and does not change the login file. If configuration was repaired after Codex's last model-list load, fully quit/reopen Codex so it reads the new projection. Do not manually invent a catalog path or delete recovery files.
+
+An older unified-menu writer always set `requires_openai_auth = false`. Codex then hid a preserved ChatGPT login from account discovery even though `auth.json` was unchanged. Desktop authentication and workspace initialization could fail while the model picker stayed on "Loading models...". The writer now distinguishes ChatGPT sign-in from an API key: a supported ChatGPT sign-in keeps account discovery, while an API key alone does not require OpenAI authentication. Keyring/auto stores preserve the active provider's policy because disk alone cannot establish their login state. An ephemeral store remains signed out, and incomplete login-file reads preserve the established policy.
 
 The local `experimental_bearer_token` remains installed on the Vary AI provider and takes precedence for forwarded request authentication; the preserved OpenAI credential is not substituted for it. Publishing and restoring the menu do not rewrite `auth.json`. Refreshing or reconnecting with a fixed build repairs a still-owned projection; external configuration edits still require the normal conflict/recovery flow. Do not delete authentication files, conversation databases, or recovery receipts to clear a loading indicator. A stale desktop initialization failure can still require a full Codex restart after repairing configuration.
 
@@ -399,6 +424,20 @@ Earlier routing catalogs advertised a fixed 32,768-token window for every entry.
 The corrected backend retains explicit model windows, maximum windows, effective percentages and separate compaction thresholds through official discovery and Codex publication. Select **Reload** in Routing to replace an older account discovery cache, then reload Codex configuration or fully restart Codex; existing conversations may retain their initial model metadata. This requires the updated Rust backend, not just frontend hot reload. User-set Codex `model_context_window` and `model_auto_compact_token_limit` can still override catalog behavior.
 
 A group intentionally publishes no more than its smallest prepared destination's capacity, including inactive manual members that older conversations may still be bound to. Unknown destinations retain a conservative 32k fallback; no model capacity is inferred from its name. A relay with no exact-model capacity metadata can therefore keep both its direct entries and a mixed official/relay group at about 31k even after a successful Reload. Official discovery cannot establish the same-named relay model's capacity. Review the actual provider's exact-model catalog metadata rather than setting every model to 1M. Existing opaque continuations stay on their original account/model, and increasing a menu value never migrates them.
+
+### Codex says "This chat uses magpie, but your current provider is varyai"
+
+Codex refuses the resume before making an inference request when the saved
+conversation provider differs from the configured provider. For paginated history,
+updated VaryAI builds migrate the SQLite provider row alone, preserving the rollout
+bytes and pagination offsets. Older builds tried to rewrite the rollout too;
+changing a short provider ID to a longer one could therefore stay pending forever,
+while the reverse switch succeeded. The standalone provider ID is now `varyai`.
+
+Close the affected conversation to release Codex's writer lock, apply the Codex
+connection with an updated build, and allow the background retry to complete
+before reopening it. Recent writes also defer migration for one minute. Do not
+delete the conversation, change pagination offsets, or remove recovery records.
 
 ### Codex reports routing_unknown_continuation after reconnecting
 
@@ -556,3 +595,21 @@ readback. Open TRAE CN yourself, and restart it once after the initial bridge
 setup if requested. The floating assistant alone is not a supported chat window.
 Ordinary catalog refreshes preserve subsequent model choices made inside TRAE;
 explicit reapplication applies the preference saved in Vary again.
+
+### Codex subscription plan and sign-in status disagree
+
+The plan shown for a Codex account comes from local identity claims and can remain available after authorization is rejected. It does not establish that the credentials still work. Provider rows give known sign-in failures priority over the cached plan and show **Logged out** when a selected account needs reauthentication. Opening the list reads local observations without renewing credentials or probing the vendor.
+
+The account editor shows **Re-login required** and a **Re-login** action for rejected, missing, or unreadable credentials. Managed accounts use targeted device login, preserving their local account ID and provider bindings. Reauthenticating a native account selects the resulting managed credential in the current provider draft; save the draft to retain that choice. This action does not overwrite Codex's native login file. Successful login refreshes allowance and model observations while retaining unsaved model choices. Temporary network and allowance-service errors do not mark an account logged out. Definitive managed refresh-token rejections and allowance HTTP 401 observations are retained locally across restarts, and stale responses cannot mark a newer token generation as rejected.
+
+### Other subscription accounts need signing in again
+
+Claude, ChatGPT API, GitHub Copilot, Gemini CLI, Antigravity and Grok use the same sign-in status priority as Codex: known rejected credentials override a cached plan in the provider list. Each retained account row offers **Re-login** when its local status requires authentication. Plans are shown only when observed from provider metadata; an unknown plan is not evidence of a failed sign-in. Provider-list and account-status polling reads local state and does not probe subscription vendors.
+
+Google and ChatGPT API reauthentication validates the returned identity before updating the existing local account. Claude reauthentication runs in a separate managed home and keeps the existing provider binding only for the same login identity. The old credential remains intact if the new login fails or is cancelled. Copilot and Grok reuse their supported device login; signing in with a different identity adds that identity without silently changing the provider's account selection. Signing back into the bound account preserves selected models. Copilot's GitHub HTTP 401 responses and native subscriptions' definitive OAuth rejections are saved locally; rate limits, permission failures and service outages do not count as revocation. Known native subscription HTTP 401 responses also update the local status without changing the forwarded response.
+
+### Subscription account allowance and model controls
+
+The subscription provider editor reads allowance separately for each retained managed account. Claude uses its managed credential directory, Copilot and Grok use the explicit account ID, and Gemini CLI and Antigravity use the selected Google credential and project. Antigravity prefers shared quota groups when supplied and otherwise shows per-model windows. ChatGPT API has no separate allowance endpoint in this integration and says so. A missing field never implies a full allowance. Refresh failures preserve the last successful meters with a stale notice; a definitive rejected authorization clears the meters and refreshes local sign-in status. Raw vendor errors and credentials are not rendered or retained in the allowance query cache.
+
+Each account has a refresh action and removal action. Removing a managed Copilot or Grok account clears a matching provider draft selection after removal succeeds. The model section supports selecting all, selecting none, manual model IDs, catalog refresh and existing per-model preferences. These controls retain the provider's explicit account binding; they do not enable multi-account fallback for subscription types whose routing schema supports one account.
