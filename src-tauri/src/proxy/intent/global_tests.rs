@@ -786,11 +786,11 @@ async fn agent_model_switch_keeps_unsigned_reasoning_history_portable(
         .filter(|app| *app != "codex")
         .chain(std::iter::once("trae"))
     {
-        for protocol in [Protocol::Chat, Protocol::Anthropic] {
-            let endpoint = if protocol == Protocol::Chat {
-                "chat/completions"
-            } else {
-                "messages"
+        for protocol in [Protocol::Chat, Protocol::Anthropic, Protocol::Responses] {
+            let endpoint = match protocol {
+                Protocol::Chat => "chat/completions",
+                Protocol::Anthropic => "messages",
+                _ => "responses",
             };
             let url = format!(
                 "http://127.0.0.1:{}/connections/{app}/v1/{endpoint}",
@@ -816,6 +816,13 @@ async fn agent_model_switch_keeps_unsigned_reasoning_history_portable(
                     }
                     payload["max_tokens"] = json!(32);
                     payload["messages"][1] = json!({"role":"assistant","content":[thought,{"type":"text","text":"Synthetic previous answer"}]});
+                } else if protocol == Protocol::Responses {
+                    payload = json!({"model":group().alias(),"stream":stream,"input":[
+                        {"role":"user","content":"Synthetic greeting"},
+                        {"type":"reasoning","id":"rs_0","status":"completed","summary":[{"type":"summary_text","text":"Synthetic visible thought"}]},
+                        {"role":"assistant","content":"Synthetic previous answer"},
+                        {"role":"user","content":"Synthetic next question"}
+                    ]});
                 }
                 let response = client
                     .post(&url)
@@ -839,6 +846,9 @@ async fn agent_model_switch_keeps_unsigned_reasoning_history_portable(
                     .await?
                     .ok_or("missing request")?;
                 assert_eq!(body["model"], "grok-4.5");
+                if protocol == Protocol::Responses {
+                    assert_eq!(body["input"], payload["input"]);
+                }
                 assert!(body["input"]
                     .to_string()
                     .contains("Synthetic previous answer"));
@@ -847,14 +857,30 @@ async fn agent_model_switch_keeps_unsigned_reasoning_history_portable(
                 vec![
                     json!({"role":"assistant","content":"Synthetic answer","reasoning_details":[{"type":"reasoning.encrypted","data":"synthetic-opaque"}]}),
                 ]
-            } else {
+            } else if protocol == Protocol::Anthropic {
                 vec![
                     json!({"role":"assistant","content":[{"type":"thinking","thinking":"Synthetic thought","signature":"synthetic-seal"},{"type":"text","text":"Synthetic answer"}]}),
                     json!({"role":"assistant","content":[{"type":"redacted_thinking","data":"synthetic-opaque"},{"type":"text","text":"Synthetic answer"}]}),
                 ]
+            } else {
+                vec![
+                    json!({"type":"reasoning","id":"synthetic-unknown","summary":[{"type":"summary_text","text":"Synthetic thought"}],"encrypted_content":"synthetic-seal"}),
+                    json!({"type":"reasoning","id":"synthetic-unknown","summary":[]}),
+                    json!({"type":"item_reference","id":"synthetic-unknown"}),
+                ]
             };
             for assistant in opaque {
-                let blocked=client.post(&url).bearer_auth(format!("synthetic-{app}")).json(&json!({"model":group().alias(),"max_tokens":32,"messages":[assistant,{"role":"user","content":"Synthetic next question"}]})).send().await?;
+                let payload = if protocol == Protocol::Responses {
+                    json!({"model":group().alias(),"input":[assistant,{"role":"user","content":"Synthetic next question"}]})
+                } else {
+                    json!({"model":group().alias(),"max_tokens":32,"messages":[assistant,{"role":"user","content":"Synthetic next question"}]})
+                };
+                let blocked = client
+                    .post(&url)
+                    .bearer_auth(format!("synthetic-{app}"))
+                    .json(&payload)
+                    .send()
+                    .await?;
                 assert_eq!(blocked.status(), StatusCode::CONFLICT);
                 assert!(
                     rx.try_recv().is_err(),

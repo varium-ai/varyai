@@ -160,6 +160,13 @@ binding when selecting another model. This rule applies at the shared Agent
 ingress. Nonempty signatures and redacted thinking still require their original
 continuation owner; their validation is not bypassed by a model selection.
 
+The same rule covers complete Responses `reasoning.summary` text, including the
+visible Gemini summaries replayed by Grok Build. Their display item IDs do not
+establish continuation ownership or collide with opaque state from another chat.
+The original history is forwarded intact. Encrypted reasoning, empty or incomplete
+reasoning references, tool results and previous-response references retain their
+existing ownership checks.
+
 Desktop's automatically generated titles follow the lead model. The gateway
 recognizes Desktop's short tool-free requests and Claude Code's explicit title
 system prompt, preserving intentional classifier and subagent model choices.

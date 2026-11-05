@@ -661,6 +661,9 @@ impl Bindings {
         }
         if let Some(items) = body.get("input").and_then(Value::as_array) {
             for item in items {
+                if length::visible_reasoning(item) {
+                    continue;
+                }
                 if matches!(
                     item["type"].as_str(),
                     Some("function_call_output" | "function_call")
@@ -693,11 +696,12 @@ impl Bindings {
                 }
             }
             if items.iter().any(|v| {
-                v.get("encrypted_content").is_some()
-                    || !matches!(
-                        v.get("type").and_then(Value::as_str),
-                        None | Some("message" | "function_call_output")
-                    )
+                !length::visible_reasoning(v)
+                    && (v.get("encrypted_content").is_some()
+                        || !matches!(
+                            v.get("type").and_then(Value::as_str),
+                            None | Some("message" | "function_call_output")
+                        ))
             }) && selected.is_none()
             {
                 return Err(());
@@ -710,6 +714,9 @@ impl Bindings {
             .and_then(Value::as_array)
             .is_none_or(|items| {
                 items.iter().all(|item| {
+                    if length::visible_reasoning(item) {
+                        return true;
+                    }
                     if let Some(ciphertext) = item.get("encrypted_content").and_then(Value::as_str)
                     {
                         let key = continuation::hash("opaque", ciphertext);

@@ -62,6 +62,9 @@ fn references_with(body: &Value, contains: impl Fn(&str, &str) -> bool) -> bool 
     }
     body["input"].as_array().is_some_and(|items| {
         items.iter().any(|item| {
+            if length::visible_reasoning(item) {
+                return false;
+            }
             item["call_id"]
                 .as_str()
                 .is_some_and(|id| contains("call", id))
@@ -295,17 +298,18 @@ impl Conversations {
                 .and_then(Value::as_array)
                 .is_some_and(|items| {
                     items.iter().any(|i| {
-                        matches!(
-                            i["type"].as_str(),
-                            Some(
-                                "function_call"
-                                    | "function_call_output"
-                                    | "reasoning"
-                                    | "compaction"
-                                    | "compaction_summary"
-                                    | "item_reference"
+                        !length::visible_reasoning(i)
+                            && matches!(
+                                i["type"].as_str(),
+                                Some(
+                                    "function_call"
+                                        | "function_call_output"
+                                        | "reasoning"
+                                        | "compaction"
+                                        | "compaction_summary"
+                                        | "item_reference"
+                                )
                             )
-                        )
                     })
                 });
         let selected = if let Some(name) = name {
