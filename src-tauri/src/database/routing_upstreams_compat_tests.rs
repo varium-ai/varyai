@@ -37,6 +37,7 @@ fn key_pool_editor_preserves_private_keys_and_applies_enabled_preference_order(
     let db = Database::memory()?;
     let mut record = custom();
     record.transport = Some(ImportedTransport {
+        primary_name: Some("Personal".into()),
         keys: vec![ImportedKey {
             id: "backup".into(),
             name: "Backup".into(),
@@ -63,6 +64,8 @@ fn key_pool_editor_preserves_private_keys_and_applies_enabled_preference_order(
     let provider = db.routing_providers()?.remove(0);
     let candidates = variants(&provider);
     assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0].settings_config["routingKeyLabel"], "Backup");
+    assert_eq!(candidates[1].settings_config["routingKeyLabel"], "Personal");
     assert!(candidates
         .iter()
         .all(|provider| provider.settings_config.get("routingKeyId").is_none()));
@@ -78,6 +81,10 @@ fn key_pool_editor_preserves_private_keys_and_applies_enabled_preference_order(
     value["transport"]["primaryOff"] = json!(true);
     let disabled = db.save_routing_upstream(serde_json::from_value(value)?)?;
     assert_eq!(variants(&db.routing_providers()?.remove(0)).len(), 1);
+    assert!(variants(&db.routing_providers()?.remove(0))[0]
+        .settings_config
+        .get("routingKeyLabel")
+        .is_none());
     let mut value = serde_json::to_value(disabled)?;
     value["transport"]["keys"][0]["enabled"] = json!(false);
     db.save_routing_upstream(serde_json::from_value(value)?)?;

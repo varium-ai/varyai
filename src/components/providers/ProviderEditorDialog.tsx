@@ -20,6 +20,7 @@ import type { GlobalProviderPreset } from "@/config/globalProviderPresets";
 import { ProviderModelPreferences } from "./ProviderModelPreferences";
 import { CodexProviderFields } from "./CodexProviderFields";
 import { ProviderKeysField } from "./ProviderKeysField";
+import { SubscriptionProviderFields } from "./SubscriptionProviderFields";
 
 type Format = GlobalProviderPreset["apiFormat"];
 export function providerModelId(value: unknown): string {
@@ -279,7 +280,13 @@ export function ProviderEditorDialog({
   let site = "";
   try {
     const url = new URL(
-      draft.codex ? "https://chatgpt.com" : (source?.baseUrl ?? ""),
+      draft.codex
+        ? "https://chatgpt.com"
+        : draft.source.kind === "subscription"
+          ? draft.source.provider === "github_copilot"
+            ? "https://github.com"
+            : "https://grok.com"
+          : (source?.baseUrl ?? ""),
     );
     if (["https:", "http:"].includes(url.protocol)) site = url.origin;
   } catch {
@@ -421,10 +428,23 @@ export function ProviderEditorDialog({
                   {t("common.loading")}
                 </p>
               )}
-              {!source && !draft.codex && !loading && !error && (
-                <p className="pv-hint" role="status">
-                  {t("providerEditor.importedAccountHint")}
-                </p>
+              {!source &&
+                draft.source.kind !== "subscription" &&
+                !draft.codex &&
+                !loading &&
+                !error && (
+                  <p className="pv-hint" role="status">
+                    {t("providerEditor.importedAccountHint")}
+                  </p>
+                )}
+              {draft.source.kind === "subscription" && (
+                <SubscriptionProviderFields
+                  draft={draft}
+                  disabled={busy || probing}
+                  onChange={onDraftChange}
+                  onError={onError}
+                  onBusyChange={setAccountBusy}
+                />
               )}
               {draft.codex && (
                 <CodexProviderFields

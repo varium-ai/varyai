@@ -33,6 +33,13 @@ pub(crate) async fn forward(
     history: Arc<CodexChatHistoryStore>,
     shadow: Arc<GeminiShadowStore>,
 ) -> Result<ProxyResponse, ProxyError> {
+    if crate::services::subscription_provider::binding(upstream).is_some()
+        && upstream.settings_config["routingSubscriptionResolved"] != true
+    {
+        return Err(ProxyError::AuthError(
+            "Subscription account is unavailable".into(),
+        ));
+    }
     if upstream.uses_managed_account_auth()
         || upstream
             .meta
@@ -465,6 +472,64 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         (format!("http://{address}"), rx, task)
+    }
+
+    #[tokio::test]
+    async fn subscription_bridge_requires_resolution_and_preserves_bearer_and_client_headers() {
+        let (base, mut captured, task) = upstream(Protocol::Chat).await;
+        let mut provider = provider(&base, Protocol::Chat);
+        provider.settings_config["routingSubscription"] =
+            json!({"provider":"github_copilot","accountId":"fixture-account"});
+        let body = json!({"model":"exact-subscription-model","messages":[{"role":"user","content":"synthetic"}],"max_tokens":32});
+        let rejected = forward(
+            &state(),
+            Protocol::Anthropic,
+            &provider,
+            &http::Method::POST,
+            "/v1/messages",
+            &body,
+            &HeaderMap::new(),
+            &http::Extensions::new(),
+            None,
+            Arc::default(),
+            Arc::default(),
+        )
+        .await;
+        assert!(matches!(rejected, Err(ProxyError::AuthError(_))));
+        assert!(captured.try_recv().is_err());
+        provider.settings_config["routingSubscriptionResolved"] = json!(true);
+        provider
+            .meta
+            .as_mut()
+            .expect("fixture metadata")
+            .local_proxy_request_overrides = Some(crate::provider::LocalProxyRequestOverrides {
+            headers: [("copilot-integration-id".into(), "vscode-chat".into())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        });
+        let response = forward(
+            &state(),
+            Protocol::Anthropic,
+            &provider,
+            &http::Method::POST,
+            "/v1/messages",
+            &body,
+            &HeaderMap::new(),
+            &http::Extensions::new(),
+            None,
+            Arc::default(),
+            Arc::default(),
+        )
+        .await
+        .expect("resolved bridge");
+        assert!(response.status().is_success());
+        let (_, headers, sent) = captured.recv().await.expect("synthetic request");
+        assert_eq!(headers["authorization"], "Bearer synthetic-source-key");
+        assert_eq!(headers["copilot-integration-id"], "vscode-chat");
+        assert_eq!(sent["model"], "exact-subscription-model");
+        assert!(!headers.contains_key("x-api-key"));
+        task.abort();
     }
 
     #[tokio::test]

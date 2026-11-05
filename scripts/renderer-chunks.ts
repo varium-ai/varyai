@@ -69,6 +69,8 @@ export function rendererChunk(id: string): string | undefined {
     return "provider-presets";
   }
   if (relative === "utils/grokBuildConfig.ts") return "provider-presets";
+  // Provider and routing screens share icons without depending on each other's UI.
+  if (relative === "components/providers/UpstreamIcon.tsx") return "app-shared";
   if (
     [
       "components/providers/forms/ConnectionPresetPicker.tsx",

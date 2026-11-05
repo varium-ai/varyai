@@ -119,6 +119,7 @@ describe("Agent installation shortcuts", () => {
     expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
   });
   it("requires install consent, guards duplicate clicks, refreshes detection and version, and never connects automatically", async () => {
+    detected.claude = true;
     let finish!: () => void;
     vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
       async () => {
@@ -154,6 +155,7 @@ describe("Agent installation shortcuts", () => {
     expect(
       screen.getByRole("button", { name: "agentInstall.installing" }),
     ).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "apps.claude" })).toBeEnabled();
     finish();
     expect(
       await screen.findByText(/agentInstall.installed/),

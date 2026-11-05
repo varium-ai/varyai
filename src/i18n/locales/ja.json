@@ -5074,8 +5074,7 @@
     "restartConfirmationRequired": "アプリの再起動を確認してください。",
     "officialModels": "公式モデル",
     "nativeCatalogHint": "Vary が提供する共有モデル一覧です。クライアントで一覧を読み込んだ後、チャットモデルを選択してください。",
-    "nativeCatalogDisconnectedHint": "共有モデル一覧のプレビューです。接続を有効にしてモデルを追加した後、クライアント内でチャットモデルを選択してください。",
-    "nativeCatalogPendingHint": "共有モデル一覧のプレビューです。TRAE ブリッジの同期はまだ完了していません。完了後に TRAE 内でモデルを選択してください。"
+    "nativeCatalogDisconnectedHint": "共有モデル一覧のプレビューです。接続を有効にしてモデルを追加した後、クライアント内でチャットモデルを選択してください。"
   },
   "providerFlow": {
     "region": "地域",
@@ -5434,10 +5433,17 @@
     "parallelProgress": "{{names}} を更新中…（{{completed}} / {{count}} 完了）",
     "checking": "インストールを確認中…",
     "awaitingConfirmation": "確認待ち…",
-    "summary": "{{count}} 個中 {{ok}} 個のツールを更新しました。",
-    "changed": "{{app}} {{from}} → {{to}}",
+    "summary": "{{count}} 個のツールを更新しました。",
+    "summaryPartial": "更新結果：{{outcomes}}。",
+    "summaryCounts": {
+      "changed": "{{count}} 件成功",
+      "failed": "{{count}} 件失敗",
+      "unverified": "{{count}} 件未確認",
+      "preflightFailed": "{{count}} 件未開始"
+    },
+    "changed": "{{app}} を更新しました：{{from}} → {{to}}",
     "failed": "{{app}} を更新できませんでした。再試行するか、元のインストーラーをご利用ください。",
-    "unverified": "{{app}}：新しいインストール済みバージョンを確認できませんでした。",
+    "unverified": "{{app}} の更新結果を確認できませんでした。インストール済みのバージョンを確認してください。",
     "preflightFailed": "{{app}}：インストールの確認に失敗したため、更新は開始していません。",
     "confirmTitle": "インストールの更新を確認",
     "confirmHint": "{{names}} には複数のインストールがあるか、更新先が不明です。更新は一つのインストールにのみ適用される可能性があります。検出した方法で続行しますか？",
@@ -5644,5 +5650,14 @@
       "switchAndCheckin": "切り替えてチェックイン",
       "switchHint": "チェックイン時に Doubao Work をこのアカウントに切り替え、完了後もそのままにします。"
     }
+  },
+  "subscriptionProvider": {
+    "addAccount": "アカウントを追加",
+    "deviceHint": "このコードを使ってブラウザーでログインしてください。",
+    "loginHint": "サブスクリプションでログイン、APIキー不要",
+    "accountHint": "このプロバイダーで使用するアカウントを選択します。デフォルトアカウントを変更しても、この紐付けは変わりません。",
+    "fetchHint": "アカウントを選択し、利用可能なモデルを取得してください。",
+    "statusFailed": "アカウントを読み込めません。再試行してください。",
+    "openLogin": "ログインページを開く"
   }
 }

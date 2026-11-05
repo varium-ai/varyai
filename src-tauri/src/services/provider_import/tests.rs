@@ -102,7 +102,7 @@ fn provider_backup_import_preserves_models_protocols_and_key_pool_and_deduplicat
     let (_dir, paths) = fixture()?;
     write(
         &paths.provider_backup,
-        json!({"providers":[{"id":"relay","name":"Relay","chat":"https://relay.example/v1","responses":"https://relay.example/v1","anthropic":"https://relay.example/anthropic","baseAPI":"responses","key":"synthetic-first","keys":[{"name":"Backup","key":"synthetic-second","off":true}],"models":["vendor/exact"],"unlisted":true}]}),
+        json!({"providers":[{"id":"relay","name":"Relay","chat":"https://relay.example/v1","responses":"https://relay.example/v1","anthropic":"https://relay.example/anthropic","baseAPI":"responses","key":"synthetic-first","keyName":"Personal","keys":[{"name":"Backup","key":"synthetic-second","off":true}],"models":["vendor/exact"],"unlisted":true}]}),
     )?;
     let before = std::fs::read(&paths.provider_backup)?;
     let db = Database::memory()?;
@@ -132,6 +132,13 @@ fn provider_backup_import_preserves_models_protocols_and_key_pool_and_deduplicat
         true
     );
     assert_eq!(saved.transport.as_ref().ok_or("transport")?.keys.len(), 1);
+    assert_eq!(
+        saved
+            .transport
+            .as_ref()
+            .and_then(|transport| transport.primary_name.as_deref()),
+        Some("Personal")
+    );
     assert!(saved.transport.as_ref().ok_or("transport")?.keys[0]
         .key
         .is_none());

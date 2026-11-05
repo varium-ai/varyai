@@ -75,8 +75,14 @@ pub(super) fn uses_shared_packages(
     let path = path.replace('\\', "/").to_ascii_lowercase();
     let real = real.replace('\\', "/").to_ascii_lowercase();
     match tool {
-        "claude" => !(real.contains("/.local/share/claude/") || real.contains("/claude/versions/")),
-        "opencode" => !(path.contains("/.opencode/bin/") && real.contains("/.opencode/bin/")),
+        "claude" => {
+            cfg!(target_os = "windows")
+                || !(real.contains("/.local/share/claude/") || real.contains("/claude/versions/"))
+        }
+        "opencode" => {
+            cfg!(target_os = "windows")
+                || !(path.contains("/.opencode/bin/") && real.contains("/.opencode/bin/"))
+        }
         "hermes" => false,
         _ => true,
     }
@@ -113,5 +119,25 @@ mod tests {
         }
         drop(first);
         assert!(waiting.await.is_some());
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_waiting_task_releases_its_tool_reservation() {
+        let coordinator = std::sync::Arc::new(LifecycleCoordinator::default());
+        let first = coordinator.package_permit(true).await;
+        let (ready, started) = tokio::sync::oneshot::channel();
+        let task_coordinator = coordinator.clone();
+        let task = tokio::spawn(async move {
+            let _tool = task_coordinator.reserve(&["codex"]).unwrap();
+            ready.send(()).unwrap();
+            let _permit = task_coordinator.package_permit(true).await;
+        });
+        started.await.unwrap();
+        assert!(coordinator.reserve(&["codex"]).is_err());
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(coordinator.reserve(&["codex"]).is_ok());
+        drop(first);
+        assert!(coordinator.package_permit(true).await.is_some());
     }
 }

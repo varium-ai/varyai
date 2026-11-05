@@ -27,7 +27,7 @@
 }
 .mp-sortable-handle:hover,
 .mp-sortable-handle:focus-visible {
-  background: var(--mp-pill);
+  background: var(--mp-hover);
   color: var(--mp-fg);
 }
 .mp-sortable-handle:focus-visible {
@@ -79,7 +79,7 @@
   left: var(--mp-sortable-divider-left, 0);
   right: var(--mp-sortable-divider-right, 0);
   height: 1px;
-  background: var(--mp-line);
+  background: var(--mp-list-divider);
   pointer-events: none;
 }
 .mp-sortable-row.dragging::before,

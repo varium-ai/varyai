@@ -5075,8 +5075,7 @@
     "restartConfirmationRequired": "請先確認重新啟動此應用程式。",
     "officialModels": "官方模型",
     "nativeCatalogHint": "Vary 提供的共享模型目錄。用戶端載入目錄後，請在用戶端內選擇聊天模型。",
-    "nativeCatalogDisconnectedHint": "共享模型目錄預覽。開啟接入開關後會加入這些模型，再到用戶端內選擇聊天模型。",
-    "nativeCatalogPendingHint": "共享模型目錄預覽。TRAE 橋接仍待同步，完成後請在 TRAE 內選擇模型。"
+    "nativeCatalogDisconnectedHint": "共享模型目錄預覽。開啟接入開關後會加入這些模型，再到用戶端內選擇聊天模型。"
   },
   "providerFlow": {
     "region": "地區",
@@ -5435,10 +5434,17 @@
     "parallelProgress": "正在更新 {{names}}…（已完成 {{completed}} / {{count}}）",
     "checking": "正在檢查安裝…",
     "awaitingConfirmation": "等待確認…",
-    "summary": "{{count}} 個工具中 {{ok}} 個已更新。",
-    "changed": "{{app}} {{from}} → {{to}}",
+    "summary": "已更新 {{count}} 個工具。",
+    "summaryPartial": "本次更新：{{outcomes}}。",
+    "summaryCounts": {
+      "changed": "{{count}} 個成功",
+      "failed": "{{count}} 個失敗",
+      "unverified": "{{count}} 個結果待確認",
+      "preflightFailed": "{{count}} 個未開始"
+    },
+    "changed": "{{app}} 已更新：{{from}} → {{to}}",
     "failed": "{{app}} 更新失敗。請重試或使用原安裝方式更新。",
-    "unverified": "{{app}}：未能確認已安裝較新的版本，請檢查安裝。",
+    "unverified": "{{app}} 更新結果待確認。請檢查已安裝版本。",
     "preflightFailed": "{{app}}：安裝檢查失敗，未開始更新。",
     "confirmTitle": "確認更新安裝",
     "confirmHint": "{{names}} 存在多處安裝，或無法確定更新目標。更新程式可能只影響其中一處，是否繼續使用偵測到的更新方式？",
@@ -5645,5 +5651,14 @@
       "switchAndCheckin": "切換並簽到",
       "switchHint": "簽到時會將豆包 Work 切換到此帳號，完成後保留在該帳號。"
     }
+  },
+  "subscriptionProvider": {
+    "addAccount": "新增帳號",
+    "deviceHint": "請在瀏覽器中使用此驗證碼完成登入。",
+    "loginHint": "訂閱帳號登入，無需 API 金鑰",
+    "accountHint": "選擇此供應商使用的帳號；變更預設帳號不會改變此綁定。",
+    "fetchHint": "選擇帳號後，取得該帳號可用的模型。",
+    "statusFailed": "無法載入帳號，請重試。",
+    "openLogin": "開啟登入頁面"
   }
 }

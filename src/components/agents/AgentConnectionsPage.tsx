@@ -26,7 +26,6 @@ import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { SharedModelPicker } from "@/components/models/SharedModelPicker";
 import { ModelPickerPopoverContent } from "@/components/models/ModelPickerPopoverContent";
 import { AgentModelVisibility } from "./AgentModelVisibility";
-import { LongConversationSettings } from "./LongConversationSettings";
 import { SortableAgentRow } from "./SortableAgentRow";
 import { WorkspaceDragOverlay } from "@/components/WorkspaceDragOverlay";
 import { restrictWorkspaceSort } from "@/lib/workspaceSorting";
@@ -140,10 +139,7 @@ export function AgentConnectionsPage({
     Partial<Record<AppId, ConnectionOperation>>
   >({});
   const operationLocks = useRef(new Set<AppId>());
-  const [sharedSettingsBusy, setSharedSettingsBusy] = useState(false);
-  const busy = sharedSettingsBusy || Object.keys(operations).length > 0;
-  const rowBusy = (app: AppId | null) =>
-    sharedSettingsBusy || (app !== null && !!operations[app]);
+  const busy = Object.keys(operations).length > 0;
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<AppId | null>(null);
   const [appOrder, setAppOrder] = useState(readAgentOrder);
@@ -165,10 +161,11 @@ export function AgentConnectionsPage({
   const updates = useAgentUpdates(
     APP_IDS.filter((app) => installations.data?.[app]),
   );
+  const rowBusy = (app: AppId | null) =>
+    app !== null && (!!operations[app] || updates.isBusy(app));
   useWorkspaceEditing(false, !!busy, onEditingChange);
   function beginOperation(app: AppId, operation: ConnectionOperation) {
-    if (updates.busy || sharedSettingsBusy || operationLocks.current.has(app))
-      return false;
+    if (updates.isBusy(app) || operationLocks.current.has(app)) return false;
     operationLocks.current.add(app);
     setOperations((current) => ({ ...current, [app]: operation }));
     return true;
@@ -366,6 +363,15 @@ export function AgentConnectionsPage({
         t("agentConnections.pickModel"))
       : nativeLabel;
     const detailsId = `${pageId}-${app}-details`;
+    const doubaoLauncher = app === "doubaowork" && !state?.configured && (
+      <Button
+        size="sm"
+        disabled={rowBusy(app) || states.isError}
+        onClick={() => void launchDoubao(enabled)}
+      >
+        {t("homeAudit.doubaoLaunch")}
+      </Button>
+    );
     const status = states.isError
       ? "unavailable"
       : state?.recoveryPending
@@ -402,7 +408,7 @@ export function AgentConnectionsPage({
           <button
             type="button"
             className="mp-agent-start"
-            disabled={rowBusy(app) || updates.busy || catalog.isPending}
+            disabled={rowBusy(app) || catalog.isPending}
             aria-label={`${t("agentConnections.modelList")} ${name(app)}`}
           >
             <span>
@@ -448,31 +454,39 @@ export function AgentConnectionsPage({
         app={app}
         name={name(app)}
         sortable={!compact}
-        className={`mp-agent-row${expanded === app ? " expanded" : ""}`}
+        className={`mp-agent-row${compact && expanded === app ? " expanded" : ""}`}
         aria-label={t(`apps.${app}`)}
-        onClick={(event) => {
-          if (
-            event.currentTarget.contains(event.target as Node) &&
-            !(event.target as Element).closest(
-              "button, a, input, label, select, textarea, [role='button'], [role='switch'], [role='combobox'], .mp-agent-expanded",
-            ) &&
-            window.getSelection()?.isCollapsed !== false
-          )
-            setExpanded(expanded === app ? null : app);
-        }}
+        onClick={
+          compact
+            ? (event) => {
+                if (
+                  event.currentTarget.contains(event.target as Node) &&
+                  !(event.target as Element).closest(
+                    "button, a, input, label, select, textarea, [role='button'], [role='switch'], [role='combobox'], .mp-agent-expanded",
+                  ) &&
+                  window.getSelection()?.isCollapsed !== false
+                )
+                  setExpanded(expanded === app ? null : app);
+              }
+            : undefined
+        }
       >
         <div className="mp-agent-icon">
           <ProviderIcon
             icon={APP_ICON_NAME[app]}
             name={t(`apps.${app}`)}
-            size={22}
+            size={compact ? 22 : 32}
           />
         </div>
         <div className="mp-agent-who">
           <div className="mp-agent-name">
             <h2>{name(app)}</h2>
             {!compact && (
-              <AgentVersionTag app={app} updates={updates} disabled={busy} />
+              <AgentVersionTag
+                app={app}
+                updates={updates}
+                disabled={rowBusy(app)}
+              />
             )}
             {app === "doubaowork" && (
               <span className="mp-agent-note">
@@ -504,7 +518,7 @@ export function AgentConnectionsPage({
                     ? "agentConnections.bridgeHint"
                     : "agentConnections.reapplyHint",
                 )}
-                disabled={rowBusy(app) || updates.busy || catalog.isPending}
+                disabled={rowBusy(app) || catalog.isPending}
                 onClick={() => void reapply(app)}
               >
                 <RefreshCw
@@ -526,7 +540,7 @@ export function AgentConnectionsPage({
                   type="button"
                   className="mp-agent-fix"
                   aria-label={t("agentConnections.restart")}
-                  disabled={rowBusy(app) || updates.busy}
+                  disabled={rowBusy(app)}
                   onClick={() => setRestarting(app)}
                 >
                   <RefreshCw
@@ -565,24 +579,26 @@ export function AgentConnectionsPage({
               : currentModel}
           </span>
         )}
-        <Button
-          variant="ghost"
-          className="mp-agent-next"
-          size="sm"
-          aria-label={`${t("agentConnections.details")} ${name(app)}`}
-          aria-expanded={expanded === app}
-          aria-controls={expanded === app ? detailsId : undefined}
-          onClick={() => setExpanded(expanded === app ? null : app)}
-        >
-          <span className={compact ? "sr-only" : undefined}>
-            {t(
-              expanded === app
-                ? "agentConnections.collapse"
-                : "agentConnections.details",
-            )}
-          </span>
-          <ChevronRight size={10} />
-        </Button>
+        {(compact || app === "trae") && (
+          <Button
+            variant="ghost"
+            className="mp-agent-next"
+            size="sm"
+            aria-label={`${t("agentConnections.details")} ${name(app)}`}
+            aria-expanded={expanded === app}
+            aria-controls={expanded === app ? detailsId : undefined}
+            onClick={() => setExpanded(expanded === app ? null : app)}
+          >
+            <span className="sr-only">
+              {t(
+                expanded === app
+                  ? "agentConnections.collapse"
+                  : "agentConnections.details",
+              )}
+            </span>
+            <ChevronRight size={10} />
+          </Button>
+        )}
         <div
           className={compact ? "mp-agent-panel-controls" : "contents"}
           hidden={compact && expanded !== app}
@@ -594,9 +610,8 @@ export function AgentConnectionsPage({
               connected={enabled}
               models={catalog.data ?? []}
               disabled={
-                sharedSettingsBusy ||
                 (!!operations[app] && operations[app] !== "visibility") ||
-                updates.busy ||
+                updates.isBusy(app) ||
                 !!state?.recoveryPending ||
                 states.isPending ||
                 states.isError ||
@@ -630,7 +645,6 @@ export function AgentConnectionsPage({
                   className="mp-agent-start"
                   disabled={
                     rowBusy(app) ||
-                    updates.busy ||
                     states.isPending ||
                     states.isError ||
                     (!!state?.recoveryPending &&
@@ -736,7 +750,6 @@ export function AgentConnectionsPage({
             aria-busy={!!operations[app]}
             disabled={
               rowBusy(app) ||
-              updates.busy ||
               states.isPending ||
               states.isError ||
               (catalog.isPending && !enabled && app !== "doubaowork")
@@ -746,7 +759,7 @@ export function AgentConnectionsPage({
             }
           />
         </div>
-        {expanded === app && (
+        {expanded === app && (compact || app === "trae") && (
           <div
             id={detailsId}
             className="mp-agent-expanded"
@@ -754,25 +767,21 @@ export function AgentConnectionsPage({
             aria-label={`${t("agentConnections.details")} ${name(app)}`}
           >
             {compact && (
-              <AgentVersionTag app={app} updates={updates} disabled={busy} />
+              <AgentVersionTag
+                app={app}
+                updates={updates}
+                disabled={rowBusy(app)}
+              />
             )}
             {((app === "doubaowork" && !state?.configured) ||
               (enabled && !state?.recoveryPending && app !== "doubaowork")) && (
               <div className="mp-agent-detail-actions">
-                {app === "doubaowork" && !state?.configured && (
-                  <Button
-                    size="sm"
-                    disabled={rowBusy(app) || updates.busy || states.isError}
-                    onClick={() => void launchDoubao(enabled)}
-                  >
-                    {t("homeAudit.doubaoLaunch")}
-                  </Button>
-                )}
+                {doubaoLauncher}
                 {enabled && !state?.recoveryPending && app !== "doubaowork" && (
                   <Button
                     size="sm"
                     variant="ghost"
-                    disabled={rowBusy(app) || updates.busy || states.isError}
+                    disabled={rowBusy(app) || states.isError}
                     onClick={() => openSetup(app)}
                   >
                     {t("agentConnections.individual")}
@@ -793,11 +802,17 @@ export function AgentConnectionsPage({
             )}
             {app === "workbuddy" && <WorkBuddyCheckinPanel />}
             {app === "doubaowork" && <DoubaoWorkCheckinPanel />}
-            {!compact && ["codex", "claude", "grokbuild"].includes(app) && (
-              <LongConversationSettings
-                disabled={busy || updates.busy}
-                onBusyChange={setSharedSettingsBusy}
-              />
+          </div>
+        )}
+        {!compact && (app === "workbuddy" || app === "doubaowork") && (
+          <div className="mp-agent-checkin">
+            {doubaoLauncher && (
+              <div className="mp-agent-detail-actions">{doubaoLauncher}</div>
+            )}
+            {app === "workbuddy" ? (
+              <WorkBuddyCheckinPanel />
+            ) : (
+              <DoubaoWorkCheckinPanel />
             )}
           </div>
         )}
@@ -900,7 +915,7 @@ export function AgentConnectionsPage({
           </span>
         </summary>
         <div className="mp-agent-more-body">
-          <div className="divide-y">
+          <div className="mp-agent-install-list divide-y">
             {other.map((app) => (
               <div
                 key={app}
@@ -909,11 +924,22 @@ export function AgentConnectionsPage({
                 className="mp-agent-install-row"
               >
                 <div>
-                  <span>{name(app)}</span>
+                  {compact && (
+                    <span className="mp-agent-install-icon">
+                      <ProviderIcon
+                        icon={APP_ICON_NAME[app]}
+                        name={name(app)}
+                        size={22}
+                      />
+                    </span>
+                  )}
+                  <span className="mp-agent-install-name" title={name(app)}>
+                    {name(app)}
+                  </span>
                   <AgentVersionTag
                     app={app}
                     updates={updates}
-                    disabled={!!busy}
+                    disabled={rowBusy(app)}
                   />
                 </div>
                 <div className="mp-agent-install-actions">
@@ -923,7 +949,7 @@ export function AgentConnectionsPage({
                     <AgentInstallButton
                       app={app}
                       updates={updates}
-                      disabled={!!busy}
+                      disabled={rowBusy(app)}
                       onSelect={() =>
                         updates.requestInstall(app, websites[app])
                       }
@@ -934,11 +960,7 @@ export function AgentConnectionsPage({
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={
-                          !installations.data?.[app] ||
-                          rowBusy(app) ||
-                          updates.busy
-                        }
+                        disabled={!installations.data?.[app] || rowBusy(app)}
                         onClick={() => connect(app)}
                       >
                         {t("agentConnections.connect")}
@@ -964,7 +986,7 @@ export function AgentConnectionsPage({
             variant="ghost"
             size="sm"
             className="mt-3"
-            disabled={updates.busy || installations.isFetching}
+            disabled={installations.isFetching}
             onClick={() =>
               void Promise.all([
                 client.invalidateQueries({

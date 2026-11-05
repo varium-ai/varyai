@@ -212,7 +212,7 @@ export function ProfileSwitcher({
             title={t("profiles.bundle.switcherHint")}
             className={cn(
               "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium transition-colors",
-              "hover:bg-black/5 dark:hover:bg-white/5",
+              "hover:bg-[var(--mp-hover)]",
               currentProfile ? "text-foreground" : "text-muted-foreground",
             )}
           >

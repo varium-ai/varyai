@@ -5150,8 +5150,7 @@
     "restartConfirmationRequired": "Confirm before restarting this application.",
     "officialModels": "Official models",
     "nativeCatalogHint": "Shared models provided by Vary. Choose the chat model inside the client after it loads this catalog.",
-    "nativeCatalogDisconnectedHint": "Preview of the shared catalog. Enable the connection to add these models, then choose a chat model inside the client.",
-    "nativeCatalogPendingHint": "Preview of the shared catalog. TRAE bridge sync is still pending; choose a model inside TRAE after sync completes."
+    "nativeCatalogDisconnectedHint": "Preview of the shared catalog. Enable the connection to add these models, then choose a chat model inside the client."
   },
   "providerFlow": {
     "region": "Region",
@@ -5510,10 +5509,17 @@
     "parallelProgress": "Updating {{names}}… ({{completed}} / {{count}} completed)",
     "checking": "Checking installations…",
     "awaitingConfirmation": "Waiting for confirmation…",
-    "summary": "{{ok}} of {{count}} agents updated.",
-    "changed": "{{app}} {{from}} → {{to}}",
+    "summary": "{{count}} tools updated.",
+    "summaryPartial": "Update results: {{outcomes}}.",
+    "summaryCounts": {
+      "changed": "{{count}} updated",
+      "failed": "{{count}} failed",
+      "unverified": "{{count}} unverified",
+      "preflightFailed": "{{count}} not started"
+    },
+    "changed": "{{app}} updated: {{from}} → {{to}}",
     "failed": "{{app}} could not be updated. Try again or use its original installer.",
-    "unverified": "{{app}}: a newer installed version could not be verified. Check its installation.",
+    "unverified": "{{app}}: the update result could not be verified. Check the installed version.",
     "preflightFailed": "{{app}}: installation check failed; no update was started.",
     "confirmTitle": "Confirm installation update",
     "confirmHint": "{{names}} has multiple installations or an uncertain update target. The updater may affect only one installation. Continue using the detected update method?",
@@ -5720,5 +5726,14 @@
       "switchAndCheckin": "Switch and check in",
       "switchHint": "Check-in switches Doubao Work to this account and leaves it selected."
     }
+  },
+  "subscriptionProvider": {
+    "addAccount": "Add account",
+    "deviceHint": "Complete sign-in in your browser using this code.",
+    "loginHint": "Sign in with your subscription, no API key required",
+    "accountHint": "Choose the account this provider will use. Changing the default account does not change this binding.",
+    "fetchHint": "Choose an account, then fetch its available models.",
+    "statusFailed": "Unable to load accounts. Please retry.",
+    "openLogin": "Open sign-in page"
   }
 }

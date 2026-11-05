@@ -51,6 +51,9 @@ vi.mock("@/lib/api/routingTrace", () => ({
     })),
   },
 }));
+vi.mock("@/lib/api/routingUpstreams", () => ({
+  routingUpstreamsApi: { list: vi.fn(async () => []) },
+}));
 vi.mock("@/lib/api/intentRouting", () => ({
   intentRoutingApi: {
     list: vi.fn<() => Promise<RoutingCatalog>>(),
@@ -165,11 +168,23 @@ it("renders exactly three tabs and compact agents, never the main sidebar", asyn
   expect(screen.getByTestId("compact-agents")).toHaveTextContent("true");
   expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   expect(screen.getByText("top")).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "trayPanel.manageRouting" }),
+  ).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("tab", { name: "trayPanel.routing" }));
   expect(
     await screen.findByText("routingPage.gatewayStopped"),
   ).toBeInTheDocument();
   expect(localStorage.getItem("vary:tray-tab")).toBe("routing");
+  const details = screen.getByRole("button", {
+    name: "trayPanel.manageRouting",
+  });
+  expect(details.closest("footer")).toBeInTheDocument();
+  expect(details.nextElementSibling).toBe(
+    screen.getByRole("button", { name: "trayPanel.quit" }),
+  );
+  fireEvent.click(details);
+  expect(trayPanelApi.open).toHaveBeenCalledWith("routing");
   fireEvent.click(screen.getByRole("button", { name: "trayPanel.openMain" }));
   expect(trayPanelApi.open).toHaveBeenCalledWith("routing");
 });
@@ -222,6 +237,15 @@ it("shows configured protection separately from the stopped gateway", async () =
   expect(
     await screen.findByText("trayPanel.securityStopped"),
   ).toBeInTheDocument();
+  const details = screen.getByRole("button", {
+    name: "trayPanel.manageSecurity",
+  });
+  expect(details.closest("footer")).toBeInTheDocument();
+  expect(details.nextElementSibling).toBe(
+    screen.getByRole("button", { name: "trayPanel.quit" }),
+  );
+  fireEvent.click(details);
+  expect(trayPanelApi.open).toHaveBeenCalledWith("security");
   fireEvent.keyDown(window, { key: "Escape" });
   await waitFor(() => expect(trayPanelApi.hide).toHaveBeenCalled());
 });
@@ -318,9 +342,9 @@ it("keeps errors and cancellations distinct from successful requests", async () 
   const failed = await screen.findByRole("button", { name: /409/ });
   expect(failed).toHaveAttribute("aria-pressed", "true");
   expect(failed.querySelector(".tray-dot")).toHaveClass("bad");
-  expect(
-    screen.getByRole("button", { name: /499/ }).querySelector(".tray-dot"),
-  ).toHaveAttribute("data-state", "cancelled");
+  const cancelled = document.querySelector('.tray-dot[data-state="cancelled"]');
+  expect(cancelled).not.toHaveClass("bad");
+  expect(cancelled?.closest("button")).not.toHaveTextContent("499");
   expect(
     screen.getByRole("button", { name: /502/ }).querySelector(".tray-dot"),
   ).toHaveClass("bad");

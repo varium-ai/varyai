@@ -14,6 +14,7 @@ mod scopes;
 pub(crate) mod trace;
 #[cfg(test)]
 mod trace_tests;
+mod trae;
 #[cfg(test)]
 mod trae_tests;
 #[cfg(test)]
@@ -252,6 +253,19 @@ impl Target {
             && self.same_account(other)
     }
     pub(crate) fn same_account(&self, other: &Self) -> bool {
+        let subscription = |target: &Self| {
+            target
+                .upstream
+                .as_ref()
+                .and_then(crate::services::subscription_provider::binding)
+        };
+        match (subscription(self), subscription(other)) {
+            (Some(a), Some(b)) if a.provider != b.provider || a.account_id != b.account_id => {
+                return false
+            }
+            (Some(_), None) | (None, Some(_)) => return false,
+            _ => {}
+        }
         let same_url = if let (Some(a), Some(b)) = (&self.upstream, &other.upstream) {
             let gemini = |provider: &crate::provider::Provider| {
                 provider
@@ -590,6 +604,15 @@ fn remember(map: &mut HashMap<String, usize>, kind: &str, key: &str, target: usi
     }
 }
 impl Bindings {
+    fn continuation_projection(&self, consumer: &str, body: &Value) -> Value {
+        if consumer == "agent:trae" {
+            trae::projection(body, |id| {
+                self.calls.contains_key(&continuation::hash("call", id))
+            })
+        } else {
+            body.clone()
+        }
+    }
     fn persist(&self) {
         if let Some(durable) = &self.durable {
             durable.persist(self);
@@ -809,6 +832,8 @@ impl Bindings {
 }
 #[derive(Default)]
 struct Observer {
+    trae: bool,
+    trae_calls: trae::Calls,
     scheduling: Option<Arc<scheduling::Scheduling>>,
     started: Option<Instant>,
     first_content: Option<Instant>,
@@ -870,6 +895,9 @@ impl Observer {
             scheduling.observe_event(value, chrono::Utc::now().timestamp());
         }
         bindings.observe(value, target);
+        if self.trae {
+            self.trae_calls.observe(value, bindings, target);
+        }
         let kind = value["type"].as_str().unwrap_or("");
         self.pending_tools |= value.get("response").unwrap_or(value)["output"]
             .as_array()
@@ -1238,7 +1266,13 @@ pub(crate) async fn handle_global(
         .extensions
         .get::<super::connections::Agent>()
         .is_none();
-    execute(
+    let keep_trae_waiting = protocol == Protocol::Chat
+        && original["stream"] == true
+        && parts
+            .extensions
+            .get::<super::connections::Agent>()
+            .is_some_and(|agent| agent.0 == "trae");
+    let pending = execute(
         state,
         session,
         parts,
@@ -1251,8 +1285,12 @@ pub(crate) async fn handle_global(
         external,
         Some(generation),
         Instant::now(),
-    )
-    .await
+    );
+    if keep_trae_waiting {
+        trae::waiting_response(pending).await
+    } else {
+        pending.await
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1433,7 +1471,10 @@ async fn execute(
         } else if tools && pinned.is_none() && conversation.is_none() {
             // Clients can omit session headers. The scope already matched observed call IDs;
             // resolve every call again so unknown, colliding or mixed owners still fail closed.
-            bindings.resolve(&projection, None)
+            bindings.resolve(
+                &bindings.continuation_projection(&consumer, &projection),
+                None,
+            )
         } else if (tools || opaque_continuation(protocol, &original)) && pinned.is_none() {
             Err(())
         } else {
@@ -1953,7 +1994,48 @@ async fn execute(
         } else {
             payload
         };
-        let mut headers = target.headers.clone();
+        let resolved_subscription = if let Some(provider) = target
+            .upstream
+            .as_ref()
+            .filter(|p| crate::services::subscription_provider::binding(p).is_some())
+        {
+            match tokio::time::timeout(
+                Duration::from_secs(30),
+                crate::services::subscription_provider::resolve(
+                    provider,
+                    state.app_handle.as_ref(),
+                ),
+            )
+            .await
+            {
+                Ok(Ok(provider)) => Some(provider),
+                _ => {
+                    return fail(
+                        StatusCode::UNAUTHORIZED,
+                        "routing_account_changed_or_expired",
+                    )
+                }
+            }
+        } else {
+            None
+        };
+        let resolved_transport = match resolved_subscription
+            .as_ref()
+            .map(|provider| {
+                crate::services::intent_routing::execution::static_transport(
+                    provider,
+                    &target.model,
+                )
+            })
+            .transpose()
+        {
+            Ok(value) => value,
+            Err(_) => return fail(StatusCode::UNAUTHORIZED, "routing_account_unavailable"),
+        };
+        let mut headers = resolved_transport
+            .as_ref()
+            .map(|(_, headers)| headers.clone())
+            .unwrap_or_else(|| target.headers.clone());
         if target.official && crate::codex_client::apply_identity(&mut headers).is_err() {
             return fail(
                 StatusCode::BAD_GATEWAY,
@@ -2033,7 +2115,7 @@ async fn execute(
             .chain(retry_deadline)
             .min();
         let response = if protocol != output && !official_conversion {
-            let Some(upstream) = &target.upstream else {
+            let Some(upstream) = resolved_subscription.as_ref().or(target.upstream.as_ref()) else {
                 return fail(StatusCode::BAD_REQUEST, "routing_conversion_unsupported");
             };
             let mut bridge_body = match super::pi::json::parse(&payload) {
@@ -2133,7 +2215,18 @@ async fn execute(
                 }
             }
         } else {
-            let mut url = target.url.clone();
+            let mut url = match resolved_transport.as_ref() {
+                Some((url, _)) => match reqwest::Url::parse(url) {
+                    Ok(url) => url,
+                    Err(_) => {
+                        return fail(
+                            StatusCode::BAD_GATEWAY,
+                            "routing_upstream_connection_failed",
+                        )
+                    }
+                },
+                None => target.url.clone(),
+            };
             if count_tokens {
                 let Some(base) = url.path().strip_suffix("/messages") else {
                     return fail(StatusCode::BAD_REQUEST, "routing_token_count_unsupported");
@@ -2445,6 +2538,7 @@ async fn execute(
             bindings.bind_session(key, index);
         }
         let mut observer = Observer::default();
+        observer.trae = agent == "trae" && protocol == Protocol::Chat;
         observer.scheduling = Some(target.scheduling.clone());
         observer.started = streaming.then_some(attempt_started);
         observer.first_content = observed_first_content;

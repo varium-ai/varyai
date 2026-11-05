@@ -324,8 +324,9 @@ field-owned receipt, so clean-exit recovery does not silently disconnect it on
 the next launch. Explicit model selections override the previous pick; ordinary
 catalog refreshes preserve it. WorkBuddy and Desktop expose a native picker,
 not a fictitious application-wide default model setting. Qoder CN uses its native
-model picker. TRAE CN exposes the shared starting-model picker in Vary: its durable
-outbox stores the selected catalog ID separately from catalog delivery. A connected
+model picker. TRAE CN exposes only the shared starting-model picker in its Vary
+row and compact tray controls, without a separate read-only catalog preview. Its
+durable outbox stores the selected catalog ID separately from catalog delivery. A connected
 bridge resolves the exact owned custom model and writes a manual recent selection
 for each native Agent label that supports it, without a session ID. Native
 persistence and selection readback must succeed before synchronization is reported
@@ -431,10 +432,15 @@ cannot be read safely.
 
 Update buttons are explicit user actions, never a consequence of version probing
 or connecting an Agent. Two or more available CLI updates expose an Update all
-bar. A synchronous UI lock covers installation preflight, confirmation and the
-entire serial batch; workspace navigation is blocked while it runs. Multiple or
-unanchored installations require confirmation. Failed preflight does not start
-an update. The backend generates commands from its allowlist, not renderer input.
+bar. Background update tasks run concurrently, with backend coordination for
+shared package-manager writes. A synchronous guard prevents duplicate lifecycle
+starts through preflight, confirmation and execution. Connection and model writes
+are guarded per selected tool, from preflight through its own version check;
+unrelated tools remain usable and completed tools unlock independently. Workspace
+navigation stays available, and returning to the page restores progress and
+results. Multiple or unanchored installations require confirmation. Failed
+preflight does not start an update. The backend generates commands from its
+allowlist, not renderer input. See [Agent updates](../guides/agent-updates.md).
 
 Each update is followed by a fresh version probe, including after command
 failure. Success requires a readable installed version newer than the original;
@@ -447,7 +453,8 @@ Missing tools expose an Install action directly in the expanded More tools list.
 The nine allowlisted CLIs reuse the existing lifecycle installer after explicit
 consent; the UI never accepts an arbitrary command. Installation rechecks presence
 before running, does not replace an installation discovered during confirmation,
-and shares the update lock for the full operation. Fresh presence and a readable,
+and shares the lifecycle-start guard for the full operation while only its target
+tool's connection controls are locked. Fresh presence and a readable,
 working CLI version are required before reporting success. Installation never
 connects an Agent, imports its provider configuration, or writes connection fields.
 Presence-only scans cover OpenCode, Pi, OpenClaw and Hermes without executing them.
@@ -531,8 +538,10 @@ in folded sections. Switching editors or navigating away from unsaved changes
 requires explicit discard. Saving is blocked while an operation is pending.
 
 Connected tools expose their starting-model picker directly in the row. Selecting
-a model updates the actual connection; details expand inline rather than opening
-a second setup dialog. Configuration drift with a receipt cannot reconnect through
+a model updates the actual connection. Main workspace rows have no Details
+button or expandable content. Long-conversation settings are always available
+in Settings; compact tray rows retain their disclosure for quick controls.
+Configuration drift with a receipt cannot reconnect through
 that picker. Receiptless Codex settings can reconnect through it, with the backup
 and restoration limits explained in the picker. Choosing a starting model while off connects directly; switching
 off asks for confirmation before restoring the tool's owned configuration.
@@ -664,3 +673,24 @@ restrictions and the full advanced account controls remain unimplemented. Native
 Codex keyring/ephemeral stores are not treated as readable file credentials.
 Synthetic acceptance uses temporary stores and dynamic-port inference fixtures;
 it does not sign in, consume a real subscription or restart an installed app.
+
+### Managed subscription entries
+
+The Add provider page separates subscription sign-ins from API-key vendors and
+relays, following the reference application's category layout. ChatGPT / Codex,
+GitHub Copilot and Grok are available. Copilot and Grok use the existing managed
+device-login lifecycle; their native routing records store a provider kind, an
+explicit account ID, selected models and the observed catalog. They never store
+access or refresh tokens in the routing registry or expose tokens to the editor.
+
+Each dispatch resolves and refreshes that same account through its existing
+manager. Copilot also resolves the account's API endpoint and supplies its client
+headers. Native and cross-protocol requests share the same credential boundary;
+unresolved accounts fail before dispatch. Account changes clear the draft model
+catalog and selection, and changing the manager default does not change a saved
+binding. Model discovery is an explicit account-scoped action in this editor.
+
+Claude, Gemini CLI, Antigravity and the reference's separate ChatGPT API mode
+remain outside this entry set: quota observation, CLI configuration and API-key
+support do not by themselves provide a complete subscription forwarding lifecycle.
+This change does not establish live vendor acceptance or subscription parity.

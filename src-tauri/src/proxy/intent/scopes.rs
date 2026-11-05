@@ -72,8 +72,13 @@ fn references_with(body: &Value, contains: impl Fn(&str, &str) -> bool) -> bool 
         })
     })
 }
-fn references(snapshot: &continuation::Snapshot, body: &Value) -> bool {
-    references_with(body, |kind, id| {
+fn references(snapshot: &continuation::Snapshot, body: &Value, consumer: &str) -> bool {
+    let projection = (consumer == "agent:trae").then(|| {
+        trae::projection(body, |id| {
+            snapshot.calls.contains_key(&continuation::hash("call", id))
+        })
+    });
+    references_with(projection.as_ref().unwrap_or(body), |kind, id| {
         let map = match kind {
             "response" => &snapshot.responses,
             "call" => &snapshot.calls,
@@ -158,7 +163,7 @@ impl Conversations {
             if name.as_ref().is_some_and(|name| name != &id) {
                 continue;
             }
-            if name.is_none() && !references(&snapshot, body) {
+            if name.is_none() && !references(&snapshot, body, consumer) {
                 continue;
             }
             if entries
@@ -311,7 +316,8 @@ impl Conversations {
             let mut found = None;
             for (index, entry) in entries.iter().enumerate().filter(|(_, e)| matches(e)) {
                 if let Ok(bindings) = entry.state.bindings.try_lock() {
-                    let evidence = references_with(body, |kind, id| {
+                    let projection = bindings.continuation_projection(consumer, body);
+                    let evidence = references_with(&projection, |kind, id| {
                         let map = match kind {
                             "response" => &bindings.responses,
                             "call" => &bindings.calls,
@@ -320,7 +326,7 @@ impl Conversations {
                         };
                         map.contains_key(&continuation::hash(kind, id))
                     });
-                    match bindings.resolve(body, None) {
+                    match bindings.resolve(&projection, None) {
                         Ok(Some(_)) => {
                             if found.is_some() {
                                 return Err("routing_ambiguous_continuation");

@@ -4,7 +4,7 @@ use crate::{
     services::routing_upstreams::{RoutingUpstream, UpstreamSource},
     store::AppState,
 };
-use tauri::State;
+use tauri::{Manager, State};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -176,10 +176,41 @@ pub(crate) async fn list_routing_upstreams(
 
 #[tauri::command]
 pub(crate) async fn save_routing_upstream(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     upstream: RoutingUpstream,
     copy_from: Option<CopySource>,
 ) -> Result<RoutingUpstream, String> {
+    if let UpstreamSource::Subscription {
+        provider,
+        account_id,
+        ..
+    } = &upstream.source
+    {
+        let available = match provider {
+            crate::services::routing_upstreams::SubscriptionProvider::GithubCopilot => {
+                let manager = app
+                    .try_state::<super::CopilotAuthState>()
+                    .ok_or("routingUpstreams.sourceUnavailable")?;
+                let manager = manager.0.read().await;
+                manager.get_account(account_id).await.is_some()
+            }
+            crate::services::routing_upstreams::SubscriptionProvider::XaiOauth => {
+                let manager = app
+                    .try_state::<super::XaiOAuthState>()
+                    .ok_or("routingUpstreams.sourceUnavailable")?;
+                let manager = manager.0.read().await;
+                manager
+                    .list_accounts()
+                    .await
+                    .iter()
+                    .any(|account| &account.id == account_id && !account.requires_reauth)
+            }
+        };
+        if !available {
+            return Err("routingUpstreams.sourceUnavailable".into());
+        }
+    }
     let db = state.db.clone();
     let saved = tokio::task::spawn_blocking(move || match copy_from {
         Some(source) => db.save_routing_upstream_copy(upstream, &source.id, source.revision),
@@ -206,6 +237,9 @@ pub(crate) async fn probe_routing_upstream(
         tokio::task::spawn_blocking(move || db.routing_discovery_provider(&id, revision))
             .await
             .map_err(|_| "routingUpstreams.failed")??;
+    if crate::services::subscription_provider::binding(&provider).is_some() {
+        return Err("routingUpstreams.invalid".into());
+    }
     let provider = crate::services::routing_upstreams::first_enabled(&provider)?;
     let (base_url, api_key) =
         provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
@@ -251,6 +285,9 @@ pub(crate) async fn discover_routing_upstream_models(
         tokio::task::spawn_blocking(move || db.routing_discovery_provider(&id, revision))
             .await
             .map_err(|_| "routingUpstreams.failed")??;
+    if crate::services::subscription_provider::binding(&provider).is_some() {
+        return Err("routingUpstreams.invalid".into());
+    }
     let provider = crate::services::routing_upstreams::first_enabled(&provider)?;
     let (base, key) = provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
     let format = provider

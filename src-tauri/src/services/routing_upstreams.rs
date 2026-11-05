@@ -10,6 +10,7 @@ pub(crate) const UNAVAILABLE: &str = "routingUpstreams.sourceUnavailable";
 pub(crate) const MAX_UPSTREAMS: usize = 256;
 pub(crate) const MAX_CONFIG_BYTES: usize = 512 * 1024;
 pub(crate) const MODEL_POLICY: &str = "routingModelPolicy";
+pub(crate) const KEY_LABEL: &str = "routingKeyLabel";
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -38,6 +39,8 @@ pub(crate) struct RoutingUpstream {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ImportedTransport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_name: Option<String>,
     #[serde(default)]
     pub primary_off: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -121,6 +124,39 @@ pub(crate) enum UpstreamSource {
         auth_type: Option<String>,
     },
     Codex,
+    Subscription {
+        provider: SubscriptionProvider,
+        account_id: String,
+        #[serde(default)]
+        models: Vec<Value>,
+        #[serde(default)]
+        catalog: Vec<Value>,
+        #[serde(default)]
+        mode: ModelMode,
+        #[serde(default)]
+        groups_only: bool,
+    },
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SubscriptionProvider {
+    GithubCopilot,
+    XaiOauth,
+}
+impl SubscriptionProvider {
+    pub(crate) fn endpoint(self) -> &'static str {
+        match self {
+            Self::GithubCopilot => "https://api.githubcopilot.com",
+            Self::XaiOauth => "https://api.x.ai/v1",
+        }
+    }
+    pub(crate) fn format(self) -> &'static str {
+        match self {
+            Self::GithubCopilot => "openai_chat",
+            Self::XaiOauth => "openai_responses",
+        }
+    }
 }
 
 // Debug output must never expose credentials or private configuration.
@@ -240,10 +276,26 @@ impl RoutingUpstream {
                 return Err(INVALID.into());
             }
         }
+        if let UpstreamSource::Subscription {
+            account_id,
+            models,
+            catalog,
+            ..
+        } = &self.source
+        {
+            if !valid_identity(account_id)
+                || models.len() > 256
+                || !valid_models(models)
+                || !valid_models(catalog)
+            {
+                return Err(INVALID.into());
+            }
+        }
         if let Some(transport) = &self.transport {
             let mut ids = std::collections::HashSet::new();
             if !matches!(self.source, UpstreamSource::Api { .. })
                 || transport.endpoints.iter().any(|(format, url)| !valid_format(format) || !valid_url(url))
+                || transport.primary_name.as_ref().is_some_and(|name| name.chars().count() > 120 || name.chars().any(char::is_control))
                 || transport.keys.len() > 64
                 || transport.preferred_key.as_ref().is_some_and(|id| !transport.keys.iter().any(|key| &key.id == id))
                 || transport.keys.iter().any(|key| key.name.chars().count() > 120 || key.name.chars().any(char::is_control))
@@ -372,6 +424,38 @@ pub(crate) fn resolve_provider(record: &RoutingUpstream) -> Result<Provider, Str
             filter_models(&mut provider);
             Ok(provider)
         }
+        UpstreamSource::Subscription {
+            provider: service,
+            account_id,
+            models,
+            catalog,
+            mode,
+            groups_only,
+        } => {
+            let mut provider = Provider::with_id(
+                record.id.clone(),
+                record.name.clone(),
+                executable_settings(
+                    service.endpoint(),
+                    "subscription-pending",
+                    service.format(),
+                    None,
+                    catalog.clone(),
+                ),
+                None,
+            );
+            provider.icon = record.icon.clone();
+            provider.meta = Some(ProviderMeta {
+                api_format: Some(service.format().into()),
+                ..Default::default()
+            });
+            provider.settings_config["routingSubscription"] =
+                json!({"provider":service,"accountId":account_id});
+            provider.settings_config[MODEL_POLICY] =
+                json!({"mode":mode,"models":models,"groupsOnly":groups_only});
+            filter_models(&mut provider);
+            Ok(provider)
+        }
         UpstreamSource::Codex => {
             let mut provider = Provider::with_id(
                 record.id.clone(),
@@ -404,10 +488,33 @@ pub(crate) fn variants(provider: &Provider) -> Vec<Provider> {
     else {
         return variants;
     };
+    let (_, primary) = provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
+    let mut enabled_keys = std::collections::BTreeSet::new();
+    if !transport.primary_off && !primary.is_empty() {
+        enabled_keys.insert(primary.as_str());
+    }
+    for key in transport.keys.iter().filter(|key| key.enabled) {
+        if let Some(token) = key.key.as_deref().filter(|key| !key.is_empty()) {
+            enabled_keys.insert(token);
+        }
+    }
+    let shared = enabled_keys.len() > 1;
+    let key_label = |key: &str, name: Option<&str>| {
+        name.filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| masked_key(key))
+    };
     // Each execution snapshot contains just its own credential, never the pool.
     for variant in &mut variants {
         if let Some(settings) = variant.settings_config.as_object_mut() {
             settings.remove("routingImportedTransport");
+            settings.remove(KEY_LABEL);
+            if shared {
+                settings.insert(
+                    KEY_LABEL.into(),
+                    json!(key_label(&primary, transport.primary_name.as_deref())),
+                );
+            }
         }
     }
     if transport.primary_off {
@@ -440,6 +547,10 @@ pub(crate) fn variants(provider: &Provider) -> Vec<Provider> {
             settings.as_object(),
         ) {
             next.remove("routingImportedTransport");
+            next.remove(KEY_LABEL);
+            if shared {
+                next.insert(KEY_LABEL.into(), json!(key_label(token, Some(&key.name))));
+            }
             for field in ["env", "auth", "apiFormat", "authType", "config"] {
                 next.insert(field.into(), source[field].clone());
             }
@@ -517,6 +628,35 @@ pub(crate) fn serves(provider: &Provider, model: &str) -> bool {
 mod tests {
     use super::*;
     use crate::app_config::AppType;
+    #[test]
+    fn subscription_sources_bind_accounts_without_storing_tokens() {
+        for service in ["github_copilot", "xai_oauth"] {
+            let record: RoutingUpstream = serde_json::from_value(json!({
+                "schemaVersion":1,"id":"fixture","name":"Subscription","revision":1,
+                "source":{"kind":"subscription","provider":service,"accountId":"fixture-account",
+                    "models":[{"model":"fixture-model"}],"catalog":[]}
+            }))
+            .expect("subscription source");
+            let provider = resolve_provider(&record).expect("resolved subscription");
+            assert_eq!(
+                provider.settings_config["routingSubscription"]["accountId"],
+                "fixture-account"
+            );
+            assert!(crate::services::intent_routing::eligible_provider(
+                &provider, false
+            ));
+            assert!(!crate::services::intent_routing::eligible_provider(
+                &provider, true
+            ));
+            assert!(!record.redacted().has_api_key);
+        }
+        for service in ["unknown", "codex_oauth"] {
+            assert!(serde_json::from_value::<RoutingUpstream>(json!({
+                "schemaVersion":1,"id":"fixture","name":"Subscription","revision":1,
+                "source":{"kind":"subscription","provider":service,"accountId":"fixture-account","models":[],"catalog":[]}
+            })).is_err());
+        }
+    }
     #[test]
     fn all_protocols_preserve_exact_models_and_support_both_credential_views() {
         for format in [

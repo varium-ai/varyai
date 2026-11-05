@@ -23,7 +23,16 @@ export type UpstreamSource =
       mode: "vendor" | "picked" | "best" | "usage";
       groupsOnly: boolean;
     }
-  | { kind: "codex" };
+  | { kind: "codex" }
+  | {
+      kind: "subscription";
+      provider: "github_copilot" | "xai_oauth";
+      accountId: string;
+      models: unknown[];
+      catalog: unknown[];
+      mode: "vendor" | "picked" | "best" | "usage";
+      groupsOnly: boolean;
+    };
 export interface RoutingUpstream {
   schemaVersion: 1;
   id: string;
@@ -39,6 +48,7 @@ export interface RoutingUpstream {
   codexSettings?: CodexProviderSettings | null;
   codex?: CodexProviderEditor | null;
   transport?: {
+    primaryName?: string | null;
     primaryOff?: boolean;
     preferredKey?: string | null;
     primaryProtocol?: string;

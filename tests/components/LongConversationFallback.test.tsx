@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
 import { LongConversationFallback } from "@/components/settings/LongConversationFallback";
@@ -43,28 +43,29 @@ it("offers the shared control in Settings when none of its tools is installed", 
 });
 
 it.each(["codex", "claude", "grokbuild"])(
-  "leaves the control in %s tool settings when installed",
+  "keeps the shared control in Settings when %s is installed",
   async (app) => {
     vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
       [app]: true,
     } as never);
     mount();
-    await waitFor(() =>
-      expect(proxyApi.getAgentInstallations).toHaveBeenCalledOnce(),
-    );
-    expect(screen.queryByRole("radiogroup")).not.toBeInTheDocument();
-    expect(intentRoutingApi.contextSettings).not.toHaveBeenCalled();
+    expect(
+      await screen.findByRole("radiogroup", {
+        name: "longConversations.title",
+      }),
+    ).toBeVisible();
+    expect(intentRoutingApi.setContextSettings).not.toHaveBeenCalled();
   },
 );
 
-it("does not expose fallback settings based on a failed installation read", async () => {
+it("keeps shared Settings available without depending on installation detection", async () => {
   vi.mocked(proxyApi.getAgentInstallations).mockRejectedValue(
     "synthetic-private-error",
   );
   mount();
-  await waitFor(() =>
-    expect(proxyApi.getAgentInstallations).toHaveBeenCalledOnce(),
-  );
-  expect(screen.queryByRole("radiogroup")).not.toBeInTheDocument();
-  expect(intentRoutingApi.contextSettings).not.toHaveBeenCalled();
+  expect(
+    await screen.findByRole("radiogroup", { name: "longConversations.title" }),
+  ).toBeVisible();
+  expect(proxyApi.getAgentInstallations).not.toHaveBeenCalled();
+  expect(intentRoutingApi.setContextSettings).not.toHaveBeenCalled();
 });

@@ -25,6 +25,7 @@ import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { proxyApi } from "@/lib/api/proxy";
 import * as authApi from "@/lib/api/auth";
 import { routingTraceApi, type RoutingTrace } from "@/lib/api/routingTrace";
+import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 import "./routing.css";
 
 type Row = RoutingTrace;
@@ -154,6 +155,12 @@ export function RoutingPage({
       ),
     [allRows, purposes],
   );
+  const upstreams = useQuery({
+    queryKey: ["routing-upstreams"],
+    queryFn: routingUpstreamsApi.list,
+    enabled: allRows.some((row) => row.candidates.length > 0),
+    staleTime: 30000,
+  });
   const selected =
     (selection && rows.find((row) => row.id === selection.id)) ?? rows[0];
   const activeSteps = selected
@@ -240,7 +247,14 @@ export function RoutingPage({
   return (
     <AccountMask
       masked={masked}
-      names={logins.data?.accounts.map((account) => account.login)}
+      names={[
+        ...(logins.data?.accounts.map((account) => account.login) ?? []),
+        ...allRows.flatMap((row) =>
+          row.candidates.flatMap((candidate) =>
+            candidate.account?.label ? [candidate.account.label] : [],
+          ),
+        ),
+      ]}
       className="vary-routing"
       data-testid="routing-page"
     >
@@ -368,6 +382,7 @@ export function RoutingPage({
         )}
         <RoutingStage
           row={shown}
+          upstreams={upstreams.data}
           accountName={accountName}
           animate={replay || (running && day === "live" && !selection)}
           replay={replay}
@@ -380,7 +395,9 @@ export function RoutingPage({
           }
           address={address}
           currentAccounts={accounts}
-          concurrent={running && day === "live" && !replay ? allRows : []}
+          concurrent={
+            running && day === "live" && !replay && !selection ? rows : []
+          }
           liveObservations={running && day === "live" && !replay}
         />
         <div className={`rt-foot${shown ? "" : " idle"}`}>
@@ -445,7 +462,7 @@ export function RoutingPage({
                     <li
                       key={index}
                       className={
-                        ["rejected", "failed", "cancelled"].includes(step.kind)
+                        ["rejected", "failed"].includes(step.kind)
                           ? "bad"
                           : step.kind === "completed"
                             ? "ok"
@@ -470,7 +487,7 @@ export function RoutingPage({
                           </code>
                         </span>
                       )}
-                      {step.status != null && (
+                      {step.status != null && step.status !== 499 && (
                         <code className="rt-status">{step.status}</code>
                       )}
                       <time>+{seconds(step.atMs)}</time>

@@ -71,6 +71,101 @@ fn observed_target(key: &str) -> Result<super::Target, Box<dyn std::error::Error
 }
 
 #[test]
+fn candidate_labels_only_expose_masked_configured_api_keys(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Store::default();
+    for (key, expected) in [
+        ("sk-4-synthetic-private-766b", "sk-4…766b"),
+        ("short", "••••••••"),
+        ("密钥示例synthetic-private结束字符", "密钥示例…结束字符"),
+    ] {
+        let mut target = observed_target(key)?;
+        target
+            .upstream
+            .as_mut()
+            .ok_or("missing provider")?
+            .settings_config =
+            serde_json::json!({ "auth": { "OPENAI_API_KEY": key }, "routingKeyLabel": expected });
+        let value = serde_json::to_value(store.candidate(&target))?;
+        assert_eq!(value["account"]["label"], expected);
+        assert!(!value.to_string().contains(key));
+        target.official = true;
+        let official = serde_json::to_value(store.candidate(&target))?;
+        assert!(official["account"].get("label").is_none());
+        target.official = false;
+        target
+            .upstream
+            .as_mut()
+            .ok_or("missing provider")?
+            .settings_config["routingSubscription"] = serde_json::json!({"provider":"xai_oauth"});
+        assert!(serde_json::to_value(store.candidate(&target))?["account"]
+            .get("label")
+            .is_none());
+    }
+    let value =
+        serde_json::to_value(store.candidate(&observed_target("synthetic-private-header-token")?))?;
+    assert!(value["account"].get("label").is_none());
+    let account: Account = serde_json::from_value(value["account"].clone())?;
+    assert!(serde_json::to_value(account)?.get("label").is_none());
+    let mut single = observed_target("sk-4-synthetic-private-766b")?;
+    single
+        .upstream
+        .as_mut()
+        .ok_or("missing provider")?
+        .settings_config = serde_json::json!({"auth":{"OPENAI_API_KEY":"fixture"}});
+    let value = serde_json::to_value(store.candidate(&single))?;
+    assert_eq!(value["account"]["kind"], "provider");
+    assert!(value["account"].get("label").is_none());
+    Ok(())
+}
+
+#[test]
+fn candidate_names_follow_the_enabled_distinct_key_pool() -> Result<(), Box<dyn std::error::Error>>
+{
+    let store = Store::default();
+    for (off, backup, enabled, expected) in [
+        (false, "fixture-other-key", true, vec!["Personal", "Backup"]),
+        (false, "fixture-other-key", false, vec!["Synthetic vendor"]),
+        (true, "fixture-other-key", true, vec!["Synthetic vendor"]),
+        (
+            false,
+            "fixture-primary-key",
+            true,
+            vec!["Synthetic vendor", "Synthetic vendor"],
+        ),
+    ] {
+        let mut target = observed_target("fixture-primary-key")?;
+        let provider = target.upstream.as_mut().ok_or("missing provider")?;
+        provider.settings_config = serde_json::json!({
+            "auth":{"OPENAI_API_KEY":"fixture-primary-key"},
+            "apiFormat":"openai_chat",
+            "routingImportedTransport":{"primaryName":"Personal", "primaryOff":off,
+                "keys":[{"id":"backup","name":"Backup","key":backup,"enabled":enabled}]}
+        });
+        let variants = crate::services::routing_upstreams::variants(provider);
+        assert_eq!(variants.len(), expected.len());
+        for (provider, expected) in variants.into_iter().zip(expected) {
+            target.upstream = Some(provider);
+            let candidate = store.candidate(&target);
+            let account = candidate.account.ok_or("missing account")?;
+            assert_eq!(
+                account.label.as_deref().unwrap_or(&candidate.provider_name),
+                expected
+            );
+            assert!(
+                account.kind
+                    == if expected == "Synthetic vendor" {
+                        AccountKind::Provider
+                    } else {
+                        AccountKind::Key
+                    }
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn account_observations_follow_requests_and_never_enumerate_the_model_catalog(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(Store::default());

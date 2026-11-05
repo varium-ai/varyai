@@ -296,7 +296,7 @@ pub(super) fn retarget(target: &mut Target, model: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn static_transport(
+pub(crate) fn static_transport(
     provider: &crate::provider::Provider,
     model: &str,
 ) -> Result<(String, http::HeaderMap), String> {

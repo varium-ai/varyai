@@ -5014,22 +5014,28 @@ mod tests {
 
     #[test]
     fn only_known_native_updates_bypass_shared_package_writes() {
-        assert!(!tool_lifecycle::uses_shared_packages(
-            "claude",
-            ToolLifecycleAction::Update,
-            Some((
-                "/synthetic/.local/bin/claude",
-                "/synthetic/.local/share/claude/versions/1.0.0"
-            ))
-        ));
-        assert!(!tool_lifecycle::uses_shared_packages(
-            "opencode",
-            ToolLifecycleAction::Update,
-            Some((
-                "/synthetic/.opencode/bin/opencode",
-                "/synthetic/.opencode/bin/opencode"
-            ))
-        ));
+        assert_eq!(
+            tool_lifecycle::uses_shared_packages(
+                "claude",
+                ToolLifecycleAction::Update,
+                Some((
+                    "/synthetic/.local/bin/claude",
+                    "/synthetic/.local/share/claude/versions/1.0.0"
+                ))
+            ),
+            cfg!(target_os = "windows")
+        );
+        assert_eq!(
+            tool_lifecycle::uses_shared_packages(
+                "opencode",
+                ToolLifecycleAction::Update,
+                Some((
+                    "/synthetic/.opencode/bin/opencode",
+                    "/synthetic/.opencode/bin/opencode"
+                ))
+            ),
+            cfg!(target_os = "windows")
+        );
         for (tool, path) in [
             ("claude", "/synthetic/.nvm/versions/node/v22/bin/claude"),
             ("codex", "/synthetic/.nvm/versions/node/v22/bin/codex"),

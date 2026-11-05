@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -12,12 +13,49 @@ import { settingsApi } from "@/lib/api/settings";
 import { proxyApi } from "@/lib/api/proxy";
 import type { AppId } from "@/lib/api";
 import type { AgentVersion } from "@/lib/api/settings";
+import { agentConnectionsApi } from "@/lib/api/agentConnections";
+import App from "@/App";
+
+vi.mock("@/components/providers/RoutingUpstreamsPanel", () => ({
+  RoutingUpstreamsPanel: () => <div>Provider fixture</div>,
+}));
+vi.mock("@/components/routing/RoutingPage", () => ({
+  RoutingPage: () => null,
+}));
+vi.mock("@/components/settings/SettingsPage", () => ({
+  SettingsPage: () => null,
+}));
+vi.mock("@/components/security/SecurityCenterPage", () => ({
+  SecurityCenterPage: () => null,
+}));
+vi.mock("@/components/security/GlobalSecurityToggle", () => ({
+  GlobalSecurityToggle: () => null,
+}));
+vi.mock("@/components/statistics/StatisticsPage", () => ({
+  StatisticsPage: () => null,
+}));
+vi.mock("@/components/FirstRunNoticeDialog", () => ({
+  FirstRunNoticeDialog: () => null,
+}));
+vi.mock("@/components/UpdateBadge", () => ({ UpdateBadge: () => null }));
+vi.mock("@/hooks/useUsageCacheBridge", () => ({
+  useUsageCacheBridge: () => {},
+}));
+vi.mock("@/lib/query", () => ({ useSettingsQuery: () => ({ data: null }) }));
+vi.mock("@/lib/trayPanel", () => ({
+  trayPanelApi: { navigation: async () => null },
+}));
 
 vi.mock("@/lib/api/agentConnections", () => ({
   agentConnectionsApi: {
     nativeModels: vi.fn(async () => []),
     list: vi.fn(async () => []),
     models: vi.fn(async () => []),
+    set: vi.fn(async () => {}),
+    reapply: vi.fn(async () => {}),
+    restart: vi.fn(async () => {}),
+    modelVisibility: vi.fn(async () => ({ only: false, ids: [] })),
+    setModelVisibility: vi.fn(async () => {}),
   },
 }));
 vi.mock("@/lib/api/proxy", () => ({
@@ -50,10 +88,14 @@ const versions = (name: string, version = "1.0.0") => [
 function mount(
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
   onEditingChange = vi.fn(),
+  compact = false,
 ) {
   return render(
     <QueryClientProvider client={client}>
-      <AgentConnectionsPage onEditingChange={onEditingChange} />
+      <AgentConnectionsPage
+        onEditingChange={onEditingChange}
+        compact={compact}
+      />
     </QueryClientProvider>,
   );
 }
@@ -271,6 +313,230 @@ describe("Agent versions and updates", () => {
     ).not.toBeInTheDocument();
     expect(settingsApi.updateDesktopAgent).not.toHaveBeenCalled();
   });
+  it.each([false, true])(
+    "keeps unrelated connections and model changes usable while Pi updates (compact: %s)",
+    async (compact) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        pi: true,
+        claude: true,
+        codex: true,
+      });
+      vi.mocked(agentConnectionsApi.models).mockResolvedValue([
+        { id: "synthetic/shared", name: "Shared model", contextWindow: null },
+      ]);
+      let finish!: () => void;
+      vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      mount(undefined, undefined, compact);
+      const pi = await screen.findByRole("article", { name: "apps.pi" });
+      if (compact) fireEvent.click(pi);
+      fireEvent.click(
+        await within(pi).findByRole("button", { name: "agentUpdates.update" }),
+      );
+      await waitFor(() =>
+        expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledWith(
+          ["pi"],
+          "update",
+        ),
+      );
+      expect(within(pi).getByRole("switch")).toBeDisabled();
+      expect(
+        within(pi).getByRole("button", {
+          name: "agentConnections.model apps.pi",
+        }),
+      ).toBeDisabled();
+      const claude = screen.getByRole("article", { name: "apps.claude" });
+      if (compact) fireEvent.click(claude);
+      const toggle = within(claude).getByRole("switch");
+      expect(toggle).toBeEnabled();
+      fireEvent.click(toggle);
+      await waitFor(() =>
+        expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+          "claude",
+          true,
+          "synthetic/shared",
+        ),
+      );
+      await waitFor(() => expect(toggle).toBeEnabled());
+      const codex = screen.getByRole("article", { name: "apps.codex" });
+      if (compact) fireEvent.click(codex);
+      const picker = within(codex).getByRole("button", {
+        name: "agentConnections.model apps.codex",
+      });
+      expect(picker).toBeEnabled();
+      fireEvent.click(picker);
+      fireEvent.click(
+        await screen.findByRole("radio", { name: /Shared model/ }),
+      );
+      await waitFor(() =>
+        expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+          "codex",
+          true,
+          "synthetic/shared",
+        ),
+      );
+      if (!compact) {
+        fireEvent.click(screen.getByText("agentConnections.moreTools"));
+        const rescan = screen.getByRole("button", {
+          name: "agentConnections.rescan",
+        });
+        await waitFor(() => expect(rescan).toBeEnabled());
+        const probes = vi.mocked(proxyApi.getAgentInstallations).mock.calls
+          .length;
+        fireEvent.click(rescan);
+        await waitFor(() =>
+          expect(proxyApi.getAgentInstallations).toHaveBeenCalledTimes(
+            probes + 1,
+          ),
+        );
+        expect(within(pi).getByRole("switch")).toBeDisabled();
+      }
+      expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledOnce();
+      await act(async () => finish());
+      await screen.findByText(/agentUpdates.unverified/);
+    },
+  );
+  it("reserves only the selected tool during preflight and releases it if the check fails", async () => {
+    let reject!: (error: Error) => void;
+    vi.mocked(settingsApi.probeToolInstallations).mockImplementation(
+      () =>
+        new Promise((_, fail) => {
+          reject = fail;
+        }),
+    );
+    mount();
+    const codex = await screen.findByRole("article", { name: "apps.codex" });
+    fireEvent.click(
+      await within(codex).findByRole("button", { name: "agentUpdates.update" }),
+    );
+    expect(within(codex).getByRole("switch")).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "apps.claude" })).toBeEnabled();
+    await act(async () => reject(new Error("synthetic-private-preflight")));
+    await screen.findByText(/agentUpdates.preflightFailed/);
+    expect(within(codex).getByRole("switch")).toBeEnabled();
+    expect(
+      screen.queryByText("synthetic-private-preflight"),
+    ).not.toBeInTheDocument();
+  });
+  it("releases each completed tool while other updates in the batch keep running", async () => {
+    let finish!: () => void;
+    vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
+      async (tools) => {
+        if (tools[0] === "claude")
+          await new Promise<void>((resolve) => {
+            finish = resolve;
+          });
+      },
+    );
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "agentUpdates.all" }),
+    );
+    await waitFor(() =>
+      expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "apps.codex" })).toBeEnabled(),
+    );
+    expect(screen.getByRole("switch", { name: "apps.claude" })).toBeDisabled();
+    await act(async () => finish());
+    await screen.findByText(/agentUpdates.summary/);
+    expect(screen.getByRole("switch", { name: "apps.claude" })).toBeEnabled();
+  });
+  it("keeps Desktop model visibility, recovery and restart actions available during a CLI update", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      pi: true,
+      codex: true,
+      "claude-desktop": true,
+    });
+    vi.mocked(agentConnectionsApi.models).mockResolvedValue([
+      { id: "synthetic/shared", name: "Shared model", contextWindow: null },
+    ]);
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "codex",
+        enabled: true,
+        configured: false,
+        recoveryPending: true,
+        model: "synthetic/shared",
+        restartRequired: false,
+      },
+      {
+        app: "claude-desktop",
+        enabled: true,
+        configured: true,
+        recoveryPending: false,
+        model: "synthetic/shared",
+        restartRequired: true,
+        desktopState: "restart_required",
+      },
+    ]);
+    let finish!: () => void;
+    vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    mount();
+    const pi = await screen.findByRole("article", { name: "apps.pi" });
+    const desktop = screen.getByRole("article", {
+      name: "apps.claude-desktop",
+    });
+    const modelList = await within(desktop).findByRole("button", {
+      name: "agentConnections.modelList apps.claude-desktop",
+    });
+    await waitFor(() => expect(modelList).toBeEnabled());
+    fireEvent.click(
+      await within(pi).findByRole("button", { name: "agentUpdates.update" }),
+    );
+    await waitFor(() =>
+      expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledOnce(),
+    );
+    expect(modelList).toBeEnabled();
+    fireEvent.click(modelList);
+    fireEvent.click(
+      await screen.findByRole("menuitemcheckbox", { name: /Shared model/ }),
+    );
+    await waitFor(() =>
+      expect(agentConnectionsApi.setModelVisibility).toHaveBeenCalledWith(
+        "claude-desktop",
+        { only: false, ids: ["synthetic/shared"] },
+      ),
+    );
+    fireEvent.keyDown(screen.getByRole("searchbox"), { key: "Escape" });
+    const codex = screen.getByRole("article", { name: "apps.codex" });
+    const reapply = within(codex).getByRole("button", {
+      name: "agentConnections.reapply",
+    });
+    expect(reapply).toBeEnabled();
+    fireEvent.click(reapply);
+    await waitFor(() =>
+      expect(agentConnectionsApi.reapply).toHaveBeenCalledWith("codex"),
+    );
+    const restart = within(desktop).getByRole("button", {
+      name: "agentConnections.restart",
+    });
+    expect(restart).toBeEnabled();
+    fireEvent.click(restart);
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "agentConnections.restart",
+      }),
+    );
+    await waitFor(() =>
+      expect(agentConnectionsApi.restart).toHaveBeenCalledWith(
+        "claude-desktop",
+        true,
+      ),
+    );
+    await act(async () => finish());
+    await screen.findByText(/agentUpdates.unverified/);
+  });
   it("shows the Codex CLI version and updater without its desktop App version or updating on mount", async () => {
     mount();
     const row = await screen.findByRole("article", { name: "apps.codex" });
@@ -430,6 +696,8 @@ describe("Agent versions and updates", () => {
       name: "agentUpdates.updating",
     });
     expect(updating).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "apps.codex" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "apps.claude" })).toBeEnabled();
     fireEvent.click(updating);
     expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledOnce();
     second.unmount();
@@ -438,8 +706,45 @@ describe("Agent versions and updates", () => {
       expect(settingsApi.getToolVersions).toHaveBeenCalledTimes(3),
     );
     mount(client);
-    expect(await screen.findByText(/agentUpdates.summary/)).toBeInTheDocument();
-    expect(screen.getByText(/agentUpdates.unverified/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/agentUpdates.unverified/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/agentUpdates.summary/)).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "apps.codex" })).toBeEnabled();
+  });
+  it("lets the real workspace switch tabs during updates and restores progress on return", async () => {
+    const finishes: Array<() => void> = [];
+    vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
+      () => new Promise<void>((resolve) => finishes.push(resolve)),
+    );
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <App />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "agentUpdates.all" }),
+    );
+    await waitFor(() => expect(finishes).toHaveLength(2));
+    fireEvent.click(
+      screen.getByRole("button", { name: "workspaceNav.providers" }),
+    );
+    expect(await screen.findByText("Provider fixture")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-connections-page"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "workspaceNav.agents" }),
+    );
+    expect(
+      await screen.findByText("agentUpdates.parallelProgress"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("button", { name: "agentUpdates.updating" }),
+    ).toHaveLength(2);
+    expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledTimes(2);
+    finishes.forEach((finish) => finish());
+    await screen.findByText(/agentUpdates.summary/);
   });
   it.each(["unchanged", "unreadable"])(
     "does not report an %s version as a successful upgrade",
@@ -466,6 +771,7 @@ describe("Agent versions and updates", () => {
       expect(
         screen.queryByText(/synthetic-private-version-output/),
       ).not.toBeInTheDocument();
+      expect(within(row).getByRole("switch")).toBeEnabled();
     },
   );
   it("does not offer updates when the installed version is already ahead", async () => {
@@ -508,6 +814,7 @@ describe("Agent versions and updates", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
+    expect(within(row).getByRole("switch")).toBeEnabled();
     expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
     fireEvent.click(
       within(row).getByRole("button", { name: "agentUpdates.update" }),

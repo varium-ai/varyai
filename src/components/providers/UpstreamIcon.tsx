@@ -25,6 +25,8 @@ export function upstreamIcon(record: RoutingUpstream) {
   const explicit = normalizeUpstreamIcon(record.icon);
   if (explicit) return explicit;
   if (record.source.kind === "codex") return "openai";
+  if (record.source.kind === "subscription")
+    return record.source.provider === "github_copilot" ? "github" : "xai";
   const saved = globalProviderPresets.find(
     (preset) => preset.id === record.presetId,
   );
