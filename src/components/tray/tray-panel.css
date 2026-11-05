@@ -48,7 +48,10 @@ body:has(.tray-panel),
   --mp-font:
     -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
   --tray-glass: rgb(255 255 255 / 62%);
-  --mp-card: rgb(255 255 255 / 48%);
+  --tray-tab-selected: #fff;
+  --tray-agent-card: #fff;
+  --tray-agent-muted: #85858f;
+  --mp-card: #fff;
   --mp-card-2: rgb(255 255 255 / 24%);
   --mp-bg: rgb(42 57 76 / 5%);
   --mp-line: rgb(42 57 76 / 20%);
@@ -79,6 +82,9 @@ body:has(.tray-panel),
 }
 .dark .tray-panel {
   --tray-glass: rgb(24 30 40 / 62%);
+  --tray-tab-selected: rgb(255 255 255 / 12%);
+  --tray-agent-card: #202936;
+  --tray-agent-muted: #aab4c3;
   --mp-card: rgb(255 255 255 / 9%);
   --mp-card-2: rgb(255 255 255 / 6%);
   --mp-bg: rgb(0 0 0 / 14%);
@@ -172,7 +178,7 @@ body:has(.tray-panel),
   color: var(--mp-control);
 }
 .tray-header > button:hover:not(:disabled) {
-  background: var(--mp-bg);
+  background: var(--mp-hover);
   color: var(--mp-fg);
 }
 .tray-header > .tray-update {
@@ -204,9 +210,6 @@ body:has(.tray-panel),
   color: var(--mp-muted);
   font-size: 12px;
 }
-.tray-tabs > button:hover {
-  color: var(--mp-fg);
-}
 .tray-tabs > button[aria-selected="true"] {
   color: var(--mp-fg);
   font-weight: 550;
@@ -219,7 +222,7 @@ body:has(.tray-panel),
   height: calc(100% - 6px);
   border: 0;
   border-radius: 6px;
-  background: var(--mp-card);
+  background: var(--tray-tab-selected);
   transform: translateX(calc(var(--tab-index) * 100%));
   transition: transform 220ms cubic-bezier(0.22, 0.75, 0.25, 1);
   pointer-events: none;
@@ -237,22 +240,34 @@ body:has(.tray-panel),
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 4px;
   flex: none;
   min-height: 40px;
   padding: 5px 12px;
   border-top: 0;
   color: var(--mp-control);
 }
-.tray-footer > button {
+.tray-footer-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 4px;
+  margin-left: auto;
+}
+.tray-footer > button,
+.tray-footer-actions > button {
   padding: 4px 7px;
   border-radius: 6px;
   font-size: 12px;
+  white-space: nowrap;
 }
-.tray-footer > button:hover {
-  background: var(--mp-bg);
+.tray-footer > button:hover,
+.tray-footer-actions > button:hover {
+  background: var(--mp-hover);
   color: var(--mp-fg);
 }
 .tray-footer [role="combobox"] {
+  min-width: 0;
   max-width: 300px;
   height: 26px;
   border: 0;
@@ -365,30 +380,34 @@ body:has(.tray-panel),
   max-width: none;
   padding: 0;
 }
+.tray-body:has(.tray-agents) {
+  padding: 0 10px 10px;
+  scrollbar-gutter: auto;
+}
 .tray-agents > :is(.mp-page-heading, .mp-lead),
 .tray-agents > .mp-agent-updates {
   display: none;
 }
-.tray-panel .tray-agents > .mp-list {
+.tray-panel .tray-agents > .mp-list,
+.tray-panel .tray-agents .mp-agent-install-list {
   padding: 0;
   overflow: hidden;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
+  border: 1px solid var(--mp-line-2);
+  border-radius: 11px;
+  background: var(--tray-agent-card);
+  box-shadow: 0 1px 2px rgb(20 30 45 / 4%);
 }
 .tray-panel .tray-agents .mp-agent-row {
   display: grid;
-  grid-template-columns: 22px minmax(104px, 1fr) minmax(0, 45%) 20px;
+  grid-template-columns: 22px minmax(0, 1fr) minmax(0, 44%) 14px;
   align-items: center;
-  gap: 0 8px;
-  min-height: 44px;
+  gap: 0 10px;
+  min-height: 38px;
   margin: 0;
-  padding: 9px 8px;
+  padding: 6px 14px;
   border: 0;
   border-radius: 0;
-}
-.tray-panel .tray-agents .mp-agent-row:hover {
-  background: var(--mp-card-2);
+  background: transparent;
 }
 .tray-panel .tray-agents .mp-agent-row + .mp-agent-row {
   border-top: 1px solid var(--mp-line-2);
@@ -412,7 +431,7 @@ body:has(.tray-panel),
   white-space: nowrap;
 }
 .tray-panel .tray-agents .mp-agent-name h2 {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   line-height: 20px;
 }
@@ -429,7 +448,7 @@ body:has(.tray-panel),
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--mp-muted);
+  color: var(--tray-agent-muted);
   font-size: 12px;
   text-align: right;
 }
@@ -437,17 +456,21 @@ body:has(.tray-panel),
   grid-column: 4;
   grid-row: 1;
   min-width: 0;
-  width: 20px;
+  width: 14px;
   height: 24px;
   margin: 0;
   padding: 0;
+  color: var(--tray-agent-muted);
 }
 .tray-panel .tray-agents .mp-agent-next svg {
   flex: none;
   width: 12px;
   height: 12px;
 }
-.tray-panel .tray-agents .mp-agent-next:hover,
+.tray-panel .tray-agents .mp-agent-next:hover {
+  background: transparent;
+  color: var(--tray-agent-muted);
+}
 .tray-panel .tray-agents .mp-agent-next[aria-expanded="true"] {
   background: var(--mp-bg);
   color: var(--mp-fg);
@@ -458,7 +481,7 @@ body:has(.tray-panel),
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 10px 0 0 30px;
+  padding: 10px 0 0 32px;
 }
 .tray-agents .mp-agent-panel-controls[hidden] {
   display: none;
@@ -477,7 +500,7 @@ body:has(.tray-panel),
 .tray-panel .tray-agents .mp-agent-expanded {
   grid-column: 1 / -1;
   margin: 8px 0 0;
-  padding: 10px 0 2px 30px;
+  padding: 10px 0 2px 32px;
   background: transparent;
   font-size: 11px;
   animation: none;
@@ -505,27 +528,77 @@ body:has(.tray-panel),
   min-height: 32px;
   padding: 6px 8px;
   border-radius: 6px;
-  color: var(--mp-muted);
+  background: transparent;
+  color: var(--tray-agent-muted);
   font-size: 12px;
   font-weight: 400;
+}
+.tray-panel .tray-agents .mp-agent-more > summary:hover {
+  background: transparent;
+  color: var(--mp-fg);
 }
 .tray-agents .mp-agent-more-hint {
   display: none;
 }
-.tray-agents .mp-agent-install-row {
-  padding: 8px 2px;
+.tray-panel .tray-agents .mp-agent-more-body {
+  padding: 6px 0 4px;
+  border-top: 0;
+}
+.tray-panel .tray-agents .mp-agent-install-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 38px;
+  padding: 6px 14px;
+  font-size: 14px;
+}
+.tray-panel .tray-agents .mp-agent-install-row + .mp-agent-install-row {
+  border-color: var(--mp-line-2);
+}
+.tray-panel .tray-agents .mp-agent-install-row > div:first-child {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 0 10px;
+  min-width: 0;
+}
+.tray-panel .tray-agents .mp-agent-install-icon {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+}
+.tray-panel .tray-agents .mp-agent-install-name {
+  grid-column: 2;
+  grid-row: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  line-height: 20px;
+}
+.tray-panel .tray-agents .mp-agent-install-row .mp-agent-cli {
+  grid-column: 2;
+}
+.tray-panel .tray-agents .mp-agent-install-actions {
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+.tray-panel .tray-agents .mp-agent-more-body button {
+  height: 24px;
   font-size: 12px;
 }
 .tray-unconfigured {
-  margin: 4px 8px 0;
-  padding: 10px 0 4px;
+  margin: 0;
+  padding: 10px 14px 4px;
   border-top: 1px solid var(--mp-line-2);
-  color: var(--mp-muted);
-  font-size: 11px;
+  color: var(--tray-agent-muted);
+  font-size: 12px;
 }
 .tray-unconfigured:first-child {
-  margin-top: 0;
-  padding-top: 4px;
   border-top: 0;
 }
 .tray-card {
@@ -650,6 +723,9 @@ body:has(.tray-panel),
 .tray-events > div + div {
   border-top: 1px solid var(--mp-line-2);
 }
+.tray-requests > button:hover {
+  background: var(--mp-hover);
+}
 .tray-requests > button.selected {
   background: var(--mp-card-2);
 }
@@ -693,6 +769,9 @@ body:has(.tray-panel),
   margin: 0;
   padding: 0;
   list-style: none;
+  border-radius: 10px;
+  background: var(--mp-card);
+  overflow: hidden;
 }
 .tray-groups > li:not(.tray-empty) {
   display: grid;
@@ -706,7 +785,7 @@ body:has(.tray-panel),
   border-top: 1px solid var(--mp-line-2);
 }
 .tray-groups > li:hover {
-  background: var(--mp-card-2);
+  background: var(--mp-hover);
 }
 .tray-group-name {
   min-width: 0;
@@ -747,7 +826,10 @@ body:has(.tray-panel),
   width: 12px;
   height: 12px;
 }
-.tray-panel .tray-strategy-trigger:hover:not(:disabled),
+.tray-panel .tray-strategy-trigger:hover:not(:disabled) {
+  background: var(--mp-hover);
+  color: var(--mp-fg);
+}
 .tray-panel .tray-strategy-trigger[data-state="open"] {
   background: var(--mp-bg);
   color: var(--mp-fg);
@@ -792,15 +874,6 @@ body:has(.tray-panel),
 .tray-strategy-option svg {
   width: 12px;
   height: 12px;
-}
-.tray-detail-link {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 10px 3px 0;
-  color: var(--mp-control);
-  font-size: 11px;
 }
 .tray-protection {
   padding: 12px;

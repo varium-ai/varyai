@@ -28,6 +28,7 @@ import {
   type EditingState,
 } from "@/hooks/useWorkspaceEditing";
 import "./providers.css";
+import { subscriptionProviders } from "@/config/subscriptionProviders";
 
 const orderStorageKey = "vary-provider-order";
 function readProviderOrder(): string[] {
@@ -254,7 +255,7 @@ export function RoutingUpstreamsPanel({
     setCopyFrom(undefined);
     setDraft(value);
     const nextModels =
-      value.source.kind === "api"
+      value.source.kind !== "codex"
         ? JSON.stringify(value.source.models, null, 2)
         : "";
     setModels(nextModels);
@@ -356,6 +357,21 @@ export function RoutingUpstreamsPanel({
           );
         else
           await routingUpstreamsApi.save({ ...draft, name: draft.name.trim() });
+        setEditorOpen(false);
+        await refresh();
+        if (adding) closeAddPage();
+      } catch (cause) {
+        report(cause);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    if (draft.source.kind === "subscription") {
+      setBusy(true);
+      setError(null);
+      try {
+        await routingUpstreamsApi.save({ ...draft, name: draft.name.trim() });
         setEditorOpen(false);
         await refresh();
         if (adding) closeAddPage();
@@ -640,7 +656,13 @@ export function RoutingUpstreamsPanel({
         endpointHost(record),
         record.source.kind === "api"
           ? record.source.models.map(modelId).join(" ")
-          : "ChatGPT Codex",
+          : record.source.kind === "subscription"
+            ? subscriptionProviders.find(
+                (p) =>
+                  record.source.kind === "subscription" &&
+                  p.id === record.source.provider,
+              )?.aliases
+            : "ChatGPT Codex",
       ]
         .join(" ")
         .toLocaleLowerCase();
@@ -705,7 +727,7 @@ export function RoutingUpstreamsPanel({
             <UpstreamIcon
               icon={upstreamIcon(record)}
               name={record.name}
-              size={22}
+              size={32}
             />
           </span>
           <span className="pv-who">
@@ -720,20 +742,26 @@ export function RoutingUpstreamsPanel({
             <span className="pv-sub">
               {record.source.kind === "api"
                 ? `${endpointHost(record) || t("providerFlow.custom")} \u00b7 ${t("modelProviders.modelCount", { count: record.source.models.length })}`
-                : "ChatGPT / Codex"}
+                : record.source.kind === "subscription"
+                  ? subscriptionProviders.find(
+                      (p) =>
+                        record.source.kind === "subscription" &&
+                        p.id === record.source.provider,
+                    )?.name
+                  : "ChatGPT / Codex"}
             </span>
           </span>
         </button>
         <span
-          className={`pv-key ${record.source.kind === "codex" ? (hasPlan ? "" : "imported") : record.hasApiKey ? "" : "missing"}`}
+          className={`pv-key ${record.source.kind !== "api" ? (hasPlan ? "" : "imported") : record.hasApiKey ? "" : "missing"}`}
           title={
-            record.source.kind === "codex"
+            record.source.kind !== "api"
               ? subscription || t("providerParity.subscription")
               : undefined
           }
         >
           <span>
-            {record.source.kind === "codex"
+            {record.source.kind !== "api"
               ? subscription || t("providerParity.subscription")
               : t(
                   record.hasApiKey
@@ -844,12 +872,34 @@ export function RoutingUpstreamsPanel({
       {adding && (
         <div ref={sheet}>
           <ProviderAddSheet
-            records={records.data ?? []}
             onImport={() => setImporting(true)}
             onClose={closeAddPage}
             onChoose={(preset) => edit(undefined, preset)}
             busy={busy || !!draft || importBusy}
-            onAccount={async () => {
+            onAccount={async (provider) => {
+              if (provider !== "codex") {
+                const preset = subscriptionProviders.find(
+                  (p) => p.id === provider,
+                )!;
+                edit({
+                  schemaVersion: 1,
+                  id: "",
+                  revision: 0,
+                  name: preset.name,
+                  icon: preset.icon,
+                  hasApiKey: false,
+                  source: {
+                    kind: "subscription",
+                    provider,
+                    accountId: "",
+                    models: [],
+                    catalog: [],
+                    mode: "vendor",
+                    groupsOnly: false,
+                  },
+                });
+                return;
+              }
               setBusy(true);
               try {
                 const created = await routingUpstreamsApi.createCodex();
@@ -913,6 +963,9 @@ export function RoutingUpstreamsPanel({
           nestedOpen={discard || !!deleting}
           onProbingChange={setProbing}
           canDuplicate={draft.source.kind === "api"}
+          canSave={
+            draft.source.kind !== "subscription" || !!draft.source.accountId
+          }
         />
       )}
       <ConfirmDialog

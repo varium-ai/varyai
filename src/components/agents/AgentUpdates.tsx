@@ -127,6 +127,24 @@ export function AgentUpdatesBar({
       }),
     )
     .join(" · ");
+  const counts = {
+    changed: results.filter((r) => r.outcome === "changed").length,
+    failed: results.filter((r) => r.outcome === "failed").length,
+    unverified: results.filter((r) => r.outcome === "unverified").length,
+    preflightFailed: results.filter((r) => r.outcome === "preflightFailed")
+      .length,
+  };
+  const summary =
+    counts.changed === results.length
+      ? t("agentUpdates.summary", { count: results.length })
+      : t("agentUpdates.summaryPartial", {
+          outcomes: Object.entries(counts)
+            .filter(([, count]) => count > 0)
+            .map(([outcome, count]) =>
+              t(`agentUpdates.summaryCounts.${outcome}`, { count }),
+            )
+            .join(" · "),
+        });
   const failed = results.some((r) => r.outcome !== "changed");
   const updateBusy =
     updates.busy && !updates.installTarget && !updates.installing;
@@ -143,7 +161,9 @@ export function AgentUpdatesBar({
             : "agentUpdates.checking",
         )
     : results.length
-      ? `${t("agentUpdates.summary", { ok: results.filter((r) => r.outcome === "changed").length, count: results.length })} ${changes}`
+      ? results.length === 1
+        ? changes
+        : `${summary} ${changes}`
       : t("agentUpdates.available", {
           count: updates.updatable.length,
           names: updates.updatable.map(name).join(", "),

@@ -227,16 +227,45 @@ impl Store {
                 .filter(|name| !name.trim().is_empty())
                 .unwrap_or(if target.official { "Codex" } else { "Provider" }),
         );
+        let key = (!target.official).then(|| {
+            target
+                .upstream
+                .as_ref()
+                .map(|provider| {
+                    provider
+                        .resolve_usage_credentials(&crate::app_config::AppType::Codex)
+                        .1
+                })
+                .unwrap_or_default()
+        });
         let account = Account {
             id: format!("{:x}", hash.finalize()),
+            label: (!target.official)
+                .then_some(target.upstream.as_ref())
+                .flatten()
+                .filter(|provider| {
+                    provider
+                        .settings_config
+                        .get("routingSubscription")
+                        .is_none()
+                })
+                .and_then(|provider| {
+                    provider
+                        .settings_config
+                        .get(crate::services::routing_upstreams::KEY_LABEL)
+                })
+                .and_then(serde_json::Value::as_str)
+                .map(label),
             provider_id: target.provider_id.clone(),
             provider_name: provider_name.clone(),
             kind: if target.official {
                 AccountKind::Account
-            } else if target.upstream.is_some()
-                || target.headers.contains_key("authorization")
-                || target.headers.contains_key("x-api-key")
-            {
+            } else if target.upstream.as_ref().is_some_and(|provider| {
+                provider
+                    .settings_config
+                    .get(crate::services::routing_upstreams::KEY_LABEL)
+                    .is_some()
+            }) {
                 AccountKind::Key
             } else {
                 AccountKind::Provider
@@ -245,18 +274,9 @@ impl Store {
             telemetry: target.scheduling.trace_account().unwrap_or_default(),
         };
         Candidate {
-            key_id: (!target.official).then(|| {
-                let key = target
-                    .upstream
-                    .as_ref()
-                    .map(|provider| {
-                        provider
-                            .resolve_usage_credentials(&crate::app_config::AppType::Codex)
-                            .1
-                    })
-                    .unwrap_or_default();
-                crate::services::routing_upstreams::key_observation(&key)
-            }),
+            key_id: key
+                .as_deref()
+                .map(crate::services::routing_upstreams::key_observation),
             provider_id: target.provider_id.clone(),
             provider_name,
             model: label(&target.model),
@@ -605,6 +625,8 @@ pub(crate) enum AccountKind {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Account {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     pub kind: AccountKind,
     pub provider_id: String,
     pub provider_name: String,

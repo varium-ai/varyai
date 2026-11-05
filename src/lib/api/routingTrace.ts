@@ -54,6 +54,7 @@ export interface RoutingTrace {
 }
 export interface RoutingAccount {
   id?: string;
+  label?: string | null;
   kind?: "account" | "key" | "provider";
   providerId: string;
   providerName: string;

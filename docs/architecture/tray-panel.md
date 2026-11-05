@@ -3,14 +3,41 @@
 The tray uses the independent `index.html?panel=tray` renderer, with Agent,
 Routing and Security tabs. It must not render the main workspace sidebar.
 
+The native context menu contains Open quick panel, Open main window, Official
+website and Quit, with one separator before Quit. It does not expose a
+lightweight-mode toggle in any supported language.
+
 Treat this surface as a quick panel: use a compact segmented tab control and
 uniform Agent rows with an icon, name, current model and disclosure button.
+Place the Agent list in one opaque white card with an 11-point radius, a subtle
+border and full-width row dividers. Use a matching dark card in dark mode.
+Keep 10-point side insets, 38-point collapsed rows, 22-point icons and 14-point
+names. Align muted, single-line model labels and disclosure controls on the
+right; truncate long names and model labels without widening the panel.
+Keep the unconfigured section inside the same card with an inset label.
+Agent rows and their disclosure buttons do not change color on hover.
+The expanded More tools list uses the same card, row height, icon size and name
+alignment. Keep installation and website actions on the right, with the rescan
+action below the card. Its summary stays transparent on hover; only its muted
+text and chevron change to the primary text color.
 Scope compact layout overrides under `.tray-panel .tray-agents` so workspace
 mobile rules cannot change row padding or move controls. Keep version numbers
 and update actions in expanded Agent details; leave setup instructions and
 long-conversation settings in the main workspace. On opening, focus the panel
 container; keyboard navigation must still expose a visible focus indicator on
 tabs and controls.
+
+Use the shared `--mp-hover` surface for neutral buttons and clickable rows,
+including header actions, routing controls and footer
+actions. It is opaque white in light mode and dark blue-gray in dark mode.
+Keep selected and expanded surfaces, menu highlights and switch tracks distinct.
+The selected tab uses an opaque white indicator in light mode and a brighter
+translucent surface in dark mode. Tabs do not change their background or text
+color on hover. Preserve the selected indicator and visible keyboard focus.
+Routing request cards, routing group lists, strategy controls, the security
+protection card and recent security events use opaque white backgrounds in
+light mode. Keep the surrounding panel translucent and preserve dark-mode
+surfaces, selection states and hover feedback.
 
 Show the header's update entry only when an available version has been detected.
 Keep it absent while checking with no known update and when already up to date.
@@ -26,6 +53,10 @@ available work area. Header, tabs and footer stay in place while `.tray-body`
 scrolls. Do not resize the native window after query updates, tab switches or
 expanded Agent details. The legacy resize IPC entry point still enforces this
 fixed geometry.
+
+Place the current tab's routing or security details action in the footer,
+immediately before Quit. Keep the profile switcher on the left and the actions
+on the right. The Agent tab has no details action.
 
 The footer's compact profile menu is a 232-point frosted popover with a 34-point
 search field and 30-point list items. It must remain inside the webview and scroll
@@ -56,8 +87,9 @@ light mode and charcoal glass with bright text in dark mode. Both use a 62% tint
 colors still diffuse through the panel. Strategy menus use a 76% tint and
 32-pixel blur, and portalled menus inherit the matching theme tokens. Theme
 changes from other windows must update an already-open panel through the shared
-theme storage key. Keep its cards, tabs, footer and strategy controls free of
-outline borders; use subtle row separators and fills to distinguish controls.
+theme storage key. Keep its tabs, footer and strategy controls free of outline
+borders; the Agent list has one subtle outer border, with row separators and
+fills distinguishing its contents.
 The renderer's backdrop filter also provides a browser preview.
 Reduced-transparency preferences use solid tints.
 

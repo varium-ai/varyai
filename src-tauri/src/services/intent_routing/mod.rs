@@ -431,6 +431,9 @@ impl RoutingGroup {
 
 /// A configuration eligibility check, not an inference or capability probe.
 pub(crate) fn eligible_provider(provider: &Provider, classifier: bool) -> bool {
+    if crate::services::subscription_provider::binding(provider).is_some() {
+        return !classifier;
+    }
     if provider.category.as_deref() == Some("official")
         || provider.uses_managed_account_auth()
         || provider

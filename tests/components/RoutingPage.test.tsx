@@ -136,6 +136,26 @@ function configuredCatalog() {
   return client;
 }
 
+it("loads supplier icons by provider ID for recorded candidates", async () => {
+  vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+    {
+      schemaVersion: 1,
+      id: "provider-a",
+      name: "Configured supplier",
+      revision: 1,
+      hasApiKey: true,
+      icon: "deepseek",
+      source: { kind: "codex" },
+    },
+  ]);
+  show();
+  await screen.findByTitle("Configured supplier");
+  expect(
+    document.querySelector('.rt-seat-icon [title="Configured supplier"] svg'),
+  ).not.toBeNull();
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(2);
+});
+
 it("keeps idle topology empty even when connected clients and providers are configured", async () => {
   vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
     requests: [],
@@ -195,6 +215,31 @@ it("shows only the recorded destination for a direct request", async () => {
     "Synthetic unrelated",
   );
   expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
+});
+
+it("keeps cancellation neutral and hides HTTP 499 while retaining actual upstream errors", async () => {
+  vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+    requests: [
+      {
+        ...route,
+        state: "cancelled",
+        status: 499,
+        steps: [
+          ...route.steps.slice(0, -1),
+          { kind: "cancelled", candidate: 1, atMs: 1240, status: 499 },
+        ],
+      },
+    ],
+    accounts: [],
+    capacity: 60,
+    running: true,
+    days: [],
+  } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
+  show();
+  const cancelled = await screen.findByText("routingPage.step.cancelled");
+  expect(cancelled.closest("li")).not.toHaveClass("bad");
+  expect(document.querySelector(".rt-log")).not.toHaveTextContent("499");
+  expect(document.querySelector(".rt-log")).toHaveTextContent("429");
 });
 
 it("does not replace a candidate-free failure with configured providers or earlier destinations", async () => {
@@ -448,6 +493,44 @@ it("selects a real request and links the stage to its recorded fallback decision
   ).toBeInTheDocument();
   expect(stage.querySelector(".live")).toBeNull();
   expect(screen.getByText("Group editor")).toBeInTheDocument();
+});
+
+it("masks recorded key labels in the stage and its tooltip", async () => {
+  vi.mocked(routingTraceApi.snapshot).mockResolvedValue({
+    requests: [
+      {
+        ...route,
+        candidates: [
+          {
+            ...route.candidates[0],
+            account: {
+              id: "opaque-key",
+              kind: "key",
+              label: "sk-4…766b",
+              providerId: "provider-a",
+              providerName: "Synthetic primary",
+              model: "model-a",
+              restUntil: 0,
+              windows: [],
+            },
+          },
+        ],
+      },
+    ],
+    accounts: [],
+    capacity: 60,
+    running: true,
+    days: [],
+  } as Awaited<ReturnType<typeof routingTraceApi.snapshot>>);
+  show();
+  await screen.findByText("sk-4…766b");
+  fireEvent.click(
+    screen.getByRole("button", { name: "routingPage.hideAccounts" }),
+  );
+  expect(document.querySelector(".rt-accts")?.innerHTML).not.toContain(
+    "sk-4…766b",
+  );
+  expect(document.querySelector(".rt-accts .account-mask")).not.toBeNull();
 });
 
 it("preserves vendor names while masking account addresses and persists the request grouping preference", async () => {

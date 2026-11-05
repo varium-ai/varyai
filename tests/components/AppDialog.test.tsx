@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -10,6 +10,32 @@ import {
 } from "../utils/dialogAnimation";
 
 describe("AppDialog", () => {
+  it("supports an initial form field without scrolling the page", () => {
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    function Form() {
+      const name = useRef<HTMLInputElement>(null);
+      return (
+        <AppDialog
+          open
+          title="Add provider"
+          onOpenChange={vi.fn()}
+          initialFocusRef={name}
+        >
+          <input ref={name} aria-label="Provider name" />
+        </AppDialog>
+      );
+    }
+    try {
+      render(<Form />);
+      expect(
+        screen.getByRole("textbox", { name: "Provider name" }),
+      ).toHaveFocus();
+      expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    } finally {
+      focus.mockRestore();
+    }
+  });
+
   it("names and describes the dialog, focuses the surface without scrolling and dismisses with Escape", async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();

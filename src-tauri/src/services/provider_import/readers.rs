@@ -562,6 +562,11 @@ pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
             crate::services::provider_icons::imported(&text(p, &["icon"]), path.parent());
         result.record.enabled = p["off"] != true;
         let mut transport = ImportedTransport {
+            primary_name: p
+                .get("keyName")
+                .and_then(serde_json::Value::as_str)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned),
             endpoints,
             primary_protocol: (!primary_protocol.is_empty()).then_some(selected.clone()),
             ..Default::default()

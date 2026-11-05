@@ -1,13 +1,19 @@
 // Adapted from the reference routing stage (MIT), without credential-derived labels.
 // See third_party/routing-reference/LICENSE.
-import { Bot, Box, KeyRound } from "lucide-react";
+import { Bot } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { APP_ICON_NAME, APP_IDS } from "@/config/appConfig";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import {
+  UpstreamIcon,
+  upstreamIcon,
+} from "@/components/providers/UpstreamIcon";
+import type { RoutingUpstream } from "@/lib/api/routingUpstreams";
 import { AccountLabel, useAccountText } from "@/components/AccountLabel";
 import appIcon from "@/assets/icons/app-icon.png";
 import { RoutingPackets } from "./RoutingPackets";
+import { useRoutingFlights } from "./useRoutingFlights";
 import type {
   RoutingAccount,
   RoutingCandidate,
@@ -29,6 +35,36 @@ const seat = (c: RoutingCandidate) =>
   c.account?.id
     ? `${c.account.id}\0${c.model}\0${c.fixedEffort ?? ""}`
     : undefined;
+const candidateKey = (candidate: RoutingCandidate) =>
+  JSON.stringify([
+    candidate.providerId,
+    candidate.account?.kind,
+    candidate.account?.id,
+    candidate.model,
+    candidate.fixedEffort,
+  ]);
+const chosenCandidate = (trace?: RoutingTrace) =>
+  [...(trace?.steps ?? [])].reverse().find((step) => step.kind === "attempt")
+    ?.candidate;
+function isAnswering(trace?: RoutingTrace) {
+  const chosen = chosenCandidate(trace);
+  return (
+    live(trace) &&
+    chosen != null &&
+    ![
+      "rejected",
+      "failed",
+      "context",
+      "images",
+      "first_token_timeout",
+      "cancelled",
+    ].includes(
+      [...(trace?.steps ?? [])]
+        .reverse()
+        .find((step) => step.candidate === chosen)?.kind ?? "",
+    )
+  );
+}
 export function RoutingStage({
   row,
   accountName,
@@ -38,6 +74,7 @@ export function RoutingStage({
   requestedModel,
   address,
   currentAccounts = [],
+  upstreams = [],
   concurrent = [],
   liveObservations = false,
   layout: stageLayout = "responsive",
@@ -51,6 +88,7 @@ export function RoutingStage({
   requestedModel?: string;
   address?: string;
   currentAccounts?: RoutingAccount[];
+  upstreams?: RoutingUpstream[];
   concurrent?: RoutingTrace[];
   liveObservations?: boolean;
   layout?: "responsive" | "compact";
@@ -59,7 +97,42 @@ export function RoutingStage({
   const { t } = useTranslation();
   const accountText = useAccountText();
   const stage = useRef<HTMLDivElement>(null);
-  const sourceAgents = [row?.agent];
+  const { flights, finish } = useRoutingFlights(
+    row,
+    concurrent,
+    animate && !replay,
+  );
+  const traces = row
+    ? [...flights.filter((trace) => trace.id !== row.id), row]
+    : flights;
+  const gatewayWorking = animate && !replay && traces.some(live);
+  const agents = [...new Set(traces.map((trace) => trace.agent))];
+  const sourceAgents: (string | undefined)[] = agents.length
+    ? agents
+    : [undefined];
+  const seats = new Map<
+    string,
+    { candidate: RoutingCandidate; trace: RoutingTrace; index: number }
+  >();
+  for (const trace of traces) {
+    trace.candidates.forEach((candidate, index) => {
+      const key = candidateKey(candidate);
+      const previous = seats.get(key);
+      if (
+        !previous ||
+        (isAnswering(trace) &&
+          chosenCandidate(trace) === index &&
+          (!isAnswering(previous.trace) ||
+            chosenCandidate(previous.trace) !== previous.index)) ||
+        (!live(previous.trace) && live(trace))
+      )
+        seats.set(key, { candidate, trace, index });
+    });
+  }
+  const candidates = [...seats.values()];
+  const candidateIndex = new Map(
+    candidates.map(({ candidate }, index) => [candidateKey(candidate), index]),
+  );
   const [paths, setPaths] = useState<{ sources: string[]; targets: string[] }>({
     sources: [],
     targets: [],
@@ -67,35 +140,8 @@ export function RoutingStage({
   const [narrow, setNarrow] = useState(false);
   const layoutKey = JSON.stringify([
     sourceAgents,
-    row?.candidates.map((candidate) => [
-      candidate.providerId,
-      candidate.account?.id,
-      candidate.model,
-      candidate.fixedEffort,
-    ]),
+    candidates.map(({ candidate }) => candidateKey(candidate)),
   ]);
-  const chosen = [...(row?.steps ?? [])]
-    .reverse()
-    .find((step) => step.kind === "attempt")?.candidate;
-  const active =
-    live(row) &&
-    chosen != null &&
-    ![
-      "rejected",
-      "failed",
-      "context",
-      "images",
-      "first_token_timeout",
-      "cancelled",
-    ].includes(
-      [...(row?.steps ?? [])]
-        .reverse()
-        .find((step) => step.candidate === chosen)?.kind ?? "",
-    );
-  const observedAt =
-    (liveObservations
-      ? now
-      : (row?.startedAt ?? now) + (row?.durationMs ?? 0)) / 1000;
   const busy = new Set(
     concurrent
       .filter((r) => r.id !== row?.id && live(r))
@@ -190,7 +236,6 @@ export function RoutingStage({
         : live(row)
           ? "planningCandidates"
           : "noCandidatesRecorded";
-  const sourceIndex = sourceAgents.indexOf(row?.agent);
   const hubDescription = [
     "Vary AI",
     address || t("routingPage.listenerUnknown"),
@@ -215,25 +260,74 @@ export function RoutingStage({
           <path
             key={index}
             d={path}
-            className={
-              row &&
-              (index === sourceIndex || index - paths.sources.length === chosen)
-                ? active && animate
-                  ? "live"
-                  : row.state === "completed" || active
-                    ? "lit"
-                    : ""
-                : ""
-            }
+            className={(() => {
+              const matching = traces.filter((trace) => {
+                if (index < paths.sources.length)
+                  return sourceAgents[index] === trace.agent;
+                const chosen = chosenCandidate(trace);
+                const target =
+                  chosen == null ? undefined : trace.candidates[chosen];
+                return (
+                  target &&
+                  candidateIndex.get(candidateKey(target)) ===
+                    index - paths.sources.length
+                );
+              });
+              return matching.some((trace) => isAnswering(trace)) && animate
+                ? "live"
+                : matching.some(
+                      (trace) =>
+                        trace.state === "completed" || isAnswering(trace),
+                    )
+                  ? "lit"
+                  : "";
+            })()}
           />
         ))}
       </svg>
       <RoutingPackets
         row={row}
         paths={[
-          paths.sources[Math.max(0, sourceIndex)] ?? "",
-          ...paths.targets.slice(0, row?.candidates.length ?? 0),
+          paths.sources[Math.max(0, sourceAgents.indexOf(row?.agent))] ?? "",
+          ...(row?.candidates.map(
+            (candidate) =>
+              paths.targets[
+                candidateIndex.get(candidateKey(candidate)) ?? -1
+              ] ?? "",
+          ) ?? []),
         ]}
+        flights={
+          animate && !replay
+            ? flights.map((trace, flightIndex) => ({
+                row: trace,
+                color: hues[trace.agent] ?? "var(--rt-accent)",
+                holdOffset:
+                  flights.slice(0, flightIndex).filter((other) => {
+                    const chosen = chosenCandidate(trace);
+                    const otherChosen = chosenCandidate(other);
+                    const target =
+                      chosen == null ? undefined : trace.candidates[chosen];
+                    const otherTarget =
+                      otherChosen == null
+                        ? undefined
+                        : other.candidates[otherChosen];
+                    return target && otherTarget
+                      ? candidateKey(target) === candidateKey(otherTarget)
+                      : !target && !otherTarget && trace.agent === other.agent;
+                  }).length * 12,
+                paths: [
+                  paths.sources[sourceAgents.indexOf(trace.agent)] ?? "",
+                  ...trace.candidates.map(
+                    (candidate) =>
+                      paths.targets[
+                        candidateIndex.get(candidateKey(candidate)) ?? -1
+                      ] ?? "",
+                  ),
+                ],
+              }))
+            : undefined
+        }
+        onFinished={finish}
         active={animate}
         replay={replay}
         speed={speed}
@@ -247,16 +341,17 @@ export function RoutingStage({
               : t(`apps.${agent}`)
             : source || t("routingPage.agent");
           const selectedSource = source === row?.agent;
+          const sourceTrace = traces.find((trace) => trace.agent === source);
           return (
             <div
               key={source ?? "idle"}
-              className={`rt-node rt-src ${selectedSource && active ? "now" : ""}`}
+              className={`rt-node rt-src ${traces.some((trace) => trace.agent === source && isAnswering(trace)) ? "now" : ""}`}
               style={
                 {
                   "--rt-agent": hues[source ?? ""] ?? "var(--rt-accent)",
                 } as CSSProperties
               }
-              title={selectedSource ? requestedModel : undefined}
+              title={selectedSource ? requestedModel : sourceTrace?.model}
             >
               <span className="rt-agent-icon">
                 {agent ? (
@@ -285,7 +380,10 @@ export function RoutingStage({
           );
         })}
       </div>
-      <div className="rt-node rt-hub" title={hubDescription}>
+      <div
+        className={`rt-node rt-hub${gatewayWorking ? " working" : ""}`}
+        title={hubDescription}
+      >
         <img src={appIcon} className="rt-brand-icon" alt="" />
         <b className={stageLayout === "compact" ? "sr-only" : undefined}>
           Vary AI
@@ -300,15 +398,23 @@ export function RoutingStage({
         )}
       </div>
       <ol className="rt-accts" aria-label={t("routingPage.candidateSeats")}>
-        {!row?.candidates.length && (
+        {!candidates.length && (
           <li className="idle">
             <span>{t(`routingPage.${emptyKey}`)}</span>
-            {row?.status != null && row.status >= 400 && (
+            {row?.status != null && row.status >= 400 && row.status !== 499 && (
               <code>{row.status}</code>
             )}
           </li>
         )}
-        {row?.candidates.map((candidate, index) => {
+        {candidates.map(({ candidate, trace, index }) => {
+          const supplier = upstreams.find(
+            (provider) => provider.id === candidate.providerId,
+          );
+          const chosen = chosenCandidate(trace);
+          const active = isAnswering(trace);
+          const observedAt =
+            (liveObservations ? now : trace.startedAt + trace.durationMs) /
+            1000;
           // Current telemetry belongs only to this exact credential and model, never to a historical request.
           const observation = liveObservations
             ? (currentAccounts.find(
@@ -319,17 +425,17 @@ export function RoutingStage({
                   a.providerId === candidate.providerId,
               ) ?? candidate.account)
             : candidate.account;
-          const step = [...row.steps]
+          const step = [...trace.steps]
             .reverse()
             .find((s) => s.candidate === index);
-          const attempt = row.steps.reduce(
+          const attempt = trace.steps.reduce(
             (last, s, i) =>
               s.kind === "attempt" && s.candidate === index ? i : last,
             -1,
           );
           const wentOn =
             attempt >= 0 &&
-            row.steps.some(
+            trace.steps.some(
               (s, i) =>
                 i > attempt && s.kind === "attempt" && s.candidate !== index,
             );
@@ -337,19 +443,29 @@ export function RoutingStage({
             ["rejected", "failed", "first_token_timeout"].includes(
               step?.kind ?? "",
             ) ||
-            (chosen === index && row.state === "failed");
+            (chosen === index && trace.state === "failed");
           const passed = ["context", "images", "paused"].includes(
             step?.kind ?? "",
           );
           const resting = (observation?.restUntil ?? 0) > observedAt;
           const answering = chosen === index && active;
-          const answered = chosen === index && row.state === "completed";
-          const accountKind = candidate.account?.kind ?? "provider";
-          const siblings = row.candidates.filter(
-            (c) =>
-              c.providerId === candidate.providerId &&
-              c.account?.kind === accountKind,
-          );
+          const answered = chosen === index && trace.state === "completed";
+          const singleKey =
+            supplier?.source.kind === "api" &&
+            Number(!supplier.transport?.primaryOff && supplier.hasApiKey) +
+              (supplier.transport?.keys.filter((key) => key.enabled).length ??
+                0) ===
+              1;
+          const accountKind = singleKey
+            ? "provider"
+            : (candidate.account?.kind ?? "provider");
+          const siblings = candidates
+            .map((entry) => entry.candidate)
+            .filter(
+              (c) =>
+                c.providerId === candidate.providerId &&
+                c.account?.kind === accountKind,
+            );
           const identities = [...new Set(siblings.map((c) => c.account?.id))];
           const number =
             identities.length > 1
@@ -364,6 +480,9 @@ export function RoutingStage({
                     : "routingPage.accountLabel",
                   { n: number },
                 ).trim();
+          const displayName =
+            (accountKind !== "provider" && candidate.account?.label) ||
+            accountName(candidate);
           const windows =
             observation?.windows.filter(
               (w) => Number.isFinite(w.usedPercent) && w.resetsAt > observedAt,
@@ -413,27 +532,30 @@ export function RoutingStage({
                           : kindLabel || t("routingPage.standby");
           return (
             <li
-              key={`${candidate.account?.id ?? candidate.providerId}/${candidate.model}/${index}`}
+              key={candidateKey(candidate)}
+              style={
+                {
+                  "--rt-agent": hues[trace.agent] ?? "var(--rt-accent)",
+                } as CSSProperties
+              }
               className={`${answering || answered ? "on" : ""} ${answering ? "now" : ""} ${failed || resting ? "rest" : ""} ${passed ? "left" : ""} ${used != null && used >= 90 ? "low" : ""}`}
-              title={`${accountText(accountName(candidate))} · ${candidate.model}${candidate.fixedEffort ? ` :${candidate.fixedEffort}` : ""} · ${status}`}
+              title={`${accountText(displayName)} · ${candidate.model}${candidate.fixedEffort ? ` :${candidate.fixedEffort}` : ""} · ${status}`}
               tabIndex={0}
             >
               <span className="dot" />
               <b>
-                {accountKind === "account" ? (
-                  <ProviderIcon
-                    icon="openai"
-                    name={t("routingPage.accountLabel", { n: "" })}
+                <span className="rt-seat-icon">
+                  <UpstreamIcon
+                    icon={supplier ? upstreamIcon(supplier) : undefined}
+                    name={accountText(supplier?.name ?? candidate.providerName)}
                     size={16}
                   />
-                ) : accountKind === "key" ? (
-                  <KeyRound size={16} aria-hidden="true" />
-                ) : (
-                  <Box size={16} aria-hidden="true" />
-                )}
+                </span>
                 <span className="who">
-                  <AccountLabel>{accountName(candidate)}</AccountLabel>
-                  {number ? ` \u00b7 ${kindLabel}` : ""}
+                  <AccountLabel>{displayName}</AccountLabel>
+                  {!candidate.account?.label && number
+                    ? ` \u00b7 ${kindLabel}`
+                    : ""}
                 </span>
                 <code className="mdl" title={candidate.model}>
                   {candidate.model}
@@ -441,9 +563,9 @@ export function RoutingStage({
                 </code>
               </b>
               <em className="rt-seat-status">
-                {step?.status != null && step.status >= 400 && (
-                  <code>{step.status}</code>
-                )}
+                {step?.status != null &&
+                  step.status >= 400 &&
+                  step.status !== 499 && <code>{step.status}</code>}
                 {status}
               </em>
               {used != null && (

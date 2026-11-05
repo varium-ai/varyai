@@ -745,6 +745,11 @@ impl ProviderAdapter for ClaudeAdapter {
     }
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
+        if provider.settings_config["routingSubscriptionResolved"] == true {
+            return self
+                .extract_key(provider)
+                .map(|key| AuthInfo::new(key, AuthStrategy::Bearer));
+        }
         let provider_type = self.provider_type(provider);
 
         // GitHub Copilot 使用特殊的认证策略

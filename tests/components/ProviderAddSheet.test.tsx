@@ -100,9 +100,7 @@ it("moves Add provider to the page header and returns to the filtered list with 
   expect(
     screen.queryByRole("searchbox", { name: "modelProviders.find" }),
   ).not.toBeInTheDocument();
-  expect(
-    screen.getByRole("heading", { level: 1, name: "modelProviders.add" }),
-  ).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
   expect(
     screen.getByRole("searchbox", { name: "providerFlow.findVendor" }),
   ).toHaveFocus();
@@ -126,9 +124,14 @@ it("opens directly on the add page when requested by another workspace page", as
   expect(
     screen.getByRole("searchbox", { name: "providerFlow.findVendor" }),
   ).toBeVisible();
-  expect(
-    screen.getByRole("heading", { level: 1, name: "providerFlow.first" }),
-  ).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
+  const back = screen.getByRole("button", { name: "common.back" });
+  expect(back.closest("header")).toContainElement(
+    screen.getByRole("searchbox", { name: "providerFlow.findVendor" }),
+  );
+  expect(back.closest("header")).toContainElement(
+    screen.getByRole("button", { name: "providerFlow.import" }),
+  );
   expect(
     screen.queryByRole("heading", { name: "modelProviders.title" }),
   ).not.toBeInTheDocument();
@@ -324,4 +327,20 @@ it("clears the vendor search with Escape before returning to the list", async ()
   expect(
     screen.getByRole("button", { name: "modelProviders.add" }),
   ).toHaveFocus();
+});
+
+it("offers managed subscription accounts separately from API vendors and searches their aliases", async () => {
+  mount(true);
+  for (const name of ["ChatGPT / Codex", "GitHub Copilot", "Grok"]) {
+    expect(screen.getByRole("button", { name })).toBeVisible();
+  }
+  const search = screen.getByRole("searchbox", {
+    name: "providerFlow.findVendor",
+  });
+  fireEvent.change(search, { target: { value: "supergrok" } });
+  expect(screen.getByRole("button", { name: "Grok" })).toBeVisible();
+  expect(screen.queryByText("providerFlow.noVendor")).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "GitHub Copilot" }),
+  ).not.toBeInTheDocument();
 });

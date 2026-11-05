@@ -2,16 +2,21 @@
    MIT attribution: third_party/routing-reference/LICENSE. */
 :root {
   --mp-bg: #f3f6fa;
+  --mp-workspace-bg: rgb(243 246 250 / 94%);
   --mp-sidebar: rgb(255 255 255 / 40%);
   --mp-card: #fff;
+  --mp-list-bg: rgb(255 255 255 / 65%);
+  --mp-list-line: rgb(215 225 236 / 65%);
+  --mp-list-divider: rgb(215 225 236 / 70%);
   --mp-card-2: #f8fafd;
   --mp-pill: #eef3ff;
   --mp-pill-hover: #e5edfc;
+  --mp-hover: #fff;
   --mp-line: #dbe3eb;
   --mp-line-2: #e7edf3;
   --mp-fg: #273443;
-  --mp-fg-2: #526277;
-  --mp-muted: #718096;
+  --mp-fg-2: #637184;
+  --mp-muted: #637184;
   --mp-faint: #a6b2c2;
   --mp-control: #6b7b90;
   --mp-accent: #3278ff;
@@ -25,11 +30,16 @@
 }
 .dark {
   --mp-bg: #151e2b;
+  --mp-workspace-bg: var(--mp-bg);
   --mp-sidebar: rgb(255 255 255 / 2%);
   --mp-card: #1c2838;
+  --mp-list-bg: var(--mp-card);
+  --mp-list-line: var(--mp-line);
+  --mp-list-divider: var(--mp-line-2);
   --mp-card-2: #192434;
   --mp-pill: #25364e;
   --mp-pill-hover: #2e435e;
+  --mp-hover: #25364e;
   --mp-line: #344458;
   --mp-line-2: #2b3a4e;
   --mp-fg: #e7eef8;
@@ -58,7 +68,7 @@
 }
 .mp-dialog[role="dialog"] {
   border: 1px solid var(--mp-line);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--mp-card);
 }
 .mp-dialog h2 {
@@ -124,16 +134,16 @@
 }
 .vary-workspace {
   --workspace-sidebar-width: 184px;
-  --workspace-page-top: 36px;
+  --workspace-page-top: 24px;
   --workspace-brand-top: 48px;
-  background: var(--mp-bg);
+  background: var(--mp-workspace-bg);
 }
 .workspace-drag-region + div {
-  --workspace-page-top: 4px;
-  --workspace-brand-top: 16px;
+  --workspace-page-top: 0px;
+  --workspace-brand-top: 24px;
 }
 .workspace-drag-region {
-  height: 32px;
+  height: 24px;
   flex: none;
   background: linear-gradient(
     to right,
@@ -148,7 +158,7 @@
   flex: none;
   flex-direction: column;
   width: var(--workspace-sidebar-width);
-  padding: var(--workspace-brand-top, 16px) 10px 24px;
+  padding: var(--workspace-brand-top, 16px) 12px 24px;
   background: var(--mp-sidebar);
 }
 .workspace-nav-selection {
@@ -168,12 +178,13 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   height: 32px;
   padding: 0;
   color: var(--mp-fg);
   font-size: 17px;
   font-weight: 600;
+  line-height: 22px;
 }
 .workspace-brand img {
   width: 32px;
@@ -185,8 +196,8 @@
 .workspace-sidebar nav {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding-top: 20px;
+  gap: 8px;
+  padding-top: 12px;
 }
 .workspace-nav-item {
   position: relative;
@@ -194,20 +205,21 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
   min-height: 28px;
-  padding: 4px 8px;
+  padding: 4px 10px;
   border-radius: 7px;
   color: var(--mp-fg);
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 400;
+  line-height: 20px;
   text-align: left;
   white-space: nowrap;
 }
 .workspace-nav-item svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   flex: none;
   color: inherit;
 }
@@ -218,6 +230,7 @@
 .workspace-nav-item[aria-current="page"] {
   background: transparent;
   color: var(--mp-accent);
+  font-weight: 500;
 }
 .workspace-nav-item[aria-current="page"] svg {
   color: inherit;
@@ -280,12 +293,12 @@
 }
 .mp-list {
   overflow: hidden;
-  border: 1px solid var(--mp-line);
-  border-radius: 12px;
-  background: var(--mp-card);
+  border: 1px solid var(--mp-list-line);
+  border-radius: 10px;
+  background: var(--mp-list-bg);
 }
 .vary-agents > .mp-list {
-  padding: 2px 0;
+  padding: 0;
 }
 .mp-agent-row {
   --mp-sortable-handle-left: 4px;
@@ -294,11 +307,14 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 61px;
-  padding: 12px 16px 12px 22px;
+  gap: 16px;
+  min-height: 60px;
+  padding: 9px 16px 9px 22px;
   flex-wrap: wrap;
   row-gap: 0;
+  cursor: default;
+}
+.tray-agents .mp-agent-row {
   cursor: pointer;
 }
 .mp-agent-row.expanded {
@@ -343,8 +359,8 @@
 .mp-agent-expanded {
   order: 10;
   flex: 0 0 calc(100% + 38px);
-  margin: 12px -16px -12px -22px;
-  padding: 12px 16px 14px 60px;
+  margin: 9px -16px -9px -22px;
+  padding: 12px 16px 14px 70px;
   border-top: 1px solid var(--mp-line-2);
   background: var(--mp-card-2);
   color: var(--mp-fg-2);
@@ -362,6 +378,10 @@
 .mp-agent-expanded:empty {
   display: none;
 }
+.mp-agent-checkin {
+  flex: 0 0 100%;
+  padding-left: 48px;
+}
 .mp-agent-detail-actions {
   display: flex;
   flex-wrap: wrap;
@@ -377,7 +397,7 @@
   font-size: 12px;
 }
 .mp-agent-detail-actions button:hover {
-  background: var(--mp-pill);
+  background: var(--mp-hover);
   color: var(--mp-fg);
 }
 @keyframes mp-details-in {
@@ -407,7 +427,7 @@
   .mp-agent-start {
     width: 140px;
     order: 5;
-    margin: 6px 0 1px 36px;
+    margin: 6px 0 1px 40px;
   }
   .mp-agent-row .mp-agent-who {
     min-width: 120px;
@@ -420,8 +440,8 @@
   display: grid;
   flex: none;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   background: transparent;
 }
 .mp-agent-who {
@@ -436,9 +456,9 @@
 }
 .mp-agent-name h2 {
   overflow: hidden;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 500;
-  line-height: 18px;
+  line-height: 22px;
   text-overflow: ellipsis;
 }
 .mp-agent-cli {
@@ -478,7 +498,7 @@
   cursor: pointer;
 }
 .mp-agent-update:hover:not(:disabled) {
-  background: var(--mp-pill);
+  background: var(--mp-hover);
   color: var(--mp-fg);
 }
 .mp-agent-update svg {
@@ -571,10 +591,10 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 4px;
+  margin-top: 2px;
   color: var(--mp-muted);
   font-size: 12px;
-  line-height: 14px;
+  line-height: 18px;
   overflow-wrap: anywhere;
 }
 .mp-agent-status > .mp-agent-dot {
@@ -619,7 +639,10 @@
 .vary-agents .mp-agent-next {
   padding: 0 8px;
 }
-.vary-agents .mp-agent-next:hover,
+.vary-agents .mp-agent-next:hover {
+  background: var(--mp-hover);
+  color: var(--mp-fg);
+}
 .vary-agents .mp-agent-next[aria-expanded="true"] {
   background: var(--mp-pill);
   color: var(--mp-fg);
@@ -693,7 +716,7 @@
   display: none;
 }
 .mp-agent-more > summary:hover {
-  background: var(--mp-card-2);
+  background: var(--mp-hover);
   color: var(--mp-fg);
 }
 .mp-agent-more > summary svg {
@@ -771,7 +794,7 @@
     flex-basis: calc(100% + 34px);
     margin-right: -14px;
     margin-left: -20px;
-    padding-left: 56px;
+    padding-left: 60px;
   }
   .vary-agents .mp-agent-next {
     display: inline-flex;

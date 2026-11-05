@@ -54,7 +54,7 @@
   color: var(--mp-fg-2);
 }
 .vary-dialog-footer > button[data-variant="outline"]:hover {
-  background: var(--mp-card-2);
+  background: var(--mp-hover);
   color: var(--mp-fg);
 }
 .vary-dialog-footer > button[data-variant="default"] {
@@ -78,6 +78,24 @@
 }
 .vary-app-dialog .vary-dialog-title {
   padding-right: 8px;
+}
+.vary-app-dialog input:not([type="checkbox"], [type="radio"], [type="range"]),
+.vary-app-dialog select,
+.vary-app-dialog textarea {
+  border: 1px solid var(--mp-line);
+  border-radius: 6px;
+  background: var(--mp-card-2);
+  color: var(--mp-fg);
+  font-size: 13px;
+  box-shadow: none;
+}
+.vary-app-dialog input:not([type="checkbox"], [type="radio"], [type="range"]),
+.vary-app-dialog select {
+  height: 32px;
+}
+.vary-app-dialog input::placeholder,
+.vary-app-dialog textarea::placeholder {
+  color: var(--mp-muted);
 }
 .vary-dialog-checkbox {
   display: flex;

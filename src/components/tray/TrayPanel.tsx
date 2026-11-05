@@ -1,13 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import {
-  ArrowUp,
-  ChevronRight,
-  ExternalLink,
-  RefreshCw,
-  Settings,
-} from "lucide-react";
+import { ArrowUp, ExternalLink, RefreshCw, Settings } from "lucide-react";
 import { AgentConnectionsPage } from "@/components/agents/AgentConnectionsPage";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
 import { RoutingStage } from "@/components/routing/RoutingStage";
@@ -26,6 +20,7 @@ import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { intentRoutingApi, type RoutingGroup } from "@/lib/api/intentRouting";
 import { proxyApi } from "@/lib/api/proxy";
 import { routingTraceApi } from "@/lib/api/routingTrace";
+import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 import { securityApi } from "@/lib/api/security";
 import { securityEventsApi } from "@/lib/api/securityEvents";
 import { routingModelLabel } from "@/lib/routingModelLabel";
@@ -223,11 +218,22 @@ export function TrayPanel() {
           activeApp={selectedApps[0] ?? "claude"}
           selectedApps={selectedApps}
         />
-        <button
-          onClick={() => void trayPanelApi.quit().catch(() => setError(true))}
-        >
-          {t("trayPanel.quit")}
-        </button>
+        <div className="tray-footer-actions">
+          {tab !== "agents" && (
+            <button onClick={() => open(tab)}>
+              {t(
+                tab === "routing"
+                  ? "trayPanel.manageRouting"
+                  : "trayPanel.manageSecurity",
+              )}
+            </button>
+          )}
+          <button
+            onClick={() => void trayPanelApi.quit().catch(() => setError(true))}
+          >
+            {t("trayPanel.quit")}
+          </button>
+        </div>
       </footer>
     </div>
   );
@@ -258,6 +264,12 @@ function TrayRouting() {
   const [failed, setFailed] = useState(false);
   const rows = traces.data?.requests.slice(0, 8) ?? [];
   const row = rows.find((r) => r.id === selected) ?? rows[0];
+  const upstreams = useQuery({
+    queryKey: ["routing-upstreams"],
+    queryFn: routingUpstreamsApi.list,
+    enabled: rows.some((row) => row.candidates.length > 0),
+    staleTime: 30000,
+  });
   async function save(group: RoutingGroup, patch: Partial<RoutingGroup>) {
     setPending(group.id);
     setFailed(false);
@@ -285,17 +297,18 @@ function TrayRouting() {
         <div className="tray-card">
           <RoutingStage
             layout="compact"
+            upstreams={upstreams.data}
             row={row}
             requestedModel={
               routingModelLabel(row, catalog.data ?? []) ??
               t("routingPage.modelUnavailable")
             }
             accountName={(c) => c.providerName}
-            animate={!!traces.data?.running}
+            animate={!!traces.data?.running && !selected}
             replay={false}
             speed={1}
             currentAccounts={traces.data?.accounts}
-            concurrent={rows}
+            concurrent={selected ? [] : (traces.data?.requests ?? [])}
             liveObservations
             address={
               gateway.data
@@ -335,7 +348,7 @@ function TrayRouting() {
                 minute: "2-digit",
               })}
             </time>
-            <span>{r.status ?? "—"}</span>
+            <span>{r.status === 499 ? "—" : (r.status ?? "—")}</span>
           </button>
         ))}
       </div>
@@ -412,13 +425,6 @@ function TrayRouting() {
           <li className="tray-empty">{t("trayPanel.failed")}</li>
         )}
       </ul>
-      <button
-        className="tray-detail-link"
-        onClick={() => void trayPanelApi.open("routing")}
-      >
-        {t("trayPanel.manageRouting")}
-        <ChevronRight size={14} />
-      </button>
     </section>
   );
 }
@@ -489,13 +495,6 @@ function TraySecurity() {
           ))
         )}
       </div>
-      <button
-        className="tray-detail-link"
-        onClick={() => void trayPanelApi.open("security")}
-      >
-        {t("trayPanel.manageSecurity")}
-        <ChevronRight size={14} />
-      </button>
     </section>
   );
 }

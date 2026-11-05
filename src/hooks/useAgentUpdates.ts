@@ -32,6 +32,7 @@ const desktopKey = ["agent-desktop-versions"];
 
 type LifecycleState = {
   busy: boolean;
+  reserved: AppId[];
   active: AppId[];
   progress: { index: number; total: number };
   pending: {
@@ -59,6 +60,7 @@ type LifecycleState = {
 function createLifecycleStore() {
   let state: LifecycleState = {
     busy: false,
+    reserved: [],
     active: [],
     progress: { index: 0, total: 0 },
     pending: null,
@@ -163,6 +165,7 @@ export function useAgentUpdates(installed: AppId[]) {
   function unlock() {
     locked.current = false;
     setBusy(false);
+    store.set("reserved", []);
     setActive([]);
   }
   async function execute(selected: AppId[]) {
@@ -237,6 +240,10 @@ export function useAgentUpdates(installed: AppId[]) {
             ),
           );
           setActive(store.snapshot().active.filter((id) => id !== app));
+          store.set(
+            "reserved",
+            store.snapshot().reserved.filter((id) => id !== app),
+          );
           setProgress({ index: completed.length, total: selected.length });
         }),
       );
@@ -254,6 +261,8 @@ export function useAgentUpdates(installed: AppId[]) {
     if (!selected.length) return;
     // The ref also guards the preflight and confirmation windows before React commits.
     locked.current = true;
+    // Reserve the selected tools before preflight so connection writes cannot race it.
+    store.set("reserved", selected);
     setBusy(true);
     setBarShown(true);
     setResults([]);
@@ -356,6 +365,15 @@ export function useAgentUpdates(installed: AppId[]) {
     desktop: desktop.data,
     updatable,
     busy,
+    isBusy: (app: AppId | null) => {
+      const state = store.snapshot();
+      return (
+        app !== null &&
+        (state.reserved.includes(app) ||
+          state.installTarget?.app === app ||
+          state.installing === app)
+      );
+    },
     active,
     progress,
     pending,

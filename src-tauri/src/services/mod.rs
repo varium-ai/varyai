@@ -36,6 +36,7 @@ pub mod sql_helpers;
 pub mod stream_check;
 pub mod subscription;
 pub mod subscription_grok;
+pub(crate) mod subscription_provider;
 pub mod sync_protocol;
 pub mod tool_risk;
 pub mod usage_cache;

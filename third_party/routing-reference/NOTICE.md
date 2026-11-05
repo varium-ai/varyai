@@ -41,6 +41,11 @@ attribution.
   `together-color.svg`, `fireworks-color.svg`, `ai302-color.svg`, and `zai.svg`.
   Original import files are `app-cc-switch.png`, `claudecode-color.svg`,
   `codex-color.svg`, and `magpie.svg`.
+  Routing motion additionally follows `plugins/routing/client.js` (`play`,
+  `home`, `staged`, `playing` and `flying`): independent concurrent request
+  lifetimes, provider waits, fallback returns and the final response journey.
+  Vary uses its React packet players and recorded trace metadata; no bird artwork
+  is copied. Cancellation has a separate neutral presentation.
 - `c4551dfcacf67536180291da402ded1d1316a2d8`: protocol review and Gemini
   tool-result role/image adaptation. Reviewed sources under `internal/gateway/`
   are `ir.go`, `gateway.go`, `gemini.go`, `translate_severed_test.go`, and
@@ -80,6 +85,12 @@ design guides; an attribution does not establish complete compatibility.
 
 ## Compatibility literals
 
+Routing candidate names additionally follow `internal/provider/keys.go`
+(`RestKeys` and `severalOn`), `internal/gateway/trace.go` (`weighed`), and the
+routing plugin's `who` / `makeRow` at Magpie revision
+`1d0fc2bb08c51d8711759694189b8a1d92ee3a1e`: one enabled key uses the supplier
+name, while a shared pool uses key names with masked-key fallbacks.
+
 Internal selectors, variable names, assets, and design filenames use Vary or
 descriptive names. A few external format identifiers remain literal so existing
 files and integrations continue to work:
@@ -96,6 +107,7 @@ files and integrations continue to work:
 The renderer labels the portable source **Magpie** and places it first. Import reads
 the original source files, keeps credentials in the backend, and does not modify
 the source application.
+
 - `c3593dc4944b91819ed12c601b0f2e844b804b5e`: desktop discovery behavior
   reviewed in `internal/agent/desktopapp.go`, `workbuddy.go` and
   `workbuddy_app_test.go`: application identities, both WorkBuddy builds,

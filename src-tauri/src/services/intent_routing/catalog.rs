@@ -443,6 +443,18 @@ pub(crate) async fn prepare_provider(
     mut provider: Provider,
     refresh: bool,
 ) -> Result<(Provider, Option<CatalogStatus>), String> {
+    if crate::services::subscription_provider::binding(&provider).is_some() {
+        let count = provider.settings_config["modelCatalog"]["models"]
+            .as_array()
+            .map_or(0, Vec::len);
+        let status = CatalogStatus {
+            provider_id: provider.id.clone(),
+            status: "cached",
+            model_count: count,
+            reason: None,
+        };
+        return Ok((provider, Some(status)));
+    }
     if !official_source(&provider) {
         let status = prepare_static_context(db, &mut provider, refresh).await;
         return Ok((provider, Some(status)));

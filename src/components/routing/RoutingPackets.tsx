@@ -1,6 +1,6 @@
 // The reference implementation's request/hold/return sequence (MIT), rendered as packets without birds.
 // See third_party/routing-reference/LICENSE.
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type CSSProperties } from "react";
 import type { RoutingTrace } from "@/lib/api/routingTrace";
 
 type Position = "source" | "hub" | number;
@@ -10,6 +10,7 @@ type Flight = {
   duration: number;
   back?: boolean;
   error?: boolean;
+  cancelled?: boolean;
   to: Position;
 };
 type Trace = RoutingTrace;
@@ -17,21 +18,68 @@ type Trace = RoutingTrace;
 export function RoutingPackets({
   row,
   paths,
+  flights,
+  onFinished,
   active,
   replay = false,
   speed = 1,
 }: {
   row?: Trace;
   paths: string[];
+  flights?: {
+    row: Trace;
+    paths: string[];
+    color?: string;
+    holdOffset?: number;
+  }[];
+  onFinished?: (id: string) => void;
   active: boolean;
   replay?: boolean;
   speed?: number;
 }) {
-  const svg = useRef<SVGSVGElement>(null);
+  const entries = flights ?? [{ row, paths }];
+  return (
+    <svg className="rt-sky" aria-hidden="true">
+      {entries.map((entry) => (
+        <PacketFlight
+          key={entry.row?.id ?? "idle"}
+          {...entry}
+          active={active}
+          replay={replay}
+          speed={speed}
+          onFinished={onFinished}
+        />
+      ))}
+    </svg>
+  );
+}
+
+function PacketFlight({
+  row,
+  paths,
+  color,
+  holdOffset = 0,
+  active,
+  replay,
+  speed,
+  onFinished,
+}: {
+  row?: Trace;
+  paths: string[];
+  color?: string;
+  holdOffset?: number;
+  active: boolean;
+  replay: boolean;
+  speed: number;
+  onFinished?: (id: string) => void;
+}) {
+  const svg = useRef<SVGGElement>(null);
   const player = useRef<ReturnType<typeof packetPlayer>>();
+  const finished = useRef(onFinished);
+  finished.current = onFinished;
   useEffect(() => {
     if (!svg.current) return;
-    const current = packetPlayer(svg.current);
+    const current = packetPlayer(svg.current, (id) => finished.current?.(id));
     player.current = current;
     return () => {
       current.dispose();
@@ -42,10 +90,14 @@ export function RoutingPackets({
     player.current?.update(row, active, replay, speed);
   }, [row, active, replay, speed]);
   useEffect(() => {
-    player.current?.layout();
-  }, [paths]);
+    player.current?.layout(holdOffset);
+  }, [paths, holdOffset]);
   return (
-    <svg className="rt-sky" ref={svg} aria-hidden="true">
+    <g
+      ref={svg}
+      data-flight-id={row?.id}
+      style={color ? ({ "--rt-agent": color } as CSSProperties) : undefined}
+    >
       <g className="rt-packet" visibility="hidden">
         <circle className="rt-packet-halo" r="10" />
         <circle className="pkt" r="4.5" />
@@ -53,11 +105,11 @@ export function RoutingPackets({
       {paths.map((path, index) => (
         <path className="rt-packet-path" d={path} key={index} />
       ))}
-    </svg>
+    </g>
   );
 }
 
-function packetPlayer(svg: SVGSVGElement) {
+function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
   const packet = svg.querySelector<SVGGElement>(".rt-packet")!;
   const media = window.matchMedia?.("(prefers-reduced-motion: reduce)");
   let reduced = media?.matches ?? false;
@@ -68,6 +120,7 @@ function packetPlayer(svg: SVGSVGElement) {
   let rate = 1;
   let seen = 0;
   let ended = false;
+  let reported = false;
   let position: Position = "source";
   let destination: Position = "source";
   let queue: Flight[] = [];
@@ -76,13 +129,20 @@ function packetPlayer(svg: SVGSVGElement) {
   let elapsed = 0;
   let frame: number | undefined;
   let disposed = false;
+  let holdOffset = 0;
   const wires = () => [
     ...svg.querySelectorAll<SVGPathElement>(".rt-packet-path"),
   ];
 
   function hide() {
     packet.setAttribute("visibility", "hidden");
-    packet.classList.remove("held", "back", "err");
+    packet.classList.remove("held", "back", "err", "cancelled");
+  }
+  function reportFinished() {
+    if (!reported && id) {
+      reported = true;
+      onFinished(id);
+    }
   }
   function cancelFrame() {
     if (frame !== undefined) cancelAnimationFrame(frame);
@@ -98,7 +158,7 @@ function packetPlayer(svg: SVGSVGElement) {
     destination = "source";
     hide();
   }
-  function pose(legs: Leg[], progress: number) {
+  function pose(legs: Leg[], progress: number, inset = 0) {
     const paths = wires();
     if (
       !legs.length ||
@@ -119,6 +179,7 @@ function packetPlayer(svg: SVGSVGElement) {
     const total = lengths.reduce((sum, length) => sum + length, 0);
     if (!Number.isFinite(total) || total <= 0) return false;
     let distance = total * Math.max(0, Math.min(progress, 1));
+    if (inset) distance = Math.max(total * 0.15, distance - inset);
     let index = 0;
     while (index < legs.length - 1 && distance > lengths[index]) {
       distance -= lengths[index++];
@@ -132,14 +193,21 @@ function packetPlayer(svg: SVGSVGElement) {
       return false;
     }
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
-    packet.setAttribute("transform", `translate(${point.x} ${point.y})`);
+    const slot = Math.ceil(inset / 12);
+    const offset =
+      inset > total * 0.85 ? (slot % 2 ? 1 : -1) * Math.ceil(slot / 2) * 8 : 0;
+    packet.setAttribute(
+      "transform",
+      `translate(${point.x} ${point.y + offset})`,
+    );
     packet.setAttribute("visibility", "visible");
     return true;
   }
   function hold() {
+    if (ended && position === "source") reportFinished();
     if (!allowed || reduced || ended || position === "source") return hide();
     const wire = position === "hub" ? 0 : position + 1;
-    if (pose([{ wire }], 1)) packet.classList.add("held");
+    if (pose([{ wire }], 1, holdOffset)) packet.classList.add("held");
   }
   function schedule() {
     if (
@@ -159,6 +227,7 @@ function packetPlayer(svg: SVGSVGElement) {
     while (flight) {
       packet.classList.toggle("back", !!flight.back);
       packet.classList.toggle("err", !!flight.error);
+      packet.classList.toggle("cancelled", !!flight.cancelled);
       packet.classList.remove("held");
       elapsed = (time - started) * rate;
       if (!pose(flight.legs, elapsed / flight.duration)) {
@@ -180,7 +249,7 @@ function packetPlayer(svg: SVGSVGElement) {
       hold();
     }
   }
-  function home(error: boolean) {
+  function home(error: boolean, cancelled = false) {
     const legs: Leg[] = [];
     if (typeof destination === "number")
       legs.push({ wire: destination + 1, reverse: true });
@@ -191,6 +260,7 @@ function packetPlayer(svg: SVGSVGElement) {
         duration: legs.length > 1 ? 1400 : 620,
         back: true,
         error,
+        cancelled,
         to: "source",
       });
     destination = "source";
@@ -215,6 +285,7 @@ function packetPlayer(svg: SVGSVGElement) {
       clear();
       seen = 0;
       ended = false;
+      reported = false;
       id = row?.id;
       replaying = replay;
       activeMode = active;
@@ -225,13 +296,17 @@ function packetPlayer(svg: SVGSVGElement) {
         (replay ||
           row.state === "routing" ||
           row.state === "streaming" ||
-          row.startedAt >= Date.now() - 5000);
+          row.startedAt + row.durationMs >= Date.now() - 5000);
       if (allowed) {
         queue.push({ legs: [{ wire: 0 }], duration: 620, to: "hub" });
         destination = "hub";
       }
     }
-    if (!row || !allowed || reduced) return;
+    if (!row || !allowed) return;
+    if (reduced) {
+      if (!["routing", "streaming"].includes(row.state)) reportFinished();
+      return;
+    }
     for (const step of row.steps.slice(seen)) {
       if (
         step.kind === "attempt" &&
@@ -268,13 +343,13 @@ function packetPlayer(svg: SVGSVGElement) {
         ["completed", "failed", "cancelled"].includes(step.kind) &&
         !ended
       ) {
-        home(step.kind !== "completed");
+        home(step.kind === "failed", step.kind === "cancelled");
         ended = true;
       }
     }
     seen = row.steps.length;
     if (!["routing", "streaming"].includes(row.state) && !ended) {
-      home(row.state !== "completed");
+      home(row.state === "failed", row.state === "cancelled");
       ended = true;
     }
     schedule();
@@ -286,13 +361,17 @@ function packetPlayer(svg: SVGSVGElement) {
   }
   function motion(event: MediaQueryListEvent) {
     reduced = event.matches;
-    if (reduced) clear();
+    if (reduced) {
+      clear();
+      if (ended) reportFinished();
+    }
   }
   document.addEventListener("visibilitychange", visibility);
   media?.addEventListener("change", motion);
   return {
     update,
-    layout() {
+    layout(offset = 0) {
+      holdOffset = offset;
       if (flight) {
         pose(flight.legs, elapsed / flight.duration);
         schedule();

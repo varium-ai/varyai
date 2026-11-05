@@ -22,27 +22,14 @@ pub fn create_tray_menu(
     let lang = language().to_lowercase();
     let labels = if lang.starts_with("zh-tw") || lang.starts_with("zh-hk") || lang.contains("hant")
     {
-        [
-            "開啟快速面板",
-            "開啟主介面",
-            "開啟官方網站",
-            "輕量模式",
-            "退出",
-        ]
+        ["開啟快速面板", "開啟主介面", "開啟官方網站", "退出"]
     } else if lang.starts_with("zh") {
-        [
-            "打开快捷面板",
-            "打开主界面",
-            "打开官方网站",
-            "轻量模式",
-            "退出",
-        ]
+        ["打开快捷面板", "打开主界面", "打开官方网站", "退出"]
     } else if lang.starts_with("ja") {
         [
             "クイックパネル",
             "メインウィンドウを開く",
             "公式サイト",
-            "軽量モード",
             "終了",
         ]
     } else {
@@ -50,7 +37,6 @@ pub fn create_tray_menu(
             "Open quick panel",
             "Open main window",
             "Official website",
-            "Lightweight mode",
             "Quit",
         ]
     };
@@ -59,9 +45,7 @@ pub fn create_tray_menu(
         .text("show_main", labels[1])
         .text("open_website", labels[2])
         .separator()
-        .check("lightweight_mode", labels[3])
-        .separator()
-        .text("quit", labels[4])
+        .text("quit", labels[3])
         .build()
         .map_err(|_| AppError::Message("Unable to build tray menu".into()))
 }
@@ -96,16 +80,6 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, id: &str) {
             let _ = app
                 .opener()
                 .open_url("https://www.varyai.net/", None::<String>);
-        }
-        "lightweight_mode" => {
-            let result = if crate::lightweight::is_lightweight_mode() {
-                crate::lightweight::exit_lightweight_mode(app)
-            } else {
-                crate::lightweight::enter_lightweight_mode(app)
-            };
-            if result.is_err() {
-                log::warn!("Unable to change lightweight mode");
-            }
         }
         "quit" => app.exit(0),
         _ => {}

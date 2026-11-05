@@ -83,6 +83,32 @@ function show(overrides: Partial<Parameters<typeof RoutingStage>[0]> = {}) {
     />,
   );
 }
+it.each([
+  ["routing", true, false, true],
+  ["streaming", true, false, true],
+  ["completed", true, false, false],
+  ["cancelled", true, false, false],
+  ["streaming", false, false, false],
+  ["streaming", true, true, false],
+] as const)(
+  "animates the gateway only for live activity: %s, %s, %s",
+  (state, animate, replay, active) => {
+    show({ row: { ...row, state }, animate, replay });
+    expect(
+      document.querySelector(".rt-hub")?.classList.contains("working"),
+    ).toBe(active);
+  },
+);
+
+it("keeps the gateway active while an older concurrent request is streaming", () => {
+  show({
+    row: { ...row, id: "finished", state: "completed" },
+    concurrent: [row],
+    animate: true,
+  });
+  expect(document.querySelector(".rt-hub")).toHaveClass("working");
+});
+
 it("renders individual safe key seats, the requested alias, actual listener and strategy", () => {
   show();
   const src = document.querySelector(".rt-src")!;
@@ -110,6 +136,92 @@ it("renders individual safe key seats, the requested alias, actual listener and 
   expect(seats[2]).toHaveTextContent("routingPage.seatQuota");
   expect(within(seats[0] as HTMLElement).queryByRole("progressbar")).toBeNull();
 });
+it("names provider seats by their supplier even when legacy labels remain", () => {
+  show({
+    row: {
+      ...row,
+      candidates: [
+        {
+          ...row.candidates[0],
+          account: {
+            ...row.candidates[0].account!,
+            kind: "provider",
+            label: "sk-4…766b",
+          },
+        },
+      ],
+    },
+  });
+  expect(document.querySelector(".rt-accts .who")).toHaveTextContent(
+    "Synthetic vendor",
+  );
+  expect(document.querySelector(".rt-accts .who")).not.toHaveTextContent(
+    "sk-4…766b",
+  );
+});
+
+it("shows the supplier for a legacy key label when only one configured key is enabled", () => {
+  show({
+    row: {
+      ...row,
+      candidates: [
+        {
+          ...row.candidates[0],
+          account: { ...row.candidates[0].account!, label: "sk-4…766b" },
+        },
+      ],
+    },
+    upstreams: [
+      {
+        schemaVersion: 1,
+        id: "fixture",
+        name: "Synthetic vendor",
+        revision: 1,
+        hasApiKey: true,
+        source: {
+          kind: "api",
+          baseUrl: "https://example.invalid",
+          apiFormat: "openai_chat",
+          models: [],
+          catalog: [],
+          mode: "vendor",
+          groupsOnly: false,
+        },
+      },
+    ],
+  });
+  expect(document.querySelector(".rt-accts .who")).toHaveTextContent(
+    "Synthetic vendor",
+  );
+  expect(document.querySelector(".rt-accts .who")).not.toHaveTextContent(
+    "sk-4…766b",
+  );
+});
+
+it("uses each candidate's configured supplier icon instead of credential-type icons", () => {
+  show({
+    upstreams: [
+      {
+        schemaVersion: 1,
+        id: "fixture",
+        name: "Synthetic vendor",
+        revision: 1,
+        hasApiKey: true,
+        icon: "deepseek",
+        source: { kind: "codex" },
+      },
+    ],
+  });
+  const icons = document.querySelectorAll(".rt-seat-icon");
+  expect(icons).toHaveLength(3);
+  expect(icons[0].querySelector(".lucide-key-round")).toBeNull();
+  expect(
+    icons[0].querySelector("[title='Synthetic vendor'] svg"),
+  ).not.toBeNull();
+  expect(icons[0].innerHTML).toBe(icons[1].innerHTML);
+  expect(icons[2].querySelector(".lucide-box")).not.toBeNull();
+});
+
 it("reports early failure rather than pretending to wait for candidates", () => {
   show({
     row: {
@@ -130,6 +242,60 @@ it("reports early failure rather than pretending to wait for candidates", () => 
   expect(document.querySelectorAll(".rt-wires path")).toHaveLength(1);
   expect(document.querySelectorAll(".rt-packet-path")).toHaveLength(1);
 });
+it("shows recorded masked key labels instead of provider names and key ordinals", () => {
+  show({
+    row: {
+      ...row,
+      candidates: row.candidates.slice(0, 2).map((candidate, index) => ({
+        ...candidate,
+        account: {
+          ...candidate.account!,
+          label: index ? "sk-8…cd3e" : "sk-4…766b",
+        },
+      })),
+    },
+  });
+  const seats = document.querySelectorAll(".rt-accts li");
+  expect(seats[0].querySelector(".who")).toHaveTextContent("sk-4…766b");
+  expect(seats[1].querySelector(".who")).toHaveTextContent("sk-8…cd3e");
+  expect(seats[0].querySelector(".who")).not.toHaveTextContent(
+    "Synthetic vendor",
+  );
+  expect(seats[0].querySelector(".who")).not.toHaveTextContent(
+    "routingPage.keyLabel",
+  );
+  expect(seats[0]).toHaveAttribute(
+    "title",
+    expect.stringContaining("sk-4…766b"),
+  );
+});
+it.each([true, false])(
+  "hides HTTP 499 for cancellation with candidates: %s",
+  (hasCandidates) => {
+    show({
+      row: {
+        ...row,
+        state: "cancelled",
+        status: 499,
+        candidates: hasCandidates ? row.candidates : [],
+        steps: [
+          {
+            kind: "cancelled",
+            candidate: hasCandidates ? 1 : undefined,
+            atMs: 1000,
+            status: 499,
+          },
+        ],
+      },
+    });
+    expect(document.querySelector(".rt-accts")).not.toHaveTextContent("499");
+    expect(document.querySelector(".rt-accts .rest")).toBeNull();
+    if (!hasCandidates)
+      expect(
+        screen.getByText("routingPage.noCandidatesCancelled"),
+      ).toBeInTheDocument();
+  },
+);
 it("keeps the tray stage horizontal while the workspace stage folds at narrow widths", () => {
   const view = show({ layout: "compact" });
   expect(document.querySelector(".rt-stage")).not.toHaveClass("narrow");
@@ -227,4 +393,66 @@ it("shows one branch for a direct request and preserves every recorded fallback 
   view.unmount();
   show();
   expect(document.querySelectorAll(".rt-accts li")).toHaveLength(3);
+});
+
+it("keeps simultaneous request paths on stage when the latest request changes", () => {
+  const older: RoutingTrace = {
+    ...row,
+    candidates: [row.candidates[0]],
+    steps: [{ kind: "attempt", candidate: 0, atMs: 1 }],
+  };
+  const view = show({ row: older, animate: true, concurrent: [older] });
+  const packet = document.querySelector(".rt-packet");
+  const next: RoutingTrace = {
+    ...older,
+    id: "newer-stage-request",
+    agent: "gemini",
+    candidates: [row.candidates[2]],
+  };
+  view.rerender(
+    <RoutingStage
+      row={next}
+      accountName={(candidate) => candidate.providerName}
+      concurrent={[next, older]}
+      animate
+      replay={false}
+      speed={1}
+    />,
+  );
+  expect(document.querySelectorAll(".rt-src")).toHaveLength(2);
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(2);
+  expect(document.querySelectorAll(".rt-packet")).toHaveLength(2);
+  expect([...document.querySelectorAll(".rt-packet")].includes(packet!)).toBe(
+    true,
+  );
+  view.rerender(
+    <RoutingStage
+      row={next}
+      accountName={(candidate) => candidate.providerName}
+      concurrent={[next, older]}
+      animate={false}
+      replay={false}
+      speed={1}
+    />,
+  );
+  expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(1);
+});
+
+it("shows one node per shared candidate without duplicating a concurrent branch", () => {
+  const view = show({ row, animate: true, concurrent: [row] });
+  const next = { ...row, id: "same-route-next" };
+  view.rerender(
+    <RoutingStage
+      row={next}
+      accountName={(candidate) => candidate.providerName}
+      concurrent={[next, row]}
+      animate
+      replay={false}
+      speed={1}
+    />,
+  );
+  expect(document.querySelectorAll(".rt-src")).toHaveLength(1);
+  expect(document.querySelectorAll(".rt-accts li")).toHaveLength(3);
+  expect(document.querySelectorAll(".rt-packet")).toHaveLength(2);
 });
