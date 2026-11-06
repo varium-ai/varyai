@@ -3,6 +3,103 @@ use serde_json::json;
 
 #[tokio::test]
 #[serial_test::serial]
+async fn unavailable_historical_models_require_reselection_without_bypassing_authentication(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::{
+        database::Database,
+        proxy::{server::ProxyServer, ProxyConfig},
+    };
+    let group: RoutingGroup = serde_json::from_value(json!({
+        "id":"current", "name":"Synthetic current model", "revision":0, "enabled":false,
+        "members":[{"id":"one","providerId":"current-provider","modelId":"current-model"}],
+        "defaultMemberId":"one", "fallbackMemberIds":[], "intentRecognitionEnabled":false,
+        "classifierTarget":null,"classificationBudgetMs":2000,"rules":[]
+    }))?;
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .no_proxy()
+        .build()?;
+    let runtime = Arc::new(Runtime::default());
+    runtime
+        .set_menu(Arc::new(Menu {
+            token: "synthetic-menu-token".into(),
+            groups: HashMap::from([(
+                "vary-provider/current".into(),
+                Arc::new(Session {
+                    group,
+                    targets: vec![],
+                    classifier: None,
+                    client: client.clone(),
+                    created: Instant::now(),
+                    bindings: Arc::default(),
+                }),
+            )]),
+            models: Default::default(),
+            default_model: None,
+            omitted_entries: 0,
+            context_settings: Default::default(),
+        }))
+        .map_err(|_| "synthetic menu publication failed")?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let info = server.start().await?;
+    let base = format!("http://127.0.0.1:{}/intent/v1", info.port);
+    let catalog: Value = client
+        .get(format!("{base}/models"))
+        .bearer_auth("synthetic-menu-token")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(catalog["data"][0]["id"], "vary-provider/current");
+    for (token, status, code) in [
+        (
+            "wrong-token",
+            StatusCode::UNAUTHORIZED,
+            "routing_session_expired",
+        ),
+        (
+            "synthetic-menu-token",
+            StatusCode::NOT_FOUND,
+            "routing_model_unavailable",
+        ),
+    ] {
+        let response = client
+            .post(format!("{base}/responses"))
+            .bearer_auth(token)
+            .json(
+                &json!({"model":"legacy-provider/legacy-model","input":"synthetic-private-input"}),
+            )
+            .send()
+            .await?;
+        assert_eq!(response.status(), status);
+        let failure: Value = response.json().await?;
+        assert_eq!(failure["error"]["code"], code);
+        if status == StatusCode::NOT_FOUND {
+            let message = failure["error"]["message"]
+                .as_str()
+                .ok_or("missing guidance")?;
+            assert!(message.contains("Select a model"));
+            assert!(message.contains("new conversation"));
+        }
+        let text = failure.to_string();
+        assert!(!text.contains("legacy-provider/legacy-model"));
+        assert!(!text.contains("synthetic-private-input"));
+    }
+    server.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn codex_account_pool_falls_back_within_one_member_and_pins_the_answering_account(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::{
@@ -992,6 +1089,15 @@ async fn readable_auto_alias_uses_smart_order_but_continuations_ignore_cooldown(
 #[tokio::test]
 #[serial_test::serial]
 async fn live_session_forwards_exact_models_and_pins_tools_without_current_provider() {
+    struct SecurityRuntimeRestore(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for SecurityRuntimeRestore {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security =
+        SecurityRuntimeRestore((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
     use crate::{
         database::Database,
         proxy::{server::ProxyServer, ProxyConfig},
@@ -1286,14 +1392,46 @@ async fn live_session_forwards_exact_models_and_pins_tools_without_current_provi
             "Bearer synthetic-second"
         );
     }
-    let result = client
+    let calls_before_unavailable = seen.lock().expect("records").len();
+    for unavailable in [
+        "vary-provider/unknown",
+        "legacy-provider/legacy-model",
+        "second-exact-model",
+    ] {
+        let result = client
+            .post(&url)
+            .bearer_auth("menu-token")
+            .json(&json!({"model":unavailable,"input":"synthetic-private-message"}))
+            .send()
+            .await
+            .expect("unavailable saved model");
+        assert_eq!(result.status(), StatusCode::NOT_FOUND);
+        let failure: Value = result.json().await.expect("model selection guidance");
+        assert_eq!(failure["error"]["code"], "routing_model_unavailable");
+        let message = failure["error"]["message"].as_str().expect("error message");
+        assert!(message.contains("Select a model"));
+        assert!(message.contains("new conversation"));
+        assert!(!message.contains(unavailable));
+        assert!(!failure.to_string().contains("synthetic-private-message"));
+        assert_eq!(
+            seen.lock().expect("records").len(),
+            calls_before_unavailable
+        );
+    }
+    let rejected = client
         .post(&url)
-        .bearer_auth("menu-token")
-        .json(&json!({"model":"vary-provider/unknown","input":"synthetic"}))
+        .bearer_auth("wrong-menu-token")
+        .json(&json!({"model":"legacy-provider/legacy-model","input":"synthetic-private-message"}))
         .send()
         .await
-        .expect("unknown alias");
-    assert_eq!(result.status(), StatusCode::NOT_FOUND);
+        .expect("unavailable model with invalid authorization");
+    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+    let failure: Value = rejected.json().await.expect("authorization failure");
+    assert_eq!(failure["error"]["code"], "routing_session_expired");
+    assert_eq!(
+        seen.lock().expect("records").len(),
+        calls_before_unavailable
+    );
     let result = client
         .post(&url)
         .bearer_auth("menu-token")

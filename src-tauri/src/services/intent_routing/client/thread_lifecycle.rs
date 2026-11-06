@@ -86,11 +86,13 @@ impl Manager {
         receipt.thread_sync_pending = true;
         self.save_thread_receipt(receipt)?;
         let result = if !restoring && target == PROVIDER {
-            threads::transition(
+            let models = self.published_thread_models(receipt, &installed)?;
+            threads::transition_with_models(
                 home,
                 &recovery.join("into-routing"),
                 source.as_str(),
                 PROVIDER,
+                &models,
             )
         } else {
             // Restore the recorded chats, then include chats created during takeover.
@@ -122,6 +124,60 @@ impl Manager {
         };
         receipt.thread_sync_pending = result.map_or(true, |report| report.incomplete);
         self.save_thread_receipt(receipt)
+    }
+
+    fn published_thread_models(
+        &self,
+        receipt: &Receipt,
+        installed: &toml::Value,
+    ) -> Result<std::collections::HashSet<String>, String> {
+        let empty = std::collections::HashSet::new;
+        if !read(&self.config)?
+            .as_deref()
+            .is_some_and(|current| projection_owned(current, &receipt.installed))
+        {
+            return Ok(empty());
+        }
+        if let Some(menu) = self.runtime.menu_snapshot()? {
+            let token = installed
+                .get("model_providers")
+                .and_then(|providers| providers.get(PROVIDER))
+                .and_then(|provider| provider.get("experimental_bearer_token"))
+                .and_then(toml::Value::as_str);
+            return Ok(if token == Some(menu.token.as_str()) {
+                menu.groups.keys().cloned().collect()
+            } else {
+                empty()
+            });
+        }
+        // Recovery without an active runtime may use only the exact owned
+        // catalog whose alias set was recorded by this publication.
+        let Some(path) = installed
+            .get("model_catalog_json")
+            .and_then(toml::Value::as_str)
+            .map(Path::new)
+            .filter(|path| {
+                path.parent() == self.receipt.parent()
+                    && receipt.catalogs.iter().any(|owned| owned == path)
+            })
+        else {
+            return Ok(empty());
+        };
+        let catalog = read(path)?.and_then(|text| serde_json::from_str::<Value>(&text).ok());
+        let aliases = catalog
+            .as_ref()
+            .and_then(|catalog| catalog.get("models"))
+            .and_then(Value::as_array)
+            .and_then(|models| {
+                models
+                    .iter()
+                    .map(|model| model.get("slug")?.as_str().map(str::to_owned))
+                    .collect::<Option<std::collections::HashSet<_>>>()
+            });
+        let recorded = receipt.model_aliases.iter().cloned().collect();
+        Ok(aliases
+            .filter(|aliases| aliases == &recorded)
+            .unwrap_or_default())
     }
 
     fn save_thread_receipt(&self, receipt: &Receipt) -> Result<(), String> {

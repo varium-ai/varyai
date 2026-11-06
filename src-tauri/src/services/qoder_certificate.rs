@@ -644,7 +644,12 @@ mod tests {
         )
         .await
         .expect("tls server");
+        // Validate this isolated listener with explicit roots, independently of
+        // the host's native trust database. The uninstalled-trust check above
+        // remains independent.
         let client = reqwest::Client::builder()
+            .use_rustls_tls()
+            .tls_built_in_root_certs(false)
             .no_proxy()
             .add_root_certificate(
                 reqwest::Certificate::from_pem(certificate.pem.as_bytes()).expect("ca"),
@@ -652,6 +657,25 @@ mod tests {
             .resolve("localhost", local)
             .build()
             .expect("client");
+        let untrusted = reqwest::Client::builder()
+            .use_rustls_tls()
+            .tls_built_in_root_certs(false)
+            .no_proxy()
+            .resolve("localhost", local)
+            .build()
+            .expect("client without test root")
+            .get(format!("https://localhost:{}/health", local.port()))
+            .send()
+            .await
+            .expect_err("an untrusted test CA must fail certificate validation");
+        assert!(format!("{untrusted:?}").contains("UnknownIssuer"));
+        // The CA permits loopback IPs, but the leaf authenticates localhost only.
+        let wrong_name = client
+            .get(format!("https://127.0.0.1:{}/health", local.port()))
+            .send()
+            .await
+            .expect_err("a trusted chain must still verify the leaf hostname");
+        assert!(format!("{wrong_name:?}").contains("NotValidForName"));
         let response = client
             .get(format!("https://localhost:{}/health", local.port()))
             .send()

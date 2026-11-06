@@ -88,6 +88,84 @@ pub(super) fn configuration_issue(
 }
 
 impl Manager {
+    /// Read only the effective, owned Codex route and a private cache fingerprint.
+    pub(crate) fn proxy_diagnostic_snapshot(
+        &self,
+        port: u16,
+    ) -> Result<Option<crate::services::codex_proxy_diagnostic::Snapshot>, String> {
+        use crate::services::codex_proxy_diagnostic::{origin, Snapshot};
+        use sha2::{Digest, Sha256};
+        if !self.runtime.menu_active() {
+            return Ok(None);
+        }
+        let (Some(receipt), Some(current)) = (self.load()?, read(&self.config)?) else {
+            return Ok(None);
+        };
+        if !projection_owned(&current, &receipt.installed)
+            || configuration_issue(&self.config, Some(&current))?.is_some()
+        {
+            return Ok(None);
+        }
+        let doc: toml::Value = current.parse().map_err(|_| FAILED)?;
+        let profile = doc
+            .get("profile")
+            .and_then(toml::Value::as_str)
+            .and_then(|name| doc.get("profiles")?.get(name));
+        let effective = |key: &str| {
+            profile
+                .and_then(|profile| profile.get(key))
+                .or_else(|| doc.get(key))
+        };
+        let provider = effective("model_provider")
+            .and_then(toml::Value::as_str)
+            .unwrap_or("openai");
+        let target = if provider == PROVIDER {
+            doc.get("model_providers")
+                .and_then(|providers| providers.get(PROVIDER))
+                .and_then(|provider| provider.get("base_url"))
+                .and_then(toml::Value::as_str)
+        } else if provider == "openai" {
+            effective("openai_base_url")
+                .and_then(toml::Value::as_str)
+                .filter(|url| {
+                    receipt
+                        .native_ownership()
+                        .and_then(|native| native.installed.as_deref())
+                        == Some(*url)
+                })
+        } else {
+            None
+        };
+        let Some(target) = target.and_then(|target| origin(target, true)) else {
+            return Ok(None);
+        };
+        if url::Url::parse(&target)
+            .ok()
+            .and_then(|url| url.port_or_known_default())
+            != Some(port)
+        {
+            return Ok(None);
+        }
+        let respect_system_proxy = profile
+            .and_then(|profile| profile.get("features"))
+            .and_then(|features| features.get("respect_system_proxy"))
+            .or_else(|| {
+                doc.get("features")
+                    .and_then(|features| features.get("respect_system_proxy"))
+            })
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(false);
+        let mut hash = Sha256::new();
+        hash.update(self.config.as_os_str().as_encoded_bytes());
+        hash.update([0]);
+        hash.update(current.as_bytes());
+        Ok(Some(Snapshot {
+            target,
+            respect_system_proxy,
+            fingerprint: hash.finalize().into(),
+        }))
+    }
+
     /// Restore a missing definition that Codex already names, including profiles.
     /// Existing definitions and unrelated routing choices remain authoritative.
     pub(crate) fn sync_configuration(&self, base: &str) -> Result<(), String> {
@@ -175,6 +253,82 @@ impl Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_proxy_diagnostic_snapshot_requires_active_owner_and_matching_port(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (dir, manager) = super::super::tests::setup();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let base = format!("http://127.0.0.1:{port}/intent/v1");
+        assert!(manager.proxy_diagnostic_snapshot(port)?.is_none());
+        manager.write_projection(
+            &[super::super::tests::group()],
+            "fixture-local-token",
+            &base,
+        )?;
+        assert!(manager.proxy_diagnostic_snapshot(port)?.is_none());
+        manager
+            .runtime
+            .set_menu(Arc::new(crate::proxy::intent::Menu {
+                token: "fixture-local-token".into(),
+                models: Default::default(),
+                default_model: None,
+                omitted_entries: 0,
+                context_settings: Default::default(),
+                groups: Default::default(),
+            }))?;
+        let first = manager
+            .proxy_diagnostic_snapshot(port)?
+            .ok_or("missing owned snapshot")?;
+        assert_eq!(first.target, format!("http://127.0.0.1:{port}"));
+        assert!(!first.respect_system_proxy);
+        assert!(first.matches_listener("127.0.0.1", port));
+        assert!(!first.matches_listener("::1", port));
+        assert!(!first.matches_listener("127.0.0.2", port));
+        assert!(manager.proxy_diagnostic_snapshot(0)?.is_none());
+        let before = fs::read(&manager.config)?;
+        assert!(!dir.path().join("auth.json").exists());
+        let mut doc: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+        doc["features"]["respect_system_proxy"] = toml_edit::value(true);
+        fs::write(&manager.config, doc.to_string())?;
+        let changed = manager
+            .proxy_diagnostic_snapshot(port)?
+            .ok_or("missing changed snapshot")?;
+        assert!(changed.respect_system_proxy);
+        assert!(changed.fingerprint != first.fingerprint);
+        doc["profile"] = toml_edit::value("fixture");
+        doc["profiles"]["fixture"]["features"]["respect_system_proxy"] = toml_edit::value(false);
+        fs::write(&manager.config, doc.to_string())?;
+        assert!(
+            !manager
+                .proxy_diagnostic_snapshot(port)?
+                .ok_or("missing profile snapshot")?
+                .respect_system_proxy
+        );
+        manager.runtime.clear_menu();
+        assert!(manager.proxy_diagnostic_snapshot(port)?.is_none());
+        manager
+            .runtime
+            .set_menu(Arc::new(crate::proxy::intent::Menu {
+                token: "fixture-local-token".into(),
+                models: Default::default(),
+                default_model: None,
+                omitted_entries: 0,
+                context_settings: Default::default(),
+                groups: Default::default(),
+            }))?;
+        doc["model_providers"][PROVIDER]["base_url"] =
+            toml_edit::value("https://synthetic.example/v1");
+        fs::write(&manager.config, doc.to_string())?;
+        assert!(manager.proxy_diagnostic_snapshot(port)?.is_none());
+        fs::write(&manager.config, &before)?;
+        fs::remove_file(&manager.receipt)?;
+        assert!(manager.proxy_diagnostic_snapshot(port)?.is_none());
+        assert_eq!(fs::read(&manager.config)?, before);
+        assert!(!dir.path().join("auth.json").exists());
+        Ok(())
+    }
 
     #[test]
     fn native_profile_provider_override_is_reported_without_an_alias_model(

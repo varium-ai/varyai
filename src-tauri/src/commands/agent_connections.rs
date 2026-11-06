@@ -34,11 +34,69 @@ fn codex_connection_status(
             None
         },
         model: selected.or(desired.flatten()),
-        restart_required: status.enabled,
+        restart_required: false,
+        reload_state: None,
         desktop_state: None,
         native_compatibility: Some(status.native_compatibility),
         configuration_issue: status.configuration_issue,
     }
+}
+
+fn with_codex_reload(mut status: Status, reload: Option<agent_connections::ReloadState>) -> Status {
+    status.restart_required = !status.recovery_pending
+        && matches!(
+            reload,
+            Some(
+                agent_connections::ReloadState::StaleCatalog
+                    | agent_connections::ReloadState::Failed
+            )
+        );
+    status.reload_state = reload;
+    status
+}
+
+/// Diagnose only the currently owned, active Codex route; never repair it here.
+#[tauri::command]
+pub(crate) async fn diagnose_codex_proxy(
+    state: State<'_, AppState>,
+    force: Option<bool>,
+) -> Result<Option<crate::services::codex_proxy_diagnostic::ProxyIssue>, String> {
+    let gateway = state.proxy_service.get_status().await?;
+    if !gateway.running {
+        return Ok(None);
+    }
+    let client = state.proxy_service.intent_client.clone();
+    let port = gateway.port;
+    let Some(snapshot) =
+        tokio::task::spawn_blocking(move || client.proxy_diagnostic_snapshot(port))
+            .await
+            .map_err(|_| FAILED)??
+    else {
+        return Ok(None);
+    };
+    if !snapshot.matches_listener(&gateway.address, gateway.port) {
+        return Ok(None);
+    }
+    let issue =
+        crate::services::codex_proxy_diagnostic::check(snapshot.clone(), force.unwrap_or(false))
+            .await;
+    if issue.is_none() {
+        return Ok(None);
+    }
+    // Ownership and listener settings can change while discovery/probes are in flight.
+    let current = state.proxy_service.get_status().await?;
+    if !current.running || current.port != gateway.port || current.address != gateway.address {
+        return Ok(None);
+    }
+    let client = state.proxy_service.intent_client.clone();
+    let after = tokio::task::spawn_blocking(move || client.proxy_diagnostic_snapshot(port))
+        .await
+        .map_err(|_| FAILED)??;
+    Ok(if after.as_ref() == Some(&snapshot) {
+        issue
+    } else {
+        None
+    })
 }
 
 #[tauri::command]
@@ -64,6 +122,7 @@ pub(crate) async fn get_agent_connection(
             recovery_reason: None,
             model: None,
             restart_required: waiting,
+            reload_state: None,
             desktop_state: None,
             native_compatibility: None,
             configuration_issue: None,
@@ -73,11 +132,15 @@ pub(crate) async fn get_agent_connection(
         state.proxy_service.sync_codex_configuration().await;
         let client = state.proxy_service.intent_client.clone();
         let manager = state.proxy_service.agent_connections.clone();
+        let reload = state.proxy_service.codex_reload_state();
         return tokio::task::spawn_blocking(move || {
-            Ok(codex_connection_status(
-                client.status()?,
-                client.selected_model()?,
-                manager.codex_intent()?,
+            Ok(with_codex_reload(
+                codex_connection_status(
+                    client.status()?,
+                    client.selected_model()?,
+                    manager.codex_intent()?,
+                ),
+                reload,
             ))
         })
         .await
@@ -176,7 +239,10 @@ pub(crate) async fn list_agent_connections(
     let desired = tokio::task::spawn_blocking(move || manager.codex_intent())
         .await
         .map_err(|_| FAILED)??;
-    statuses.push(codex_connection_status(status, selected, desired));
+    statuses.push(with_codex_reload(
+        codex_connection_status(status, selected, desired),
+        state.proxy_service.codex_reload_state(),
+    ));
     let manager = state.proxy_service.agent_connections.clone();
     let mut bridge = tokio::task::spawn_blocking(move || manager.bridge_status())
         .await
@@ -200,32 +266,83 @@ pub(crate) async fn list_agent_connections(
         recovery_reason: None,
         model: None,
         restart_required: audit_waiting,
+        reload_state: None,
         desktop_state: None,
         native_compatibility: None,
         configuration_issue: None,
     });
     Ok(statuses)
 }
+#[cfg(test)]
+mod desktop_restart_tests {
+    use super::*;
+
+    #[test]
+    fn confirmation_is_required_for_every_app_and_only_verified_desktops_are_selected() {
+        for app in ["claude-desktop", "workbuddy", "claude", "codex", "unknown"] {
+            assert_eq!(
+                validate_restart_request(app, false),
+                Err("agentConnections.restartConfirmationRequired".into())
+            );
+        }
+        for app in ["claude-desktop", "workbuddy", "codex"] {
+            assert_eq!(validate_restart_request(app, true), Ok(()));
+        }
+        for app in ["claude", "trae", "unknown"] {
+            assert_eq!(
+                validate_restart_request(app, true),
+                Err("agentConnections.restartUnsupported".into())
+            );
+        }
+    }
+}
+
+fn validate_restart_request(app: &str, confirmed: bool) -> Result<(), String> {
+    if !confirmed {
+        return Err("agentConnections.restartConfirmationRequired".into());
+    }
+    if app != "codex" && !agent_connections::desktop::supports_restart(app) {
+        return Err("agentConnections.restartUnsupported".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) async fn restart_agent_connection(
     state: State<'_, AppState>,
     app: String,
     confirmed: bool,
 ) -> Result<(), String> {
-    if !confirmed {
-        return Err("agentConnections.restartConfirmationRequired".into());
-    }
-    if app != "claude-desktop" {
-        return Err("agentConnections.restartUnsupported".into());
-    }
+    validate_restart_request(&app, confirmed)?;
     let _guard = state.proxy_service.lock_switch_for_app(&app).await;
-    if !state.proxy_service.intent_runtime.connections.active(&app) {
-        return Err(agent_connections::CONFLICT.into());
+    if app == "codex" {
+        let client = state.proxy_service.intent_client.clone();
+        let current = tokio::task::spawn_blocking(move || client.status())
+            .await
+            .map_err(|_| FAILED)??;
+        if current.configuration_issue.is_some()
+            || (current.recovery_pending && !current.configuration_owned)
+        {
+            return Err(agent_connections::CONFLICT.into());
+        }
+        return state.proxy_service.request_codex_reload();
     }
+    let active = state.proxy_service.intent_runtime.connections.active(&app);
     let manager = state.proxy_service.agent_connections.clone();
-    tokio::task::spawn_blocking(move || manager.restart_desktop(&app))
-        .await
-        .map_err(|_| FAILED)?
+    tokio::task::spawn_blocking(move || {
+        // Connected restarts need a live gateway. A disconnected restart instead
+        // validates the token-free restoration fingerprints in the manager.
+        if !active
+            && manager
+                .load(&app)?
+                .is_some_and(|receipt| !receipt.suspended)
+        {
+            return Err(agent_connections::CONFLICT.into());
+        }
+        manager.restart_desktop(&app)
+    })
+    .await
+    .map_err(|_| FAILED)?
 }
 #[tauri::command]
 pub(crate) async fn reapply_agent_connection(

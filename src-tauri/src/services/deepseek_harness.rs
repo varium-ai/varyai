@@ -8,8 +8,10 @@ const PLUGIN: &str = "@deepseek-ai/dsh-llm-pi-ai";
 const FAILED: &str = "agentConnections.failed";
 
 pub(crate) fn config_path() -> PathBuf {
+    // A test/debug home must not inherit a running Harness instance's home.
+    let isolated = std::env::var("CC_SWITCH_TEST_HOME").is_ok_and(|home| !home.trim().is_empty());
     std::env::var_os("DSH_HOME")
-        .filter(|value| !value.is_empty())
+        .filter(|value| !isolated && !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::config::get_home_dir().join(".dsh"))
         .join("profiles/desktop/cordis.patch.yml")
@@ -419,6 +421,52 @@ pub(crate) fn candidates(value: &Value) -> Vec<(String, String, Vec<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial]
+    fn isolated_home_takes_priority_over_an_inherited_harness_home() {
+        struct Restore {
+            isolated: Option<std::ffi::OsString>,
+            inherited: Option<std::ffi::OsString>,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (key, previous) in [
+                    ("CC_SWITCH_TEST_HOME", &self.isolated),
+                    ("DSH_HOME", &self.inherited),
+                ] {
+                    match previous {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+        let _restore = Restore {
+            isolated: std::env::var_os("CC_SWITCH_TEST_HOME"),
+            inherited: std::env::var_os("DSH_HOME"),
+        };
+        let isolated = tempfile::tempdir().unwrap();
+        let inherited = tempfile::tempdir().unwrap();
+        std::env::set_var("CC_SWITCH_TEST_HOME", isolated.path());
+        std::env::set_var("DSH_HOME", inherited.path());
+        assert_eq!(
+            config_path(),
+            isolated
+                .path()
+                .join(".dsh/profiles/desktop/cordis.patch.yml")
+        );
+        std::env::set_var("CC_SWITCH_TEST_HOME", "   ");
+        assert_eq!(
+            config_path(),
+            inherited.path().join("profiles/desktop/cordis.patch.yml")
+        );
+        std::env::remove_var("CC_SWITCH_TEST_HOME");
+        assert_eq!(
+            config_path(),
+            inherited.path().join("profiles/desktop/cordis.patch.yml")
+        );
+    }
 
     #[test]
     fn custom_routes_extend_the_existing_adapter_and_keep_native_providers() -> Result<(), String> {

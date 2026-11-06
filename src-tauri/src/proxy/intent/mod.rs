@@ -42,6 +42,7 @@ use std::{
 
 #[derive(Default)]
 pub(crate) struct Runtime {
+    pub(crate) codex_activity: Arc<super::client_activity::Activity>,
     pub(crate) traces: Arc<trace::Store>,
     pub(crate) connections: super::connections::Connections,
     sessions: RwLock<HashMap<String, TemporarySession>>,
@@ -1116,8 +1117,14 @@ impl Drop for Observer {
     }
 }
 fn error(status: StatusCode, code: &'static str) -> Response {
+    let message = match code {
+        "routing_model_unavailable" => {
+            "The saved model is unavailable in the current VaryAI model list. Select a model from the current list, or start a new conversation."
+        }
+        _ => code,
+    };
     let mut response = Response::new(Body::from(
-        json!({"error":{"type":"invalid_request_error","code":code,"message":code}}).to_string(),
+        json!({"error":{"type":"invalid_request_error","code":code,"message":message}}).to_string(),
     ));
     *response.status_mut() = status;
     response.headers_mut().insert(

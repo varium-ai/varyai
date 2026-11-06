@@ -478,6 +478,10 @@ impl ProxyServer {
                 self.state.clone(),
                 super::intent::native::admission,
             ))
+            .layer(axum::middleware::from_fn_with_state(
+                self.state.intent_runtime.codex_activity.clone(),
+                super::client_activity::observe,
+            ))
             .with_state(self.state.clone())
     }
 

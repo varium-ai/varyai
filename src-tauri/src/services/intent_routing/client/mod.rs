@@ -1026,6 +1026,10 @@ impl Manager {
 }
 
 fn recognized_orphan_provider(table: &toml::map::Map<String, toml::Value>) -> bool {
+    menu_provider_signature(table, "/intent/v1")
+}
+
+fn menu_provider_signature(table: &toml::map::Map<String, toml::Value>, path: &str) -> bool {
     table.keys().all(|key| {
         matches!(
             key.as_str(),
@@ -1082,10 +1086,82 @@ fn recognized_orphan_provider(table: &toml::map::Map<String, toml::Value>) -> bo
                     && url.password().is_none()
                     && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
                     && url.port().is_some()
-                    && url.path() == "/intent/v1"
+                    && url.path() == path
                     && url.query().is_none()
                     && url.fragment().is_none()
             })
+}
+
+/// Another gateway can retain and redirect this provider for historical chats.
+/// Matching origins alone never establish that its native route belongs to VaryAI.
+fn foreign_native_projection(doc: &toml::Value) -> bool {
+    if references_projection(doc) {
+        return false;
+    }
+    let Some(providers) = doc.get("model_providers").and_then(toml::Value::as_table) else {
+        return false;
+    };
+    let Some(retained) = providers.get(PROVIDER).and_then(toml::Value::as_table) else {
+        return false;
+    };
+    if !menu_provider_signature(retained, "/v1") {
+        return false;
+    }
+    let profile = match doc.get("profile") {
+        Some(name) => {
+            let Some(profile) = name
+                .as_str()
+                .and_then(|name| doc.get("profiles")?.get(name))
+                .and_then(toml::Value::as_table)
+            else {
+                return false;
+            };
+            Some(profile)
+        }
+        None => None,
+    };
+    let Some(selected) = profile
+        .and_then(|profile| profile.get("model_provider"))
+        .or_else(|| doc.get("model_provider"))
+        .and_then(toml::Value::as_str)
+    else {
+        return false;
+    };
+    if matches!(selected, PROVIDER | "openai") {
+        return false;
+    }
+    let Some(external) = providers.get(selected).and_then(toml::Value::as_table) else {
+        return false;
+    };
+    let local_menu = |raw: Option<&str>| -> Option<url::Url> {
+        let parsed = url::Url::parse(raw?).ok()?;
+        (parsed.scheme() == "http"
+            && parsed.username().is_empty()
+            && parsed.password().is_none()
+            && matches!(parsed.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+            && parsed.port().is_some_and(|port| port != 0)
+            && parsed.path() == "/v1"
+            && parsed.query().is_none()
+            && parsed.fragment().is_none())
+        .then_some(parsed)
+    };
+    let Some(retained) = local_menu(retained.get("base_url").and_then(toml::Value::as_str)) else {
+        return false;
+    };
+    let Some(external) = local_menu(external.get("base_url").and_then(toml::Value::as_str)) else {
+        return false;
+    };
+    let Some(native) = doc
+        .get("openai_base_url")
+        .and_then(toml::Value::as_str)
+        .filter(|value| valid_native_url(value))
+        .and_then(|value| url::Url::parse(value).ok())
+    else {
+        return false;
+    };
+    native.port().is_some_and(|port| port != 0)
+        && retained.origin() == external.origin()
+        && external.origin() == native.origin()
 }
 
 fn disconnect_orphan_fields(table: &mut dyn toml_edit::TableLike) {
@@ -1119,6 +1195,9 @@ fn disconnect_orphan_fields(table: &mut dyn toml_edit::TableLike) {
 
 fn disconnect_orphan_text(current: &str) -> Result<Option<String>, String> {
     let value: toml::Value = current.parse().map_err(|_| CONFLICT)?;
+    if foreign_native_projection(&value) {
+        return Ok(None);
+    }
     let top_routed = value.get("model_provider").and_then(toml::Value::as_str) == Some(PROVIDER);
     let profile = value.get("profile").and_then(toml::Value::as_str);
     let profile_routed = profile
@@ -1176,6 +1255,9 @@ fn orphan_state(current: Option<&str>) -> Result<(bool, bool), String> {
         return Ok((false, false));
     };
     let doc: toml::Value = current.parse().map_err(|_| FAILED)?;
+    if foreign_native_projection(&doc) {
+        return Ok((false, false));
+    }
     let referenced = references_projection(&doc);
     let Some(provider) = doc.get("model_providers").and_then(|p| p.get(PROVIDER)) else {
         return Ok((referenced, false));

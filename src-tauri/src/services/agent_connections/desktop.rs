@@ -1,17 +1,19 @@
 //! Desktop configuration freshness is independent of field ownership.
 use serde::Serialize;
+#[cfg(any(target_os = "windows", test))]
+mod windows;
 #[cfg(any(target_os = "macos", test))]
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum State {
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     Stopped,
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     Current,
     RestartRequired,
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     Unknown,
     #[cfg(not(target_os = "macos"))]
     Unsupported,
@@ -49,29 +51,69 @@ fn assess(instances: &[Instance], applied_ms: Option<i64>) -> State {
     }
 }
 
+pub(crate) fn supports_restart(app: &str) -> bool {
+    matches!(app, "claude-desktop" | "workbuddy")
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn bundle_ids(app: &str) -> &'static [&'static str] {
+    match app {
+        "claude-desktop" => &["com.anthropic.claudefordesktop"],
+        "workbuddy" => &["com.tencent.workbuddy.mac", "com.workbuddy.workbuddy-ai"],
+        _ => &[],
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn workbuddy_bundle_ids(dir: &std::path::Path) -> Option<&'static [&'static str]> {
+    match dir.file_name()?.to_str()? {
+        ".workbuddy-ai" => Some(&["com.workbuddy.workbuddy-ai"]),
+        ".workbuddy" => Some(&["com.tencent.workbuddy.mac"]),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn selected_bundle_ids(app: &str) -> Result<&'static [&'static str], String> {
+    if app == "workbuddy" {
+        workbuddy_bundle_ids(&crate::workbuddy_config::get_workbuddy_dir())
+            .ok_or_else(|| FAILED.into())
+    } else {
+        Ok(bundle_ids(app))
+    }
+}
+
 pub(crate) fn state(app: &str, applied_ms: Option<i64>) -> Option<State> {
-    if app != "claude-desktop" {
+    if !supports_restart(app) {
         return None;
     }
     #[cfg(target_os = "macos")]
     {
-        Some(macos::instances().map_or(State::Unknown, |instances| assess(&instances, applied_ms)))
+        Some(
+            macos::Native { app }
+                .instances()
+                .map_or(State::Unknown, |instances| assess(&instances, applied_ms)),
+        )
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        Some(windows::state(app, applied_ms))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = applied_ms;
         Some(State::Unsupported)
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const FAILED: &str = "agentConnections.restartFailed";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const CHANGED: &str = "agentConnections.restartChanged";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const RUNNING: &str = "agentConnections.restartBlocked";
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 trait Runtime {
     fn instances(&self) -> Result<Vec<Instance>, String>;
     fn quit(&self, instance: &Instance) -> Result<(), String>;
@@ -79,7 +121,7 @@ trait Runtime {
     fn open(&self, bundle: &std::path::Path) -> Result<(), String>;
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn restart_with(
     runtime: &impl Runtime,
     applied_ms: Option<i64>,
@@ -89,7 +131,11 @@ fn restart_with(
         return Err(super::CONFLICT.into());
     }
     let instances = runtime.instances()?;
-    if assess(&instances, applied_ms) != State::RestartRequired {
+    if assess(&instances, applied_ms) != State::RestartRequired
+        || instances
+            .iter()
+            .any(|instance| instance.launched_ms.is_none())
+    {
         return Err(CHANGED.into());
     }
     let target = instances.first().ok_or(CHANGED)?.bundle.clone();
@@ -118,18 +164,28 @@ pub(crate) fn restart(
     applied_ms: Option<i64>,
     valid: impl Fn() -> bool,
 ) -> Result<(), String> {
-    if app != "claude-desktop" {
+    if !supports_restart(app) {
         return Err("agentConnections.restartUnsupported".into());
     }
     #[cfg(target_os = "macos")]
     {
-        restart_with(&macos::Native, applied_ms, valid)
+        restart_with(&macos::Native { app }, applied_ms, valid)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::restart(app, applied_ms, valid)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (applied_ms, valid);
         Err("agentConnections.restartUnsupported".into())
     }
+}
+
+// Internal app-server fallback; public desktop selection remains unchanged.
+#[cfg(target_os = "windows")]
+pub(crate) fn recover_codex(valid: impl Fn() -> bool) -> Result<(), String> {
+    windows::recover_codex(valid)
 }
 
 #[cfg(target_os = "macos")]
@@ -138,23 +194,70 @@ mod macos {
     use objc2_app_kit::NSRunningApplication;
     use objc2_foundation::NSString;
 
-    const ID: &str = "com.anthropic.claudefordesktop";
-    pub(super) struct Native;
-    fn applications() -> objc2::rc::Retained<objc2_foundation::NSArray<NSRunningApplication>> {
-        NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(ID))
+    pub(super) struct Native<'a> {
+        pub app: &'a str,
     }
-    fn identity(app: &NSRunningApplication) -> Result<Instance, String> {
+    fn applications(
+        id: &str,
+    ) -> objc2::rc::Retained<objc2_foundation::NSArray<NSRunningApplication>> {
+        NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(id))
+    }
+    pub(super) fn bundle_matches(path: &std::path::Path, ids: &[&str], roots: &[PathBuf]) -> bool {
+        use objc2_foundation::{
+            NSData, NSDictionary, NSPropertyListMutabilityOptions, NSPropertyListSerialization,
+        };
+        if !roots.iter().any(|root| path.starts_with(root))
+            || path.extension().is_none_or(|ext| ext != "app")
+            || path.canonicalize().ok().as_deref() != Some(path)
+            || !path.is_dir()
+        {
+            return false;
+        }
+        let Ok(bytes) = std::fs::read(path.join("Contents/Info.plist")) else {
+            return false;
+        };
+        if bytes.len() > 1024 * 1024 {
+            return false;
+        }
+        let data = NSData::from_vec(bytes);
+        // Foundation parses immutable XML or binary plist bytes without NSBundle's metadata cache.
+        let Ok(value) = (unsafe {
+            NSPropertyListSerialization::propertyListWithData_options_format_error(
+                &data,
+                NSPropertyListMutabilityOptions::empty(),
+                std::ptr::null_mut(),
+            )
+        }) else {
+            return false;
+        };
+        value
+            .downcast_ref::<NSDictionary>()
+            .and_then(|dict| dict.objectForKey(&NSString::from_str("CFBundleIdentifier")))
+            .and_then(|value| {
+                value
+                    .downcast_ref::<NSString>()
+                    .map(|id| ids.contains(&id.to_string().as_str()))
+            })
+            .unwrap_or(false)
+    }
+    fn identity(app: &NSRunningApplication, ids: &[&str]) -> Result<Instance, String> {
+        let id = app.bundleIdentifier().ok_or(FAILED)?.to_string();
+        if !ids.contains(&id.as_str()) {
+            return Err(FAILED.into());
+        }
         let path = PathBuf::from(
             app.bundleURL()
                 .and_then(|url| url.path())
                 .ok_or(FAILED)?
                 .to_string(),
         );
-        let trusted = [
-            PathBuf::from("/Applications/Claude.app"),
-            crate::config::get_home_dir().join("Applications/Claude.app"),
+        let roots = [
+            PathBuf::from("/Applications"),
+            crate::config::get_home_dir().join("Applications"),
         ];
-        if !trusted.contains(&path) || path.is_symlink() || !path.is_dir() {
+        // Accept renamed/nested bundles only when both the running identity and
+        // the bundle on disk identify the selected app. Reject symlink escapes.
+        if !bundle_matches(&path, &[&id], &roots) {
             return Err(FAILED.into());
         }
         let date = app
@@ -167,24 +270,32 @@ mod macos {
             launched_ms: date.map(|date| date as i64),
         })
     }
-    pub(super) fn instances() -> Result<Vec<Instance>, String> {
-        applications()
-            .iter()
-            .filter(|app| !app.isTerminated())
-            .map(|app| identity(&app))
-            .collect()
-    }
-    impl Runtime for Native {
+    impl Runtime for Native<'_> {
         fn instances(&self) -> Result<Vec<Instance>, String> {
-            instances()
+            if cfg!(test) || std::env::var_os("CC_SWITCH_TEST_HOME").is_some() {
+                return Err(FAILED.into());
+            }
+            let ids = selected_bundle_ids(self.app)?;
+            let mut found = Vec::new();
+            for id in ids {
+                for app in applications(id).iter().filter(|app| !app.isTerminated()) {
+                    found.push(identity(&app, ids)?);
+                }
+            }
+            found.sort_by_key(|instance| instance.pid);
+            Ok(found)
         }
         fn quit(&self, instance: &Instance) -> Result<(), String> {
-            let apps = applications();
+            let ids = selected_bundle_ids(self.app)?;
+            let apps = ids
+                .iter()
+                .flat_map(|id| applications(id).to_vec())
+                .collect::<Vec<_>>();
             let app = apps
                 .iter()
                 .find(|app| app.processIdentifier() == instance.pid)
                 .ok_or(CHANGED)?;
-            if identity(&app)? != *instance {
+            if identity(app, ids)? != *instance {
                 return Err(CHANGED.into());
             }
             app.terminate().then_some(()).ok_or_else(|| RUNNING.into())
@@ -203,6 +314,13 @@ mod macos {
             }
         }
         fn open(&self, bundle: &std::path::Path) -> Result<(), String> {
+            let roots = [
+                PathBuf::from("/Applications"),
+                crate::config::get_home_dir().join("Applications"),
+            ];
+            if !bundle_matches(bundle, selected_bundle_ids(self.app)?, &roots) {
+                return Err(CHANGED.into());
+            }
             let status = std::process::Command::new("/usr/bin/open")
                 .arg(bundle)
                 .status()
@@ -221,6 +339,237 @@ mod tests {
             pid: 123,
             bundle: "/synthetic/Claude.app".into(),
             launched_ms,
+        }
+    }
+
+    use std::{cell::RefCell, collections::VecDeque};
+
+    struct FakeRuntime {
+        snapshots: RefCell<VecDeque<Vec<Instance>>>,
+        events: RefCell<Vec<&'static str>>,
+        quit_error: Option<&'static str>,
+        wait_error: Option<&'static str>,
+    }
+
+    impl FakeRuntime {
+        fn new(snapshots: Vec<Vec<Instance>>) -> Self {
+            Self {
+                snapshots: RefCell::new(snapshots.into()),
+                events: RefCell::new(vec![]),
+                quit_error: None,
+                wait_error: None,
+            }
+        }
+    }
+
+    impl Runtime for FakeRuntime {
+        fn instances(&self) -> Result<Vec<Instance>, String> {
+            self.events.borrow_mut().push("instances");
+            Ok(self
+                .snapshots
+                .borrow_mut()
+                .pop_front()
+                .expect("unexpected discovery"))
+        }
+        fn quit(&self, _: &Instance) -> Result<(), String> {
+            self.events.borrow_mut().push("quit");
+            self.quit_error.map_or(Ok(()), |error| Err(error.into()))
+        }
+        fn wait_for_exit(&self, _: &[Instance]) -> Result<(), String> {
+            self.events.borrow_mut().push("wait");
+            self.wait_error.map_or(Ok(()), |error| Err(error.into()))
+        }
+        fn open(&self, bundle: &std::path::Path) -> Result<(), String> {
+            assert_eq!(bundle, std::path::Path::new("/synthetic/Claude.app"));
+            self.events.borrow_mut().push("open");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn supported_desktop_selection_includes_both_verified_workbuddy_builds() {
+        assert!(supports_restart("claude-desktop"));
+        assert!(supports_restart("workbuddy"));
+        assert_eq!(
+            bundle_ids("workbuddy"),
+            &["com.tencent.workbuddy.mac", "com.workbuddy.workbuddy-ai"]
+        );
+        assert_eq!(
+            bundle_ids("claude-desktop"),
+            &["com.anthropic.claudefordesktop"]
+        );
+        for app in ["claude", "codex", "trae", "unknown"] {
+            assert!(!supports_restart(app), "{app}");
+            assert!(bundle_ids(app).is_empty(), "{app}");
+        }
+    }
+
+    #[test]
+    fn workbuddy_selection_follows_the_managed_config_variant() {
+        for (dir, id) in [
+            (".workbuddy-ai", "com.workbuddy.workbuddy-ai"),
+            (".workbuddy", "com.tencent.workbuddy.mac"),
+        ] {
+            assert_eq!(
+                workbuddy_bundle_ids(std::path::Path::new(dir)),
+                Some(&[id][..])
+            );
+        }
+        assert_eq!(
+            workbuddy_bundle_ids(std::path::Path::new("/custom/settings")),
+            None
+        );
+        assert_eq!(
+            workbuddy_bundle_ids(std::path::Path::new(".codebuddy")),
+            None
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bundle_identity_is_read_from_disk_again_before_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join("Renamed.app");
+        std::fs::create_dir_all(bundle.join("Contents")).unwrap();
+        let plist = bundle.join("Contents/Info.plist");
+        let write_id = |id: &str| {
+            std::fs::write(&plist, format!(r#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>{id}</string></dict></plist>"#)).unwrap()
+        };
+        let roots = [root.path().canonicalize().unwrap()];
+        let bundle = bundle.canonicalize().unwrap();
+        write_id("com.workbuddy.workbuddy-ai");
+        assert!(macos::bundle_matches(
+            &bundle,
+            &["com.workbuddy.workbuddy-ai"],
+            &roots
+        ));
+        assert!(!macos::bundle_matches(
+            &bundle,
+            &["com.tencent.workbuddy.mac"],
+            &roots
+        ));
+        write_id("test.replacement");
+        assert!(!macos::bundle_matches(
+            &bundle,
+            &["com.workbuddy.workbuddy-ai"],
+            &roots
+        ));
+    }
+
+    #[test]
+    fn restart_normally_quits_waits_and_reopens_the_verified_bundle() {
+        let old = vec![instance(Some(1000))];
+        let runtime = FakeRuntime::new(vec![old.clone(), old, vec![]]);
+        assert_eq!(restart_with(&runtime, Some(2000), || true), Ok(()));
+        assert_eq!(
+            *runtime.events.borrow(),
+            [
+                "instances",
+                "instances",
+                "quit",
+                "wait",
+                "instances",
+                "open"
+            ]
+        );
+    }
+
+    #[test]
+    fn restart_refuses_stopped_current_unknown_and_mixed_bundles() {
+        let mut other = instance(Some(1000));
+        other.bundle = "/synthetic/Other.app".into();
+        for instances in [
+            vec![],
+            vec![instance(Some(3000))],
+            vec![instance(None)],
+            vec![instance(Some(1000)), instance(None)],
+            vec![instance(Some(1000)), other],
+        ] {
+            let runtime = FakeRuntime::new(vec![instances]);
+            assert_eq!(
+                restart_with(&runtime, Some(2000), || true),
+                Err(CHANGED.into())
+            );
+            assert_eq!(*runtime.events.borrow(), ["instances"]);
+        }
+    }
+
+    #[test]
+    fn restart_rechecks_configuration_before_quit_and_before_reopen() {
+        for (checks, expected, events) in [
+            (vec![false], super::super::CONFLICT, vec![]),
+            (vec![true, false], CHANGED, vec!["instances"]),
+            (
+                vec![true, true, false],
+                super::super::CONFLICT,
+                vec!["instances", "instances", "quit", "wait"],
+            ),
+        ] {
+            let old = vec![instance(Some(1000))];
+            let runtime = FakeRuntime::new(vec![old.clone(), old]);
+            let checks = RefCell::new(VecDeque::from(checks));
+            assert_eq!(
+                restart_with(&runtime, Some(2000), || checks
+                    .borrow_mut()
+                    .pop_front()
+                    .expect("unexpected validation")),
+                Err(expected.into())
+            );
+            assert_eq!(*runtime.events.borrow(), events);
+        }
+    }
+
+    #[test]
+    fn restart_never_quits_a_replacement_or_reopens_over_a_new_instance() {
+        let old = vec![instance(Some(1000))];
+        for replacement in [
+            Instance {
+                pid: 456,
+                ..old[0].clone()
+            },
+            Instance {
+                launched_ms: Some(1500),
+                ..old[0].clone()
+            },
+            Instance {
+                bundle: "/synthetic/Other.app".into(),
+                ..old[0].clone()
+            },
+        ] {
+            let runtime = FakeRuntime::new(vec![old.clone(), vec![replacement.clone()]]);
+            assert_eq!(
+                restart_with(&runtime, Some(2000), || true),
+                Err(CHANGED.into())
+            );
+            assert_eq!(*runtime.events.borrow(), ["instances", "instances"]);
+            let runtime = FakeRuntime::new(vec![old.clone(), old.clone(), vec![replacement]]);
+            assert_eq!(
+                restart_with(&runtime, Some(2000), || true),
+                Err(CHANGED.into())
+            );
+            assert_eq!(
+                *runtime.events.borrow(),
+                ["instances", "instances", "quit", "wait", "instances"]
+            );
+        }
+    }
+
+    #[test]
+    fn refused_normal_quit_and_exit_timeout_never_reopen() {
+        let old = vec![instance(Some(1000))];
+        for refuse_quit in [true, false] {
+            let mut runtime = FakeRuntime::new(vec![old.clone(), old.clone()]);
+            if refuse_quit {
+                runtime.quit_error = Some(RUNNING);
+            } else {
+                runtime.wait_error = Some(RUNNING);
+            }
+            assert_eq!(
+                restart_with(&runtime, Some(2000), || true),
+                Err(RUNNING.into())
+            );
+            assert!(!runtime.events.borrow().contains(&"open"));
+            assert_eq!(runtime.events.borrow().contains(&"wait"), !refuse_quit);
         }
     }
 
@@ -255,7 +604,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[test]
     fn desktop_restart_is_unsupported_without_validating_configuration() {
         let state = state("claude-desktop", Some(2000));

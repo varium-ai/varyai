@@ -1,7 +1,10 @@
 pub(crate) mod agent_rewards;
 pub mod balance;
+#[cfg(any(target_os = "macos", windows, test))]
+pub(crate) mod codex_app_server;
 pub mod codex_oauth_models;
 pub(crate) mod codex_provider;
+pub(crate) mod codex_proxy_diagnostic;
 pub mod coding_plan;
 pub mod config;
 pub(crate) mod doubao_checkin;
