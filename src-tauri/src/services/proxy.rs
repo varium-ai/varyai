@@ -6235,6 +6235,7 @@ mod tests {
                     }
                     Err(_) => break,
                 };
+                socket.set_nonblocking(false).unwrap();
                 let mut line = String::new();
                 BufReader::new(socket.try_clone().unwrap())
                     .read_line(&mut line)
