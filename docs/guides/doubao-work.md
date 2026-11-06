@@ -1,6 +1,6 @@
 # Doubao Work on macOS
 
-This integration targets the standalone Doubao Work client, not the general Doubao application. Install the client separately and sign in with your own account.
+This integration targets the standalone Doubao Work client, not the general Doubao application. Install the client separately from the [Doubao Work website](https://www.doubao.com/work) and sign in with your own account. The **More tools** website and installation shortcuts open this product page.
 
 ## Connect
 
