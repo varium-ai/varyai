@@ -98,7 +98,7 @@ const websites: Record<AppId, string> = {
   openclaw: "https://openclaw.ai/",
   hermes: "https://github.com/NousResearch/hermes-agent",
   qoder: "https://qoder.com/",
-  doubaowork: "https://www.doubao.com/",
+  doubaowork: "https://www.doubao.com/work",
   trae: "https://www.trae.ai/",
   kimi: "https://www.kimi.com/code",
   qwen: "https://qwenlm.github.io/qwen-code-docs/",
@@ -349,18 +349,20 @@ export function AgentConnectionsPage({
       : catalog.data[0].id;
     void apply(app, true, model);
   }
+  const hasSavedConnection = (app: AppId) =>
+    states.data.some(
+      (state) =>
+        state.app === app &&
+        (state.enabled ||
+          state.recoveryPending ||
+          state.desktopState === "restart_required" ||
+          state.reloadState === "stale_catalog" ||
+          state.reloadState === "failed"),
+    );
   const shown = appOrder.filter(
     (app) =>
-      installations.data?.[app] ||
-      states.data?.some(
-        (state) =>
-          state.app === app &&
-          (state.enabled ||
-            state.recoveryPending ||
-            state.desktopState === "restart_required" ||
-            state.reloadState === "stale_catalog" ||
-            state.reloadState === "failed"),
-      ),
+      installations.data?.[app] !== false &&
+      (installations.data?.[app] || hasSavedConnection(app)),
   );
   const connectionRank = (app: AppId) => {
     const query = connections[APP_IDS.indexOf(app)];
@@ -368,6 +370,10 @@ export function AgentConnectionsPage({
   };
   if (compact) shown.sort((a, b) => connectionRank(b) - connectionRank(a));
   const other = APP_IDS.filter((app) => !shown.includes(app));
+  const otherWithConnections = other.filter(hasSavedConnection);
+  const otherWithoutConnections = other.filter(
+    (app) => !hasSavedConnection(app),
+  );
   function reorder({ active, over }: DragEndEvent) {
     if (
       compact ||
@@ -560,7 +566,7 @@ export function AgentConnectionsPage({
         key={app}
         app={app}
         name={name(app)}
-        sortable={!compact}
+        sortable={!compact && shown.includes(app)}
         className={`mp-agent-row${compact && expanded === app ? " expanded" : ""}`}
         aria-label={t(`apps.${app}`)}
         onClick={
@@ -1085,7 +1091,8 @@ export function AgentConnectionsPage({
         </summary>
         <div className="mp-agent-more-body">
           <div className="mp-agent-install-list divide-y">
-            {other.map((app) => (
+            {otherWithConnections.map(row)}
+            {otherWithoutConnections.map((app) => (
               <div
                 key={app}
                 role="group"

@@ -68,14 +68,14 @@ function version(name: string, value: string | null) {
     },
   ];
 }
-function mount() {
+function mount(compact = false) {
   return render(
     <QueryClientProvider
       client={
         new QueryClient({ defaultOptions: { queries: { retry: false } } })
       }
     >
-      <AgentConnectionsPage />
+      <AgentConnectionsPage compact={compact} />
     </QueryClientProvider>,
   );
 }
@@ -105,23 +105,106 @@ beforeEach(() => {
   vi.mocked(settingsApi.openExternal).mockResolvedValue();
 });
 describe("Agent installation shortcuts", () => {
-  it("offers installation in the main row when a saved connection outlives the CLI", async () => {
-    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
-      {
-        app: "opencode",
-        enabled: true,
-        configured: false,
-        model: null,
-        recoveryPending: true,
-        restartRequired: false,
-      },
-    ]);
-    mount();
-    const main = await screen.findByRole("article", { name: "apps.opencode" });
-    expect(
-      within(main).getByRole("button", { name: "agentInstall.install" }),
-    ).toBeEnabled();
-  });
+  it.each([false, true])(
+    "keeps a missing tool's reload failure visible in More tools (compact: %s)",
+    async (compact) => {
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app: "codex",
+          enabled: false,
+          configured: false,
+          model: null,
+          recoveryPending: false,
+          restartRequired: false,
+          reloadState: "failed",
+        },
+      ]);
+      const { container } = mount(compact);
+      const summary = await screen.findByText("agentConnections.moreTools");
+      fireEvent.click(summary);
+      const failed = await screen.findByRole("article", { name: "apps.codex" });
+      expect(summary.closest("details")).toContainElement(failed);
+      expect(container.querySelector(".mp-list")).not.toContainElement(failed);
+      expect(
+        within(failed).queryByRole("button", {
+          name: "agentConnections.sorting.handle",
+        }),
+      ).not.toBeInTheDocument();
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+      expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["website", "install"])(
+    "opens Doubao Work's product page from the %s shortcut",
+    async (shortcut) => {
+      mount();
+      const desktop = await row("doubaowork");
+      fireEvent.click(
+        within(desktop).getByRole("button", {
+          name:
+            shortcut === "website"
+              ? "agentConnections.website"
+              : "agentInstall.install",
+        }),
+      );
+      if (shortcut === "install") {
+        fireEvent.click(
+          await screen.findByRole("button", {
+            name: "agentInstall.openWebsite",
+          }),
+        );
+      }
+      await waitFor(() =>
+        expect(settingsApi.openExternal).toHaveBeenCalledWith(
+          "https://www.doubao.com/work",
+        ),
+      );
+      expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
+    },
+  );
+  it.each([false, true])(
+    "moves a missing CLI with a saved connection into More tools (compact: %s)",
+    async (compact) => {
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app: "opencode",
+          enabled: true,
+          configured: false,
+          model: null,
+          recoveryPending: true,
+          restartRequired: false,
+        },
+      ]);
+      const { container } = mount(compact);
+      const disclosure = (
+        await screen.findByText("agentConnections.moreTools")
+      ).closest("details");
+      expect(disclosure).not.toHaveAttribute("open");
+      fireEvent.click(screen.getByText("agentConnections.moreTools"));
+      const missing = await screen.findByRole("article", {
+        name: "apps.opencode",
+      });
+      expect(disclosure).toContainElement(missing);
+      expect(container.querySelector(".mp-list")).not.toContainElement(missing);
+      expect(
+        within(missing).getByRole("button", { name: "agentInstall.install" }),
+      ).toBeEnabled();
+      expect(
+        within(missing).queryByRole("button", {
+          name: "agentConnections.sorting.handle",
+        }),
+      ).not.toBeInTheDocument();
+      if (compact)
+        fireEvent.click(
+          within(missing).getByRole("button", {
+            name: "agentConnections.details apps.opencode",
+          }),
+        );
+      expect(within(missing).getByRole("switch")).toBeChecked();
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+      expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
+    },
+  );
   it("offers installation for missing agents, hides meaningless Connect actions, and never installs on mount", async () => {
     mount();
     const open = await row("opencode");

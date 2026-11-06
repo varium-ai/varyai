@@ -65,7 +65,14 @@ pub(super) fn find_in(app: &str, roots: &[PathBuf]) -> Option<PathBuf> {
 }
 
 fn matches(app: &str, path: &Path, named: bool) -> bool {
-    if !path.is_dir() {
+    let Ok(resolved) = path.canonicalize() else {
+        return false;
+    };
+    if !resolved.is_dir()
+        || resolved.components().any(|component| {
+            component.as_os_str() == ".Trash" || component.as_os_str() == ".Trashes"
+        })
+    {
         return false;
     }
     match field(path, "CFBundleIdentifier") {
@@ -280,6 +287,34 @@ mod tests {
             );
             assert_eq!(find_in(app, &[dir.path().into()]), Some(path), "{app}");
         }
+    }
+
+    #[test]
+    fn trashed_desktop_bundles_do_not_count_as_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        for trash in [".Trash", ".Trashes/501"] {
+            let root = dir.path().join(trash);
+            let path = bundle(&root, "DoubaoWork.app", "com.work.pc.doubao");
+            assert!(!matches("doubaowork", &path, false));
+            assert!(find_in("doubaowork", &[root]).is_none());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_symlinks_to_trashed_bundles_do_not_count_as_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = bundle(
+            &dir.path().join(".Trash"),
+            "DoubaoWork.app",
+            "com.work.pc.doubao",
+        );
+        let apps = dir.path().join("Applications");
+        std::fs::create_dir(&apps).unwrap();
+        let alias = apps.join("DoubaoWork.app");
+        std::os::unix::fs::symlink(&path, &alias).unwrap();
+        assert!(!matches("doubaowork", &alias, false));
+        assert!(find_in("doubaowork", &[apps]).is_none());
     }
 
     #[test]
