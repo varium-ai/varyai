@@ -49,7 +49,7 @@ fn provider_notes_survive_save_edit_and_do_not_enter_upstream_configuration(
         "Synthetic revised provider note"
     );
     assert!(!format!("{reloaded:?}").contains("provider note"));
-    let executable = crate::services::routing_upstreams::resolve_provider(&reloaded)?;
+    let executable = db.routing_discovery_provider(&reloaded.id, reloaded.revision)?;
     assert!(!executable
         .settings_config
         .to_string()
