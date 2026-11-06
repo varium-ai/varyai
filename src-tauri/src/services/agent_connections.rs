@@ -209,11 +209,25 @@ pub(crate) struct Status {
     pub recovery_reason: Option<RecoveryReason>,
     pub model: Option<String>,
     pub restart_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reload_state: Option<ReloadState>,
     pub desktop_state: Option<desktop::State>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_compatibility: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub configuration_issue: Option<super::intent_routing::client::ConfigurationIssue>,
+}
+// The wire type remains available on platforms without a Codex desktop worker.
+#[cfg_attr(not(any(target_os = "macos", windows, test)), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReloadState {
+    Current,
+    StaleCatalog,
+    WaitingForIdle,
+    Restarting,
+    Failed,
+    Stopped,
 }
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -549,6 +563,29 @@ impl FileEdit {
         Ok(())
     }
 }
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopFreshness {
+    app: String,
+    applied_at_ms: i64,
+    files: Vec<DesktopFingerprint>,
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct DesktopFingerprint {
+    path: PathBuf,
+    digest: Option<String>,
+}
+impl DesktopFingerprint {
+    fn capture(path: PathBuf) -> Result<Self, String> {
+        use sha2::{Digest, Sha256};
+        let digest = read(&path)?.map(|text| format!("{:x}", Sha256::digest(text.as_bytes())));
+        Ok(Self { path, digest })
+    }
+    fn intact(&self) -> bool {
+        Self::capture(self.path.clone()).is_ok_and(|current| current == *self)
+    }
+}
+
 pub(crate) struct Manager {
     pub root: PathBuf,
 }
@@ -642,7 +679,88 @@ impl Manager {
         }
         Ok(Some(receipt))
     }
+    fn desktop_freshness_path(&self, app: &str) -> Result<PathBuf, String> {
+        if !desktop::supports_restart(app) {
+            return Err("agentConnections.restartUnsupported".into());
+        }
+        Ok(self.root.join(format!("{app}-desktop-freshness.json")))
+    }
+    fn desktop_freshness(&self, app: &str) -> Result<Option<DesktopFreshness>, String> {
+        if !desktop::supports_restart(app) {
+            return Ok(None);
+        }
+        let Some(text) = read(&self.desktop_freshness_path(app)?)? else {
+            return Ok(None);
+        };
+        let freshness: DesktopFreshness = serde_json::from_str(&text).map_err(|_| FAILED)?;
+        if freshness.app != app || freshness.files.is_empty() || freshness.applied_at_ms <= 0 {
+            return Err(FAILED.into());
+        }
+        Ok(freshness
+            .files
+            .iter()
+            .all(DesktopFingerprint::intact)
+            .then_some(freshness))
+    }
+    fn desktop_restoration_snapshot(receipt: &Receipt) -> Result<Vec<DesktopFingerprint>, String> {
+        if !desktop::supports_restart(&receipt.app) {
+            return Ok(vec![]);
+        }
+        receipt
+            .files
+            .iter()
+            .map(|file| DesktopFingerprint::capture(file.path.clone()))
+            .collect()
+    }
+    fn record_desktop_restoration(
+        &self,
+        receipt: &Receipt,
+        before: Vec<DesktopFingerprint>,
+    ) -> Result<(), String> {
+        if !desktop::supports_restart(&receipt.app) {
+            return Ok(());
+        }
+        let files = Self::desktop_restoration_snapshot(receipt)?;
+        if files == before {
+            return Ok(());
+        }
+        let freshness = DesktopFreshness {
+            app: receipt.app.clone(),
+            applied_at_ms: chrono::Utc::now().timestamp_millis(),
+            files,
+        };
+        atomic_write_private(
+            &self.desktop_freshness_path(&receipt.app)?,
+            &serde_json::to_vec(&freshness).map_err(|_| FAILED)?,
+        )
+        .map_err(|_| FAILED.into())
+    }
+    fn desktop_selection_matches(&self, app: &str) -> bool {
+        if app != "workbuddy" {
+            return true;
+        }
+        let path = crate::workbuddy_config::get_workbuddy_config_path();
+        match self.load(app) {
+            Ok(Some(receipt)) => receipt.files.iter().any(|file| file.path == path),
+            Ok(None) => self.desktop_freshness(app).is_ok_and(|freshness| {
+                freshness
+                    .is_some_and(|freshness| freshness.files.iter().any(|file| file.path == path))
+            }),
+            Err(_) => false,
+        }
+    }
     pub fn status(&self, app: &str) -> Result<Status, String> {
+        self.status_with_desktop(app, |app, applied_ms| {
+            self.desktop_selection_matches(app)
+                .then(|| desktop::state(app, applied_ms))
+                .flatten()
+        })
+    }
+    fn status_with_desktop(
+        &self,
+        app: &str,
+        state: impl FnOnce(&str, Option<i64>) -> Option<desktop::State>,
+    ) -> Result<Status, String> {
         let receipt = self.load(app)?;
         let configured = receipt.as_ref().is_some_and(|receipt| {
             !receipt.suspended
@@ -651,9 +769,14 @@ impl Manager {
                     .iter()
                     .all(|file| file.intact().unwrap_or(false))
         });
-        let desktop_state = configured
-            .then(|| desktop::state(app, receipt.as_ref().and_then(|r| r.applied_at_ms)))
-            .flatten();
+        let desktop_state = if configured {
+            state(app, receipt.as_ref().and_then(|r| r.applied_at_ms))
+        } else if receipt.is_none() || receipt.as_ref().is_some_and(|receipt| receipt.suspended) {
+            self.desktop_freshness(app)?
+                .and_then(|freshness| state(app, Some(freshness.applied_at_ms)))
+        } else {
+            None
+        };
         Ok(Status {
             app: app.into(),
             enabled: configured,
@@ -662,15 +785,44 @@ impl Manager {
             recovery_reason: (receipt.as_ref().is_some_and(|r| !r.suspended) && !configured)
                 .then_some(RecoveryReason::ConfigurationChanged),
             model: receipt.map(|r| r.model),
-            restart_required: configured
-                && desktop_state.is_none_or(|state| state == desktop::State::RestartRequired),
+            restart_required: desktop_state == Some(desktop::State::RestartRequired),
+            reload_state: None,
             desktop_state,
             native_compatibility: None,
             configuration_issue: None,
         })
     }
     pub fn restart_desktop(&self, app: &str) -> Result<(), String> {
-        let receipt = self.load(app)?.ok_or(CONFLICT)?;
+        if !self.desktop_selection_matches(app) {
+            return Err(CONFLICT.into());
+        }
+        self.restart_desktop_with(app, |applied_ms, valid| {
+            desktop::restart(app, applied_ms, || {
+                self.desktop_selection_matches(app) && valid()
+            })
+        })
+    }
+    fn restart_desktop_with(
+        &self,
+        app: &str,
+        restart: impl FnOnce(Option<i64>, &dyn Fn() -> bool) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if !desktop::supports_restart(app) {
+            return Err("agentConnections.restartUnsupported".into());
+        }
+        let receipt = self.load(app)?;
+        if receipt.is_none() || receipt.as_ref().is_some_and(|receipt| receipt.suspended) {
+            let freshness = self.desktop_freshness(app)?.ok_or(CONFLICT)?;
+            let valid = || {
+                self.load(app).is_ok_and(|current| {
+                    current.is_none() || current.is_some_and(|current| current.suspended)
+                }) && self
+                    .desktop_freshness(app)
+                    .is_ok_and(|current| current.as_ref() == Some(&freshness))
+            };
+            return restart(Some(freshness.applied_at_ms), &valid);
+        }
+        let receipt = receipt.ok_or(CONFLICT)?;
         let valid = || {
             self.load(app).is_ok_and(|current| {
                 current.is_some_and(|current| {
@@ -684,7 +836,7 @@ impl Manager {
                 })
             })
         };
-        desktop::restart(app, receipt.applied_at_ms, valid)
+        restart(receipt.applied_at_ms, &valid)
     }
     pub fn install(&self, mut receipt: Receipt) -> Result<(), String> {
         let path = self.path(&receipt.app)?;
@@ -858,9 +1010,11 @@ impl Manager {
             return Err(CONFLICT.into());
         }
         desktop_config::save_settings(&self.root, &receipt)?;
+        let before = Self::desktop_restoration_snapshot(&receipt)?;
         for file in receipt.files.iter().rev() {
             file.restore()?;
         }
+        self.record_desktop_restoration(&receipt, before)?;
         fs::remove_file(self.path(app)?).map_err(|_| FAILED.into())
     }
     pub fn release_for_reapply(&self, app: &str) -> Result<(), String> {
@@ -916,9 +1070,11 @@ impl Manager {
             &serde_json::to_vec(&receipt).map_err(|_| FAILED)?,
         )
         .map_err(|_| FAILED)?;
+        let before = Self::desktop_restoration_snapshot(&receipt)?;
         for file in receipt.files.iter().rev() {
             file.restore()?;
         }
+        self.record_desktop_restoration(&receipt, before)?;
         Ok(())
     }
     pub fn codex_intent(&self) -> Result<Option<Option<String>>, String> {
@@ -1088,6 +1244,182 @@ fn build_with_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disconnected_desktop_freshness_is_token_free_and_rechecks_restored_files(
+    ) -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        let path = dir.path().join("models.json");
+        let original = r#"{"models":[],"apiKey":"synthetic-original"}"#;
+        fs::write(&path, original).map_err(|_| FAILED)?;
+        let file = FileEdit::prepare(path.clone(), |value| {
+            value["models"] = json!([{"id":"synthetic-model","apiKey":"synthetic-local"}]);
+            Ok(())
+        })?;
+        manager.install(Receipt {
+            app: "workbuddy".into(),
+            token: "synthetic-local".into(),
+            model: "shared".into(),
+            model_map: BTreeMap::new(),
+            visible_models: None,
+            files: vec![file],
+            suspended: false,
+            applied_at_ms: Some(2000),
+        })?;
+        manager.disconnect("workbuddy")?;
+        assert_eq!(read(&path)?.as_deref(), Some(original));
+        let freshness = read(&manager.desktop_freshness_path("workbuddy")?)?.ok_or(FAILED)?;
+        assert!(!freshness.contains("synthetic-original"));
+        assert!(!freshness.contains("synthetic-local"));
+        let status = manager.status_with_desktop("workbuddy", |_, applied| {
+            assert!(applied.is_some());
+            Some(desktop::State::RestartRequired)
+        })?;
+        assert!(!status.enabled && !status.configured && !status.recovery_pending);
+        assert!(status.restart_required);
+        assert_eq!(
+            serde_json::to_value(status).map_err(|_| FAILED)?["desktopState"],
+            "restart_required"
+        );
+        manager.restart_desktop_with("workbuddy", |applied, valid| {
+            assert!(applied.is_some());
+            assert!(valid());
+            fs::write(&path, r#"{"models":[{"id":"external"}]}"#).map_err(|_| FAILED)?;
+            assert!(!valid());
+            Ok(())
+        })?;
+        let status = manager.status_with_desktop("workbuddy", |_, _| {
+            panic!("changed restored config must not query apps")
+        })?;
+        assert!(status.desktop_state.is_none());
+        assert!(!status.restart_required);
+        assert_eq!(
+            manager.restart_desktop_with("workbuddy", |_, _| panic!("must refuse changed config")),
+            Err(CONFLICT.into())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workbuddy_runtime_selection_must_match_the_managed_projection_path() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        let managed = dir.path().join(".workbuddy");
+        let other = dir.path().join(".workbuddy-ai");
+        let file = FileEdit::prepare(managed.join("models.json"), |value| {
+            value["model"] = json!("shared");
+            Ok(())
+        })?;
+        manager.install(Receipt {
+            app: "workbuddy".into(),
+            token: "synthetic-local".into(),
+            model: "shared".into(),
+            model_map: BTreeMap::new(),
+            visible_models: None,
+            files: vec![file],
+            suspended: false,
+            applied_at_ms: Some(2000),
+        })?;
+        crate::workbuddy_config::with_test_dir(&managed, || {
+            assert!(manager.desktop_selection_matches("workbuddy"))
+        });
+        crate::workbuddy_config::with_test_dir(&other, || {
+            assert!(!manager.desktop_selection_matches("workbuddy"));
+            assert!(manager.status("workbuddy").unwrap().desktop_state.is_none());
+            assert_eq!(manager.restart_desktop("workbuddy"), Err(CONFLICT.into()));
+        });
+        manager.disconnect("workbuddy")?;
+        crate::workbuddy_config::with_test_dir(&managed, || {
+            assert!(manager.desktop_selection_matches("workbuddy"))
+        });
+        crate::workbuddy_config::with_test_dir(&other, || {
+            assert!(!manager.desktop_selection_matches("workbuddy"))
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn disconnecting_an_already_suspended_desktop_preserves_the_real_restoration_time(
+    ) -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        let file = FileEdit::prepare(dir.path().join("models.json"), |value| {
+            value["model"] = json!("shared");
+            Ok(())
+        })?;
+        manager.install(Receipt {
+            app: "workbuddy".into(),
+            token: "synthetic-local".into(),
+            model: "shared".into(),
+            model_map: BTreeMap::new(),
+            visible_models: None,
+            files: vec![file],
+            suspended: false,
+            applied_at_ms: Some(2000),
+        })?;
+        manager.suspend("workbuddy")?;
+        let path = manager.desktop_freshness_path("workbuddy")?;
+        let mut freshness = manager.desktop_freshness("workbuddy")?.ok_or(FAILED)?;
+        freshness.applied_at_ms = 1234;
+        atomic_write_private(&path, &serde_json::to_vec(&freshness).map_err(|_| FAILED)?)
+            .map_err(|_| FAILED)?;
+        let before = read(&path)?;
+        manager.disconnect("workbuddy")?;
+        assert_eq!(read(&path)?, before);
+        manager.disconnect("workbuddy")?;
+        assert_eq!(read(&path)?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn desktop_restart_rechecks_receipt_identity_and_owned_configuration() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        let path = dir.path().join("models.json");
+        let file = FileEdit::prepare(path.clone(), |value| {
+            value["model"] = json!("shared");
+            Ok(())
+        })?;
+        manager.install(Receipt {
+            app: "workbuddy".into(),
+            token: "synthetic-local".into(),
+            model: "shared".into(),
+            model_map: BTreeMap::new(),
+            visible_models: None,
+            files: vec![file],
+            suspended: false,
+            applied_at_ms: Some(2000),
+        })?;
+        manager.restart_desktop_with("workbuddy", |_, valid| {
+            assert!(valid());
+            let mut receipt = manager.load("workbuddy")?.ok_or(FAILED)?;
+            receipt.token = "synthetic-replacement".into();
+            atomic_write_private(
+                &manager.path("workbuddy")?,
+                &serde_json::to_vec(&receipt).map_err(|_| FAILED)?,
+            )
+            .map_err(|_| FAILED)?;
+            assert!(!valid());
+            Ok(())
+        })?;
+        manager.restart_desktop_with("workbuddy", |_, valid| {
+            assert!(valid());
+            fs::write(&path, r#"{"model":"external"}"#).map_err(|_| FAILED)?;
+            assert!(!valid());
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     #[test]
     fn native_formats_restore_owned_fields_and_preserve_external_edits() -> Result<(), String> {
         for (format, original, external) in [

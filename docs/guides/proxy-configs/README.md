@@ -1,6 +1,6 @@
 # Keep Vary AI loopback traffic local
 
-Use these examples only after confirming that a VPN/proxy is forwarding requests for `127.0.0.1:15722` to a remote proxy. HTTP 503 alone does not establish that diagnosis.
+Use these examples after confirming that a VPN/proxy prevents requests from reaching `127.0.0.1:15722`. The Codex connection row offers **How to fix** when a health probe through its predicted proxy route fails while direct health probes succeed. This does not establish that the proxy forwarded the request to a remote server. HTTP 502 or 503 alone does not establish that diagnosis. See [Codex proxy diagnostics](../../troubleshooting.md#codex-cannot-reach-local-routing-through-a-proxy).
 
 The examples contain no subscription, server, account, or key. They route loopback traffic directly and send other traffic to the user's selected proxy. They replace the routing policy; they do not preserve an existing region-based split-routing policy. LAN addresses are not included in the direct exception.
 

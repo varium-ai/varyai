@@ -56,6 +56,7 @@ impl Manager {
                 .then_some(RecoveryReason::BridgePending),
             model: outbox.and_then(|o| o.model),
             restart_required: enabled && !delivered,
+            reload_state: None,
             desktop_state: None,
             native_compatibility: None,
             configuration_issue: None,

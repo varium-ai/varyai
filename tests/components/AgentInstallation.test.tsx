@@ -137,6 +137,39 @@ describe("Agent installation shortcuts", () => {
       expect(settingsApi.openExternal).toHaveBeenCalledWith(website),
     );
   });
+  it.each([false, true])(
+    "keeps a missing tool's reload failure visible in More tools (compact: %s)",
+    async (compact) => {
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app: "codex",
+          enabled: false,
+          configured: false,
+          model: null,
+          recoveryPending: false,
+          restartRequired: false,
+          reloadState: "failed",
+        },
+      ]);
+      const { container } = mount(compact);
+      const summary = await screen.findByText("agentConnections.moreTools");
+      fireEvent.click(summary);
+      const failed = await screen.findByRole("group", { name: "apps.codex" });
+      expect(await within(failed).findByRole("status")).toHaveTextContent(
+        "agentConnections.states.reloadFailed",
+      );
+      expect(within(failed).queryByRole("switch")).not.toBeInTheDocument();
+      expect(summary.closest("details")).toContainElement(failed);
+      expect(container.querySelector(".mp-list")).not.toContainElement(failed);
+      expect(
+        within(failed).queryByRole("button", {
+          name: "agentConnections.sorting.handle",
+        }),
+      ).not.toBeInTheDocument();
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+      expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
+    },
+  );
   it.each(["website", "install"])(
     "opens Doubao Work's product page from the %s shortcut",
     async (shortcut) => {

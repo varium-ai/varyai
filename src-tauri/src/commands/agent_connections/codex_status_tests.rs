@@ -62,6 +62,38 @@ fn codex_with_an_unowned_recovery_receipt_shows_disabled() {
 }
 
 #[test]
+fn foreign_native_disconnect_clears_recovery_after_saved_intent_is_removed(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let origin = format!("http://{}", listener.local_addr()?);
+    let config = dir.path().join("config.toml");
+    let before = format!("model_provider='magpie'\nmodel='external-model'\nopenai_base_url='{origin}/backend-api/codex'\n[model_providers.magpie]\nbase_url='{origin}/v1'\nwire_api='responses'\n[model_providers.varyai]\nname='VaryAI models and routing groups'\nbase_url='{origin}/v1'\nwire_api='responses'\nrequires_openai_auth=false\nsupports_websockets=false\nsupports_standalone_web_search=false\nexperimental_bearer_token='fixture-foreign-credential-123456'\n");
+    fs::write(&config, &before)?;
+    let manager = client::Manager::new(
+        config.clone(),
+        dir.path().join("receipt.json"),
+        Arc::default(),
+    );
+    let pending = codex_connection_status(
+        manager.status()?,
+        None,
+        Some(Some("vary-auto/fixture".into())),
+    );
+    assert!(!pending.enabled && !pending.configured && pending.recovery_pending);
+    assert!(matches!(
+        pending.recovery_reason,
+        Some(RecoveryReason::ConnectionInactive)
+    ));
+    manager.disconnect()?;
+    let disconnected = codex_connection_status(manager.status()?, None, None);
+    assert!(!disconnected.enabled && !disconnected.configured && !disconnected.recovery_pending);
+    assert!(disconnected.recovery_reason.is_none());
+    assert_eq!(fs::read_to_string(config)?, before);
+    Ok(())
+}
+
+#[test]
 fn external_takeover_turns_the_switch_off_even_with_saved_intent() {
     let status = client::Status {
         enabled: false,
@@ -88,6 +120,39 @@ fn external_takeover_turns_the_switch_off_even_with_saved_intent() {
         Some(RecoveryReason::ConfigurationChanged)
     ));
 }
+#[test]
+fn reload_progress_never_implies_configuration_ownership_or_inference_success() {
+    use agent_connections::ReloadState;
+    for reload in [
+        ReloadState::Current,
+        ReloadState::StaleCatalog,
+        ReloadState::WaitingForIdle,
+        ReloadState::Restarting,
+        ReloadState::Failed,
+        ReloadState::Stopped,
+    ] {
+        let status = client::Status {
+            enabled: false,
+            configuration_owned: false,
+            provider_enabled: false,
+            recovery_pending: true,
+            orphaned_config: false,
+            orphan_cleanup_available: false,
+            group_ids: vec![],
+            omitted_entries: 0,
+            native_compatibility: "unsupported".into(),
+            configuration_issue: None,
+        };
+        let result = with_codex_reload(codex_connection_status(status, None, None), Some(reload));
+        assert!(!result.enabled && !result.configured && result.recovery_pending);
+        assert!(
+            !result.restart_required,
+            "configuration must be recovered before reloading"
+        );
+        assert_eq!(result.reload_state, Some(reload));
+    }
+}
+
 #[test]
 fn stopped_gateway_does_not_look_like_an_external_takeover() {
     let status = client::Status {

@@ -86,11 +86,13 @@ impl Manager {
         receipt.thread_sync_pending = true;
         self.save_thread_receipt(receipt)?;
         let result = if !restoring && target == PROVIDER {
-            threads::transition(
+            let models = self.published_thread_models(receipt, &installed)?;
+            threads::transition_with_models(
                 home,
                 &recovery.join("into-routing"),
                 source.as_str(),
                 PROVIDER,
+                &models,
             )
         } else {
             // Restore the recorded chats, then include chats created during takeover.
@@ -122,6 +124,115 @@ impl Manager {
         };
         receipt.thread_sync_pending = result.map_or(true, |report| report.incomplete);
         self.save_thread_receipt(receipt)
+    }
+
+    fn published_thread_models(
+        &self,
+        receipt: &Receipt,
+        installed: &toml::Value,
+    ) -> Result<std::collections::HashSet<String>, String> {
+        let empty = std::collections::HashSet::new;
+        if !read(&self.config)?
+            .as_deref()
+            .is_some_and(|current| projection_owned(current, &receipt.installed))
+        {
+            return Ok(empty());
+        }
+        if let Some(menu) = self.runtime.menu_snapshot()? {
+            let token = installed
+                .get("model_providers")
+                .and_then(|providers| providers.get(PROVIDER))
+                .and_then(|provider| provider.get("experimental_bearer_token"))
+                .and_then(toml::Value::as_str);
+            if token != Some(menu.token.as_str()) {
+                return Ok(empty());
+            }
+            let canonical = menu
+                .groups
+                .keys()
+                .cloned()
+                .collect::<std::collections::HashSet<_>>();
+            let mut models = canonical.clone();
+            models.extend(
+                receipt
+                    .model_map
+                    .iter()
+                    .filter(|(_, owner)| canonical.contains(*owner))
+                    .map(|(wire, _)| wire.clone()),
+            );
+            return Ok(models);
+        }
+        // Recovery without an active runtime may use only the exact owned
+        // catalog whose alias set was recorded by this publication.
+        let Some(path) = installed
+            .get("model_catalog_json")
+            .and_then(toml::Value::as_str)
+            .map(Path::new)
+            .filter(|path| {
+                path.parent() == self.receipt.parent()
+                    && receipt.catalogs.iter().any(|owned| owned == path)
+            })
+        else {
+            return Ok(empty());
+        };
+        let catalog = read(path)?.and_then(|text| serde_json::from_str::<Value>(&text).ok());
+        let Some(entries) = catalog
+            .as_ref()
+            .and_then(|catalog| catalog.get("models"))
+            .and_then(Value::as_array)
+        else {
+            return Ok(empty());
+        };
+        let Some(slugs) = entries
+            .iter()
+            .map(|model| model.get("slug")?.as_str().map(str::to_owned))
+            .collect::<Option<std::collections::HashSet<_>>>()
+        else {
+            return Ok(empty());
+        };
+        let recorded = receipt
+            .model_aliases
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        if slugs.len() != entries.len() || recorded.len() != receipt.model_aliases.len() {
+            return Ok(empty());
+        }
+        if receipt.model_map.is_empty() {
+            // Receipts written before readable aliases recorded only canonical slugs.
+            return Ok(if slugs == recorded { slugs } else { empty() });
+        }
+        let Some(canonical) = recorded
+            .iter()
+            .map(|wire| receipt.model_map.get(wire).cloned())
+            .collect::<Option<std::collections::HashSet<_>>>()
+        else {
+            return Ok(empty());
+        };
+        // Retained aliases prove identity, not current availability. Only owners
+        // represented in this publication may contribute compatibility entries.
+        let mut expected = canonical.clone();
+        expected.extend(
+            receipt
+                .model_map
+                .iter()
+                .filter(|(_, owner)| canonical.contains(*owner))
+                .map(|(wire, _)| wire.clone()),
+        );
+        if slugs != expected
+            || entries.iter().any(|entry| {
+                let slug = entry["slug"].as_str().unwrap_or_default();
+                let visibility = if recorded.contains(slug) {
+                    "list"
+                } else {
+                    "hide"
+                };
+                entry["visibility"].as_str() != Some(visibility)
+            })
+        {
+            return Ok(empty());
+        }
+        Ok(expected)
     }
 
     fn save_thread_receipt(&self, receipt: &Receipt) -> Result<(), String> {
