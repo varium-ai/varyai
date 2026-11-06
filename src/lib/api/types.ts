@@ -10,6 +10,7 @@ export type AppId =
   | "hermes"
   | "pi"
   | "workbuddy"
+  | "workbuddy-ai"
   | "qoder"
   | "doubaowork"
   | "trae"

@@ -4,6 +4,7 @@ const AGENTS: &[&str] = &[
     "claude-desktop",
     "codex",
     "workbuddy",
+    "workbuddy-ai",
     "qoder",
     "doubaowork",
     "trae",

@@ -424,7 +424,34 @@ fn catalog_covers_every_agent_without_returning_credentials(
         .agents
         .iter()
         .any(|a| a.id == "opencode" && a.local_routing));
+    assert!(value
+        .agents
+        .iter()
+        .any(|a| a.id == "workbuddy-ai" && a.local_routing));
     assert_eq!(value.agents.iter().filter(|a| !a.local_routing).count(), 1);
+    Ok(())
+}
+
+#[test]
+fn workbuddy_editions_bind_gateway_policies_independently() -> Result<(), Box<dyn std::error::Error>>
+{
+    let db = Database::memory()?;
+    let key = db.create_gateway_key(policy())?;
+    db.bind_gateway_agent("workbuddy-ai", Some(&key.key.id))?;
+    assert!(db
+        .authorize_gateway_agent("workbuddy", "other", 1)?
+        .is_none());
+    assert!(matches!(
+        db.authorize_gateway_agent("workbuddy-ai", "other", 1),
+        Err(GatewayError::Forbidden)
+    ));
+    assert!(db
+        .authorize_gateway_agent("workbuddy-ai", "allowed", 1)?
+        .is_some());
+    db.bind_gateway_agent("workbuddy-ai", None)?;
+    assert!(db
+        .authorize_gateway_agent("workbuddy-ai", "other", 1)?
+        .is_none());
     Ok(())
 }
 

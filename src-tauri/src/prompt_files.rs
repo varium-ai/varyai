@@ -14,6 +14,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         app,
         AppType::ClaudeDesktop
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
@@ -40,6 +41,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         AppType::Pi => crate::pi_config::get_pi_agent_dir()?,
         AppType::ClaudeDesktop
         | AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen
@@ -60,6 +62,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         AppType::Pi => "AGENTS.md",
         AppType::ClaudeDesktop
         | AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen

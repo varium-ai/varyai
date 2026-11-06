@@ -42,6 +42,7 @@ use std::{
 
 #[derive(Default)]
 pub(crate) struct Runtime {
+    pub(crate) codex_activity: Arc<super::client_activity::Activity>,
     pub(crate) traces: Arc<trace::Store>,
     pub(crate) connections: super::connections::Connections,
     sessions: RwLock<HashMap<String, TemporarySession>>,
@@ -1116,8 +1117,14 @@ impl Drop for Observer {
     }
 }
 fn error(status: StatusCode, code: &'static str) -> Response {
+    let message = match code {
+        "routing_model_unavailable" => {
+            "The saved model is unavailable in the current VaryAI model list. Select a model from the current list, or start a new conversation."
+        }
+        _ => code,
+    };
     let mut response = Response::new(Body::from(
-        json!({"error":{"type":"invalid_request_error","code":code,"message":code}}).to_string(),
+        json!({"error":{"type":"invalid_request_error","code":code,"message":message}}).to_string(),
     ));
     *response.status_mut() = status;
     response.headers_mut().insert(
@@ -1441,7 +1448,7 @@ async fn execute(
     } else {
         None
     };
-    let portable_tool_history = (agent == "workbuddy"
+    let portable_tool_history = (matches!(agent, "workbuddy" | "workbuddy-ai")
         || session.targets.iter().all(|target| target.official))
         && protocol != Protocol::Responses
         && session.targets.len() == 1
@@ -2025,7 +2032,7 @@ async fn execute(
                 &target.model,
                 &scoped.official,
                 index,
-                agent == "workbuddy",
+                matches!(agent, "workbuddy" | "workbuddy-ai"),
             ) {
                 Ok(payload) => payload,
                 Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_conversion_unsupported"),
@@ -2178,7 +2185,7 @@ async fn execute(
                 Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_invalid_json"),
             };
             bridge_body["model"] = Value::String(target.model.clone());
-            if agent == "workbuddy" && protocol == Protocol::Chat {
+            if matches!(agent, "workbuddy" | "workbuddy-ai") && protocol == Protocol::Chat {
                 super::workbuddy::normalize_chat_for_conversion(&mut bridge_body);
             }
             // Protocol helpers see only allowed caller protocol metadata, never caller credentials.

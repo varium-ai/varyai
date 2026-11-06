@@ -2144,3 +2144,33 @@ fn private_key_alert_and_hide_have_distinct_wire_behavior_but_mask_both_audits()
         }
     }
 }
+
+#[test]
+fn workbuddy_editions_use_distinct_audit_conversations() {
+    use crate::app_config::AppType;
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "x-conversation-id",
+        "synthetic-same-conversation"
+            .parse()
+            .expect("synthetic header"),
+    );
+    for (app, expected) in [
+        (AppType::WorkBuddy, "workbuddy_synthetic-same-conversation"),
+        (
+            AppType::WorkBuddyAi,
+            "workbuddy-ai_synthetic-same-conversation",
+        ),
+    ] {
+        assert_eq!(
+            super::audit_session_id(&app, &headers, &json!({})).as_deref(),
+            Some(expected)
+        );
+        assert!(super::audit_session_id(
+            &app,
+            &axum::http::HeaderMap::new(),
+            &json!({"request_id":"synthetic-request"})
+        )
+        .is_none());
+    }
+}

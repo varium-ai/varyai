@@ -148,6 +148,8 @@ pub struct ProxyTakeoverStatus {
     pub qoder: bool,
     #[serde(default)]
     pub workbuddy: bool,
+    #[serde(default, rename = "workbuddy-ai")]
+    pub workbuddy_ai: bool,
     pub claude: bool,
     pub codex: bool,
     pub gemini: bool,
@@ -166,6 +168,7 @@ impl ProxyTakeoverStatus {
             || self.opencode
             || self.openclaw
             || self.workbuddy
+            || self.workbuddy_ai
             || self.qoder
             || self.kimi
             || self.qwen

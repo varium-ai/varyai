@@ -41,6 +41,7 @@ vi.mock("@/lib/api/agentConnections", () => ({
   agentConnectionsApi: {
     list: vi.fn(),
     get: vi.fn(),
+    diagnoseCodexProxy: vi.fn(),
     nativeModel: vi.fn(),
     models: vi.fn(),
     nativeModels: vi.fn(),
@@ -382,6 +383,10 @@ it("keeps version updates inside tray details instead of the quick summary", asy
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.removeItem("vary-agent-order");
+  vi.mocked(agentConnectionsApi.diagnoseCodexProxy).mockResolvedValue(null);
+  vi.mocked(proxyApi.getProxyStatus).mockResolvedValue({
+    running: true,
+  } as Awaited<ReturnType<typeof proxyApi.getProxyStatus>>);
   vi.mocked(settingsApi.getToolVersions).mockResolvedValue([]);
   vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
     claude: true,
@@ -569,49 +574,186 @@ describe("Agent connections", () => {
     },
   );
 
-  it("confirms a stale Desktop restart and never restarts from rendering or cancel", async () => {
+  it.each(["claude-desktop", "workbuddy"])(
+    "confirms a stale %s restart and never restarts from rendering or cancel",
+    async (app) => {
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app,
+          enabled: true,
+          configured: true,
+          recoveryPending: false,
+          model: "vary-auto/shared",
+          restartRequired: true,
+          desktopState: "restart_required",
+        },
+      ]);
+      mount();
+      const row = await screen.findByRole("article", {
+        name: `apps.${app}`,
+      });
+      const restart = within(row).getByRole("button", {
+        name: "agentConnections.restart",
+      });
+      expect(within(row).getByRole("status")).toHaveTextContent(
+        "agentConnections.states.restartRequired",
+      );
+      expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+      fireEvent.click(restart);
+      let dialog = await screen.findByRole("dialog");
+      expect(dialog).toHaveTextContent("agentConnections.restartConfirmHint");
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: "common.cancel" }),
+      );
+      expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+      fireEvent.click(restart);
+      dialog = await screen.findByRole("dialog");
+      fireEvent.click(
+        within(dialog).getByRole("button", {
+          name: "agentConnections.restart",
+        }),
+      );
+      await waitFor(() =>
+        expect(agentConnectionsApi.restart).toHaveBeenCalledWith(app, true),
+      );
+      expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["claude-desktop", "workbuddy"])(
+    "offers a confirmed %s restart after restoring its native configuration",
+    async (app) => {
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app,
+          enabled: false,
+          configured: false,
+          recoveryPending: false,
+          model: null,
+          restartRequired: true,
+          desktopState: "restart_required",
+        },
+      ]);
+      mount();
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      expect(within(row).getByRole("switch")).not.toBeChecked();
+      fireEvent.click(
+        within(row).getByRole("button", { name: "agentConnections.restart" }),
+      );
+      const dialog = await screen.findByRole("dialog");
+      fireEvent.click(
+        within(dialog).getByRole("button", {
+          name: "agentConnections.restart",
+        }),
+      );
+      await waitFor(() =>
+        expect(agentConnectionsApi.restart).toHaveBeenCalledWith(app, true),
+      );
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["stale_catalog", "failed"] as const)(
+    "offers a confirmed Codex reload when the background service is %s",
+    async (reloadState) => {
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app: "codex",
+          enabled: true,
+          configured: true,
+          recoveryPending: false,
+          model: "vary-auto/shared",
+          restartRequired: true,
+          reloadState,
+        },
+      ]);
+      mount();
+      const row = await screen.findByRole("article", { name: "apps.codex" });
+      expect(within(row).getByRole("status")).toHaveTextContent(
+        reloadState === "failed"
+          ? "agentConnections.states.reloadFailed"
+          : "agentConnections.states.catalogStale",
+      );
+      fireEvent.click(
+        within(row).getByRole("button", { name: "agentConnections.restart" }),
+      );
+      let dialog = await screen.findByRole("dialog");
+      expect(dialog).toHaveTextContent(
+        "agentConnections.codexRestartConfirmHint",
+      );
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: "common.cancel" }),
+      );
+      expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+      fireEvent.click(
+        within(row).getByRole("button", { name: "agentConnections.restart" }),
+      );
+      dialog = await screen.findByRole("dialog");
+      fireEvent.click(
+        within(dialog).getByRole("button", {
+          name: "agentConnections.restart",
+        }),
+      );
+      await waitFor(() =>
+        expect(agentConnectionsApi.restart).toHaveBeenCalledWith("codex", true),
+      );
+      expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["waiting_for_idle", "restarting"] as const)(
+    "shows Codex reload progress %s without offering another restart",
+    async (reloadState) => {
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app: "codex",
+          enabled: true,
+          configured: true,
+          recoveryPending: false,
+          model: "vary-auto/shared",
+          restartRequired: false,
+          reloadState,
+        },
+      ]);
+      mount();
+      const row = await screen.findByRole("article", { name: "apps.codex" });
+      expect(within(row).getByRole("status")).toHaveTextContent(
+        reloadState === "waiting_for_idle"
+          ? "agentConnections.states.waitingForIdle"
+          : "agentConnections.states.reloading",
+      );
+      expect(
+        within(row).queryByRole("button", { name: "agentConnections.restart" }),
+      ).not.toBeInTheDocument();
+      expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps Codex configuration drift ahead of reload errors", async () => {
     vi.mocked(agentConnectionsApi.list).mockResolvedValue([
       {
-        app: "claude-desktop",
-        enabled: true,
-        configured: true,
-        recoveryPending: false,
-        model: "vary-auto/shared",
+        app: "codex",
+        enabled: false,
+        configured: false,
+        recoveryPending: true,
+        recoveryReason: "configuration_changed",
+        model: null,
         restartRequired: true,
-        desktopState: "restart_required",
+        reloadState: "failed",
       },
     ]);
     mount();
-    const row = await screen.findByRole("article", {
-      name: "apps.claude-desktop",
-    });
-    const restart = within(row).getByRole("button", {
-      name: "agentConnections.restart",
-    });
+    const row = await screen.findByRole("article", { name: "apps.codex" });
     expect(within(row).getByRole("status")).toHaveTextContent(
-      "agentConnections.states.restartRequired",
+      "agentConnections.states.recovery",
     );
-    expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
-    fireEvent.click(restart);
-    let dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("agentConnections.restartConfirmHint");
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "common.cancel" }),
-    );
-    expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
-    fireEvent.click(restart);
-    dialog = await screen.findByRole("dialog");
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "agentConnections.restart" }),
-    );
-    await waitFor(() =>
-      expect(agentConnectionsApi.restart).toHaveBeenCalledWith(
-        "claude-desktop",
-        true,
-      ),
-    );
-    expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
-    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+    expect(
+      within(row).queryByRole("button", { name: "agentConnections.restart" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(row).getByRole("button", { name: "agentConnections.reapply" }),
+    ).toBeEnabled();
   });
 
   it.each(["current", "stopped", "unknown", "unsupported"] as const)(
@@ -2025,6 +2167,173 @@ describe("Agent connections", () => {
     );
     expect(agentConnectionsApi.set).not.toHaveBeenCalled();
   });
+  it.each([false, true])(
+    "clears only the inactive Codex connection request after foreign takeover (compact=%s)",
+    async (compact) => {
+      const inactive = {
+        app: "codex",
+        enabled: false,
+        configured: false,
+        model: "vary-auto/shared",
+        recoveryPending: true,
+        recoveryReason: "connection_inactive" as const,
+        restartRequired: false,
+      };
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([inactive]);
+      vi.mocked(agentConnectionsApi.nativeModels).mockResolvedValue([
+        { app: "codex", available: true, model: "magpie-test-model" },
+      ]);
+      vi.mocked(agentConnectionsApi.set).mockImplementation(async () => {
+        vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+          {
+            ...inactive,
+            model: null,
+            recoveryPending: false,
+            recoveryReason: null,
+          },
+        ]);
+      });
+      mount(compact);
+      const row = await screen.findByRole("article", { name: "apps.codex" });
+      if (compact) {
+        fireEvent.click(
+          within(row).getByRole("button", {
+            name: "agentConnections.details apps.codex",
+          }),
+        );
+      }
+      const picker = within(row).getByRole("button", {
+        name: "agentConnections.model apps.codex",
+      });
+      await waitFor(() => expect(picker).toBeEnabled());
+      expect(within(row).getByRole("switch")).not.toBeChecked();
+      expect(picker).toHaveTextContent("magpie-test-model");
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+      fireEvent.click(picker);
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "agentConnections.disconnectOnly",
+        }),
+      );
+      const dialog = await screen.findByRole("dialog");
+      expect(dialog).toHaveTextContent(
+        "agentConnections.inactiveCodexDisconnectHint",
+      );
+      expect(dialog).not.toHaveTextContent("agentConnections.disconnectHint");
+      expect(dialog).not.toHaveTextContent(
+        "agentConnections.orphanDisconnectHint",
+      );
+      expect(
+        within(dialog).queryByRole("button", {
+          name: "agentConnections.disconnectRestore",
+        }),
+      ).not.toBeInTheDocument();
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+      expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
+      fireEvent.click(
+        within(dialog).getByRole("button", {
+          name: "agentConnections.disconnectOnly",
+        }),
+      );
+      await waitFor(() =>
+        expect(agentConnectionsApi.set).toHaveBeenCalledExactlyOnceWith(
+          "codex",
+          false,
+          null,
+        ),
+      );
+      await waitFor(() =>
+        expect(within(row).getByRole("status")).toHaveTextContent(
+          "agentConnections.states.off",
+        ),
+      );
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(within(row).getByRole("switch")).not.toBeChecked();
+      expect(picker).toHaveTextContent("magpie-test-model");
+      expect(
+        within(row).queryByRole("button", {
+          name: "agentConnections.reapply",
+        }),
+      ).not.toBeInTheDocument();
+      expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
+    },
+  );
+  it("keeps a changed Codex configuration protected from the inactive-intent disconnect path", async () => {
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "codex",
+        enabled: false,
+        configured: false,
+        model: "vary-auto/shared",
+        recoveryPending: true,
+        recoveryReason: "configuration_changed",
+        restartRequired: false,
+      },
+    ]);
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.codex" });
+    expect(
+      within(row).getByRole("button", {
+        name: "agentConnections.model apps.codex",
+      }),
+    ).toBeDisabled();
+    expect(
+      screen.queryByRole("button", {
+        name: "agentConnections.disconnectOnly",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(row).getByRole("button", { name: "agentConnections.reapply" }),
+    ).toBeEnabled();
+    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+    expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
+  });
+  it("keeps owned Codex recovery and restoration when the gateway is stopped", async () => {
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "codex",
+        enabled: true,
+        configured: false,
+        model: "vary-auto/shared",
+        recoveryPending: true,
+        recoveryReason: "connection_inactive",
+        restartRequired: false,
+      },
+    ]);
+    vi.mocked(proxyApi.getProxyStatus).mockResolvedValue({
+      running: false,
+    } as Awaited<ReturnType<typeof proxyApi.getProxyStatus>>);
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.codex" });
+    await waitFor(() =>
+      expect(within(row).getByRole("status")).toHaveTextContent(
+        "agentConnections.states.gatewayStopped",
+      ),
+    );
+    expect(within(row).getByRole("switch")).toBeChecked();
+    expect(
+      within(row).getByRole("button", {
+        name: "agentConnections.model apps.codex",
+      }),
+    ).toBeDisabled();
+    fireEvent.click(within(row).getByRole("switch"));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("agentConnections.disconnectHint");
+    expect(dialog).not.toHaveTextContent(
+      "agentConnections.inactiveCodexDisconnectHint",
+    );
+    expect(
+      within(dialog).getByRole("button", {
+        name: "agentConnections.disconnectRestore",
+      }),
+    ).toBeEnabled();
+    expect(
+      within(dialog).queryByRole("button", {
+        name: "agentConnections.disconnectOnly",
+      }),
+    ).not.toBeInTheDocument();
+    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+  });
   it("distinguishes inactive routing from changed configuration and sanitizes reapply failures", async () => {
     vi.mocked(agentConnectionsApi.list).mockResolvedValue([
       {
@@ -2546,6 +2855,188 @@ describe("per-Agent detection", () => {
       }),
     ).toHaveTextContent("Shared group");
   });
+});
+
+describe("Codex proxy diagnostic integration", () => {
+  const connected = {
+    app: "codex",
+    enabled: true,
+    configured: true,
+    model: "vary-auto/shared",
+    recoveryPending: false,
+    restartRequired: false,
+  };
+  const proxyIssue = {
+    target: "http://127.0.0.1:15722",
+    proxy: "http://127.0.0.1:7890",
+    source: "environment" as const,
+  };
+
+  it.each([false, true])(
+    "replaces the healthy status and keeps the proxy action visible (compact=%s)",
+    async (compact) => {
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([connected]);
+      vi.mocked(agentConnectionsApi.diagnoseCodexProxy).mockResolvedValue(
+        proxyIssue,
+      );
+      mount(compact);
+      const row = await screen.findByRole("article", { name: "apps.codex" });
+      const action = await within(row).findByRole("button", {
+        name: "agentConnections.codexProxy.howToFix",
+      });
+      expect(within(row).getAllByRole("status")).toHaveLength(1);
+      expect(within(row).getByRole("status")).toHaveTextContent(
+        "agentConnections.states.codexProxyBlocked",
+      );
+      expect(
+        within(row).queryByText("agentConnections.states.configured"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      await userEvent.click(action);
+      const warning = screen.getByRole("dialog", {
+        name: "agentConnections.codexProxy.title",
+      });
+      expect(
+        within(warning).getByText(
+          "agentConnections.codexProxy.sourceEnvironment",
+        ),
+      ).toBeInTheDocument();
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+      await userEvent.click(
+        within(warning).getByRole("button", {
+          name: "agentConnections.disconnectRestore",
+        }),
+      );
+      const confirmation = screen.getByRole("dialog", {
+        name: "agentConnections.disconnectTitle",
+      });
+      expect(
+        screen.queryByRole("dialog", {
+          name: "agentConnections.codexProxy.title",
+        }),
+      ).not.toBeInTheDocument();
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+      await userEvent.click(
+        within(confirmation).getByRole("button", {
+          name: "agentConnections.disconnectRestore",
+        }),
+      );
+      await waitFor(() =>
+        expect(agentConnectionsApi.set).toHaveBeenCalledExactlyOnceWith(
+          "codex",
+          false,
+          null,
+        ),
+      );
+    },
+  );
+
+  it("discards a confirmed diagnostic when the running gateway changes address or port", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([connected]);
+    vi.mocked(proxyApi.getProxyStatus).mockResolvedValue({
+      running: true,
+      address: "127.0.0.1",
+      port: 15722,
+    } as Awaited<ReturnType<typeof proxyApi.getProxyStatus>>);
+    vi.mocked(agentConnectionsApi.diagnoseCodexProxy).mockResolvedValueOnce(
+      proxyIssue,
+    );
+    mount(false, client);
+    const action = await screen.findByRole("button", {
+      name: "agentConnections.codexProxy.howToFix",
+    });
+    await userEvent.click(action);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    let resolveFresh!: (value: null) => void;
+    vi.mocked(agentConnectionsApi.diagnoseCodexProxy).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFresh = resolve;
+      }),
+    );
+    await act(async () => {
+      client.setQueryData(["proxyStatus"], {
+        running: true,
+        address: "127.0.0.2",
+        port: 15723,
+      });
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole("button", {
+        name: "agentConnections.codexProxy.howToFix",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(screen.getByRole("article", { name: "apps.codex" })).getByRole(
+        "status",
+      ),
+    ).not.toHaveTextContent("agentConnections.states.codexProxyBlocked");
+    await waitFor(() =>
+      expect(agentConnectionsApi.diagnoseCodexProxy).toHaveBeenCalledTimes(2),
+    );
+    await act(async () => {
+      resolveFresh(null);
+    });
+    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "disabled",
+    "unconfigured",
+    "recovery",
+    "configurationIssue",
+    "connectionError",
+    "gatewayStopped",
+    "gatewayError",
+  ])(
+    "does not diagnose an ineligible Codex connection: %s",
+    async (scenario) => {
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          ...connected,
+          enabled: scenario !== "disabled",
+          configured: scenario !== "unconfigured",
+          recoveryPending: scenario === "recovery",
+          configurationIssue:
+            scenario === "configurationIssue" ? "provider_missing" : null,
+        },
+      ]);
+      if (scenario === "connectionError") {
+        vi.mocked(agentConnectionsApi.get).mockRejectedValue(
+          new Error("synthetic-unavailable"),
+        );
+      }
+      if (scenario === "gatewayStopped") {
+        vi.mocked(proxyApi.getProxyStatus).mockResolvedValue({
+          running: false,
+        } as Awaited<ReturnType<typeof proxyApi.getProxyStatus>>);
+      }
+      if (scenario === "gatewayError") {
+        vi.mocked(proxyApi.getProxyStatus).mockRejectedValue(
+          new Error("synthetic-unavailable"),
+        );
+      }
+      mount();
+      const row = await screen.findByRole("article", { name: "apps.codex" });
+      await waitFor(() =>
+        expect(within(row).getByRole("status")).not.toHaveTextContent(
+          "agentConnections.states.checking",
+        ),
+      );
+      expect(agentConnectionsApi.diagnoseCodexProxy).not.toHaveBeenCalled();
+      expect(
+        within(row).queryByRole("button", {
+          name: "agentConnections.codexProxy.howToFix",
+        }),
+      ).not.toBeInTheDocument();
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+    },
+  );
 });
 
 it("updates the switch after external takeover without writing another manager's configuration", async () => {

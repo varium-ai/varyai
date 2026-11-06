@@ -26,6 +26,7 @@ pub fn supports_binding(app: &str) -> bool {
             | "grokbuild"
             | "pi"
             | "workbuddy"
+            | "workbuddy-ai"
             | "opencode"
             | "qoder"
             | "hermes"

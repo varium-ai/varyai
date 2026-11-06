@@ -102,11 +102,17 @@ fn decompress_single(
             match read_with_output_limit(zlib, max_output_bytes) {
                 Ok(decompressed) => Ok(Some(decompressed)),
                 Err(zlib_err) => {
-                    // TooLarge 也要回退：raw 流被误判为 zlib 时可能在预算处截停，
-                    // 回退后若真是炸弹，raw 解码同样会触发 TooLarge。
+                    // A raw stream can resemble zlib, so allow a successful fallback.
+                    // If both formats fail, retain any observed size-limit rejection.
                     log::debug!("deflate 按 zlib 解压失败（{zlib_err}），回退 raw deflate");
                     let raw = flate2::read::DeflateDecoder::new(body);
-                    Ok(Some(read_with_output_limit(raw, max_output_bytes)?))
+                    match read_with_output_limit(raw, max_output_bytes) {
+                        Ok(decompressed) => Ok(Some(decompressed)),
+                        Err(_) if matches!(zlib_err, DecompressError::TooLarge { .. }) => {
+                            Err(zlib_err)
+                        }
+                        Err(raw_err) => Err(raw_err),
+                    }
                 }
             }
         }
@@ -224,6 +230,34 @@ mod tests {
 
         let decompressed = decompress_body("deflate", &compressed).unwrap().unwrap();
         assert_eq!(decompressed, payload);
+    }
+
+    #[test]
+    fn deflate_size_limit_survives_format_fallback() -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+        let payload = vec![b'x'; 4096];
+        let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        zlib.write_all(&payload)?;
+        let zlib = zlib.finish()?;
+        let mut raw =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        raw.write_all(&payload)?;
+        let raw = raw.finish()?;
+        for compressed in [&zlib, &raw] {
+            assert!(matches!(
+                decompress_body_with_limit("deflate", compressed, 1024),
+                Err(DecompressError::TooLarge { limit: 1024 })
+            ));
+            assert_eq!(
+                decompress_body_with_limit("deflate", compressed, payload.len())?,
+                Some(payload.clone())
+            );
+        }
+        assert!(matches!(
+            decompress_body_with_limit("deflate", &[0xff; 32], 1024),
+            Err(DecompressError::Io(_))
+        ));
+        Ok(())
     }
 
     #[test]

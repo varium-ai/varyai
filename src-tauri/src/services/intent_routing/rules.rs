@@ -191,6 +191,7 @@ impl Conditions {
                     "codex",
                     "pi",
                     "workbuddy",
+                    "workbuddy-ai",
                     "opencode",
                     "gemini",
                     "grokbuild",
@@ -364,6 +365,27 @@ mod tests {
         assert!(group.validate().is_err());
         Ok(())
     }
+    #[test]
+    fn workbuddy_editions_have_independent_agent_conditions() {
+        let conditions = Conditions {
+            agents: vec!["workbuddy-ai".into()],
+            ..Default::default()
+        };
+        assert!(conditions.valid());
+        let mut facts = Facts {
+            tokens: None,
+            images: false,
+            effort: None,
+            agent: "workbuddy-ai",
+            compact: false,
+            at: chrono::Utc::now(),
+            folder: "",
+        };
+        assert!(conditions.matches(&facts));
+        facts.agent = "workbuddy";
+        assert!(!conditions.matches(&facts));
+    }
+
     #[test]
     fn every_condition_must_hold_and_unknown_facts_never_prove_a_threshold() {
         let conditions = Conditions {

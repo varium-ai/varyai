@@ -5,17 +5,27 @@ use super::*;
 struct Row {
     provider: String,
     rollout: String,
+    model: Option<String>,
 }
 
-fn read_row(home: &Path, db: &Path, id: &str) -> Result<Row, String> {
+pub(super) enum Transition {
+    Moved,
+    Unchanged,
+    UnsupportedModel,
+}
+
+fn read_row(home: &Path, db: &Path, id: &str, check_model: bool) -> Result<Row, String> {
     let db = safe_db_path(home, db).ok_or(CONFLICT)?;
     let conn =
-        Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|_| FAILED)?;
-    let row = conn.query_row(
+        Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|_| FAILED)?;
+    let mut row = conn.query_row(
         "SELECT model_provider, rollout_path FROM threads WHERE id = ?1 AND history_mode = 'paginated'",
         [id],
-        |row| Ok(Row { provider: row.get(0)?, rollout: row.get(1)? }),
+        |row| Ok(Row { provider: row.get(0)?, rollout: row.get(1)?, model: None }),
     ).map_err(|_| CONFLICT)?;
+    if check_model {
+        row.model = read_row_model(&db, id).ok().flatten();
+    }
     Ok(row)
 }
 
@@ -50,10 +60,17 @@ fn update(db: &Path, id: &str, row: &Row, to: &str) -> Result<(), String> {
         Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(|_| FAILED)?;
     conn.busy_timeout(Duration::from_secs(2))
         .map_err(|_| FAILED)?;
-    let changed = conn.execute(
-        "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND model_provider = ?3 AND history_mode = 'paginated' AND rollout_path = ?4",
-        params![to, id, row.provider, row.rollout],
-    ).map_err(|_| CONFLICT)?;
+    let changed = if let Some(model) = &row.model {
+        conn.execute(
+            "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND model_provider = ?3 AND history_mode = 'paginated' AND rollout_path = ?4 AND model = ?5",
+            params![to, id, row.provider, row.rollout, model],
+        )
+    } else {
+        conn.execute(
+            "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND model_provider = ?3 AND history_mode = 'paginated' AND rollout_path = ?4",
+            params![to, id, row.provider, row.rollout],
+        )
+    }.map_err(|_| CONFLICT)?;
     if changed != 1 {
         return Err(CONFLICT.into());
     }
@@ -65,14 +82,15 @@ pub(super) fn transition(
     recovery: &Path,
     row: &ThreadRow,
     receipt: &mut Receipt,
-) -> Result<bool, String> {
-    let current = read_row(home, &row.db, &row.id)?;
+    models: Option<&HashSet<String>>,
+) -> Result<Transition, String> {
+    let current = read_row(home, &row.db, &row.id, models.is_some())?;
     let existing = receipt
         .entries
         .iter()
         .position(|entry| entry.paginated && entry.db == row.db && entry.id == row.id);
     if current.provider == receipt.to && existing.is_none() {
-        return Ok(false);
+        return Ok(Transition::Unchanged);
     }
     if current.provider != receipt.from && current.provider != receipt.to {
         return Err(CONFLICT.into());
@@ -80,7 +98,19 @@ pub(super) fn transition(
     if existing.is_some_and(|index| {
         receipt.entries[index].state == ReceiptState::Moved && current.provider == receipt.to
     }) {
-        return Ok(false);
+        return Ok(Transition::Unchanged);
+    }
+    if models.is_some_and(|models| {
+        !current
+            .model
+            .as_ref()
+            .is_some_and(|model| models.contains(model))
+    }) {
+        if current.provider == receipt.to && existing.is_some() {
+            // Preserve an interrupted row write for journal-backed recovery.
+            return Err(CONFLICT.into());
+        }
+        return Ok(Transition::UnsupportedModel);
     }
     ensure_quiet(home, &current)?;
     let index = if let Some(index) = existing {
@@ -103,7 +133,7 @@ pub(super) fn transition(
     }
     receipt.entries[index].state = ReceiptState::Moved;
     persist_receipt(recovery, &receipt.from, &receipt.to, receipt)?;
-    Ok(true)
+    Ok(Transition::Moved)
 }
 
 pub(super) fn restore(
@@ -112,7 +142,7 @@ pub(super) fn restore(
     from: &str,
     to: &str,
 ) -> Result<(), String> {
-    let current = read_row(home, &entry.db, &entry.id)?;
+    let current = read_row(home, &entry.db, &entry.id, false)?;
     if current.provider == from {
         return Ok(());
     }
@@ -151,6 +181,49 @@ mod tests {
 
     fn provider(conn: &Connection) -> Result<String, rusqlite::Error> {
         conn.query_row("SELECT model_provider FROM threads", [], |row| row.get(0))
+    }
+
+    #[test]
+    fn gated_paginated_pending_recovery_and_model_compare_write_are_scoped(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let home = dir.path().join("codex");
+        let recovery = dir.path().join("recovery");
+        let (path, conn) = fixture(&home, ".jsonl")?;
+        let alias = "vary-auto/fixture";
+        conn.execute("ALTER TABLE threads ADD COLUMN model TEXT", [])?;
+        conn.execute("UPDATE threads SET model=?1", [alias])?;
+        let state = home.join("state_5.sqlite");
+        let validated = read_row(&home, &state, "synthetic", true)?;
+        conn.execute("UPDATE threads SET model='codex/fixture-old'", [])?;
+        assert!(update(&state, "synthetic", &validated, "varyai").is_err());
+        assert_eq!(provider(&conn)?, "magpie");
+        conn.execute("UPDATE threads SET model=?1", [alias])?;
+        super::super::transition(&home, &recovery, "magpie", "varyai")?;
+        let mut journal =
+            read_receipt(&receipt_path(&recovery, "magpie", "varyai"))?.ok_or("missing journal")?;
+        journal.entries[0].state = ReceiptState::Pending;
+        persist_receipt(&recovery, "magpie", "varyai", &journal)?;
+        let before = fs::read(&path)?;
+        conn.execute("UPDATE threads SET model='codex/fixture-old'", [])?;
+        let models = HashSet::from([alias.to_owned()]);
+        let blocked = transition_with_models(&home, &recovery, "magpie", "varyai", &models)?;
+        assert_eq!(blocked.moved, 0);
+        assert!(blocked.incomplete);
+        assert_eq!(provider(&conn)?, "varyai");
+        assert_eq!(
+            read_receipt(&receipt_path(&recovery, "magpie", "varyai"))?
+                .ok_or("missing journal")?
+                .entries[0]
+                .state,
+            ReceiptState::Pending
+        );
+        conn.execute("UPDATE threads SET model=?1", [alias])?;
+        let resumed = transition_with_models(&home, &recovery, "magpie", "varyai", &models)?;
+        assert_eq!(resumed.moved, 1);
+        assert!(!resumed.incomplete);
+        assert_eq!(fs::read(&path)?, before);
+        Ok(())
     }
 
     #[test]

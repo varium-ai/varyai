@@ -36,6 +36,7 @@ const PromptFormPanel: React.FC<PromptFormPanelProps> = ({
     hermes: "SOUL.md",
     pi: "AGENTS.md",
     workbuddy: "",
+    "workbuddy-ai": "",
     qoder: "qoder",
     doubaowork: "",
     trae: "",

@@ -3795,7 +3795,8 @@ fn agent_desktop_bundles(app: &str) -> &'static [&'static str] {
     match app {
         "claude-desktop" => &["Claude.app"],
         "codex" => &["Codex.app", "ChatGPT.app"],
-        "workbuddy" => &["WorkBuddy AI.app", "WorkBuddy.app"],
+        "workbuddy" => &["WorkBuddy.app"],
+        "workbuddy-ai" => &["WorkBuddy AI.app"],
         "qoder" => &["Qoder CN.app"],
         "trae" => &["Trae CN.app"],
         "doubaowork" => &["DoubaoWork.app"],

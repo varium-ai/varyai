@@ -406,6 +406,8 @@ pub struct ProxyService {
     native_checkpoint_key: std::path::PathBuf,
     native_lifecycle: Arc<std::sync::Mutex<NativeLifecycle>>,
     codex_thread_worker: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,
+    #[cfg(any(target_os = "macos", windows))]
+    codex_app_server_worker: Arc<std::sync::Mutex<Option<super::codex_app_server::Worker>>>,
 }
 
 #[derive(Default)]
@@ -516,6 +518,8 @@ impl ProxyService {
             native_checkpoint_key,
             native_lifecycle: Arc::default(),
             codex_thread_worker: Arc::default(),
+            #[cfg(any(target_os = "macos", windows))]
+            codex_app_server_worker: Arc::default(),
             qoder: Arc::new(super::qoder_proxy::Manager::new(db.clone())),
             doubaowork: Arc::new(super::doubao_work::Manager::default()),
             db,
@@ -1046,9 +1050,50 @@ impl ProxyService {
     /// 设置 AppHandle（在应用初始化时调用）
     pub fn set_app_handle(&self, handle: tauri::AppHandle) {
         self.qoder.set_app_handle(handle.clone());
+        #[cfg(any(target_os = "macos", windows))]
+        if let Ok(mut worker) = self.codex_app_server_worker.lock() {
+            if worker.is_none() {
+                *worker = Some(super::codex_app_server::start(
+                    Arc::downgrade(&self.intent_client),
+                    self.switch_locks.clone(),
+                    self.intent_runtime.codex_activity.clone(),
+                ));
+            }
+        }
         futures::executor::block_on(async {
             *self.app_handle.write().await = Some(handle);
         });
+    }
+
+    pub(crate) fn codex_reload_state(&self) -> Option<super::agent_connections::ReloadState> {
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            self.codex_app_server_worker
+                .lock()
+                .ok()?
+                .as_ref()
+                .map(|worker| worker.snapshot())
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            None
+        }
+    }
+
+    pub(crate) fn request_codex_reload(&self) -> Result<(), String> {
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            self.codex_app_server_worker
+                .lock()
+                .map_err(|_| "agentConnections.restartFailed")?
+                .as_ref()
+                .ok_or("agentConnections.restartUnsupported")?
+                .request_restart()
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            Err("agentConnections.restartUnsupported".into())
+        }
     }
 
     pub(crate) async fn lock_switch_for_app(
@@ -1382,6 +1427,8 @@ impl ProxyService {
                     .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
                     .map_err(|e| e.to_string())?,
             workbuddy: self.workbuddy_active().await,
+            workbuddy_ai: self.is_running().await
+                && self.intent_runtime.connections.active("workbuddy-ai"),
             claude: claude_enabled,
             codex: codex_enabled,
             gemini: gemini_enabled,
@@ -1424,7 +1471,7 @@ impl ProxyService {
                 .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
                 .map_err(|_| super::agent_connections::FAILED)?,
             // Desktop's shared adapter snapshots profiles rather than using legacy takeover.
-            "claude-desktop" | "opencode" | "openclaw" | "hermes" => false,
+            "claude-desktop" | "opencode" | "openclaw" | "hermes" | "workbuddy-ai" => false,
             _ => return Err(super::agent_connections::FAILED.into()),
         })
     }
@@ -6856,7 +6903,15 @@ mod tests {
             let model_a = &models[0].id;
             let model_b = &models[1].id;
             let origin = format!("http://127.0.0.1:{}", info.port);
-            let mut apps = vec!["deepseek-harness", "opencode", "openclaw", "hermes", "pi"];
+            let mut apps = vec![
+                "deepseek-harness",
+                "opencode",
+                "openclaw",
+                "hermes",
+                "pi",
+                "workbuddy",
+                "workbuddy-ai",
+            ];
             if !cfg!(target_os = "linux") {
                 apps.push("claude-desktop");
             }

@@ -212,3 +212,16 @@ the SQLite-only transition using its private recovery journal, writer-lock
 coordination, and checked provider/history-mode updates. Paginated rollout
 contents and byte offsets remain unchanged. The Magpie MIT notice and license
 listed above apply to this behavior reference.
+
+## Codex local-proxy diagnostics
+
+Codex proxy selection and the user-opened remediation dialog were compared with
+Magpie revision `465928bccea4fec3537edd6280f7cabb9a0c5bad`,
+`internal/agent/codex_proxy.go`, `codex_proxy_test.go`, `reach.go`,
+`internal/netproxy/scutil.go`, `windows.go`, and the corresponding GUI drift
+controls. The resolver and tests were also checked at
+`6ddfc15843a7f99c81556e36762fed2cbcd327e9`. VaryAI independently implements the
+behavior in Rust and React with four runtime languages, bounded gateway health
+probes, sanitized diagnostic addresses, and its existing ownership-checked
+configuration recovery. The diagnostic does not copy the reference's claim that
+every turn returns HTTP 502. The Magpie MIT notice and license listed above apply.
