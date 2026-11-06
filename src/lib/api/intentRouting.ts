@@ -196,6 +196,11 @@ export interface RoutingClientStatus {
   orphanCleanupAvailable?: boolean;
   providerEnabled?: boolean;
   omittedEntries?: number;
+  configurationIssue?:
+    | "provider_missing"
+    | "profile_override"
+    | "catalog_missing"
+    | null;
   nativeCompatibility?:
     | "disabled"
     | "pending"

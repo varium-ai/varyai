@@ -109,6 +109,37 @@ fn with_credentials(
     provider
 }
 
+/// Model-specific endpoints are part of the account's observed catalog.
+pub(crate) fn for_model(provider: &Provider, model: &str) -> Result<Provider, String> {
+    let mut provider = provider.clone();
+    if !binding(&provider).is_some_and(|b| b.provider == SubscriptionProvider::GithubCopilot) {
+        return Ok(provider);
+    }
+    let row = provider
+        .settings_config
+        .pointer("/modelCatalog/models")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|rows| rows.iter().find(|r| r["model"] == model));
+    let Some(endpoints) = row.and_then(|r| r["supported_endpoints"].as_array()) else {
+        return Ok(provider);
+    };
+    let format = [
+        ("/chat/completions", "openai_chat"),
+        ("/responses", "openai_responses"),
+        ("/v1/messages", "anthropic"),
+    ]
+    .into_iter()
+    .find(|(endpoint, _)| endpoints.iter().any(|v| v == endpoint))
+    .map(|(_, format)| format)
+    .ok_or("routingUpstreams.sourceUnavailable")?;
+    provider
+        .meta
+        .get_or_insert_with(Default::default)
+        .api_format = Some(format.into());
+    provider.settings_config["apiFormat"] = json!(format);
+    Ok(provider)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

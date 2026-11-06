@@ -40,6 +40,8 @@ vi.mock("@/lib/api/intentRouting", () => ({
 vi.mock("@/lib/api/agentConnections", () => ({
   agentConnectionsApi: {
     list: vi.fn(),
+    get: vi.fn(),
+    nativeModel: vi.fn(),
     models: vi.fn(),
     nativeModels: vi.fn(),
     set: vi.fn(),
@@ -67,13 +69,12 @@ vi.mock("@/lib/api/settings", () => ({
     openExternal: vi.fn(async () => {}),
   },
 }));
-function mount(compact = false) {
+function mount(
+  compact = false,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   return render(
-    <QueryClientProvider
-      client={
-        new QueryClient({ defaultOptions: { queries: { retry: false } } })
-      }
-    >
+    <QueryClientProvider client={client}>
       <AgentConnectionsPage compact={compact} />
     </QueryClientProvider>,
   );
@@ -397,6 +398,29 @@ beforeEach(() => {
       restartRequired: false,
     },
   ]);
+  vi.mocked(agentConnectionsApi.get).mockImplementation(async (app) => {
+    const entries = await agentConnectionsApi.list();
+    return (
+      entries.find((entry) => entry.app === app) ?? {
+        app,
+        enabled: false,
+        configured: false,
+        model: null,
+        recoveryPending: false,
+        restartRequired: false,
+      }
+    );
+  });
+  vi.mocked(agentConnectionsApi.nativeModel).mockImplementation(async (app) => {
+    const entries = await agentConnectionsApi.nativeModels();
+    return (
+      entries.find((entry) => entry.app === app) ?? {
+        app,
+        model: null,
+        available: false,
+      }
+    );
+  });
   vi.mocked(agentConnectionsApi.models).mockResolvedValue([
     { id: "vary-auto/shared", name: "Shared group", contextWindow: 1000000 },
   ]);
@@ -1365,7 +1389,7 @@ describe("Agent connections", () => {
             },
             { id: "direct-model", name: "Direct model", contextWindow: 200000 },
           ]);
-          mount();
+          mount(app === "trae");
           const row = await screen.findByRole("article", {
             name: `apps.${app}`,
           });
@@ -1439,7 +1463,7 @@ describe("Agent connections", () => {
         status: "bridgePending",
       },
     ])(
-      "keeps one starting picker and useful $mode details",
+      "keeps one starting picker in the flat workspace or useful compact $mode details",
       async ({ enabled, configured, recoveryPending, status }) => {
         vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
           trae: true,
@@ -1469,6 +1493,17 @@ describe("Agent connections", () => {
             hidden: true,
           }),
         ).not.toBeInTheDocument();
+        if (!compact) {
+          expect(
+            within(row).queryByRole("button", {
+              name: "agentConnections.details apps.trae",
+            }),
+          ).not.toBeInTheDocument();
+          fireEvent.click(within(row).getByRole("heading"));
+          expect(within(row).queryByRole("region")).not.toBeInTheDocument();
+          expect(within(row).getByRole("switch")).toBeEnabled();
+          return;
+        }
         fireEvent.click(
           within(row).getByRole("button", {
             name: "agentConnections.details apps.trae",
@@ -1889,6 +1924,67 @@ describe("Agent connections", () => {
       ),
     );
   });
+  it.each(["provider_missing", "profile_override", "catalog_missing"] as const)(
+    "explains the Codex configuration issue %s instead of showing a configured connection",
+    async (configurationIssue) => {
+      const connection = {
+        app: "codex",
+        enabled: true,
+        configured: false,
+        model: "vary-auto/shared",
+        recoveryPending: true,
+        recoveryReason: "configuration_changed" as const,
+        restartRequired: false,
+        configurationIssue,
+      };
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([connection]);
+      mount();
+      const row = await screen.findByRole("article", { name: "apps.codex" });
+      await waitFor(() =>
+        expect(within(row).getByRole("status")).toHaveTextContent(
+          `agentConnections.states.${configurationIssue}`,
+        ),
+      );
+      expect(
+        within(row).getByRole("button", { name: "agentConnections.reapply" }),
+      ).toBeEnabled();
+    },
+  );
+  it.each([
+    "unsupported",
+    "revoked",
+    "reconnect_required",
+    "recovery_pending",
+  ] as const)(
+    "offers reapply for unavailable Codex native compatibility (%s) while keeping the model menu connected",
+    async (nativeCompatibility) => {
+      const connection = {
+        app: "codex",
+        enabled: true,
+        configured: true,
+        model: "vary-auto/shared",
+        recoveryPending: false,
+        restartRequired: true,
+        nativeCompatibility,
+      };
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([connection]);
+      mount();
+      const row = await screen.findByRole("article", { name: "apps.codex" });
+      await waitFor(() =>
+        expect(within(row).getByRole("status")).toHaveTextContent(
+          "agentConnections.states.nativeUnavailable",
+        ),
+      );
+      expect(within(row).getByRole("switch")).toBeChecked();
+      expect(
+        within(row).queryByText("agentConnections.codexNativeHint"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(row).getByRole("button", { name: "agentConnections.reapply" }),
+      ).toBeEnabled();
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+    },
+  );
   it("offers Apply again directly on a drifted Codex row and refreshes its status", async () => {
     const pending = {
       app: "codex",
@@ -2293,4 +2389,199 @@ describe("Agent connections", () => {
       screen.queryByText(/synthetic-private-configuration/),
     ).not.toBeInTheDocument();
   });
+});
+
+describe("per-Agent detection", () => {
+  it.each([false, true])(
+    "unlocks completed Agents while another is checking (compact=%s)",
+    async (compact) => {
+      const get = vi.mocked(agentConnectionsApi.get).getMockImplementation()!;
+      let finish!: (
+        value: Awaited<ReturnType<typeof agentConnectionsApi.get>>,
+      ) => void;
+      vi.mocked(agentConnectionsApi.get).mockImplementation((app) =>
+        app === "codex"
+          ? new Promise((resolve) => {
+              finish = resolve;
+            })
+          : get(app),
+      );
+      mount(compact);
+      const codex = await screen.findByRole("article", { name: "apps.codex" });
+      await waitFor(() =>
+        expect(within(codex).getByRole("status")).toHaveTextContent(
+          "agentConnections.states.checking",
+        ),
+      );
+      expect(
+        within(codex).queryByText("agentConnections.states.off"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(codex).getByRole("switch", { hidden: compact }),
+      ).toBeDisabled();
+      const claude = screen.getByRole("article", { name: "apps.claude" });
+      await waitFor(() =>
+        expect(
+          within(claude).getByRole("switch", { hidden: compact }),
+        ).toBeEnabled(),
+      );
+      expect(document.querySelector(".mp-list > p[role='status']")).toBeNull();
+      if (compact) {
+        const unconfigured = screen.getByText("trayPanel.notConfigured");
+        expect(
+          codex.compareDocumentPosition(unconfigured) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+      }
+      await act(async () =>
+        finish({
+          app: "codex",
+          enabled: false,
+          configured: false,
+          recoveryPending: false,
+          model: null,
+          restartRequired: false,
+        }),
+      );
+      await waitFor(() =>
+        expect(within(codex).getByRole("status")).toHaveTextContent(
+          "agentConnections.states.off",
+        ),
+      );
+      expect(
+        within(codex).getByRole("switch", { hidden: compact }),
+      ).toBeEnabled();
+    },
+  );
+
+  it("keeps native model detection independent for each Agent", async () => {
+    const native = vi
+      .mocked(agentConnectionsApi.nativeModel)
+      .getMockImplementation()!;
+    vi.mocked(agentConnectionsApi.nativeModel).mockImplementation((app) =>
+      app === "codex" ? new Promise(() => {}) : native(app),
+    );
+    mount();
+    const claude = await screen.findByRole("article", { name: "apps.claude" });
+    await waitFor(() =>
+      expect(
+        within(claude).getByRole("button", {
+          name: "agentConnections.model Claude Code",
+        }),
+      ).toHaveTextContent("agentConnections.nativeDefault"),
+    );
+    const codex = screen.getByRole("article", { name: "apps.codex" });
+    expect(
+      within(codex).getByRole("button", {
+        name: "agentConnections.model apps.codex",
+      }),
+    ).toHaveTextContent("common.loading");
+    expect(within(claude).getByRole("switch")).toBeEnabled();
+    expect(within(codex).getByRole("switch")).toBeEnabled();
+  });
+
+  it("isolates detection failures to their Agent", async () => {
+    const get = vi.mocked(agentConnectionsApi.get).getMockImplementation()!;
+    vi.mocked(agentConnectionsApi.get).mockImplementation((app) =>
+      app === "codex"
+        ? Promise.reject(new Error("synthetic failure"))
+        : get(app),
+    );
+    mount();
+    const codex = await screen.findByRole("article", { name: "apps.codex" });
+    await waitFor(() =>
+      expect(within(codex).getByRole("status")).toHaveTextContent(
+        "agentConnections.states.unavailable",
+      ),
+    );
+    expect(within(codex).getByRole("switch")).toBeDisabled();
+    const claude = screen.getByRole("article", { name: "apps.claude" });
+    expect(within(claude).getByRole("status")).toHaveTextContent(
+      "agentConnections.states.off",
+    );
+    expect(within(claude).getByRole("switch")).toBeEnabled();
+  });
+
+  it("retains confirmed connection and model during a slow background refresh", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    vi.mocked(agentConnectionsApi.get).mockResolvedValue({
+      app: "codex",
+      enabled: true,
+      configured: true,
+      model: "vary-auto/shared",
+      recoveryPending: false,
+      restartRequired: false,
+    });
+    mount(false, client);
+    const codex = await screen.findByRole("article", { name: "apps.codex" });
+    await waitFor(() =>
+      expect(within(codex).getByRole("status")).toHaveTextContent(
+        "agentConnections.states.configured",
+      ),
+    );
+    vi.mocked(agentConnectionsApi.get).mockImplementation(
+      () => new Promise(() => {}),
+    );
+    vi.mocked(agentConnectionsApi.nativeModel).mockImplementation(
+      () => new Promise(() => {}),
+    );
+    await act(async () => {
+      void client.invalidateQueries({ queryKey: ["agent-connections"] });
+      void client.invalidateQueries({ queryKey: ["agent-native-models"] });
+    });
+    await waitFor(() =>
+      expect(
+        client.isFetching({ queryKey: ["agent-connections", "codex"] }),
+      ).toBe(1),
+    );
+    expect(within(codex).getByRole("status")).toHaveTextContent(
+      "agentConnections.states.configured",
+    );
+    expect(within(codex).getByRole("switch")).toBeEnabled();
+    expect(
+      within(codex).getByRole("button", {
+        name: "agentConnections.model apps.codex",
+      }),
+    ).toHaveTextContent("Shared group");
+  });
+});
+
+it("updates the switch after external takeover without writing another manager's configuration", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const original = {
+    app: "codex",
+    enabled: true,
+    configured: true,
+    model: "vary-auto/shared",
+    recoveryPending: false,
+    restartRequired: false,
+  };
+  vi.mocked(agentConnectionsApi.list).mockResolvedValue([original]);
+  mount(false, client);
+  const toggle = await screen.findByRole("switch", { name: "apps.codex" });
+  await waitFor(() => expect(toggle).toBeChecked());
+  const external = {
+    ...original,
+    enabled: false,
+    configured: false,
+    recoveryPending: true,
+    recoveryReason: "configuration_changed" as const,
+  };
+  vi.mocked(agentConnectionsApi.list).mockResolvedValue([external]);
+  await act(async () => {
+    await client.invalidateQueries({
+      queryKey: ["agent-connections", "codex"],
+    });
+  });
+  await waitFor(() => expect(toggle).not.toBeChecked());
+  expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+  expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
+  fireEvent.click(toggle);
+  await waitFor(() =>
+    expect(agentConnectionsApi.reapply).toHaveBeenCalledWith("codex"),
+  );
 });

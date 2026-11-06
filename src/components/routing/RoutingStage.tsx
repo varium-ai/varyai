@@ -13,6 +13,7 @@ import type { RoutingUpstream } from "@/lib/api/routingUpstreams";
 import { AccountLabel, useAccountText } from "@/components/AccountLabel";
 import appIcon from "@/assets/icons/app-icon.png";
 import { RoutingPackets } from "./RoutingPackets";
+import { formatRoutingDuration } from "@/lib/routingDuration";
 import { useRoutingFlights } from "./useRoutingFlights";
 import type {
   RoutingAccount,
@@ -181,7 +182,7 @@ export function RoutingStage({
         ...node.querySelectorAll(".rt-accts li:not(.idle)"),
       ].map((child) => child.getBoundingClientRect());
       if (!sources.length || !hub) return;
-      const wire = (a: DOMRect, b: DOMRect) => {
+      const wire = (a: DOMRect, b: DOMRect, source = false) => {
         if (b.left < a.right) {
           const x1 = a.left + a.width / 2 - box.left,
             y1 = a.bottom - box.top;
@@ -189,9 +190,10 @@ export function RoutingStage({
             y2 = b.top + b.height / 2 - box.top;
           return `M${x1},${y1} C${x1},${y1 + 12} ${x2 - 12},${y1 + 12} ${x2 - 12},${y2 - 8} Q${x2 - 12},${y2} ${x2},${y2}`;
         }
-        const x1 = a.right - box.left,
+        const compact = stageLayout === "compact";
+        const x1 = a.right - box.left + (compact ? (source ? 3 : 2) : 0),
           y1 = a.top + a.height / 2 - box.top;
-        const x2 = b.left - box.left,
+        const x2 = b.left - box.left - (compact ? (source ? 2 : 3) : 0),
           y2 = b.top + b.height / 2 - box.top;
         const middle = (x1 + x2) / 2;
         return `M${x1},${y1} C${middle},${y1} ${middle},${y2} ${x2},${y2}`;
@@ -201,7 +203,7 @@ export function RoutingStage({
           sourceList &&
           (source.bottom <= sourceList.top || source.top >= sourceList.bottom)
             ? ""
-            : wire(source, hub),
+            : wire(source, hub, true),
         ),
         targets: candidates.map((candidate) =>
           list && (candidate.bottom <= list.top || candidate.top >= list.bottom)
@@ -286,6 +288,7 @@ export function RoutingStage({
         ))}
       </svg>
       <RoutingPackets
+        compact={stageLayout === "compact"}
         row={row}
         paths={[
           paths.sources[Math.max(0, sourceAgents.indexOf(row?.agent))] ?? "",
@@ -298,23 +301,9 @@ export function RoutingStage({
         ]}
         flights={
           animate && !replay
-            ? flights.map((trace, flightIndex) => ({
+            ? flights.map((trace) => ({
                 row: trace,
                 color: hues[trace.agent] ?? "var(--rt-accent)",
-                holdOffset:
-                  flights.slice(0, flightIndex).filter((other) => {
-                    const chosen = chosenCandidate(trace);
-                    const otherChosen = chosenCandidate(other);
-                    const target =
-                      chosen == null ? undefined : trace.candidates[chosen];
-                    const otherTarget =
-                      otherChosen == null
-                        ? undefined
-                        : other.candidates[otherChosen];
-                    return target && otherTarget
-                      ? candidateKey(target) === candidateKey(otherTarget)
-                      : !target && !otherTarget && trace.agent === other.agent;
-                  }).length * 12,
                 paths: [
                   paths.sources[sourceAgents.indexOf(trace.agent)] ?? "",
                   ...trace.candidates.map(
@@ -477,10 +466,8 @@ export function RoutingStage({
             ? Math.max(0, Math.min(100, quota.usedPercent))
             : undefined;
           const remaining = (until: number) => {
-            const minutes = Math.max(1, Math.ceil((until - observedAt) / 60));
             return t("routingPage.resetIn", {
-              hours: Math.floor(minutes / 60),
-              minutes: minutes % 60,
+              time: formatRoutingDuration((until - observedAt) * 1000, t),
             });
           };
           const baseStatus = resting

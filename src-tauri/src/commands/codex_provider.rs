@@ -74,29 +74,42 @@ pub(crate) struct ModelTest {
     elapsed_ms: u64,
 }
 
+fn new_codex_draft() -> RoutingUpstream {
+    RoutingUpstream {
+        icon: None,
+        transport: None,
+        schema_version: 1,
+        id: uuid::Uuid::new_v4().to_string(),
+        name: "ChatGPT / Codex".into(),
+        revision: 0,
+        source: crate::services::routing_upstreams::UpstreamSource::Codex,
+        has_api_key: false,
+        enabled: true,
+        preset_id: None,
+        region: None,
+        codex_settings: Some(Settings::default()),
+    }
+}
+
 #[tauri::command]
-pub(crate) async fn create_codex_provider(
-    state: State<'_, AppState>,
-) -> Result<RoutingUpstream, String> {
-    let db = state.db.clone();
-    tokio::task::spawn_blocking(move || {
-        db.save_routing_upstream(RoutingUpstream {
-            icon: None,
-            transport: None,
-            schema_version: 1,
-            id: String::new(),
-            name: "ChatGPT / Codex".into(),
-            revision: 0,
-            source: crate::services::routing_upstreams::UpstreamSource::Codex,
-            has_api_key: false,
-            enabled: true,
-            preset_id: None,
-            region: None,
-            codex_settings: Some(Settings::default()),
-        })
-    })
-    .await
-    .map_err(|_| "routingUpstreams.failed")?
+pub(crate) async fn create_codex_provider(state: State<'_, AppState>) -> Result<Editor, String> {
+    let upstream = new_codex_draft();
+    let provider = crate::services::routing_upstreams::resolve_provider(&upstream)?;
+    observe_editor(state.inner(), upstream, provider, Settings::default()).await
+}
+
+fn discovery_provider(
+    db: &crate::database::Database,
+    id: String,
+    revision: u32,
+) -> Result<crate::provider::Provider, String> {
+    if revision == 0 {
+        let mut draft = new_codex_draft();
+        draft.id = id;
+        crate::services::routing_upstreams::resolve_provider(&draft)
+    } else {
+        db.routing_discovery_provider(&id, revision)
+    }
 }
 
 #[tauri::command]
@@ -111,10 +124,9 @@ pub(crate) async fn test_codex_provider_model(
         return Err("routingUpstreams.invalid".into());
     }
     let db = state.db.clone();
-    let mut provider =
-        tokio::task::spawn_blocking(move || db.routing_discovery_provider(&id, revision))
-            .await
-            .map_err(|_| "routingUpstreams.failed")??;
+    let mut provider = tokio::task::spawn_blocking(move || discovery_provider(&db, id, revision))
+        .await
+        .map_err(|_| "routingUpstreams.failed")??;
     if !codex_provider::is_codex(&provider) {
         return Err("routingUpstreams.invalid".into());
     }
@@ -186,6 +198,15 @@ pub(crate) async fn editor(state: &AppState, id: String, revision: u32) -> Resul
             .into_iter()
             .collect();
     }
+    observe_editor(state, upstream, provider, settings).await
+}
+
+async fn observe_editor(
+    state: &AppState,
+    upstream: RoutingUpstream,
+    provider: crate::provider::Provider,
+    mut settings: Settings,
+) -> Result<Editor, String> {
     let native =
         tokio::task::spawn_blocking(crate::services::intent_routing::catalog::native_editor_info)
             .await
@@ -255,7 +276,7 @@ pub(crate) async fn editor(state: &AppState, id: String, revision: u32) -> Resul
 pub(crate) async fn import_codex_provider_account(
     state: State<'_, AppState>,
     path: String,
-) -> Result<(), String> {
+) -> Result<crate::proxy::providers::copilot_auth::GitHubAccount, String> {
     let value = tokio::task::spawn_blocking(move || {
         use std::io::Read;
         let file = std::fs::File::open(path).map_err(|_| "routingUpstreams.invalid")?;
@@ -279,8 +300,30 @@ pub(crate) async fn import_codex_provider_account(
                 "codex_oauth_duplicate_account"
             }
             _ => "routingUpstreams.invalid",
-        })?;
-    Ok(())
+        })
+        .map_err(str::to_owned)
+}
+
+fn save_codex_record(
+    db: &crate::database::Database,
+    mut upstream: RoutingUpstream,
+    settings: Settings,
+) -> Result<RoutingUpstream, String> {
+    if !matches!(
+        upstream.source,
+        crate::services::routing_upstreams::UpstreamSource::Codex
+    ) || !settings.valid()
+    {
+        return Err("routingUpstreams.invalid".into());
+    }
+    if upstream.revision != 0 {
+        let provider = db.routing_discovery_provider(&upstream.id, upstream.revision)?;
+        if !codex_provider::is_codex(&provider) {
+            return Err("routingUpstreams.invalid".into());
+        }
+    }
+    upstream.codex_settings = Some(settings);
+    db.save_routing_upstream(upstream)
 }
 
 #[tauri::command]
@@ -301,17 +344,9 @@ pub(crate) async fn save_codex_provider(
         return Err("routingUpstreams.sourceUnavailable".into());
     }
     let db = state.db.clone();
-    let saved = tokio::task::spawn_blocking(move || {
-        let provider = db.routing_discovery_provider(&upstream.id, upstream.revision)?;
-        if !codex_provider::is_codex(&provider) {
-            return Err("routingUpstreams.invalid".into());
-        }
-        let mut upstream = upstream;
-        upstream.codex_settings = Some(settings);
-        db.save_routing_upstream(upstream)
-    })
-    .await
-    .map_err(|_| "routingUpstreams.failed")??;
+    let saved = tokio::task::spawn_blocking(move || save_codex_record(&db, upstream, settings))
+        .await
+        .map_err(|_| "routingUpstreams.failed")??;
     crate::services::intent_routing::menu::refresh_active(&state.proxy_service).await;
     Ok(saved)
 }
@@ -324,10 +359,9 @@ pub(crate) async fn codex_provider_models(
     account: String,
 ) -> Result<Vec<Value>, String> {
     let db = state.db.clone();
-    let mut provider =
-        tokio::task::spawn_blocking(move || db.routing_discovery_provider(&id, revision))
-            .await
-            .map_err(|_| "routingUpstreams.failed")??;
+    let mut provider = tokio::task::spawn_blocking(move || discovery_provider(&db, id, revision))
+        .await
+        .map_err(|_| "routingUpstreams.failed")??;
     if !codex_provider::is_codex(&provider) {
         return Err("routingUpstreams.invalid".into());
     }
@@ -354,7 +388,7 @@ pub(crate) async fn codex_provider_models(
         .unwrap_or_default())
 }
 
-fn quota_auth_error(
+pub(crate) fn quota_auth_error(
     error: crate::proxy::providers::codex_oauth_auth::CodexOAuthError,
 ) -> Result<crate::services::subscription::SubscriptionQuota, String> {
     use crate::proxy::providers::codex_oauth_auth::CodexOAuthError;
@@ -391,13 +425,22 @@ pub(crate) async fn codex_provider_quota(
             Ok(workspace) => workspace,
             Err(error) => return quota_auth_error(error),
         };
-        query_codex_quota(
+        let result = query_codex_quota(
             &token,
             Some(&workspace),
             "codex_oauth",
             "Account authorization unavailable",
         )
-        .await
+        .await;
+        if result.as_ref().is_ok_and(|quota| {
+            matches!(
+                quota.credential_status,
+                crate::services::subscription::CredentialStatus::Expired
+            )
+        }) {
+            manager.observe_rejected_access(&account, &token).await;
+        }
+        result
     };
     let mut quota: SubscriptionQuota = result.map_err(|_| "routingUpstreams.failed")?;
     // Vendor text and authentication errors never enter this editor.
@@ -409,6 +452,25 @@ pub(crate) async fn codex_provider_quota(
 #[cfg(test)]
 mod account_tests {
     use super::*;
+
+    #[test]
+    fn opening_and_cancelling_codex_drafts_persist_nothing_and_save_persists_once(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = crate::database::Database::memory()?;
+        let cancelled = new_codex_draft();
+        let draft = new_codex_draft();
+        assert!(cancelled.id != draft.id && draft.revision == 0);
+        assert!(db.list_routing_upstreams()?.is_empty());
+        let executable = discovery_provider(&db, draft.id.clone(), 0)?;
+        assert!(codex_provider::is_codex(&executable));
+        assert!(db.list_routing_upstreams()?.is_empty());
+        let saved = save_codex_record(&db, draft.clone(), Settings::default())?;
+        assert!(saved.revision == 1);
+        assert!(db.list_routing_upstreams()?.len() == 1);
+        assert!(save_codex_record(&db, draft, Settings::default()).is_err());
+        assert!(db.list_routing_upstreams()?.len() == 1);
+        Ok(())
+    }
 
     #[test]
     fn quota_auth_errors_only_require_login_when_authorization_is_definitively_gone() {

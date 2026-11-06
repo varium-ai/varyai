@@ -219,7 +219,8 @@ fn text(parts: &[Part]) -> String {
     parts
         .iter()
         .filter_map(|p| match p {
-            Part::Text { text, .. } => Some(text.as_str()),
+            Part::Text { text, .. } => Some(text.clone()),
+            Part::ToolReference { name } => Some(format!("Tool available: {name}")),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -455,7 +456,7 @@ fn openai_parts(
                 out.push(if responses { file["type"] = json!("input_file");file } else { json!({"type":"file","file":file}) });
             }
             Part::Search { query, hits } => out.push(json!({"type":if responses {"input_text"} else {"text"},"text":format!("{query}\n{}",json!(hits))})),
-            Part::ToolReference { name } => out.push(json!({"type":"tool_reference","name":name})),
+            Part::ToolReference { name } => out.push(json!({"type":if responses {"input_text"} else {"text"},"text":format!("Tool available: {name}")})),
             Part::Thinking { .. } | Part::ToolCall { .. } | Part::ToolResult { .. }
             | Part::NamespacedToolCall{..} | Part::CustomToolCall{..} | Part::CustomToolResult{..} => {}
         }
@@ -923,7 +924,7 @@ fn gemini_parts(parts: &[Part]) -> Result<Vec<Value>, ProxyError> {
                 block
             }
             Part::Search { query, hits } => json!({"text":format!("{query}\n{}",json!(hits))}),
-            Part::ToolReference { .. } => continue,
+            Part::ToolReference { name } => json!({"text":format!("Tool available: {name}")}),
             Part::NamespacedToolCall { .. }
             | Part::CustomToolCall { .. }
             | Part::CustomToolResult { .. } => return Err(invalid()),
@@ -1097,6 +1098,31 @@ fn gemini_thinking(r: &Request) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parity_deferred_client_tool_discovery_survives_protocol_conversion(
+    ) -> Result<(), crate::proxy::ProxyError> {
+        let body = json!({"model":"synthetic","messages":[
+            {"role":"assistant","content":[{"type":"tool_use","id":"synthetic-search","name":"ToolSearch","input":{"query":"lookup"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"synthetic-search","content":[{"type":"tool_reference","tool_name":"lookup"}]}]}
+        ],"tools":[{"name":"ToolSearch","description":"Find a tool","input_schema":{"type":"object"}}, {"name":"lookup","description":"Synthetic lookup","input_schema":{"type":"object"},"defer_loading":true}]});
+        let parsed = super::super::parse::request(Protocol::Anthropic, &body, "/v1/messages")?;
+        for target in [
+            Protocol::Chat,
+            Protocol::Responses,
+            Protocol::Gemini,
+            Protocol::Anthropic,
+        ] {
+            let wire = request(&parsed, target)?;
+            let encoded = wire.to_string();
+            assert!(encoded.contains("lookup"));
+            assert!(encoded.contains("ToolSearch"));
+            if target != Protocol::Anthropic {
+                assert!(encoded.contains("Tool available: lookup"));
+            }
+        }
+        Ok(())
+    }
     #[test]
     fn chat_single_text_uses_plain_content_and_keeps_multi_part_content() {
         for (parts, plain) in [

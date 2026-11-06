@@ -59,6 +59,17 @@ pub fn get_opencode_config_path() -> PathBuf {
     get_opencode_dir().join("opencode.json")
 }
 
+/// Use the same native document for discovery and shared catalog projection.
+pub(crate) fn get_opencode_projection_path() -> PathBuf {
+    let json = get_opencode_config_path();
+    let jsonc = json.with_extension("jsonc");
+    if jsonc.exists() {
+        jsonc
+    } else {
+        json
+    }
+}
+
 /// 获取 OpenCode SQLite 数据库路径
 /// 优先级: OPENCODE_DB 环境变量 > XDG_DATA_HOME > ~/.local/share/opencode
 pub fn get_opencode_db_path() -> PathBuf {

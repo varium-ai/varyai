@@ -26,19 +26,32 @@ pub(crate) struct NativeModel {
 pub(crate) fn list() -> Vec<NativeModel> {
     STARTING_MODEL_APPS
         .iter()
-        .map(|&app| match selection(app) {
-            Ok(model) => NativeModel {
-                app,
-                model,
-                available: true,
-            },
-            Err(_) => NativeModel {
-                app,
-                model: None,
-                available: false,
-            },
-        })
+        .map(|&app| observe(app))
         .collect()
+}
+
+pub(crate) fn get(app: &str) -> Result<NativeModel, String> {
+    let app = STARTING_MODEL_APPS
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == app)
+        .ok_or(FAILED)?;
+    Ok(observe(app))
+}
+
+fn observe(app: &'static str) -> NativeModel {
+    match selection(app) {
+        Ok(model) => NativeModel {
+            app,
+            model,
+            available: true,
+        },
+        Err(_) => NativeModel {
+            app,
+            model: None,
+            available: false,
+        },
+    }
 }
 
 fn selection(app: &str) -> Result<Option<String>, String> {
@@ -55,14 +68,7 @@ fn selection(app: &str) -> Result<Option<String>, String> {
             crate::gemini_config::get_gemini_settings_path()
         }
         "grokbuild" => crate::grok_config::get_grok_config_path(),
-        "opencode" => {
-            let path = crate::opencode_config::get_opencode_config_path();
-            if !path.exists() && path.with_extension("jsonc").exists() {
-                path.with_extension("jsonc")
-            } else {
-                path
-            }
-        }
+        "opencode" => crate::opencode_config::get_opencode_projection_path(),
         "openclaw" => crate::openclaw_config::get_openclaw_config_path(),
         "hermes" => crate::hermes_config::get_hermes_config_path(),
         "kimi" | "qwen" | "zcode" | "deepseek-harness" => {

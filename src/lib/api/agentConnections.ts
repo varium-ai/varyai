@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { RoutingClientStatus } from "./intentRouting";
 export interface AgentConnection {
   app: string;
   enabled: boolean;
@@ -19,6 +20,8 @@ export interface AgentConnection {
     | "unknown"
     | "unsupported"
     | null;
+  nativeCompatibility?: RoutingClientStatus["nativeCompatibility"] | null;
+  configurationIssue?: RoutingClientStatus["configurationIssue"];
 }
 export interface AgentModel {
   id: string;
@@ -42,6 +45,10 @@ export interface AgentNativeModel {
   available: boolean;
 }
 export const agentConnectionsApi = {
+  get: (app: string) =>
+    invoke<AgentConnection>("get_agent_connection", { app }),
+  nativeModel: (app: string) =>
+    invoke<AgentNativeModel>("get_agent_native_model", { app }),
   list: () => invoke<AgentConnection[]>("list_agent_connections"),
   models: () => invoke<AgentModel[]>("get_agent_model_catalog"),
   nativeModels: () => invoke<AgentNativeModel[]>("get_agent_native_models"),

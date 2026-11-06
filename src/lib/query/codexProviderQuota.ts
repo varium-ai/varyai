@@ -6,7 +6,10 @@ import {
 import type { SubscriptionQuota } from "@/types/subscription";
 
 interface AllowanceSnapshot {
-  quota?: Pick<SubscriptionQuota, "credentialStatus" | "success" | "tiers">;
+  quota?: Pick<
+    SubscriptionQuota,
+    "credentialStatus" | "success" | "tiers" | "codex"
+  >;
   failed: boolean;
 }
 
@@ -29,9 +32,17 @@ export function useCodexProviderQuotas(
             ? previous.quota
             : undefined;
           try {
-            const { credentialStatus, success, tiers } =
+            const { credentialStatus, success, tiers, codex } =
               await routingUpstreamsApi.codexQuota(account.id);
-            const quota = { credentialStatus, success, tiers };
+            const quota = { credentialStatus, success, tiers, codex };
+            if (credentialStatus === "expired") {
+              void client.invalidateQueries({
+                queryKey: ["routing-upstreams"],
+              });
+              void client.invalidateQueries({
+                queryKey: ["managed-auth-status", "codex_oauth"],
+              });
+            }
             return {
               quota:
                 !success && credentialStatus === "valid"

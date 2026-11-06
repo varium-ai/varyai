@@ -29,7 +29,7 @@ fn ports(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<u16>> {
 pub(super) fn generated_id(id: &str) -> bool {
     matches!(
         id.to_ascii_lowercase().as_str(),
-        "magpie" | "cc-switch" | "cc_switch" | "ccswitch" | "varyai" | "varyai-routing"
+        "magpie" | "cc-switch" | "cc_switch" | "ccswitch" | "varyai"
     )
 }
 

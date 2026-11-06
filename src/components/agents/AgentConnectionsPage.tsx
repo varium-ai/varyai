@@ -1,5 +1,5 @@
 import { Fragment, useId, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
   closestCenter,
@@ -115,20 +115,32 @@ export function AgentConnectionsPage({
   const name = (app: AppId) =>
     app === "claude" ? "Claude Code" : t(`apps.${app}`);
   const client = useQueryClient();
-  const states = useQuery({
-    queryKey: ["agent-connections"],
-    queryFn: agentConnectionsApi.list,
-    refetchInterval: 5000,
+  const connections = useQueries({
+    queries: APP_IDS.map((app) => ({
+      queryKey: ["agent-connections", app],
+      queryFn: () => agentConnectionsApi.get(app),
+      refetchInterval: 5000,
+    })),
   });
+  const states = {
+    data: connections.flatMap((query) => (query.data ? [query.data] : [])),
+    isError: connections.some((query) => query.isError),
+    isPending: connections.some((query) => query.isPending),
+  };
   const installations = useAgentInstallations();
   const catalog = useQuery({
     queryKey: ["agent-model-catalog"],
     queryFn: agentConnectionsApi.models,
   });
-  const nativeModels = useQuery({
-    queryKey: ["agent-native-models"],
-    queryFn: agentConnectionsApi.nativeModels,
-    refetchInterval: 5000,
+  const nativeModels = useQueries({
+    queries: APP_IDS.map((app) => ({
+      queryKey: ["agent-native-models", app],
+      queryFn: () =>
+        nativePicker(app) || app === "trae"
+          ? Promise.resolve({ app, model: null, available: false })
+          : agentConnectionsApi.nativeModel(app),
+      refetchInterval: 5000,
+    })),
   });
   const gateway = useQuery({
     queryKey: ["proxyStatus"],
@@ -290,6 +302,17 @@ export function AgentConnectionsPage({
     void client.invalidateQueries({ queryKey: ["agent-model-catalog"] });
   }
   function connect(app: AppId) {
+    const state = states.data?.find((entry) => entry.app === app);
+    if (
+      !state?.enabled &&
+      state?.recoveryPending &&
+      state.recoveryReason === "configuration_changed"
+    ) {
+      // Explicitly reconnect against the externally edited baseline. Polling
+      // must never reapply our old receipt or change another manager's config.
+      void reapply(app);
+      return;
+    }
     if (app === "doubaowork") {
       void apply(app, true, null);
       return;
@@ -309,12 +332,11 @@ export function AgentConnectionsPage({
           state.app === app && (state.enabled || state.recoveryPending),
       ),
   );
-  if (compact)
-    shown.sort(
-      (a, b) =>
-        Number(!!states.data?.find((s) => s.app === b)?.enabled) -
-        Number(!!states.data?.find((s) => s.app === a)?.enabled),
-    );
+  const connectionRank = (app: AppId) => {
+    const query = connections[APP_IDS.indexOf(app)];
+    return query.data?.enabled ? 2 : query.isPending || query.isError ? 1 : 0;
+  };
+  if (compact) shown.sort((a, b) => connectionRank(b) - connectionRank(a));
   const other = APP_IDS.filter((app) => !shown.includes(app));
   function reorder({ active, over }: DragEndEvent) {
     if (
@@ -345,11 +367,24 @@ export function AgentConnectionsPage({
       count: shown.length,
     });
   function row(app: AppId) {
-    const state = states.data?.find((state) => state.app === app);
+    const connection = connections[APP_IDS.indexOf(app)];
+    const state = connection.data;
+    const nativeQuery = nativeModels[APP_IDS.indexOf(app)];
     const enabled = !!state?.enabled;
     const orphaned = app === "codex" && state?.recoveryReason === "orphaned";
-    const native = nativeModels.data?.find((entry) => entry.app === app);
-    const nativeAvailable = native?.available && !nativeModels.isError;
+    const nativeUnavailable =
+      app === "codex" &&
+      state?.configured &&
+      !state.recoveryPending &&
+      !connection.isError &&
+      [
+        "unsupported",
+        "revoked",
+        "reconnect_required",
+        "recovery_pending",
+      ].includes(state.nativeCompatibility ?? "");
+    const native = nativeQuery.data;
+    const nativeAvailable = native?.available && !nativeQuery.isError;
     const nativeModel =
       app === "opencode"
         ? native?.model?.replace(/^[^/]+\//, "")
@@ -357,7 +392,7 @@ export function AgentConnectionsPage({
     const nativeLabel = nativeAvailable
       ? (nativeModel ?? t("agentConnections.nativeDefault"))
       : t(
-          nativeModels.isPending
+          nativeQuery.isPending
             ? "common.loading"
             : "agentConnections.nativeUnavailable",
         );
@@ -370,39 +405,46 @@ export function AgentConnectionsPage({
     const doubaoLauncher = app === "doubaowork" && !state?.configured && (
       <Button
         size="sm"
-        disabled={rowBusy(app) || states.isError}
+        disabled={rowBusy(app) || connection.isPending || connection.isError}
         onClick={() => void launchDoubao(enabled)}
       >
         {t("homeAudit.doubaoLaunch")}
       </Button>
     );
-    const status = states.isError
-      ? "unavailable"
-      : state?.recoveryPending
-        ? state.recoveryReason === "bridge_pending"
-          ? "bridgePending"
-          : state.recoveryReason === "connection_inactive"
-            ? gateway.data?.running
-              ? "inactive"
-              : "gatewayStopped"
-            : state.recoveryReason === "orphaned"
-              ? "orphaned"
-              : "recovery"
-        : enabled
-          ? gateway.isError
-            ? "unavailable"
-            : gateway.data?.running
-              ? state?.configured
-                ? app === "doubaowork"
-                  ? "auditConnected"
-                  : state.desktopState === "restart_required"
-                    ? "restartRequired"
-                    : "configured"
-                : app === "doubaowork"
-                  ? "auditWaiting"
-                  : "recovery"
-              : "gatewayStopped"
-          : "off";
+    const status =
+      connection.isPending || (enabled && gateway.isPending)
+        ? "checking"
+        : connection.isError
+          ? "unavailable"
+          : state?.recoveryPending
+            ? state.configurationIssue
+              ? state.configurationIssue
+              : state.recoveryReason === "bridge_pending"
+                ? "bridgePending"
+                : state.recoveryReason === "connection_inactive"
+                  ? gateway.data?.running
+                    ? "inactive"
+                    : "gatewayStopped"
+                  : state.recoveryReason === "orphaned"
+                    ? "orphaned"
+                    : "recovery"
+            : enabled
+              ? gateway.isError
+                ? "unavailable"
+                : gateway.data?.running
+                  ? state?.configured
+                    ? app === "doubaowork"
+                      ? "auditConnected"
+                      : nativeUnavailable
+                        ? "nativeUnavailable"
+                        : state.desktopState === "restart_required"
+                          ? "restartRequired"
+                          : "configured"
+                    : app === "doubaowork"
+                      ? "auditWaiting"
+                      : "recovery"
+                  : "gatewayStopped"
+              : "off";
     const modelCatalog = ["workbuddy", "qoder", "trae"].includes(app) ? (
       <Popover
         open={browsing === app}
@@ -512,34 +554,35 @@ export function AgentConnectionsPage({
                 {t("agentConnections.individual")}
               </span>
             )}
-            {state?.recoveryPending && !states.isError && (
-              <button
-                type="button"
-                className="mp-agent-fix"
-                aria-label={t("agentConnections.reapply")}
-                title={t(
-                  app === "trae"
-                    ? "agentConnections.bridgeHint"
-                    : "agentConnections.reapplyHint",
-                )}
-                disabled={rowBusy(app) || catalog.isPending}
-                onClick={() => void reapply(app)}
-              >
-                <RefreshCw
-                  size={11}
-                  className={
-                    operations[app] === "reapplying"
-                      ? "animate-spin motion-reduce:animate-none"
-                      : ""
-                  }
-                />
-                <span>{t("agentConnections.reapply")}</span>
-              </button>
-            )}
+            {(state?.recoveryPending || nativeUnavailable) &&
+              !connection.isError && (
+                <button
+                  type="button"
+                  className="mp-agent-fix"
+                  aria-label={t("agentConnections.reapply")}
+                  title={t(
+                    app === "trae"
+                      ? "agentConnections.bridgeHint"
+                      : "agentConnections.reapplyHint",
+                  )}
+                  disabled={rowBusy(app) || catalog.isPending}
+                  onClick={() => void reapply(app)}
+                >
+                  <RefreshCw
+                    size={11}
+                    className={
+                      operations[app] === "reapplying"
+                        ? "animate-spin motion-reduce:animate-none"
+                        : ""
+                    }
+                  />
+                  <span>{t("agentConnections.reapply")}</span>
+                </button>
+              )}
             {state?.configured &&
               !state.recoveryPending &&
               state.desktopState === "restart_required" &&
-              !states.isError && (
+              !connection.isError && (
                 <button
                   type="button"
                   className="mp-agent-fix"
@@ -560,7 +603,7 @@ export function AgentConnectionsPage({
               )}
           </div>
           <p
-            className={`mp-agent-status ${status === "unavailable" ? "bad" : enabled || operations[app] ? "wait" : ""}`}
+            className={`mp-agent-status ${status === "unavailable" ? "bad" : status === "checking" ? "checking" : enabled || operations[app] ? "wait" : ""}`}
             role="status"
             title={t(
               `agentConnections.states.${operations[app] && operations[app] !== "visibility" ? operations[app] : status}`,
@@ -583,7 +626,7 @@ export function AgentConnectionsPage({
               : currentModel}
           </span>
         )}
-        {(compact || app === "trae") && (
+        {compact && (
           <Button
             variant="ghost"
             className="mp-agent-next"
@@ -617,8 +660,8 @@ export function AgentConnectionsPage({
                 (!!operations[app] && operations[app] !== "visibility") ||
                 updates.isBusy(app) ||
                 !!state?.recoveryPending ||
-                states.isPending ||
-                states.isError ||
+                connection.isPending ||
+                connection.isError ||
                 catalog.isPending ||
                 catalog.isError
               }
@@ -669,8 +712,8 @@ export function AgentConnectionsPage({
                   className="mp-agent-start"
                   disabled={
                     rowBusy(app) ||
-                    states.isPending ||
-                    states.isError ||
+                    connection.isPending ||
+                    connection.isError ||
                     (!!state?.recoveryPending &&
                       !orphaned &&
                       !(
@@ -771,11 +814,11 @@ export function AgentConnectionsPage({
             className="mp-switch"
             aria-label={t(`apps.${app}`)}
             checked={enabled}
-            aria-busy={!!operations[app]}
+            aria-busy={connection.isPending || !!operations[app]}
             disabled={
               rowBusy(app) ||
-              states.isPending ||
-              states.isError ||
+              connection.isPending ||
+              connection.isError ||
               (catalog.isPending && !enabled && app !== "doubaowork")
             }
             onCheckedChange={(checked) =>
@@ -783,7 +826,7 @@ export function AgentConnectionsPage({
             }
           />
         </div>
-        {expanded === app && (compact || app === "trae") && (
+        {compact && expanded === app && (
           <div
             id={detailsId}
             className="mp-agent-expanded"
@@ -805,7 +848,9 @@ export function AgentConnectionsPage({
                   <Button
                     size="sm"
                     variant="ghost"
-                    disabled={rowBusy(app) || states.isError}
+                    disabled={
+                      rowBusy(app) || connection.isPending || connection.isError
+                    }
                     onClick={() => openSetup(app)}
                   >
                     {t("agentConnections.individual")}
@@ -904,18 +949,30 @@ export function AgentConnectionsPage({
       >
         <SortableContext items={shown} strategy={verticalListSortingStrategy}>
           <div className="mp-list">
-            {(states.isPending || installations.isPending) && (
-              <p className="py-8 text-sm text-muted-foreground" role="status">
-                {t("common.loading")}
-              </p>
-            )}
+            {(installations.isPending || states.isPending) &&
+              shown.length === 0 && (
+                <div
+                  role="status"
+                  aria-label={t("agentConnections.states.checking")}
+                >
+                  {[0, 1, 2].map((index) => (
+                    <div
+                      key={index}
+                      className="mp-agent-row mp-agent-placeholder"
+                      aria-hidden="true"
+                    >
+                      <span className="mp-agent-placeholder-icon" />
+                      <span className="mp-agent-placeholder-name" />
+                      <span className="mp-agent-placeholder-control" />
+                    </div>
+                  ))}
+                </div>
+              )}
             {shown.map((app, index) => (
               <Fragment key={app}>
                 {compact &&
-                  !states.data?.find((s) => s.app === app)?.enabled &&
-                  (index === 0 ||
-                    states.data?.find((s) => s.app === shown[index - 1])
-                      ?.enabled) && (
+                  connectionRank(app) === 0 &&
+                  (index === 0 || connectionRank(shown[index - 1]) > 0) && (
                     <p className="tray-unconfigured">
                       {t("trayPanel.notConfigured")}
                     </p>
@@ -923,11 +980,14 @@ export function AgentConnectionsPage({
                 {row(app)}
               </Fragment>
             ))}
-            {!installations.isPending && !shown.length && (
-              <p className="py-8 text-sm text-muted-foreground">
-                {t("agentConnections.empty")}
-              </p>
-            )}
+            {!installations.isPending &&
+              !states.isPending &&
+              !states.isError &&
+              !shown.length && (
+                <p className="py-8 text-sm text-muted-foreground">
+                  {t("agentConnections.empty")}
+                </p>
+              )}
           </div>
         </SortableContext>
         {!compact && <WorkspaceDragOverlay />}

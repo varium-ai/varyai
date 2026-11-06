@@ -52,7 +52,13 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-Use `pnpm exec vitest run <test-files>` to select frontend tests. There is no `pnpm lint` command. `pnpm format:check` checks `src/`; apply formatting tools to other changed files as appropriate.
+### Commit and CI acceptance
+
+Before committing, run the applicable checks above on the final changes and compare them with `.github/workflows/ci.yml`. Include the helper tests and production dependency audit, rather than reporting only renderer and Rust unit tests. Record the checked revision or working-tree changes, OS, toolchain, commands, outcomes and unavailable checks. Fix relevant failures before committing; disclose any required check that cannot run. Changes made after verification require rerunning the affected checks.
+
+After pushing, inspect the workflow for the exact pushed revision and follow it until the required jobs finish. Report pending, skipped and failed jobs explicitly. Backend acceptance includes the applicable Linux, Windows and macOS jobs and the Windows-to-WSL2 contract when the workflow requires it. Local success on one platform is not cross-platform CI acceptance. Use failed job logs to establish the cause; do not bypass a check or weaken an assertion merely to make CI green. All required checks must pass for the revision being merged. If remote results cannot be obtained, report verification as incomplete.
+
+Use `pnpm exec vitest run <test-files>` to select frontend tests during development; focused tests do not replace the required checks before committing. There is no `pnpm lint` command. `pnpm format:check` checks `src/`; apply formatting tools to other changed files as appropriate.
 
 Claude Desktop process inspection and restart are supported only on macOS. Keep native restart helpers behind `#[cfg(target_os = "macos")]`; the pure configuration freshness assessment also compiles under `cfg(test)` so its synthetic fixtures run on every CI platform. Linux and Windows report `unsupported` and reject desktop restart requests. Run Clippy on all three CI platforms because a macOS-only check cannot detect unused native helpers in other platform builds.
 
@@ -62,6 +68,12 @@ Provider tests that read Hermes configuration must isolate `HERMES_HOME` and
 `LOCALAPPDATA` alongside the temporary home directory, and restore their previous
 values afterward. Hermes uses `LOCALAPPDATA` on Windows, so changing `HOME` alone
 can leave providers from earlier tests visible to later tests.
+
+Shared Agent projection tests run portable client assertions on every platform.
+Claude Desktop fixtures use `Library/Application Support` on macOS and separate
+`AppData/Roaming/Claude` input files from `AppData/Local/Claude-3p` output files on
+Windows, all under the temporary test home. Linux must assert that Desktop
+projection is rejected while retaining the portable client coverage.
 
 The Qoder TLS listener owns its accepted connection tasks and cancels and joins
 them during shutdown. Its certificate test keeps both an immediate same-address

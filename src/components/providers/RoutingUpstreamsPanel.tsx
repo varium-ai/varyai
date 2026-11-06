@@ -72,6 +72,7 @@ export function RoutingUpstreamsPanel({
   const records = useQuery({
     queryKey: ["routing-upstreams"],
     queryFn: routingUpstreamsApi.list,
+    refetchInterval: 15_000,
   });
   const [draft, setDraft] = useState<RoutingUpstream | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -82,6 +83,8 @@ export function RoutingUpstreamsPanel({
   const [discovered, setDiscovered] = useState<FetchedModel[]>([]);
   const [apiKey, setApiKey] = useState("");
   const [deleting, setDeleting] = useState<RoutingUpstream | null>(null);
+  const [selected, setSelected] = useState<Set<string> | null>(null);
+  const [confirmBulk, setConfirmBulk] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(startAdding);
@@ -93,6 +96,7 @@ export function RoutingUpstreamsPanel({
   const [copyFrom, setCopyFrom] = useState<ProviderCopySource>();
   const [duplicating, setDuplicating] = useState(false);
   const [probing, setProbing] = useState(false);
+  const [startReauth, setStartReauth] = useState(false);
   const [editorPreset, setEditorPreset] = useState<GlobalProviderPreset | null>(
     null,
   );
@@ -130,6 +134,7 @@ export function RoutingUpstreamsPanel({
   const focusPending = useRef(false);
   function openAddPage() {
     listScroll.current = page.current?.closest("main")?.scrollTop ?? 0;
+    setSelected(null);
     setAdding(true);
   }
   function closeAddPage() {
@@ -151,6 +156,7 @@ export function RoutingUpstreamsPanel({
   }, [adding, draft, busy, importBusy]);
   function returnFocus() {
     focusPending.current = true;
+    setStartReauth(false);
     setDraft(null);
     setApiKey("");
   }
@@ -192,9 +198,15 @@ export function RoutingUpstreamsPanel({
       setDiscard(true);
       return;
     }
+    setStartReauth(false);
     setEditorOpen(false);
   }
-  function edit(record?: RoutingUpstream, preset?: GlobalProviderPreset) {
+  function edit(
+    record?: RoutingUpstream,
+    preset?: GlobalProviderPreset,
+    reauth = false,
+  ) {
+    setStartReauth(reauth);
     setEditorOpen(true);
     setLoadedRecord(record ?? null);
     returnToProvider.current = record?.id ?? null;
@@ -670,10 +682,44 @@ export function RoutingUpstreamsPanel({
     }) ?? [];
   const on = filtered.filter((record) => record.enabled !== false);
   const off = filtered.filter((record) => record.enabled === false);
-  async function openRecord(record: RoutingUpstream) {
+  const visible = showOff || !!terms.length ? filtered : on;
+  function toggleSelected(id: string, checked: boolean) {
+    setSelected((previous) => {
+      const next = new Set(previous);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+  async function removeSelected() {
+    if (!selected?.size || !records.data) return;
+    setBusy(true);
+    setError(null);
+    try {
+      for (const record of records.data.filter((record) =>
+        selected.has(record.id),
+      )) {
+        await routingUpstreamsApi.remove(record.id, record.revision);
+        setSelected((previous) => {
+          if (!previous) return null;
+          const next = new Set(previous);
+          next.delete(record.id);
+          return next;
+        });
+      }
+      setSelected(null);
+    } catch (cause) {
+      report(cause);
+    } finally {
+      setConfirmBulk(false);
+      await refresh();
+      setBusy(false);
+    }
+  }
+  async function openRecord(record: RoutingUpstream, reauth = false) {
     if (busy || draft) return;
     if (record.source.kind !== "codex") {
-      edit(record);
+      edit(record, undefined, reauth);
       return;
     }
     setError(null);
@@ -685,7 +731,7 @@ export function RoutingUpstreamsPanel({
       );
       if (value.id !== record.id || value.revision !== record.revision)
         throw new Error("unavailable");
-      edit(value);
+      edit(value, undefined, reauth);
     } catch (cause) {
       report(cause);
     } finally {
@@ -694,15 +740,31 @@ export function RoutingUpstreamsPanel({
   }
   function providerRow(record: RoutingUpstream) {
     const plans = [...new Set(record.subscriptionPlans ?? [])];
+    const subscriptionLabel =
+      record.source.kind !== "api" && record.reauthRequired === false
+        ? record.source.kind === "codex"
+          ? "ChatGPT"
+          : {
+              github_copilot: "GitHub Copilot",
+              xai_oauth: "Grok",
+              claude: "Claude",
+              chatgpt_api: "ChatGPT",
+              gemini_cli: "Google",
+              antigravity: "Google",
+            }[record.source.provider]
+        : t("providerParity.subscription");
     const subscription = plans
-      .map((plan) => plan || t("providerParity.subscription"))
+      .map((plan) => plan || subscriptionLabel)
       .join(" · ");
-    const hasPlan = plans.some((plan) => !!plan);
+    const hasPlan =
+      plans.some((plan) => !!plan) ||
+      (record.source.kind !== "api" && record.reauthRequired === false);
+    const needsLogin = record.source.kind !== "api" && record.reauthRequired;
     return (
       <SortableWorkspaceRow
         key={record.id}
         id={record.id}
-        disabled={busy || !!draft}
+        disabled={busy || !!draft || !!selected}
         handleLabel={t("modelProviders.sorting.handle", {
           provider: record.name,
         })}
@@ -714,14 +776,36 @@ export function RoutingUpstreamsPanel({
         className={`pv-row ${record.enabled === false ? "off" : ""}`}
         onClick={(event) => {
           if ((event.target as Element).closest("button, input")) return;
+          if (selected) {
+            toggleSelected(record.id, !selected.has(record.id));
+            return;
+          }
           void openRecord(record);
         }}
       >
+        {selected && (
+          <input
+            type="checkbox"
+            className="pv-select-check"
+            disabled={busy}
+            aria-label={record.name}
+            checked={selected.has(record.id)}
+            onChange={(event) =>
+              toggleSelected(record.id, event.target.checked)
+            }
+          />
+        )}
         <button
           className="pv-open"
           aria-label={`${t("common.edit")} ${record.name}`}
           disabled={busy || !!draft}
-          onClick={() => void openRecord(record)}
+          onClick={() => {
+            if (selected) {
+              toggleSelected(record.id, !selected.has(record.id));
+              return;
+            }
+            void openRecord(record);
+          }}
         >
           <span className="pv-logo" aria-hidden>
             <UpstreamIcon
@@ -753,7 +837,7 @@ export function RoutingUpstreamsPanel({
           </span>
         </button>
         <span
-          className={`pv-key ${record.source.kind !== "api" ? (hasPlan ? "" : "imported") : record.hasApiKey ? "" : "missing"}`}
+          className={`pv-key ${needsLogin ? "missing" : record.source.kind !== "api" ? (hasPlan ? "" : "imported") : record.hasApiKey ? "" : "missing"}`}
           title={
             record.source.kind !== "api"
               ? subscription || t("providerParity.subscription")
@@ -761,20 +845,33 @@ export function RoutingUpstreamsPanel({
           }
         >
           <span>
-            {record.source.kind !== "api"
-              ? subscription || t("providerParity.subscription")
-              : t(
-                  record.hasApiKey
-                    ? "modelProviders.keySaved"
-                    : "modelProviders.keyMissing",
-                )}
+            {needsLogin
+              ? t("codexProvider.loggedOut")
+              : record.source.kind !== "api"
+                ? subscription || t("providerParity.subscription")
+                : t(
+                    record.hasApiKey
+                      ? "modelProviders.keySaved"
+                      : "modelProviders.keyMissing",
+                  )}
           </span>
         </span>
+        {needsLogin && (
+          <button
+            type="button"
+            className="pv-reauth"
+            disabled={busy || !!draft || !!selected}
+            aria-label={`${t("codexOauth.reauthLogin")} ${record.name}`}
+            onClick={() => void openRecord(record, true)}
+          >
+            {t("codexOauth.reauthLogin")}
+          </button>
+        )}
         <Switch
           className="mp-switch"
           aria-label={`${t("modelPicker.enableProvider")} ${record.name}`}
           checked={record.enabled !== false}
-          disabled={busy || !!draft}
+          disabled={busy || !!draft || !!selected}
           onCheckedChange={(enabled) => void toggle(record, enabled)}
         />
         <ChevronRight className="pv-chevron" size={11} aria-hidden />
@@ -808,6 +905,26 @@ export function RoutingUpstreamsPanel({
       )}
       {!adding && !!records.data?.length && (
         <div className="pv-head">
+          {selected && (
+            <label className="pv-select-all">
+              <input
+                type="checkbox"
+                disabled={busy || !visible.length}
+                checked={
+                  !!visible.length &&
+                  visible.every((record) => selected.has(record.id))
+                }
+                onChange={(event) =>
+                  setSelected(
+                    event.target.checked
+                      ? new Set(visible.map((record) => record.id))
+                      : new Set(),
+                  )
+                }
+              />
+              <span>{t("modelProviders.selectAll")}</span>
+            </label>
+          )}
           <Input
             className="pv-query"
             type="search"
@@ -817,6 +934,25 @@ export function RoutingUpstreamsPanel({
             disabled={busy || !!draft}
             onChange={(event) => setQuery(event.target.value)}
           />
+          {selected && (
+            <button
+              type="button"
+              className="pv-batch-delete"
+              disabled={!selected.size || busy}
+              onClick={() => setConfirmBulk(true)}
+            >
+              {t("modelProviders.removeSelected", { count: selected.size })}
+            </button>
+          )}
+          <button
+            type="button"
+            className="pv-manage"
+            aria-pressed={!!selected}
+            disabled={busy || !!draft}
+            onClick={() => setSelected(selected ? null : new Set())}
+          >
+            {t(selected ? "common.cancel" : "modelProviders.manage")}
+          </button>
         </div>
       )}
       {records.isError && <p role="alert">{t("modelProviders.failed")}</p>}
@@ -876,40 +1012,80 @@ export function RoutingUpstreamsPanel({
             onClose={closeAddPage}
             onChoose={(preset) => edit(undefined, preset)}
             busy={busy || !!draft || importBusy}
-            onAccount={async (provider) => {
+            addedSubscriptions={subscriptionProviders
+              .filter((preset) =>
+                records.data?.some((record) =>
+                  preset.id === "codex"
+                    ? record.source.kind === "codex"
+                    : record.source.kind === "subscription" &&
+                      record.source.provider === preset.id,
+                ),
+              )
+              .map((preset) => preset.id)}
+            onAccount={async (provider, accountId) => {
+              const existing = records.data?.find((record) =>
+                provider === "codex"
+                  ? record.source.kind === "codex"
+                  : record.source.kind === "subscription" &&
+                    record.source.provider === provider,
+              );
               if (provider !== "codex") {
                 const preset = subscriptionProviders.find(
                   (p) => p.id === provider,
                 )!;
-                edit({
-                  schemaVersion: 1,
-                  id: "",
-                  revision: 0,
-                  name: preset.name,
-                  icon: preset.icon,
-                  hasApiKey: false,
-                  source: {
-                    kind: "subscription",
-                    provider,
-                    accountId: "",
-                    models: [],
-                    catalog: [],
-                    mode: "vendor",
-                    groupsOnly: false,
-                  },
-                });
+                const next: RoutingUpstream =
+                  existing?.source.kind === "subscription"
+                    ? {
+                        ...existing,
+                        source:
+                          existing.source.accountId === accountId
+                            ? existing.source
+                            : {
+                                ...existing.source,
+                                accountId,
+                                models: [],
+                                catalog: [],
+                                mode: "vendor",
+                              },
+                      }
+                    : {
+                        schemaVersion: 1,
+                        id: "",
+                        revision: 0,
+                        name: preset.name,
+                        icon: preset.icon,
+                        hasApiKey: false,
+                        source: {
+                          kind: "subscription",
+                          provider,
+                          accountId,
+                          models: [],
+                          catalog: [],
+                          mode: "vendor",
+                          groupsOnly: false,
+                        },
+                      };
+                edit(next);
+                setAdding(false);
                 return;
               }
               setBusy(true);
               try {
-                const created = await routingUpstreamsApi.createCodex();
-                await refresh();
-                edit(
-                  await routingUpstreamsApi.editor(
-                    created.id,
-                    created.revision,
-                  ),
-                );
+                const created = existing
+                  ? await routingUpstreamsApi.editor(
+                      existing.id,
+                      existing.revision,
+                    )
+                  : await routingUpstreamsApi.createCodex();
+                if (!created.codex) throw new Error("unavailable");
+                created.codex.settings.accounts = [
+                  ...new Set([
+                    ...(existing ? created.codex.settings.accounts : []),
+                    accountId,
+                  ]),
+                ];
+                edit(created);
+                setAdding(false);
               } catch (cause) {
                 report(cause);
               } finally {
@@ -942,6 +1118,8 @@ export function RoutingUpstreamsPanel({
           region={region}
           regions={presetRegions}
           allowedFormats={activeEndpoints}
+          startReauth={startReauth}
+          onReauthStarted={() => setStartReauth(false)}
           onDraftChange={setDraft}
           onEnabledChange={(enabled) => void toggleEditor(enabled)}
           onModelsChange={setModels}
@@ -990,6 +1168,19 @@ export function RoutingUpstreamsPanel({
           }
           setDuplicating(false);
         }}
+      />
+      <ConfirmDialog
+        className="mp-dialog pv-confirm"
+        isOpen={confirmBulk}
+        title={t("modelProviders.removeSelected", {
+          count: selected?.size ?? 0,
+        })}
+        message={t("modelProviders.removeSelectedHint", {
+          count: selected?.size ?? 0,
+        })}
+        pending={busy}
+        onCancel={() => setConfirmBulk(false)}
+        onConfirm={() => void removeSelected()}
       />
       <ConfirmDialog
         className="mp-dialog pv-confirm"

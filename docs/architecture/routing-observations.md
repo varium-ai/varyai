@@ -48,7 +48,11 @@ navigation, and reduced-motion settings suppress control and stage movement.
   Stage status lines use an unnumbered API-key fallback, or "one key" for a
   provider seat. Rest and context restrictions precede answering/completion and
   failure states; quota renewals remain visible alongside those states. Account
-  headers show a recorded subscription plan when known. Only recognized plan
+  reset countdowns match Magpie's `dur` precision: seconds below a minute,
+  minutes below an hour, hours and minutes below ten hours, rounded hours below
+  48 hours, then rounded days. Thus 88 hours 46 minutes displays as four days.
+  Live views use current time; historical requests retain their observation time.
+  Account headers show a recorded subscription plan when known. Only recognized plan
   types from the bound account's Codex usage response or rate-limit event are
   recorded; keys and unknown plan values never acquire an inferred subscription.
   The account list also retains recorded safe names and plan subtitles.
@@ -63,14 +67,20 @@ navigation, and reduced-motion settings suppress control and stage movement.
   The live selected destination receives the Agent's color;
   moving paths and packets follow actual attempts and fallback decisions. A solid
   point travels to the provider and waits for completion; a hollow ring returns
-  through Vary to its original Agent. Failed attempts return in red, stopping at
+  through Vary to its original Agent. The workspace and compact tray keep only
+  small circular packets: no birds, count badges, halo discs, aggregation or
+  per-request offsets. Concurrent requests waiting at the same destination
+  overlap at the same wire tip, as Magpie's `holdAll` does. Workspace positions
+  use Magpie's `min(6, length / 4)` clearance at each end and cosine easing;
+  compact tray positions use its wire tips and quadratic easing. The compact
+  tray also retains its 3.5px dots, 420/460ms outgoing legs and green/red replies.
+  Failed attempts return in red, stopping at
   the hub if another candidate follows; a final failure returns to the Agent.
   Cancellation returns in muted gray, including HTTP 499, and never implies an
   upstream error. The workspace and tray omit the synthetic HTTP 499 status code
   from candidate labels, decision steps and request rows; cancellation steps keep
   neutral styling. Recorded traces retain the original status for diagnostics.
-  Shared-provider waits are slightly offset so concurrent packets
-  remain visible. Finished players are removed once the return ends and never
+  Finished players are removed once the return ends and never
   restart on polling. Newly completed long requests use their finish time for
   admission; initial history does not introduce unrelated completed branches.
   Completed requests have stationary paths. Listener and strategy details remain

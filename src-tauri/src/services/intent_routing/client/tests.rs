@@ -1,7 +1,7 @@
 use super::*;
 use serde_json::json;
 
-fn setup() -> (tempfile::TempDir, Manager) {
+pub(super) fn setup() -> (tempfile::TempDir, Manager) {
     let dir = tempfile::tempdir().expect("fixture directory");
     let manager = Manager::new(
         dir.path().join("config.toml"),
@@ -10,8 +10,63 @@ fn setup() -> (tempfile::TempDir, Manager) {
     );
     (dir, manager)
 }
-fn group() -> RoutingGroup {
+pub(super) fn group() -> RoutingGroup {
     super::super::tests::fixture()
+}
+
+#[test]
+fn provider_refresh_preserves_capabilities_and_header_table_shapes(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for headers in [
+        "http_headers = { x-synthetic-header = 'retained', x-openai-actor-authorization = 'varyai' }\n",
+        "[model_providers.varyai.http_headers]\nx-synthetic-header = 'retained'\nx-openai-actor-authorization = 'varyai'\n",
+    ] {
+        let (_dir, manager) = setup();
+        let original = format!(
+            "[model_providers.varyai]\ncapabilities = ['synthetic-capability']\n{headers}"
+        );
+        fs::write(&manager.config, &original)?;
+        manager.write_projection_inner(
+            &[group()],
+            "synthetic-local-token",
+            "http://127.0.0.1:1234/intent/v1",
+            None,
+            true,
+            None,
+        )?;
+        for _ in 0..2 {
+            let doc: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
+            let provider = &doc["model_providers"][PROVIDER];
+            assert_eq!(
+                provider.get("capabilities"),
+                Some(&toml::Value::Array(vec![toml::Value::String(
+                    "synthetic-capability".into()
+                )]))
+            );
+            assert_eq!(
+                provider
+                    .get("http_headers")
+                    .and_then(|h| h.get("x-synthetic-header"))
+                    .and_then(toml::Value::as_str),
+                Some("retained")
+            );
+            assert_eq!(
+                provider
+                    .get("http_headers")
+                    .and_then(|h| h.get("x-openai-actor-authorization"))
+                    .and_then(toml::Value::as_str),
+                Some(PROVIDER)
+            );
+            manager.write_projection(
+                &[group()],
+                "synthetic-local-token",
+                "http://127.0.0.1:1234/intent/v1",
+            )?;
+        }
+        manager.restore()?;
+        assert_eq!(fs::read_to_string(&manager.config)?, original);
+    }
+    Ok(())
 }
 
 #[test]
@@ -40,7 +95,6 @@ fn projection_keeps_openai_login_visible_without_using_it_for_forwarding() {
     for auth in [
         json!({"auth_mode":"chatgpt", "tokens":{"access_token":"synthetic-oauth"}}),
         json!({"auth_mode":"chatgptAuthTokens", "tokens":{"access_token":"synthetic-oauth"}}),
-        json!({"OPENAI_API_KEY":"synthetic-official-key"}),
     ] {
         let (dir, manager) = setup();
         let original = "model_provider='openai'\nmodel='original'\n";
@@ -84,6 +138,7 @@ fn projection_does_not_require_a_missing_or_unsupported_login() {
         Some("not-json".to_owned()),
         Some(json!({"last_refresh":"synthetic-metadata"}).to_string()),
         Some(json!({"OPENAI_API_KEY":"PROXY_MANAGED"}).to_string()),
+        Some(json!({"OPENAI_API_KEY":"synthetic-official-key"}).to_string()),
         Some(json!({"bedrock_api_key":"synthetic-bedrock"}).to_string()),
         Some(json!({"auth_mode":"headers", "tokens":{"access_token":"stale"}}).to_string()),
     ] {
@@ -229,6 +284,56 @@ fn orphan(manager: &Manager) -> String {
     fs::write(&manager.config, &text).expect("switched config");
     fs::remove_file(&manager.receipt).expect("lost receipt");
     text
+}
+
+#[test]
+fn dangling_projection_without_provider_requires_explicit_reconnect() {
+    let (dir, manager) = setup();
+    let before = "# user fixture\nmodel = 'vary-provider/model-synthetic'\nmodel_provider = 'varyai'\nmodel_catalog_json = '/synthetic/vary-routing-catalog-0123456789abcdef0123456789abcdef.json'\nopenai_base_url = 'http://127.0.0.1:3425/backend-api/codex'\n[model_providers.custom]\nbase_url = 'https://synthetic.example/v1'\n";
+    fs::write(&manager.config, before).expect("config");
+
+    let status = manager.status().expect("status");
+    assert!(status.orphaned_config && status.recovery_pending);
+    assert!(!status.orphan_cleanup_available);
+    assert_eq!(
+        manager.write_projection(
+            &[group()],
+            "synthetic-reconnect-token",
+            "http://127.0.0.1:1234/intent/v1",
+        ),
+        Err(CONFLICT.into())
+    );
+    assert_eq!(
+        fs::read_to_string(&manager.config).expect("unchanged"),
+        before
+    );
+    assert!(!manager.receipt.exists());
+
+    manager
+        .write_projection_inner(
+            &[group()],
+            "synthetic-reconnect-token",
+            "http://127.0.0.1:1234/intent/v1",
+            None,
+            true,
+            None,
+        )
+        .expect("explicit reconnect");
+    assert!(manager.receipt.exists());
+    assert!(fs::read_dir(dir.path())
+        .expect("files")
+        .filter_map(Result::ok)
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("vary-routing-orphan-backup-")
+        }));
+    manager.restore().expect("restore");
+    assert_eq!(
+        fs::read_to_string(&manager.config).expect("restored"),
+        before
+    );
 }
 
 #[test]
@@ -485,7 +590,7 @@ fn orphan_cleanup_never_guesses_active_or_custom_ownership() {
             "active" => doc["model_provider"] = toml_edit::value(PROVIDER),
             "profile" => doc["profiles"]["selected"]["model_provider"] = toml_edit::value(PROVIDER),
             "nested-reference" => {
-                let nested: DocumentMut = "external = [{ model_provider = 'varyai-routing' }]"
+                let nested: DocumentMut = "external = [{ model_provider = 'varyai' }]"
                     .parse()
                     .expect("nested fixture");
                 doc["external"] = nested["external"].clone();
@@ -535,7 +640,7 @@ fn orphan_cleanup_never_guesses_active_or_custom_ownership() {
 fn explicit_reconnect_repairs_partial_menu_without_modifying_login(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (dir, manager) = setup();
-    let before = "model_provider='varyai-routing'\nmodel='synthetic-raw-model'\n[model_providers.varyai-routing]\nname='VaryAI models and routing groups'\nbase_url='http://127.0.0.1:1234/intent/v1'\nwire_api='responses'\nrequires_openai_auth=false\nexperimental_bearer_token='synthetic-old-token'\n";
+    let before = "model_provider='varyai'\nmodel='synthetic-raw-model'\n[model_providers.varyai]\nname='VaryAI models and routing groups'\nbase_url='http://127.0.0.1:1234/intent/v1'\nwire_api='responses'\nrequires_openai_auth=false\nexperimental_bearer_token='synthetic-old-token'\n";
     fs::write(&manager.config, before)?;
     let auth = serde_json::to_vec(
         &json!({"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-login"}}),
@@ -779,7 +884,7 @@ fn menu_catalog_has_distinct_aliases_and_human_names() {
     assert_eq!(catalog["models"][0]["slug"], "vary-auto/development");
     assert_eq!(
         catalog["models"][1]["display_name"],
-        "Second · routing group · VaryAI"
+        "Second · routing group"
     );
     assert!(catalog["models"][0]["base_instructions"].is_string());
     assert_eq!(catalog["models"][0]["shell_type"], "shell_command");
@@ -806,7 +911,7 @@ fn restores_original_config_without_touching_auth_or_unrelated_edits() {
         )
         .expect("project");
     let active = fs::read_to_string(&manager.config).expect("active");
-    assert!(active.contains("varyai-routing"));
+    assert!(active.contains("varyai"));
     fs::write(&manager.config, format!("new_setting = true\n{active}")).expect("external edit");
     manager.restore().expect("restore");
     let restored: toml::Value = fs::read_to_string(&manager.config)
@@ -841,7 +946,7 @@ fn recovery_is_durable_and_preserves_newer_owned_field_edits() {
     restarted.restore().expect("recover");
     let text = fs::read_to_string(&manager.config).expect("restored");
     assert!(text.contains("user-new-model"));
-    assert!(!text.contains("varyai-routing"));
+    assert!(!text.contains("varyai"));
 }
 
 #[test]
@@ -1480,6 +1585,7 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
                 upstream: None,
                 effort: super::super::effort::Capability::parse(&json!({
                     "supported_reasoning_levels":["low","high"],
+                    "service_tiers": if images { json!([{ "id":"priority", "name":"Fast", "description":"Higher usage" }]) } else { json!([]) },
                     "context_window": if images { 1000000 } else { 128000 },
                     "max_context_window": if images { 1200000 } else { 128000 },
                     "auto_compact_token_limit": 90000,
@@ -1571,6 +1677,23 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
     assert_eq!(actual["models"][1]["auto_compact_token_limit"], 90000);
     assert_eq!(actual["models"][1]["effective_context_window_percent"], 90);
     assert_eq!(actual["models"][1]["default_reasoning_level"], "high");
+    assert_eq!(actual["models"][0]["service_tiers"], json!([]));
+    assert_eq!(
+        actual["models"][1]["service_tiers"],
+        json!([
+            {"id":"priority","name":"Fast","description":"Higher usage"}
+        ])
+    );
+    assert_eq!(
+        actual["models"][1]["additional_speed_tiers"],
+        json!(["fast"])
+    );
+    let direct_session = &menu.groups["vary-provider/exact-id"];
+    assert_eq!(
+        direct_session.model_entry("vary-provider/exact-id")["service_tiers"],
+        actual["models"][1]["service_tiers"]
+    );
+
     assert_eq!(
         actual["models"][1]["input_modalities"],
         json!(["text", "image"])
@@ -1632,4 +1755,29 @@ fn menu_exports_shared_levels_and_preserves_user_default() {
         value["models"][0]["input_modalities"],
         json!(["text", "image"])
     );
+}
+
+#[test]
+fn external_takeover_is_observed_without_reapplying_or_losing_the_recovery_receipt(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, manager) = setup();
+    manager.write_projection(
+        &[group()],
+        "synthetic-token",
+        "http://127.0.0.1:1234/intent/v1",
+    )?;
+    assert!(manager.status()?.configuration_owned);
+    let mut doc: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+    doc["model_provider"] = toml_edit::value("magpie");
+    doc["model"] = toml_edit::value("synthetic-external-model");
+    doc["model_providers"]["magpie"]["base_url"] = toml_edit::value("http://127.0.0.1:2345/v1");
+    let external = doc.to_string();
+    fs::write(&manager.config, &external)?;
+    let status = manager.status()?;
+    assert!(!status.enabled && !status.configuration_owned);
+    assert!(status.recovery_pending);
+    manager.sync_configuration("http://127.0.0.1:1234/intent/v1")?;
+    assert_eq!(fs::read_to_string(&manager.config)?, external);
+    assert!(manager.load()?.is_some());
+    Ok(())
 }

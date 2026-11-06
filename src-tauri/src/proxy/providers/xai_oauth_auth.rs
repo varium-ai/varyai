@@ -400,6 +400,24 @@ impl XaiOAuthManager {
             .await
     }
 
+    /// Invalidate only the rejected generation; never evict a concurrent renewal.
+    pub(crate) async fn renew_rejected_token(
+        &self,
+        account_id: &str,
+        rejected: &str,
+    ) -> Result<String, XaiOAuthError> {
+        {
+            let mut tokens = self.access_tokens.write().await;
+            if tokens
+                .get(account_id)
+                .is_some_and(|token| token.token == rejected)
+            {
+                tokens.remove(account_id);
+            }
+        }
+        self.get_valid_token_for_account(account_id).await
+    }
+
     pub async fn get_valid_token(&self) -> Result<String, XaiOAuthError> {
         match self.resolve_default_account_id().await {
             Some(account_id) => self.get_valid_token_for_account(&account_id).await,
@@ -1125,6 +1143,35 @@ mod tests {
         assert!(validate_xai_endpoint("https://attacker.example/token").is_err());
     }
 
+    #[tokio::test]
+    async fn rejection_of_an_old_token_keeps_a_concurrent_renewal(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let manager = XaiOAuthManager::new(dir.path().to_owned());
+        manager
+            .add_account_internal(
+                "fixture".into(),
+                None,
+                "synthetic-refresh".into(),
+                None,
+                None,
+            )
+            .await?;
+        manager.access_tokens.write().await.insert(
+            "fixture".into(),
+            CachedAccessToken {
+                token: "synthetic-new".into(),
+                expires_at_ms: chrono::Utc::now().timestamp_millis() + 3_600_000,
+            },
+        );
+        assert_eq!(
+            manager
+                .renew_rejected_token("fixture", "synthetic-old")
+                .await?,
+            "synthetic-new"
+        );
+        Ok(())
+    }
     #[tokio::test]
     async fn account_store_round_trips_and_persists_reauth_state() {
         let data_dir = tempfile::tempdir().unwrap();

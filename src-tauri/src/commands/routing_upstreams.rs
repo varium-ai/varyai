@@ -13,16 +13,34 @@ pub(crate) struct ProviderSummary {
     upstream: RoutingUpstream,
     #[serde(skip_serializing_if = "Option::is_none")]
     subscription_plans: Option<Vec<Option<String>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reauth_required: Option<bool>,
 }
 
 async fn subscription_summaries(
     records: Vec<RoutingUpstream>,
     manager: &CodexOAuthManager,
     native_plan: Option<&str>,
+    native_ready: bool,
 ) -> Vec<ProviderSummary> {
+    let accounts = manager.list_accounts().await;
     let mut plans = std::collections::HashMap::<String, Option<String>>::new();
     let mut summaries = Vec::with_capacity(records.len());
     for upstream in records {
+        let reauth_required = matches!(upstream.source, UpstreamSource::Codex).then(|| {
+            let settings = upstream.codex_settings.clone().unwrap_or_default();
+            settings.accounts.is_empty()
+                || settings.accounts.iter().any(|id| {
+                    if id == "native" {
+                        !native_ready
+                    } else {
+                        accounts
+                            .iter()
+                            .find(|account| &account.id == id)
+                            .is_none_or(|account| account.reauth_required)
+                    }
+                })
+        });
         let subscription_plans = if matches!(upstream.source, UpstreamSource::Codex) {
             let settings = upstream.codex_settings.clone().unwrap_or_default();
             let mut selected = Vec::new();
@@ -47,6 +65,7 @@ async fn subscription_summaries(
         summaries.push(ProviderSummary {
             upstream,
             subscription_plans,
+            reauth_required,
         });
     }
     summaries
@@ -148,13 +167,14 @@ pub(crate) async fn routing_upstream_editor(
 
 #[tauri::command]
 pub(crate) async fn list_routing_upstreams(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<ProviderSummary>, String> {
     let db = state.db.clone();
     let records = tokio::task::spawn_blocking(move || db.list_routing_upstreams())
         .await
         .map_err(|_| "routingUpstreams.failed")??;
-    let native_plan = if records.iter().any(|record| {
+    let native = if records.iter().any(|record| {
         matches!(record.source, UpstreamSource::Codex)
             && record
                 .codex_settings
@@ -163,7 +183,6 @@ pub(crate) async fn list_routing_upstreams(
     }) {
         tokio::task::spawn_blocking(|| {
             crate::services::intent_routing::catalog::native_editor_info()
-                .and_then(|info| info.plan)
         })
         .await
         .ok()
@@ -171,7 +190,71 @@ pub(crate) async fn list_routing_upstreams(
     } else {
         None
     };
-    Ok(subscription_summaries(records, &state.codex_oauth_manager, native_plan.as_deref()).await)
+    let mut summaries = subscription_summaries(
+        records,
+        &state.codex_oauth_manager,
+        native.as_ref().and_then(|info| info.plan.as_deref()),
+        native.is_some(),
+    )
+    .await;
+    // Status queries read local records only. A failed status read is unknown, not logged out.
+    for summary in &mut summaries {
+        if let UpstreamSource::Subscription {
+            provider,
+            account_id,
+            ..
+        } = &summary.upstream.source
+        {
+            use crate::services::routing_upstreams::SubscriptionProvider;
+            let observation = match provider {
+                SubscriptionProvider::GithubCopilot => {
+                    if let Some(auth) = app.try_state::<super::CopilotAuthState>() {
+                        let manager = auth.0.read().await;
+                        let account = manager.get_account(account_id).await;
+                        let plan = manager.editor_plan(account_id).await;
+                        Some((
+                            account
+                                .as_ref()
+                                .is_none_or(|account| account.reauth_required),
+                            plan,
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                SubscriptionProvider::XaiOauth => {
+                    if let Some(auth) = app.try_state::<super::XaiOAuthState>() {
+                        let manager = auth.0.read().await;
+                        let accounts = manager.list_accounts().await;
+                        Some((
+                            accounts
+                                .iter()
+                                .find(|account| &account.id == account_id)
+                                .is_none_or(|account| account.requires_reauth),
+                            None,
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                provider => crate::services::native_subscription::list(*provider)
+                    .await
+                    .ok()
+                    .map(|accounts| {
+                        let account = accounts.iter().find(|account| &account.id == account_id);
+                        (
+                            account.is_none_or(|account| account.reauth_required),
+                            account.and_then(|account| account.plan.clone()),
+                        )
+                    }),
+            };
+            if let Some((reauth, plan)) = observation {
+                summary.reauth_required = Some(reauth);
+                summary.subscription_plans = Some(vec![plan]);
+            }
+        }
+    }
+    Ok(summaries)
 }
 
 #[tauri::command]
@@ -366,6 +449,7 @@ mod subscription_tests {
             ("plus-user", "plus"),
             ("pro-user", "pro"),
             ("unknown-user", "unknown"),
+            ("prolite-user", "prolite"),
         ] {
             let claims = serde_json::json!({
                 "sub": user,
@@ -408,6 +492,8 @@ mod subscription_tests {
             }),
         };
         let plus = db.save_routing_upstream(record("Plus fixture", vec![ids[0].clone()], true))?;
+        let prolite =
+            db.save_routing_upstream(record("Prolite fixture", vec![ids[3].clone()], true))?;
         let mixed = db.save_routing_upstream(record(
             "Mixed fixture",
             vec![ids[0].clone(), ids[1].clone()],
@@ -424,6 +510,7 @@ mod subscription_tests {
             db.list_routing_upstreams()?,
             &manager,
             Some("ChatGPT Business"),
+            true,
         )
         .await;
         let plans = |id: &str| -> Result<&Vec<Option<String>>, Box<dyn std::error::Error>> {
@@ -433,12 +520,25 @@ mod subscription_tests {
                 .ok_or_else(|| "missing summary".into())
         };
         assert_eq!(plans(&plus.id)?, &vec![Some("ChatGPT Plus".into())]);
+        assert_eq!(plans(&prolite.id)?, &vec![Some("ChatGPT Prolite".into())]);
         assert_eq!(
             plans(&mixed.id)?,
             &vec![Some("ChatGPT Plus".into()), Some("ChatGPT Pro".into())]
         );
         assert_eq!(plans(&unknown.id)?, &vec![None]);
         assert_eq!(plans(&native.id)?, &vec![Some("ChatGPT Business".into())]);
+        assert_eq!(
+            rows.iter()
+                .find(|r| r.upstream.id == plus.id)
+                .and_then(|r| r.reauth_required),
+            Some(false)
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|r| r.upstream.id == unknown.id)
+                .and_then(|r| r.reauth_required),
+            Some(true)
+        );
         let serialized = serde_json::to_string(&rows)?;
         for private in [
             "id_token",

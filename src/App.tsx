@@ -179,7 +179,12 @@ export default function App() {
           <UpdateBadge />
         </div>
       </footer>
-      <FirstRunNoticeDialog />
+      <FirstRunNoticeDialog
+        onConnected={() => {
+          setAddingProvider(false);
+          setView("agents");
+        }}
+      />
       <ConfirmDialog
         isOpen={!!nextView}
         title={t("providerFlow.discardTitle")}

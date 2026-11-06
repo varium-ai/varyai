@@ -4,12 +4,15 @@ use serde_json::Value;
 
 fn paths(app: &str) -> &'static [&'static [&'static str]] {
     match app {
-        "claude" => &[&["env", "ANTHROPIC_MODEL"]],
+        "claude" => &[&["env", "ANTHROPIC_MODEL"], &["model"]],
         "pi" => &[&["defaultProvider"], &["defaultModel"]],
         "opencode" => &[&["model"]],
         "gemini" => &[&["GEMINI_MODEL"], &["model", "name"]],
         "grokbuild" => &[&["models", "default"]],
-        "openclaw" => &[&["agents", "defaults", "model", "primary"]],
+        "openclaw" => &[
+            &["agents", "defaults", "model"],
+            &["agents", "defaults", "model", "primary"],
+        ],
         "hermes" => &[&["model", "default"]],
         "qoder" => &[&["providers", "varyai", "model"]],
         "kimi" => &[&["default_model"]],
@@ -67,6 +70,12 @@ pub(super) fn adopt(receipt: &mut Receipt) -> Result<(), String> {
                 .iter()
                 .map(|key| (*key).into())
                 .collect::<Vec<String>>();
+            if receipt.app == "openclaw"
+                && path.len() == 3
+                && at(&installed, &path).is_some_and(Value::is_object)
+            {
+                continue;
+            }
             if at(&file.installed, &path).is_none() {
                 continue;
             }
@@ -133,6 +142,9 @@ fn renamed_model(
 }
 
 pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> {
+    if paths(&old.app).is_empty() {
+        return Ok(());
+    }
     let catalogs = next
         .files
         .iter()
@@ -170,6 +182,15 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
             let Some(choice) = at(&prior.installed, &path).filter(|choice| valid(choice)) else {
                 continue;
             };
+            if old.app == "openclaw" && path.len() == 3 && choice.is_object() {
+                continue;
+            }
+            if old.app == "claude"
+                && path.first().is_some_and(|key| key == "env")
+                && at(&file.installed, &path).is_none()
+            {
+                continue;
+            }
             let renamed = ["pi", "hermes", "grokbuild"]
                 .contains(&old.app.as_str())
                 .then(|| {
@@ -346,6 +367,14 @@ mod tests {
             live["token"] = json!("synthetic-external-change");
             fs::write(&path, live.to_string()).map_err(|_| FAILED)?;
             assert!(manager.status(app)?.recovery_pending);
+            assert!(
+                !manager.status(app)?.enabled,
+                "external ownership must turn the switch off"
+            );
+            assert_eq!(
+                fs::read_to_string(&path).map_err(|_| FAILED)?,
+                live.to_string()
+            );
             assert_eq!(manager.disconnect(app), Err(CONFLICT.into()));
         }
         Ok(())

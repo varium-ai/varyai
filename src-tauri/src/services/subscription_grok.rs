@@ -673,6 +673,7 @@ pub(crate) async fn query_grok_quota(
         success: true,
         tiers: vec![tier],
         extra_usage: None,
+        codex: None,
         error: None,
         queried_at: Some(now_millis()),
     })

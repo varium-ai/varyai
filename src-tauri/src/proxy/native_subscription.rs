@@ -79,6 +79,7 @@ pub(crate) fn specialized(provider: &Provider) -> bool {
         matches!(
             binding.provider,
             SubscriptionProvider::Claude
+                | SubscriptionProvider::XaiOauth
                 | SubscriptionProvider::ChatgptApi
                 | SubscriptionProvider::GeminiCli
                 | SubscriptionProvider::Antigravity
@@ -120,11 +121,18 @@ pub(crate) async fn forward(
     shadow: Arc<super::providers::gemini_shadow::GeminiShadowStore>,
     history: Arc<super::providers::codex_chat_history::CodexChatHistoryStore>,
     client: reqwest::Client,
+    app: Option<&tauri::AppHandle>,
 ) -> Result<ProxyResponse, ProxyError> {
     let binding = crate::services::subscription_provider::binding(provider).ok_or_else(invalid)?;
-    let account = accounts::resolve(binding.provider, &binding.account_id)
-        .await
-        .map_err(|_| ProxyError::AuthError("Subscription account is unavailable".into()))?;
+    let account = if binding.provider == SubscriptionProvider::XaiOauth {
+        None
+    } else {
+        Some(
+            accounts::resolve(binding.provider, &binding.account_id)
+                .await
+                .map_err(|_| ProxyError::AuthError("Subscription account is unavailable".into()))?,
+        )
+    };
     let mut payload = payload.clone();
     if protocol == Protocol::Responses {
         let (_, owners) = history
@@ -159,14 +167,65 @@ pub(crate) async fn forward(
     let streaming = request.stream;
     let source_protocol = match binding.provider {
         SubscriptionProvider::Claude => Protocol::Anthropic,
-        SubscriptionProvider::ChatgptApi => Protocol::Responses,
+        SubscriptionProvider::ChatgptApi | SubscriptionProvider::XaiOauth => Protocol::Responses,
         _ => Protocol::Gemini,
     };
     let context =
         super::providers::transform_codex_chat::build_codex_tool_context_from_request(&payload);
-    let source = if binding.provider == SubscriptionProvider::Claude {
-        claude(&account, &request).await?
+    let source = if binding.provider == SubscriptionProvider::XaiOauth {
+        let body = if protocol == Protocol::Responses {
+            payload.clone()
+        } else {
+            ir::build::request(&request, Protocol::Responses)?
+        };
+        let token = provider
+            .settings_config
+            .pointer("/auth/OPENAI_API_KEY")
+            .and_then(Value::as_str)
+            .ok_or_else(invalid)?;
+        let mut response = crate::services::grok_subscription::inference(
+            &client,
+            crate::services::grok_subscription::BASE,
+            token,
+            body.clone(),
+        )
+        .await
+        .map_err(|_| invalid())?;
+        if response.status() == StatusCode::UNAUTHORIZED {
+            use tauri::Manager;
+            if let Some(state) =
+                app.and_then(|app| app.try_state::<crate::commands::XaiOAuthState>())
+            {
+                let manager = state.0.read().await;
+                let renewed = manager
+                    .renew_rejected_token(&binding.account_id, token)
+                    .await
+                    .map_err(|_| {
+                        ProxyError::AuthError("Subscription authorization is unavailable".into())
+                    })?;
+                response = crate::services::grok_subscription::inference(
+                    &client,
+                    crate::services::grok_subscription::BASE,
+                    &renewed,
+                    body,
+                )
+                .await
+                .map_err(|_| invalid())?;
+            }
+        }
+        if !response.status().is_success() {
+            return Err(ProxyError::UpstreamError {
+                status: response.status().as_u16(),
+                body: None,
+            });
+        }
+        Box::pin(response.bytes_stream().map(|chunk| {
+            chunk.map_err(|_| std::io::Error::other("Subscription stream interrupted"))
+        })) as ByteStream
+    } else if binding.provider == SubscriptionProvider::Claude {
+        claude(account.as_ref().ok_or_else(invalid)?, &request).await?
     } else if binding.provider == SubscriptionProvider::ChatgptApi {
+        let account = account.as_ref().ok_or_else(invalid)?;
         let body = chatgpt_body(ir::build::request(&request, Protocol::Responses)?)?;
         // Sign in with ChatGPT requires stateless streamed Responses inference.
         let response = client
@@ -179,6 +238,9 @@ pub(crate) async fn forward(
             .send()
             .await
             .map_err(|_| invalid())?;
+        if response.status() == StatusCode::UNAUTHORIZED {
+            accounts::observe_rejection(account).await;
+        }
         if !response.status().is_success() {
             return Err(ProxyError::UpstreamError {
                 status: response.status().as_u16(),
@@ -189,11 +251,12 @@ pub(crate) async fn forward(
             chunk.map_err(|_| std::io::Error::other("Subscription stream interrupted"))
         })) as ByteStream
     } else {
-        let project = accounts::google_project(&account).await.map_err(|_| {
+        let account = account.as_ref().ok_or_else(invalid)?;
+        let project = accounts::google_project(account).await.map_err(|_| {
             ProxyError::ConfigError("Subscription Cloud project is unavailable".into())
         })?;
         let model = if binding.provider == SubscriptionProvider::GeminiCli {
-            accounts::gemini_wire_model(&account, &project, &request.model).await
+            accounts::gemini_wire_model(account, &project, &request.model).await
         } else {
             request.model.clone()
         };
@@ -217,6 +280,9 @@ pub(crate) async fn forward(
             .send()
             .await
             .map_err(|_| invalid())?;
+        if response.status() == StatusCode::UNAUTHORIZED {
+            accounts::observe_rejection(account).await;
+        }
         if !response.status().is_success() {
             return Ok(ProxyResponse::buffered(
                 response.status(),
@@ -325,20 +391,56 @@ async fn tool_server(tools: Vec<Value>) -> Result<(Server, String), ProxyError> 
     }));
     Ok((server, url))
 }
-fn caller_prompt(body: &Value) -> Value {
-    let mut content = Vec::new();
-    for message in body["messages"].as_array().into_iter().flatten() {
-        content.push(json!({"type":"text","text":format!("{}:", message["role"].as_str().unwrap_or("user"))}));
-        for block in message["content"].as_array().into_iter().flatten() {
-            if matches!(block["type"].as_str(), Some("text" | "image")) {
-                content.push(block.clone());
-            } else {
-                content.push(json!({"type":"text","text":block.to_string()}));
+fn claude_history(
+    body: &Value,
+    work: &str,
+    model: &str,
+    session: &str,
+) -> Result<(Vec<Value>, Value), ProxyError> {
+    let messages = body["messages"].as_array().ok_or_else(invalid)?;
+    let (last, history) = messages.split_last().ok_or_else(invalid)?;
+    if last["role"] != "user" {
+        return Err(invalid());
+    }
+    let mut parent = Value::Null;
+    let mut lines = Vec::new();
+    for original in history {
+        let role = original["role"]
+            .as_str()
+            .filter(|r| matches!(*r, "user" | "assistant"))
+            .ok_or_else(invalid)?;
+        let mut message = original.clone();
+        if let Some(blocks) = message["content"].as_array_mut() {
+            for block in blocks {
+                if block["type"] == "tool_use" {
+                    if let Some(name) = block["name"].as_str() {
+                        block["name"] = json!(format!("mcp__vary__{name}"));
+                    }
+                }
             }
         }
+        if role == "assistant" {
+            message["id"] = json!(format!("msg_{}", uuid::Uuid::new_v4().simple()));
+            message["type"] = json!("message");
+            message["model"] = json!(model);
+            message["usage"] = json!({"input_tokens":0,"output_tokens":0});
+        }
+        let uuid = json!(uuid::Uuid::new_v4().to_string());
+        lines.push(json!({"parentUuid":parent,"isSidechain":false,"userType":"external","cwd":work,"sessionId":session,"type":role,"message":message,"uuid":uuid,"timestamp":chrono::Utc::now().to_rfc3339()}));
+        parent = uuid;
     }
-    json!({"type":"user","message":{"role":"user","content":content}})
+    Ok((
+        lines,
+        json!({"type":"user","session_id":session,"message":last}),
+    ))
 }
+struct ReplayDirectory(std::path::PathBuf);
+impl Drop for ReplayDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn cli_event(value: &Value) -> Option<Value> {
     if value["type"] != "stream_event" {
         return None;
@@ -358,10 +460,36 @@ async fn claude(
     account: &accounts::Account,
     request: &ir::Request,
 ) -> Result<ByteStream, ProxyError> {
+    claude_with_command(account, request, accounts::claude_command()).await
+}
+async fn claude_with_command(
+    account: &accounts::Account,
+    request: &ir::Request,
+    mut command: tokio::process::Command,
+) -> Result<ByteStream, ProxyError> {
     let body = ir::build::request(request, Protocol::Anthropic)?;
     let tools = body["tools"].as_array().into_iter().flatten().map(|tool| json!({"name":tool["name"],"description":tool["description"],"inputSchema":tool["input_schema"]})).collect();
     let (server, url) = tool_server(tools).await?;
     let temporary = tempfile::tempdir().map_err(|_| invalid())?;
+    let work = std::fs::canonicalize(temporary.path()).map_err(|_| invalid())?;
+    let work_name = work
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>();
+    let session = uuid::Uuid::new_v4().to_string();
+    let (lines, prompt) = claude_history(&body, &work.to_string_lossy(), &request.model, &session)?;
+    let replay_dir = account.claude_dir().join("projects").join(work_name);
+    let replay = ReplayDirectory(replay_dir.clone());
+    if !lines.is_empty() {
+        let mut bytes = Vec::new();
+        for line in &lines {
+            serde_json::to_writer(&mut bytes, line).map_err(|_| invalid())?;
+            bytes.push(b'\n');
+        }
+        crate::config::atomic_write_private(&replay_dir.join(format!("{session}.jsonl")), &bytes)
+            .map_err(|_| invalid())?;
+    }
     let mcp = temporary.path().join("mcp.json");
     let system = temporary.path().join("system.txt");
     let config = json!({"mcpServers":{"vary":{"type":"http","url":url}}});
@@ -383,7 +511,6 @@ async fn claude(
         _ => {}
     }
     crate::config::atomic_write_private(&system, instructions.as_bytes()).map_err(|_| invalid())?;
-    let mut command = accounts::claude_command();
     // Claude Code owns execution; caller generation options are per-run only.
     let mut extra = serde_json::Map::new();
     for key in [
@@ -438,17 +565,20 @@ async fn claude(
     if let Some(effort) = &request.reasoning.effort {
         command.args(["--effort", effort]);
     }
+    if !lines.is_empty() {
+        command.args(["--resume", &session]);
+    }
     let mut child = command.spawn().map_err(|_| {
         ProxyError::ConfigError("Claude Code must be installed and signed in".into())
     })?;
     let mut input = child.stdin.take().ok_or_else(invalid)?;
-    let mut prompt = serde_json::to_vec(&caller_prompt(&body)).map_err(|_| invalid())?;
+    let mut prompt = serde_json::to_vec(&prompt).map_err(|_| invalid())?;
     prompt.push(b'\n');
     input.write_all(&prompt).await.map_err(|_| invalid())?;
     drop(input);
     let output = child.stdout.take().ok_or_else(invalid)?;
     Ok(Box::pin(async_stream::stream! {
-        let _server=server; let _temporary=temporary;
+        let _server=server; let _temporary=temporary; let _replay=replay;
         let mut reader=BufReader::new(output); let mut buffer=Vec::new(); let mut ended=false;
         loop {
             buffer.clear();
@@ -473,6 +603,74 @@ async fn claude(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_claude_resumes_typed_history_and_returns_the_following_turn(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir()?;
+        let script = dir.path().join("fixture-cli");
+        std::fs::write(
+            &script,
+            r#"#!/usr/bin/env python3
+import os, sys, json
+args=sys.argv[1:]
+sid=args[args.index('--resume')+1]
+work=''.join(c if c.isascii() and c.isalnum() else '-' for c in os.path.realpath(os.getcwd()))
+with open(os.path.join(os.environ['CLAUDE_CONFIG_DIR'],'projects',work,sid+'.jsonl')) as f:
+    rows=[json.loads(line) for line in f]
+prompt=json.loads(sys.stdin.readline())
+call=rows[-1]['message']['content'][0]
+result=prompt['message']['content'][0]
+if call['type']!='tool_use' or call['id']!=result['tool_use_id'] or call['name']!='mcp__vary__fixture':
+    sys.exit(2)
+for event in [{'type':'message_start','message':{'id':'fixture-reply','role':'assistant','model':'fixture','content':[],'usage':{'input_tokens':1,'output_tokens':0}}},{'type':'content_block_start','index':0,'content_block':{'type':'text','text':''}},{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'synthetic continuation'}},{'type':'content_block_stop','index':0},{'type':'message_delta','delta':{'stop_reason':'end_turn'},'usage':{'output_tokens':1}},{'type':'message_stop'}]:
+    print(json.dumps({'type':'stream_event','event':event}),flush=True)
+"#,
+        )?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))?;
+        let home = dir.path().join("account");
+        let account: accounts::Account = serde_json::from_value(
+            json!({"id":"fixture","provider":"claude","login":"fixture","claudeHome":home}),
+        )?;
+        let body = json!({"model":"fixture","messages":[{"role":"user","content":[{"type":"text","text":"synthetic"}]},{"role":"assistant","content":[{"type":"tool_use","id":"fixture-call","name":"fixture","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"fixture-call","content":"synthetic result"}]}]});
+        let request = ir::parse::request(Protocol::Anthropic, &body, "/v1/messages")?;
+        let source =
+            claude_with_command(&account, &request, tokio::process::Command::new(script)).await?;
+        let reply = ir::stream::collect(source, Protocol::Anthropic).await?;
+        assert!(reply
+            .parts
+            .iter()
+            .any(|part| matches!(part,ir::Part::Text{text,..} if text=="synthetic continuation")));
+        assert!(std::fs::read_dir(home.join("projects"))?.next().is_none());
+        Ok(())
+    }
+    #[test]
+    fn claude_history_keeps_roles_tool_links_images_and_thinking() {
+        let body = json!({"messages":[
+            {"role":"user","content":[{"type":"text","text":"synthetic question"}]},
+            {"role":"assistant","content":[{"type":"thinking","thinking":"synthetic thought","signature":"synthetic-signature"},{"type":"tool_use","id":"call-fixture","name":"fixture","input":{"n":1}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"call-fixture","content":[{"type":"text","text":"synthetic result"}]}]}
+        ]});
+        let (history, prompt) =
+            claude_history(&body, "/fixture", "fixture-model", "fixture-session")
+                .expect("typed history");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[1]["message"]["role"], "assistant");
+        assert_eq!(
+            history[1]["message"]["content"][0]["signature"],
+            "synthetic-signature"
+        );
+        assert_eq!(
+            history[1]["message"]["content"][1]["name"],
+            "mcp__vary__fixture"
+        );
+        assert_eq!(
+            prompt["message"]["content"][0]["tool_use_id"],
+            "call-fixture"
+        );
+        assert_eq!(history[1]["parentUuid"], history[0]["uuid"]);
+    }
     #[test]
     fn chatgpt_plan_requests_are_stateless_and_keep_caller_functions() {
         let body=chatgpt_body(json!({"model":"fixture","stream":false,"store":true,"temperature":0.3,"previous_response_id":"fixture-old","input":[{"role":"system","content":"synthetic instruction"}],"tools":[{"type":"function","name":"fixture","parameters":{"type":"object"}}]})).expect("plan body");
