@@ -30,6 +30,7 @@ pub(crate) const APPS: &[&str] = &[
     "claude",
     "pi",
     "workbuddy",
+    "workbuddy-ai",
     "codex",
     "opencode",
     "gemini",
@@ -551,6 +552,36 @@ impl FileEdit {
 pub(crate) struct Manager {
     pub root: PathBuf,
 }
+
+fn same_native_path(left: &Path, right: &Path) -> bool {
+    let resolve = |path: &Path| {
+        path.canonicalize().unwrap_or_else(|_| {
+            path.parent()
+                .and_then(|parent| parent.canonicalize().ok())
+                .zip(path.file_name())
+                .map(|(parent, name)| parent.join(name))
+                .unwrap_or_else(|| path.to_path_buf())
+        })
+    };
+    resolve(left) == resolve(right)
+}
+
+fn workbuddy_connection_path(app: &str) -> Result<Option<PathBuf>, String> {
+    if !matches!(app, "workbuddy" | "workbuddy-ai") {
+        return Ok(None);
+    }
+    let domestic = crate::workbuddy_config::get_workbuddy_config_path();
+    let international = crate::workbuddy_config::get_workbuddy_ai_config_path();
+    if same_native_path(&domestic, &international) {
+        return Err(CONFLICT.into());
+    }
+    Ok(Some(if app == "workbuddy" {
+        domestic
+    } else {
+        international
+    }))
+}
+
 impl Manager {
     pub fn build(
         &self,
@@ -559,6 +590,21 @@ impl Manager {
         origin: &str,
         selected: &str,
     ) -> Result<Receipt, String> {
+        if let Some(path) = workbuddy_connection_path(app)? {
+            let other = if app == "workbuddy" {
+                "workbuddy-ai"
+            } else {
+                "workbuddy"
+            };
+            if self.load(other)?.is_some_and(|receipt| {
+                receipt
+                    .files
+                    .iter()
+                    .any(|file| same_native_path(&file.path, &path))
+            }) {
+                return Err(CONFLICT.into());
+            }
+        }
         build_with_token(
             app,
             menu,
@@ -778,6 +824,7 @@ impl Manager {
             file.fields = owned;
         }
         if unchanged
+            && next.model == old.model
             && next.model_map == old.model_map
             && next.visible_models == old.visible_models
             && next
@@ -989,10 +1036,11 @@ fn build_with_token(
                 Ok(())
             })?);
         }
-        "workbuddy" => {
+        "workbuddy" | "workbuddy-ai" => {
+            let path = workbuddy_connection_path(app)?.ok_or(FAILED)?;
             let (named, _) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
             let named_models = named.iter().map(|model| (model.id.clone(), model)).collect::<Vec<_>>();
-            receipt.files.push(FileEdit::prepare_document(crate::workbuddy_config::get_workbuddy_config_path(), true, |value| {
+            receipt.files.push(FileEdit::prepare_document(path, true, |value| {
             let array = value.is_array();
             if array { *value = json!({"models":value.take()}); }
             if value.get("models").is_some_and(|rows| !rows.is_array()) { return Err(FAILED.into()); }
@@ -1405,6 +1453,76 @@ mod tests {
                 }),
             )]),
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn workbuddy_editions_connect_and_restore_independently(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        struct Home(Option<std::ffi::OsString>);
+        impl Drop for Home {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                    None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+                }
+                let _ = crate::settings::reload_settings();
+            }
+        }
+        let _home = Home(std::env::var_os("CC_SWITCH_TEST_HOME"));
+        std::env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+        crate::settings::reload_settings()?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        let menu = fixture_menu();
+        let model = menu.default_model.as_deref().ok_or("fixture model")?;
+        let paths = [
+            dir.path().join(".workbuddy/models.json"),
+            dir.path().join(".workbuddy-ai/models.json"),
+        ];
+        let original = r#"{"models":[],"custom":"synthetic-user-setting"}"#;
+        for path in &paths {
+            fs::create_dir_all(path.parent().ok_or("parent")?)?;
+            fs::write(path, original)?;
+        }
+        for (index, app) in ["workbuddy", "workbuddy-ai"].into_iter().enumerate() {
+            let receipt = manager.build(app, &menu, "http://127.0.0.1:1", model)?;
+            assert_eq!(receipt.files[0].path, paths[index]);
+            manager.install(receipt)?;
+            let value: Value = serde_json::from_slice(&fs::read(&paths[index])?)?;
+            assert_eq!(
+                value["models"][0]["url"],
+                format!("http://127.0.0.1:1/connections/{app}/v1/chat/completions")
+            );
+        }
+        let domestic = manager.load("workbuddy")?.ok_or("domestic receipt")?;
+        let international = manager
+            .load("workbuddy-ai")?
+            .ok_or("international receipt")?;
+        assert!(domestic.token != international.token);
+        let international_bytes = fs::read(&paths[1])?;
+        manager.disconnect("workbuddy")?;
+        assert_eq!(fs::read_to_string(&paths[0])?, original);
+        assert_eq!(fs::read(&paths[1])?, international_bytes);
+        assert!(manager.status("workbuddy-ai")?.enabled);
+        manager.disconnect("workbuddy-ai")?;
+        assert_eq!(fs::read_to_string(&paths[1])?, original);
+        crate::workbuddy_config::with_test_dir(paths[1].parent().ok_or("parent")?, || {
+            assert!(
+                matches!(manager.build("workbuddy-ai", &menu, "http://127.0.0.1:1", model), Err(error) if error == CONFLICT)
+            );
+        });
+        let mut legacy = manager.build("workbuddy", &menu, "http://127.0.0.1:1", model)?;
+        legacy.files[0].path = paths[1].clone();
+        manager.install(legacy)?;
+        assert!(
+            matches!(manager.build("workbuddy-ai", &menu, "http://127.0.0.1:1", model), Err(error) if error == CONFLICT)
+        );
+        manager.disconnect("workbuddy")?;
+        assert_eq!(fs::read_to_string(&paths[1])?, original);
+        Ok(())
     }
     #[test]
     fn suspended_receipts_reconnect_after_a_restored_field_is_edited() -> Result<(), String> {

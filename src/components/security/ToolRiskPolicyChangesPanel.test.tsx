@@ -86,6 +86,47 @@ describe("P2-9 policy changes panel with real hooks and API", () => {
       screen.getByText("toolRisk.policyChanges.currentNamesHint"),
     ).toBeVisible();
   });
+  it.each([false, true])(
+    "refreshes current rule names and waits for their result when failed=%s",
+    async (failed) => {
+      const id = "custom-12345678-1234-1234-1234-123456789abc";
+      vi.mocked(invoke).mockImplementation(async (command) =>
+        command === "get_tool_risk_rules"
+          ? [{ id, origin: "custom", name: "Synthetic original name" }]
+          : [{ ...row, targetId: id }],
+      );
+      mount();
+      await screen.findByText("Synthetic original name");
+      let finish!: () => void;
+      vi.mocked(invoke).mockImplementation((command) =>
+        command === "get_tool_risk_rules"
+          ? new Promise((resolve, reject) => {
+              finish = () =>
+                failed
+                  ? reject(new Error("synthetic-private-name-error"))
+                  : resolve([
+                      { id, origin: "custom", name: "Synthetic updated name" },
+                    ]);
+            })
+          : Promise.resolve([{ ...row, targetId: id }]),
+      );
+      fireEvent.click(button("common.refresh"));
+      await waitFor(() => expect(finish).toBeTypeOf("function"));
+      expect(button("common.refresh")).toBeDisabled();
+      expect(toast.success).not.toHaveBeenCalled();
+      await act(async () => finish());
+      await waitFor(() =>
+        expect(failed ? toast.error : toast.success).toHaveBeenCalledWith(
+          `toolRisk.policyChanges.${failed ? "refreshFailed" : "refreshed"}`,
+        ),
+      );
+      if (!failed)
+        expect(await screen.findByText("Synthetic updated name")).toBeVisible();
+      expect(document.body.textContent).not.toContain(
+        "synthetic-private-name-error",
+      );
+    },
+  );
   it("starts at 50 records, displays fixed metadata and the honest local-history boundary", async () => {
     vi.mocked(invoke).mockResolvedValue([row]);
     mount();
@@ -128,8 +169,8 @@ describe("P2-9 policy changes panel with real hooks and API", () => {
     await waitFor(() => expect(button("common.refresh")).toBeEnabled());
     const count = vi.mocked(invoke).mock.calls.length;
     fireEvent.click(button("common.refresh"));
-    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(count + 1));
-    expect(invoke).toHaveBeenLastCalledWith("get_tool_risk_policy_changes", {
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(count + 2));
+    expect(invoke).toHaveBeenCalledWith("get_tool_risk_policy_changes", {
       limit: 50,
       offset: 50,
     });

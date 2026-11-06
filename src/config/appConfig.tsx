@@ -27,6 +27,7 @@ export const APP_ICON_NAME: Record<AppId, string> = {
   hermes: "hermes",
   pi: "pi",
   workbuddy: "workbuddy",
+  "workbuddy-ai": "workbuddy",
   qoder: "qoder",
   doubaowork: "doubaowork",
   trae: "trae",
@@ -47,6 +48,7 @@ export const APP_IDS: AppId[] = [
   "hermes",
   "pi",
   "workbuddy",
+  "workbuddy-ai",
   "qoder",
   "doubaowork",
   "trae",
@@ -67,6 +69,7 @@ export const DEFAULT_VISIBLE_APPS: VisibleApps = {
   hermes: true,
   pi: true,
   workbuddy: false,
+  "workbuddy-ai": false,
   qoder: false,
   doubaowork: false,
   trae: false,
@@ -82,6 +85,7 @@ export const SKILLS_APP_IDS: Exclude<
   | "claude-desktop"
   | "openclaw"
   | "workbuddy"
+  | "workbuddy-ai"
   | "qoder"
   | "doubaowork"
   | "trae"
@@ -109,6 +113,7 @@ export const TAKEOVER_APP_IDS = [
   ...PROXY_APP_IDS,
   "claude-desktop",
   "workbuddy",
+  "workbuddy-ai",
   "qoder",
   "doubaowork",
   "trae",
@@ -133,6 +138,7 @@ export function isTakeoverAppId(
   | ProxyAppId
   | "claude-desktop"
   | "workbuddy"
+  | "workbuddy-ai"
   | "qoder"
   | "doubaowork"
   | "trae"
@@ -154,6 +160,7 @@ export type AdditiveAppId = Extract<
   | "hermes"
   | "pi"
   | "workbuddy"
+  | "workbuddy-ai"
   | "qoder"
   | "trae"
   | "kimi"
@@ -168,6 +175,7 @@ export const ADDITIVE_APP_IDS: AdditiveAppId[] = [
   "hermes",
   "pi",
   "workbuddy",
+  "workbuddy-ai",
   "qoder",
   "trae",
   "kimi",
@@ -187,6 +195,7 @@ export type McpAppId = Exclude<
   | "openclaw"
   | "pi"
   | "workbuddy"
+  | "workbuddy-ai"
   | "qoder"
   | "doubaowork"
   | "trae"
@@ -343,9 +352,27 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
     badgeClass: "bg-sky-500/10 text-sky-700 dark:text-sky-300 border-0 gap-1.5",
   },
   workbuddy: {
-    label: "WorkBuddy",
+    label: "WorkBuddy China",
     icon: (
-      <ProviderIcon icon={APP_ICON_NAME.workbuddy} name="WorkBuddy" size={14} />
+      <ProviderIcon
+        icon={APP_ICON_NAME.workbuddy}
+        name="WorkBuddy China"
+        size={14}
+      />
+    ),
+    activeClass:
+      "bg-sky-500/10 ring-1 ring-sky-500/20 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400",
+    badgeClass:
+      "bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/20 border-0 gap-1.5",
+  },
+  "workbuddy-ai": {
+    label: "WorkBuddy AI",
+    icon: (
+      <ProviderIcon
+        icon={APP_ICON_NAME["workbuddy-ai"]}
+        name="WorkBuddy AI"
+        size={14}
+      />
     ),
     activeClass:
       "bg-sky-500/10 ring-1 ring-sky-500/20 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400",

@@ -405,7 +405,7 @@ pub(crate) async fn set_agent_connection(
     set_native_connection(state.inner(), app, enabled, model).await
 }
 
-async fn set_native_connection(
+pub(crate) async fn set_native_connection(
     state: &AppState,
     app: String,
     enabled: bool,

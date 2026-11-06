@@ -34,6 +34,7 @@ impl McpApps {
             AppType::Hermes => self.hermes,
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
@@ -57,6 +58,7 @@ impl McpApps {
             AppType::Hermes => self.hermes = enabled,
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
@@ -134,6 +136,7 @@ impl SkillApps {
             AppType::Hermes => self.hermes,
             AppType::Pi => self.pi,
             AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
@@ -157,6 +160,7 @@ impl SkillApps {
             AppType::Hermes => self.hermes = enabled,
             AppType::Pi => self.pi = enabled,
             AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
@@ -425,6 +429,8 @@ pub enum AppType {
     Hermes,
     Pi,
     WorkBuddy,
+    #[serde(rename = "workbuddy-ai")]
+    WorkBuddyAi,
     Qoder,
     Kimi,
     Qwen,
@@ -448,6 +454,7 @@ impl AppType {
             AppType::Hermes => "hermes",
             AppType::Pi => "pi",
             AppType::WorkBuddy => "workbuddy",
+            AppType::WorkBuddyAi => "workbuddy-ai",
             AppType::Qoder => "qoder",
             AppType::Kimi => "kimi",
             AppType::Qwen => "qwen",
@@ -471,6 +478,7 @@ impl AppType {
                 | AppType::Hermes
                 | AppType::Pi
                 | AppType::WorkBuddy
+                | AppType::WorkBuddyAi
                 | AppType::Qoder
                 | AppType::Kimi
                 | AppType::Qwen
@@ -500,6 +508,7 @@ impl AppType {
             AppType::Hermes,
             AppType::Pi,
             AppType::WorkBuddy,
+            AppType::WorkBuddyAi,
             AppType::Qoder,
             AppType::Kimi,
             AppType::Qwen,
@@ -528,6 +537,7 @@ impl FromStr for AppType {
             "hermes" => Ok(AppType::Hermes),
             "pi" => Ok(AppType::Pi),
             "workbuddy" => Ok(AppType::WorkBuddy),
+            "workbuddy-ai" => Ok(AppType::WorkBuddyAi),
             "qoder" | "qoder-cn" => Ok(AppType::Qoder),
             "kimi" => Ok(AppType::Kimi),
             "qwen" => Ok(AppType::Qwen),
@@ -580,6 +590,7 @@ impl CommonConfigSnippets {
             AppType::Hermes => self.hermes.as_ref(),
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
@@ -603,6 +614,7 @@ impl CommonConfigSnippets {
             AppType::Hermes => self.hermes = snippet,
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
@@ -937,6 +949,7 @@ impl MultiAppConfig {
             // this legacy config avoids a second, unused prompt state.
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
@@ -989,6 +1002,7 @@ impl MultiAppConfig {
                 AppType::Hermes => continue,   // Hermes didn't exist in v3.6.x, skip
                 AppType::Pi
                 | AppType::WorkBuddy
+                | AppType::WorkBuddyAi
                 | AppType::Qoder
                 | AppType::Kimi
                 | AppType::Qwen

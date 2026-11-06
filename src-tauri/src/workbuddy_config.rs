@@ -38,7 +38,7 @@ pub fn get_workbuddy_default_dir() -> PathBuf {
 }
 
 fn detect_dir(home: &Path) -> PathBuf {
-    let candidates = [".workbuddy-ai", ".workbuddy", ".codebuddy"];
+    let candidates = [".workbuddy", ".codebuddy"];
     for name in candidates {
         let dir = home.join(name);
         if dir.join("models.json").exists() {
@@ -51,7 +51,11 @@ fn detect_dir(home: &Path) -> PathBuf {
             return dir;
         }
     }
-    home.join(".workbuddy-ai")
+    home.join(".workbuddy")
+}
+
+pub fn get_workbuddy_ai_config_path() -> PathBuf {
+    crate::config::get_home_dir().join(".workbuddy-ai/models.json")
 }
 
 pub fn get_workbuddy_config_path() -> PathBuf {
@@ -223,7 +227,11 @@ pub(crate) fn expanded_models(config: &Value) -> Result<Vec<Value>, AppError> {
 }
 
 pub fn read_models() -> Result<Vec<Value>, AppError> {
-    let (document, _) = read_at(&get_workbuddy_config_path())?;
+    read_models_at(&get_workbuddy_config_path())
+}
+
+pub(crate) fn read_models_at(path: &Path) -> Result<Vec<Value>, AppError> {
+    let (document, _) = read_at(path)?;
     Ok(document
         .get("models")
         .and_then(Value::as_array)
@@ -565,6 +573,15 @@ mod tests {
         std::fs::create_dir(&legacy).expect("mkdir");
         std::fs::write(legacy.join("models.json"), "{}").expect("seed");
         assert_eq!(detect_dir(dir.path()), legacy);
+    }
+
+    #[test]
+    fn workbuddy_editions_do_not_share_default_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let international = dir.path().join(".workbuddy-ai");
+        std::fs::create_dir(&international).unwrap();
+        std::fs::write(international.join("models.json"), "{}").unwrap();
+        assert_eq!(detect_dir(dir.path()), dir.path().join(".workbuddy"));
     }
 
     #[test]

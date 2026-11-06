@@ -1381,7 +1381,8 @@
     "openclaw": "OpenClaw",
     "hermes": "Hermes",
     "pi": "Pi",
-    "workbuddy": "WorkBuddy",
+    "workbuddy": "WorkBuddy（中国版）",
+    "workbuddy-ai": "WorkBuddy AI（国际版）",
     "trae": "TRAE CN",
     "kimi": "Kimi Code",
     "qwen": "Qwen Code",
@@ -2236,6 +2237,8 @@
     "requestsLabel": "次请求",
     "costLabel": "总成本",
     "appFilter": {
+      "workbuddy": "WorkBuddy（中国版）",
+      "workbuddy-ai": "WorkBuddy AI（国际版）",
       "qoder": "Qoder CN",
       "all": "全部",
       "claude": "Claude Code",

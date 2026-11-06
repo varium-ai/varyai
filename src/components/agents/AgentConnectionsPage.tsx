@@ -81,12 +81,19 @@ type ConnectionOperation =
   | "visibility";
 const nativePicker = (app: AppId | null) =>
   app !== null &&
-  ["claude-desktop", "workbuddy", "qoder", "doubaowork"].includes(app);
+  [
+    "claude-desktop",
+    "workbuddy",
+    "workbuddy-ai",
+    "qoder",
+    "doubaowork",
+  ].includes(app);
 const websites: Record<AppId, string> = {
   "claude-desktop": "https://claude.ai/download",
   claude: "https://code.claude.com/docs/en/overview",
   pi: "https://pi.dev/",
-  workbuddy: "https://www.workbuddy.ai/",
+  workbuddy: "https://www.workbuddy.cn/",
+  "workbuddy-ai": "https://www.workbuddy.ai/",
   codex: "https://developers.openai.com/codex/",
   opencode: "https://opencode.ai/",
   gemini: "https://geminicli.com/",
@@ -339,10 +346,6 @@ export function AgentConnectionsPage({
   };
   if (compact) shown.sort((a, b) => connectionRank(b) - connectionRank(a));
   const other = APP_IDS.filter((app) => !shown.includes(app));
-  const otherWithConnections = other.filter(hasSavedConnection);
-  const otherWithoutConnections = other.filter(
-    (app) => !hasSavedConnection(app),
-  );
   function reorder({ active, over }: DragEndEvent) {
     if (
       compact ||
@@ -450,7 +453,12 @@ export function AgentConnectionsPage({
                       : "recovery"
                   : "gatewayStopped"
               : "off";
-    const modelCatalog = ["workbuddy", "qoder", "trae"].includes(app) ? (
+    const modelCatalog = [
+      "workbuddy",
+      "workbuddy-ai",
+      "qoder",
+      "trae",
+    ].includes(app) ? (
       <Popover
         open={browsing === app}
         onOpenChange={(open) => setBrowsing(open ? app : null)}
@@ -1011,8 +1019,7 @@ export function AgentConnectionsPage({
         </summary>
         <div className="mp-agent-more-body">
           <div className="mp-agent-install-list divide-y">
-            {otherWithConnections.map(row)}
-            {otherWithoutConnections.map((app) => (
+            {other.map((app) => (
               <div
                 key={app}
                 role="group"
@@ -1032,11 +1039,13 @@ export function AgentConnectionsPage({
                   <span className="mp-agent-install-name" title={name(app)}>
                     {name(app)}
                   </span>
-                  <AgentVersionTag
-                    app={app}
-                    updates={updates}
-                    disabled={rowBusy(app)}
-                  />
+                  {installations.data?.[app] === true && (
+                    <AgentVersionTag
+                      app={app}
+                      updates={updates}
+                      disabled={rowBusy(app)}
+                    />
+                  )}
                 </div>
                 <div className="mp-agent-install-actions">
                   {(updates.installing === app ||

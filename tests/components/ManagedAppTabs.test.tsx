@@ -292,7 +292,7 @@ describe("managed app sorting", () => {
       "Codex",
       "Grok Build",
       "Claude Desktop",
-      "WorkBuddy",
+      zh.apps.workbuddy,
     ]);
   });
 

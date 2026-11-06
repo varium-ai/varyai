@@ -1382,6 +1382,8 @@ impl ProxyService {
                     .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
                     .map_err(|e| e.to_string())?,
             workbuddy: self.workbuddy_active().await,
+            workbuddy_ai: self.is_running().await
+                && self.intent_runtime.connections.active("workbuddy-ai"),
             claude: claude_enabled,
             codex: codex_enabled,
             gemini: gemini_enabled,
@@ -1424,7 +1426,7 @@ impl ProxyService {
                 .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
                 .map_err(|_| super::agent_connections::FAILED)?,
             // Desktop's shared adapter snapshots profiles rather than using legacy takeover.
-            "claude-desktop" | "opencode" | "openclaw" | "hermes" => false,
+            "claude-desktop" | "opencode" | "openclaw" | "hermes" | "workbuddy-ai" => false,
             _ => return Err(super::agent_connections::FAILED.into()),
         })
     }
@@ -6856,7 +6858,15 @@ mod tests {
             let model_a = &models[0].id;
             let model_b = &models[1].id;
             let origin = format!("http://127.0.0.1:{}", info.port);
-            let mut apps = vec!["deepseek-harness", "opencode", "openclaw", "hermes", "pi"];
+            let mut apps = vec![
+                "deepseek-harness",
+                "opencode",
+                "openclaw",
+                "hermes",
+                "pi",
+                "workbuddy",
+                "workbuddy-ai",
+            ];
             if !cfg!(target_os = "linux") {
                 apps.push("claude-desktop");
             }

@@ -308,6 +308,7 @@ export interface VisibleApps {
   hermes: boolean;
   pi: boolean;
   workbuddy?: boolean;
+  "workbuddy-ai"?: boolean;
   qoder?: boolean;
   doubaowork?: boolean;
   trae?: boolean;

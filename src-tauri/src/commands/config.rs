@@ -171,6 +171,13 @@ pub async fn get_config_status(
                 .to_string_lossy()
                 .into_owned(),
         }),
+        AppType::WorkBuddyAi => Ok(ConfigStatus {
+            exists: crate::workbuddy_config::get_workbuddy_ai_config_path().exists(),
+            path: crate::config::get_home_dir()
+                .join(".workbuddy-ai")
+                .to_string_lossy()
+                .into_owned(),
+        }),
         AppType::WorkBuddy => Ok(ConfigStatus {
             exists: crate::workbuddy_config::get_workbuddy_config_path().exists(),
             path: crate::workbuddy_config::get_workbuddy_dir()
@@ -220,6 +227,7 @@ pub async fn get_config_dir(app: String) -> Result<String, String> {
         AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
         AppType::Hermes => crate::hermes_config::get_hermes_dir(),
         AppType::WorkBuddy => crate::workbuddy_config::get_workbuddy_dir(),
+        AppType::WorkBuddyAi => crate::config::get_home_dir().join(".workbuddy-ai"),
         AppType::Qoder => crate::qoder_config::directory(),
         AppType::Pi => crate::pi_config::get_pi_agent_dir().map_err(|e| e.to_string())?,
     };
@@ -251,6 +259,7 @@ pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, 
         AppType::OpenClaw => crate::openclaw_config::get_openclaw_dir(),
         AppType::Hermes => crate::hermes_config::get_hermes_dir(),
         AppType::WorkBuddy => crate::workbuddy_config::get_workbuddy_dir(),
+        AppType::WorkBuddyAi => crate::config::get_home_dir().join(".workbuddy-ai"),
         AppType::Qoder => crate::qoder_config::directory(),
         AppType::Pi => crate::pi_config::get_pi_agent_dir().map_err(|e| e.to_string())?,
     };

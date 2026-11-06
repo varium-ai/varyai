@@ -105,6 +105,38 @@ beforeEach(() => {
   vi.mocked(settingsApi.openExternal).mockResolvedValue();
 });
 describe("Agent installation shortcuts", () => {
+  it("shows WorkBuddy AI independently when only the international edition is installed", async () => {
+    detected["workbuddy-ai"] = true;
+    mount();
+    const international = await screen.findByRole("article", {
+      name: "apps.workbuddy-ai",
+    });
+    expect(
+      within(international).getByRole("switch", {
+        name: "apps.workbuddy-ai",
+      }),
+    ).toBeEnabled();
+    const domestic = await row("workbuddy");
+    expect(
+      within(domestic).getByRole("button", { name: "agentInstall.install" }),
+    ).toBeEnabled();
+    expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["workbuddy", "https://www.workbuddy.cn/"],
+    ["workbuddy-ai", "https://www.workbuddy.ai/"],
+  ])("opens %s’s own website from More tools", async (app, website) => {
+    mount();
+    const desktop = await row(app);
+    fireEvent.click(
+      within(desktop).getByRole("button", {
+        name: "agentConnections.website",
+      }),
+    );
+    await waitFor(() =>
+      expect(settingsApi.openExternal).toHaveBeenCalledWith(website),
+    );
+  });
   it.each(["website", "install"])(
     "opens Doubao Work's product page from the %s shortcut",
     async (shortcut) => {
@@ -133,27 +165,45 @@ describe("Agent installation shortcuts", () => {
       expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
     },
   );
-  it.each([false, true])(
-    "moves a missing CLI with a saved connection into More tools (compact: %s)",
-    async (compact) => {
+  it.each([
+    { app: "opencode", compact: false, recoveryPending: true },
+    { app: "opencode", compact: true, recoveryPending: true },
+    { app: "workbuddy", compact: false, recoveryPending: false },
+    { app: "workbuddy", compact: true, recoveryPending: false },
+    { app: "workbuddy-ai", compact: false, recoveryPending: false },
+    { app: "workbuddy-ai", compact: true, recoveryPending: false },
+  ] as const)(
+    "shows only installation and website actions for missing $app with a saved connection (compact: $compact)",
+    async ({ app, compact, recoveryPending }) => {
       vi.mocked(agentConnectionsApi.list).mockResolvedValue([
         {
-          app: "opencode",
+          app,
           enabled: true,
-          configured: false,
+          configured: !recoveryPending,
           model: null,
-          recoveryPending: true,
+          recoveryPending,
           restartRequired: false,
         },
       ]);
+      if (app !== "opencode") {
+        vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({
+          [app]: {
+            supported: true,
+            installed: true,
+            source: "desktop",
+            version: "9.8.7",
+            latest_version: null,
+          },
+        });
+      }
       const { container } = mount(compact);
       const disclosure = (
         await screen.findByText("agentConnections.moreTools")
       ).closest("details");
       expect(disclosure).not.toHaveAttribute("open");
       fireEvent.click(screen.getByText("agentConnections.moreTools"));
-      const missing = await screen.findByRole("article", {
-        name: "apps.opencode",
+      const missing = await screen.findByRole("group", {
+        name: `apps.${app}`,
       });
       expect(disclosure).toContainElement(missing);
       expect(container.querySelector(".mp-list")).not.toContainElement(missing);
@@ -161,17 +211,16 @@ describe("Agent installation shortcuts", () => {
         within(missing).getByRole("button", { name: "agentInstall.install" }),
       ).toBeEnabled();
       expect(
-        within(missing).queryByRole("button", {
-          name: "agentConnections.sorting.handle",
+        within(missing).getByRole("button", {
+          name: "agentConnections.website",
         }),
+      ).toBeEnabled();
+      expect(within(missing).getAllByRole("button")).toHaveLength(2);
+      expect(within(missing).queryByRole("switch")).not.toBeInTheDocument();
+      expect(within(missing).queryByRole("combobox")).not.toBeInTheDocument();
+      expect(
+        within(missing).queryByText("9.8.7", { exact: false }),
       ).not.toBeInTheDocument();
-      if (compact)
-        fireEvent.click(
-          within(missing).getByRole("button", {
-            name: "agentConnections.details apps.opencode",
-          }),
-        );
-      expect(within(missing).getByRole("switch")).toBeChecked();
       expect(agentConnectionsApi.set).not.toHaveBeenCalled();
       expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
     },
@@ -238,36 +287,40 @@ describe("Agent installation shortcuts", () => {
     expect(screen.getByText("1.2.3")).toBeInTheDocument();
     expect(agentConnectionsApi.set).not.toHaveBeenCalled();
   });
-  it("cancels without side effects and uses a distinct official install-page flow for desktop apps", async () => {
-    mount();
-    const desktop = await row("workbuddy");
-    fireEvent.click(
-      within(desktop).getByRole("button", { name: "agentInstall.install" }),
-    );
-    const dialog = await screen.findByRole("dialog");
-    expect(
-      within(dialog).getByText("agentInstall.websiteHint"),
-    ).toBeInTheDocument();
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "common.cancel" }),
-    );
-    expect(settingsApi.openExternal).not.toHaveBeenCalled();
-    fireEvent.click(
-      within(desktop).getByRole("button", { name: "agentInstall.install" }),
-    );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "agentInstall.openWebsite" }),
-    );
-    await waitFor(() =>
-      expect(settingsApi.openExternal).toHaveBeenCalledWith(
-        "https://www.workbuddy.ai/",
-      ),
-    );
-    expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
-    expect(
-      screen.queryByText(/agentInstall.installed/),
-    ).not.toBeInTheDocument();
-  });
+  it.each([
+    ["workbuddy", "https://www.workbuddy.cn/"],
+    ["workbuddy-ai", "https://www.workbuddy.ai/"],
+  ])(
+    "cancels without side effects and opens %s’s own installation page",
+    async (app, website) => {
+      mount();
+      const desktop = await row(app);
+      fireEvent.click(
+        within(desktop).getByRole("button", { name: "agentInstall.install" }),
+      );
+      const dialog = await screen.findByRole("dialog");
+      expect(
+        within(dialog).getByText("agentInstall.websiteHint"),
+      ).toBeInTheDocument();
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: "common.cancel" }),
+      );
+      expect(settingsApi.openExternal).not.toHaveBeenCalled();
+      fireEvent.click(
+        within(desktop).getByRole("button", { name: "agentInstall.install" }),
+      );
+      fireEvent.click(
+        await screen.findByRole("button", { name: "agentInstall.openWebsite" }),
+      );
+      await waitFor(() =>
+        expect(settingsApi.openExternal).toHaveBeenCalledWith(website),
+      );
+      expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
+      expect(
+        screen.queryByText(/agentInstall.installed/),
+      ).not.toBeInTheDocument();
+    },
+  );
   it("does not overwrite an installation that appeared before confirmation", async () => {
     mount();
     const open = await row("opencode");

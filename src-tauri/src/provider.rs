@@ -224,7 +224,7 @@ impl Provider {
                 str_at(settings.get("apiKey")),
             ),
             // Pi custom providers use the native models.json field names.
-            AppType::WorkBuddy => (
+            AppType::WorkBuddy | AppType::WorkBuddyAi => (
                 str_at(settings.get("url"))
                     .trim_end_matches("/chat/completions")
                     .to_string(),

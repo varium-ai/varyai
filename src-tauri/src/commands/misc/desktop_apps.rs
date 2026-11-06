@@ -3,7 +3,8 @@ use super::*;
 
 fn ids(app: &str) -> &'static [&'static str] {
     match app {
-        "workbuddy" => &["com.tencent.workbuddy.mac", "com.workbuddy.workbuddy-ai"],
+        "workbuddy" => &["com.tencent.workbuddy.mac"],
+        "workbuddy-ai" => &["com.workbuddy.workbuddy-ai"],
         "claude-desktop" => &["com.anthropic.claudefordesktop"],
         "codex" => &["com.openai.codex"],
         "trae" => &["cn.trae.app"],
@@ -270,7 +271,8 @@ mod tests {
         for (app, name) in [
             ("claude-desktop", "Claude.app"),
             ("codex", "Codex.app"),
-            ("workbuddy", "WorkBuddy AI.app"),
+            ("workbuddy", "WorkBuddy.app"),
+            ("workbuddy-ai", "WorkBuddy AI.app"),
             ("qoder", "Qoder CN.app"),
             ("doubaowork", "DoubaoWork.app"),
             ("trae", "Trae CN.app"),
@@ -321,13 +323,53 @@ mod tests {
     fn workbuddy_builds_and_renamed_bundles_are_detected_by_identity() {
         for (name, id) in [
             ("WorkBuddy.app", "com.tencent.workbuddy.mac"),
-            ("WorkBuddy AI.app", "com.workbuddy.workbuddy-ai"),
-            ("Renamed.app", "com.workbuddy.workbuddy-ai"),
+            ("Renamed.app", "com.tencent.workbuddy.mac"),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = bundle(dir.path(), name, id);
             assert_eq!(find_in("workbuddy", &[dir.path().into()]), Some(path));
         }
+    }
+
+    #[test]
+    fn workbuddy_international_bundles_do_not_count_as_china_installations() {
+        for name in ["WorkBuddy AI.app", "WorkBuddy.app", "Renamed.app"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = bundle(dir.path(), name, "com.workbuddy.workbuddy-ai");
+            assert_eq!(
+                find_in("workbuddy-ai", &[dir.path().into()]),
+                Some(path.clone())
+            );
+            assert!(!matches("workbuddy", &path, false));
+            assert!(find_in("workbuddy", &[dir.path().into()]).is_none());
+        }
+    }
+
+    #[test]
+    fn workbuddy_china_removal_is_not_masked_by_an_international_installation() {
+        let dir = tempfile::tempdir().unwrap();
+        let apps = dir.path().join("Applications");
+        let domestic = bundle(&apps, "WorkBuddy.app", "com.tencent.workbuddy.mac");
+        let international = bundle(&apps, "WorkBuddy AI.app", "com.workbuddy.workbuddy-ai");
+        assert_eq!(
+            find_in("workbuddy", &[apps.clone()]),
+            Some(domestic.clone())
+        );
+        let trash = dir.path().join(".Trash");
+        std::fs::create_dir(&trash).unwrap();
+        std::fs::rename(&domestic, trash.join("WorkBuddy.app")).unwrap();
+        assert_eq!(
+            find_in("workbuddy-ai", &[apps.clone()]),
+            Some(international)
+        );
+        assert!(find_in("workbuddy", &[apps, trash]).is_none());
+    }
+
+    #[test]
+    fn workbuddy_international_name_without_metadata_is_not_a_china_installation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("WorkBuddy AI.app")).unwrap();
+        assert!(find_in("workbuddy", &[dir.path().into()]).is_none());
     }
 
     #[test]
@@ -343,7 +385,7 @@ mod tests {
     #[test]
     fn binary_metadata_and_external_renames_remain_readable() {
         let dir = tempfile::tempdir().unwrap();
-        let path = bundle(dir.path(), "Renamed.app", "com.workbuddy.workbuddy-ai");
+        let path = bundle(dir.path(), "Renamed.app", "com.tencent.workbuddy.mac");
         assert!(std::process::Command::new("/usr/bin/plutil")
             .args(["-convert", "binary1"])
             .arg(path.join("Contents/Info.plist"))
@@ -377,7 +419,7 @@ mod tests {
     fn arbitrary_config_directories_and_bundles_are_not_traversed() {
         let dir = tempfile::tempdir().unwrap();
         let outer = dir.path().join("Other.app");
-        bundle(&outer, "WorkBuddy AI.app", "com.workbuddy.workbuddy-ai");
+        bundle(&outer, "WorkBuddy.app", "com.tencent.workbuddy.mac");
         assert!(find_in("workbuddy", &[dir.path().into()]).is_none());
         let missing = dir.path().join("missing");
         assert!(find_in("workbuddy", &[missing.clone()]).is_none());
