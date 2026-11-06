@@ -462,6 +462,7 @@ impl CodexOAuthManager {
                     id_token: Some(token.into()),
                     authenticated_at: chrono::Utc::now().timestamp(),
                     token_updated_at_ms,
+                    reauth_required: false,
                     imported_access,
                 },
             );

@@ -154,7 +154,7 @@ impl SubscriptionProvider {
     pub(crate) fn endpoint(self) -> &'static str {
         match self {
             Self::GithubCopilot => "https://api.githubcopilot.com",
-            Self::XaiOauth => "https://api.x.ai/v1",
+            Self::XaiOauth => super::grok_subscription::BASE,
             Self::Claude => "https://api.anthropic.com",
             Self::ChatgptApi => "https://api.openai.com/v1",
             Self::GeminiCli => "https://cloudcode-pa.googleapis.com",
@@ -574,6 +574,20 @@ pub(crate) fn variants(provider: &Provider) -> Vec<Provider> {
             variants.push(variant);
         }
     }
+    let mut seen = std::collections::BTreeSet::new();
+    variants.retain(|variant| {
+        let (base, key) = variant.resolve_usage_credentials(&crate::app_config::AppType::Codex);
+        // Display labels are not part of transport identity. Distinct formats,
+        // endpoints and account credentials must remain separate destinations.
+        seen.insert((
+            base,
+            key,
+            variant.settings_config["apiFormat"].to_string(),
+            variant.settings_config["authType"].to_string(),
+            variant.settings_config["headers"].to_string(),
+            variant.settings_config["config"].to_string(),
+        ))
+    });
     variants
 }
 
@@ -603,7 +617,31 @@ pub(crate) fn filter_models(provider: &mut Provider) {
     provider.settings_config["routingVendorCatalog"] = json!(catalog);
     let mut rows = match policy["mode"].as_str() {
         Some("usage") => vec![],
-        Some("picked") => picks.clone(),
+        Some("picked") => picks
+            .iter()
+            .map(|pick| {
+                let Some(id) = model_id(pick) else {
+                    return pick.clone();
+                };
+                let mut row = catalog
+                    .iter()
+                    .find(|row| model_id(row) == Some(id))
+                    .cloned()
+                    .unwrap_or_else(|| pick.clone());
+                if let Some(fields) = pick.as_object() {
+                    if let Some(row) = row.as_object_mut() {
+                        // Fresh vendor facts remain authoritative; explicit preferences
+                        // carry user overrides without replacing capability observations.
+                        for (key, value) in fields {
+                            if key == "modelPreferences" || !row.contains_key(key) {
+                                row.insert(key.clone(), value.clone());
+                            }
+                        }
+                    }
+                }
+                row
+            })
+            .collect(),
         Some("best") => crate::services::codex_provider::best_models(catalog),
         _ => catalog.into_iter().take(24).collect(),
     };
@@ -640,6 +678,39 @@ pub(crate) fn serves(provider: &Provider, model: &str) -> bool {
 mod tests {
     use super::*;
     use crate::app_config::AppType;
+
+    #[test]
+    fn selected_subscription_models_keep_refreshed_capabilities_and_preferences(
+    ) -> Result<(), String> {
+        let record: RoutingUpstream=serde_json::from_value(json!({"schemaVersion":1,"id":"synthetic","name":"Synthetic","revision":1,"source":{"kind":"subscription","provider":"github_copilot","accountId":"fixture","mode":"picked","models":[{"model":"fixture-model","modelPreferences":{"reasoningLevels":["high"]}}],"catalog":[{"model":"fixture-model","contextWindow":200000,"supported_endpoints":["/responses"],"inputModalities":["text","image"]}]}})).map_err(|_|INVALID)?;
+        let provider = resolve_provider(&record)?;
+        let row = &provider.settings_config["modelCatalog"]["models"][0];
+        assert_eq!(row["contextWindow"], 200000);
+        assert_eq!(row["supported_endpoints"], json!(["/responses"]));
+        assert_eq!(row["modelPreferences"]["reasoningLevels"], json!(["high"]));
+        let selected =
+            crate::services::subscription_provider::for_model(&provider, "fixture-model")?;
+        assert_eq!(
+            selected.meta.as_ref().and_then(|m| m.api_format.as_deref()),
+            Some("openai_responses")
+        );
+        let (url, _) = crate::services::intent_routing::execution::static_transport(
+            &selected,
+            "fixture-model",
+        )?;
+        assert!(url.ends_with("/responses"));
+        Ok(())
+    }
+    #[test]
+    fn parity_duplicate_keys_share_one_execution_destination() -> Result<(), String> {
+        let record: RoutingUpstream = serde_json::from_value(json!({
+            "schemaVersion":1,"id":"synthetic","name":"Synthetic","revision":1,
+            "source":{"kind":"api","baseUrl":"https://synthetic.invalid/v1","apiKey":"synthetic-only","apiFormat":"openai_chat"},
+            "transport":{"keys":[{"id":"backup","name":"","key":"synthetic-only","enabled":true}]}
+        })).map_err(|_| INVALID)?;
+        assert_eq!(variants(&resolve_provider(&record)?).len(), 1);
+        Ok(())
+    }
     #[test]
     fn subscription_sources_bind_accounts_without_storing_tokens() {
         for service in [

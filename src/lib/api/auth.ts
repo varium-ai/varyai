@@ -16,7 +16,8 @@ export interface ManagedAuthAccount {
   authenticated_at: number;
   is_default: boolean;
   github_domain: string;
-  /** Codex-only: the account lacks identity or workspace metadata required for binding. */
+  plan?: string | null;
+  /** Codex-only: credentials were rejected or identity/workspace metadata is incomplete. */
   reauth_required?: boolean;
   /** xAI-only: the refresh credential is invalid and the account is unusable. */
   requires_reauth: boolean;
@@ -43,11 +44,13 @@ export async function authStartLogin(
   authProvider: ManagedAuthProvider,
   githubDomain?: string,
   targetAccountId?: string,
+  proxy?: string,
 ): Promise<ManagedAuthDeviceCodeResponse> {
   return invoke<ManagedAuthDeviceCodeResponse>("auth_start_login", {
     authProvider,
     githubDomain: githubDomain || null,
     targetAccountId: targetAccountId || null,
+    proxy: proxy || null,
   });
 }
 

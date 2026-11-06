@@ -83,6 +83,27 @@ client release.
 
 All shared Agent connections use the same IR adapter when their native Chat, Anthropic or Gemini protocol targets a managed ChatGPT/Codex account. No client-name allowlist controls conversion. The existing account executor retains exact destination selection, refresh and authentication; the static API-key executor is not involved. Native Responses requests retain their original wire requirements. Official streaming replies with an omitted SSE media type still pass the strict event decoder, and each client receives its own JSON or SSE format. Private tool reasoning is scoped to the frozen destination and conversation and restored only for matching inspected tool history.
 
+## Gemini search and function combinations
+
+When a converted Gemini request combines native search with function declarations,
+the builder enables `toolConfig.includeServerSideToolInvocations`. Automatic or
+unspecified function choice uses `VALIDATED`; explicit disabled, required and named
+function choices retain their constraints. Function-only and search-only requests
+retain their existing configuration and schemas.
+
+Gemini's server-side Google Search `toolCall` and `toolResponse` parts represent
+work already executed upstream. The reply reader renders them as completed search
+items, never as client function calls. Native parts and their signatures stay in
+the existing provider/session-scoped shadow history. Restoration requires an
+unambiguous match of the complete visible assistant turn; client-visible metadata
+cannot inject native state, and another provider or session cannot borrow it.
+Unknown server tool types still fail conversion. Buffered and streamed replies
+use the same part reader.
+
+See Google's [tool combination guide](https://ai.google.dev/gemini-api/docs/tool-combination)
+and [GenerateContent reference](https://ai.google.dev/api/generate-content), plus
+the [Gemini combination verification](../qa/2026-11-06-gemini-tool-combination.md).
+
 ## Grok tool-schema compatibility
 
 Cross-protocol requests targeting Grok (including namespaced model IDs on
@@ -96,6 +117,26 @@ features or discard validation constraints.
 Grok tool schemas also omit `required: null`, including nested schema nodes,
 because the upstream rejects null instead of treating it as an absent list. Real
 required arrays and user data under examples, defaults and const remain intact.
+
+Grok can reject object schemas referenced through local `$ref` entries, including
+nullable properties and array items. The adapter expands resolvable local JSON
+Pointer references within each tool schema. Reference siblings remain intersected
+through `allOf`, preserving their constraints. Unresolved, external, recursive or
+scoped references retain the original schema; depth and node budgets also cancel
+expansion without dropping constraints. Only schema-bearing keywords are visited,
+so examples, defaults and properties named `description` or `title` stay intact.
+
+Grok Chat live search is retired: sending `web_search_options`, including an
+empty object, can return HTTP 410. When converting to Chat for a Grok model,
+optional native search declarations are omitted instead of inventing that retired
+field. Function tools, schemas, choices, prompts and reasoning remain intact.
+A search-only request with `tool_choice: "required"` is rejected locally rather
+than silently running without its required tool. If no tools remain, optional
+choices and parallel-tool settings are omitted as well. Native search declarations
+on Responses and search conversion for other models are unchanged. Grok native
+web search requires a Responses-capable upstream; this Chat compatibility rule
+does not implement a replacement search executor. The behavior was checked against
+Magpie's `chat.go` / `gateway.go` search handling at the pinned Grok reference.
 
 Intent routing preserves an explicit upstream rejection's HTTP status instead of
 labeling it a connection failure. Raw upstream error bodies remain private; only

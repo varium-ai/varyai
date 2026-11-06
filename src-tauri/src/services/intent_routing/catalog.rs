@@ -58,10 +58,12 @@ impl ModelCache {
                 .names
                 .iter()
                 .all(|(id, name)| self.models.contains(id) && super::valid_text(name, 80))
-            && self
-                .reasoning
-                .iter()
-                .all(|(id, c)| self.models.contains(id) && c.levels.len() <= 8 && c.context.valid())
+            && self.reasoning.iter().all(|(id, c)| {
+                self.models.contains(id)
+                    && c.levels.len() <= 8
+                    && c.context.valid()
+                    && super::speed::valid(c.service_tiers.as_deref())
+            })
             && self
                 .models
                 .iter()
@@ -82,7 +84,7 @@ pub(crate) struct CatalogStatus {
 fn cache_key(source: &str, account: &str, identity: &str) -> String {
     let mut hash = Sha256::new();
     // Older caches lack picker visibility and cannot be safely filtered in place.
-    for part in ["picker-visible-v1", source, account, identity] {
+    for part in ["picker-visible-service-tiers-v2", source, account, identity] {
         hash.update(part.len().to_be_bytes());
         hash.update(part.as_bytes());
     }
@@ -185,17 +187,7 @@ fn native_editor_observation(auth: &Value) -> Option<NativeEditorInfo> {
         .filter(|s| s.len() <= 256 && !s.chars().any(char::is_control))
         .unwrap_or("Codex")
         .to_owned();
-    let plan = match claims
-        .pointer("/https:~1~1api.openai.com~1auth/chatgpt_plan_type")
-        .and_then(Value::as_str)
-    {
-        Some("plus") => Some("ChatGPT Plus".into()),
-        Some("pro") => Some("ChatGPT Pro".into()),
-        Some("free") => Some("ChatGPT Free".into()),
-        Some("team" | "business") => Some("ChatGPT Business".into()),
-        Some("enterprise") => Some("ChatGPT Enterprise".into()),
-        _ => None,
-    };
+    let plan = crate::services::subscription_plan::chatgpt_plan_from_claims(&claims);
     // Equal display names or emails do not prove an equal subscription seat.
     let identity = crate::codex_config::extract_codex_id_token_user_identity(token)
         .filter(|_| {
@@ -1335,6 +1327,43 @@ mod tests {
     }
 
     #[test]
+    fn speed_tiers_survive_account_scoped_cache_and_refresh() {
+        let tiers = json!([{"id":"priority","name":"Fast","description":"Higher usage"}]);
+        let cache = ModelCache::from_catalog(
+            json!({"models":[{
+                "slug":"synthetic-model", "service_tiers":tiers,
+                "private_extension":"not-persisted"
+            }]}),
+            100,
+        )
+        .expect("synthetic catalog");
+        let serialized = serde_json::to_string(&cache).expect("cache");
+        assert!(!serialized.contains("private_extension"));
+        let restored: ModelCache = serde_json::from_str(&serialized).expect("cache");
+        assert!(restored.valid_at(101));
+        let mut provider = Provider::with_id("fixture".into(), "Fixture".into(), json!({}), None);
+        apply_cache(&mut provider, restored);
+        assert_eq!(
+            provider.settings_config["modelCatalog"]["models"][0]["service_tiers"],
+            tiers
+        );
+        apply_cache(
+            &mut provider,
+            ModelCache::from_catalog(
+                json!({"models":[{
+                    "slug":"synthetic-model", "service_tiers":[]
+                }]}),
+                101,
+            )
+            .expect("updated catalog"),
+        );
+        assert_eq!(
+            provider.settings_config["modelCatalog"]["models"][0]["service_tiers"],
+            json!([])
+        );
+    }
+
+    #[test]
     fn discovery_retains_only_normalized_reasoning_capabilities() {
         for value in [
             json!({"models":[{"slug":"synthetic-model", "supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}], "input_modalities":["text","image"], "private_extension":"not-persisted"}]}),
@@ -1586,6 +1615,27 @@ mod tests {
     }
 
     #[test]
+    fn native_editor_plan_preserves_new_chatgpt_tiers() -> Result<(), Box<dyn std::error::Error>> {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        for (plan, expected) in [
+            ("prolite", "ChatGPT Prolite"),
+            ("promax", "ChatGPT Promax"),
+            ("go", "ChatGPT Go"),
+            ("team", "ChatGPT Team"),
+        ] {
+            let claims = json!({"sub":"fixture-user", "https://api.openai.com/auth":{"chatgpt_account_id":"fixture-workspace", "chatgpt_plan_type":plan}});
+            let token = format!(
+                "{}.{}.",
+                URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#),
+                URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims)?)
+            );
+            let info = native_editor_observation(&json!({"auth_mode":"chatgpt", "tokens":{"account_id":"fixture-workspace", "access_token":"synthetic-access", "id_token":token}})).ok_or("missing native observation")?;
+            assert_eq!(info.plan.as_deref(), Some(expected));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn native_editor_identity_requires_consistent_workspace_and_never_returns_tokens() {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
@@ -1716,6 +1766,9 @@ pub(crate) struct ExecutionCredentials {
     continuation: Option<String>,
 }
 impl ExecutionCredentials {
+    pub(crate) fn capability(&self, model: &str) -> super::effort::Capability {
+        super::effort::Capability::for_provider(&self.provider, model)
+    }
     pub(crate) fn serves_model(&self, model: &str) -> bool {
         crate::services::codex_provider::account_serves(&self.provider, model)
     }

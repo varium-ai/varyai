@@ -49,6 +49,7 @@ export interface RoutingUpstream {
   source: UpstreamSource;
   hasApiKey: boolean;
   subscriptionPlans?: Array<string | null>;
+  reauthRequired?: boolean;
   enabled?: boolean;
   presetId?: string | null;
   region?: string | null;
@@ -105,7 +106,12 @@ export const routingUpstreamsApi = {
     return invoke<RoutingUpstream>("routing_upstream_editor", { id, revision });
   },
   saveCodex: (upstream: RoutingUpstream, settings: CodexProviderSettings) => {
-    const { codex: _editor, subscriptionPlans: _plans, ...record } = upstream;
+    const {
+      codex: _editor,
+      subscriptionPlans: _plans,
+      reauthRequired: _reauth,
+      ...record
+    } = upstream;
     return invoke<RoutingUpstream>("save_codex_provider", {
       upstream: record,
       settings,
@@ -123,7 +129,7 @@ export const routingUpstreamsApi = {
       { account },
     ),
   importCodexAccount: (path: string) =>
-    invoke<void>("import_codex_provider_account", { path }),
+    invoke<{ id: string }>("import_codex_provider_account", { path }),
   testCodexModel: (
     id: string,
     revision: number,
@@ -143,7 +149,12 @@ export const routingUpstreamsApi = {
     }),
   list: () => invoke<RoutingUpstream[]>("list_routing_upstreams"),
   save: (upstream: RoutingUpstream, copyFrom?: ProviderCopySource) => {
-    const { codex: _editor, subscriptionPlans: _plans, ...record } = upstream;
+    const {
+      codex: _editor,
+      subscriptionPlans: _plans,
+      reauthRequired: _reauth,
+      ...record
+    } = upstream;
     return invoke<RoutingUpstream>("save_routing_upstream", {
       upstream: record,
       copyFrom,

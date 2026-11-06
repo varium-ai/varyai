@@ -8,14 +8,17 @@ pub(super) fn named_catalog(
     selected: &str,
     model_map: &mut BTreeMap<String, String>,
 ) -> (Vec<Model>, String) {
-    model_map.clear();
     let mut projected = catalog.to_vec();
     let mut chosen = selected.to_owned();
     for model in &mut projected {
         let internal = model.id.clone();
-        let mut name = model.name.clone();
+        let mut name = model_map
+            .iter()
+            .find(|(_, alias)| *alias == &internal)
+            .map(|(wire, _)| wire.clone())
+            .unwrap_or_else(|| model.name.clone());
         let mut duplicate = 2;
-        while model_map.contains_key(&name) {
+        while model_map.get(&name).is_some_and(|alias| alias != &internal) {
             name = format!("{} ({duplicate})", model.name);
             duplicate += 1;
         }
@@ -48,7 +51,6 @@ pub(super) fn build(
         }
         _ => return Err(FAILED.into()),
     };
-    receipt.model_map.clear();
     let (projected, chosen) = if ["grokbuild", "hermes", "kimi", "qwen", "zcode"].contains(&app) {
         named_catalog(catalog, selected, &mut receipt.model_map)
     } else {
@@ -177,11 +179,24 @@ fn edit(
                     &["models", "providers", "varyai"],
                     json!({"baseUrl":format!("{base}/v1"),"apiKey":token,"api":"openai-completions","models":rows}),
                 )?;
-                set(
-                    value,
-                    &["agents", "defaults", "model", "primary"],
-                    json!(format!("varyai/{selected}")),
-                )?;
+                let model_path = if value
+                    .pointer("/agents/defaults/model")
+                    .is_some_and(Value::is_string)
+                {
+                    vec!["agents", "defaults", "model"]
+                } else {
+                    vec!["agents", "defaults", "model", "primary"]
+                };
+                set(value, &model_path, json!(format!("varyai/{selected}")))?;
+                if let Some(allow) = value.pointer_mut("/agents/defaults/modelPolicy/allow") {
+                    let allow = allow.as_array_mut().ok_or(FAILED)?;
+                    if !allow
+                        .iter()
+                        .any(|entry| matches!(entry.as_str(), Some("*") | Some("varyai/*")))
+                    {
+                        allow.push(json!("varyai/*"));
+                    }
+                }
                 // Extend a native allowlist without hiding the user's own models.
                 if value.pointer("/agents/defaults/models").is_some() {
                     let allowlist = value
@@ -399,6 +414,79 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parity_readable_ids_survive_renames_and_are_never_reassigned() {
+        let mut first = Model {
+            output_tokens: None,
+            cost: None,
+            id: "vary-provider/a".into(),
+            name: "Shared label".into(),
+            context_window: None,
+            compact_at: None,
+            group: "Synthetic".into(),
+            reasoning_levels: vec![],
+            reasoning: false,
+            default_reasoning_level: None,
+            images: false,
+            icon: None,
+        };
+        let mut second = first.clone();
+        second.id = "vary-provider/b".into();
+        let mut map = BTreeMap::new();
+        let (initial, _) = named_catalog(&[first.clone(), second.clone()], &first.id, &mut map);
+        first.name = "Renamed".into();
+        let (renamed, _) = named_catalog(&[first.clone(), second.clone()], &first.id, &mut map);
+        assert_eq!(initial[0].id, renamed[0].id);
+        let (remaining, _) = named_catalog(&[second], &first.id, &mut map);
+        assert_eq!(remaining[0].id, initial[1].id);
+        assert_eq!(map[&initial[0].id], first.id);
+    }
+
+    #[test]
+    fn parity_openclaw_string_model_connects_and_restores() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let path = dir.path().join("openclaw.json");
+        let original = json!({"agents":{"defaults":{"model":"synthetic/native","modelPolicy":{"allow":["synthetic/*"]}}}}).to_string();
+        std::fs::write(&path, &original).map_err(|_| FAILED)?;
+        let model = Model {
+            output_tokens: None,
+            cost: None,
+            id: "vary-provider/test".into(),
+            name: "Synthetic".into(),
+            context_window: None,
+            compact_at: None,
+            group: "Synthetic".into(),
+            reasoning_levels: vec![],
+            reasoning: false,
+            default_reasoning_level: None,
+            images: false,
+            icon: None,
+        };
+        let file = edit(
+            "openclaw",
+            path.clone(),
+            &[model],
+            "http://127.0.0.1:1/connections/openclaw",
+            "synthetic-local",
+            "vary-provider/test",
+        )?;
+        file.write()?;
+        let installed: Value =
+            json5::from_str(&std::fs::read_to_string(&path).map_err(|_| FAILED)?)
+                .map_err(|_| FAILED)?;
+        assert_eq!(
+            installed["agents"]["defaults"]["model"],
+            "varyai/vary-provider/test"
+        );
+        assert!(installed
+            .pointer("/agents/defaults/modelPolicy/allow")
+            .and_then(Value::as_array)
+            .is_some_and(|allow| allow.contains(&json!("varyai/*"))));
+        file.restore()?;
+        assert_eq!(std::fs::read_to_string(path).map_err(|_| FAILED)?, original);
+        Ok(())
+    }
+
+    #[test]
     fn deepseek_desktop_projection_is_readable_reversible_and_keeps_foreign_edits(
     ) -> Result<(), String> {
         let root = tempfile::tempdir().map_err(|_| FAILED)?;
@@ -407,6 +495,8 @@ mod tests {
             "# Desktop customization\n- id: another-plugin\n  config:\n    enabled: true\n";
         std::fs::write(&path, original).map_err(|_| FAILED)?;
         let catalog = vec![Model {
+            output_tokens: None,
+            cost: None,
             id: "vary-provider/synthetic-route".into(),
             name: "Readable Model · Supplier · VaryAI".into(),
             context_window: Some(128000),
@@ -586,6 +676,8 @@ mod tests {
     {
         let catalog = vec![
             Model {
+                output_tokens: None,
+                cost: None,
                 icon: None,
                 id: "vary-provider/route-hash-a".into(),
                 name: "Synthetic Model · Supplier · VaryAI".into(),
@@ -598,6 +690,8 @@ mod tests {
                 images: true,
             },
             Model {
+                output_tokens: None,
+                cost: None,
                 icon: None,
                 id: "vary-provider/route-hash-b".into(),
                 name: "Synthetic Model · Supplier · VaryAI".into(),
@@ -713,6 +807,8 @@ mod tests {
     ) -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|_| FAILED)?;
         let mut catalog = vec![Model {
+            output_tokens: None,
+            cost: None,
             icon: None,
             id: "auto/shared".into(),
             name: "Shared".into(),
@@ -754,6 +850,8 @@ mod tests {
     #[test]
     fn eight_native_projections_are_private_reversible_and_refreshable() -> Result<(), String> {
         let catalog = vec![Model {
+            output_tokens: None,
+            cost: None,
             icon: None,
             id: "auto/shared".into(),
             name: "Shared".into(),

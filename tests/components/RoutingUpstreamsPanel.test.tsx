@@ -98,6 +98,91 @@ describe("global upstream editor", () => {
       ),
     );
   });
+  it.each([
+    "ChatGPT Prolite",
+    "ChatGPT Promax",
+    "ChatGPT Go",
+    "ChatGPT Team",
+    "ChatGPT Edu",
+  ])("shows the %s plan on the provider row", async (plan) => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+      {
+        ...primary,
+        id: "codex",
+        name: "Codex fixture",
+        hasApiKey: false,
+        source: { kind: "codex" },
+        subscriptionPlans: [plan],
+        reauthRequired: false,
+      },
+    ] as never);
+    mount();
+    const row = await screen.findByRole("article", { name: "Codex fixture" });
+    expect(within(row).getByText(plan)).toBeVisible();
+    expect(row.querySelector(".pv-key")).not.toHaveClass("imported");
+  });
+  it("shows ChatGPT for a valid sign-in with no known plan without claiming Plus", async () => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+      {
+        ...primary,
+        id: "codex",
+        name: "Codex fixture",
+        hasApiKey: false,
+        source: { kind: "codex" },
+        subscriptionPlans: [null],
+        reauthRequired: false,
+      },
+    ] as never);
+    mount();
+    const row = await screen.findByRole("article", { name: "Codex fixture" });
+    expect(within(row).getByText("ChatGPT")).toBeVisible();
+    expect(row.querySelector(".pv-key")).not.toHaveClass("imported");
+    expect(within(row).queryByText("ChatGPT Plus")).toBeNull();
+  });
+  it("supports batch deleting providers from the manage action next to search", async () => {
+    const secondary = {
+      ...primary,
+      id: "secondary",
+      name: "Synthetic secondary",
+      revision: 7,
+    };
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary, secondary]);
+    vi.mocked(routingUpstreamsApi.remove).mockResolvedValue(undefined);
+    mount();
+    await screen.findByRole("article", { name: "Synthetic primary" });
+    fireEvent.click(
+      screen.getByRole("button", { name: "modelProviders.manage" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "common.cancel" }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "modelProviders.selectAll" }),
+    );
+    expect(
+      screen.getByRole("checkbox", { name: "Synthetic primary" }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "Synthetic secondary" }),
+    ).toBeChecked();
+    fireEvent.click(
+      screen.getByRole("button", { name: "modelProviders.removeSelected" }),
+    );
+    fireEvent.click(
+      within(
+        screen.getByRole("dialog", { name: "modelProviders.removeSelected" }),
+      ).getByRole("button", { name: "common.confirm" }),
+    );
+    await waitFor(() => {
+      expect(routingUpstreamsApi.remove).toHaveBeenCalledWith("primary", 4);
+      expect(routingUpstreamsApi.remove).toHaveBeenCalledWith("secondary", 7);
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "common.cancel" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
   it("shows the selected subscription plan in the provider row without opening the editor", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
       {
@@ -1063,6 +1148,11 @@ describe("global upstream editor", () => {
     mount();
     expect(await screen.findByText(/primary\.example/)).toBeInTheDocument();
     expect(
+      screen.queryByRole("button", {
+        name: "codexOauth.reauthLogin Synthetic primary",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
       screen.queryByText(
         /synthetic-user|synthetic-pass|private-path|synthetic-token/,
       ),
@@ -1081,3 +1171,73 @@ describe("global upstream editor", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+it("shows logged out instead of a cached subscription plan when selected credentials need re-login", async () => {
+  vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+    {
+      schemaVersion: 1,
+      id: "codex",
+      revision: 1,
+      name: "Expired fixture",
+      hasApiKey: false,
+      source: { kind: "codex" },
+      subscriptionPlans: ["ChatGPT Plus"],
+      reauthRequired: true,
+    },
+  ] as never);
+  mount();
+  const row = await screen.findByRole("article", { name: "Expired fixture" });
+  expect(within(row).getByText("codexProvider.loggedOut")).toBeVisible();
+  expect(
+    within(row).getByRole("button", {
+      name: "codexOauth.reauthLogin Expired fixture",
+    }),
+  ).toBeVisible();
+  expect(row.querySelector(".pv-key")).toHaveClass("missing");
+  expect(routingUpstreamsApi.editor).not.toHaveBeenCalled();
+  expect(routingUpstreamsApi.probe).not.toHaveBeenCalled();
+});
+
+it.each([
+  "claude",
+  "chatgpt_api",
+  "github_copilot",
+  "gemini_cli",
+  "antigravity",
+  "xai_oauth",
+] as const)(
+  "prioritizes known signed-out status for %s subscriptions",
+  async (provider) => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+      {
+        schemaVersion: 1,
+        id: "subscription",
+        revision: 1,
+        name: "Subscription fixture",
+        hasApiKey: false,
+        source: {
+          kind: "subscription",
+          provider,
+          accountId: "fixture",
+          models: [],
+          catalog: [],
+          mode: "vendor",
+          groupsOnly: false,
+        },
+        subscriptionPlans: ["Synthetic plan"],
+        reauthRequired: true,
+      },
+    ] as never);
+    mount();
+    const row = await screen.findByRole("article", {
+      name: "Subscription fixture",
+    });
+    expect(within(row).getByText("codexProvider.loggedOut")).toBeVisible();
+    expect(
+      within(row).getByRole("button", {
+        name: "codexOauth.reauthLogin Subscription fixture",
+      }),
+    ).toBeVisible();
+    expect(row.querySelector(".pv-key")).toHaveClass("missing");
+  },
+);

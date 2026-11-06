@@ -574,7 +574,11 @@ pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
         if let Some(keys) = p["keys"].as_array() {
             for (index, key) in keys.iter().enumerate() {
                 let protocol = text(key, &["protocol"]);
-                if !text(key, &["plan"]).is_empty() {
+                if !text(key, &["plan"]).is_empty()
+                    || key["weight"]
+                        .as_i64()
+                        .is_some_and(|weight| !matches!(weight, 0 | 1))
+                {
                     result.skip = Some("unsupported".into());
                 }
                 transport.keys.push(ImportedKey {
@@ -680,6 +684,38 @@ pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
             p.get(*key)
                 .is_some_and(|v| !v.is_null() && v != "" && v != &json!({}))
         }) || p["insecureTLS"] == true
+            || [
+                "keySpendCaps",
+                "maxConcurrency",
+                "accountConcurrency",
+                "maxAccounts",
+                "accountWeights",
+                "accountCaps",
+                "accountWindowCaps",
+                "maxRPM",
+                "queueLimit",
+                "queueWait",
+                "queueTimeout",
+                "maxQueue",
+                "queueTimeoutMs",
+            ]
+            .iter()
+            .any(|key| {
+                p.get(*key).is_some_and(|v| {
+                    !v.is_null()
+                        && v != ""
+                        && v != &json!({})
+                        && v != &json!([])
+                        && v != &json!(0)
+                        && v != &json!(false)
+                })
+            })
+            || p["keyWeight"]
+                .as_i64()
+                .is_some_and(|weight| !matches!(weight, 0 | 1))
+            || p["priceRate"]
+                .as_f64()
+                .is_some_and(|rate| rate != 0.0 && rate != 1.0)
             || !matches!(text(p, &["routing"]).as_str(), "" | "order")
             || p["sink"] == true
             || p["fallback"].as_array().is_some_and(|v| !v.is_empty())

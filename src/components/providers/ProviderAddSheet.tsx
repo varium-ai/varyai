@@ -12,6 +12,7 @@ import {
   subscriptionProviders,
   type SubscriptionProviderId,
 } from "@/config/subscriptionProviders";
+import { SubscriptionSignIn } from "./SubscriptionSignIn";
 
 export function ProviderAddSheet({
   onChoose,
@@ -19,23 +20,34 @@ export function ProviderAddSheet({
   onAccount,
   onImport,
   busy,
+  addedSubscriptions = [],
 }: {
   onChoose: (preset?: GlobalProviderPreset) => void;
   onClose: () => void;
-  onAccount: (provider: SubscriptionProviderId) => Promise<void>;
+  onAccount: (
+    provider: SubscriptionProviderId,
+    accountId: string,
+  ) => Promise<void>;
+  addedSubscriptions?: SubscriptionProviderId[];
   onImport?: () => void;
   busy: boolean;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
+  const [signing, setSigning] = useState<{
+    provider: SubscriptionProviderId;
+    attempt: number;
+  }>();
   const term = query.trim().toLocaleLowerCase();
   const matches = globalProviderPresets.filter((p) =>
     `${p.id} ${p.name} ${p.baseUrl} ${Object.values(p.china?.endpoints ?? {}).join(" ")} ${p.regions?.map((region) => `${region.name} ${Object.values(region.endpoints).join(" ")}`).join(" ") ?? ""}`
       .toLocaleLowerCase()
       .includes(term),
   );
-  const subscriptions = subscriptionProviders.filter((provider) =>
-    `${provider.name} ${provider.aliases}`.toLocaleLowerCase().includes(term),
+  const subscriptions = subscriptionProviders.filter(
+    (provider) =>
+      provider.id === signing?.provider ||
+      `${provider.name} ${provider.aliases}`.toLocaleLowerCase().includes(term),
   );
   return (
     <section aria-label={t("providerFlow.sheet")} className="pv-sheet">
@@ -45,7 +57,10 @@ export function ProviderAddSheet({
           size="sm"
           className="pv-back"
           disabled={busy}
-          onClick={onClose}
+          onClick={() => {
+            setSigning(undefined);
+            onClose();
+          }}
         >
           <ArrowLeft size={14} />
           {t("common.back")}
@@ -64,12 +79,24 @@ export function ProviderAddSheet({
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
                   e.preventDefault();
-                  query ? setQuery("") : !busy && onClose();
+                  if (query) setQuery("");
+                  else if (!busy) {
+                    setSigning(undefined);
+                    onClose();
+                  }
                 }
               }}
             />
           </div>
-          <Button variant="ghost" size="sm" disabled={busy} onClick={onImport}>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              setSigning(undefined);
+              onImport?.();
+            }}
+          >
             {t("providerFlow.import")}
           </Button>
           <Button
@@ -78,7 +105,10 @@ export function ProviderAddSheet({
             className="pv-custom-action"
             title={t("providerFlow.compatible")}
             disabled={busy}
-            onClick={() => onChoose()}
+            onClick={() => {
+              setSigning(undefined);
+              onChoose();
+            }}
           >
             <Plus size={13} aria-hidden />
             {t("providerFlow.custom")}
@@ -98,9 +128,15 @@ export function ProviderAddSheet({
               <button
                 key={provider.id}
                 aria-label={provider.name}
-                className="pv-tile"
+                className={`pv-tile${signing?.provider === provider.id ? " on" : ""}`}
+                aria-pressed={signing?.provider === provider.id}
                 disabled={busy}
-                onClick={() => void onAccount(provider.id)}
+                onClick={() =>
+                  setSigning((old) => ({
+                    provider: provider.id,
+                    attempt: (old?.attempt ?? 0) + 1,
+                  }))
+                }
               >
                 <ProviderIcon
                   icon={provider.icon}
@@ -108,9 +144,25 @@ export function ProviderAddSheet({
                   size={18}
                 />
                 <span>{provider.name}</span>
+                {addedSubscriptions.includes(provider.id) && (
+                  <span
+                    className="pv-signed-in-dot"
+                    aria-label={t("subscriptionLogin.signedIn")}
+                  />
+                )}
               </button>
             ))}
           </div>
+          {signing && (
+            <SubscriptionSignIn
+              key={`${signing.provider}-${signing.attempt}`}
+              provider={signing.provider}
+              onCancel={() => setSigning(undefined)}
+              onComplete={(id) => {
+                void onAccount(signing.provider, id);
+              }}
+            />
+          )}
         </div>
       )}
       {(["vendor", "relay"] as const).map((kind) => {
@@ -126,7 +178,10 @@ export function ProviderAddSheet({
                     aria-label={p.name}
                     className="pv-tile"
                     disabled={busy}
-                    onClick={() => onChoose(p)}
+                    onClick={() => {
+                      setSigning(undefined);
+                      onChoose(p);
+                    }}
                   >
                     <ProviderIcon icon={p.icon} name={p.name} size={18} />
                     <span>{p.name}</span>

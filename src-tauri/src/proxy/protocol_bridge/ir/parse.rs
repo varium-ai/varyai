@@ -621,7 +621,11 @@ fn responses(body: &Value, request: &mut Request) -> Result<(), ProxyError> {
                 };
                 request.messages.push(Message {
                     role: "assistant".into(),
-                    parts: vec![Part::Search { query, hits }],
+                    parts: vec![Part::Search {
+                        query,
+                        hits,
+                        gemini: None,
+                    }],
                 });
             }
             "item_reference" => return Err(invalid("Unresolved response item reference")),
@@ -731,6 +735,7 @@ fn anthropic_parts(value: &Value) -> Result<Vec<Part>, ProxyError> {
                 parts.push(Part::Search {
                     query: String::new(),
                     hits,
+                    gemini: None,
                 });
             }
             _ => {}

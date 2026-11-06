@@ -80,6 +80,7 @@ pub const DEFAULT_PROXY_ROUTES: &[ClaudeDesktopDefaultRoute] = &[
 
 #[derive(Debug, Clone)]
 struct ClaudeDesktopPaths {
+    normal_data_path: PathBuf,
     normal_config_path: PathBuf,
     threep_config_path: PathBuf,
     config_library_path: PathBuf,
@@ -1362,14 +1363,61 @@ fn windows_local_app_data_dir() -> PathBuf {
 
 #[cfg(windows)]
 fn windows_paths_from_local_app_data(local_app_data: &Path) -> ClaudeDesktopPaths {
-    let normal_dir = pick_windows_claude_dir(local_app_data, false)
-        .unwrap_or_else(|| local_app_data.join("Claude"));
-    let threep_dir = pick_windows_claude_dir(local_app_data, true)
-        .unwrap_or_else(|| local_app_data.join("Claude-3p"));
-    paths_from_dirs(normal_dir, threep_dir)
+    let roaming = if cfg!(test) && std::env::var_os("CC_SWITCH_TEST_HOME").is_some() {
+        local_app_data.with_file_name("Roaming")
+    } else {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(|| local_app_data.with_file_name("Roaming"))
+    };
+    windows_path_sets(local_app_data, &roaming).remove(0)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
+fn windows_path_sets(local: &Path, roaming: &Path) -> Vec<ClaudeDesktopPaths> {
+    let normal = pick_windows_claude_dir(local, false).unwrap_or_else(|| local.join("Claude"));
+    let threep = pick_windows_claude_dir(local, true).unwrap_or_else(|| local.join("Claude-3p"));
+    let mut classic = paths_from_dirs(normal, threep);
+    classic.normal_data_path = roaming.join("Claude").join(CONFIG_FILE);
+    let mut sets = vec![classic];
+    let mut packages = std::fs::read_dir(local.join("Packages"))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter(|entry| {
+            entry.file_name().to_str().is_some_and(|name| {
+                name.starts_with("Claude_") || name.starts_with("AnthropicPBC.Claude_")
+            })
+        })
+        .map(|entry| entry.path().join("LocalCache"))
+        .collect::<Vec<_>>();
+    packages.sort();
+    for package in packages {
+        let mut paths = paths_from_dirs(
+            package.join("Local/Claude"),
+            package.join("Local/Claude-3p"),
+        );
+        paths.normal_data_path = package.join("Roaming/Claude").join(CONFIG_FILE);
+        sets.push(paths);
+    }
+    sets.sort_by_key(|paths| {
+        std::cmp::Reverse(
+            [&paths.normal_data_path, &paths.threep_config_path]
+                .into_iter()
+                .filter_map(|path| {
+                    path.parent()
+                        .and_then(|dir| std::fs::metadata(dir.join("Local State")).ok())
+                        .and_then(|meta| meta.modified().ok())
+                })
+                .max(),
+        )
+    });
+    sets
+}
+
+#[cfg(any(windows, test))]
 fn pick_windows_claude_dir(local_app_data: &Path, threep: bool) -> Option<PathBuf> {
     let exact_name = if threep { "Claude-3p" } else { "Claude" };
     let exact = local_app_data.join(exact_name);
@@ -1402,6 +1450,7 @@ fn paths_from_dirs(normal_dir: PathBuf, threep_dir: PathBuf) -> ClaudeDesktopPat
     let meta_path = config_library_path.join("_meta.json");
 
     ClaudeDesktopPaths {
+        normal_data_path: normal_dir.join(CONFIG_FILE),
         normal_config_path: normal_dir.join(CONFIG_FILE),
         threep_config_path: threep_dir.join(CONFIG_FILE),
         config_library_path,
@@ -1473,6 +1522,7 @@ mod tests {
                 paths.clone(),
                 "http://127.0.0.1:1",
                 concat!("synthetic", "-local"),
+                None,
                 &[],
             )
         };
@@ -1504,6 +1554,7 @@ mod tests {
                 paths.clone(),
                 "http://127.0.0.1:1",
                 concat!("synthetic", "-local"),
+                None,
                 &[],
             )
         };
@@ -1577,6 +1628,8 @@ mod tests {
         .map(|path| Ok((path.clone(), fs::read(path).map_err(|_| "fixture")?)))
         .collect::<Result<Vec<_>, String>>()?;
         let model = Model {
+            output_tokens: None,
+            cost: None,
             icon: None,
             compact_at: None,
             id: "synthetic-provider/first".into(),
@@ -1593,6 +1646,7 @@ mod tests {
             paths.clone(),
             "http://127.0.0.1:1/connections/claude-desktop",
             concat!("synthetic", "-local-token"),
+            None,
             std::slice::from_ref(&model),
         )?;
         assert_eq!(mapping.get(&wire), Some(&model.id));
@@ -2663,6 +2717,7 @@ pub(crate) fn selector_roots() -> Vec<PathBuf> {
 pub(crate) fn shared_catalog_edits(
     base: &str,
     token: &str,
+    previous_token: Option<&str>,
     models: &[crate::services::agent_connections::Model],
 ) -> Result<
     (
@@ -2671,15 +2726,41 @@ pub(crate) fn shared_catalog_edits(
     ),
     String,
 > {
+    #[cfg(not(windows))]
     use crate::services::agent_connections::FAILED;
-    let paths = current_platform_paths().map_err(|_| FAILED)?;
-    shared_catalog_edits_at(paths, base, token, models)
+    #[cfg(windows)]
+    {
+        let local = windows_local_app_data_dir();
+        let roaming = if cfg!(test) && std::env::var_os("CC_SWITCH_TEST_HOME").is_some() {
+            local.with_file_name("Roaming")
+        } else {
+            std::env::var_os("APPDATA")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .unwrap_or_else(|| local.with_file_name("Roaming"))
+        };
+        let mut all = vec![];
+        let mut mapping = std::collections::BTreeMap::new();
+        for paths in windows_path_sets(&local, &roaming) {
+            let (files, models) =
+                shared_catalog_edits_at(paths, base, token, previous_token, models)?;
+            all.extend(files);
+            mapping.extend(models);
+        }
+        return Ok((all, mapping));
+    }
+    #[cfg(not(windows))]
+    {
+        let paths = current_platform_paths().map_err(|_| FAILED)?;
+        shared_catalog_edits_at(paths, base, token, previous_token, models)
+    }
 }
 
 fn shared_catalog_edits_at(
     paths: ClaudeDesktopPaths,
     base: &str,
     token: &str,
+    previous_token: Option<&str>,
     models: &[crate::services::agent_connections::Model],
 ) -> Result<
     (
@@ -2689,7 +2770,7 @@ fn shared_catalog_edits_at(
     String,
 > {
     use crate::services::agent_connections::{
-        desktop_config::{key_matches, Kind},
+        desktop_config::{keep_key, Kind},
         FileEdit,
     };
     let mut mapping = std::collections::BTreeMap::new();
@@ -2715,11 +2796,28 @@ fn shared_catalog_edits_at(
     }) {
         profile["defaultModelEffort"] = json!(effort);
     }
+    let native: Value = read_json_file(&paths.normal_data_path).unwrap_or_else(|_| json!({}));
+    let locale_source = paths.normal_data_path.with_file_name("config.json");
+    let locale_target = paths.threep_config_path.with_file_name("config.json");
     let mut files = vec![];
-    for path in [paths.normal_config_path, paths.threep_config_path] {
+    for path in [&paths.normal_config_path, &paths.threep_config_path] {
         files.push(
-            FileEdit::prepare(path, |value| {
+            FileEdit::prepare(path.clone(), |value| {
                 value["deploymentMode"] = json!("3p");
+                if path == &paths.threep_config_path {
+                    if let Some(source) = native.get("mcpServers").and_then(Value::as_object) {
+                        if value.get("mcpServers").is_none() {
+                            value["mcpServers"] = json!({});
+                        }
+                        if let Some(target) =
+                            value.get_mut("mcpServers").and_then(Value::as_object_mut)
+                        {
+                            for (name, server) in source {
+                                target.entry(name.clone()).or_insert_with(|| server.clone());
+                            }
+                        }
+                    }
+                }
                 Ok(())
             })?
             .for_desktop(Kind::Mode),
@@ -2727,11 +2825,14 @@ fn shared_catalog_edits_at(
     }
     files.push(
         FileEdit::prepare(paths.profile_path, |value| {
+            if previous_token.is_none() && value.get("toolSearchEnabled").is_none() {
+                value["toolSearchEnabled"] = json!(true);
+            }
             let preserve_key = value["inferenceProvider"] == "gateway"
                 && value["inferenceGatewayBaseUrl"] == base
                 && value
                     .get("inferenceGatewayApiKey")
-                    .is_some_and(|key| key_matches(key, &json!(token)));
+                    .is_some_and(|key| keep_key(key, token, previous_token));
             for (key, next) in profile
                 .as_object()
                 .ok_or(crate::services::agent_connections::FAILED)?
@@ -2769,5 +2870,22 @@ fn shared_catalog_edits_at(
         })?
         .for_desktop(Kind::Meta),
     );
+    let locale: Value = read_json_file(&locale_source).unwrap_or_else(|_| json!({}));
+    if let Some(locale) = locale["locale"].as_str().filter(|locale| {
+        !locale.is_empty()
+            && locale.len() <= 32
+            && locale
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    }) {
+        if let Ok(edit) = FileEdit::prepare(locale_target, |value| {
+            if value.get("locale").is_none() {
+                value["locale"] = json!(locale);
+            }
+            Ok(())
+        }) {
+            files.push(edit.for_desktop(Kind::Carry));
+        }
+    }
     Ok((files, mapping))
 }

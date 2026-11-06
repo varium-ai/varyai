@@ -2392,3 +2392,130 @@ async fn codex_grok_chat_fixture(reject: bool) -> Result<(), Box<dyn std::error:
     task.abort();
     Ok(())
 }
+
+#[tokio::test]
+#[serial_test::serial]
+async fn codex_grok_chat_optional_search_does_not_reach_retired_live_search(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::provider::{Provider, ProviderMeta};
+    struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for RestoreSecurity {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _security = RestoreSecurity((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let task = tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send(body.clone()).await;
+                if body.get("web_search_options").is_some() {
+                    return (StatusCode::GONE, Json(json!({"error":{"message":"Synthetic retired Chat search"}}))).into_response();
+                }
+                if body["stream"] == true {
+                    let events = [
+                        json!({"id":"synthetic-grok-reply","model":"grok-4.5","choices":[{"index":0,"delta":{"role":"assistant","content":"Synthetic answer"},"finish_reason":null}]}),
+                        json!({"id":"synthetic-grok-reply","model":"grok-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+                    ];
+                    let sse = events.iter().map(|event| format!("data: {event}\n\n")).collect::<String>() + "data: [DONE]\n\n";
+                    return ([("content-type", "text/event-stream")], sse).into_response();
+                }
+                Json(json!({"id":"synthetic-grok-reply","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"Synthetic answer"},"finish_reason":"stop"}]})).into_response()
+            }
+        }))).await
+    });
+    let runtime = Arc::new(Runtime::default());
+    let mut published = menu(&format!("http://{address}/v1/chat/completions"));
+    let session = Arc::make_mut(
+        published
+            .groups
+            .values_mut()
+            .next()
+            .ok_or("missing session")?,
+    );
+    session.group.levels.clear();
+    session.group.members[0].model_id = "grok-4.5".into();
+    session.targets[0].model = "grok-4.5".into();
+    let mut provider = Provider::with_id(
+        "fixture".into(),
+        "Synthetic Grok".into(),
+        json!({"env":{"ANTHROPIC_BASE_URL":format!("http://{address}/v1"),"ANTHROPIC_API_KEY":"synthetic-upstream"}}),
+        None,
+    );
+    provider.meta = Some(ProviderMeta {
+        api_format: Some("openai_chat".into()),
+        ..Default::default()
+    });
+    session.targets[0].upstream = Some(provider);
+    runtime.set_menu(Arc::new(published))?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime);
+    let info = server.start().await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    for stream in [false, true] {
+        let response = client.post(format!("http://127.0.0.1:{}/intent/v1/responses", info.port))
+            .bearer_auth("synthetic-local-token")
+            .json(&json!({"model":group().alias(),"stream":stream,"store":false,
+                "input":[{"role":"developer","content":"Synthetic developer instruction"},{"role":"user","content":"Synthetic prompt"}],
+                "tools":[{"type":"web_search"},{"type":"namespace","name":"synthetic_namespace","tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]},"strict":true}]}],
+                "tool_choice":"auto","parallel_tool_calls":true,"reasoning":{"effort":"high"}}))
+            .send().await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let text = response.text().await?;
+        assert!(text.contains("Synthetic answer"));
+        if stream {
+            assert!(text.contains("event: response.completed"));
+            assert!(!text.contains("event: response.failed"));
+            let events: Vec<Value> = text
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .filter_map(|data| serde_json::from_str(data).ok())
+                .collect();
+            assert!(!events.is_empty());
+            for (index, event) in events.iter().enumerate() {
+                assert_eq!(event["sequence_number"], index as u64);
+            }
+        }
+        let sent = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await?
+            .ok_or("missing request")?;
+        assert!(sent.get("web_search_options").is_none());
+        assert_eq!(sent["model"], "grok-4.5");
+        assert_eq!(sent["stream"], stream);
+        assert_eq!(sent["tools"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            sent["tools"][0]["function"]["name"],
+            "synthetic_namespace__lookup"
+        );
+        assert_eq!(
+            sent["tools"][0]["function"]["parameters"]["required"],
+            json!(["text"])
+        );
+        assert_eq!(sent["tools"][0]["function"]["strict"], true);
+        assert_eq!(
+            sent["messages"][0]["content"],
+            "Synthetic developer instruction"
+        );
+        assert_eq!(sent["messages"][1]["content"], "Synthetic prompt");
+        assert_eq!(sent["reasoning_effort"], "high");
+        assert_eq!(sent["tool_choice"], "auto");
+        assert_eq!(sent["parallel_tool_calls"], true);
+    }
+    assert!(rx.try_recv().is_err());
+    server.stop().await?;
+    task.abort();
+    Ok(())
+}

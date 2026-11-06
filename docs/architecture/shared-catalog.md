@@ -330,6 +330,10 @@ confirmation explains the fallback to Codex defaults rather than promising the
 lost historical settings. Background recovery still leaves receiptless
 configuration unchanged. Selecting a shared model is an explicit reconnect that
 backs up the current configuration before acquiring it.
+The same recovery warning applies when only VaryAI model, catalog or provider
+references remain and the provider definition is missing. Background refresh
+does not claim these fields. An explicit reconnect saves a private backup and
+recreates the complete provider definition; it does not invent the lost baseline.
 Background refresh continues to refuse conflicting edits. An unreadable or
 malformed configuration, or externally changed owned arrays, fails without
 guessing its contents or element ownership. Successful
@@ -344,8 +348,9 @@ field-owned receipt, so clean-exit recovery does not silently disconnect it on
 the next launch. Explicit model selections override the previous pick; ordinary
 catalog refreshes preserve it. WorkBuddy and Desktop expose a native picker,
 not a fictitious application-wide default model setting. Qoder CN uses its native
-model picker. TRAE CN exposes only the shared starting-model picker in its Vary
-row and compact tray controls, without a separate read-only catalog preview. Its
+model picker. TRAE CN's workspace row exposes the shared starting-model picker
+without a details disclosure or a separate read-only catalog preview. Compact
+tray rows retain their details disclosure and catalog preview. Its
 durable outbox stores the selected catalog ID separately from catalog delivery. A connected
 bridge resolves the exact owned custom model and writes a manual recent selection
 for each native Agent label that supports it, without a session ID. Native
@@ -357,6 +362,18 @@ Closed or unsupported native windows leave the selection pending. Older outboxes
 without a starting-model field retain native selection behavior until an explicit
 selection is made. If a selected model leaves the catalog, synchronization chooses
 the first remaining catalog model.
+
+Connection detection and native starting-model observations run independently for
+each Agent through `get_agent_connection` and `get_agent_native_model`. Each row
+shows Checking until its connection result is available; another Agent's slow or
+failed detection does not disable a completed row. Connection mutations still
+invalidate the `agent-connections` and `agent-native-models` query prefixes,
+including the individual Agent queries. Background refreshes retain cached data
+while requests are pending. The compact list places unresolved Agents above the
+Not connected group, and initial installation discovery uses row placeholders
+instead of a page-wide loading paragraph. The batch APIs remain available to
+other consumers; repairing an inactive individual connection refreshes only its
+own catalog rather than synchronizing every Agent.
 
 Starting-model selection and Desktop visibility use the same `SharedModelPicker`
 component and `ModelPickerPopoverContent` shell. Search, provider filtering,
@@ -675,8 +692,9 @@ account's discovered list. Explicitly typed model IDs remain possible when no
 authoritative catalog is available.
 
 Selected accounts expand into immutable targets of the same provider/model.
-New requests prefer configured account order, moving known exhausted accounts
-behind the remaining accounts. Transient failures can try another account before
+New requests retain the selected strategy order, moving known exhausted accounts
+behind the remaining accounts without resetting rotation or weights. Explicit
+credential rejection and transient failures can try another approved account before
 any reply is delivered. A response or tool continuation retains its exact
 answering account and never silently follows a changed default login. Official
 subscription traffic retains its Responses-only, stream/store requirements.
@@ -706,7 +724,9 @@ access or refresh tokens in the routing registry or expose tokens to the editor.
 Each dispatch resolves and refreshes that same account through its existing
 manager. Copilot also resolves the account's API endpoint and supplies its client
 headers. Native and cross-protocol requests share the same credential boundary;
-unresolved accounts fail before dispatch. Account changes clear the draft model
+unresolved accounts fail before dispatch. Unbound automatic groups can advance
+to another approved target; pinned continuations and manual selections retain
+their destination. Account changes clear the draft model
 catalog and selection, and changing the manager default does not change a saved
 binding. Model discovery is an explicit account-scoped action in this editor.
 
@@ -714,3 +734,38 @@ Claude, Gemini CLI, Antigravity and the reference's separate ChatGPT API mode
 remain outside this entry set: quota observation, CLI configuration and API-key
 support do not by themselves provide a complete subscription forwarding lifecycle.
 This change does not establish live vendor acceptance or subscription parity.
+
+### Native projection and transport parity
+
+A receipt reserves each allocated readable request ID for its original catalog
+alias. Refresh and suspend/resume retain these reservations, including removed
+entries, so a rename or duplicate-label deletion cannot redirect an old selector.
+Each account contributes its own image, context and reasoning capabilities;
+display catalog unions do not enlarge an account's executable capabilities.
+
+Known output ceilings and complete input/output/cache price tables are carried
+through the shared model metadata. Pi, OpenCode and WorkBuddy receive their native
+output-limit fields. Unknown limits and incomplete prices remain unknown;
+group output limits require known values for every executable member, and a
+shared price table requires all members to agree.
+
+OpenCode discovery and projection use the same JSONC-first path and preserve
+comments. OpenClaw accepts scalar and object model selections, retaining native
+fallbacks and extending restrictive allow policies. Claude Code uses the native
+model picker and top-level model choice; receipt-owned cloud switches are
+shadowed while an administrator's conflicting cloud policy is rejected.
+
+Desktop carries missing local MCP server names and locale into its separate 3p
+configuration. Existing 3p settings win, and native edits or deletions become user
+ownership on refresh. Tool search is seeded once; client tool references survive
+supported protocol conversion. Windows discovery includes classic directories
+and both MSIX package families, and writes both directory sets. Actual Windows
+builds and hosted tool compatibility still require separate acceptance.
+
+Before any visible stream content, an explicit semantic failure can advance to
+another approved candidate. A single candidate retains immediate response
+headers. Partial content, pinned continuations and ambiguous network failures
+never trigger replay, and HTTP success alone does not clear failure cooldown.
+Unsupported source spending, concurrency, account-cap/weight and queue/RPM
+controls make an imported resource unavailable in preview rather than disappearing
+from an executable copy.

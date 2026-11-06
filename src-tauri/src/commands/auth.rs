@@ -24,6 +24,8 @@ pub struct ManagedAuthAccount {
     pub authenticated_at: i64,
     pub is_default: bool,
     pub github_domain: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
     /// Codex 专用：旧账号缺少写入原生 Codex auth.json 所需的 id_token。
     pub reauth_required: bool,
     /// xAI 专用：refresh token 已失效，账号不可再用于请求。
@@ -73,6 +75,7 @@ fn map_account(
         avatar_url: account.avatar_url,
         authenticated_at: account.authenticated_at,
         github_domain: account.github_domain,
+        plan: None,
     }
 }
 
@@ -90,6 +93,7 @@ fn map_xai_account(
         github_domain: account.github_domain,
         reauth_required: false,
         requires_reauth: account.requires_reauth,
+        plan: None,
     }
 }
 
@@ -112,6 +116,7 @@ pub async fn auth_start_login(
     auth_provider: String,
     github_domain: Option<String>,
     target_account_id: Option<String>,
+    proxy: Option<String>,
     copilot_state: State<'_, CopilotAuthState>,
     codex_state: State<'_, CodexOAuthState>,
     xai_state: State<'_, XaiOAuthState>,
@@ -132,7 +137,7 @@ pub async fn auth_start_login(
         AUTH_PROVIDER_CODEX_OAUTH => {
             let auth_manager = &codex_state.0;
             let response = auth_manager
-                .start_device_flow(target_account_id.as_deref())
+                .start_device_flow_with_proxy(target_account_id.as_deref(), proxy.as_deref())
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(map_device_code_response(auth_provider, response))
@@ -243,18 +248,20 @@ pub async fn auth_get_status(
             let auth_manager = copilot_state.0.read().await;
             let status = auth_manager.get_status().await;
             let default_account_id = status.default_account_id.clone();
+            let mut accounts = Vec::new();
+            for account in status.accounts {
+                let plan = auth_manager.editor_plan(&account.id).await;
+                let mut summary =
+                    map_account(auth_provider, account, default_account_id.as_deref());
+                summary.plan = plan;
+                accounts.push(summary);
+            }
             Ok(ManagedAuthStatus {
                 provider: auth_provider.to_string(),
                 authenticated: status.authenticated,
                 default_account_id: default_account_id.clone(),
                 migration_error: status.migration_error,
-                accounts: status
-                    .accounts
-                    .into_iter()
-                    .map(|account| {
-                        map_account(auth_provider, account, default_account_id.as_deref())
-                    })
-                    .collect(),
+                accounts,
             })
         }
         AUTH_PROVIDER_CODEX_OAUTH => {

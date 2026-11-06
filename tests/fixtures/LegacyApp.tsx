@@ -87,7 +87,7 @@ import UnifiedSkillsPanel, {
   type SkillsCheckUpdatesState,
 } from "@/components/skills/UnifiedSkillsPanel";
 import { DeepLinkImportDialog } from "@/components/DeepLinkImportDialog";
-import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
+import { FirstRunNoticeDialog } from "./LegacyFirstRunNoticeDialog";
 import { QoderCertificateNotice } from "@/components/QoderCertificateNotice";
 import { AgentsPanel } from "@/components/agents/AgentsPanel";
 import { UniversalProviderPanel } from "@/components/universal";

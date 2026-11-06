@@ -51,6 +51,52 @@ pub struct ExtraUsage {
     pub currency: Option<String>,
 }
 
+/// Explicit controls are observations, never permission to spend credits.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexQuotaDetails {
+    pub allowed: Option<bool>,
+    pub limit_reached: Option<bool>,
+    pub model_usage: HashMap<String, CodexModelUsage>,
+    pub credits: Option<CodexCredits>,
+    pub reset_credits: Option<CodexResetCredits>,
+    pub spend_control: Option<CodexSpendControl>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodexModelUsage {
+    pub available: Option<bool>,
+    pub available_at: Option<serde_json::Value>,
+    pub credits_would_enable: Option<bool>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodexCredits {
+    pub has_credits: Option<bool>,
+    pub unlimited: Option<bool>,
+    pub overage_limit_reached: Option<bool>,
+    #[serde(default, deserialize_with = "credit_balance")]
+    pub balance: Option<String>,
+}
+fn credit_balance<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let text = value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| value.as_number().map(ToString::to_string));
+    Ok(text.filter(|s| s.len() <= 64 && s.parse::<f64>().is_ok_and(|n| n.is_finite() && n >= 0.0)))
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodexResetCredits {
+    pub available_count: Option<u64>,
+    pub applicable_available_count: Option<u64>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodexSpendControl {
+    pub reached: Option<bool>,
+    pub individual_limit: Option<f64>,
+}
+
 /// 订阅额度查询结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +107,8 @@ pub struct SubscriptionQuota {
     pub success: bool,
     pub tiers: Vec<QuotaTier>,
     pub extra_usage: Option<ExtraUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<CodexQuotaDetails>,
     pub error: Option<String>,
     pub queried_at: Option<i64>,
 }
@@ -74,6 +122,7 @@ impl SubscriptionQuota {
             success: false,
             tiers: vec![],
             extra_usage: None,
+            codex: None,
             error: None,
             queried_at: None,
         }
@@ -87,6 +136,7 @@ impl SubscriptionQuota {
             success: false,
             tiers: vec![],
             extra_usage: None,
+            codex: None,
             error: Some(message),
             queried_at: Some(now_millis()),
         }
@@ -408,7 +458,7 @@ async fn query_claude_quota(access_token: &str) -> Result<SubscriptionQuota, Str
 }
 
 /// 兼容旧顶层窗口与新版模型专属周限额，保持查询、缓存和 UI 共用 QuotaTier。
-fn parse_claude_quota(body: &serde_json::Value) -> SubscriptionQuota {
+pub(crate) fn parse_claude_quota(body: &serde_json::Value) -> SubscriptionQuota {
     // 解析已知的 tier 窗口
     let mut tiers = Vec::new();
     for &tier_name in KNOWN_TIERS {
@@ -522,6 +572,7 @@ fn parse_claude_quota(body: &serde_json::Value) -> SubscriptionQuota {
         success: true,
         tiers,
         extra_usage,
+        codex: None,
         error: None,
         queried_at: Some(now_millis()),
     }
@@ -706,6 +757,8 @@ struct CodexRateLimitWindow {
 
 #[derive(Deserialize)]
 struct CodexRateLimit {
+    allowed: Option<bool>,
+    limit_reached: Option<bool>,
     primary_window: Option<CodexRateLimitWindow>,
     secondary_window: Option<CodexRateLimitWindow>,
 }
@@ -713,6 +766,24 @@ struct CodexRateLimit {
 #[derive(Deserialize)]
 struct CodexUsageResponse {
     rate_limit: Option<CodexRateLimit>,
+    #[serde(default)]
+    model_usage: Option<HashMap<String, CodexModelUsage>>,
+    credits: Option<CodexCredits>,
+    rate_limit_reset_credits: Option<CodexResetCredits>,
+    spend_control: Option<CodexSpendControl>,
+}
+
+impl CodexUsageResponse {
+    fn details(&self) -> CodexQuotaDetails {
+        CodexQuotaDetails {
+            allowed: self.rate_limit.as_ref().and_then(|r| r.allowed),
+            limit_reached: self.rate_limit.as_ref().and_then(|r| r.limit_reached),
+            model_usage: self.model_usage.clone().unwrap_or_default(),
+            credits: self.credits.clone(),
+            reset_credits: self.rate_limit_reset_credits.clone(),
+            spend_control: self.spend_control.clone(),
+        }
+    }
 }
 
 /// 根据窗口秒数映射到 tier 名称（与 Claude 的命名兼容以复用前端 i18n）
@@ -789,6 +860,7 @@ pub(crate) async fn query_codex_quota(
         }
     };
 
+    let details = body.details();
     let mut tiers = Vec::new();
 
     if let Some(rate_limit) = body.rate_limit {
@@ -818,6 +890,7 @@ pub(crate) async fn query_codex_quota(
         success: true,
         tiers,
         extra_usage: None,
+        codex: Some(details),
         error: None,
         queried_at: Some(now_millis()),
     })
@@ -1300,6 +1373,7 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
         success: true,
         tiers,
         extra_usage: None,
+        codex: None,
         error: None,
         queried_at: Some(now_millis()),
     })
@@ -1621,5 +1695,45 @@ mod tests {
         // 其他窗口按小时/天回退命名
         assert_eq!(window_seconds_to_tier_name(3600), "1_hour");
         assert_eq!(window_seconds_to_tier_name(86400), "1_day");
+    }
+}
+
+#[cfg(test)]
+mod subscription_controls_tests {
+    use super::*;
+    #[test]
+    fn null_model_usage_and_numeric_balances_do_not_discard_valid_windows() {
+        let body:CodexUsageResponse=serde_json::from_value(serde_json::json!({"rate_limit":{"allowed":true,"primary_window":{"used_percent":12}},"model_usage":null,"credits":{"balance":25.5}})).expect("nullable usage");
+        assert!(body.details().model_usage.is_empty());
+        assert_eq!(
+            body.details().credits.and_then(|c| c.balance),
+            Some("25.5".into())
+        );
+    }
+    #[test]
+    fn account_holds_and_model_credits_survive_without_fabricated_windows() {
+        let body: CodexUsageResponse = serde_json::from_value(serde_json::json!({
+            "rate_limit":{"allowed":false,"limit_reached":true},
+            "model_usage":{"fixture":{"available":false,"credits_would_enable":true}},
+            "credits":{"has_credits":true,"balance":"62500.0","unlimited":false},
+            "rate_limit_reset_credits":{"available_count":2,"applicable_available_count":1},
+            "spend_control":{"reached":true,"individual_limit":100}
+        }))
+        .expect("supported quota controls");
+        let details = body.details();
+        assert_eq!(details.allowed, Some(false));
+        assert_eq!(details.limit_reached, Some(true));
+        assert_eq!(
+            details.credits.as_ref().and_then(|c| c.balance.as_deref()),
+            Some("62500.0")
+        );
+        assert_eq!(details.model_usage["fixture"].available, Some(false));
+        assert_eq!(
+            details
+                .reset_credits
+                .as_ref()
+                .and_then(|c| c.available_count),
+            Some(2)
+        );
     }
 }

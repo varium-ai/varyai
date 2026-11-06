@@ -57,6 +57,8 @@ impl Manager {
             model: outbox.and_then(|o| o.model),
             restart_required: enabled && !delivered,
             desktop_state: None,
+            native_compatibility: None,
+            configuration_issue: None,
         })
     }
     pub(crate) fn bridge_select(&self, enabled: bool) -> Result<(), String> {

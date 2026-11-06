@@ -49,6 +49,24 @@ vi.mock("@/lib/trayPanel", () => ({
 vi.mock("@/lib/api/agentConnections", () => ({
   agentConnectionsApi: {
     nativeModels: vi.fn(async () => []),
+    nativeModel: vi.fn(async (app: string) => ({
+      app,
+      model: null,
+      available: true,
+    })),
+    get: vi.fn(async (app: string) => {
+      const entries = await agentConnectionsApi.list();
+      return (
+        entries.find((entry) => entry.app === app) ?? {
+          app,
+          enabled: false,
+          configured: false,
+          model: null,
+          recoveryPending: false,
+          restartRequired: false,
+        }
+      );
+    }),
     list: vi.fn(async () => []),
     models: vi.fn(async () => []),
     set: vi.fn(async () => {}),

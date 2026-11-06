@@ -14,6 +14,7 @@ import type {
 type PollingState = "idle" | "polling" | "success" | "error";
 type LoginRequest = {
   targetAccountId?: string;
+  proxy?: string;
   generation: number;
 };
 
@@ -26,6 +27,10 @@ export function useManagedAuth(
   const queryKey = ["managed-auth-status", authProvider];
 
   const [pollingState, setPollingState] = useState<PollingState>("idle");
+  const [loginCompletion, setLoginCompletion] = useState<{
+    accountId: string;
+    generation: number;
+  } | null>(null);
   const [deviceCode, setDeviceCode] =
     useState<ManagedAuthDeviceCodeResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +42,7 @@ export function useManagedAuth(
   const flowGenerationRef = useRef(0);
   const activeDeviceCodeRef = useRef<string | null>(null);
   const retryTargetAccountIdRef = useRef<string | undefined>(undefined);
+  const retryProxyRef = useRef<string>();
   const flowTransitionRef = useRef<Promise<void>>(Promise.resolve());
 
   const {
@@ -49,10 +55,8 @@ export function useManagedAuth(
     queryKey,
     queryFn: () => authApi.authGetStatus(authProvider),
     staleTime: 30000,
-    // A rejected xAI refresh token is persisted as `requires_reauth` by the
-    // proxy hot path. Periodically refresh local status so an already-open Auth
-    // Center stops showing the account as logged in without requiring a reload.
-    refetchInterval: authProvider === "xai_oauth" ? 15_000 : false,
+    // Read local rejection observations without renewing credentials or probing vendors.
+    refetchInterval: 15_000,
   });
 
   const stopPolling = useCallback(() => {
@@ -112,8 +116,15 @@ export function useManagedAuth(
   }, [cancelBackendFlow, stopPolling]);
 
   const startLoginMutation = useMutation({
-    mutationFn: ({ targetAccountId }: LoginRequest) =>
-      authApi.authStartLogin(authProvider, githubDomain, targetAccountId),
+    mutationFn: ({ targetAccountId, proxy }: LoginRequest) =>
+      proxy === undefined
+        ? authApi.authStartLogin(authProvider, githubDomain, targetAccountId)
+        : authApi.authStartLogin(
+            authProvider,
+            githubDomain,
+            targetAccountId,
+            proxy,
+          ),
     onSuccess: async (response, request) => {
       if (request.generation !== flowGenerationRef.current) {
         void cancelBackendFlow(response.device_code);
@@ -171,6 +182,10 @@ export function useManagedAuth(
             await refetchStatus();
             await queryClient.invalidateQueries({ queryKey });
             if (completionGeneration !== flowGenerationRef.current) return;
+            setLoginCompletion({
+              accountId: newAccount.id,
+              generation: completionGeneration,
+            });
             setPollingState("idle");
             setDeviceCode(null);
           }
@@ -273,19 +288,20 @@ export function useManagedAuth(
   });
 
   const beginLogin = useCallback(
-    (targetAccountId?: string) => {
+    (targetAccountId?: string, proxy?: string) => {
       const previousDeviceCode = activeDeviceCodeRef.current;
       activeDeviceCodeRef.current = null;
       const generation = flowGenerationRef.current + 1;
       flowGenerationRef.current = generation;
       retryTargetAccountIdRef.current = targetAccountId;
+      retryProxyRef.current = proxy;
       setPollingState("idle");
       setDeviceCode(null);
       setError(null);
       stopPolling();
       void queueBackendCancellation(previousDeviceCode).then(() => {
         if (generation !== flowGenerationRef.current) return;
-        startLoginMutation.mutate({ targetAccountId, generation });
+        startLoginMutation.mutate({ targetAccountId, proxy, generation });
       });
     },
     [queueBackendCancellation, startLoginMutation, stopPolling],
@@ -294,14 +310,14 @@ export function useManagedAuth(
   const startAuth = useCallback(() => beginLogin(), [beginLogin]);
 
   const reauthAccount = useCallback(
-    (accountId: string) => {
-      beginLogin(accountId);
+    (accountId: string, proxy?: string) => {
+      beginLogin(accountId, proxy);
     },
     [beginLogin],
   );
 
   const retryAuth = useCallback(
-    () => beginLogin(retryTargetAccountIdRef.current),
+    () => beginLogin(retryTargetAccountIdRef.current, retryProxyRef.current),
     [beginLogin],
   );
 
@@ -314,7 +330,7 @@ export function useManagedAuth(
     setPollingState("idle");
     setDeviceCode(null);
     setError(null);
-    void queueBackendCancellation(previousDeviceCode);
+    return queueBackendCancellation(previousDeviceCode);
   }, [queueBackendCancellation, stopPolling]);
 
   const logout = useCallback(() => {
@@ -350,6 +366,7 @@ export function useManagedAuth(
     defaultAccountId: authStatus?.default_account_id ?? null,
     migrationError: authStatus?.migration_error ?? null,
     pollingState,
+    loginCompletion,
     deviceCode,
     error,
     isPolling: pollingState === "polling",
@@ -358,6 +375,7 @@ export function useManagedAuth(
     isSettingDefaultAccount: setDefaultAccountMutation.isPending,
     startAuth,
     addAccount: startAuth,
+    addAccountWithProxy: (proxy: string) => beginLogin(undefined, proxy),
     reauthAccount,
     retryAuth,
     cancelAuth,

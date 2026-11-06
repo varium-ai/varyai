@@ -12,12 +12,21 @@ import { RoutingUpstreamsPanel } from "@/components/providers/RoutingUpstreamsPa
 import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 
 const managedAccounts = vi.hoisted(() => ({
+  browser: null as Record<string, unknown> | null,
+  reauthAccount: vi.fn(),
+  addAccount: vi.fn(),
+  cancelAuth: vi.fn(),
+  deviceCode: null as { user_code: string; verification_uri: string } | null,
+  loginCompletion: null as { accountId: string; generation: number } | null,
+  pollingState: "idle",
+  isAddingAccount: false,
   rows: [] as Array<{ id: string; login: string; reauth_required: boolean }>,
 }));
 
 vi.mock("@/lib/api/routingUpstreams", () => ({
   routingUpstreamsApi: {
     list: vi.fn(),
+    createCodex: vi.fn(),
     editor: vi.fn(),
     saveCodex: vi.fn(),
     codexModels: vi.fn(),
@@ -30,11 +39,17 @@ vi.mock("@/lib/api/routingUpstreams", () => ({
 vi.mock("@/components/providers/forms/hooks/useCodexOauth", () => ({
   useCodexOauth: () => ({
     accounts: managedAccounts.rows,
-    pollingState: "idle",
-    addAccount: vi.fn(),
-    cancelAuth: vi.fn(),
+    browser: managedAccounts.browser ?? undefined,
+    addAccountWithProxy: managedAccounts.addAccount,
+    loginCompletion: managedAccounts.loginCompletion,
+    pollingState: managedAccounts.pollingState,
+    isStatusSuccess: true,
+    reauthAccount: managedAccounts.reauthAccount,
+    addAccount: managedAccounts.addAccount,
+    cancelAuth: managedAccounts.cancelAuth,
+    deviceCode: managedAccounts.deviceCode,
     refetchStatus: vi.fn(),
-    isAddingAccount: false,
+    isAddingAccount: managedAccounts.isAddingAccount,
   }),
 }));
 
@@ -72,6 +87,11 @@ const codex = {
 beforeEach(() => {
   vi.clearAllMocks();
   managedAccounts.rows = [];
+  managedAccounts.browser = null;
+  managedAccounts.deviceCode = null;
+  managedAccounts.loginCompletion = null;
+  managedAccounts.pollingState = "idle";
+  managedAccounts.isAddingAccount = false;
   vi.mocked(routingUpstreamsApi.list).mockResolvedValue([upstream]);
   vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
     ...upstream,
@@ -568,6 +588,11 @@ it("does not mistake a generic source or refresh failure for an expired authoriz
   expect(await screen.findByText("codexProvider.quotaStale")).toBeVisible();
   expect(screen.getByText("codexProvider.remaining")).toBeVisible();
   expect(
+    screen.queryByRole("button", {
+      name: "codexOauth.reauthLogin person@example.test",
+    }),
+  ).not.toBeInTheDocument();
+  expect(
     screen.queryByText("codexProvider.quotaLoginRequired"),
   ).not.toBeInTheDocument();
 });
@@ -737,4 +762,513 @@ it("never labels a different account's catalog as the newly selected account's l
   );
   await screen.findByText("codexProvider.catalogEmpty");
   expect(screen.queryByRole("button", { name: /^model-b$/ })).toBeNull();
+});
+
+it("offers targeted re-login when an allowance confirms rejected credentials", async () => {
+  managedAccounts.rows = [
+    { id: "managed", login: "person@example.test", reauth_required: false },
+  ];
+  vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+    ...upstream,
+    codex: {
+      ...codex,
+      settings: { ...codex.settings, accounts: ["managed"] },
+      accounts: [{ ...codex.accounts[0], id: "managed", native: false }],
+    },
+  } as never);
+  vi.mocked(routingUpstreamsApi.codexQuota).mockResolvedValue({
+    credentialStatus: "expired",
+    success: false,
+    tiers: [],
+  } as never);
+  await open();
+  const account = within(
+    screen.getByRole("group", { name: "person@example.test" }),
+  );
+  expect(await account.findByText("codexOauth.reauthBadge")).toBeVisible();
+  fireEvent.click(
+    account.getByRole("button", {
+      name: "codexOauth.reauthLogin person@example.test",
+    }),
+  );
+  expect(managedAccounts.reauthAccount).toHaveBeenCalledWith("managed");
+  expect(managedAccounts.addAccount).not.toHaveBeenCalled();
+});
+
+it("offers re-login for an incomplete managed identity without querying its quota", async () => {
+  managedAccounts.rows = [
+    {
+      id: "incomplete",
+      login: "incomplete@example.test",
+      reauth_required: true,
+    },
+  ];
+  await open();
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "codexOauth.reauthLogin incomplete@example.test",
+    }),
+  );
+  expect(managedAccounts.reauthAccount).toHaveBeenCalledWith("incomplete");
+  expect(routingUpstreamsApi.codexQuota).not.toHaveBeenCalledWith("incomplete");
+});
+
+it("uses the proven managed alias when reauthenticating a native row", async () => {
+  managedAccounts.rows = [
+    { id: "managed", login: "person@example.test", reauth_required: false },
+  ];
+  vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+    ...upstream,
+    codex: {
+      ...codex,
+      accounts: [{ ...codex.accounts[0], aliases: ["managed"] }],
+    },
+  } as never);
+  vi.mocked(routingUpstreamsApi.codexQuota).mockResolvedValue({
+    credentialStatus: "expired",
+    success: false,
+    tiers: [],
+  } as never);
+  await open();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "codexOauth.reauthLogin person@example.test",
+    }),
+  );
+  expect(managedAccounts.reauthAccount).toHaveBeenCalledWith("managed");
+});
+
+it("refreshes repaired credentials and model observations without discarding unsaved choices", async () => {
+  managedAccounts.rows = [
+    { id: "managed", login: "person@example.test", reauth_required: true },
+  ];
+  const draftEditor = {
+    ...upstream,
+    codex: {
+      ...codex,
+      settings: { ...codex.settings, accounts: ["managed"] },
+      accounts: [
+        { ...codex.accounts[0], id: "managed", native: false, ready: false },
+      ],
+    },
+  };
+  vi.mocked(routingUpstreamsApi.editor).mockResolvedValue(draftEditor as never);
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const invalidate = vi.spyOn(client, "invalidateQueries");
+  const view = mount(client);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "common.edit Synthetic Codex" }),
+  );
+  await screen.findByRole("dialog");
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "codexOauth.reauthLogin person@example.test",
+    }),
+  );
+  managedAccounts.rows = [
+    { id: "managed", login: "person@example.test", reauth_required: false },
+  ];
+  managedAccounts.loginCompletion = { accountId: "managed", generation: 1 };
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <RoutingUpstreamsPanel />
+    </QueryClientProvider>,
+  );
+  await waitFor(() =>
+    expect(routingUpstreamsApi.codexQuota).toHaveBeenCalledWith("managed"),
+  );
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ["routing-upstreams"] });
+  expect(screen.queryByText("codexOauth.reauthBadge")).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("checkbox", { name: "person@example.test" }),
+  ).toBeChecked();
+  expect(screen.getByRole("button", { name: "model-a" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(routingUpstreamsApi.editor).toHaveBeenCalledTimes(1);
+});
+
+it("selects the repaired native alias in the draft while preserving model choices", async () => {
+  managedAccounts.rows = [
+    { id: "managed", login: "person@example.test", reauth_required: false },
+  ];
+  vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+    ...upstream,
+    codex: {
+      ...codex,
+      accounts: [{ ...codex.accounts[0], aliases: ["managed"] }],
+    },
+  } as never);
+  vi.mocked(routingUpstreamsApi.codexQuota).mockImplementation(
+    async (account) =>
+      ({
+        credentialStatus: account === "native" ? "expired" : "valid",
+        success: account !== "native",
+        tiers: [],
+      }) as never,
+  );
+  vi.mocked(routingUpstreamsApi.saveCodex).mockResolvedValue(upstream);
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const view = mount(client);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "common.edit Synthetic Codex" }),
+  );
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "codexOauth.reauthLogin person@example.test",
+    }),
+  );
+  managedAccounts.loginCompletion = { accountId: "managed", generation: 1 };
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <RoutingUpstreamsPanel />
+    </QueryClientProvider>,
+  );
+  await waitFor(() =>
+    expect(routingUpstreamsApi.codexQuota).toHaveBeenCalledWith("managed"),
+  );
+  expect(
+    screen.getAllByRole("checkbox", { name: "person@example.test" }),
+  ).toHaveLength(1);
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+  await waitFor(() =>
+    expect(routingUpstreamsApi.saveCodex).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        accounts: ["managed"],
+        models: codex.settings.models,
+      }),
+    ),
+  );
+});
+it("starts re-login directly from the provider row when credentials are logged out", async () => {
+  managedAccounts.rows = [
+    { id: "managed", login: "person@example.test", reauth_required: true },
+  ];
+  vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+    { ...upstream, reauthRequired: true },
+  ] as never);
+  vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+    ...upstream,
+    codex: {
+      ...codex,
+      settings: { ...codex.settings, accounts: ["managed"] },
+      accounts: [
+        { ...codex.accounts[0], id: "managed", native: false, ready: false },
+      ],
+    },
+  } as never);
+  mount();
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "codexOauth.reauthLogin Synthetic Codex",
+    }),
+  );
+  await screen.findByRole("dialog");
+  await waitFor(() =>
+    expect(managedAccounts.reauthAccount).toHaveBeenCalledWith("managed"),
+  );
+  expect(managedAccounts.addAccount).not.toHaveBeenCalled();
+});
+
+it("keeps model editing and closing available while a browser login waits", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const view = mount(client);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "common.edit Synthetic Codex" }),
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: "codexProvider.addAccount" }),
+  );
+  managedAccounts.isAddingAccount = true;
+  managedAccounts.pollingState = "polling";
+  managedAccounts.deviceCode = {
+    user_code: "SYNTHETIC-CODE",
+    verification_uri: "https://example.test/device",
+  };
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <RoutingUpstreamsPanel />
+    </QueryClientProvider>,
+  );
+  const dialog = within(screen.getByRole("dialog"));
+  expect(dialog.getByRole("button", { name: "model-a" })).toBeEnabled();
+  expect(dialog.getByRole("button", { name: "common.save" })).toBeEnabled();
+  const cancels = dialog.getAllByRole("button", { name: "common.cancel" });
+  expect(cancels.at(-1)).toBeEnabled();
+  expect(
+    dialog.queryByRole("button", { name: "codexProvider.addAccount" }),
+  ).not.toBeInTheDocument();
+  fireEvent.click(cancels[0]);
+  expect(managedAccounts.cancelAuth).toHaveBeenCalledOnce();
+});
+
+it("keeps a new Codex provider as a draft until save and discards it on cancellation", async () => {
+  vi.mocked(routingUpstreamsApi.list).mockResolvedValue([]);
+  vi.mocked(routingUpstreamsApi.createCodex).mockResolvedValue({
+    ...upstream,
+    id: "new-fixture",
+    revision: 0,
+    name: "ChatGPT / Codex",
+    codex,
+  } as never);
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const view = mount(client);
+  const add = await screen.findByRole("button", { name: "modelProviders.add" });
+  await waitFor(() => expect(add).toBeEnabled());
+  fireEvent.click(add);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "ChatGPT / Codex" }),
+  );
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(routingUpstreamsApi.createCodex).not.toHaveBeenCalled();
+  managedAccounts.loginCompletion = { accountId: "native", generation: 1 };
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <RoutingUpstreamsPanel />
+    </QueryClientProvider>,
+  );
+  const dialog = await screen.findByRole("dialog", { name: "ChatGPT / Codex" });
+  expect(routingUpstreamsApi.editor).not.toHaveBeenCalled();
+  expect(routingUpstreamsApi.saveCodex).not.toHaveBeenCalled();
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "common.cancel" }),
+  );
+  expect(routingUpstreamsApi.saveCodex).not.toHaveBeenCalled();
+});
+
+it("adds an account from the subscription picker before opening the existing Codex provider", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const view = mount(client);
+  const add = await screen.findByRole("button", { name: "modelProviders.add" });
+  await waitFor(() => expect(add).toBeEnabled());
+  fireEvent.click(add);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "ChatGPT / Codex" }),
+  );
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(routingUpstreamsApi.editor).not.toHaveBeenCalled();
+  managedAccounts.loginCompletion = { accountId: "native", generation: 1 };
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <RoutingUpstreamsPanel />
+    </QueryClientProvider>,
+  );
+  await screen.findByRole("dialog", { name: "Synthetic Codex" });
+  expect(routingUpstreamsApi.createCodex).not.toHaveBeenCalled();
+  expect(routingUpstreamsApi.editor).toHaveBeenCalledWith("fixture", 2);
+});
+
+it("selects a newly authenticated account inside the existing draft without creating a provider", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const view = mount(client);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "common.edit Synthetic Codex" }),
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: "codexProvider.addAccount" }),
+  );
+  managedAccounts.rows = [
+    { id: "new-account", login: "new@example.test", reauth_required: false },
+  ];
+  managedAccounts.loginCompletion = { accountId: "new-account", generation: 1 };
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <RoutingUpstreamsPanel />
+    </QueryClientProvider>,
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("checkbox", { name: "new@example.test" }),
+    ).toBeChecked(),
+  );
+  expect(screen.getByRole("button", { name: "model-a" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(routingUpstreamsApi.createCodex).not.toHaveBeenCalled();
+  expect(routingUpstreamsApi.saveCodex).not.toHaveBeenCalled();
+});
+
+it("cancels a browser login immediately when the editor closes", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const view = mount(client);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "common.edit Synthetic Codex" }),
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: "codexProvider.addAccount" }),
+  );
+  managedAccounts.isAddingAccount = true;
+  managedAccounts.deviceCode = {
+    user_code: "SYNTHETIC",
+    verification_uri: "https://example.test/device",
+  };
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <RoutingUpstreamsPanel />
+    </QueryClientProvider>,
+  );
+  fireEvent.click(
+    within(screen.getByRole("dialog"))
+      .getAllByRole("button", { name: "common.cancel" })
+      .at(-1)!,
+  );
+  await waitFor(() => expect(managedAccounts.cancelAuth).toHaveBeenCalled());
+  expect(routingUpstreamsApi.saveCodex).not.toHaveBeenCalled();
+});
+
+it("starts browser login by default and renders its complete panel inside the account list", async () => {
+  const start = vi.fn().mockResolvedValue(undefined);
+  const submit = vi.fn();
+  managedAccounts.browser = {
+    start,
+    cancel: vi.fn().mockResolvedValue(undefined),
+    reopen: vi.fn(),
+    submit,
+    isPending: false,
+    starting: false,
+  };
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const view = mount(client);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "common.edit Synthetic Codex" }),
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: "codexProvider.addAccount" }),
+  );
+  await waitFor(() => expect(start).toHaveBeenCalledWith(undefined, ""));
+  expect(managedAccounts.addAccount).not.toHaveBeenCalled();
+  managedAccounts.browser.flow = {
+    id: "synthetic-browser-flow",
+    url: "https://auth.openai.com/oauth/authorize?state=synthetic",
+    status: "waiting",
+    callbackBlocked: false,
+  };
+  managedAccounts.browser.isPending = true;
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <RoutingUpstreamsPanel />
+    </QueryClientProvider>,
+  );
+  const panel = screen.getByRole("region", { name: "codexBrowser.title" });
+  expect(panel.closest(".cx-accounts")).not.toBeNull();
+  expect(
+    within(panel).getByRole("textbox", {
+      name: "codexBrowser.authorizationUrl",
+    }),
+  ).toHaveValue("https://auth.openai.com/oauth/authorize?state=synthetic");
+  fireEvent.change(
+    within(panel).getByRole("textbox", { name: "codexBrowser.callbackUrl" }),
+    {
+      target: {
+        value:
+          "http://localhost:1455/auth/callback?state=synthetic&code=synthetic",
+      },
+    },
+  );
+  fireEvent.click(
+    within(panel).getByRole("button", { name: "codexBrowser.finish" }),
+  );
+  expect(submit).toHaveBeenCalledWith(
+    "http://localhost:1455/auth/callback?state=synthetic&code=synthetic",
+  );
+  expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
+});
+
+it.each(["cancel", "device"] as const)(
+  "does not open a delayed browser login after %s",
+  async (action) => {
+    let release!: () => void;
+    managedAccounts.cancelAuth.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const start = vi.fn().mockResolvedValue(undefined);
+    managedAccounts.browser = {
+      start,
+      cancel: vi.fn().mockResolvedValue(undefined),
+      reopen: vi.fn(),
+      submit: vi.fn(),
+      isPending: false,
+      starting: false,
+    };
+    await open();
+    fireEvent.click(
+      screen.getByRole("button", { name: "codexProvider.addAccount" }),
+    );
+    const panel = within(
+      screen.getByRole("region", { name: "codexBrowser.title" }),
+    );
+    fireEvent.click(
+      panel.getByRole("button", {
+        name: action === "cancel" ? "common.cancel" : "codexBrowser.deviceWay",
+      }),
+    );
+    await act(async () => release());
+    expect(start).not.toHaveBeenCalled();
+    if (action === "device") {
+      expect(managedAccounts.addAccount).toHaveBeenCalledWith("");
+    } else {
+      expect(
+        screen.queryByRole("region", { name: "codexBrowser.title" }),
+      ).toBeNull();
+    }
+  },
+);
+
+it("shows account restrictions and credits without inventing percentage windows", async () => {
+  vi.mocked(routingUpstreamsApi.codexQuota).mockResolvedValue({
+    tool: "codex",
+    credentialStatus: "valid",
+    success: true,
+    tiers: [],
+    codex: {
+      allowed: false,
+      limitReached: true,
+      modelUsage: {},
+      credits: { balance: "25.5" },
+    },
+  } as never);
+  await open();
+  expect(await screen.findByText("codexProvider.quotaHeld")).toBeVisible();
+  expect(screen.getByText("codexProvider.creditBalance")).toBeVisible();
+  expect(screen.queryByText("codexProvider.remaining")).not.toBeInTheDocument();
+  expect(
+    screen.queryByText("codexProvider.quotaEmpty"),
+  ).not.toBeInTheDocument();
+});
+
+it("keeps the empty-window status when account metadata contains no displayed quota", async () => {
+  vi.mocked(routingUpstreamsApi.codexQuota).mockResolvedValue({
+    tool: "codex",
+    credentialStatus: "valid",
+    success: true,
+    tiers: [],
+    codex: { allowed: true, modelUsage: {} },
+  } as never);
+  await open();
+  expect(await screen.findByText("codexProvider.quotaEmpty")).toBeVisible();
+  expect(screen.queryByText("codexProvider.quotaHeld")).not.toBeInTheDocument();
 });

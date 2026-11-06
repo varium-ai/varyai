@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { UpstreamIcon } from "./UpstreamIcon";
 import { ProviderIconField } from "./ProviderIconField";
+import { subscriptionProviders } from "@/config/subscriptionProviders";
 import { settingsApi } from "@/lib/api/settings";
 import type { RoutingUpstream } from "@/lib/api/routingUpstreams";
 import type { FetchedModel } from "@/lib/api/model-fetch";
@@ -69,6 +70,8 @@ export function ProviderEditorDialog({
   region,
   regions,
   allowedFormats,
+  startReauth = false,
+  onReauthStarted,
   onDraftChange,
   onEnabledChange,
   onModelsChange,
@@ -101,6 +104,8 @@ export function ProviderEditorDialog({
   region: string;
   regions: Array<{ id: string; name: string }>;
   allowedFormats?: Partial<Record<Format, string>>;
+  startReauth?: boolean;
+  onReauthStarted?: () => void;
   onDraftChange: (value: RoutingUpstream) => void;
   onEnabledChange: (enabled: boolean) => void;
   onModelsChange: (value: string) => void;
@@ -283,9 +288,11 @@ export function ProviderEditorDialog({
       draft.codex
         ? "https://chatgpt.com"
         : draft.source.kind === "subscription"
-          ? draft.source.provider === "github_copilot"
-            ? "https://github.com"
-            : "https://grok.com"
+          ? (subscriptionProviders.find(
+              (provider) =>
+                draft.source.kind === "subscription" &&
+                provider.id === draft.source.provider,
+            )?.website ?? "")
           : (source?.baseUrl ?? ""),
     );
     if (["https:", "http:"].includes(url.protocol)) site = url.origin;
@@ -454,8 +461,11 @@ export function ProviderEditorDialog({
                 )}
               {draft.source.kind === "subscription" && (
                 <SubscriptionProviderFields
+                  editorOpen={open}
                   draft={draft}
                   disabled={busy || probing}
+                  startReauth={startReauth}
+                  onReauthStarted={onReauthStarted}
                   onChange={onDraftChange}
                   onError={onError}
                   onBusyChange={setAccountBusy}
@@ -463,8 +473,11 @@ export function ProviderEditorDialog({
               )}
               {draft.codex && (
                 <CodexProviderFields
+                  editorOpen={open}
                   draft={draft}
                   disabled={busy || probing}
+                  startReauth={startReauth}
+                  onReauthStarted={onReauthStarted}
                   onChange={onDraftChange}
                   onError={onError}
                   onBusyChange={setAccountBusy}

@@ -5,9 +5,16 @@ use serde_json::Value;
 pub(super) fn visible_reasoning(item: &Value) -> bool {
     item["type"] == "reasoning"
         && item.as_object().is_some_and(|fields| {
-            fields
-                .keys()
-                .all(|key| ["type", "id", "status", "summary"].contains(&key.as_str()))
+            fields.iter().all(|(key, value)| match key.as_str() {
+                "type" | "id" | "status" | "summary" => true,
+                // Codex replays absent optional state as null and adds harness
+                // metadata. Neither creates an opaque continuation dependency.
+                "content" | "encrypted_content" => value.is_null(),
+                "internal_chat_message_metadata_passthrough" => {
+                    value.is_null() || value.is_object()
+                }
+                _ => false,
+            })
         })
         && item
             .get("status")

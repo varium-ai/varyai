@@ -30,7 +30,6 @@ export function RoutingPackets({
     row: Trace;
     paths: string[];
     color?: string;
-    holdOffset?: number;
   }[];
   onFinished?: (id: string) => void;
   active: boolean;
@@ -58,7 +57,6 @@ function PacketFlight({
   row,
   paths,
   color,
-  holdOffset = 0,
   active,
   replay,
   speed,
@@ -67,7 +65,6 @@ function PacketFlight({
   row?: Trace;
   paths: string[];
   color?: string;
-  holdOffset?: number;
   active: boolean;
   replay: boolean;
   speed: number;
@@ -90,8 +87,8 @@ function PacketFlight({
     player.current?.update(row, active, replay, speed);
   }, [row, active, replay, speed]);
   useEffect(() => {
-    player.current?.layout(holdOffset);
-  }, [paths, holdOffset]);
+    player.current?.layout();
+  }, [paths]);
   return (
     <g
       ref={svg}
@@ -101,6 +98,14 @@ function PacketFlight({
       <g className="rt-packet" visibility="hidden">
         <circle className="rt-packet-halo" r="10" />
         <circle className="pkt" r="4.5" />
+        <g
+          className="rt-packet-count"
+          visibility="hidden"
+          transform="translate(0 -18)"
+        >
+          <rect x="-12" y="-8" width="24" height="16" rx="8" />
+          <text textAnchor="middle" dominantBaseline="central" />
+        </g>
       </g>
       {paths.map((path, index) => (
         <path className="rt-packet-path" d={path} key={index} />
@@ -109,8 +114,32 @@ function PacketFlight({
   );
 }
 
+// Only waiting packets share a marker; each request keeps its own flight lifecycle.
+function syncWaitingPackets(sky: SVGSVGElement | null) {
+  if (!sky) return;
+  const groups = new Map<string, SVGGElement[]>();
+  for (const packet of sky.querySelectorAll<SVGGElement>("[data-held-wire]")) {
+    const key = packet.getAttribute("data-held-wire")!;
+    const group = groups.get(key) ?? [];
+    group.push(packet);
+    groups.set(key, group);
+  }
+  for (const group of groups.values()) {
+    group.forEach((packet, index) => {
+      packet.setAttribute("visibility", index === 0 ? "visible" : "hidden");
+      const badge = packet.querySelector(".rt-packet-count")!;
+      badge.setAttribute(
+        "visibility",
+        index === 0 && group.length > 1 ? "visible" : "hidden",
+      );
+      badge.querySelector("text")!.textContent = String(group.length);
+    });
+  }
+}
+
 function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
   const packet = svg.querySelector<SVGGElement>(".rt-packet")!;
+  const sky = svg.ownerSVGElement;
   const media = window.matchMedia?.("(prefers-reduced-motion: reduce)");
   let reduced = media?.matches ?? false;
   let id: string | undefined;
@@ -129,12 +158,21 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
   let elapsed = 0;
   let frame: number | undefined;
   let disposed = false;
-  let holdOffset = 0;
   const wires = () => [
     ...svg.querySelectorAll<SVGPathElement>(".rt-packet-path"),
   ];
 
+  function leaveHold() {
+    const wasHeld = packet.hasAttribute("data-held-wire");
+    packet.removeAttribute("data-held-wire");
+    packet.classList.remove("held");
+    packet
+      .querySelector(".rt-packet-count")!
+      .setAttribute("visibility", "hidden");
+    if (wasHeld) syncWaitingPackets(sky);
+  }
   function hide() {
+    leaveHold();
     packet.setAttribute("visibility", "hidden");
     packet.classList.remove("held", "back", "err", "cancelled");
   }
@@ -158,7 +196,7 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
     destination = "source";
     hide();
   }
-  function pose(legs: Leg[], progress: number, inset = 0) {
+  function pose(legs: Leg[], progress: number, waiting = false) {
     const paths = wires();
     if (
       !legs.length ||
@@ -179,7 +217,8 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
     const total = lengths.reduce((sum, length) => sum + length, 0);
     if (!Number.isFinite(total) || total <= 0) return false;
     let distance = total * Math.max(0, Math.min(progress, 1));
-    if (inset) distance = Math.max(total * 0.15, distance - inset);
+    // Keep the halo outside the destination card, even in the compact tray.
+    if (waiting) distance = Math.max(total / 2, total - 14);
     let index = 0;
     while (index < legs.length - 1 && distance > lengths[index]) {
       distance -= lengths[index++];
@@ -193,13 +232,7 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
       return false;
     }
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
-    const slot = Math.ceil(inset / 12);
-    const offset =
-      inset > total * 0.85 ? (slot % 2 ? 1 : -1) * Math.ceil(slot / 2) * 8 : 0;
-    packet.setAttribute(
-      "transform",
-      `translate(${point.x} ${point.y + offset})`,
-    );
+    packet.setAttribute("transform", `translate(${point.x} ${point.y})`);
     packet.setAttribute("visibility", "visible");
     return true;
   }
@@ -207,7 +240,14 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
     if (ended && position === "source") reportFinished();
     if (!allowed || reduced || ended || position === "source") return hide();
     const wire = position === "hub" ? 0 : position + 1;
-    if (pose([{ wire }], 1, holdOffset)) packet.classList.add("held");
+    if (pose([{ wire }], 1, true)) {
+      packet.classList.add("held");
+      packet.setAttribute(
+        "data-held-wire",
+        wires()[wire].getAttribute("d") ?? "",
+      );
+      syncWaitingPackets(sky);
+    } else hide();
   }
   function schedule() {
     if (
@@ -228,7 +268,7 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
       packet.classList.toggle("back", !!flight.back);
       packet.classList.toggle("err", !!flight.error);
       packet.classList.toggle("cancelled", !!flight.cancelled);
-      packet.classList.remove("held");
+      leaveHold();
       elapsed = (time - started) * rate;
       if (!pose(flight.legs, elapsed / flight.duration)) {
         // Geometry may arrive a render later. Layout resumes the same flight.
@@ -370,8 +410,7 @@ function packetPlayer(svg: SVGGElement, onFinished: (id: string) => void) {
   media?.addEventListener("change", motion);
   return {
     update,
-    layout(offset = 0) {
-      holdOffset = offset;
+    layout() {
       if (flight) {
         pose(flight.legs, elapsed / flight.duration);
         schedule();

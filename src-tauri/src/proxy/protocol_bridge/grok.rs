@@ -1,4 +1,4 @@
-//! Grok tool-schema compatibility: Rust regex patterns and non-null required lists.
+//! Grok tool-schema compatibility: local references, regex patterns and required lists.
 use serde_json::Value;
 
 pub(in crate::proxy) fn normalize_tool_schemas(body: &mut Value) {
@@ -17,11 +17,78 @@ pub(in crate::proxy) fn normalize_tool_schemas(body: &mut Value) {
         for tool in tools {
             for path in ["/parameters", "/function/parameters", "/input_schema"] {
                 if let Some(schema) = tool.pointer_mut(path) {
+                    let mut expanded = schema.clone();
+                    if expand_local_refs(&mut expanded, schema, 0, &mut 16_384) {
+                        *schema = expanded;
+                    }
                     normalize_schema(schema);
                 }
             }
         }
     }
+}
+
+fn expand_local_refs(schema: &mut Value, root: &Value, depth: usize, budget: &mut usize) -> bool {
+    // Keep the original schema if expansion is recursive, scoped or too large.
+    if depth >= 64 || *budget == 0 {
+        return false;
+    }
+    *budget -= 1;
+    if [
+        "$id",
+        "$anchor",
+        "$dynamicAnchor",
+        "$dynamicRef",
+        "$recursiveRef",
+    ]
+    .iter()
+    .any(|key| schema.get(key).is_some())
+    {
+        return false;
+    }
+    if !visit_schema_children(schema, &mut |child| {
+        expand_local_refs(child, root, depth + 1, budget)
+    }) {
+        return false;
+    }
+    let Some(reference) = schema.get("$ref") else {
+        return true;
+    };
+    let Some(pointer) = reference.as_str().and_then(|value| value.strip_prefix('#')) else {
+        return false;
+    };
+    let Some(target) = pointer
+        .starts_with('/')
+        .then(|| root.pointer(pointer))
+        .flatten()
+    else {
+        return false;
+    };
+    if !target.is_object() && !target.is_boolean() {
+        return false;
+    }
+    let mut target = target.clone();
+    if !expand_local_refs(&mut target, root, depth + 1, budget) {
+        return false;
+    }
+    let Some(object) = schema.as_object_mut() else {
+        return false;
+    };
+    object.remove("$ref");
+    if object.is_empty() {
+        *schema = target;
+    } else {
+        // A reference and its siblings are intersected, never overwritten.
+        let Some(all_of) = object
+            .entry("allOf")
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+        else {
+            return false;
+        };
+        all_of.push(target);
+    }
+    true
 }
 
 fn normalize_schema(schema: &mut Value) {
@@ -34,6 +101,16 @@ fn normalize_schema(schema: &mut Value) {
     if let Some(Value::String(pattern)) = object.get_mut("pattern") {
         *pattern = rust_pattern(pattern);
     }
+    visit_schema_children(schema, &mut |child| {
+        normalize_schema(child);
+        true
+    });
+}
+
+fn visit_schema_children(schema: &mut Value, visit: &mut impl FnMut(&mut Value) -> bool) -> bool {
+    let Some(object) = schema.as_object_mut() else {
+        return true;
+    };
     // Visit only schema-bearing keywords. Examples, defaults, const and enum
     // contain user data, including properties literally named "pattern".
     for key in [
@@ -45,7 +122,9 @@ fn normalize_schema(schema: &mut Value) {
     ] {
         if let Some(Value::Object(children)) = object.get_mut(key) {
             for child in children.values_mut() {
-                normalize_schema(child);
+                if !visit(child) {
+                    return false;
+                }
             }
         }
     }
@@ -69,13 +148,16 @@ fn normalize_schema(schema: &mut Value) {
         if let Some(child) = object.get_mut(key) {
             if let Value::Array(children) = child {
                 for child in children {
-                    normalize_schema(child);
+                    if !visit(child) {
+                        return false;
+                    }
                 }
-            } else {
-                normalize_schema(child);
+            } else if !visit(child) {
+                return false;
             }
         }
     }
+    true
 }
 
 fn rust_pattern(pattern: &str) -> String {
@@ -196,18 +278,56 @@ mod tests {
     }
 
     #[test]
+    fn grok_object_refs_expand_in_nullable_properties_and_array_items() {
+        let record = json!({"type":"object","properties":{
+            "description":{"type":"string"},"title":{"type":"string"}
+        },"required":["description","title"],"additionalProperties":false});
+        let schema = json!({"type":"object","properties":{
+            "record":{"anyOf":[{"$ref":"#/$defs/Record"},{"type":"null"}]},
+            "records":{"type":"array","items":{"$ref":"#/$defs/Record"}}
+        },"$defs":{"Record":record},"additionalProperties":false,
+        "examples":[{"description":{"$ref":"#/$defs/Record"}}]});
+        for path in ["parameters", "input_schema"] {
+            let mut body = json!({"model":"grok-4.5","tools":[{path:schema}]});
+            normalize_tool_schemas(&mut body);
+            let actual = &body["tools"][0][path];
+            assert_eq!(actual["properties"]["record"]["anyOf"][0], record);
+            assert_eq!(actual["properties"]["records"]["items"], record);
+            assert_eq!(actual["examples"], schema["examples"]);
+            assert_eq!(actual["additionalProperties"], false);
+        }
+    }
+
+    #[test]
     fn grok_recursive_unresolved_external_or_scoped_refs_are_not_discarded() {
         for schema in [
             json!({"type":"object","properties":{"item":{"$ref":"#/$defs/loop"}},"$defs":{"loop":{"$ref":"#/$defs/loop"}}}),
             json!({"type":"object","properties":{"item":{"$ref":"#/$defs/missing"}}}),
             json!({"type":"object","properties":{"item":{"$ref":"https://example.invalid/synthetic-schema"}}}),
             json!({"type":"object","properties":{"item":{"$ref":"#/$defs/item"}},"$defs":{"item":{"$id":"synthetic-scope","type":"string"}}}),
+            json!({"$id":"https://example.invalid/synthetic-scope","type":"object","properties":{"item":{"$ref":"#/$defs/item"}},"$defs":{"item":{"type":"string"}}}),
         ] {
             let mut body = json!({"model":"grok-4.5","tools":[{"parameters":schema}]});
             let original = body.clone();
             normalize_tool_schemas(&mut body);
             assert_eq!(body, original);
         }
+    }
+
+    #[test]
+    fn grok_ref_expansion_is_bounded_and_preserves_the_original_on_overflow() {
+        let mut schema = json!({"$ref":"#/$defs/item0","$defs":{}});
+        schema["$defs"]["item0"] = json!({"type":"string"});
+        for index in 1..16 {
+            let previous = format!("#/$defs/item{}", index - 1);
+            schema["$defs"][format!("item{index}")] =
+                json!({"anyOf":[{"$ref":previous},{"$ref":previous}]});
+        }
+        schema["$ref"] = json!("#/$defs/item15");
+        let mut body = json!({"model":"grok-4.5","tools":[{"parameters":schema}]});
+        let original = body.clone();
+        normalize_tool_schemas(&mut body);
+        assert_eq!(body, original);
     }
 
     #[test]
