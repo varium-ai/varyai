@@ -77,61 +77,104 @@ async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
         )?;
         assert_eq!(first.model_map, second.model_map, "{app}");
     }
-    let desktop_dir = dir.path().join("Library/Application Support");
-    let normal = desktop_dir.join("Claude/claude_desktop_config.json");
-    let threep = desktop_dir.join("Claude-3p/claude_desktop_config.json");
-    fs::create_dir_all(normal.parent().ok_or("parent")?)?;
-    fs::write(&normal,json!({"mcpServers":{"edited":{"command":"synthetic-original"},"removed":{"command":"synthetic-original"}}}).to_string())?;
-    fs::write(
-        normal.with_file_name("config.json"),
-        json!({"locale":"ja-JP"}).to_string(),
-    )?;
-    let manager = Manager {
-        root: dir.path().join("desktop-receipts"),
-    };
-    manager.install(manager.build("claude-desktop", &menu, "http://127.0.0.1:1", selected)?)?;
-    let mut live: Value = serde_json::from_str(&fs::read_to_string(&threep)?)?;
-    live["mcpServers"]["edited"]["command"] = json!("synthetic-user-change");
-    live["mcpServers"]
-        .as_object_mut()
-        .ok_or("servers")?
-        .remove("removed");
-    fs::write(&threep, live.to_string())?;
-    fs::remove_file(threep.with_file_name("config.json"))?;
-    fs::remove_file(normal.with_file_name("config.json"))?;
-    manager.refresh("claude-desktop", &menu, "http://127.0.0.1:1")?;
-    let refreshed: Value = serde_json::from_str(&fs::read_to_string(&threep)?)?;
-    assert!(refreshed["mcpServers"].get("removed").is_none());
-    assert!(!threep.with_file_name("config.json").exists());
-    manager.disconnect("claude-desktop")?;
-    let restored: Value = serde_json::from_str(&fs::read_to_string(&threep)?)?;
-    assert_eq!(
-        restored["mcpServers"]["edited"]["command"],
-        "synthetic-user-change"
-    );
-    assert!(restored["mcpServers"].get("removed").is_none());
-    let profile = desktop_dir
-        .join("Claude-3p/configLibrary")
-        .join(format!("{}.json", crate::claude_desktop_config::PROFILE_ID));
-    fs::write(
-        &profile,
-        json!({"toolSearchEnabled":false,"customSetting":true}).to_string(),
-    )?;
-    manager.install(manager.build("claude-desktop", &menu, "http://127.0.0.1:1", selected)?)?;
-    let mut value: Value = serde_json::from_str(&fs::read_to_string(&profile)?)?;
-    assert_eq!(value["toolSearchEnabled"], false);
-    value
-        .as_object_mut()
-        .ok_or("profile")?
-        .remove("toolSearchEnabled");
-    fs::write(&profile, value.to_string())?;
-    manager.refresh("claude-desktop", &menu, "http://127.0.0.1:1")?;
-    manager.disconnect("claude-desktop")?;
-    let restored: Value = serde_json::from_str(&fs::read_to_string(&profile)?)?;
-    assert!(restored.get("toolSearchEnabled").is_none());
-    manager.install(manager.build("claude-desktop", &menu, "http://127.0.0.1:1", selected)?)?;
-    let reconnected: Value = serde_json::from_str(&fs::read_to_string(&profile)?)?;
-    assert!(reconnected.get("toolSearchEnabled").is_none());
-    manager.disconnect("claude-desktop")?;
+    #[cfg(not(any(target_os = "macos", windows)))]
+    assert!(matches!(
+        build("claude-desktop", &menu, "http://127.0.0.1:1", selected),
+        Err(error) if error == FAILED
+    ));
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        let desktop_dir = if cfg!(windows) {
+            dir.path().join("AppData/Local")
+        } else {
+            dir.path().join("Library/Application Support")
+        };
+        let normal_dir = if cfg!(windows) {
+            dir.path().join("AppData/Roaming/Claude")
+        } else {
+            desktop_dir.join("Claude")
+        };
+        let normal = normal_dir.join("claude_desktop_config.json");
+        let threep = desktop_dir.join("Claude-3p/claude_desktop_config.json");
+        fs::create_dir_all(normal.parent().ok_or("parent")?)?;
+        fs::write(&normal,json!({"mcpServers":{"edited":{"command":"synthetic-original"},"removed":{"command":"synthetic-original"}}}).to_string())?;
+        fs::write(
+            normal.with_file_name("config.json"),
+            json!({"locale":"ja-JP"}).to_string(),
+        )?;
+        let manager = Manager {
+            root: dir.path().join("desktop-receipts"),
+        };
+        manager.install(manager.build(
+            "claude-desktop",
+            &menu,
+            "http://127.0.0.1:1",
+            selected,
+        )?)?;
+        let mut live: Value = serde_json::from_str(&fs::read_to_string(&threep)?)?;
+        assert_eq!(
+            live["mcpServers"]["edited"]["command"],
+            "synthetic-original"
+        );
+        assert_eq!(
+            live["mcpServers"]["removed"]["command"],
+            "synthetic-original"
+        );
+        let locale: Value =
+            serde_json::from_str(&fs::read_to_string(threep.with_file_name("config.json"))?)?;
+        assert_eq!(locale["locale"], "ja-JP");
+        live["mcpServers"]["edited"]["command"] = json!("synthetic-user-change");
+        live["mcpServers"]
+            .as_object_mut()
+            .ok_or("servers")?
+            .remove("removed");
+        fs::write(&threep, live.to_string())?;
+        fs::remove_file(threep.with_file_name("config.json"))?;
+        fs::remove_file(normal.with_file_name("config.json"))?;
+        manager.refresh("claude-desktop", &menu, "http://127.0.0.1:1")?;
+        let refreshed: Value = serde_json::from_str(&fs::read_to_string(&threep)?)?;
+        assert!(refreshed["mcpServers"].get("removed").is_none());
+        assert!(!threep.with_file_name("config.json").exists());
+        manager.disconnect("claude-desktop")?;
+        let restored: Value = serde_json::from_str(&fs::read_to_string(&threep)?)?;
+        assert_eq!(
+            restored["mcpServers"]["edited"]["command"],
+            "synthetic-user-change"
+        );
+        assert!(restored["mcpServers"].get("removed").is_none());
+        let profile = desktop_dir
+            .join("Claude-3p/configLibrary")
+            .join(format!("{}.json", crate::claude_desktop_config::PROFILE_ID));
+        fs::write(
+            &profile,
+            json!({"toolSearchEnabled":false,"customSetting":true}).to_string(),
+        )?;
+        manager.install(manager.build(
+            "claude-desktop",
+            &menu,
+            "http://127.0.0.1:1",
+            selected,
+        )?)?;
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(&profile)?)?;
+        assert_eq!(value["toolSearchEnabled"], false);
+        value
+            .as_object_mut()
+            .ok_or("profile")?
+            .remove("toolSearchEnabled");
+        fs::write(&profile, value.to_string())?;
+        manager.refresh("claude-desktop", &menu, "http://127.0.0.1:1")?;
+        manager.disconnect("claude-desktop")?;
+        let restored: Value = serde_json::from_str(&fs::read_to_string(&profile)?)?;
+        assert!(restored.get("toolSearchEnabled").is_none());
+        manager.install(manager.build(
+            "claude-desktop",
+            &menu,
+            "http://127.0.0.1:1",
+            selected,
+        )?)?;
+        let reconnected: Value = serde_json::from_str(&fs::read_to_string(&profile)?)?;
+        assert!(reconnected.get("toolSearchEnabled").is_none());
+        manager.disconnect("claude-desktop")?;
+    }
     Ok(())
 }

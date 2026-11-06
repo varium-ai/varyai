@@ -69,6 +69,12 @@ Provider tests that read Hermes configuration must isolate `HERMES_HOME` and
 values afterward. Hermes uses `LOCALAPPDATA` on Windows, so changing `HOME` alone
 can leave providers from earlier tests visible to later tests.
 
+Shared Agent projection tests run portable client assertions on every platform.
+Claude Desktop fixtures use `Library/Application Support` on macOS and separate
+`AppData/Roaming/Claude` input files from `AppData/Local/Claude-3p` output files on
+Windows, all under the temporary test home. Linux must assert that Desktop
+projection is rejected while retaining the portable client coverage.
+
 The Qoder TLS listener owns its accepted connection tasks and cancels and joins
 them during shutdown. Its certificate test keeps both an immediate same-address
 rebind assertion and pending TLS handshakes to verify that stopping the listener

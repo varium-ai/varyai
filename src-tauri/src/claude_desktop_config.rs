@@ -2747,7 +2747,7 @@ pub(crate) fn shared_catalog_edits(
             all.extend(files);
             mapping.extend(models);
         }
-        return Ok((all, mapping));
+        Ok((all, mapping))
     }
     #[cfg(not(windows))]
     {

@@ -126,6 +126,7 @@ pub(super) fn restore(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
 
     fn fixture(
         home: &Path,

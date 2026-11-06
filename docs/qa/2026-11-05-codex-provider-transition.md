@@ -63,3 +63,30 @@ CI must be checked against the exact revision after pushing.
 
 Detailed command logs and per-file SHA-256 fingerprints were retained locally in
 `/tmp/varyai-magpie-compare.1SHNh8/verification.json` at verification time.
+
+## Windows CI follow-up
+
+The Windows Clippy job for `3839ed09adeaa36b6712a07f3c2c5266c92fac59`
+reported an unused `File` import in the thread-transition module and an unnecessary
+`return` in the Windows Desktop catalog branch. Its Clippy version was 1.99.0.
+The repair qualifies the Unix directory-sync file access, imports `File` inside
+the paginated tests, and uses the Windows block's tail expression.
+
+The checked parent is `2c1bf374711c4b23805eca31155c40ca68d909af`, which also includes the
+subsequent routing-animation update and main-branch synchronization. Its Rust tree
+is identical to the initial checked revision before this three-file repair.
+The checked Rust-file fingerprint is `14f40b3a30c673545e44f0bd1735bcf8efe639e6106ee209e3ecca473ce5bbb3`.
+No checked source changed during the successful follow-up runs.
+
+On macOS arm64 with Rust/Cargo 1.98.1 and the frontend toolchain above:
+
+- `cargo check`, `cargo fmt --check`, and Clippy with `-D warnings`: passed.
+- `cargo test --lib`: 6,025 passed, 18 ignored.
+- Full `cargo test`: 16 binaries, 6,188 passed, 18 ignored.
+- `pnpm typecheck`, `pnpm build:renderer`, and `pnpm format:check`: passed.
+- `pnpm test:unit`: 279 files, 3,471 tests passed.
+
+Cargo commands use `--manifest-path src-tauri/Cargo.toml`, as above. Helper and
+production-audit inputs have not changed since the successful checks recorded
+above. Windows execution and the CI toolchain still require the new revision's
+remote checks; an earlier revision's failed or cancelled runs do not validate it.

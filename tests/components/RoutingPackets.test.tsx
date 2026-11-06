@@ -89,11 +89,14 @@ it("flies a glowing dot through both wires, holds for the real response, and ret
     /translate\((?!0 )/,
   );
   expect(view.container.querySelector(".rt-flier,.wing,.body")).toBeNull();
+  expect(
+    view.container.querySelector(".rt-packet-count,.rt-packet-halo"),
+  ).toBeNull();
   finishFlights();
   expect(point(view.container)).toHaveClass("held");
   expect(point(view.container)).toHaveAttribute(
     "transform",
-    "translate(186 0)",
+    "translate(194 0)",
   );
   const held = point(view.container);
   view.rerender(
@@ -125,7 +128,7 @@ it("flies a glowing dot through both wires, holds for the real response, and ret
   expect(point(view.container)).toHaveClass("back");
   expect(point(view.container)).not.toHaveAttribute(
     "transform",
-    "translate(186 0)",
+    "translate(194 0)",
   );
   finishFlights();
   expect(point(view.container)).toHaveAttribute("visibility", "hidden");
@@ -172,14 +175,14 @@ it("returns a rejected attempt to the hub before moving to the next recorded can
   frame(300);
   expect(point(view.container)).toHaveClass("back", "err");
   expect(point(view.container)?.getAttribute("transform")).not.toBe(
-    "translate(186 86)",
+    "translate(194 94)",
   );
   finishFlights();
   expect(point(view.container)).toHaveClass("held");
   expect(point(view.container)).not.toHaveClass("err");
   expect(point(view.container)).toHaveAttribute(
     "transform",
-    "translate(186 86)",
+    "translate(194 94)",
   );
 });
 
@@ -213,7 +216,7 @@ it("keeps historical selections still, while explicit replay follows only the su
     />,
   );
   finishFlights();
-  expect(point(view.container)).toHaveAttribute("transform", "translate(86 0)");
+  expect(point(view.container)).toHaveAttribute("transform", "translate(94 0)");
 });
 
 it("tracks new wire geometry while held and cancels all work when hidden, reduced, or unmounted", () => {
@@ -228,7 +231,7 @@ it("tracks new wire geometry while held and cancels all work when hidden, reduce
   );
   expect(point(view.container)).toHaveAttribute(
     "transform",
-    "translate(186 86)",
+    "translate(194 94)",
   );
   view.rerender(
     <RoutingPackets row={{ ...request, id: "next" }} paths={paths} active />,
@@ -320,44 +323,43 @@ it("finishes an older response while a newer request starts its own flight", () 
   expect(nextPacket).toHaveAttribute("visibility", "visible");
 });
 
-it("aggregates waiting requests on a short wire without moving dots off the wire", () => {
-  vi.spyOn(
-    SVGElement.prototype as SVGPathElement,
-    "getTotalLength",
-  ).mockReturnValue(24);
-  const flights = Array.from({ length: 12 }, (_, index) => ({
-    row: { ...request, id: `synthetic-${index}` },
-    paths,
-  }));
-  const view = render(
-    <RoutingPackets paths={paths} flights={flights} active />,
-  );
-  finishFlights();
-  const packets = [...view.container.querySelectorAll(".rt-packet")];
-  expect(packets).toHaveLength(12);
-  expect(packets.every((packet) => packet.classList.contains("held"))).toBe(
-    true,
-  );
-  expect(
-    packets.every(
-      (packet) => packet.getAttribute("transform") === "translate(112 0)",
-    ),
-  ).toBe(true);
-  expect(
-    packets.filter((packet) => packet.getAttribute("visibility") === "visible"),
-  ).toHaveLength(1);
-  expect(packets[0].querySelector(".rt-packet-count")).toHaveAttribute(
-    "visibility",
-    "visible",
-  );
-  expect(packets[0].querySelector(".rt-packet-count text")).toHaveTextContent(
-    "12",
-  );
-  expect(callbacks.size).toBe(0);
-});
+it.each([
+  [24, 118],
+  [12, 109],
+])(
+  "keeps concurrent dots at Magpie's wire tip for length %i without badges or offsets",
+  (length, x) => {
+    vi.spyOn(
+      SVGElement.prototype as SVGPathElement,
+      "getTotalLength",
+    ).mockReturnValue(length);
+    const flights = Array.from({ length: 12 }, (_, index) => ({
+      row: { ...request, id: `synthetic-${index}` },
+      paths,
+    }));
+    const view = render(
+      <RoutingPackets paths={paths} flights={flights} active />,
+    );
+    finishFlights();
+    const packets = [...view.container.querySelectorAll(".rt-packet")];
+    expect(packets).toHaveLength(12);
+    for (const packet of packets) {
+      expect(packet).toHaveClass("held");
+      expect(packet).toHaveAttribute("visibility", "visible");
+      expect(packet).toHaveAttribute("transform", `translate(${x} 0)`);
+    }
+    expect(
+      view.container.querySelector(
+        "text,rect,.rt-packet-count,.rt-packet-halo",
+      ),
+    ).toBeNull();
+    expect(callbacks.size).toBe(0);
+  },
+);
 
-it("updates the waiting count when a request returns and promotes a remaining request on removal", () => {
+it("lets a concurrent request return without resetting or hiding another waiting dot", () => {
   const second = { ...request, id: "second-request" };
+  const finished = vi.fn();
   const view = render(
     <RoutingPackets
       paths={paths}
@@ -365,20 +367,17 @@ it("updates the waiting count when a request returns and promotes a remaining re
         { row: request, paths },
         { row: second, paths },
       ]}
+      onFinished={finished}
       active
     />,
   );
   finishFlights();
   const packets = [...view.container.querySelectorAll(".rt-packet")];
-  expect(packets[0].querySelector(".rt-packet-count text")).toHaveTextContent(
-    "2",
-  );
   const completed: RoutingTrace = {
     ...second,
     state: "completed",
     steps: [...second.steps, { kind: "completed", atMs: 2000, candidate: 0 }],
   };
-  const finished = vi.fn();
   view.rerender(
     <RoutingPackets
       paths={paths}
@@ -394,90 +393,50 @@ it("updates the waiting count when a request returns and promotes a remaining re
   frame(300);
   expect(packets[1]).toHaveClass("back");
   expect(packets[1]).toHaveAttribute("visibility", "visible");
-  expect(packets[1].querySelector(".rt-packet-count")).toHaveAttribute(
-    "visibility",
-    "hidden",
-  );
+  expect(packets[0]).toHaveClass("held");
   expect(packets[0]).toHaveAttribute("visibility", "visible");
-  expect(packets[0].querySelector(".rt-packet-count")).toHaveAttribute(
-    "visibility",
-    "hidden",
-  );
+  expect(packets[0]).toHaveAttribute("transform", "translate(194 0)");
   finishFlights();
   expect(finished).toHaveBeenCalledExactlyOnceWith(second.id);
-  const third = { ...request, id: "third-request" };
   view.rerender(
-    <RoutingPackets
-      paths={paths}
-      flights={[
-        { row: request, paths },
-        { row: third, paths },
-      ]}
-      active
-    />,
+    <RoutingPackets paths={paths} flights={[{ row: request, paths }]} active />,
   );
-  finishFlights();
-  view.rerender(
-    <RoutingPackets paths={paths} flights={[{ row: third, paths }]} active />,
-  );
+  expect(point(view.container)).toBe(packets[0]);
   expect(point(view.container)).toHaveAttribute("visibility", "visible");
-  expect(
-    point(view.container)?.querySelector(".rt-packet-count"),
-  ).toHaveAttribute("visibility", "hidden");
 });
 
-it("groups by the actual waiting wire rather than a request-local candidate index", () => {
-  const sameTarget: RoutingTrace = {
-    ...request,
-    id: "same-target",
-    steps: [{ kind: "attempt", atMs: 5, candidate: 1 }],
-  };
-  const differentTarget = { ...request, id: "different-target" };
-  const planning = { ...request, id: "planning", steps: [] };
+it("uses Magpie's plain 3.5px tray dots and 420/460ms trips without birds or badges", () => {
   const view = render(
+    <RoutingPackets row={request} paths={paths} active compact />,
+  );
+  frame(0);
+  frame(420);
+  frame(460);
+  expect(point(view.container)).toHaveClass("held");
+  expect(point(view.container)).toHaveAttribute(
+    "transform",
+    "translate(200 0)",
+  );
+  expect(view.container.querySelector(".pkt")).toHaveAttribute("r", "3.5");
+  expect(
+    view.container.querySelector(".rt-flier,text,rect,.rt-packet-halo"),
+  ).toBeNull();
+  view.rerender(
     <RoutingPackets
+      row={{ ...request, state: "completed" }}
       paths={paths}
-      flights={[
-        { row: request, paths },
-        { row: sameTarget, paths: [paths[0], paths[2], paths[1]] },
-        { row: differentTarget, paths: [paths[0], paths[2]] },
-        { row: planning, paths },
-      ]}
       active
+      compact
     />,
   );
-  finishFlights();
-  const packets = [...view.container.querySelectorAll(".rt-packet")];
-  expect(packets[0].querySelector(".rt-packet-count text")).toHaveTextContent(
-    "2",
-  );
-  expect(packets[1]).toHaveAttribute("visibility", "hidden");
-  expect(packets[2]).toHaveAttribute("visibility", "visible");
-  expect(packets[3]).toHaveAttribute("visibility", "visible");
-  expect(packets[2].querySelector(".rt-packet-count")).toHaveAttribute(
-    "visibility",
-    "hidden",
-  );
-  expect(packets[3].querySelector(".rt-packet-count")).toHaveAttribute(
-    "visibility",
-    "hidden",
-  );
+  frame(0);
+  frame(840);
+  expect(point(view.container)).toHaveAttribute("visibility", "hidden");
 });
 
-it("counts only arrived packets and keeps independent stages separate", () => {
+it("repositions every waiting dot on resize and keeps stages independent", () => {
   const second = { ...request, id: "second-request" };
   const view = render(
-    <>
-      <RoutingPackets
-        paths={paths}
-        flights={[{ row: request, paths }]}
-        active
-      />
-      <RoutingPackets row={request} paths={paths} active />
-    </>,
-  );
-  finishFlights();
-  view.rerender(
     <>
       <RoutingPackets
         paths={paths}
@@ -487,26 +446,11 @@ it("counts only arrived packets and keeps independent stages separate", () => {
         ]}
         active
       />
-      <RoutingPackets row={request} paths={paths} active />
+      <RoutingPackets row={request} paths={paths} active compact />
     </>,
   );
-  frame(0);
-  frame(300);
-  const packets = [...view.container.querySelectorAll(".rt-packet")];
-  expect(packets[1]).not.toHaveClass("held");
-  expect(packets[0].querySelector(".rt-packet-count")).toHaveAttribute(
-    "visibility",
-    "hidden",
-  );
   finishFlights();
-  expect(packets[0].querySelector(".rt-packet-count text")).toHaveTextContent(
-    "2",
-  );
-  expect(packets[2]).toHaveAttribute("visibility", "visible");
-  expect(packets[2].querySelector(".rt-packet-count")).toHaveAttribute(
-    "visibility",
-    "hidden",
-  );
+  const packets = [...view.container.querySelectorAll(".rt-packet")];
   const moved = [paths[0], paths[2]];
   view.rerender(
     <>
@@ -518,15 +462,15 @@ it("counts only arrived packets and keeps independent stages separate", () => {
         ]}
         active
       />
-      <RoutingPackets row={request} paths={paths} active />
+      <RoutingPackets row={request} paths={paths} active compact />
     </>,
   );
-  expect(packets[0]).toHaveAttribute("transform", "translate(186 86)");
-  expect(packets[0].querySelector(".rt-packet-count text")).toHaveTextContent(
-    "2",
-  );
-  expect(packets[1]).toHaveAttribute("visibility", "hidden");
-  expect(packets[2]).toHaveAttribute("transform", "translate(186 0)");
+  expect(packets[0]).toHaveAttribute("transform", "translate(194 94)");
+  expect(packets[1]).toHaveAttribute("transform", "translate(194 94)");
+  expect(packets[2]).toHaveAttribute("transform", "translate(200 0)");
+  expect(
+    packets.every((packet) => packet.getAttribute("visibility") === "visible"),
+  ).toBe(true);
 });
 
 it("animates a recently completed long request based on its finish time", () => {
