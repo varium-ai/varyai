@@ -1192,9 +1192,21 @@ pub(crate) async fn handle(
         Ok(b) => b,
         Err(_) => return fail(StatusCode::PAYLOAD_TOO_LARGE, "routing_body_limit"),
     };
-    let original = match super::pi::json::parse(&bytes) {
+    let mut original = match super::pi::json::parse(&bytes) {
         Ok(v) if v.is_object() => v,
         _ => return fail(StatusCode::BAD_REQUEST, "routing_invalid_json"),
+    };
+    let bytes = if menu.is_some() {
+        match state
+            .intent_runtime
+            .native
+            .canonicalize_model(bytes, &mut original)
+        {
+            Ok(bytes) => bytes,
+            Err(code) => return fail(StatusCode::BAD_REQUEST, code),
+        }
+    } else {
+        bytes
     };
     let session = menu
         .as_ref()
@@ -2269,6 +2281,18 @@ async fn execute(
                 ) => {
                     return fail(StatusCode::BAD_REQUEST, "routing_conversion_unsupported");
                 }
+                Err(super::ProxyError::UpstreamError { status, body }) => {
+                    // Classify only into fixed codes. Never log or return the body.
+                    let code = super::protocol_bridge::grok::rejection_code(
+                        body.as_deref().unwrap_or_default().as_bytes(),
+                    );
+                    log::warn!("[Intent] Upstream rejected converted request: status={status}, code={code}");
+                    return fail(
+                        StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+                        code,
+                    );
+                }
+                Err(super::ProxyError::SafeUpstream(error)) => return error.to_response(),
                 Err(_) => {
                     return fail(
                         StatusCode::BAD_GATEWAY,

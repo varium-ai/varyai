@@ -329,6 +329,54 @@ fn visible_reasoning_ids_do_not_claim_opaque_continuation_ownership() {
 }
 
 #[test]
+fn codex_visible_reasoning_with_null_fields_and_metadata_is_portable() {
+    let summary = json!({
+        "type":"reasoning","id":"synthetic-prior-model-item",
+        "summary":[{"type":"summary_text","text":"Synthetic visible thought"}],
+        "content":null,"encrypted_content":null,
+        "internal_chat_message_metadata_passthrough":{"turn_id":"synthetic-prior-turn"}
+    });
+    let bindings = Bindings::default();
+    let body = json!({"input":[summary]});
+    assert!(length::visible_reasoning(&body["input"][0]));
+    assert_eq!(bindings.resolve(&body, None), Ok(None));
+    assert!(bindings.known_opaque(&body));
+    assert!(length::portable(&body));
+    let conversations = scopes::Conversations::default();
+    assert!(conversations
+        .acquire("synthetic-codex", &Arc::default(), None, &body)
+        .is_ok());
+    for patch in [
+        json!({"encrypted_content":"synthetic-sealed-state"}),
+        json!({"encrypted_content":{}}),
+        json!({"content":[{"type":"unknown_state","data":"synthetic"}]}),
+        json!({"internal_chat_message_metadata_passthrough":"synthetic-invalid"}),
+        json!({"summary":[]}),
+        json!({"signature":"synthetic-seal"}),
+    ] {
+        let mut invalid = body.clone();
+        for (key, value) in patch.as_object().unwrap() {
+            invalid["input"][0][key] = value.clone();
+        }
+        assert!(!length::visible_reasoning(&invalid["input"][0]));
+        assert!(bindings.resolve(&invalid, None).is_err());
+        assert!(!bindings.known_opaque(&invalid));
+        assert!(!length::portable(&invalid));
+    }
+    for dependency in [
+        json!({"previous_response_id":"synthetic-unknown-response"}),
+        json!({"input":[body["input"][0],{"type":"item_reference","id":"synthetic-unknown-item"}]}),
+        json!({"input":[body["input"][0],{"type":"function_call_output","call_id":"synthetic-unknown-call","output":"synthetic"}]}),
+    ] {
+        let mut dependent = body.clone();
+        for (key, value) in dependency.as_object().unwrap() {
+            dependent[key] = value.clone();
+        }
+        assert!(bindings.resolve(&dependent, None).is_err());
+    }
+}
+
+#[test]
 fn fragmented_sse_records_ids_without_rewriting_frames() {
     let mut bindings = Bindings::default();
     let mut observer = Observer::default();

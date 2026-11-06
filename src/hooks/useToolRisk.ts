@@ -37,7 +37,12 @@ function useWriteNotice() {
     const auditUnavailable = receipt.auditStatus === "audit_unavailable";
     if (runtimeFailed) toast.warning(t("toolRisk.savedNotApplied"));
     if (auditUnavailable) toast.warning(t("toolRisk.auditUnavailable"));
-    if (!runtimeFailed && !auditUnavailable && successKey)
+    if (
+      !runtimeFailed &&
+      !auditUnavailable &&
+      receipt.auditStatus !== "not_needed" &&
+      successKey
+    )
       toast.success(t(successKey));
   };
 }

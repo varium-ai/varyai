@@ -21,7 +21,7 @@ fn trusted_url(app: &str, raw: &str) -> Option<reqwest::Url> {
         "qoder" => &["static.qoder.com.cn"],
         "doubaowork" => &["lf9-apk.ugapk.cn", "lf6-apk.ugapk.cn", "lf3-apk.ugapk.cn"],
         "trae" => &["lf-cdn.trae.com.cn"],
-        "kimi" => &["code.kimi.com"],
+        "kimi" => &["code.kimi.com", "cdn.kimi.com"],
         "zcode" => &["cdn-zcode.z.ai", "cdn.codegeex.cn"],
         "deepseek-harness" => &["download.deepseek.com"],
         _ => return None,
@@ -291,6 +291,25 @@ mod tests {
         }
         assert!(trusted_url("kimi", "https://code.kimi.com/kimi-code/desktop/a.zip").is_some());
         assert!(trusted_url("unknown", "https://code.kimi.com/a.zip").is_none());
+    }
+
+    #[test]
+    fn kimi_download_redirect_accepts_only_its_official_https_cdn() {
+        assert!(trusted_url(
+            "kimi",
+            "https://cdn.kimi.com/kimi-code/desktop/binaries/1.3.0/KimiCode-1.3.0-mac-arm64.zip"
+        )
+        .is_some());
+        for url in [
+            "http://cdn.kimi.com/app.zip",
+            "https://cdn.kimi.com.evil.test/app.zip",
+            "https://user@cdn.kimi.com/app.zip",
+            "https://cdn.kimi.com:8443/app.zip",
+            "https://cdn.kimi.com/app.zip#fragment",
+        ] {
+            assert!(trusted_url("kimi", url).is_none());
+        }
+        assert!(trusted_url("qoder", "https://cdn.kimi.com/app.zip").is_none());
     }
 
     #[test]

@@ -76,6 +76,7 @@ pub(crate) struct ModelTest {
 
 fn new_codex_draft() -> RoutingUpstream {
     RoutingUpstream {
+        notes: None,
         icon: None,
         transport: None,
         schema_version: 1,

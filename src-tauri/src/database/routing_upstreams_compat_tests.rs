@@ -6,6 +6,7 @@ use serde_json::json;
 
 fn custom() -> RoutingUpstream {
     RoutingUpstream {
+        notes: None,
         icon: None,
         transport: None,
         schema_version: 1,
@@ -28,6 +29,32 @@ fn custom() -> RoutingUpstream {
             auth_type: None,
         },
     }
+}
+
+#[test]
+fn provider_notes_survive_save_edit_and_do_not_enter_upstream_configuration(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db = Database::memory()?;
+    let mut raw = serde_json::to_value(custom())?;
+    raw["notes"] = json!("Synthetic original provider note");
+    let saved = db.save_routing_upstream(serde_json::from_value(raw)?)?;
+    let editor = db.routing_upstream_editor(&saved.id, saved.revision)?;
+    let mut updated = serde_json::to_value(&editor)?;
+    assert_eq!(updated["notes"], "Synthetic original provider note");
+    updated["notes"] = json!("Synthetic revised provider note");
+    let saved = db.save_routing_upstream(serde_json::from_value(updated)?)?;
+    let reloaded = db.routing_upstream_editor(&saved.id, saved.revision)?;
+    assert_eq!(
+        serde_json::to_value(&reloaded)?["notes"],
+        "Synthetic revised provider note"
+    );
+    assert!(!format!("{reloaded:?}").contains("provider note"));
+    let executable = db.routing_discovery_provider(&reloaded.id, reloaded.revision)?;
+    assert!(!executable
+        .settings_config
+        .to_string()
+        .contains("provider note"));
+    Ok(())
 }
 
 #[test]

@@ -195,10 +195,12 @@ pub(super) fn parse_part(protocol: Protocol, part: &Value) -> Result<Option<Part
             "server_tool_use" if part["name"] == "web_search" => Some(Part::Search {
                 query: text(&part["input"]["query"]),
                 hits: Vec::new(),
+                gemini: None,
             }),
             "web_search_tool_result" => Some(Part::Search {
                 query: String::new(),
                 hits: part["content"].as_array().cloned().ok_or_else(invalid)?,
+                gemini: None,
             }),
             _ => return Err(invalid()),
         },
@@ -264,12 +266,35 @@ pub(super) fn parse_part(protocol: Protocol, part: &Value) -> Result<Option<Part
                     .as_array()
                     .cloned()
                     .unwrap_or_default(),
+                gemini: None,
             }),
             _ => return Err(invalid()),
         },
         Protocol::Gemini => {
             let signature = optional(&part["thoughtSignature"]);
-            if let Some(call) = part.get("functionCall") {
+            if let Some(tool) = part.get("toolCall").or_else(|| part.get("toolResponse")) {
+                if !matches!(
+                    tool["toolType"].as_str(),
+                    Some("GOOGLE_SEARCH_WEB" | "GOOGLE_SEARCH_IMAGE")
+                ) {
+                    return Err(invalid());
+                }
+                let query = match part.pointer("/toolCall/args/queries") {
+                    None => String::new(),
+                    Some(value) => value
+                        .as_array()
+                        .ok_or_else(invalid)?
+                        .iter()
+                        .map(required)
+                        .collect::<Result<Vec<_>, _>>()?
+                        .join("\n"),
+                };
+                Some(Part::Search {
+                    query,
+                    hits: Vec::new(),
+                    gemini: Some(part.clone()),
+                })
+            } else if let Some(call) = part.get("functionCall") {
                 Some(Part::ToolCall {
                     id: optional(&call["id"])
                         .unwrap_or_else(|| format!("call_{}", uuid::Uuid::new_v4().simple())),
@@ -502,7 +527,17 @@ pub(crate) fn parse(protocol: Protocol, body: &Value) -> Result<Reply, ProxyErro
     Ok(result)
 }
 pub(super) fn part(protocol: Protocol, p: &Part, index: usize) -> Option<Value> {
-    if let Part::Search { query, hits } = p {
+    if let Part::Search {
+        query,
+        hits,
+        gemini,
+    } = p
+    {
+        if protocol == Protocol::Gemini {
+            if let Some(native) = gemini {
+                return Some(native.clone());
+            }
+        }
         if protocol == Protocol::Responses {
             return Some(
                 json!({"type":"web_search_call","id":format!("ws_{index}"),"status":"completed","action":{"type":"search","query":query,"sources":hits}}),
@@ -810,7 +845,7 @@ pub(crate) fn render(protocol: Protocol, reply: &Reply) -> Result<Value, ProxyEr
             for p in &reply.parts {
                 match p{
                 Part::Text{text,..}=>content.push_str(text),Part::Thinking{text,..}=>reasoning.push_str(text),
-                Part::Search{query,hits}=>{content.push_str(&format!("[Web search: {query}]\n"));for hit in hits{content.push_str(&format!("{}: {}\n",hit["title"].as_str().unwrap_or_default(),hit["url"].as_str().unwrap_or_default()));}},
+                Part::Search{query,hits,..}=>{content.push_str(&format!("[Web search: {query}]\n"));for hit in hits{content.push_str(&format!("{}: {}\n",hit["title"].as_str().unwrap_or_default(),hit["url"].as_str().unwrap_or_default()));}},
                 Part::File{media_type,url,..}=>content.push_str(&if let Some(url)=url{format!("[attachment {media_type}: {url}]")}else{format!("[attachment {media_type}]")}),
                 Part::NamespacedToolCall{id,namespace,name,arguments,..}=>calls.push(json!({"id":id,"type":"function","function":{"name":flatten_namespace_tool_name(namespace,name),"arguments":arguments.to_string()}})),
                 Part::CustomToolCall{id,name,input,namespace}=>calls.push(json!({"id":id,"type":"function","function":{"name":namespace.as_ref().map(|ns|flatten_namespace_tool_name(ns,name)).unwrap_or_else(||name.clone()),"arguments":json!({"input":input}).to_string()}})),
@@ -827,6 +862,15 @@ pub(crate) fn render(protocol: Protocol, reply: &Reply) -> Result<Value, ProxyEr
             json!({"id":reply.id,"object":"chat.completion","created":chrono::Utc::now().timestamp(),"model":reply.model,"choices":[{"index":0,"message":message,"finish_reason":render_stop(protocol,&reply.stop)}],"usage":usage})
         }
     })
+}
+
+#[cfg(test)]
+pub(super) fn gemini_search_fixture() -> Value {
+    json!({"responseId":"synthetic-search-response","modelVersion":"gemini-3.6-flash","candidates":[{"content":{"role":"model","parts":[
+        {"toolCall":{"toolType":"GOOGLE_SEARCH_WEB","id":"synthetic-search","args":{"queries":["synthetic query"]}},"thoughtSignature":"synthetic-call-signature"},
+        {"toolResponse":{"toolType":"GOOGLE_SEARCH_WEB","id":"synthetic-search","response":{"search_suggestions":"Synthetic result"}},"thoughtSignature":"synthetic-result-signature"},
+        {"text":"Synthetic answer","thoughtSignature":"synthetic-answer-signature"}
+    ]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2}})
 }
 
 #[cfg(test)]
@@ -962,6 +1006,32 @@ mod tests {
             assert!(!error.contains("synthetic-private-detail"));
         }
     }
+    #[test]
+    fn gemini_combined_server_search_is_not_a_client_function_call() {
+        let input = gemini_search_fixture();
+        let parsed = parse(Protocol::Gemini, &input).unwrap();
+        assert_eq!(parsed.stop, "stop");
+        let native = render(Protocol::Gemini, &parsed).unwrap();
+        assert_eq!(
+            native["candidates"][0]["content"]["parts"],
+            input["candidates"][0]["content"]["parts"]
+        );
+        let client = render(Protocol::Responses, &parsed).unwrap();
+        assert_eq!(client["output"][0]["type"], "web_search_call");
+        assert_eq!(client["output"][0]["action"]["query"], "synthetic query");
+        assert_eq!(client["output"][1]["type"], "web_search_call");
+        assert!(!client.to_string().contains("synthetic-call-signature"));
+        assert!(!client["output"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["type"] == "function_call"));
+        let mut invalid = input;
+        invalid["candidates"][0]["content"]["parts"][0]["toolCall"]["toolType"] =
+            json!("UNSUPPORTED_TOOL");
+        assert!(parse(Protocol::Gemini, &invalid).is_err());
+    }
+
     #[test]
     fn native_gemini_parallel_calls_without_ids_get_unique_ids_for_every_client() {
         let input = json!({"candidates":[{"content":{"parts":[{"functionCall":{"name":"first","args":{"value":1}}},{"functionCall":{"name":"second","args":{"value":2}}}]},"finishReason":"STOP"}]});

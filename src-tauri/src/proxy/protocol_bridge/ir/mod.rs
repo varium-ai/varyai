@@ -79,6 +79,8 @@ pub(crate) enum Part {
     Search {
         query: String,
         hits: Vec<Value>,
+        // Native server-tool state is replayed only inside its Gemini scope.
+        gemini: Option<Value>,
     },
 }
 

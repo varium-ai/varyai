@@ -4,16 +4,20 @@ use crate::proxy::intent::Runtime;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
 use toml_edit::DocumentMut;
 
+mod aliases;
 mod health;
 mod thread_lifecycle;
 mod threads;
 pub(crate) use health::ConfigurationIssue;
+#[cfg(test)]
+mod alias_tests;
 #[cfg(test)]
 mod mode_tests;
 
@@ -68,6 +72,8 @@ struct Receipt {
     model_aliases: Vec<String>,
     #[serde(default)]
     previous_model_aliases: Vec<String>,
+    #[serde(default)]
+    model_map: BTreeMap<String, String>,
     #[serde(default)]
     native: Option<NativeOwnership>,
     #[serde(default)]
@@ -524,8 +530,18 @@ impl Manager {
         Ok(doc
             .get("model")
             .and_then(toml::Value::as_str)
-            .filter(|alias| receipt.model_aliases.iter().any(|id| id == alias))
-            .map(str::to_owned))
+            .filter(|alias| {
+                receipt.model_aliases.iter().any(|id| id == alias)
+                    || aliases::selected(&receipt.model_aliases, &receipt.model_map, alias)
+                        .is_some()
+            })
+            .map(|alias| {
+                receipt
+                    .model_map
+                    .get(alias)
+                    .cloned()
+                    .unwrap_or_else(|| alias.to_owned())
+            }))
     }
     pub(crate) fn native_owned_url(&self) -> Result<Option<String>, String> {
         let Some(receipt) = self.load()? else {
@@ -761,7 +777,7 @@ impl Manager {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let menu = self.runtime.menu_snapshot()?.filter(|m| m.token == token);
-        let projection = if let Some(menu) = &menu {
+        let mut projection = if let Some(menu) = &menu {
             let mut ids = groups.iter().map(|group| &group.id).collect::<Vec<_>>();
             ids.sort();
             let mut menu_ids = menu
@@ -777,13 +793,12 @@ impl Manager {
         } else {
             catalog(groups, &Default::default(), chosen, &Default::default())?
         };
-        let aliases = projection["models"]
-            .as_array()
-            .ok_or(FAILED)?
-            .iter()
-            .filter_map(|model| model["slug"].as_str())
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
+        let mut model_map = old
+            .as_ref()
+            .or(superseded.as_ref())
+            .map(|receipt| receipt.model_map.clone())
+            .unwrap_or_default();
+        let aliases = aliases::project(&mut projection, &mut model_map)?;
         let first_alias = aliases.first().ok_or("agentConnections.noModels")?;
         let catalog_bytes = serde_json::to_vec_pretty(&projection).map_err(|_| FAILED)?;
         if let Some(receipt) = &superseded {
@@ -827,22 +842,26 @@ impl Manager {
         let current_model = doc.get("model").and_then(|v| v.as_str()).unwrap_or("");
         let keep_native_model = native_mode
             && !current_model.is_empty()
+            && !model_map.contains_key(current_model)
             && !["vary-auto/", "vary-provider/", "auto/"]
                 .iter()
                 .any(|prefix| current_model.starts_with(prefix));
         if let Some(selected) = selected {
-            if !aliases.iter().any(|alias| alias == selected) {
-                return Err("agentConnections.noModels".into());
-            }
+            let selected = aliases::selected(&aliases, &model_map, selected)
+                .ok_or("agentConnections.noModels")?;
             doc["model"] = toml_edit::value(selected);
-        } else if !keep_native_model && !aliases.iter().any(|alias| alias == current_model) {
-            let stand_in = menu.as_ref().and_then(|m| m.stand_in_direct(current_model));
-            let default = stand_in
+        } else if !keep_native_model {
+            let canonical = model_map
+                .get(current_model)
+                .map(String::as_str)
+                .unwrap_or(current_model);
+            let stand_in = menu.as_ref().and_then(|m| m.stand_in_direct(canonical));
+            let default = aliases::selected(&aliases, &model_map, current_model)
+                .or_else(|| stand_in.and_then(|id| aliases::selected(&aliases, &model_map, id)))
                 .or_else(|| {
                     menu.as_ref()
                         .and_then(|m| m.default_model.as_ref())
-                        .filter(|alias| aliases.contains(alias))
-                        .map(String::as_str)
+                        .and_then(|id| aliases::selected(&aliases, &model_map, id))
                 })
                 .unwrap_or(first_alias);
             doc["model"] = toml_edit::value(default);
@@ -919,6 +938,7 @@ impl Manager {
                 .as_ref()
                 .map(|r| r.model_aliases.clone())
                 .unwrap_or_default(),
+            model_map,
             native,
             pre_write: Some(ConfigSnapshot {
                 text: current.clone(),
@@ -942,7 +962,7 @@ impl Manager {
         if let Some(menu) = menu {
             self.runtime
                 .native
-                .publish_menu(menu, projection)
+                .publish_menu(menu, projection, receipt.model_map.clone())
                 .map_err(|_| FAILED)?;
         }
         self.reconcile_thread_receipt(&mut receipt, false)?;
@@ -960,7 +980,9 @@ impl Manager {
         let Some(current) = read(&self.config)? else {
             return Ok(());
         };
-        let Some(disconnected) = disconnect_orphan_text(&current)? else {
+        let Some(disconnected) =
+            disconnect_orphan_text(&current, self.receipt.parent().ok_or(FAILED)?)?
+        else {
             return Ok(());
         };
         // An explicit disconnect can remove recognized routing fields without
@@ -1088,7 +1110,36 @@ fn recognized_orphan_provider(table: &toml::map::Map<String, toml::Value>) -> bo
             })
 }
 
-fn disconnect_orphan_fields(table: &mut dyn toml_edit::TableLike) {
+fn disconnect_orphan_fields(table: &mut dyn toml_edit::TableLike, catalog_root: &Path) {
+    let catalog_path = table
+        .get("model_catalog_json")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| {
+                    name.strip_prefix("vary-routing-catalog-")?
+                        .strip_suffix(".json")
+                })
+                .is_some_and(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        });
+    // Only the private generated catalog can prove ownership of a readable name
+    // after the receipt is lost. External catalogs and unrelated names stay intact.
+    let published_model = catalog_path
+        .as_ref()
+        .filter(|path| path.parent() == Some(catalog_root))
+        .and_then(|path| read(path).ok().flatten())
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .is_some_and(|catalog| {
+            catalog["models"].as_array().is_some_and(|models| {
+                let selected = table.get("model").and_then(|v| v.as_str());
+                selected.is_some()
+                    && models
+                        .iter()
+                        .any(|model| model["slug"].as_str() == selected)
+            })
+        });
     if table.get("model_provider").and_then(|v| v.as_str()) == Some(PROVIDER) {
         table.remove("model_provider");
     }
@@ -1096,28 +1147,20 @@ fn disconnect_orphan_fields(table: &mut dyn toml_edit::TableLike) {
         .get("model")
         .and_then(|v| v.as_str())
         .is_some_and(|model| {
-            ["vary-auto/", "vary-provider/", "auto/"]
-                .iter()
-                .any(|prefix| model.starts_with(prefix))
+            published_model
+                || ["vary-auto/", "vary-provider/", "auto/"]
+                    .iter()
+                    .any(|prefix| model.starts_with(prefix))
         })
     {
         table.remove("model");
     }
-    if table
-        .get("model_catalog_json")
-        .and_then(|v| v.as_str())
-        .and_then(|path| Path::new(path).file_name()?.to_str())
-        .and_then(|name| {
-            name.strip_prefix("vary-routing-catalog-")?
-                .strip_suffix(".json")
-        })
-        .is_some_and(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    {
+    if catalog_path.is_some() {
         table.remove("model_catalog_json");
     }
 }
 
-fn disconnect_orphan_text(current: &str) -> Result<Option<String>, String> {
+fn disconnect_orphan_text(current: &str, catalog_root: &Path) -> Result<Option<String>, String> {
     let value: toml::Value = current.parse().map_err(|_| CONFLICT)?;
     let top_routed = value.get("model_provider").and_then(toml::Value::as_str) == Some(PROVIDER);
     let profile = value.get("profile").and_then(toml::Value::as_str);
@@ -1150,7 +1193,7 @@ fn disconnect_orphan_text(current: &str) -> Result<Option<String>, String> {
     }
     let mut doc: DocumentMut = current.parse().map_err(|_| CONFLICT)?;
     if top_routed || native_routed {
-        disconnect_orphan_fields(doc.as_table_mut());
+        disconnect_orphan_fields(doc.as_table_mut(), catalog_root);
     }
     if profile_routed || (top_routed && profile.is_some()) {
         if let Some(table) = profile
@@ -1159,7 +1202,7 @@ fn disconnect_orphan_text(current: &str) -> Result<Option<String>, String> {
         {
             let provider = table.get("model_provider").and_then(|v| v.as_str());
             if provider.is_none() || provider == Some(PROVIDER) {
-                disconnect_orphan_fields(table);
+                disconnect_orphan_fields(table, catalog_root);
             }
         }
     }
@@ -1284,6 +1327,8 @@ fn restore_text(current: Option<&str>, receipt: &Receipt) -> Result<Option<Strin
                         .iter()
                         .chain(&receipt.previous_model_aliases)
                         .any(|alias| alias == v)
+                        || receipt.model_map.contains_key(v)
+                        || receipt.model_map.values().any(|id| id == v)
                         || receipt
                             .group_ids
                             .iter()

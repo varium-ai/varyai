@@ -78,6 +78,26 @@ describe("global upstream editor", () => {
       ],
     },
   };
+  it("preserves and saves notes in the shared provider editor used by every Agent", async () => {
+    const saved = { ...primary, notes: "Synthetic original note" };
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([saved]);
+    vi.mocked(routingUpstreamsApi.editor).mockResolvedValue(saved);
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    const notes = await screen.findByLabelText("provider.notes");
+    expect(notes).toHaveValue("Synthetic original note");
+    fireEvent.change(notes, { target: { value: "Synthetic revised note" } });
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+        expect.objectContaining({ notes: "Synthetic revised note" }),
+      ),
+    );
+  });
   it.each([
     "ChatGPT Prolite",
     "ChatGPT Promax",

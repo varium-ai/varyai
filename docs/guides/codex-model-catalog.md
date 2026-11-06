@@ -7,8 +7,18 @@ Claude and Codex use the same model-mapping actions: **Fetch Models** loads cand
 Generated catalog data must continue to match the backend TOML/JSON contract. The live client configuration and catalog file must refer to the same provider and model IDs. A model list response does not prove that every listed model is callable or included in an account's quota.
 
 Generated model labels use the model name and supplier name without a VaryAI
-suffix. Routing-group labels keep the group name and group designation. Display
-labels remain separate from the stable model aliases used for requests.
+suffix. Routing-group labels keep the group name and group designation. Codex wire names use readable ASCII slugs derived from those labels, such as
+`grok-4.5-Synthetic`. Non-ASCII characters and separators become hyphens, and
+repeated hyphens collapse. The picker retains the full Unicode display label;
+the CLI model-change notice uses the ASCII wire name. Codex also places that
+name in `x-codex-routing-hint`, whose header conversion rejects non-ASCII text.
+The connection receipt maps each published name to its stable internal model ID. Duplicate names receive a numeric suffix;
+renaming retains the old name, and a retired name is never reassigned to another
+model during that connection. Legacy hash IDs and previously published names remain accepted by the gateway
+and retain hidden catalog metadata for existing conversations. A client session
+still using a Unicode wire name must reselect the model: its header conversion
+can fail before a request reaches the gateway. Internal routing and continuation
+checks still use the stable ID.
 
 The shared Codex connection follows the provider identity behavior reviewed at
 [Magpie revision `465928b`](https://github.com/yetone/magpie/tree/465928bccea4fec3537edd6280f7cabb9a0c5bad).
@@ -59,6 +69,23 @@ VaryAI references require connection recovery; use **Apply again** when a recove
 record exists, or select a shared model to reconnect when the record is missing.
 Restart the client after the complete configuration has been restored, then send
 a new message and check VaryAI's request statistics.
+
+Recent Codex CLI versions can connect to a shared app-server daemon whose version
+differs from the CLI executable. Check `codex app-server daemon version` when
+`/model` shows only bundled official models even though the gateway publishes
+custom models. The native adapter supports 0.114, 0.165, 0.166 and 0.167; an
+unsupported daemon receives `routing_native_client_unsupported`. On CLI 0.166,
+`codex --no-daemon` uses a fresh embedded server without restarting the shared
+daemon. Open `/model` and **All models** when the quick auto-model menu appears.
+A daemon retaining older login credentials can also receive HTTP 401 after a
+credential change. For the same account, its `getAuthStatus` RPC with
+`refreshToken: true` performs a guarded reload before requesting a token refresh.
+A successful reload can restore model discovery without restarting the daemon or
+rewriting login files. Confirm the cached and stored account agree first; do not
+bypass the native account check or replace credentials from a different account.
+Close and reopen an already displayed model picker after discovery recovers. See the
+[readable-alias verification report](../qa/2026-11-06-codex-readable-aliases.md)
+for the tested CLI/daemon versions and remaining acceptance gaps.
 
 Exiting another gateway such as Magpie does not prove that its configuration was
 removed. A preexisting `openai_base_url` can remain after the gateway exits.

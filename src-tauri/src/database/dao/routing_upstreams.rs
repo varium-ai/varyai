@@ -539,6 +539,7 @@ impl Database {
             .into_iter()
             .find(|r| r.id == id);
         self.save_routing_upstream(RoutingUpstream {
+            notes: None,
             icon: provider.icon,
             transport: None,
             schema_version: 1,

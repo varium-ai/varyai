@@ -935,6 +935,9 @@ it("selects the repaired native alias in the draft while preserving model choice
   expect(
     screen.getAllByRole("checkbox", { name: "person@example.test" }),
   ).toHaveLength(1);
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled(),
+  );
   fireEvent.click(screen.getByRole("button", { name: "common.save" }));
   await waitFor(() =>
     expect(routingUpstreamsApi.saveCodex).toHaveBeenCalledWith(

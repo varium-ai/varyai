@@ -689,8 +689,11 @@ impl Manager {
             .unwrap_or(&old.model);
         let visibility = self.visibility_for(app)?;
         if old.suspended {
+            // Suspension already restored the projection, so fields edited after
+            // that point are no longer ours. Keep them as the baseline instead of
+            // failing on the receipt's now-stale original.
             for file in old.files.iter().rev() {
-                file.restore()?;
+                file.restore_fields(true)?;
             }
             let mut next = build_with_token(
                 app,
@@ -1349,6 +1352,102 @@ mod tests {
         );
         assert_eq!(read(&path)?.as_deref(), Some(changed));
         assert!(manager.load("workbuddy")?.is_some());
+        Ok(())
+    }
+    fn fixture_menu() -> Menu {
+        use crate::{
+            proxy::intent::{MenuModel, Session, Target},
+            services::intent_routing::RoutingGroup,
+        };
+        use std::{collections::HashMap, sync::Arc, time::Instant};
+        let group: RoutingGroup = serde_json::from_value(json!({
+            "id":"fixture","name":"Fixture","revision":0,"enabled":true,"members":[],
+            "defaultMemberId":"a","fallbackMemberIds":[],"intentRecognitionEnabled":false,
+            "classifierTarget":null,"classificationBudgetMs":2000,"rules":[]
+        }))
+        .expect("fixture group");
+        let alias = group.alias();
+        let target = Target {
+            provider_id: "fixture".into(),
+            model: "exact".into(),
+            upstream: None,
+            effort: Default::default(),
+            url: "http://127.0.0.1:1/responses".parse().expect("fixture url"),
+            headers: Default::default(),
+            official: false,
+            credentials: None,
+            scheduling: Arc::default(),
+            fixed_effort: None,
+        };
+        Menu {
+            token: String::new(),
+            models: HashMap::from([(
+                alias.clone(),
+                MenuModel {
+                    alias: alias.clone(),
+                    label: "Fixture".into(),
+                    description: "VaryAI routing group",
+                    order: 0,
+                },
+            )]),
+            default_model: Some(alias.clone()),
+            omitted_entries: 0,
+            context_settings: Default::default(),
+            groups: HashMap::from([(
+                alias,
+                Arc::new(Session {
+                    group,
+                    targets: vec![target],
+                    classifier: None,
+                    client: reqwest::Client::new(),
+                    created: Instant::now(),
+                    bindings: Arc::default(),
+                }),
+            )]),
+        }
+    }
+    #[test]
+    fn suspended_receipts_reconnect_after_a_restored_field_is_edited() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "default_model = \"native/one\"\n\n[providers.native]\ntype = \"kimi\"\napi_key = \"synthetic-native\"\n\n[models.\"native/one\"]\nprovider = \"native\"\nmodel = \"one\"\nmax_context_size = 128000\n",
+        )
+        .map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().join("receipts"),
+        };
+        let menu = fixture_menu();
+        let selected = menu.default_model.clone().ok_or(FAILED)?;
+        let origin = "http://127.0.0.1:9";
+        let receipt = crate::services::agent_clients::with_test_config(&path, || {
+            manager.build("kimi", &menu, origin, &selected)
+        })?;
+        manager.install(receipt)?;
+        manager.suspend("kimi")?;
+        assert!(manager
+            .load("kimi")?
+            .is_some_and(|receipt| receipt.suspended));
+        // Kimi Code rewrites default_model when the user picks another model
+        // while the shared projection is suspended.
+        fs::write(
+            &path,
+            "default_model = \"native/two\"\n\n[providers.native]\ntype = \"kimi\"\napi_key = \"synthetic-native\"\n\n[models.\"native/one\"]\nprovider = \"native\"\nmodel = \"one\"\nmax_context_size = 128000\n",
+        )
+        .map_err(|_| FAILED)?;
+        crate::services::agent_clients::with_test_config(&path, || {
+            manager.update("kimi", &menu, origin, Some(&selected))
+        })?
+        .ok_or(FAILED)?;
+        assert!(manager.status("kimi")?.configured);
+        let live = Format::Toml.parse(read(&path)?.as_deref())?;
+        assert_eq!(live["default_model"], json!("Fixture"));
+        assert_eq!(
+            live["providers"]["native"]["api_key"],
+            json!("synthetic-native")
+        );
+        assert!(live["providers"].get("Vary AI").is_some());
         Ok(())
     }
     #[test]

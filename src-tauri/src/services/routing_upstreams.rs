@@ -19,6 +19,8 @@ pub(crate) struct RoutingUpstream {
     pub id: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     pub revision: u32,
     pub source: UpstreamSource,
@@ -758,6 +760,7 @@ mod tests {
                     json!({"model":"exact-model", "modalities":["text"], "custom":{"unmodified":true}}),
                 ];
                 let record = RoutingUpstream {
+                    notes: None,
                     icon: None,
                     transport: None,
                     schema_version: 1,
