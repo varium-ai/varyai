@@ -451,7 +451,8 @@ fn abandoned_rollouts_expire_only_after_their_last_file_activity(
         ),
     )?;
     assert!(activity::busy(dir.path(), since).map_err(|_| "activity")?);
-    fs::File::open(&rollout)?.set_times(
+    // Windows timestamp updates require a writable file handle.
+    fs::File::options().write(true).open(&rollout)?.set_times(
         fs::FileTimes::new().set_modified(now - std::time::Duration::from_secs(40 * 60)),
     )?;
     assert!(!activity::busy(dir.path(), since).map_err(|_| "activity")?);
@@ -474,12 +475,12 @@ fn abandoned_database_turns_expire_by_database_and_wal_activity(
         "INSERT INTO thread_turns VALUES('inProgress', ?1)",
         [started],
     )?;
-    fs::File::open(&db)?.set_times(
+    fs::File::options().write(true).open(&db)?.set_times(
         fs::FileTimes::new().set_modified(now - std::time::Duration::from_secs(40 * 60)),
     )?;
     assert!(activity::busy(dir.path(), since).map_err(|_| "activity")?);
     drop(conn);
-    fs::File::open(&db)?.set_times(
+    fs::File::options().write(true).open(&db)?.set_times(
         fs::FileTimes::new().set_modified(now - std::time::Duration::from_secs(40 * 60)),
     )?;
     assert!(!activity::busy(dir.path(), since).map_err(|_| "activity")?);
