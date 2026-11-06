@@ -657,6 +657,7 @@ mod tests {
             ),
         ] {
             db.save_routing_upstream(RoutingUpstream {
+                notes: None,
                 icon: None,
                 schema_version: 1,
                 id: String::new(),
@@ -1339,6 +1340,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let manager = Arc::new(CodexOAuthManager::new(dir.path().to_owned()));
         let record = RoutingUpstream {
+            notes: None,
             icon: None,
             transport: None,
             schema_version: 1,
@@ -1668,12 +1670,28 @@ mod tests {
         );
         let aliases = menu.groups.keys().cloned().collect::<BTreeSet<_>>();
         let default = menu.default_model.clone().unwrap();
+        let labels = menu
+            .models
+            .values()
+            .map(|model| model.label.replace(" · ", "-"))
+            .collect::<BTreeSet<_>>();
+        let default_label = menu
+            .models
+            .values()
+            .find(|model| model.alias == default)
+            .unwrap()
+            .label
+            .replace(" · ", "-");
         manager
             .activate_menu(Arc::new(menu), "http://127.0.0.1:1/intent/v1")
             .unwrap();
         let text = std::fs::read_to_string(&config).unwrap();
         let value = text.parse::<toml::Value>().unwrap();
-        assert_eq!(value["model"].as_str(), Some(default.as_str()));
+        assert_eq!(value["model"].as_str(), Some(default_label.as_str()));
+        assert_eq!(
+            manager.selected_model().unwrap().as_deref(),
+            Some(default.as_str())
+        );
         let catalog: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(value["model_catalog_json"].as_str().unwrap()).unwrap(),
         )
@@ -1684,7 +1702,15 @@ mod tests {
             .iter()
             .map(|m| m["slug"].as_str().unwrap().to_owned())
             .collect::<BTreeSet<_>>();
-        assert_eq!(actual, aliases);
+        assert_eq!(actual, aliases.union(&labels).cloned().collect());
+        let visible = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|model| model["visibility"] == "list")
+            .map(|model| model["slug"].as_str().unwrap().to_owned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(visible, labels);
         assert!(manager.status().unwrap().group_ids.is_empty());
         let chosen = aliases.iter().find(|alias| **alias != default).unwrap();
         let mut edited = text.parse::<toml_edit::DocumentMut>().unwrap();

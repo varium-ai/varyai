@@ -455,7 +455,7 @@ fn openai_parts(
                 if let Some(name) = name { file["filename"] = json!(name); }
                 out.push(if responses { file["type"] = json!("input_file");file } else { json!({"type":"file","file":file}) });
             }
-            Part::Search { query, hits } => out.push(json!({"type":if responses {"input_text"} else {"text"},"text":format!("{query}\n{}",json!(hits))})),
+            Part::Search { query, hits, .. } => out.push(json!({"type":if responses {"input_text"} else {"text"},"text":format!("{query}\n{}",json!(hits))})),
             Part::ToolReference { name } => out.push(json!({"type":if responses {"input_text"} else {"text"},"text":format!("Tool available: {name}")})),
             Part::Thinking { .. } | Part::ToolCall { .. } | Part::ToolResult { .. }
             | Part::NamespacedToolCall{..} | Part::CustomToolCall{..} | Part::CustomToolResult{..} => {}
@@ -521,9 +521,23 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
         body["stop"] = json!(r.stop);
     }
     let mut tools = Vec::new();
+    let grok = r
+        .model
+        .rsplit('/')
+        .next()
+        .unwrap_or(&r.model)
+        .to_ascii_lowercase()
+        .starts_with("grok");
+    let mut omitted_search = false;
     for t in &r.tools {
         if t.kind == "web_search" {
-            body["web_search_options"] = native_tool(t, Protocol::Chat)?;
+            // Grok retired Chat live search (410). Codex offers search even on
+            // ordinary turns; only Responses can execute Grok's native search.
+            if grok {
+                omitted_search = true;
+            } else {
+                body["web_search_options"] = native_tool(t, Protocol::Chat)?;
+            }
             continue;
         }
         if t.kind != "function" {
@@ -535,14 +549,19 @@ fn chat(r: &Request) -> Result<Value, ProxyError> {
         }
         tools.push(json!({"type":"function","function":f}));
     }
+    if omitted_search && tools.is_empty() && r.tool_choice == Some(ToolChoice::Required) {
+        return Err(invalid());
+    }
     if !tools.is_empty() {
         body["tools"] = json!(tools);
     }
-    if let Some(value) = choice(r, Protocol::Chat) {
-        body["tool_choice"] = value;
-    }
-    if let Some(value) = r.parallel {
-        body["parallel_tool_calls"] = json!(value);
+    if !omitted_search || body.get("tools").is_some() {
+        if let Some(value) = choice(r, Protocol::Chat) {
+            body["tool_choice"] = value;
+        }
+        if let Some(value) = r.parallel {
+            body["parallel_tool_calls"] = json!(value);
+        }
     }
     if let Some(value) = &r.native.user {
         body["user"] = json!(value);
@@ -741,7 +760,7 @@ fn anthropic_parts(parts: &[Part]) -> Result<Vec<Value>, ProxyError> {
                 } else if !text.is_empty() {out.push(json!({"type":"text","text":text}));}
             }
             Part::ToolReference{name}=>out.push(json!({"type":"tool_reference","tool_name":name})),
-            Part::Search{query,hits}=>out.push(json!({"type":"text","text":format!("{query}\n{}",json!(hits))})),
+            Part::Search{query,hits,..}=>out.push(json!({"type":"text","text":format!("{query}\n{}",json!(hits))})),
             Part::NamespacedToolCall{..}|Part::CustomToolCall{..}|Part::CustomToolResult{..}=>return Err(invalid()),
         }
     }
@@ -923,7 +942,13 @@ fn gemini_parts(parts: &[Part]) -> Result<Vec<Value>, ProxyError> {
                 }
                 block
             }
-            Part::Search { query, hits } => json!({"text":format!("{query}\n{}",json!(hits))}),
+            Part::Search {
+                query,
+                hits,
+                gemini,
+            } => gemini
+                .clone()
+                .unwrap_or_else(|| json!({"text":format!("{query}\n{}",json!(hits))})),
             Part::ToolReference { name } => json!({"text":format!("Tool available: {name}")}),
             Part::NamespacedToolCall { .. }
             | Part::CustomToolCall { .. }
@@ -1016,6 +1041,7 @@ fn gemini(r: &Request) -> Result<Value, ProxyError> {
     let declarations = tool_functions(r)
         .map(|t| json!({"name":t.name,"description":t.description,"parametersJsonSchema":t.schema}))
         .collect::<Vec<_>>();
+    let combined = !declarations.is_empty() && r.tools.iter().any(|t| t.kind != "function");
     let mut tools = Vec::new();
     if !declarations.is_empty() {
         tools.push(json!({"functionDeclarations":declarations}));
@@ -1026,8 +1052,17 @@ fn gemini(r: &Request) -> Result<Value, ProxyError> {
     if !tools.is_empty() {
         body["tools"] = json!(tools);
     }
-    if let Some(c) = &r.tool_choice {
+    if combined {
+        body["toolConfig"]["includeServerSideToolInvocations"] = json!(true);
+    }
+    let default_choice = ToolChoice::Auto;
+    if let Some(c) = r
+        .tool_choice
+        .as_ref()
+        .or(combined.then_some(&default_choice))
+    {
         body["toolConfig"]["functionCallingConfig"] = match c {
+            ToolChoice::Auto if combined => json!({"mode":"VALIDATED"}),
             ToolChoice::Auto => json!({"mode":"AUTO"}),
             ToolChoice::None => json!({"mode":"NONE"}),
             ToolChoice::Required => json!({"mode":"ANY"}),
@@ -1257,6 +1292,71 @@ mod tests {
         );
     }
     #[test]
+    fn grok_chat_omits_optional_native_search_but_keeps_function_tools() {
+        for model in ["grok-4.5", "grok-4.7", "xai/GROK-4.6"] {
+            for required in [false, true] {
+                let body = json!({"model":model,"input":"Synthetic prompt","stream":true,
+                    "tools":[{"type":"web_search"},{"type":"function","name":"lookup",
+                        "parameters":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]},"strict":true}],
+                    "tool_choice":if required {"required"} else {"auto"},"parallel_tool_calls":true,
+                    "reasoning":{"effort":"high"}});
+                let parsed =
+                    super::super::parse::request(Protocol::Responses, &body, "/v1/responses")
+                        .unwrap();
+                let chat = request(&parsed, Protocol::Chat).unwrap();
+                assert!(chat.get("web_search_options").is_none());
+                assert_eq!(chat["tools"].as_array().unwrap().len(), 1);
+                assert_eq!(chat["tools"][0]["function"]["name"], "lookup");
+                assert_eq!(
+                    chat["tools"][0]["function"]["parameters"],
+                    body["tools"][1]["parameters"]
+                );
+                assert_eq!(chat["tools"][0]["function"]["strict"], true);
+                assert_eq!(chat["messages"][0]["content"], "Synthetic prompt");
+                assert_eq!(chat["tool_choice"], body["tool_choice"]);
+                assert_eq!(chat["parallel_tool_calls"], true);
+                assert_eq!(chat["reasoning_effort"], "high");
+                assert_eq!(chat["stream"], true);
+                // Native search still belongs to Responses, not the retired Chat API.
+                assert_eq!(
+                    request(&parsed, Protocol::Responses).unwrap()["tools"][0],
+                    body["tools"][0]
+                );
+                let mut other = parsed;
+                other.model = "synthetic-model".into();
+                assert_eq!(
+                    request(&other, Protocol::Chat).unwrap()["web_search_options"],
+                    json!({})
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn grok_chat_does_not_silently_ignore_required_search_or_leave_dangling_choices() {
+        for choice in ["auto", "none", "required"] {
+            let body = json!({"model":"grok-4.5","input":"Synthetic prompt",
+                "tools":[{"type":"web_search"}],"tool_choice":choice,"parallel_tool_calls":true});
+            let parsed =
+                super::super::parse::request(Protocol::Responses, &body, "/v1/responses").unwrap();
+            let result = request(&parsed, Protocol::Chat);
+            if choice == "required" {
+                assert!(result.is_err());
+            } else {
+                let chat = result.unwrap();
+                for key in [
+                    "web_search_options",
+                    "tools",
+                    "tool_choice",
+                    "parallel_tool_calls",
+                ] {
+                    assert!(chat.get(key).is_none(), "unexpected {key}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn web_search_declarations_translate_to_eligible_native_tool_spellings() {
         for (source, body) in [
             (
@@ -1288,6 +1388,53 @@ mod tests {
                 .is_some());
         }
     }
+    #[test]
+    fn gemini_combined_search_and_functions_enable_context_circulation() {
+        let function = json!({"type":"function","name":"synthetic_echo","parameters":{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}});
+        let search = json!({"type":"web_search"});
+        for (choice, mode) in [
+            (None, "VALIDATED"),
+            (Some(json!("auto")), "VALIDATED"),
+            (Some(json!("none")), "NONE"),
+            (Some(json!("required")), "ANY"),
+            (
+                Some(json!({"type":"function","name":"synthetic_echo"})),
+                "ANY",
+            ),
+        ] {
+            let mut input = json!({"model":"gemini-3.6-flash","input":"Synthetic request","tools":[function,search]});
+            if let Some(choice) = choice {
+                input["tool_choice"] = choice;
+            }
+            let parsed =
+                super::super::parse::request(Protocol::Responses, &input, "/v1/responses").unwrap();
+            let body = request(&parsed, Protocol::Gemini).unwrap();
+            assert_eq!(body["toolConfig"]["includeServerSideToolInvocations"], true);
+            assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], mode);
+            assert_eq!(
+                body["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"],
+                function["parameters"]
+            );
+            assert!(body["tools"][1].get("googleSearch").is_some());
+            if input["tool_choice"].is_object() {
+                assert_eq!(
+                    body["toolConfig"]["functionCallingConfig"]["allowedFunctionNames"],
+                    json!(["synthetic_echo"])
+                );
+            }
+        }
+        for tools in [json!([]), json!([function]), json!([search])] {
+            let input = json!({"model":"gemini-3.6-flash","input":"Synthetic request","tools":tools,"tool_choice":"auto"});
+            let parsed =
+                super::super::parse::request(Protocol::Responses, &input, "/v1/responses").unwrap();
+            let body = request(&parsed, Protocol::Gemini).unwrap();
+            assert!(body["toolConfig"]
+                .get("includeServerSideToolInvocations")
+                .is_none());
+            assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "AUTO");
+        }
+    }
+
     #[test]
     fn unknown_native_tools_are_rejected_instead_of_leaking_other_api_objects() {
         let parsed = super::super::parse::request(

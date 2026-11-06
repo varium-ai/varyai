@@ -1,4 +1,4 @@
-//! Provider/session-scoped replay of opaque Gemini signatures lost by client wire formats.
+//! Provider/session-scoped replay of Gemini signatures and server-tool state lost by clients.
 use super::*;
 use crate::proxy::providers::gemini_shadow::{GeminiShadowStore, GeminiToolCallMeta};
 use serde_json::json;
@@ -145,6 +145,18 @@ fn same_part(left: &Part, right: &Part) -> bool {
     match (left, right) {
         (Part::Text { text: a, .. }, Part::Text { text: b, .. }) => a == b,
         (Part::Thinking { text: a, .. }, Part::Thinking { text: b, .. }) => a == b,
+        (
+            Part::Search {
+                query: a,
+                hits: ah,
+                gemini: an,
+            },
+            Part::Search {
+                query: b,
+                hits: bh,
+                gemini: bn,
+            },
+        ) => a == b && ah == bh && (an.is_none() || bn.is_none() || an == bn),
         _ => left == right,
     }
 }
@@ -201,7 +213,7 @@ fn fill_call_signature(part: &mut Part, signature: &str) {
     }
 }
 
-/// Restore absent signatures, never text or arguments, only inside an explicit native scope.
+/// Restore absent native state only within its provider/session scope and matching history.
 pub(crate) fn restore(
     request: &mut Request,
     store: &GeminiShadowStore,
@@ -313,6 +325,15 @@ pub(crate) fn restore(
             }) {
                 match (part, saved) {
                     (
+                        Part::Search { gemini: slot, .. },
+                        Part::Search {
+                            gemini: Some(native),
+                            ..
+                        },
+                    ) if slot.is_none() => {
+                        *slot = Some(native.clone());
+                    }
+                    (
                         Part::Text {
                             signature: slot, ..
                         },
@@ -395,6 +416,45 @@ mod tests {
                 _ => None,
             })
     }
+    #[test]
+    fn gemini_combined_search_state_is_restored_only_to_exact_scoped_history() {
+        let store = GeminiShadowStore::with_limits(2, 4);
+        let native = super::super::reply::gemini_search_fixture();
+        let reply = super::super::reply::parse(Protocol::Gemini, &native).unwrap();
+        record(
+            &reply,
+            &store,
+            "synthetic-provider",
+            Some("synthetic-session"),
+        );
+        for (provider, session, changed) in [
+            ("synthetic-provider", "synthetic-session", false),
+            ("other-provider", "synthetic-session", false),
+            ("synthetic-provider", "other-session", false),
+            ("synthetic-provider", "synthetic-session", true),
+        ] {
+            let mut request = through_client(&reply, Protocol::Responses);
+            if changed {
+                for part in request.messages.iter_mut().flat_map(|m| &mut m.parts) {
+                    if let Part::Search { query, .. } = part {
+                        query.push_str(" changed");
+                    }
+                }
+            }
+            restore(&mut request, &store, provider, Some(session));
+            let body = super::super::build::request(&request, Protocol::Gemini).unwrap();
+            if provider == "synthetic-provider" && session == "synthetic-session" && !changed {
+                assert_eq!(
+                    body["contents"][0]["parts"],
+                    native["candidates"][0]["content"]["parts"]
+                );
+            } else {
+                assert!(!body.to_string().contains("synthetic-call-signature"));
+                assert!(!body.to_string().contains("toolResponse"));
+            }
+        }
+    }
+
     #[test]
     fn gemini_call_signature_survives_chat_and_responses_history_replay() {
         for client in [Protocol::Chat, Protocol::Responses] {

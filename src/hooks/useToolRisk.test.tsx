@@ -354,6 +354,22 @@ describe("P2-9 real API receipt consumption", () => {
     for (const [name] of writes)
       api[name].mockImplementation(realApi[name] as never);
   });
+  it("does not announce an update when unchanged settings produced no policy change", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      value: null,
+      persistedPolicyVersion: 1,
+      auditStatus: "not_needed",
+      runtimeStatus: "applied",
+    });
+    const { client, hook, run } = receiptSetup();
+    await act(async () => {
+      await run("updateSettings");
+    });
+    expect(notices.success).not.toHaveBeenCalled();
+    expect(notices.warning).not.toHaveBeenCalled();
+    hook.unmount();
+    client.clear();
+  });
   it.each(writes)(
     "unwraps %s and preserves the real IPC inputs",
     async (name, command, value, args) => {

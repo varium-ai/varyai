@@ -3901,6 +3901,9 @@
     "auditUnavailable": "設定已儲存，但本次變更紀錄無法寫入，本機歷史可能存在缺漏。",
     "policyWriteFailed": "設定變更失敗，請重新整理後重試。",
     "policyChanges": {
+      "refreshed": "變更記錄已重新整理",
+      "refreshFailed": "重新整理變更記錄失敗，請重試",
+      "currentNamesHint": "規則名稱來自目前設定；固定 ID 可用於核對已重新命名或刪除的規則。",
       "entry": "變更紀錄",
       "title": "本機設定變更紀錄",
       "description": "僅保留本機最近 1000 筆紀錄，可清空，不具備防竄改保證。",

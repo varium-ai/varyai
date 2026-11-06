@@ -21,3 +21,5 @@ The implementation is under [protocol observation](../../src-tauri/src/proxy/too
 The current worker uses static rules. No local-model reviewer is connected to the runtime. Persisted rule fields reserved by older configurations remain readable for compatibility.
 
 Shell command list editors expose all five match scopes directly in the scope menu: prefix, program, exact, keyword and regular expression. Keyword and regular-expression validation and explicit scope confirmation remain required; there is no separate advanced-mode visibility switch.
+
+Policy history shows localized built-in rule names and the current name of an existing custom rule beside its stable ID. Names come from current configuration, not a historical snapshot; deleted rules retain their IDs without inventing a name. Manual refresh reports success or failure without exposing backend error details. Saving identical settings does not advance the policy version or announce an update; real changes still apply when live observation is disabled.

@@ -893,7 +893,10 @@ fn explicit_reconnect_repairs_partial_menu_without_modifying_login(
         None,
     )?;
     let installed: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
-    assert_eq!(installed["model"].as_str(), Some(group().alias().as_str()));
+    assert_eq!(
+        installed["model"].as_str(),
+        Some(format!("{}-routing-group", group().name).as_str())
+    );
     assert_eq!(
         installed["model_providers"][PROVIDER]["requires_openai_auth"].as_bool(),
         Some(true)
@@ -968,7 +971,10 @@ fn explicit_reconnect_adopts_restored_or_modified_provider_and_preserves_baselin
             .parse()
             .expect("toml");
         assert_eq!(installed["model_provider"].as_str(), Some(PROVIDER));
-        assert_eq!(installed["model"].as_str(), Some(group().alias().as_str()));
+        assert_eq!(
+            installed["model"].as_str(),
+            Some(format!("{}-routing-group", group().name).as_str())
+        );
         assert_eq!(
             installed["model_providers"][PROVIDER]["base_url"].as_str(),
             Some("http://127.0.0.1:4321/intent/v1")
@@ -1874,7 +1880,7 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
     manager
         .activate_menu_with_native(menu.clone(), MENU_BASE, Some(NATIVE_ONE), false)
         .expect("activate");
-    let expected = menu_catalog(&menu, "high").expect("rich catalog");
+    let mut expected = menu_catalog(&menu, "high").expect("rich catalog");
     assert_eq!(expected["models"][0]["slug"], "auto/exact-group");
     assert_eq!(expected["models"][1]["slug"], "vary-provider/exact-id");
     let receipt = manager.load().expect("receipt").expect("installed");
@@ -1882,17 +1888,18 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
         &fs::read_to_string(receipt.catalogs.last().expect("catalog path")).expect("catalog"),
     )
     .expect("json");
+    aliases::project(&mut expected, &mut BTreeMap::new()).expect("readable catalog");
     assert_eq!(actual, expected);
     let (published_menu, native_catalog) = manager.runtime.native.menu().expect("native snapshot");
     assert_eq!(native_catalog, actual);
     assert_eq!(published_menu.token, menu.token);
-    assert_eq!(actual["models"][0]["slug"], "auto/exact-group");
+    assert_eq!(actual["models"][0]["slug"], "Exact-group-label");
     assert_eq!(
         actual["models"][0]["description"],
         "Routing group description"
     );
     assert_eq!(actual["models"][0]["input_modalities"], json!(["text"]));
-    assert_eq!(actual["models"][1]["slug"], "vary-provider/exact-id");
+    assert_eq!(actual["models"][1]["slug"], "Exact-direct-label");
     assert_eq!(actual["models"][1]["display_name"], "Exact direct label");
     assert_eq!(
         actual["models"][1]["supported_reasoning_levels"]
@@ -1941,7 +1948,14 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
         .expect("config")
         .parse()
         .expect("toml");
-    assert_eq!(selected["model"].as_str(), Some("auto/exact-group"));
+    assert_eq!(selected["model"].as_str(), Some("Exact-group-label"));
+    assert_eq!(
+        manager
+            .selected_model()
+            .expect("canonical selection")
+            .as_deref(),
+        Some("auto/exact-group")
+    );
     manager
         .activate_menu_with_native(menu.clone(), MENU_BASE, None, false)
         .expect("background refresh");
@@ -1949,7 +1963,14 @@ fn shared_menu_catalog_matches_disk_projection_rich_metadata_and_capabilities() 
         .expect("config")
         .parse()
         .expect("toml");
-    assert_eq!(selected["model"].as_str(), Some("auto/exact-group"));
+    assert_eq!(selected["model"].as_str(), Some("Exact-group-label"));
+    assert_eq!(
+        manager
+            .selected_model()
+            .expect("canonical selection")
+            .as_deref(),
+        Some("auto/exact-group")
+    );
     let before = fs::read(&manager.config).expect("config");
     assert!(manager
         .activate_menu_with_selection(menu, MENU_BASE, None, true, Some("not-in-catalog"))

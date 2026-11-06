@@ -240,8 +240,28 @@ impl Manager {
                         .get("model_reasoning_effort")
                         .and_then(toml::Value::as_str)
                         .unwrap_or("");
-                    let catalog = serde_json::to_string_pretty(&menu_catalog(&menu, chosen)?)
-                        .map_err(|_| FAILED)?;
+                    let installed: toml::Value = receipt.installed.parse().map_err(|_| FAILED)?;
+                    let token = installed
+                        .get("model_providers")
+                        .and_then(|providers| providers.get(PROVIDER))
+                        .and_then(|provider| provider.get("experimental_bearer_token"))
+                        .and_then(toml::Value::as_str);
+                    if token != Some(menu.token.as_str())
+                        || !read(&self.config)?
+                            .as_deref()
+                            .is_some_and(|current| projection_owned(current, &receipt.installed))
+                    {
+                        return Err(CONFLICT.into());
+                    }
+                    let mut projection = menu_catalog(&menu, chosen)?;
+                    let mut model_map = receipt.model_map.clone();
+                    let visible = aliases::project(&mut projection, &mut model_map)?;
+                    // Repair the recorded publication only. A changed menu must
+                    // publish its receipt and native projection through normal refresh.
+                    if model_map != receipt.model_map || visible != receipt.model_aliases {
+                        return Err(CONFLICT.into());
+                    }
+                    let catalog = serde_json::to_string_pretty(&projection).map_err(|_| FAILED)?;
                     replace_checked(path, None, Some(&catalog))?;
                 }
             }

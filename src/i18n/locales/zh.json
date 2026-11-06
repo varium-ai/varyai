@@ -3974,6 +3974,9 @@
     "auditUnavailable": "配置已保存，但本次变更记录不可用，本地历史可能存在缺口。",
     "policyWriteFailed": "配置变更失败，请刷新后重试。",
     "policyChanges": {
+      "refreshed": "变更记录已刷新",
+      "refreshFailed": "刷新变更记录失败，请重试",
+      "currentNamesHint": "规则名称来自当前配置；稳定 ID 可用于核对已重命名或删除的规则。",
       "entry": "变更记录",
       "title": "本地配置变更记录",
       "description": "仅保留本地最近 1000 条记录，可清空，不具备防篡改保证。",

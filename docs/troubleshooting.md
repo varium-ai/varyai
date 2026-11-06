@@ -2,6 +2,61 @@
 
 Use synthetic examples when reporting a problem. Logs, provider configuration, client authentication files and database backups may contain credentials or private prompts. Review and redact them before sharing.
 
+## Codex receives HTTP 400 from Gemini with search and functions
+
+Codex includes both native search and function declarations even on a greeting.
+A Gemini upstream can reject this combination with `routing_upstream_rejected`
+when the converted request omits `toolConfig.includeServerSideToolInvocations`.
+A successful tool-free request does not validate this case. This upstream 400 is
+separate from the local `409 routing_unknown_continuation` history check.
+
+The corrected Gemini converter enables server-tool context circulation and uses
+`VALIDATED` for automatic function choice when both tool kinds are present. It
+keeps search, function schemas and explicit function constraints. It also handles
+the resulting server-side search call/result parts and restores their native
+state only to matching history in the same provider/session scope. Merely adding
+the request flag without updating response parsing can still break a search turn.
+
+Use the rebuilt backend and verify that a complete Codex turn finishes with its
+full tool declarations. With `pnpm dev --no-watch`, source edits and `cargo build`
+do not reload the active gateway; an explicit backend restart is still necessary.
+Do not clear credentials or conversation history as a workaround for this 400.
+See the [verification record](qa/2026-11-06-gemini-tool-combination.md).
+
+## Codex reconnects with Grok and HTTP 400 or 410
+
+HTTP 400 with `routing_upstream_rejected` can also come from Grok rejecting
+object parameters referenced through local JSON Schema `$ref` entries. A greeting
+still sends Codex's tool declarations, so text-only probes with no tools do not
+reproduce this failure. The Grok adapter expands resolvable local references while
+preserving constraints and user data. Verify with the complete tool declarations;
+removing tools or simplifying every schema does not establish compatibility.
+
+If a new Codex conversation using a Grok model fails with `410 Gone` and
+`routing_upstream_rejected`, check whether the selected upstream uses Chat
+Completions. Codex can offer a native `web_search` tool on an ordinary turn.
+Older VaryAI builds translate that declaration into `web_search_options: {}`;
+Grok's retired Chat live-search API rejects that field even when no search was
+requested in the prompt. Reopening the conversation does not remove it.
+
+The corrected Chat converter omits optional Grok native-search declarations while
+preserving function tools, schemas, prompts, reasoning and stream completion. It
+does not downgrade requests that require search as their only tool. Use a
+Responses-capable Grok upstream for native web search. Do not change credentials,
+model names or disable unrelated security controls to work around this error.
+
+Source edits do not change an already running VaryAI backend. The corrected
+backend must be built and explicitly restarted before retesting the desktop
+conversation. A successful direct request without Codex's tool declarations does
+not validate this path. Reproduce with a fresh Codex conversation and verify a
+terminal response, not merely HTTP 200 or the first streamed bytes.
+
+## Kimi Code desktop update leaves the installed version unchanged
+
+The official Kimi Code desktop download endpoint on `code.kimi.com` redirects to `cdn.kimi.com`. Builds whose updater trusts only the first host can discover a newer version but reject the redirected download before installation. Use a VaryAI build that explicitly trusts both official HTTPS hosts. Archive checksums, application identity, signing team and code-signature verification remain required; do not disable these checks or allow arbitrary redirect hosts.
+
+The source fix does not modify an already running VaryAI binary or update Kimi Code by itself. Until the corrected VaryAI backend is in use, update Kimi Code through its official application update channel.
+
 ## CC Switch rejects a shared database as too new
 
 This section concerns historical shared-storage builds. Current VaryAI uses an independent native database pair and keeps its files separate from CC Switch. The historical compatibility baseline was CC Switch v4.0.21 shared schema v23; its portable monolithic export and extension formats are distinct.
@@ -505,6 +560,15 @@ fix does not bulk-rewrite historical choices. See the
 [historical-model verification report](qa/2026-11-06-codex-historical-model-routing.md).
 
 ### Codex reports routing_unknown_continuation after reconnecting
+
+When a conversation switches from GLM, Grok or another model that returned a
+visible reasoning summary, Codex can replay that summary with `content: null`,
+`encrypted_content: null` and `internal_chat_message_metadata_passthrough`.
+Earlier builds mistook those optional fields for account-bound state and returned
+409 before contacting the newly selected model. The router now recognizes this
+plain summary without deleting or rewriting its fields. Actual encrypted state,
+unresolved item references and unknown tool results still require their original
+ownership evidence. This fix does not require deleting the conversation.
 
 This 409 means VaryAI cannot establish one exact owner for the supplied response ID, tool call or opaque continuation. Older builds retained ordinary ownership only in memory, so restarting VaryAI or reconnecting the Codex menu could lose it. Starting a new conversation avoids submitting unknown account-bound state; do not remove reasoning or compaction items from an existing history to bypass the check.
 

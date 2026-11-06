@@ -647,6 +647,7 @@ mod tests {
         config.listen_port = 0;
         db.update_proxy_config(config).await?;
         db.save_routing_upstream(RoutingUpstream {
+            notes: None,
             transport: None,
             schema_version: 1,
             preset_id: None,
@@ -999,6 +1000,7 @@ mod tests {
         config.listen_port = 0;
         db.update_proxy_config(config).await?;
         db.save_routing_upstream(RoutingUpstream {
+            notes: None,
             icon: None,
             transport: None,
             schema_version: 1,
@@ -1112,6 +1114,7 @@ mod tests {
         config.listen_port = 0;
         db.update_proxy_config(config).await?;
         db.save_routing_upstream(RoutingUpstream {
+            notes: None,
             icon: None,
             transport: None,
             schema_version: 1,

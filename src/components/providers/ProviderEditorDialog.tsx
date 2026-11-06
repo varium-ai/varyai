@@ -430,6 +430,21 @@ export function ProviderEditorDialog({
                   />
                 </div>
               )}
+              <div className="pv-field">
+                <label htmlFor={`${id}-notes`}>{t("provider.notes")}</label>
+                <Input
+                  id={`${id}-notes`}
+                  disabled={disabled}
+                  value={draft.notes ?? ""}
+                  placeholder={t("provider.notesPlaceholder")}
+                  onChange={(event) =>
+                    onDraftChange({
+                      ...draft,
+                      notes: event.target.value || null,
+                    })
+                  }
+                />
+              </div>
               {loading && (
                 <p role="status" className="pv-hint">
                   {t("common.loading")}

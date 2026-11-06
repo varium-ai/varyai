@@ -112,7 +112,7 @@ fn magpie_paginated_chats_follow_takeover_without_rewriting_history(
     Ok(())
 }
 
-fn thread_model_fixture(
+pub(super) fn thread_model_fixture(
     dir: &Path,
     id: &str,
     provider: &str,
@@ -204,7 +204,11 @@ fn standalone_connection_keeps_unpublished_legacy_thread_models_on_their_source_
             manager.sync_threads()?;
             let installed: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
             assert_eq!(installed["model_provider"].as_str(), Some(PROVIDER));
-            assert_eq!(installed["model"].as_str(), Some(alias.as_str()));
+            assert_eq!(
+                installed["model"].as_str(),
+                Some("Development-routing-group")
+            );
+            assert_eq!(manager.selected_model()?.as_deref(), Some(alias.as_str()));
             assert_eq!(
                 thread_provider(dir.path(), "unpublished-thread")?,
                 "magpie",

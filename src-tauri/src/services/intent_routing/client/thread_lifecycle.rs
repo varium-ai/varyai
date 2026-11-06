@@ -144,11 +144,23 @@ impl Manager {
                 .and_then(|providers| providers.get(PROVIDER))
                 .and_then(|provider| provider.get("experimental_bearer_token"))
                 .and_then(toml::Value::as_str);
-            return Ok(if token == Some(menu.token.as_str()) {
-                menu.groups.keys().cloned().collect()
-            } else {
-                empty()
-            });
+            if token != Some(menu.token.as_str()) {
+                return Ok(empty());
+            }
+            let canonical = menu
+                .groups
+                .keys()
+                .cloned()
+                .collect::<std::collections::HashSet<_>>();
+            let mut models = canonical.clone();
+            models.extend(
+                receipt
+                    .model_map
+                    .iter()
+                    .filter(|(_, owner)| canonical.contains(*owner))
+                    .map(|(wire, _)| wire.clone()),
+            );
+            return Ok(models);
         }
         // Recovery without an active runtime may use only the exact owned
         // catalog whose alias set was recorded by this publication.
@@ -164,20 +176,63 @@ impl Manager {
             return Ok(empty());
         };
         let catalog = read(path)?.and_then(|text| serde_json::from_str::<Value>(&text).ok());
-        let aliases = catalog
+        let Some(entries) = catalog
             .as_ref()
             .and_then(|catalog| catalog.get("models"))
             .and_then(Value::as_array)
-            .and_then(|models| {
-                models
-                    .iter()
-                    .map(|model| model.get("slug")?.as_str().map(str::to_owned))
-                    .collect::<Option<std::collections::HashSet<_>>>()
-            });
-        let recorded = receipt.model_aliases.iter().cloned().collect();
-        Ok(aliases
-            .filter(|aliases| aliases == &recorded)
-            .unwrap_or_default())
+        else {
+            return Ok(empty());
+        };
+        let Some(slugs) = entries
+            .iter()
+            .map(|model| model.get("slug")?.as_str().map(str::to_owned))
+            .collect::<Option<std::collections::HashSet<_>>>()
+        else {
+            return Ok(empty());
+        };
+        let recorded = receipt
+            .model_aliases
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        if slugs.len() != entries.len() || recorded.len() != receipt.model_aliases.len() {
+            return Ok(empty());
+        }
+        if receipt.model_map.is_empty() {
+            // Receipts written before readable aliases recorded only canonical slugs.
+            return Ok(if slugs == recorded { slugs } else { empty() });
+        }
+        let Some(canonical) = recorded
+            .iter()
+            .map(|wire| receipt.model_map.get(wire).cloned())
+            .collect::<Option<std::collections::HashSet<_>>>()
+        else {
+            return Ok(empty());
+        };
+        // Retained aliases prove identity, not current availability. Only owners
+        // represented in this publication may contribute compatibility entries.
+        let mut expected = canonical.clone();
+        expected.extend(
+            receipt
+                .model_map
+                .iter()
+                .filter(|(_, owner)| canonical.contains(*owner))
+                .map(|(wire, _)| wire.clone()),
+        );
+        if slugs != expected
+            || entries.iter().any(|entry| {
+                let slug = entry["slug"].as_str().unwrap_or_default();
+                let visibility = if recorded.contains(slug) {
+                    "list"
+                } else {
+                    "hide"
+                };
+                entry["visibility"].as_str() != Some(visibility)
+            })
+        {
+            return Ok(empty());
+        }
+        Ok(expected)
     }
 
     fn save_thread_receipt(&self, receipt: &Receipt) -> Result<(), String> {

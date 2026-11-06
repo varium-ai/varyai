@@ -1858,6 +1858,25 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn gemini_combined_server_search_stream_completes_without_client_tool_execution() {
+        let input = reply::gemini_search_fixture();
+        let mut output = transcode(
+            source(format!("data: {input}\n\n")),
+            Protocol::Gemini,
+            Protocol::Responses,
+        );
+        let mut text = String::new();
+        while let Some(chunk) = output.next().await {
+            text.push_str(std::str::from_utf8(&chunk.unwrap()).unwrap());
+        }
+        assert!(text.contains("response.completed"));
+        assert!(text.contains("web_search_call"));
+        assert!(!text.contains("function_call"));
+        assert!(!text.contains("protocol_stream_error"));
+        assert!(!text.contains("synthetic-call-signature"));
+    }
+
+    #[tokio::test]
     async fn dropping_client_cancels_the_upstream_and_frames_are_bounded() {
         struct DropStream(std::sync::Arc<std::sync::atomic::AtomicBool>);
         impl futures::Stream for DropStream {

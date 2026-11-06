@@ -43,6 +43,7 @@ export interface RoutingUpstream {
   schemaVersion: 1;
   id: string;
   name: string;
+  notes?: string | null;
   icon?: string | null;
   revision: number;
   source: UpstreamSource;

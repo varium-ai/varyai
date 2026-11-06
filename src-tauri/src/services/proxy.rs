@@ -6641,6 +6641,7 @@ mod tests {
         let db = Arc::new(Database::memory()?);
         use_ephemeral_proxy_port(&db).await;
         let mut upstream = RoutingUpstream {
+            notes: None,
             icon: None,
             transport: None,
             schema_version: 1,
@@ -6866,6 +6867,7 @@ mod tests {
             let db = Arc::new(Database::memory()?);
             futures::executor::block_on(use_ephemeral_proxy_port(&db));
             db.save_routing_upstream(RoutingUpstream {
+                notes: None,
                 icon: None,
                 transport: None,
                 schema_version: 1,
@@ -7066,6 +7068,7 @@ mod tests {
         let db = Arc::new(Database::memory().expect("database"));
         use_ephemeral_proxy_port(&db).await;
         db.save_routing_upstream(RoutingUpstream {
+            notes: None,
             icon: None,
             transport: None,
             schema_version: 1,
@@ -7231,6 +7234,7 @@ mod tests {
         let db = Arc::new(Database::memory()?);
         use_ephemeral_proxy_port(&db).await;
         let upstream = db.save_routing_upstream(RoutingUpstream {
+            notes: None,
             icon: None,
             transport: None,
             schema_version: 1,
@@ -7972,6 +7976,7 @@ mod tests {
         let mut upstreams = Vec::new();
         for name in ["First", "Second"] {
             upstreams.push(db.save_routing_upstream(RoutingUpstream {
+                notes: None,
                 icon: None,
                 transport: None,
                 schema_version: 1,
@@ -8051,7 +8056,8 @@ mod tests {
         assert_eq!(refreshed.model, direct);
         codex.activate_menu_with_selection(off.clone(), origin, None, false, None)?;
         let projection = std::fs::read_to_string(&config)?.parse::<toml::Value>()?;
-        assert_eq!(projection["model"].as_str(), Some(direct));
+        assert_eq!(projection["model"].as_str(), Some("shared-model-First"));
+        assert_eq!(codex.selected_model()?.as_deref(), Some(direct));
         service.agent_connections.disconnect("claude")?;
         codex.restore()?;
         assert!(!service.is_running().await);
@@ -8064,6 +8070,7 @@ mod tests {
         let db = Arc::new(Database::memory().expect("db"));
         db.set_intent_routing_auto_create(true).expect("on");
         db.save_routing_upstream(RoutingUpstream {
+            notes: None,
             icon: None,
             transport: None,
             schema_version: 1,
@@ -8360,7 +8367,10 @@ mod tests {
         assert!(service.get_takeover_status().await.expect("state").codex);
         let projection = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
             .expect("group config");
-        assert!(projection.contains("vary-auto/fixture"));
+        assert_eq!(
+            projection.parse::<toml::Value>().expect("config")["model"].as_str(),
+            Some("Fixture-routing-group")
+        );
         service
             .set_takeover_for_app("codex", true)
             .await

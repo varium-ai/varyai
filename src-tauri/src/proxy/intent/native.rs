@@ -5,6 +5,7 @@ use http::{header, HeaderMap, StatusCode};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     io::Read,
     path::Path,
     sync::{
@@ -18,6 +19,28 @@ const FAILED: &str = "routing_native_unavailable";
 const LEASE: Duration = Duration::from_secs(5);
 const BODY_LIMIT: usize = 8 * 1024 * 1024;
 type TokenMac = Hmac<Sha256>;
+
+fn canonicalize_model(
+    bytes: bytes::Bytes,
+    original: &mut Value,
+    model_map: &BTreeMap<String, String>,
+) -> Result<bytes::Bytes, &'static str> {
+    let Some(canonical) = original["model"]
+        .as_str()
+        .and_then(|name| model_map.get(name))
+    else {
+        return Ok(bytes);
+    };
+    if original["model"] == *canonical {
+        return Ok(bytes);
+    }
+    let before = original.clone();
+    original["model"] = Value::String(canonical.clone());
+    // Edit only the model string; preserve numeric lexemes and all other fields.
+    super::super::pi::json::encode_redacted(&bytes, &before, original)
+        .map(bytes::Bytes::from)
+        .map_err(|_| "routing_unsafe_payload_edit")
+}
 
 pub(crate) struct Credentials {
     token: String,
@@ -81,11 +104,26 @@ pub(crate) struct Native {
     epoch: AtomicU64,
     status: RwLock<Option<&'static str>>,
     checkpoints: RwLock<Option<Arc<super::checkpoint::Store>>>,
-    projection: RwLock<Option<(Arc<super::Menu>, Value)>>,
+    projection: RwLock<Option<Projection>>,
+}
+#[derive(Clone)]
+struct Projection {
+    menu: Arc<super::Menu>,
+    catalog: Value,
+    model_map: Arc<BTreeMap<String, String>>,
 }
 impl Native {
-    pub fn publish_menu(&self, menu: Arc<super::Menu>, catalog: Value) -> Result<(), &'static str> {
-        *self.projection.write().map_err(|_| FAILED)? = Some((menu, catalog));
+    pub fn publish_menu(
+        &self,
+        menu: Arc<super::Menu>,
+        catalog: Value,
+        model_map: BTreeMap<String, String>,
+    ) -> Result<(), &'static str> {
+        *self.projection.write().map_err(|_| FAILED)? = Some(Projection {
+            menu,
+            catalog,
+            model_map: Arc::new(model_map),
+        });
         Ok(())
     }
     pub fn clear_menu(&self) {
@@ -93,12 +131,33 @@ impl Native {
             *projection = None;
         }
     }
-    pub(crate) fn menu(&self) -> Result<(Arc<super::Menu>, Value), &'static str> {
+    fn projection(&self) -> Result<Projection, &'static str> {
         self.projection
             .read()
             .map_err(|_| FAILED)?
             .clone()
             .ok_or(FAILED)
+    }
+    #[cfg(test)]
+    pub(crate) fn menu(&self) -> Result<(Arc<super::Menu>, Value), &'static str> {
+        self.projection()
+            .map(|projection| (projection.menu, projection.catalog))
+    }
+    pub(super) fn canonicalize_model(
+        &self,
+        bytes: bytes::Bytes,
+        original: &mut Value,
+    ) -> Result<bytes::Bytes, &'static str> {
+        let map = self
+            .projection
+            .read()
+            .map_err(|_| FAILED)?
+            .as_ref()
+            .map(|projection| projection.model_map.clone());
+        match map {
+            Some(map) => canonicalize_model(bytes, original, &map),
+            None => Ok(bytes),
+        }
     }
     fn observed(&self, lease: &Arc<Lease>) {
         if let Ok(slot) = self.current.read() {
@@ -720,7 +779,7 @@ pub(crate) async fn handle(
                 })
                 .flatten()
         });
-    if !observed.is_some_and(|v| v[0] == 0 && matches!(v[1], 114 | 165 | 166)) {
+    if !observed.is_some_and(|v| v[0] == 0 && matches!(v[1], 114 | 165 | 166 | 167)) {
         state.intent_runtime.native.set_status("unsupported");
         return super::error(StatusCode::BAD_REQUEST, "routing_native_client_unsupported");
     }
@@ -734,7 +793,11 @@ pub(crate) async fn handle(
     {
         return super::error(StatusCode::UPGRADE_REQUIRED, "routing_native_use_http");
     }
-    let (menu, catalog) = match state.intent_runtime.native.menu() {
+    let Projection {
+        menu,
+        catalog,
+        model_map,
+    } = match state.intent_runtime.native.projection() {
         Ok(projection) => projection,
         Err(_) => return super::error(StatusCode::SERVICE_UNAVAILABLE, FAILED),
     };
@@ -799,6 +862,10 @@ pub(crate) async fn handle(
     let mut original = match super::super::pi::json::parse(&bytes) {
         Ok(body) if body.is_object() => body,
         _ => return super::error(StatusCode::BAD_REQUEST, "routing_invalid_json"),
+    };
+    let bytes = match canonicalize_model(bytes, &mut original, &model_map) {
+        Ok(bytes) => bytes,
+        Err(code) => return super::error(StatusCode::BAD_REQUEST, code),
     };
     let Some(model) = original["model"].as_str() else {
         return super::error(
@@ -1147,6 +1214,22 @@ mod tests {
     }
 
     #[test]
+    fn readable_model_normalization_preserves_unrelated_wire_values() {
+        let raw = bytes::Bytes::from_static(br#"{"model":"Grok - Synthetic","input":"opaque","metadata":{"integer":9007199254740993,"float":1.0000e+03}}"#);
+        let mut original = super::super::super::pi::json::parse(&raw).expect("fixture");
+        let map = BTreeMap::from([("Grok - Synthetic".into(), "vary-provider/synthetic".into())]);
+        let normalized = canonicalize_model(raw, &mut original, &map).expect("normalize");
+        let text = std::str::from_utf8(&normalized).expect("utf8");
+        assert_eq!(original["model"], "vary-provider/synthetic");
+        assert!(text.contains("9007199254740993"));
+        assert!(text.contains("1.0000e+03"));
+        assert_eq!(
+            canonicalize_model(normalized.clone(), &mut original, &map).expect("legacy"),
+            normalized
+        );
+    }
+
+    #[test]
     fn refresh_rejects_same_workspace_different_user_and_rotates_exact_token() {
         let runtime = Native::default();
         let lease = runtime
@@ -1229,9 +1312,18 @@ mod tests {
         });
         let expected_catalog =
             crate::services::intent_routing::client::menu_catalog(&menu, "high")?;
-        runtime
-            .native
-            .publish_menu(menu.clone(), expected_catalog.clone())?;
+        runtime.native.publish_menu(
+            menu.clone(),
+            expected_catalog.clone(),
+            BTreeMap::from([
+                ("Readable synthetic model".into(), alias.clone()),
+                ("Previous synthetic name".into(), alias.clone()),
+                (
+                    "Removed synthetic model".into(),
+                    "vary-provider/removed".into(),
+                ),
+            ]),
+        )?;
         runtime.set_menu(menu)?;
         let directory = tempfile::tempdir()?;
         runtime
@@ -1260,7 +1352,7 @@ mod tests {
             client
                 .post(format!("{base}/responses"))
                 .bearer_auth(concat!("synthetic", "-native-auth"))
-                .header("version", "0.166.0")
+                .header("version", "0.167.0")
                 .header("cookie", "caller-private")
                 .json(&body)
                 .send()
@@ -1297,6 +1389,26 @@ mod tests {
             .await?;
         assert_eq!(catalog, expected_catalog);
         assert_eq!(catalog["models"][0]["slug"], alias);
+        for version in ["0.114.0", "0.165.0", "0.166.0", "0.167.0"] {
+            let response = client
+                .get(format!("{base}/models?client_version={version}"))
+                .bearer_auth(concat!("synthetic", "-native-auth"))
+                .header("version", version)
+                .send()
+                .await?;
+            assert_eq!(response.status(), StatusCode::OK, "{version}");
+            assert_eq!(response.json::<Value>().await?, expected_catalog);
+        }
+        for version in ["0.113.0", "0.168.0", "1.0.0"] {
+            let response = client
+                .get(format!("{base}/models?client_version={version}"))
+                .bearer_auth(concat!("synthetic", "-native-auth"))
+                .header("version", version)
+                .send()
+                .await?;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{version}");
+        }
+        runtime.native.set_status("pending");
         assert_eq!(runtime.native.status(), "pending");
         assert_eq!(
             post(serde_json::json!({"model":"vary-provider/unpublished","input":"synthetic"}))
@@ -1305,7 +1417,15 @@ mod tests {
             StatusCode::NOT_FOUND
         );
         assert_eq!(post(serde_json::json!({"model":alias,"input":[{"type":"reasoning","encrypted_content":"unknown-state"}]})).await?.status(),StatusCode::CONFLICT);
-        let first = post(serde_json::json!({"model":alias,"input":"synthetic"})).await?;
+        assert_eq!(
+            post(serde_json::json!({"model":"Removed synthetic model","input":"synthetic"}))
+                .await?
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        let first =
+            post(serde_json::json!({"model":"Readable synthetic model","input":"synthetic"}))
+                .await?;
         assert_eq!(first.status(), StatusCode::OK);
         let _ = first.bytes().await?;
         let compact_response = client.post(format!("{base}/responses/compact")).bearer_auth(concat!("synthetic", "-native-auth")).header("version","0.114.0").json(&serde_json::json!({"model":alias,"input":[{"type":"message","role":"user","content":"synthetic history"}]})).send().await?;
@@ -1322,7 +1442,7 @@ mod tests {
             .native
             .prepare_checkpoints(&directory.path().join("checkpoint.key"))?;
         runtime.native.install(credentials())?;
-        let response = post(serde_json::json!({"model":alias,"input":[{"type":"compaction","encrypted_content":seal.clone()},{"type":"message","role":"user","content":"continue"}]})).await?;
+        let response = post(serde_json::json!({"model":"Previous synthetic name","input":[{"type":"compaction","encrypted_content":seal.clone()},{"type":"message","role":"user","content":"continue"}]})).await?;
         assert_eq!(response.status(), StatusCode::OK);
         let _ = response.bytes().await?;
         {
@@ -1397,6 +1517,53 @@ mod tests {
             StatusCode::UNAUTHORIZED
         );
         assert_eq!(seen.lock().expect("fixture").len(), 4);
+        for model in [
+            &alias,
+            "Readable synthetic model",
+            "Previous synthetic name",
+        ] {
+            let response = client
+                .post(format!(
+                    "http://127.0.0.1:{}/intent/v1/responses",
+                    info.port
+                ))
+                .bearer_auth(concat!("fixture", "-menu-token"))
+                .json(&serde_json::json!({"model":model,"input":"synthetic"}))
+                .send()
+                .await?;
+            assert_eq!(response.status(), StatusCode::OK);
+            let _ = response.bytes().await?;
+        }
+        assert_eq!(seen.lock().expect("fixture").len(), 7);
+        runtime.native.install(credentials())?;
+        for named in [false, true] {
+            let input = serde_json::json!([
+                {"type":"reasoning","id":"synthetic-prior-model-item",
+                 "summary":[{"type":"summary_text","text":"Synthetic visible thought"}],
+                 "content":null,"encrypted_content":null,
+                 "internal_chat_message_metadata_passthrough":{"turn_id":"synthetic-prior-turn"}},
+                {"type":"message","role":"assistant","content":"Synthetic prior answer"},
+                {"type":"message","role":"user","content":"Synthetic follow-up"}
+            ]);
+            let mut body = serde_json::json!({"model":"Readable synthetic model","input":input});
+            if named {
+                body["prompt_cache_key"] = serde_json::json!("synthetic-switched-conversation");
+            }
+            let response = post(body.clone()).await?;
+            assert_eq!(response.status(), StatusCode::OK);
+            let _ = response.bytes().await?;
+            assert_eq!(
+                seen.lock()
+                    .expect("fixture")
+                    .last()
+                    .ok_or("missing request")?
+                    .1["input"],
+                input
+            );
+            body["input"][0]["encrypted_content"] = serde_json::json!("synthetic-unknown-seal");
+            assert_eq!(post(body).await?.status(), StatusCode::CONFLICT);
+        }
+        assert_eq!(seen.lock().expect("fixture").len(), 9);
         server.stop().await?;
         task.abort();
         Ok(())
@@ -1719,6 +1886,7 @@ mod tests {
                 groups: HashMap::new(),
             }),
             serde_json::json!({"models": [{"slug": "vary-auto/development"}]}),
+            BTreeMap::new(),
         )?;
         runtime
             .native

@@ -241,6 +241,7 @@ fn candidate(
 ) -> Candidate {
     use crate::services::codex_provider::ModelMode;
     let mut record = RoutingUpstream {
+        notes: None,
         icon: None,
         schema_version: 1,
         id: "imported".into(),

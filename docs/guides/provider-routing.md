@@ -22,6 +22,8 @@ See [Codex model catalogs](codex-model-catalog.md) for import behavior. Do not u
 
 ## Replace managed model catalogs
 
+The shared provider editor includes optional notes for every Agent. Notes are preserved when editing and saved as provider metadata; they are not sent as model parameters or included in provider diagnostics.
+
 On the **Tools** page, WorkBuddy, Qoder and TRAE expose a searchable **Model list** containing the shared catalog. This is a preview while disconnected or waiting for TRAE's bridge, not confirmation that the client has loaded it. Browsing the list does not enable a connection or select a starting model; choose the chat model inside the client after connecting and loading its catalog. Doubao Work shows **Official models** because it supports official-session auditing only.
 
 Selecting a supplier in Kimi, Qwen, ZCode, Qoder or WorkBuddy replaces the models managed by VaryAI with the target supplier's complete saved catalog. Selecting the official entry withdraws those managed models. File adapters stage validation and replacement before writing; native login state, MCP configuration and unrelated providers remain intact. Recognizable ownership markers also cover models left after deletion of the shared database. Unmarked historical native configurations cannot be distinguished from user-created configurations and remain protected.
