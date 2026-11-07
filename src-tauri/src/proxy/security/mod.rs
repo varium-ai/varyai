@@ -26,6 +26,7 @@ mod payload_json;
 mod payload_metadata;
 mod payload_text;
 pub mod pii;
+mod protocol_adapters;
 mod request_carriers;
 mod request_detection;
 mod request_plan;
@@ -34,6 +35,8 @@ mod request_transaction;
 pub mod response;
 pub(crate) mod response_restoration;
 mod restoration_audit;
+mod restoration_contract;
+mod restoration_core;
 mod restoration_policy;
 pub(crate) mod restore_diagnostics;
 pub mod runtime;
@@ -80,8 +83,26 @@ pub(super) mod history_test_process;
 #[path = "tests/aggregation_tests.rs"]
 mod aggregation_tests;
 #[cfg(test)]
+#[path = "tests/c3_lifecycle_tests.rs"]
+mod c3_lifecycle_tests;
+#[cfg(test)]
+#[path = "tests/c3_responses_integration_tests.rs"]
+mod c3_responses_integration_tests;
+#[cfg(test)]
+#[path = "tests/c5_native_evidence_tests.rs"]
+mod c5_native_evidence_tests;
+#[cfg(test)]
+#[path = "tests/c5_native_import_tests.rs"]
+mod c5_native_import_tests;
+#[cfg(test)]
+#[path = "tests/c5_native_sse_tests.rs"]
+mod c5_native_sse_tests;
+#[cfg(test)]
 #[path = "tests/history_provenance_tests.rs"]
 mod history_provenance_tests;
+#[cfg(test)]
+#[path = "tests/native_route_scope_tests.rs"]
+mod native_route_scope_tests;
 #[cfg(test)]
 #[path = "tests/request_literal_tests.rs"]
 mod request_literal_tests;
@@ -144,6 +165,12 @@ mod reversible_text_tests;
 mod reversible_transaction_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "tests/unified_core_tests.rs"]
+mod unified_core_tests;
+#[cfg(test)]
+#[path = "tests/unified_test_support.rs"]
+mod unified_test_support;
 
 use axum::{http::HeaderMap, response::Response};
 use serde_json::Value;
@@ -423,3 +450,19 @@ mod reversible_integration_tests;
 #[cfg(test)]
 #[path = "tests/upstream_error_tests.rs"]
 mod upstream_error_tests;
+
+#[cfg(test)]
+#[path = "tests/c5_request_contract_tests.rs"]
+mod c5_request_contract_tests;
+
+#[cfg(test)]
+#[path = "tests/c5_native_response_tests.rs"]
+mod c5_native_response_tests;
+
+#[cfg(test)]
+#[path = "tests/native_execution_tests.rs"]
+mod native_execution_tests;
+
+#[cfg(test)]
+#[path = "tests/native_test_support.rs"]
+mod native_test_support;

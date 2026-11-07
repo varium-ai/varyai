@@ -113,6 +113,58 @@ pub(crate) fn extract_codex_restoration_session_id<'a>(
     validate(suffix)
 }
 
+/// Borrow a strict Chat identity using the unchanged Codex source and validation rules.
+#[allow(dead_code)]
+pub(crate) fn extract_chat_restoration_session_id<'a>(
+    headers: &'a HeaderMap,
+    body: &'a serde_json::Value,
+) -> Option<&'a str> {
+    extract_codex_restoration_session_id(headers, body)
+}
+
+/// Borrow only a strict native Anthropic identity; invalid present sources stop lookup.
+#[allow(dead_code)]
+pub(crate) fn extract_anthropic_restoration_session_id<'a>(
+    headers: &'a HeaderMap,
+    body: &'a serde_json::Value,
+) -> Option<&'a str> {
+    for name in ["x-claude-code-session-id", "claude-code-session-id"] {
+        if headers.contains_key(name) {
+            return extract_native_restoration_header(headers, name);
+        }
+    }
+
+    let metadata = body.get("metadata")?.as_object()?;
+    if let Some(value) = metadata.get("session_id") {
+        return validate_native_restoration_identity(value.as_str()?);
+    }
+    let user_id = metadata.get("user_id")?.as_str()?;
+    let (_, suffix) = user_id.split_once("_session_")?;
+    validate_native_restoration_identity(suffix)
+}
+
+/// Borrow an explicit local Gemini session header only; never infer a fallback identity.
+#[allow(dead_code)]
+pub(crate) fn extract_gemini_restoration_session_id(headers: &HeaderMap) -> Option<&str> {
+    extract_native_restoration_header(headers, "x-session-id")
+}
+
+fn validate_native_restoration_identity(raw: &str) -> Option<&str> {
+    (!raw.is_empty()
+        && raw.len() <= 256
+        && !raw.chars().any(|ch| ch.is_whitespace() || ch.is_control()))
+    .then_some(raw)
+}
+
+fn extract_native_restoration_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    let mut values = headers.get_all(name).iter();
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    validate_native_restoration_identity(std::str::from_utf8(value.as_bytes()).ok()?)
+}
+
 /// Extract an actual client identity without generating a per-request UUID.
 pub(crate) fn extract_client_session_id(
     headers: &HeaderMap,
@@ -334,6 +386,478 @@ fn generate_new_session_id() -> SessionIdResult {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn native_restoration_header(raw: &[u8]) -> axum::http::HeaderValue {
+        match axum::http::HeaderValue::from_bytes(raw) {
+            Ok(value) => value,
+            Err(_) => panic!("synthetic header must be representable"),
+        }
+    }
+
+    fn native_restoration_assert_borrowed(actual: Option<&str>, expected: &str) {
+        assert!(actual.is_some_and(|raw| {
+            std::ptr::eq(raw.as_ptr(), expected.as_ptr()) && raw.len() == expected.len()
+        }));
+    }
+
+    fn native_restoration_all_identities<'a>(
+        headers: &'a HeaderMap,
+        body: &'a serde_json::Value,
+    ) -> [Option<&'a str>; 3] {
+        [
+            extract_chat_restoration_session_id(headers, body),
+            extract_anthropic_restoration_session_id(headers, body),
+            extract_gemini_restoration_session_id(headers),
+        ]
+    }
+
+    #[test]
+    fn native_restoration_chat_preserves_codex_source_order_and_borrowing() {
+        let names = ["thread-id", "session-id", "session_id", "x-session-id"];
+        let mut headers = HeaderMap::new();
+        for (name, value) in names.iter().zip(["chat-a", "chat-b", "chat-c", "chat-d"]) {
+            headers.insert(*name, native_restoration_header(value.as_bytes()));
+        }
+        let body = json!({"metadata":{"session_id":"chat-metadata", "user_id":"user_session_chat-suffix"}});
+        for name in names {
+            let expected = match headers.get(name).and_then(|value| value.to_str().ok()) {
+                Some(value) => value,
+                None => panic!("synthetic source must exist"),
+            };
+            let actual = extract_chat_restoration_session_id(&headers, &body);
+            native_restoration_assert_borrowed(actual, expected);
+            assert!(actual == extract_codex_restoration_session_id(&headers, &body));
+            headers.remove(name);
+        }
+        native_restoration_assert_borrowed(
+            extract_chat_restoration_session_id(&headers, &body),
+            body["metadata"]["session_id"].as_str().unwrap_or_default(),
+        );
+        let body = json!({"metadata":{"user_id":"user_session_chat-suffix_session_tail"}});
+        let expected = body["metadata"]["user_id"]
+            .as_str()
+            .and_then(|value| value.split_once("_session_"))
+            .map(|(_, suffix)| suffix)
+            .unwrap_or_default();
+        native_restoration_assert_borrowed(
+            extract_chat_restoration_session_id(&headers, &body),
+            expected,
+        );
+    }
+
+    #[test]
+    fn native_restoration_chat_rejects_invalid_higher_priority_headers() {
+        let names = ["thread-id", "session-id", "session_id", "x-session-id"];
+        let body =
+            json!({"metadata":{"session_id":"chat-fallback", "user_id":"user_session_suffix"}});
+        for (index, name) in names.iter().enumerate() {
+            for invalid in [
+                "",
+                " ",
+                " leading",
+                "trailing ",
+                "a\tb",
+                "a\u{85}b",
+                "x".repeat(257).as_str(),
+            ] {
+                let mut headers = HeaderMap::new();
+                for &lower in &names[index + 1..] {
+                    headers.insert(lower, native_restoration_header(b"lower-source"));
+                }
+                headers.insert(*name, native_restoration_header(invalid.as_bytes()));
+                assert!(extract_chat_restoration_session_id(&headers, &body).is_none());
+                assert!(extract_codex_restoration_session_id(&headers, &body).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn native_restoration_chat_rejects_duplicate_headers_even_if_identical() {
+        let body = json!({"metadata":{"session_id":"chat-fallback"}});
+        for name in ["thread-id", "session-id", "session_id", "x-session-id"] {
+            for second in ["duplicate-source", "different-source"] {
+                let mut headers = HeaderMap::new();
+                headers.append(name, native_restoration_header(b"duplicate-source"));
+                headers.append(name, native_restoration_header(second.as_bytes()));
+                assert!(extract_chat_restoration_session_id(&headers, &body).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn native_restoration_chat_requires_strict_metadata_and_recognized_suffix() {
+        let headers = HeaderMap::new();
+        for invalid in [
+            json!(null),
+            json!(false),
+            json!(7),
+            json!([]),
+            json!({}),
+            json!(""),
+            json!(" leading"),
+            json!("a\nb"),
+            json!("a\u{7f}b"),
+            json!("x".repeat(257)),
+        ] {
+            let body =
+                json!({"metadata":{"session_id":invalid, "user_id":"user_session_valid-suffix"}});
+            assert!(extract_chat_restoration_session_id(&headers, &body).is_none());
+        }
+        for invalid in [
+            json!(null),
+            json!([]),
+            json!(5),
+            json!("unrecognized-user"),
+            json!("user_session_"),
+            json!("user_session_a b"),
+            json!("user_session_a\nb"),
+            json!(format!("user_session_{}", "é".repeat(129))),
+        ] {
+            let body = json!({"metadata":{"user_id":invalid}});
+            assert!(extract_chat_restoration_session_id(&headers, &body).is_none());
+        }
+        for metadata in [json!(null), json!(false), json!([]), json!("not-an-object")] {
+            assert!(
+                extract_chat_restoration_session_id(&headers, &json!({"metadata":metadata}))
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn native_restoration_chat_ignores_unrecognized_sources_without_generation() {
+        let mut headers = HeaderMap::new();
+        for name in [
+            "x-request-id",
+            "x-conversation-id",
+            "x-claude-code-session-id",
+            "x-grok-conv-id",
+        ] {
+            headers.insert(name, native_restoration_header(b"unsupported-source"));
+        }
+        let body = json!({"session_id":"root-source", "prompt_cache_key":"cache-source", "previous_response_id":"response-source", "metadata":{"user_id":"unrecognized-user"}});
+        for _ in 0..2 {
+            assert!(extract_chat_restoration_session_id(&headers, &body).is_none());
+        }
+        assert!(extract_chat_restoration_session_id(&HeaderMap::new(), &json!({})).is_none());
+    }
+
+    #[test]
+    fn native_restoration_anthropic_source_order_and_borrowing() {
+        let mut headers = HeaderMap::new();
+        let names = ["x-claude-code-session-id", "claude-code-session-id"];
+        for (name, value) in names.iter().zip(["anthropic-a", "anthropic-b"]) {
+            headers.insert(*name, native_restoration_header(value.as_bytes()));
+        }
+        let body = json!({"metadata":{"session_id":"anthropic-metadata", "user_id":"user_session_anthropic-suffix"}});
+        for name in names {
+            let expected = match headers.get(name).and_then(|value| value.to_str().ok()) {
+                Some(value) => value,
+                None => panic!("synthetic source must exist"),
+            };
+            native_restoration_assert_borrowed(
+                extract_anthropic_restoration_session_id(&headers, &body),
+                expected,
+            );
+            headers.remove(name);
+        }
+        native_restoration_assert_borrowed(
+            extract_anthropic_restoration_session_id(&headers, &body),
+            body["metadata"]["session_id"].as_str().unwrap_or_default(),
+        );
+        let body = json!({"metadata":{"user_id":"uninspected prefix_session_anthropic-suffix_session_tail"}});
+        let expected = body["metadata"]["user_id"]
+            .as_str()
+            .and_then(|value| value.split_once("_session_"))
+            .map(|(_, suffix)| suffix)
+            .unwrap_or_default();
+        native_restoration_assert_borrowed(
+            extract_anthropic_restoration_session_id(&headers, &body),
+            expected,
+        );
+    }
+
+    #[test]
+    fn native_restoration_anthropic_rejects_invalid_higher_priority_headers() {
+        let names = ["x-claude-code-session-id", "claude-code-session-id"];
+        let body = json!({"metadata":{"session_id":"anthropic-fallback", "user_id":"user_session_suffix"}});
+        for (index, name) in names.iter().enumerate() {
+            for invalid in [
+                "",
+                " ",
+                " leading",
+                "trailing ",
+                "a\tb",
+                "a\u{85}b",
+                "x".repeat(257).as_str(),
+            ] {
+                let mut headers = HeaderMap::new();
+                for &lower in &names[index + 1..] {
+                    headers.insert(lower, native_restoration_header(b"lower-source"));
+                }
+                headers.insert(*name, native_restoration_header(invalid.as_bytes()));
+                assert!(extract_anthropic_restoration_session_id(&headers, &body).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn native_restoration_anthropic_rejects_duplicate_headers_even_if_identical() {
+        let body = json!({"metadata":{"session_id":"anthropic-fallback"}});
+        for name in ["x-claude-code-session-id", "claude-code-session-id"] {
+            for second in ["duplicate-source", "different-source"] {
+                let mut headers = HeaderMap::new();
+                headers.append(name, native_restoration_header(b"duplicate-source"));
+                headers.append(name, native_restoration_header(second.as_bytes()));
+                assert!(extract_anthropic_restoration_session_id(&headers, &body).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn native_restoration_anthropic_requires_strict_metadata_and_recognized_suffix() {
+        let headers = HeaderMap::new();
+        for invalid in [
+            json!(null),
+            json!(false),
+            json!(7),
+            json!([]),
+            json!({}),
+            json!(""),
+            json!(" leading"),
+            json!("a\nb"),
+            json!("a\u{7f}b"),
+            json!("x".repeat(257)),
+        ] {
+            let body =
+                json!({"metadata":{"session_id":invalid, "user_id":"user_session_valid-suffix"}});
+            assert!(extract_anthropic_restoration_session_id(&headers, &body).is_none());
+        }
+        for invalid in [
+            json!(null),
+            json!([]),
+            json!(5),
+            json!("unrecognized-user"),
+            json!("user_session_"),
+            json!("user_session_a b"),
+            json!("user_session_a\nb"),
+            json!(format!("user_session_{}", "é".repeat(129))),
+        ] {
+            let body = json!({"metadata":{"user_id":invalid}});
+            assert!(extract_anthropic_restoration_session_id(&headers, &body).is_none());
+        }
+        for metadata in [json!(null), json!(false), json!([]), json!("not-an-object")] {
+            assert!(extract_anthropic_restoration_session_id(
+                &headers,
+                &json!({"metadata":metadata})
+            )
+            .is_none());
+        }
+        let body = json!({"metadata":{"session_id":"metadata-wins", "user_id":false}});
+        native_restoration_assert_borrowed(
+            extract_anthropic_restoration_session_id(&headers, &body),
+            body["metadata"]["session_id"].as_str().unwrap_or_default(),
+        );
+    }
+
+    #[test]
+    fn native_restoration_anthropic_ignores_codex_and_other_identity_sources() {
+        let body = json!({"session_id":"root-source", "prompt_cache_key":"cache-source", "previous_response_id":"response-source"});
+        for name in [
+            "thread-id",
+            "session-id",
+            "session_id",
+            "x-session-id",
+            "x-request-id",
+            "x-conversation-id",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(name, native_restoration_header(b"unsupported-source"));
+            assert!(extract_anthropic_restoration_session_id(&headers, &body).is_none());
+        }
+        assert!(extract_anthropic_restoration_session_id(&HeaderMap::new(), &body).is_none());
+    }
+
+    #[test]
+    fn native_restoration_gemini_borrows_only_explicit_local_session_header() {
+        let mut headers = HeaderMap::new();
+        for name in [
+            "thread-id",
+            "session-id",
+            "session_id",
+            "x-claude-code-session-id",
+        ] {
+            headers.insert(name, native_restoration_header(b"unsupported-source"));
+        }
+        headers.insert(
+            "x-session-id",
+            native_restoration_header(b"gemini-explicit"),
+        );
+        let expected = match headers
+            .get("x-session-id")
+            .and_then(|value| value.to_str().ok())
+        {
+            Some(value) => value,
+            None => panic!("synthetic source must exist"),
+        };
+        native_restoration_assert_borrowed(
+            extract_gemini_restoration_session_id(&headers),
+            expected,
+        );
+    }
+
+    #[test]
+    fn native_restoration_gemini_rejects_invalid_explicit_session_header() {
+        for invalid in [
+            "",
+            " ",
+            " leading",
+            "trailing ",
+            "a\tb",
+            "a\u{85}b",
+            "x".repeat(257).as_str(),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "thread-id",
+                native_restoration_header(b"unsupported-source"),
+            );
+            headers.insert(
+                "x-session-id",
+                native_restoration_header(invalid.as_bytes()),
+            );
+            assert!(extract_gemini_restoration_session_id(&headers).is_none());
+        }
+    }
+
+    #[test]
+    fn native_restoration_gemini_rejects_duplicate_headers_even_if_identical() {
+        for second in ["duplicate-source", "different-source"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "thread-id",
+                native_restoration_header(b"unsupported-source"),
+            );
+            headers.append(
+                "x-session-id",
+                native_restoration_header(b"duplicate-source"),
+            );
+            headers.append("x-session-id", native_restoration_header(second.as_bytes()));
+            assert!(extract_gemini_restoration_session_id(&headers).is_none());
+        }
+    }
+
+    #[test]
+    fn native_restoration_gemini_does_not_infer_identity_or_generate_fallback() {
+        for name in [
+            "thread-id",
+            "session-id",
+            "session_id",
+            "x-claude-code-session-id",
+            "x-request-id",
+            "x-conversation-id",
+            "x-goog-request-id",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(name, native_restoration_header(b"unsupported-source"));
+            assert!(extract_gemini_restoration_session_id(&headers).is_none());
+        }
+        for _ in 0..2 {
+            assert!(extract_gemini_restoration_session_id(&HeaderMap::new()).is_none());
+        }
+    }
+
+    #[test]
+    fn native_restoration_all_parsers_enforce_utf8_byte_limit_without_trimming() {
+        let body = json!({"metadata":{"session_id":"metadata-fallback"}});
+        let empty_headers = HeaderMap::new();
+        for raw in [
+            "a".repeat(256),
+            "é".repeat(128),
+            "界".repeat(85),
+            "short-identity".to_owned(),
+        ] {
+            let mut headers = HeaderMap::new();
+            for name in ["thread-id", "x-claude-code-session-id", "x-session-id"] {
+                headers.insert(name, native_restoration_header(raw.as_bytes()));
+            }
+            assert!(native_restoration_all_identities(&headers, &body)
+                .iter()
+                .all(|actual| *actual == Some(raw.as_str())));
+            let body = json!({"metadata":{"session_id":raw}});
+            for actual in [
+                extract_chat_restoration_session_id(&empty_headers, &body),
+                extract_anthropic_restoration_session_id(&empty_headers, &body),
+            ] {
+                assert!(actual == body["metadata"]["session_id"].as_str());
+            }
+        }
+        for raw in [
+            "a".repeat(257),
+            "é".repeat(129),
+            format!("{}a", "é".repeat(128)),
+            " leading".to_owned(),
+            "trailing ".to_owned(),
+            "a\tb".to_owned(),
+            "a\u{2003}b".to_owned(),
+            "a\u{80}b".to_owned(),
+            String::new(),
+        ] {
+            let mut headers = HeaderMap::new();
+            for name in ["thread-id", "x-claude-code-session-id", "x-session-id"] {
+                headers.insert(name, native_restoration_header(raw.as_bytes()));
+            }
+            assert!(native_restoration_all_identities(&headers, &body)
+                .iter()
+                .all(Option::is_none));
+        }
+    }
+
+    #[test]
+    fn native_restoration_all_parsers_reject_non_utf8_headers_without_fallback() {
+        let body = json!({"metadata":{"session_id":"metadata-fallback"}});
+        for invalid in [b"\xff".as_slice(), b"\xc3\x28".as_slice()] {
+            let mut headers = HeaderMap::new();
+            for name in ["thread-id", "x-claude-code-session-id", "x-session-id"] {
+                headers.insert(name, native_restoration_header(invalid));
+            }
+            assert!(native_restoration_all_identities(&headers, &body)
+                .iter()
+                .all(Option::is_none));
+        }
+    }
+
+    #[test]
+    fn native_restoration_parsers_preserve_input_and_legacy_session_behavior() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "thread-id",
+            native_restoration_header(b"  synthetic-legacy-thread-identifier  "),
+        );
+        headers.insert(
+            "x-claude-code-session-id",
+            native_restoration_header(b"  synthetic-legacy-anthropic-identifier  "),
+        );
+        headers.insert(
+            "x-session-id",
+            native_restoration_header(b"  synthetic-legacy-gemini-identifier  "),
+        );
+        let body = json!({"metadata":{"session_id":"synthetic-metadata", "user_id":"user_session_synthetic-suffix"}, "messages":[{"role":"user", "content":"synthetic-text"}]});
+        let original_headers = headers.clone();
+        let original_body = body.clone();
+        assert!(native_restoration_all_identities(&headers, &body)
+            .iter()
+            .all(Option::is_none));
+        assert!(extract_codex_restoration_session_id(&headers, &body).is_none());
+        let codex = extract_session_id(&headers, &body, "codex");
+        assert!(codex.session_id == "codex_synthetic-legacy-thread-identifier");
+        assert!(codex.source == SessionIdSource::Header && codex.client_provided);
+        let claude = extract_session_id(&headers, &body, "claude");
+        assert!(claude.session_id == "  synthetic-legacy-anthropic-identifier  ");
+        assert!(claude.source == SessionIdSource::Header && claude.client_provided);
+        assert!(headers == original_headers);
+        assert!(body == original_body);
+    }
 
     // ========== Session ID 提取测试 ==========
 

@@ -678,6 +678,7 @@ async fn installed_gemini_cli_uses_chat_bridge() {
 #[tokio::test]
 #[serial_test::serial]
 async fn claude_converted_tool_calls_reach_history_from_native_responses() {
+    super::security::runtime::set_security_runtime_for_test(Default::default());
     use super::tool_observation::channel::test_channel;
     use crate::services::tool_risk::{
         response_parser::ResponseProcessor, runtime::*, worker::project_event,

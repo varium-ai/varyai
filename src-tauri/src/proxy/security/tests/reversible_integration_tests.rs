@@ -3017,10 +3017,12 @@ async fn outbound_retention_fixture_with_prompt(tail: bool, prompt: Option<bool>
     // independently rebuilt tail. Keep the input test's distinguishing charge
     // separate from the new tail's fixed baseline; never infer it from owners.
     let before_competing = budget.used();
+    let provenance_charge = std::mem::size_of::<super::payload_budget::Reservation>()
+        + 2 * std::mem::size_of::<usize>();
     if prompt.is_none() {
         assert_eq!(
             before_competing,
-            baseline + 3 * first_charge + output_charge
+            baseline + 3 * first_charge + output_charge + provenance_charge
         );
     }
     let retained_input_trees = if tail || prompt.is_some() { 3 } else { 2 };
@@ -3036,6 +3038,7 @@ async fn outbound_retention_fixture_with_prompt(tail: bool, prompt: Option<bool>
                 - baseline
                 - retained_input_trees * first_charge
                 - fixed_tail_charge
+                - provenance_charge
                 - (distinguishing_charge + second_charge / 2),
         )
         .map_err(|error| std::io::Error::other(error.code()))?;
@@ -3065,7 +3068,7 @@ async fn outbound_retention_fixture_with_prompt(tail: bool, prompt: Option<bool>
     if prompt.is_some() {
         assert_eq!(
             before_competing,
-            baseline + 3 * first_charge + 2 * output_charge,
+            baseline + 3 * first_charge + 2 * output_charge + provenance_charge,
             "independent prompt candidate must retain its own complete-tree reservation"
         );
     }
@@ -3565,8 +3568,13 @@ async fn namespace_wire_lifecycle(participating: bool, namespace: bool) -> TestR
         vec![provider],
     ));
     tokio::select! {_=probe.reached.notified()=>{},result=&mut pending=>panic!("before barrier: {}",result.err().map_or("success".into(),|error|error.error.to_string())),_=tokio::time::sleep(std::time::Duration::from_secs(3))=>panic!("barrier timeout")}
+    let provenance_charge = std::mem::size_of::<super::payload_budget::Reservation>()
+        + 2 * std::mem::size_of::<usize>();
     let retained = if participating {
-        baseline + 3 * source_charge + output_charge * (1 + usize::from(namespace))
+        baseline
+            + 3 * source_charge
+            + output_charge * (1 + usize::from(namespace))
+            + provenance_charge
     } else {
         0
     };
@@ -4601,33 +4609,24 @@ async fn p1_xai_original_frame_limits_budget_and_cancel() -> TestResult {
             Ok::<_, std::io::Error>(bytes::Bytes::from(prefix)),
             Ok(bytes::Bytes::from(terminal)),
         ];
-        let held = if mode == "budget" {
-            Some(budget.reserve(budget.limit() - budget.used())?)
-        } else {
-            None
-        };
-        let mut stream =
+        let observed =
             observe_xai_original_sse(futures::stream::iter(chunks), Some(evidence.clone()));
-        if mode == "unpolled" {
-            drop(stream);
-        } else if mode == "cancel" {
-            assert!(stream
-                .next()
-                .await
-                .ok_or("missing synthetic first frame")?
-                .is_ok());
-            drop(stream);
-        } else {
-            while let Some(_chunk) = stream.next().await {}
-            drop(stream);
-        }
-        drop(held);
+        // Cancellation withholds genuine original EOF; an unpolled observer
+        // supplies no original observation at all. Neither can authorize output.
+        let original_limit = match mode {
+            "unpolled" => 0,
+            "cancel" => 1,
+            _ => usize::MAX,
+        };
+        let converted = crate::proxy::providers::transform_codex_responses_xai_sanitize::create_xai_native_responses_sse_stream(
+            observed.take(original_limit),
+            crate::proxy::providers::transform_codex_responses_namespace::ResponseNamespaceTable::Legacy(
+                std::collections::HashMap::new(),
+            ),
+        );
         let prepared = http::Response::builder()
             .header("content-type", "text/event-stream")
-            .body(Body::from(format!(
-                "event: response.completed\ndata: {}\n\n",
-                json!({"type":"response.completed","response":response})
-            )))?;
+            .body(Body::from_stream(converted))?;
         let restored = attempt
             .restore_client_http_response(
                 prepared,
@@ -4635,7 +4634,15 @@ async fn p1_xai_original_frame_limits_budget_and_cancel() -> TestResult {
                 Some(evidence),
             )
             .await;
+        // Exhaust the same budget only after the final wrapper owns its
+        // lifecycle, so failure occurs during polling rather than fixture setup.
+        let held = if mode == "budget" {
+            Some(budget.reserve(budget.limit() - budget.used())?)
+        } else {
+            None
+        };
         let bytes = restored.into_body().collect().await?.to_bytes();
+        drop(held);
         let text = std::str::from_utf8(&bytes)?;
         assert_eq!(
             text.contains(FIXTURE_PHONE),
@@ -9492,6 +9499,128 @@ mod text_fallback_http_tests {
     }
 
     #[tokio::test]
+    async fn text_fallback_http_lazy_unpolled_and_pending_cancel_preserve_boundaries() -> TestResult
+    {
+        use super::super::tokenization::publication_test_support;
+        for sse in [false, true] {
+            for phase in 0..3 {
+                let fixture = fixture()?;
+                let reads = Arc::new(AtomicUsize::new(0));
+                let counter = reads.clone();
+                let payload = wire(&fixture, sse);
+                let body = Body::from_stream(async_stream::stream! {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    if phase == 2 {
+                        yield Ok::<_, std::io::Error>(Bytes::from(payload));
+                    }
+                    futures::future::pending::<()>().await;
+                });
+                let mut pending = Box::pin(prepare_text_projection_http_for_test(
+                    response(body, sse)?,
+                    fixture.lease.fork_attempt_extracted()?,
+                    fixture.budget.clone(),
+                ));
+                assert_eq!(
+                    fixture.budget.used(),
+                    0,
+                    "unpolled fixture allocated mechanics"
+                );
+                assert_eq!(reads.load(Ordering::SeqCst), 0);
+                if phase != 0 {
+                    assert!(
+                        futures::poll!(pending.as_mut()).is_pending(),
+                        "projection released before entity EOF"
+                    );
+                    assert_eq!(reads.load(Ordering::SeqCst), 1);
+                    assert_eq!(fixture.budget.used() > 0, sse || phase == 2);
+                }
+                let counts = publication_test_support::counts(&fixture.store)?;
+                assert_eq!((counts.0, counts.1, counts.2), (0, 0, 0));
+                no_authority(&fixture)?;
+                drop(pending);
+                assert_eq!(
+                    fixture.budget.used(),
+                    0,
+                    "cancelled projection stranded mechanics"
+                );
+                assert_eq!(reads.load(Ordering::SeqCst), usize::from(phase != 0));
+                let counts = publication_test_support::counts(&fixture.store)?;
+                assert_eq!((counts.0, counts.1, counts.2), (0, 0, 0));
+                no_authority(&fixture)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn text_fallback_http_capacity_phase_controls() -> TestResult {
+        use super::super::{
+            response_restoration::RestoreError, restore_diagnostics::RestoreReason,
+        };
+        for sse in [false, true] {
+            for phase in 0..3 {
+                let fixture = fixture()?;
+                let budget =
+                    PayloadBudget::with_limit(if phase == 0 { 1 } else { 32 * 1024 * 1024 });
+                assert_eq!(budget.used(), 0);
+                let reads = Arc::new(AtomicUsize::new(0));
+                let used_at_read = Arc::new(AtomicUsize::new(0));
+                let counter = reads.clone();
+                let observed = used_at_read.clone();
+                let body_budget = budget.clone();
+                let payload = wire(&fixture, sse);
+                let body = Body::from_stream(async_stream::stream! {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    observed.store(body_budget.used(), Ordering::SeqCst);
+                    // Exhaust capacity only after the HTTP adapter has initialized.
+                    let _exhaustion = if phase == 1 {
+                        Some(body_budget.reserve(body_budget.limit() - body_budget.used())?)
+                    } else {
+                        None
+                    };
+                    yield Ok::<_, super::super::tokenization::TokenError>(Bytes::from(payload));
+                    drop(_exhaustion);
+                });
+                let result = prepare_text_projection_http_for_test(
+                    response(body, sse)?,
+                    fixture.lease.fork_attempt_extracted()?,
+                    budget.clone(),
+                )
+                .await;
+                if phase == 2 {
+                    let projected = result.map_err(|_| "adequate synthetic capacity refused")?;
+                    let output = projected.into_body().collect().await?;
+                    assert!(!output.to_bytes().is_empty());
+                } else {
+                    assert!(
+                        matches!(result, Err(RestoreError::FailedBecause(RestoreReason::RestoreCapacity))),
+                        "capacity phase did not reject with the fixed capacity classification; mode={sse} phase={phase}"
+                    );
+                }
+                assert_eq!(
+                    reads.load(Ordering::SeqCst),
+                    if sse && phase == 0 { 0 } else { 1 },
+                    "capacity rejection stage mismatch; mode={sse} phase={phase}"
+                );
+                if phase != 0 {
+                    assert_eq!(
+                        used_at_read.load(Ordering::SeqCst) > 0,
+                        sse,
+                        "initialization charge mismatch before body read; mode={sse} phase={phase}"
+                    );
+                }
+                assert_eq!(
+                    budget.used(),
+                    0,
+                    "capacity phase leaked; mode={sse} phase={phase}"
+                );
+                no_authority(&fixture)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn text_fallback_http_capacity_cancel_truncation_io_and_utf8_refuse() -> TestResult {
         for sse in [false, true] {
             let fixture = fixture()?;
@@ -9535,9 +9664,25 @@ mod text_fallback_http_tests {
                     result.is_err(),
                     "invalid synthetic entity accepted; mode={sse} case={variant}"
                 );
+                if variant == 6 {
+                    assert!(
+                        matches!(result, Err(super::super::response_restoration::RestoreError::FailedBecause(
+                            super::super::restore_diagnostics::RestoreReason::RestoreCapacity
+                        ))),
+                        "one-byte budget must retain the fixed capacity classification; mode={sse}"
+                    );
+                }
                 assert_eq!(
                     reads.load(Ordering::SeqCst),
-                    if variant == 5 { 2 } else { 1 }
+                    if sse && variant == 6 {
+                        // Mandatory stream identities reject before polling this one-byte budget.
+                        0
+                    } else if variant == 5 {
+                        2
+                    } else {
+                        1
+                    },
+                    "synthetic rejection read boundary; mode={sse} case={variant}"
                 );
                 assert_eq!(budget.used(), 0);
                 no_authority(&fixture)?;
@@ -14943,4 +15088,871 @@ mod extended_history_failure_diagnostics {
         trace_growth_failures()?;
         snapshot_failures()
     }
+}
+
+// Real router, handler and converter coverage for the same preconversion owner.
+// These tools are recorded at the client boundary and are never executed.
+mod c3_json_router {
+    use super::*;
+    use crate::proxy::security::{
+        payload_budget::PayloadBudget,
+        restoration_core::{LifecycleOperation, ResponseLifecycle},
+        tokenization::{publication_test_support, DlpTokenStore},
+    };
+
+    const ORDINARY: &str = "Synthetic ordinary router input";
+    const CALL: &str = "call_c3_router";
+    const TOOL: &str = "synthetic_c3_lookup";
+
+    #[derive(Clone)]
+    struct Fixture {
+        chat: bool,
+        sse: bool,
+        seen: Arc<Mutex<Vec<Value>>>,
+    }
+
+    fn carrier(value: &Value) -> Option<&str> {
+        match value {
+            Value::String(text) if text == ORDINARY || text.contains("rredact-cn_phone-") => {
+                Some(text)
+            }
+            Value::Array(values) => values.iter().find_map(carrier),
+            Value::Object(values) => values.values().find_map(carrier),
+            _ => None,
+        }
+    }
+
+    fn arguments(text: &str) -> Value {
+        json!({"phone":text,"nested":[7,true,null,{"literal":"synthetic opaque value"}]})
+    }
+
+    async fn upstream(
+        State(fixture): State<Fixture>,
+        Json(body): Json<Value>,
+    ) -> axum::response::Response {
+        if let Ok(mut seen) = fixture.seen.lock() {
+            seen.push(body.clone());
+        }
+        let text = carrier(&body).unwrap_or("missing synthetic router carrier");
+        let arguments = arguments(text);
+        if !fixture.sse {
+            return Json(if fixture.chat {
+                json!({"id":"chat_c3_router","object":"chat.completion","model":"synthetic-model",
+                    "choices":[{"index":0,"message":{"role":"assistant","content":text,"tool_calls":[{
+                        "id":CALL,"type":"function","function":{"name":TOOL,"arguments":arguments.to_string()}}]},
+                        "finish_reason":"tool_calls"}]})
+            } else {
+                json!({"id":"msg_c3_router","type":"message","role":"assistant","model":"synthetic-model",
+                    "content":[{"type":"text","text":text},{"type":"tool_use","id":CALL,"name":TOOL,"input":arguments}],
+                    "stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}})
+            }).into_response();
+        }
+        let events = if fixture.chat {
+            vec![
+                json!({"id":"chat_c3_router","object":"chat.completion.chunk","model":"synthetic-model",
+                    "choices":[{"index":0,"delta":{"role":"assistant","content":text,"tool_calls":[{
+                        "index":0,"id":CALL,"type":"function","function":{"name":TOOL,"arguments":arguments.to_string()}}]},
+                        "finish_reason":null}]}),
+                json!({"id":"chat_c3_router","object":"chat.completion.chunk","model":"synthetic-model",
+                    "choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+            ]
+        } else {
+            vec![
+                json!({"type":"message_start","message":{"id":"msg_c3_router","type":"message","role":"assistant",
+                    "model":"synthetic-model","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}),
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}}),
+                json!({"type":"content_block_stop","index":0}),
+                json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":CALL,"name":TOOL,"input":{}}}),
+                json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":arguments.to_string()}}),
+                json!({"type":"content_block_stop","index":1}),
+                json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}),
+                json!({"type":"message_stop"}),
+            ]
+        };
+        let mut wire = String::new();
+        for event in events {
+            if let Some(kind) = event["type"].as_str() {
+                wire.push_str(&format!("event: {kind}\r\n"));
+            }
+            wire.push_str(&format!("data: {event}\r\n\r\n"));
+        }
+        if fixture.chat {
+            wire.push_str("data: [DONE]\r\n\r\n");
+        }
+        // An unmarked original SSE entity exercises the real buffered aggregation path.
+        ([("content-type", "application/json")], wire).into_response()
+    }
+
+    // Aborting the isolated loopback server also covers assertion/error exits.
+    struct Server(tokio::task::JoinHandle<std::io::Result<()>>);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+
+    async fn run(
+        chat: bool,
+        sse: bool,
+        mapped: bool,
+        rejection: Option<LifecycleOperation>,
+    ) -> TestResult {
+        let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+        runtime::set_security_runtime_for_test(Default::default());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let upstream = Router::new().fallback(post(upstream)).with_state(Fixture {
+            chat,
+            sse,
+            seen: seen.clone(),
+        });
+        let _server = Server(tokio::spawn(async move {
+            axum::serve(listener, upstream).await
+        }));
+        let db = Arc::new(Database::memory()?);
+        let provider = Provider::with_id(
+            "c3-router-provider".into(),
+            "Synthetic C3 router".into(),
+            json!({"base_url":format!("http://{addr}"),"api_key":"synthetic-c3-router-credential",
+                "api_format":if chat { "chat_completions" } else { "anthropic" }}),
+            None,
+        );
+        db.save_provider("codex", &provider)?;
+        db.set_current_provider("codex", &provider.id)?;
+        let store = DlpTokenStore::new();
+        let budget = PayloadBudget::with_limit(32 * 1024 * 1024);
+        let proxy = ProxyServer::new(ProxyConfig::default(), db, None).with_restoration_gateway(
+            RestorationGateway::with_test_store_and_rules(
+                store.clone(),
+                &["chinese_phone_number"],
+                budget.clone(),
+            ),
+        );
+        let request = http::Request::builder().method("POST").uri("/v1/responses")
+            .header("content-type", "application/json").header("session-id", "synthetic-c3-router-session")
+            .body(Body::from(json!({"model":"synthetic-model","input":if mapped { FIXTURE_PHONE } else { ORDINARY },"stream":false,
+                "tools":[{"type":"function","name":TOOL,"parameters":{"type":"object"}}]}).to_string()))?;
+        let guard = rejection.map(ResponseLifecycle::reject_operation_for_test);
+        let response = proxy.build_router().call(request).await?;
+        let status = response.status();
+        // JSON activation belongs before body polling, unlike the SSE continuation contract.
+        let before_poll = publication_test_support::counts(&store)?;
+        assert_eq!(
+            before_poll.0,
+            usize::from(rejection.is_none()),
+            "c3_router_json_activation_boundary"
+        );
+        assert_eq!(
+            (before_poll.1, before_poll.2),
+            (0, 0),
+            "c3_router_pending_publication_leaked"
+        );
+        let bytes = response.into_body().collect().await?.to_bytes();
+        drop(guard);
+        let value: Value = serde_json::from_slice(&bytes)?;
+        let raw = std::str::from_utf8(&bytes)?;
+        let mut recorder = FinalClientRecorder::default();
+        recorder.observe_json(&value);
+        let captured = seen.lock().map_err(|_| "c3_router_capture_poisoned")?;
+        assert_eq!(captured.len(), 1, "c3_router_requires_one_actual_attempt");
+        let outbound = carrier(&captured[0]).ok_or("c3_router_outbound_carrier_missing")?;
+        assert_eq!(
+            outbound.contains("rredact-cn_phone-"),
+            mapped,
+            "c3_router_mapping_precondition"
+        );
+        assert!(
+            !outbound.contains(FIXTURE_PHONE),
+            "c3_router_private_input_reached_upstream"
+        );
+        assert!(
+            !raw.contains("rredact-cn_phone-"),
+            "c3_router_reference_reached_client"
+        );
+        if rejection.is_some() {
+            assert_eq!(
+                status,
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                "c3_router_rejected_owner_reached_converter_exit"
+            );
+            assert_eq!(value["error"]["code"], "proxy_processing_failed");
+            assert!(
+                value.get("output").is_none(),
+                "c3_router_rejected_owner_released_output"
+            );
+            assert!(
+                !recorder.completed && recorder.failed && recorder.submissions.is_empty(),
+                "c3_router_rejected_owner_released_tool"
+            );
+            assert!(
+                !raw.contains(FIXTURE_PHONE),
+                "c3_router_rejected_owner_released_private_text"
+            );
+        } else {
+            assert_eq!(
+                status,
+                http::StatusCode::OK,
+                "c3_router_valid_source_rejected"
+            );
+            assert!(
+                recorder.completed && !recorder.failed,
+                "c3_router_completion_missing"
+            );
+            assert_eq!(
+                recorder.submissions.len(),
+                1,
+                "c3_router_tool_conversion_changed"
+            );
+            let tool = &recorder.submissions[0];
+            assert!(
+                tool["type"] == "function_call" && tool["call_id"] == CALL && tool["name"] == TOOL,
+                "c3_router_tool_identity_changed"
+            );
+            let restored: Value = serde_json::from_str(
+                tool["arguments"]
+                    .as_str()
+                    .ok_or("c3_router_arguments_missing")?,
+            )?;
+            let expected_text = if mapped { FIXTURE_PHONE } else { ORDINARY };
+            assert!(
+                restored == arguments(expected_text),
+                "c3_router_argument_types_or_restoration_changed"
+            );
+            assert!(
+                value["output"]
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|item| item["type"] == "message"
+                        && item["content"][0]["text"] == expected_text)),
+                "c3_router_text_restoration_changed"
+            );
+        }
+        let after_poll = publication_test_support::counts(&store)?;
+        assert_eq!(
+            (after_poll.0, after_poll.1, after_poll.2),
+            (usize::from(rejection.is_none()), 0, 0),
+            "c3_router_completed_publication_changed_after_poll"
+        );
+        drop(captured);
+        drop(bytes);
+        drop(proxy);
+        assert_eq!(budget.used(), 0, "c3_router_response_owner_charge_leaked");
+        Ok(())
+    }
+
+    async fn streaming_upstream(
+        state: State<Fixture>,
+        body: Json<Value>,
+    ) -> axum::response::Response {
+        let sse = state.0.sse;
+        let mut response = upstream(state, body).await;
+        if sse {
+            response.headers_mut().insert(
+                http::header::CONTENT_TYPE,
+                http::HeaderValue::from_static("text/event-stream"),
+            );
+        }
+        response
+    }
+
+    async fn run_stream(chat: bool, mapped: bool, reject_original: bool) -> TestResult {
+        run_stream_format(chat, mapped, reject_original, true).await
+    }
+
+    async fn run_stream_format(
+        chat: bool,
+        mapped: bool,
+        reject_original: bool,
+        sse: bool,
+    ) -> TestResult {
+        run_stream_entity(chat, mapped, reject_original, sse, true).await
+    }
+
+    async fn run_stream_entity(
+        chat: bool,
+        mapped: bool,
+        reject_original: bool,
+        sse: bool,
+        marked: bool,
+    ) -> TestResult {
+        let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+        runtime::set_security_runtime_for_test(Default::default());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let route = if marked {
+            post(streaming_upstream)
+        } else {
+            post(upstream)
+        };
+        let upstream = Router::new().fallback(route).with_state(Fixture {
+            chat,
+            sse,
+            seen: seen.clone(),
+        });
+        let _server = Server(tokio::spawn(async move {
+            axum::serve(listener, upstream).await
+        }));
+        let db = Arc::new(Database::memory()?);
+        let provider = Provider::with_id(
+            "c3-stream-provider".into(),
+            "Synthetic C3 stream".into(),
+            json!({"base_url":format!("http://{addr}"),"api_key":"synthetic-c3-stream-credential",
+                "api_format":if chat { "chat_completions" } else { "anthropic" }}),
+            None,
+        );
+        db.save_provider("codex", &provider)?;
+        db.set_current_provider("codex", &provider.id)?;
+        let store = DlpTokenStore::new();
+        let budget = PayloadBudget::with_limit(32 * 1024 * 1024);
+        let proxy = ProxyServer::new(ProxyConfig::default(), db, None).with_restoration_gateway(
+            RestorationGateway::with_test_store_and_rules(
+                store.clone(),
+                &["chinese_phone_number"],
+                budget.clone(),
+            ),
+        );
+        let request = http::Request::builder().method("POST").uri("/v1/responses")
+            .header("content-type", "application/json").header("session-id", "synthetic-c3-stream-session")
+            .body(Body::from(json!({"model":"synthetic-model","input":if mapped { FIXTURE_PHONE } else { ORDINARY },"stream":true,
+                "tools":[{"type":"function","name":TOOL,"parameters":{"type":"object"}}]}).to_string()))?;
+        let lifecycle_baseline = ResponseLifecycle::begin_count_for_test();
+        let guard = reject_original.then(|| {
+            ResponseLifecycle::reject_operation_for_test(LifecycleOperation::ObserveOriginal)
+        });
+        let response = proxy.build_router().call(request).await?;
+        assert_eq!(
+            response.status(),
+            http::StatusCode::OK,
+            "c3_stream_requires_successful_streaming_transport"
+        );
+        let before = publication_test_support::counts(&store)?;
+        assert_eq!(
+            (before.0, before.1, before.2),
+            (0, 0, 0),
+            "c3_stream_published_before_body_poll"
+        );
+        let bytes = response.into_body().collect().await?.to_bytes();
+        drop(guard);
+        let wire = std::str::from_utf8(&bytes)?;
+        let mut recorder = FinalClientRecorder::default();
+        recorder.observe_sse(wire)?;
+        let captured = seen.lock().map_err(|_| "c3_stream_capture_poisoned")?;
+        assert_eq!(captured.len(), 1, "c3_stream_requires_one_actual_attempt");
+        let outbound = carrier(&captured[0]).ok_or("c3_stream_outbound_carrier_missing")?;
+        assert_eq!(
+            outbound.contains("rredact-cn_phone-"),
+            mapped,
+            "c3_stream_mapping_precondition"
+        );
+        assert!(
+            !outbound.contains(FIXTURE_PHONE),
+            "c3_stream_private_input_reached_upstream"
+        );
+        assert!(
+            !wire.contains("rredact-cn_phone-"),
+            "c3_stream_reference_reached_client"
+        );
+        if reject_original {
+            assert!(
+                recorder.failed && !recorder.completed,
+                "c3_stream_original_rejection_did_not_stop_completion"
+            );
+            assert!(
+                recorder.submissions.is_empty(),
+                "c3_stream_original_rejection_released_tool"
+            );
+            assert!(
+                !wire.contains(FIXTURE_PHONE),
+                "c3_stream_original_rejection_released_private_text"
+            );
+        } else {
+            assert!(
+                recorder.completed && !recorder.failed,
+                "c3_stream_valid_original_rejected"
+            );
+            assert_eq!(
+                recorder.submissions.len(),
+                1,
+                "c3_stream_tool_conversion_changed"
+            );
+            let tool = &recorder.submissions[0];
+            assert!(
+                tool["type"] == "function_call" && tool["call_id"] == CALL && tool["name"] == TOOL,
+                "c3_stream_tool_identity_changed"
+            );
+            let restored: Value = serde_json::from_str(
+                tool["arguments"]
+                    .as_str()
+                    .ok_or("c3_stream_arguments_missing")?,
+            )?;
+            assert!(
+                restored == arguments(if mapped { FIXTURE_PHONE } else { ORDINARY }),
+                "c3_stream_argument_types_or_restoration_changed"
+            );
+        }
+        let after = publication_test_support::counts(&store)?;
+        assert_eq!(
+            (after.0, after.1, after.2),
+            (usize::from(!reject_original), 0, 0),
+            "c3_stream_publication_boundary_changed"
+        );
+        assert_eq!(
+            ResponseLifecycle::begin_count_for_test() - lifecycle_baseline,
+            1,
+            "c3_stream_created_shadow_lifecycle"
+        );
+        drop(captured);
+        drop(bytes);
+        drop(proxy);
+        assert_eq!(budget.used(), 0, "c3_stream_response_owner_charge_leaked");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn c3_stream_fallback_router_anthropic_json_mapped_control() -> TestResult {
+        run_stream_format(false, true, false, false).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn c3_stream_fallback_router_anthropic_json_zero_control() -> TestResult {
+        run_stream_format(false, false, false, false).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn c3_stream_buffered_sse_router_mapped_control() -> TestResult {
+        run_stream_entity(false, true, false, true, false).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn c3_stream_buffered_sse_router_zero_control() -> TestResult {
+        run_stream_entity(false, false, false, true, false).await
+    }
+
+    #[derive(Clone)]
+    struct XaiFixture {
+        seen: Arc<Mutex<Vec<Value>>>,
+        pending: bool,
+    }
+
+    async fn xai_upstream(
+        State(fixture): State<XaiFixture>,
+        Json(body): Json<Value>,
+    ) -> axum::response::Response {
+        if let Ok(mut seen) = fixture.seen.lock() {
+            seen.push(body.clone());
+        }
+        let text = carrier(&body).unwrap_or("missing synthetic xai carrier");
+        // Whole floats force the production rewrite; the original observer must run first.
+        let raw_arguments =
+            json!({"phone":text,"count":7.0,"label":"Synthetic UTF-8 control α"}).to_string();
+        let item = json!({"id":"fc_c3_xai","type":"function_call","call_id":CALL,
+            "name":TOOL,"arguments":raw_arguments,"status":"completed"});
+        let events = [
+            json!({"type":"response.output_item.added","output_index":0,"item":{
+                "id":"fc_c3_xai","type":"function_call","call_id":CALL,"name":TOOL,"arguments":"","status":"in_progress"}}),
+            json!({"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_c3_xai","delta":raw_arguments}),
+            json!({"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_c3_xai","arguments":raw_arguments}),
+            json!({"type":"response.output_item.done","output_index":0,"item":item}),
+            json!({"type":"response.completed","response":{"id":"resp_c3_xai","object":"response","status":"completed",
+                "model":"synthetic-model","output":[item]}}),
+        ];
+        let mut wire = String::new();
+        for event in events {
+            if fixture.pending && event["type"] == "response.completed" {
+                break;
+            }
+            if let Some(kind) = event["type"].as_str() {
+                wire.push_str(&format!("event: {kind}\r\ndata: {event}\r\n\r\n"));
+            }
+        }
+        let chunks: Vec<_> = wire
+            .as_bytes()
+            .chunks(7)
+            .map(|chunk| Ok::<_, std::io::Error>(bytes::Bytes::copy_from_slice(chunk)))
+            .collect();
+        (
+            [("content-type", "text/event-stream")],
+            Body::from_stream(futures::StreamExt::chain(
+                futures::stream::iter(chunks),
+                futures::stream::poll_fn(move |_| {
+                    if fixture.pending {
+                        std::task::Poll::Pending
+                    } else {
+                        std::task::Poll::Ready(None)
+                    }
+                }),
+            )),
+        )
+            .into_response()
+    }
+
+    #[derive(Clone, Copy)]
+    enum XaiRead {
+        Complete,
+        CancelAfter(usize),
+        Pending,
+    }
+
+    async fn run_xai_stream(mapped: bool, reject_original: bool) -> TestResult {
+        run_xai_read(mapped, reject_original, XaiRead::Complete).await
+    }
+
+    async fn run_xai_read(mapped: bool, reject_original: bool, read: XaiRead) -> TestResult {
+        use crate::proxy::security::http_restoration::xai_lending_test_support;
+        use futures::{Stream, StreamExt};
+        let (probe_guard, probe) = xai_lending_test_support::install();
+        let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
+        runtime::set_security_runtime_for_test(Default::default());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let upstream = Router::new()
+            .fallback(post(xai_upstream))
+            .with_state(XaiFixture {
+                seen: seen.clone(),
+                pending: matches!(read, XaiRead::Pending),
+            });
+        let _server = Server(tokio::spawn(async move {
+            axum::serve(listener, upstream).await
+        }));
+        let db = Arc::new(Database::memory()?);
+        let provider = Provider::with_id(
+            "c3-xai-provider".into(),
+            "Synthetic C3 xAI".into(),
+            json!({"auth":{"OPENAI_API_KEY":"synthetic-c3-xai-credential"},"config":format!(
+                "model_provider = \"custom\"\n[model_providers.custom]\nname = \"xai\"\nbase_url = \"http://{addr}/api.x.ai/v1\"\nwire_api = \"responses\"\n")}),
+            None,
+        );
+        db.save_provider("codex", &provider)?;
+        db.set_current_provider("codex", &provider.id)?;
+        let store = DlpTokenStore::new();
+        let budget = PayloadBudget::with_limit(32 * 1024 * 1024);
+        let proxy = ProxyServer::new(ProxyConfig::default(), db, None).with_restoration_gateway(
+            RestorationGateway::with_test_store_and_rules(
+                store.clone(),
+                &["chinese_phone_number"],
+                budget.clone(),
+            ),
+        );
+        let request = http::Request::builder().method("POST").uri("/v1/responses")
+            .header("content-type", "application/json").header("session-id", "synthetic-c3-xai-session")
+            .body(Body::from(json!({"model":"synthetic-model","input":if mapped { FIXTURE_PHONE } else { ORDINARY },"stream":true,
+                "tools":[{"type":"function","name":TOOL,"parameters":{"type":"object"}}]}).to_string()))?;
+        let baseline = ResponseLifecycle::begin_count_for_test();
+        let guard = reject_original.then(|| {
+            ResponseLifecycle::reject_operation_for_test(LifecycleOperation::ObserveOriginal)
+        });
+        let response = proxy.build_router().call(request).await?;
+        assert_eq!(
+            response.status(),
+            http::StatusCode::OK,
+            "c3_xai_stream_transport_changed"
+        );
+        let before = publication_test_support::counts(&store)?;
+        assert_eq!(
+            (before.0, before.1, before.2),
+            (0, 0, 0),
+            "c3_xai_published_before_poll"
+        );
+        let mut stream = response.into_body().into_data_stream();
+        let mut bytes = Vec::new();
+        let mut yields = 0;
+        if matches!(read, XaiRead::Pending) {
+            // Complete original frames are observed before the converter awaits more bytes.
+            // A readiness-based poll avoids accepting a pre-network Pending as owner evidence.
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                futures::future::poll_fn(|cx| {
+                    match std::pin::Pin::new(&mut stream).poll_next(cx) {
+                        std::task::Poll::Ready(_) => {
+                            std::task::Poll::Ready(Err("c3_xai_pending_released_output"))
+                        }
+                        std::task::Poll::Pending => match probe.snapshot() {
+                            Ok((lent, observed, true)) if lent > 0 && observed == 4 => {
+                                std::task::Poll::Ready(Ok(()))
+                            }
+                            Ok(_) => std::task::Poll::Pending,
+                            Err(error) => std::task::Poll::Ready(Err(error)),
+                        },
+                    }
+                }),
+            )
+            .await
+            .map_err(|_| "c3_xai_pending_lent_owner_not_observed")??;
+            assert!(budget.used() > 0, "c3_xai_pending_owner_not_charged");
+            let pending = publication_test_support::counts(&store)?;
+            assert_eq!(
+                (pending.0, pending.1, pending.2),
+                (0, 0, 0),
+                "c3_xai_pending_published"
+            );
+            drop(stream);
+            assert!(!probe.snapshot()?.2, "c3_xai_cancel_stranded_lent_owner");
+        } else {
+            let kinds = [
+                "response.output_item.added",
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+                "response.output_item.done",
+                "response.completed",
+            ];
+            while let Some(chunk) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+                    .await
+                    .map_err(|_| "c3_xai_delivery_timed_out")?
+            {
+                let chunk = chunk?;
+                if !reject_original {
+                    let text = std::str::from_utf8(&chunk)?;
+                    let data = text
+                        .lines()
+                        .find_map(|line| line.strip_prefix("data: "))
+                        .ok_or("c3_xai_delivery_data_missing")?;
+                    let event: Value = serde_json::from_str(data)?;
+                    assert!(
+                        yields < kinds.len() && event["type"] == kinds[yields],
+                        "c3_xai_delivery_order_changed"
+                    );
+                    assert_eq!(
+                        text.lines()
+                            .filter(|line| line.starts_with("data: "))
+                            .count(),
+                        1,
+                        "c3_xai_delivery_merged_frames"
+                    );
+                }
+                yields += 1;
+                bytes.extend_from_slice(&chunk);
+                let held = publication_test_support::counts(&store)?;
+                assert_eq!(
+                    (held.0, held.1, held.2),
+                    if reject_original {
+                        (0, 0, 0)
+                    } else {
+                        (0, 1, 1)
+                    },
+                    "c3_xai_published_before_delivery_resume"
+                );
+                assert!(budget.used() > 0, "c3_xai_delivery_owner_not_charged");
+                if matches!(read, XaiRead::CancelAfter(cut) if yields == cut) {
+                    break;
+                }
+            }
+            if let XaiRead::CancelAfter(cut) = read {
+                assert_eq!(yields, cut, "c3_xai_cancel_cut_not_reached");
+            } else if !reject_original {
+                assert_eq!(yields, 5, "c3_xai_terminal_yield_count_changed");
+            }
+            drop(stream);
+        }
+        drop(guard);
+        let wire = std::str::from_utf8(&bytes)?;
+        let mut recorder = FinalClientRecorder::default();
+        recorder.observe_sse(wire)?;
+        let captured = seen.lock().map_err(|_| "c3_xai_capture_poisoned")?;
+        assert_eq!(captured.len(), 1, "c3_xai_requires_actual_attempt");
+        let outbound = carrier(&captured[0]).ok_or("c3_xai_carrier_missing")?;
+        assert_eq!(
+            outbound.contains("rredact-cn_phone-"),
+            mapped,
+            "c3_xai_mapping_precondition"
+        );
+        assert!(
+            !outbound.contains(FIXTURE_PHONE),
+            "c3_xai_private_input_reached_upstream"
+        );
+        assert!(
+            !wire.contains("rredact-cn_phone-"),
+            "c3_xai_reference_reached_client"
+        );
+        if reject_original {
+            assert!(
+                recorder.failed && !recorder.completed,
+                "c3_xai_original_rejection_did_not_stop_completion"
+            );
+            assert!(
+                recorder.submissions.is_empty(),
+                "c3_xai_original_rejection_released_tool"
+            );
+            assert!(
+                !wire.contains(FIXTURE_PHONE),
+                "c3_xai_original_rejection_released_private_text"
+            );
+        } else {
+            let expected_completed = matches!(read, XaiRead::Complete | XaiRead::CancelAfter(5));
+            assert!(
+                recorder.completed == expected_completed && !recorder.failed,
+                "c3_xai_valid_original_rejected"
+            );
+            let expected_tools = usize::from(matches!(
+                read,
+                XaiRead::Complete | XaiRead::CancelAfter(4..)
+            ));
+            assert_eq!(
+                recorder.submissions.len(),
+                expected_tools,
+                "c3_xai_tool_rewrite_changed"
+            );
+            if let Some(tool) = recorder.submissions.first() {
+                assert!(
+                    tool["type"] == "function_call"
+                        && tool["call_id"] == CALL
+                        && tool["name"] == TOOL,
+                    "c3_xai_tool_identity_changed"
+                );
+                let restored: Value = serde_json::from_str(
+                    tool["arguments"]
+                        .as_str()
+                        .ok_or("c3_xai_arguments_missing")?,
+                )?;
+                assert!(
+                    restored
+                        == json!({"phone":if mapped { FIXTURE_PHONE } else { ORDINARY },"count":7,"label":"Synthetic UTF-8 control α"}),
+                    "c3_xai_restoration_or_integer_rewrite_changed"
+                );
+                assert!(
+                    restored["count"].as_u64() == Some(7),
+                    "c3_xai_integer_rewrite_missing"
+                );
+            }
+        }
+        if !reject_original {
+            let (lends, observed, _) = probe.snapshot()?;
+            assert!(lends > 0, "c3_xai_original_owner_never_lent");
+            assert_eq!(
+                observed,
+                if matches!(read, XaiRead::Pending) {
+                    4
+                } else {
+                    5
+                },
+                "c3_xai_original_frames_not_observed"
+            );
+        }
+        let after = publication_test_support::counts(&store)?;
+        assert_eq!(
+            (after.0, after.1, after.2),
+            (
+                usize::from(!reject_original && matches!(read, XaiRead::Complete)),
+                0,
+                0
+            ),
+            "c3_xai_publication_boundary_changed"
+        );
+        assert_eq!(
+            ResponseLifecycle::begin_count_for_test() - baseline,
+            1,
+            "c3_xai_shadow_lifecycle_created"
+        );
+        drop(captured);
+        drop(bytes);
+        drop(proxy);
+        assert!(!probe.snapshot()?.2, "c3_xai_finished_lent_owner_retained");
+        drop(probe);
+        drop(probe_guard);
+        assert_eq!(budget.used(), 0, "c3_xai_response_owner_charge_leaked");
+        Ok(())
+    }
+
+    macro_rules! xai_cases {
+        ($( $name:ident => ($mapped:expr, $reject:expr) ),+ $(,)?) => { $(
+            #[tokio::test(flavor = "current_thread")]
+            #[serial_test::serial]
+            async fn $name() -> TestResult { run_xai_stream($mapped, $reject).await }
+        )+ };
+    }
+    xai_cases!(
+        c3_xai_stream_router_mapped_control => (true, false),
+        c3_xai_stream_router_zero_control => (false, false),
+        c3_xai_stream_router_mapped_original_rejected => (true, true),
+        c3_xai_stream_router_zero_original_rejected => (false, true),
+    );
+
+    macro_rules! xai_delivery_cases {
+        ($( $name:ident => ($mapped:expr, $read:expr) ),+ $(,)?) => { $(
+            #[tokio::test(flavor = "current_thread")]
+            #[serial_test::serial]
+            async fn $name() -> TestResult { run_xai_read($mapped, false, $read).await }
+        )+ };
+    }
+    xai_delivery_cases!(
+        c3_xai_delivery_pending_cancel_mapped => (true, XaiRead::Pending),
+        c3_xai_delivery_pending_cancel_zero => (false, XaiRead::Pending),
+        c3_xai_delivery_cancel_mapped_after_1 => (true, XaiRead::CancelAfter(1)),
+        c3_xai_delivery_cancel_mapped_after_2 => (true, XaiRead::CancelAfter(2)),
+        c3_xai_delivery_cancel_mapped_after_3 => (true, XaiRead::CancelAfter(3)),
+        c3_xai_delivery_cancel_mapped_after_4 => (true, XaiRead::CancelAfter(4)),
+        c3_xai_delivery_cancel_mapped_after_5 => (true, XaiRead::CancelAfter(5)),
+        c3_xai_delivery_cancel_zero_after_1 => (false, XaiRead::CancelAfter(1)),
+        c3_xai_delivery_cancel_zero_after_2 => (false, XaiRead::CancelAfter(2)),
+        c3_xai_delivery_cancel_zero_after_3 => (false, XaiRead::CancelAfter(3)),
+        c3_xai_delivery_cancel_zero_after_4 => (false, XaiRead::CancelAfter(4)),
+        c3_xai_delivery_cancel_zero_after_5 => (false, XaiRead::CancelAfter(5)),
+    );
+
+    macro_rules! streaming_cases {
+        ($( $name:ident => ($chat:expr, $mapped:expr, $reject:expr) ),+ $(,)?) => { $(
+            #[tokio::test(flavor = "current_thread")]
+            #[serial_test::serial]
+            async fn $name() -> TestResult { run_stream($chat, $mapped, $reject).await }
+        )+ };
+    }
+    streaming_cases!(
+        c3_stream_router_chat_mapped_control => (true, true, false),
+        c3_stream_router_chat_zero_control => (true, false, false),
+        c3_stream_router_anthropic_mapped_control => (false, true, false),
+        c3_stream_router_anthropic_zero_control => (false, false, false),
+        c3_stream_router_chat_mapped_original_rejected => (true, true, true),
+        c3_stream_router_chat_zero_original_rejected => (true, false, true),
+        c3_stream_router_anthropic_mapped_original_rejected => (false, true, true),
+        c3_stream_router_anthropic_zero_original_rejected => (false, false, true),
+    );
+
+    macro_rules! cases {
+        ($( $name:ident => ($chat:expr, $sse:expr, $mapped:expr, $rejection:expr) ),+ $(,)?) => { $(
+            #[tokio::test(flavor = "current_thread")]
+            #[serial_test::serial]
+            async fn $name() -> TestResult { run($chat, $sse, $mapped, $rejection).await }
+        )+ };
+    }
+    cases!(
+        c3_json_router_chat_json_mapped => (true, false, true, None),
+        c3_json_router_chat_json_zero => (true, false, false, None),
+        c3_json_router_anthropic_json_mapped => (false, false, true, None),
+        c3_json_router_anthropic_json_zero => (false, false, false, None),
+        c3_json_router_chat_buffered_sse_mapped => (true, true, true, None),
+        c3_json_router_chat_buffered_sse_zero => (true, true, false, None),
+        c3_json_router_anthropic_buffered_sse_mapped => (false, true, true, None),
+        c3_json_router_anthropic_buffered_sse_zero => (false, true, false, None),
+        c3_json_router_chat_json_original_mapped => (true, false, true, Some(LifecycleOperation::ObserveOriginal)),
+        c3_json_router_chat_json_original_zero => (true, false, false, Some(LifecycleOperation::ObserveOriginal)),
+        c3_json_router_anthropic_json_original_mapped => (false, false, true, Some(LifecycleOperation::ObserveOriginal)),
+        c3_json_router_anthropic_json_original_zero => (false, false, false, Some(LifecycleOperation::ObserveOriginal)),
+        c3_json_router_chat_buffered_sse_original_mapped => (true, true, true, Some(LifecycleOperation::ObserveOriginal)),
+        c3_json_router_chat_buffered_sse_original_zero => (true, true, false, Some(LifecycleOperation::ObserveOriginal)),
+        c3_json_router_anthropic_buffered_sse_original_mapped => (false, true, true, Some(LifecycleOperation::ObserveOriginal)),
+        c3_json_router_anthropic_buffered_sse_original_zero => (false, true, false, Some(LifecycleOperation::ObserveOriginal)),
+        c3_json_router_chat_json_leaf_mapped => (true, false, true, Some(LifecycleOperation::Done)),
+        c3_json_router_chat_json_leaf_zero => (true, false, false, Some(LifecycleOperation::Done)),
+        c3_json_router_anthropic_json_leaf_mapped => (false, false, true, Some(LifecycleOperation::Done)),
+        c3_json_router_anthropic_json_leaf_zero => (false, false, false, Some(LifecycleOperation::Done)),
+        c3_json_router_chat_buffered_sse_leaf_mapped => (true, true, true, Some(LifecycleOperation::Done)),
+        c3_json_router_chat_buffered_sse_leaf_zero => (true, true, false, Some(LifecycleOperation::Done)),
+        c3_json_router_anthropic_buffered_sse_leaf_mapped => (false, true, true, Some(LifecycleOperation::Done)),
+        c3_json_router_anthropic_buffered_sse_leaf_zero => (false, true, false, Some(LifecycleOperation::Done)),
+        c3_json_router_chat_json_finish_mapped => (true, false, true, Some(LifecycleOperation::Finish)),
+        c3_json_router_chat_json_finish_zero => (true, false, false, Some(LifecycleOperation::Finish)),
+        c3_json_router_anthropic_json_finish_mapped => (false, false, true, Some(LifecycleOperation::Finish)),
+        c3_json_router_anthropic_json_finish_zero => (false, false, false, Some(LifecycleOperation::Finish)),
+        c3_json_router_chat_buffered_sse_finish_mapped => (true, true, true, Some(LifecycleOperation::Finish)),
+        c3_json_router_chat_buffered_sse_finish_zero => (true, true, false, Some(LifecycleOperation::Finish)),
+        c3_json_router_anthropic_buffered_sse_finish_mapped => (false, true, true, Some(LifecycleOperation::Finish)),
+        c3_json_router_anthropic_buffered_sse_finish_zero => (false, true, false, Some(LifecycleOperation::Finish)),
+    );
 }

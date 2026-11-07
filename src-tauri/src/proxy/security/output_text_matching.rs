@@ -2,7 +2,14 @@
 //! Nonmatches remain text; a match never grants restoration authority.
 use std::ops::Range;
 
-use super::tokenization::TokenError;
+use super::{
+    payload_budget::PayloadBudget,
+    payload_metadata::PayloadVec,
+    payload_text::PayloadText,
+    response_restoration::RestoreError,
+    restore_diagnostics::RestoreReason,
+    tokenization::{DlpRequestLease, TokenError},
+};
 
 use super::token_format;
 
@@ -44,6 +51,89 @@ pub(super) fn split_prefix_and_tail(text: &str) -> (&str, &str) {
         }
     }
     (text, "")
+}
+
+pub(super) fn restore_text(
+    text: &str,
+    lease: &DlpRequestLease,
+    budget: &PayloadBudget,
+    output_tokens: &mut PayloadVec<PayloadText>,
+    restored_occurrences: &mut usize,
+) -> Result<PayloadText, RestoreError> {
+    let mut ranges = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
+    visit_complete_references(text, |range| {
+        if lease.resolve_if_authorized(&text[range.clone()])?.is_some() {
+            ranges.push(range)?;
+        }
+        Ok(())
+    })
+    .map_err(RestoreError::scan_error)?;
+    let next_occurrences = restored_occurrences
+        .checked_add(ranges.len())
+        .ok_or(RestoreError::FailedBecause(RestoreReason::RestoreCapacity))?;
+    let mut additions = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
+    let mut out_len = text.len();
+    for range in ranges.as_slice() {
+        let reference = &text[range.clone()];
+        let plain = lease
+            .resolve(reference)
+            .map_err(|_| RestoreError::FailedBecause(RestoreReason::TokenContext))?;
+        if !output_tokens
+            .as_slice()
+            .iter()
+            .any(|item| item.as_str() == reference)
+            && !additions.as_slice().contains(&reference)
+        {
+            if output_tokens
+                .len()
+                .checked_add(additions.len())
+                .is_none_or(|len| len >= 4096)
+            {
+                return Err(RestoreError::FailedBecause(RestoreReason::RestoreCapacity));
+            }
+            additions.push(reference).map_err(RestoreError::capacity)?;
+        }
+        out_len = out_len
+            .checked_sub(range.len())
+            .and_then(|n| n.checked_add(plain.len()))
+            .ok_or(RestoreError::FailedBecause(RestoreReason::RestoreCapacity))?;
+    }
+    let mut out = PayloadText::with_capacity(out_len, budget.clone(), budget.limit())
+        .map_err(RestoreError::capacity)?;
+    let mut cursor = 0usize;
+    for range in ranges.as_slice() {
+        out.append(&text[cursor..range.start])
+            .map_err(RestoreError::capacity)?;
+        let plain = lease
+            .resolve(&text[range.clone()])
+            .map_err(|_| RestoreError::FailedBecause(RestoreReason::TokenContext))?;
+        out.append(plain).map_err(RestoreError::capacity)?;
+        cursor = range.end;
+    }
+    out.append(&text[cursor..])
+        .map_err(RestoreError::capacity)?;
+    if !additions.as_slice().is_empty() {
+        // Stage the entire replacement ledger while its old backing remains charged.
+        // Moving it into the caller is the sole commit and cannot allocate or fail.
+        let mut staged = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
+        for reference in output_tokens
+            .as_slice()
+            .iter()
+            .map(PayloadText::as_str)
+            .chain(additions.as_slice().iter().copied())
+        {
+            let owned = PayloadText::try_from_str(
+                reference,
+                budget.clone(),
+                token_format::MAX_REFERENCE_BYTES,
+            )
+            .map_err(RestoreError::capacity)?;
+            staged.push(owned).map_err(RestoreError::capacity)?;
+        }
+        *output_tokens = staged;
+    }
+    *restored_occurrences = next_occurrences;
+    Ok(out)
 }
 
 #[cfg(test)]

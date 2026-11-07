@@ -15,7 +15,10 @@ use super::{
         claude_stream_usage_event_filter, codex_stream_usage_event_filter, CLAUDE_PARSER_CONFIG,
         CODEX_PARSER_CONFIG, GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
     },
-    handler_context::RequestContext,
+    handler_context::{
+        RequestContext, RequestIngress, RestorationOperation, RestorationRouteScope,
+    },
+    protocol_bridge::Protocol,
     providers::{
         codex_chat_common::extract_reasoning_field_text,
         codex_chat_history::{
@@ -130,7 +133,24 @@ pub async fn handle_messages(
     State(state): State<ProxyState>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
-    handle_messages_for_app(state, request, AppType::Claude, "Claude", "claude", None).await
+    handle_messages_with_ingress(state, request, RequestIngress::Direct).await
+}
+
+pub(crate) async fn handle_messages_with_ingress(
+    state: ProxyState,
+    request: axum::extract::Request,
+    ingress: RequestIngress,
+) -> Result<axum::response::Response, ProxyError> {
+    handle_messages_for_app(
+        state,
+        request,
+        AppType::Claude,
+        "Claude",
+        "claude",
+        None,
+        ingress,
+    )
+    .await
 }
 
 pub async fn handle_claude_desktop_messages(
@@ -145,6 +165,7 @@ pub async fn handle_claude_desktop_messages(
         "Claude Desktop",
         "claude-desktop",
         Some("/claude-desktop"),
+        RequestIngress::Direct,
     )
     .await
 }
@@ -172,6 +193,7 @@ async fn handle_messages_for_app(
     tag: &'static str,
     app_type_str: &'static str,
     strip_prefix: Option<&'static str>,
+    ingress: RequestIngress,
 ) -> Result<axum::response::Response, ProxyError> {
     let (parts, body) = request.into_parts();
     let method = parts.method.clone();
@@ -186,11 +208,16 @@ async fn handle_messages_for_app(
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
-    let dlp_request = match super::security::http_restoration::admit_http_request(
+    let route_scope = RestorationRouteScope::json_endpoint(
+        Protocol::Anthropic,
+        ingress,
+        RestorationOperation::Messages,
+        &body,
+    );
+    let dlp_request = match super::security::http_restoration::admit_http_request_with_scope(
         &state.restoration_gateway,
         &app_type,
-        false,
-        false,
+        route_scope,
         &mut body,
         &headers,
     )? {
@@ -861,6 +888,14 @@ pub async fn handle_chat_completions(
     State(state): State<ProxyState>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
+    handle_chat_completions_with_ingress(state, request, RequestIngress::Direct).await
+}
+
+pub(crate) async fn handle_chat_completions_with_ingress(
+    state: ProxyState,
+    request: axum::extract::Request,
+    ingress: RequestIngress,
+) -> Result<axum::response::Response, ProxyError> {
     let (parts, req_body) = request.into_parts();
     let method = parts.method.clone();
     let uri = parts.uri;
@@ -875,11 +910,16 @@ pub async fn handle_chat_completions(
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
-    let dlp_request = match super::security::http_restoration::admit_http_request(
+    let route_scope = RestorationRouteScope::json_endpoint(
+        Protocol::Chat,
+        ingress,
+        RestorationOperation::ChatCompletions,
+        &body,
+    );
+    let dlp_request = match super::security::http_restoration::admit_http_request_with_scope(
         &state.restoration_gateway,
         &AppType::Codex,
-        false,
-        false,
+        route_scope,
         &mut body,
         &headers,
     )? {
@@ -951,7 +991,15 @@ pub async fn handle_responses(
     State(state): State<ProxyState>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
-    handle_responses_for_app(state, request, AppType::Codex, "Codex", "codex").await
+    handle_responses_with_ingress(state, request, RequestIngress::Direct).await
+}
+
+pub(crate) async fn handle_responses_with_ingress(
+    state: ProxyState,
+    request: axum::extract::Request,
+    ingress: RequestIngress,
+) -> Result<axum::response::Response, ProxyError> {
+    handle_responses_for_app(state, request, AppType::Codex, "Codex", "codex", ingress).await
 }
 
 pub async fn handle_grokbuild_responses(
@@ -964,6 +1012,7 @@ pub async fn handle_grokbuild_responses(
         AppType::GrokBuild,
         "Grok Build",
         "grokbuild",
+        RequestIngress::Direct,
     )
     .await
 }
@@ -974,6 +1023,7 @@ async fn handle_responses_for_app(
     app_type: AppType,
     tag: &'static str,
     app_type_str: &'static str,
+    ingress: RequestIngress,
 ) -> Result<axum::response::Response, ProxyError> {
     let (parts, req_body) = request.into_parts();
     let method = parts.method.clone();
@@ -989,11 +1039,16 @@ async fn handle_responses_for_app(
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
-    let dlp_request = match super::security::http_restoration::admit_http_request(
+    let route_scope = RestorationRouteScope::json_endpoint(
+        Protocol::Responses,
+        ingress,
+        RestorationOperation::Responses,
+        &body,
+    );
+    let dlp_request = match super::security::http_restoration::admit_http_request_with_scope(
         &state.restoration_gateway,
         &app_type,
-        true,
-        false,
+        route_scope,
         &mut body,
         &headers,
     )? {
@@ -1052,9 +1107,13 @@ async fn handle_responses_for_app(
 
     let dlp_attempt = result.dlp_attempt.take();
     let leased_response = dlp_attempt.is_some();
-    let evidence = dlp_attempt
-        .as_ref()
-        .and_then(|attempt| attempt.upstream_sse_evidence_tracker());
+    let evidence = if is_stream || result.response.is_sse() {
+        dlp_attempt
+            .as_ref()
+            .and_then(|attempt| attempt.upstream_sse_evidence_tracker())
+    } else {
+        None
+    };
     let connection_guard = result.connection_guard.take();
     ctx.converted_output = result.claude_api_format.is_some();
     ctx.outbound_model = result.outbound_model.take();
@@ -1328,11 +1387,16 @@ async fn handle_responses_compact_for_app(
     let mut body: Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
-    let dlp_request = match super::security::http_restoration::admit_http_request(
+    let route_scope = RestorationRouteScope::json_endpoint(
+        Protocol::Responses,
+        RequestIngress::Direct,
+        RestorationOperation::ResponsesCompact,
+        &body,
+    );
+    let dlp_request = match super::security::http_restoration::admit_http_request_with_scope(
         &state.restoration_gateway,
         &app_type,
-        true,
-        true,
+        route_scope,
         &mut body,
         &headers,
     )? {
@@ -1388,9 +1452,13 @@ async fn handle_responses_compact_for_app(
 
     let dlp_attempt = result.dlp_attempt.take();
     let leased_response = dlp_attempt.is_some();
-    let evidence = dlp_attempt
-        .as_ref()
-        .and_then(|attempt| attempt.upstream_sse_evidence_tracker());
+    let evidence = if is_stream || result.response.is_sse() {
+        dlp_attempt
+            .as_ref()
+            .and_then(|attempt| attempt.upstream_sse_evidence_tracker())
+    } else {
+        None
+    };
     let connection_guard = result.connection_guard.take();
     ctx.outbound_model = result.outbound_model.take();
     ctx.provider = result.provider;
@@ -2266,11 +2334,21 @@ async fn handle_codex_anthropic_to_responses_transform(
                 )
             }
         };
-        let protocol = super::security::completion_json::JsonCompletionProtocol::AnthropicMessages;
-        let verified = if body_looks_like_sse(raw) {
-            attempt.verify_upstream_sse_completion(protocol, raw)
+        let verified = if is_stream {
+            match evidence.as_ref().and_then(|tracker| tracker.lock().ok()) {
+                Some(mut tracker) => {
+                    tracker.observe_fully_read_anthropic_body(raw, body_looks_like_sse(raw))
+                }
+                None => Err(super::security::response_restoration::RestoreError::RestoreFailed),
+            }
         } else {
-            attempt.verify_upstream_json_completion(protocol, raw)
+            let protocol =
+                super::security::completion_json::JsonCompletionProtocol::AnthropicMessages;
+            if body_looks_like_sse(raw) {
+                attempt.verify_upstream_sse_completion(protocol, raw)
+            } else {
+                attempt.verify_upstream_json_completion(protocol, raw)
+            }
         };
         if let Err(error) = verified {
             return Ok(
@@ -2279,19 +2357,6 @@ async fn handle_codex_anthropic_to_responses_transform(
                     super::security::restore_diagnostics::RestoreStage::CompletionEvidence,
                 ),
             );
-        }
-        if is_stream && !body_looks_like_sse(raw) {
-            if let Some(tracker) = &evidence {
-                match tracker.lock() {
-                    Ok(mut tracker) => tracker.observe_fully_read_anthropic_json(raw),
-                    Err(_) => return Ok(
-                        super::security::http_restoration::build_codex_restore_error_response_at(
-                            super::security::response_restoration::RestoreError::RestoreFailed,
-                            super::security::restore_diagnostics::RestoreStage::CompletionEvidence,
-                        ),
-                    ),
-                }
-            }
         }
     }
     let body_str = String::from_utf8_lossy(&body_bytes);
@@ -2806,6 +2871,15 @@ pub async fn handle_gemini(
     uri: axum::http::Uri,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
+    handle_gemini_with_ingress(state, uri, request, RequestIngress::Direct).await
+}
+
+pub(crate) async fn handle_gemini_with_ingress(
+    state: ProxyState,
+    uri: axum::http::Uri,
+    request: axum::extract::Request,
+    ingress: RequestIngress,
+) -> Result<axum::response::Response, ProxyError> {
     let (parts, req_body) = request.into_parts();
     let method = parts.method.clone();
     let headers = parts.headers;
@@ -2825,12 +2899,12 @@ pub async fn handle_gemini(
     };
 
     if !body.is_null() {
+        let route_scope = RestorationRouteScope::gemini_endpoint(ingress, &method, &uri);
         if let super::security::http_restoration::RestorationAdmission::Intercepted(response) =
-            super::security::http_restoration::admit_http_request(
+            super::security::http_restoration::admit_http_request_with_scope(
                 &state.restoration_gateway,
                 &AppType::Gemini,
-                false,
-                false,
+                route_scope,
                 &mut body,
                 &headers,
             )?

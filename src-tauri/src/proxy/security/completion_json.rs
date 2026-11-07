@@ -187,6 +187,14 @@ impl NativeSseCompletion {
                 return Err(TokenError::RedactionFailed);
             }
         }
+        // Pair the raw header first; data-only SSE uses its validated protocol type.
+        let event_name = if event_name.is_empty() {
+            data.get("type")
+                .and_then(Value::as_str)
+                .ok_or(TokenError::RedactionFailed)?
+        } else {
+            event_name
+        };
         if event_name == "response.failed"
             || event_name == "error"
             || data.get("error").is_some_and(|v| !v.is_null())
@@ -246,14 +254,23 @@ impl JsonCompletion {
     }
 
     pub(super) fn observe_raw_json(&mut self, raw: &str, budget: &PayloadBudget) {
+        drop(self.observe_raw_json_scoped(raw, budget));
+    }
+
+    /// The caller may inspect the exact strict parse before conversion, without retaining a copy.
+    pub(super) fn observe_raw_json_scoped(
+        &mut self,
+        raw: &str,
+        budget: &PayloadBudget,
+    ) -> Option<PayloadJson> {
         if self.seen {
             self.permitted = false;
-            return;
+            return None;
         }
         self.seen = true;
         let Ok(parsed) = PayloadJson::try_from_str(raw, budget.clone(), budget.limit()) else {
             self.permitted = false;
-            return;
+            return None;
         };
         let value = parsed.as_value();
         self.permitted = match self.protocol {
@@ -271,6 +288,7 @@ impl JsonCompletion {
                 validate_compact_json_response(value).is_ok()
             }
         };
+        self.permitted.then_some(parsed)
     }
 
     pub(crate) fn permits_completion(&self) -> bool {
