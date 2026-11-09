@@ -39,16 +39,63 @@ async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
     let selected = menu.default_model.as_deref().ok_or("fixture default")?;
     let claude_path = crate::config::get_claude_settings_path();
     fs::create_dir_all(claude_path.parent().ok_or("parent")?)?;
-    let original = json!({"env":{"CLAUDE_CODE_USE_BEDROCK":"1","ANTHROPIC_MODEL":"native"},"model":"native-choice"}).to_string();
+    let original = json!({"env":{"CLAUDE_CODE_USE_BEDROCK":"1","ANTHROPIC_MODEL":"native"},"model":"native-choice","modelPicker":{"options":[{"model":"native-extra","label":"Native extra"}]}}).to_string();
     fs::write(&claude_path, &original)?;
     let receipt = build("claude", &menu, "http://127.0.0.1:1", selected)?;
     let installed = &receipt.files[0].installed;
     assert_eq!(installed["env"]["CLAUDE_CODE_USE_BEDROCK"], "0");
     assert!(installed["env"].get("ANTHROPIC_MODEL").is_none());
-    assert_eq!(installed["model"], selected);
-    assert_eq!(installed["modelPicker"]["options"][0]["model"], selected);
+    let name = &models(&menu)[0].name;
+    assert_eq!(installed["model"], name.as_str());
+    assert_eq!(
+        installed["modelPicker"]["options"][1]["model"],
+        name.as_str()
+    );
+    assert_eq!(
+        receipt.model_map.get(name).map(String::as_str),
+        Some(selected)
+    );
+    for role in ["OPUS", "SONNET", "HAIKU"] {
+        assert_eq!(
+            installed["env"][format!("ANTHROPIC_DEFAULT_{role}_MODEL")],
+            name.as_str()
+        );
+        assert_eq!(
+            installed["env"][format!("ANTHROPIC_DEFAULT_{role}_MODEL_NAME")],
+            name.as_str()
+        );
+    }
     receipt.files[0].write()?;
     receipt.files[0].restore()?;
+    assert_eq!(fs::read_to_string(&claude_path)?, original);
+    let mut legacy = receipt.clone();
+    legacy.model_map.clear();
+    legacy.files[0] = FileEdit::prepare(claude_path.clone(), |value| {
+        *value = installed.clone();
+        value["model"] = json!(selected);
+        value["modelPicker"]["options"][1]["model"] = json!(selected);
+        for role in ["OPUS", "SONNET", "HAIKU"] {
+            value["env"][format!("ANTHROPIC_DEFAULT_{role}_MODEL")] = json!(selected);
+            value["env"]
+                .as_object_mut()
+                .ok_or("env")?
+                .remove(&format!("ANTHROPIC_DEFAULT_{role}_MODEL_NAME"));
+        }
+        Ok(())
+    })?;
+    let manager = Manager {
+        root: dir.path().join("receipts"),
+    };
+    manager.install(legacy)?;
+    let upgraded = manager
+        .refresh("claude", &menu, "http://127.0.0.1:1")?
+        .ok_or("upgrade")?;
+    assert_eq!(upgraded.files[0].installed, *installed);
+    let refreshed = manager
+        .refresh("claude", &menu, "http://127.0.0.1:1")?
+        .ok_or("refresh")?;
+    assert_eq!(refreshed.files[0].installed, *installed);
+    manager.disconnect("claude")?;
     assert_eq!(fs::read_to_string(&claude_path)?, original);
     let json_path = crate::opencode_config::get_opencode_dir().join("opencode.json");
     let jsonc = json_path.with_extension("jsonc");
@@ -59,7 +106,7 @@ async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
     receipt.files[0].write()?;
     assert!(fs::read_to_string(&jsonc)?.contains("// retained comment"));
     assert!(!json_path.exists());
-    for app in ["kimi", "qwen", "zcode", "workbuddy"] {
+    for app in ["claude", "kimi", "qwen", "zcode", "workbuddy"] {
         let first = build(app, &menu, "http://127.0.0.1:1", selected)?;
         assert!(!first.model_map.is_empty(), "{app}");
         let mut renamed = menu.clone();

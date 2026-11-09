@@ -37,6 +37,11 @@ fn matches_image(app: &str, image: &str, local: &str, programs: &str) -> bool {
     if app == "workbuddy" {
         return !programs.is_empty() && image == format!("{programs}\\workbuddy\\workbuddy.exe");
     }
+    if app == "workbuddy-ai" {
+        return !programs.is_empty()
+            && (image == format!("{programs}\\workbuddy ai\\workbuddy.exe")
+                || image == format!("{programs}\\workbuddy-ai\\workbuddy.exe"));
+    }
     if app == "codex" {
         return !programs.is_empty()
             && image
@@ -235,10 +240,15 @@ pub(super) fn recover_codex(valid: impl Fn() -> bool) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 pub(super) fn supported(app: &str) -> bool {
-    app != "workbuddy"
-        || crate::workbuddy_config::get_workbuddy_dir()
+    // Only apps with verified Windows process identity can restart here.
+    // Other desktop agents keep macOS support via bundle identifiers.
+    match app {
+        "claude-desktop" | "codex" | "workbuddy-ai" => true,
+        "workbuddy" => crate::workbuddy_config::get_workbuddy_dir()
             .file_name()
-            .is_some_and(|name| name == ".workbuddy")
+            .is_some_and(|name| name == ".workbuddy"),
+        _ => false,
+    }
 }
 #[cfg(target_os = "windows")]
 pub(super) fn state(app: &str, applied_ms: Option<i64>) -> State {

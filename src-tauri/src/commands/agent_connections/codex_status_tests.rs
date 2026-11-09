@@ -143,7 +143,11 @@ fn reload_progress_never_implies_configuration_ownership_or_inference_success() 
             native_compatibility: "unsupported".into(),
             configuration_issue: None,
         };
-        let result = with_codex_reload(codex_connection_status(status, None, None), Some(reload));
+        let result = with_codex_reload(
+            codex_connection_status(status, None, None),
+            Some(reload),
+            None,
+        );
         assert!(!result.enabled && !result.configured && result.recovery_pending);
         assert!(
             !result.restart_required,

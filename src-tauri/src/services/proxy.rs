@@ -1933,8 +1933,18 @@ impl ProxyService {
                     self.start().await?;
                 }
                 self.doubaowork.enable().await;
+                let manager = self.agent_connections.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    manager.record_doubaowork_desktop_application()
+                })
+                .await;
             } else {
                 self.doubaowork.disable().await;
+                let manager = self.agent_connections.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    manager.record_doubaowork_desktop_application()
+                })
+                .await;
             }
             self.db
                 .set_setting(
@@ -3354,7 +3364,13 @@ impl ProxyService {
                 .map_err(|_| "intentRouting.modeRecoveryRequired")?;
         }
         self.schedule_codex_thread_sync();
-        activation.map(|_| ())
+        let result = activation.map(|_| ());
+        if result.is_ok() {
+            let manager = self.agent_connections.clone();
+            let _ = tokio::task::spawn_blocking(move || manager.record_codex_desktop_application())
+                .await;
+        }
+        result
     }
 
     fn native_codex_url(base: &str) -> Option<String> {

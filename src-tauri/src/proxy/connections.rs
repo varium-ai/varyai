@@ -337,7 +337,17 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
                         entry["supports_1m"] = json!(window >= 1_000_000);
                     }
                 }
-                if ["pi", "hermes", "grokbuild", "kimi", "qwen", "zcode"].contains(&app) {
+                if [
+                    "claude",
+                    "pi",
+                    "hermes",
+                    "grokbuild",
+                    "kimi",
+                    "qwen",
+                    "zcode",
+                ]
+                .contains(&app)
+                {
                     if let Some((wire, _)) = connection
                         .model_map
                         .iter()
@@ -383,7 +393,7 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
         .model_map
         .get(model)
         .or_else(|| {
-            (app == "claude-desktop")
+            matches!(app, "claude" | "claude-desktop")
                 .then(|| crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(model))
                 .and_then(|plain| connection.model_map.get(plain))
         })

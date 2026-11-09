@@ -42,8 +42,13 @@ fn codex_connection_status(
     }
 }
 
-fn with_codex_reload(mut status: Status, reload: Option<agent_connections::ReloadState>) -> Status {
-    status.restart_required = !status.recovery_pending
+fn with_codex_reload(
+    mut status: Status,
+    reload: Option<agent_connections::ReloadState>,
+    desktop_state: Option<agent_connections::desktop::State>,
+) -> Status {
+    status.desktop_state = desktop_state;
+    let reload_restart = !status.recovery_pending
         && matches!(
             reload,
             Some(
@@ -51,7 +56,12 @@ fn with_codex_reload(mut status: Status, reload: Option<agent_connections::Reloa
                     | agent_connections::ReloadState::Failed
             )
         );
-    status.reload_state = reload;
+    let desktop_restart = !status.recovery_pending
+        && desktop_state == Some(agent_connections::desktop::State::RestartRequired);
+    status.restart_required = reload_restart || desktop_restart;
+    // Prefer a verified desktop-app restart over background app-server reload
+    // when both are pending, so the UI offers one clear action.
+    status.reload_state = if desktop_restart { None } else { reload };
     status
 }
 
@@ -114,6 +124,14 @@ pub(crate) async fn get_agent_connection(
 ) -> Result<Status, String> {
     if app == "doubaowork" {
         let (active, waiting) = state.proxy_service.doubaowork_connection_status();
+        let manager = state.proxy_service.agent_connections.clone();
+        let desktop_state = tokio::task::spawn_blocking(move || {
+            manager.doubaowork_desktop_state(active || waiting)
+        })
+        .await
+        .map_err(|_| FAILED)??;
+        let desktop_restart =
+            desktop_state == Some(agent_connections::desktop::State::RestartRequired);
         return Ok(Status {
             app,
             enabled: active || waiting,
@@ -121,9 +139,9 @@ pub(crate) async fn get_agent_connection(
             recovery_pending: false,
             recovery_reason: None,
             model: None,
-            restart_required: waiting,
+            restart_required: waiting || desktop_restart,
             reload_state: None,
-            desktop_state: None,
+            desktop_state,
             native_compatibility: None,
             configuration_issue: None,
         });
@@ -134,14 +152,13 @@ pub(crate) async fn get_agent_connection(
         let manager = state.proxy_service.agent_connections.clone();
         let reload = state.proxy_service.codex_reload_state();
         return tokio::task::spawn_blocking(move || {
-            Ok(with_codex_reload(
-                codex_connection_status(
-                    client.status()?,
-                    client.selected_model()?,
-                    manager.codex_intent()?,
-                ),
-                reload,
-            ))
+            let status = codex_connection_status(
+                client.status()?,
+                client.selected_model()?,
+                manager.codex_intent()?,
+            );
+            let desktop_state = manager.codex_desktop_state(&status)?;
+            Ok(with_codex_reload(status, reload, desktop_state))
         })
         .await
         .map_err(|_| FAILED)?;
@@ -230,19 +247,20 @@ pub(crate) async fn list_agent_connections(
         }
     }
     let client = state.proxy_service.intent_client.clone();
-    let (status, selected) = tokio::task::spawn_blocking(move || {
-        Ok::<_, String>((client.status()?, client.selected_model()?))
+    let manager = state.proxy_service.agent_connections.clone();
+    let reload = state.proxy_service.codex_reload_state();
+    let status = tokio::task::spawn_blocking(move || {
+        let status = codex_connection_status(
+            client.status()?,
+            client.selected_model()?,
+            manager.codex_intent()?,
+        );
+        let desktop_state = manager.codex_desktop_state(&status)?;
+        Ok::<_, String>(with_codex_reload(status, reload, desktop_state))
     })
     .await
     .map_err(|_| FAILED)??;
-    let manager = state.proxy_service.agent_connections.clone();
-    let desired = tokio::task::spawn_blocking(move || manager.codex_intent())
-        .await
-        .map_err(|_| FAILED)??;
-    statuses.push(with_codex_reload(
-        codex_connection_status(status, selected, desired),
-        state.proxy_service.codex_reload_state(),
-    ));
+    statuses.push(status);
     let manager = state.proxy_service.agent_connections.clone();
     let mut bridge = tokio::task::spawn_blocking(move || manager.bridge_status())
         .await
@@ -258,6 +276,13 @@ pub(crate) async fn list_agent_connections(
     }
     statuses.push(bridge);
     let (audit_active, audit_waiting) = state.proxy_service.doubaowork_connection_status();
+    let manager = state.proxy_service.agent_connections.clone();
+    let desktop_state = tokio::task::spawn_blocking(move || {
+        manager.doubaowork_desktop_state(audit_active || audit_waiting)
+    })
+    .await
+    .map_err(|_| FAILED)??;
+    let desktop_restart = desktop_state == Some(agent_connections::desktop::State::RestartRequired);
     statuses.push(Status {
         app: "doubaowork".into(),
         enabled: audit_active || audit_waiting,
@@ -265,9 +290,9 @@ pub(crate) async fn list_agent_connections(
         recovery_pending: false,
         recovery_reason: None,
         model: None,
-        restart_required: audit_waiting,
+        restart_required: audit_waiting || desktop_restart,
         reload_state: None,
-        desktop_state: None,
+        desktop_state,
         native_compatibility: None,
         configuration_issue: None,
     });
@@ -279,16 +304,40 @@ mod desktop_restart_tests {
 
     #[test]
     fn confirmation_is_required_for_every_app_and_only_verified_desktops_are_selected() {
-        for app in ["claude-desktop", "workbuddy", "claude", "codex", "unknown"] {
+        for app in [
+            "claude-desktop",
+            "workbuddy",
+            "workbuddy-ai",
+            "codex",
+            "qoder",
+            "trae",
+            "doubaowork",
+            "kimi",
+            "zcode",
+            "deepseek-harness",
+            "claude",
+            "unknown",
+        ] {
             assert_eq!(
                 validate_restart_request(app, false),
                 Err("agentConnections.restartConfirmationRequired".into())
             );
         }
-        for app in ["claude-desktop", "workbuddy", "codex"] {
+        for app in [
+            "claude-desktop",
+            "workbuddy",
+            "workbuddy-ai",
+            "codex",
+            "qoder",
+            "trae",
+            "doubaowork",
+            "kimi",
+            "zcode",
+            "deepseek-harness",
+        ] {
             assert_eq!(validate_restart_request(app, true), Ok(()));
         }
-        for app in ["claude", "trae", "unknown"] {
+        for app in ["claude", "gemini", "opencode", "pi", "unknown"] {
             assert_eq!(
                 validate_restart_request(app, true),
                 Err("agentConnections.restartUnsupported".into())
@@ -301,7 +350,7 @@ fn validate_restart_request(app: &str, confirmed: bool) -> Result<(), String> {
     if !confirmed {
         return Err("agentConnections.restartConfirmationRequired".into());
     }
-    if app != "codex" && !agent_connections::desktop::supports_restart(app) {
+    if !agent_connections::desktop::supports_restart(app) {
         return Err("agentConnections.restartUnsupported".into());
     }
     Ok(())
@@ -315,17 +364,55 @@ pub(crate) async fn restart_agent_connection(
 ) -> Result<(), String> {
     validate_restart_request(&app, confirmed)?;
     let _guard = state.proxy_service.lock_switch_for_app(&app).await;
+    if app == "trae" {
+        let manager = state.proxy_service.agent_connections.clone();
+        return tokio::task::spawn_blocking(move || manager.restart_bridge_desktop())
+            .await
+            .map_err(|_| FAILED)?;
+    }
+    if app == "doubaowork" {
+        let manager = state.proxy_service.agent_connections.clone();
+        return tokio::task::spawn_blocking(move || manager.restart_doubaowork_desktop())
+            .await
+            .map_err(|_| FAILED)?;
+    }
     if app == "codex" {
         let client = state.proxy_service.intent_client.clone();
-        let current = tokio::task::spawn_blocking(move || client.status())
-            .await
-            .map_err(|_| FAILED)??;
-        if current.configuration_issue.is_some()
-            || (current.recovery_pending && !current.configuration_owned)
-        {
+        let manager = state.proxy_service.agent_connections.clone();
+        let reload = state.proxy_service.codex_reload_state();
+        let (status, desktop_state) = tokio::task::spawn_blocking(move || {
+            let status = codex_connection_status(
+                client.status()?,
+                client.selected_model()?,
+                manager.codex_intent()?,
+            );
+            let desktop_state = manager.codex_desktop_state(&status)?;
+            Ok::<_, String>((status, desktop_state))
+        })
+        .await
+        .map_err(|_| FAILED)??;
+        if status.configuration_issue.is_some() || status.recovery_pending {
             return Err(agent_connections::CONFLICT.into());
         }
-        return state.proxy_service.request_codex_reload();
+        let desktop_restart =
+            desktop_state == Some(agent_connections::desktop::State::RestartRequired);
+        let reload_restart = matches!(
+            reload,
+            Some(
+                agent_connections::ReloadState::StaleCatalog
+                    | agent_connections::ReloadState::Failed
+            )
+        );
+        if desktop_restart {
+            let manager = state.proxy_service.agent_connections.clone();
+            return tokio::task::spawn_blocking(move || manager.restart_codex_desktop())
+                .await
+                .map_err(|_| FAILED)?;
+        }
+        if reload_restart {
+            return state.proxy_service.request_codex_reload();
+        }
+        return Err("agentConnections.restartChanged".into());
     }
     let active = state.proxy_service.intent_runtime.connections.active(&app);
     let manager = state.proxy_service.agent_connections.clone();
@@ -956,7 +1043,7 @@ mod tests {
             match app {
                 "claude" => assert_eq!(
                     installed["env"]["CLAUDE_CODE_MODEL_CAPABILITIES"],
-                    format!("{alias}=effort,xhigh_effort,max_effort")
+                    "synthetic · synthetic=effort,xhigh_effort,max_effort"
                 ),
                 "pi" => assert_eq!(
                     installed["providers"]["varyai"]["models"][0]["thinkingLevelMap"]["max"],
