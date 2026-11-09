@@ -16,24 +16,14 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ProviderIcon } from "@/components/ProviderIcon";
+import { ProviderImportSourceIcon } from "./ProviderImportSourceIcon";
 import "./providers.css";
-import switchIcon from "@/icons/extracted/import-cc-switch.png";
-import claudeIcon from "@/icons/extracted/import-claude.svg";
-import codexIcon from "@/icons/extracted/import-codex.svg";
-import backupIcon from "@/icons/extracted/import-logo.svg";
 
 type Choice = { on: boolean; mode: "key" | "add"; name?: string };
 const pickable = (item: ProviderImportItem) =>
   !item.skip && item.status !== "same";
 const keyOf = (source: string, reference: string) =>
   JSON.stringify([source, reference]);
-const sourceIcons: Record<string, string> = {
-  "cc-switch": switchIcon,
-  "claude-code": claudeIcon,
-  codex: codexIcon,
-  magpie: backupIcon,
-};
 
 export function ProviderImportDialog({
   open,
@@ -77,11 +67,9 @@ export function ProviderImportDialog({
     void request
       .then((next) => {
         if (!active) return;
-        const ordered = embedded
-          ? next
-          : [...next].sort(
-              (a, b) => Number(b.id === "magpie") - Number(a.id === "magpie"),
-            );
+        const ordered = [...next].sort(
+          (a, b) => Number(b.id === "magpie") - Number(a.id === "magpie"),
+        );
         const initial: Record<string, Choice> = {};
         for (const source of next)
           for (const item of source.items) {
@@ -247,20 +235,10 @@ export function ProviderImportDialog({
                       ?.focus();
                   }}
                 >
-                  {source.id === "opencode" ? (
-                    <ProviderIcon
-                      icon="opencode"
-                      name={source.name}
-                      size={17}
-                    />
-                  ) : (
-                    <img
-                      src={sourceIcons[source.id]}
-                      alt=""
-                      width={17}
-                      height={17}
-                    />
-                  )}
+                  <ProviderImportSourceIcon
+                    sourceId={source.id}
+                    name={source.name}
+                  />
                   <span>{source.name}</span>
                   <span className="pv-import-count">
                     {source.found && !source.error

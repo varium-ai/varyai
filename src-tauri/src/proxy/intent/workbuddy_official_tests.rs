@@ -121,7 +121,7 @@ impl Fixture {
                 let tx = tx.clone(); let counter = counter.clone();
                 async move {
                     let index = counter.fetch_add(1, Ordering::SeqCst);
-                    let valid = body["stream"] == true && body["store"] == false && body["instructions"].is_string();
+                    let valid = body["stream"] == true && body["store"] == false && body["instructions"].is_string() && body.get("metadata").is_none();
                     let _ = tx.send((headers, body)).await;
                     if !valid { return (StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"Synthetic official contract violation"}}))).into_response(); }
                     let wire = match reply {
@@ -393,6 +393,47 @@ async fn workbuddy_official_transport_supplies_defaults_and_omits_unsupported_sa
         );
     }
     fixture.stop().await
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn desktop_official_anthropic_metadata_does_not_reject_the_turn(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _security = security();
+    for streaming in [false, true] {
+        let mut fixture = Fixture::new("claude-desktop", Reply::Text).await?;
+        let request = json!({
+            "model":fixture.alias,
+            "stream":streaming,
+            "max_tokens":128,
+            "system":"Synthetic desktop instructions",
+            "metadata":{"user_id":"synthetic-desktop-user"},
+            "messages":[{"role":"user","content":"Synthetic desktop question"}],
+            "tools":[{"name":"synthetic_tool","description":"Synthetic tool","input_schema":{"type":"object","properties":{"value":{"type":"integer"}},"required":["value"]}}],
+            "output_config":{"effort":"high"}
+        });
+        let response = fixture.send("messages", &request).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let wire = response.text().await?;
+        assert!(wire.contains("Synthetic official answer"));
+        if streaming {
+            assert!(wire.contains("message_stop"));
+        } else {
+            let body: Value = serde_json::from_str(&wire)?;
+            assert_eq!(body["stop_reason"], "end_turn");
+        }
+        let sent = fixture.request().await?;
+        assert!(sent.get("metadata").is_none());
+        assert_eq!(sent["instructions"], request["system"]);
+        assert_eq!(sent["tools"][0]["name"], request["tools"][0]["name"]);
+        assert_eq!(
+            sent["tools"][0]["parameters"],
+            request["tools"][0]["input_schema"]
+        );
+        assert_eq!(sent["reasoning"]["effort"], "high");
+        fixture.stop().await?;
+    }
+    Ok(())
 }
 
 #[tokio::test]

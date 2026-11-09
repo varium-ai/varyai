@@ -1,14 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import {
-  PlusCircle,
-  RefreshCw,
-  ArrowUp,
-  ArrowDown,
-  Check,
-  GripVertical,
-} from "lucide-react";
+import { RefreshCw, ArrowUp, ArrowDown, GripVertical } from "lucide-react";
 import {
   routingUpstreamsApi,
   type RoutingUpstream,
@@ -22,6 +15,8 @@ import { settingsApi } from "@/lib/api/settings";
 import { copyText } from "@/lib/clipboard";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useRoutingRowDrag } from "@/hooks/useRoutingRowDrag";
+import { SubscriptionAccountActions } from "./SubscriptionAccountActions";
+import { SubscriptionModelChip } from "./SubscriptionModelChip";
 
 export function CodexProviderFields({
   draft,
@@ -63,7 +58,7 @@ export function CodexProviderFields({
   const [showOthers, setShowOthers] = useState(false);
   const [managing, setManaging] = useState(false);
   const [loginWay, setLoginWay] = useState<"browser" | "device">("browser");
-  const [loginProxy, setLoginProxy] = useState("");
+  const [loginProxy, setLoginProxy] = useState<string>();
   const [loginActionError, setLoginActionError] = useState<string>();
   const loginTarget = useRef<string>();
   const loginActionGeneration = useRef(0);
@@ -211,7 +206,11 @@ export function CodexProviderFields({
         ? account.id
         : undefined;
   }
-  async function beginLogin(way: "browser" | "device", proxy = loginProxy) {
+  async function beginLogin(
+    way: "browser" | "device",
+    selection?: { proxy?: string },
+  ) {
+    const proxy = selection ? selection.proxy : loginProxy;
     const attempt = ++loginActionGeneration.current;
     handledLogin.current =
       way === "browser" && browser
@@ -235,14 +234,15 @@ export function CodexProviderFields({
         return;
       if (loginTarget.current)
         auth.reauthAccount(loginTarget.current, ...(browser ? [proxy] : []));
-      else if (browser) auth.addAccountWithProxy(proxy);
+      else if (browser && proxy !== undefined) auth.addAccountWithProxy(proxy);
       else auth.addAccount();
     }
   }
   function startAccountReauth(account?: (typeof ordered)[number]) {
     reauthSource.current = account?.id;
     loginTarget.current = account ? reauthIdFor(account) : undefined;
-    void beginLogin("browser");
+    setLoginProxy(undefined);
+    void beginLogin("browser", { proxy: undefined });
   }
   async function cancelLogin() {
     loginActionGeneration.current += 1;
@@ -645,34 +645,32 @@ export function CodexProviderFields({
               );
             })}
             {!authenticating && !managing && (
-              <>
-                <button
-                  type="button"
-                  className="cx-add-account"
-                  disabled={locked}
-                  onClick={() => {
-                    startAccountReauth();
-                  }}
-                >
-                  <PlusCircle size={16} />
-                  {t("codexProvider.addAccount")}
-                </button>
-                <button
-                  type="button"
-                  className="cx-add-account"
-                  disabled={locked}
-                  onClick={() => void importAccount()}
-                >
-                  <PlusCircle size={16} />
-                  {t("codexProvider.importAccount")}
-                </button>
-              </>
+              <SubscriptionAccountActions
+                disabled={locked}
+                actions={[
+                  {
+                    key: "add",
+                    label: t("codexProvider.addAccount"),
+                    onClick: () => startAccountReauth(),
+                  },
+                  {
+                    key: "file",
+                    label: t("codexProvider.importAccount"),
+                    onClick: () => void importAccount(),
+                  },
+                ]}
+              />
             )}
             {managing && (
               <CodexLoginPanel
                 key={`${loginWay}-${browser?.flow?.id ?? auth.deviceCode?.device_code ?? "starting"}`}
                 mode={loginWay}
                 proxy={loginProxy}
+                inheritProxy={!!loginTarget.current}
+                onInheritProxy={() => {
+                  setLoginProxy(undefined);
+                  void beginLogin(loginWay, { proxy: undefined });
+                }}
                 url={
                   loginWay === "browser" && browser
                     ? browser.flow?.url
@@ -693,6 +691,7 @@ export function CodexProviderFields({
                 submitting={browser?.submitting}
                 submitted={browser?.submitted}
                 callbackBlocked={browser?.flow?.callbackBlocked}
+                httpStatus={browser?.flow?.diagnostic?.httpStatus}
                 openFailed={browser?.openFailed}
                 error={
                   loginWay === "browser" && browser
@@ -702,6 +701,15 @@ export function CodexProviderFields({
                       : loginActionError
                 }
                 onCancel={() => void cancelLogin()}
+                onRetry={
+                  (
+                    loginWay === "browser" && browser
+                      ? browser.error || loginActionError
+                      : auth.error || loginActionError
+                  )
+                    ? () => void beginLogin(loginWay)
+                    : undefined
+                }
                 onReopen={() => {
                   if (loginWay === "browser" && browser) void browser.reopen();
                   else if (auth.deviceCode)
@@ -725,7 +733,7 @@ export function CodexProviderFields({
                 onImport={() => void cancelLogin().then(importAccount)}
                 onProxy={(proxy) => {
                   setLoginProxy(proxy);
-                  void beginLogin(loginWay, proxy);
+                  void beginLogin(loginWay, { proxy });
                 }}
                 onSubmit={(url) => {
                   if (browser) void browser.submit(url);
@@ -804,8 +812,7 @@ export function CodexProviderFields({
           </div>
           <div className="pv-model-chips">
             {shown.map((row) => (
-              <button
-                type="button"
+              <SubscriptionModelChip
                 key={String(row.model)}
                 title={
                   tests[String(row.model)]
@@ -817,21 +824,18 @@ export function CodexProviderFields({
                       )
                     : undefined
                 }
-                className={`pv-chip ${selected.has(String(row.model)) && policy.mode === "picked" ? "on" : ""}`}
-                aria-pressed={
+                selected={
                   selected.has(String(row.model)) && policy.mode === "picked"
                 }
                 disabled={locked}
                 onClick={() => choose(String(row.model))}
               >
-                {selected.has(String(row.model)) &&
-                  policy.mode === "picked" && <Check size={12} aria-hidden />}
                 {String(
                   (row.modelPreferences as { name?: string })?.name ??
                     row.displayName ??
                     row.model,
                 )}
-              </button>
+              </SubscriptionModelChip>
             ))}
           </div>
           {policy.mode === "picked" &&

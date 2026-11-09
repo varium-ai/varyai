@@ -75,6 +75,35 @@ it("lists each provider separately and requires explicit account selection", asy
   fireEvent.click(account);
   expect(onSelect).toHaveBeenCalledWith("fixture-account");
 });
+it.each(["claude", "chatgpt_api", "gemini_cli", "antigravity"] as const)(
+  "keeps %s account actions inside the same account frame",
+  async (provider) => {
+    mount(provider);
+    const radio = await screen.findByRole("radio", { name: /Fixture account/ });
+    const add = screen.getByRole("button", {
+      name:
+        provider === "chatgpt_api"
+          ? "nativeSubscription.continueChatgpt"
+          : "subscriptionProvider.addAccount",
+    });
+    const frame = radio.closest(".cx-accounts");
+    expect(frame).toContainElement(add);
+    if (provider !== "chatgpt_api") {
+      expect(frame).toContainElement(
+        screen.getByRole("button", {
+          name: "nativeSubscription.importFile",
+        }),
+      );
+    }
+    if (provider === "claude" || provider === "gemini_cli") {
+      expect(frame).toContainElement(
+        screen.getByRole("button", {
+          name: "nativeSubscription.importLocal",
+        }),
+      );
+    }
+  },
+);
 it("opens independent ChatGPT API authorization and cancels on unmount", async () => {
   vi.mocked(api.start).mockResolvedValue({
     id: "fixture-flow",

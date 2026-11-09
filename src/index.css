@@ -1,5 +1,6 @@
 @import "./components/layout/workspace.css";
 @import "./components/ui/dialog.css";
+@import "./components/ui/native-select.css";
 
 @tailwind base;
 @tailwind components;

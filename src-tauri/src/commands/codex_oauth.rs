@@ -7,7 +7,7 @@
 
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
 use crate::services::model_fetch::FetchedModel;
-use crate::services::subscription::{query_codex_quota, SubscriptionQuota};
+use crate::services::subscription::{query_codex_quota_with_client, SubscriptionQuota};
 use crate::store::AppState;
 use std::sync::Arc;
 use tauri::State;
@@ -69,7 +69,9 @@ async fn query_codex_oauth_quota_for(
         .map_err(|e| e.to_string())?;
 
     // 瞬时传输失败以 Err 传播（前端 reject → retry + 保留上次成功值）。
-    query_codex_quota(
+    let client = manager.account_client(id).await?;
+    query_codex_quota_with_client(
+        &client,
         &token,
         Some(&chatgpt_account_id),
         "codex_oauth",
@@ -110,7 +112,13 @@ pub async fn get_codex_oauth_models(
         .await
         .map_err(|e| e.to_string())?;
 
-    crate::services::codex_oauth_models::fetch_models_with_token(&token, &chatgpt_account_id).await
+    let client = manager.account_client(&id).await?;
+    crate::services::codex_oauth_models::fetch_models_with_client(
+        &client,
+        &token,
+        &chatgpt_account_id,
+    )
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -119,9 +127,14 @@ pub(crate) async fn codex_browser_login_start(
     target_account_id: Option<String>,
     proxy: Option<String>,
 ) -> Result<crate::proxy::providers::codex_oauth_auth::BrowserLoginStatus, String> {
-    state
-        .codex_oauth_manager
-        .start_browser_login(target_account_id, proxy)
+    let manager = state.codex_oauth_manager.clone();
+    let service = state.proxy_service.clone();
+    manager
+        .start_browser_login(target_account_id, proxy, move || async move {
+            service
+                .lock_switch_for_app(crate::app_config::AppType::Codex.as_str())
+                .await
+        })
         .await
 }
 #[tauri::command(rename_all = "camelCase")]
@@ -129,15 +142,7 @@ pub(crate) async fn codex_browser_login_poll(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<crate::proxy::providers::codex_oauth_auth::BrowserLoginStatus, String> {
-    state
-        .codex_oauth_manager
-        .poll_browser_login(&id, || async {
-            state
-                .proxy_service
-                .lock_switch_for_app(crate::app_config::AppType::Codex.as_str())
-                .await
-        })
-        .await
+    state.codex_oauth_manager.browser_login_status(&id).await
 }
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn codex_browser_login_callback(
@@ -147,7 +152,7 @@ pub(crate) async fn codex_browser_login_callback(
 ) -> Result<(), String> {
     state
         .codex_oauth_manager
-        .submit_browser_callback(&id, &callback_url)
+        .finish_browser_callback(&id, &callback_url)
         .await
 }
 #[tauri::command(rename_all = "camelCase")]

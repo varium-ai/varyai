@@ -136,6 +136,23 @@ it("distinguishes unavailable account status and allows retry", () => {
 });
 
 it.each(["github_copilot", "xai_oauth"] as const)(
+  "keeps %s add-account action inside the account frame",
+  (provider) => {
+    mount(provider);
+    const add = screen.getByRole("button", {
+      name: "subscriptionProvider.addAccount",
+    });
+    expect(
+      screen
+        .getByRole("radio", { name: "fixture-user" })
+        .closest(".cx-accounts"),
+    ).toContainElement(add);
+    fireEvent.click(add);
+    expect(auth.addAccount).toHaveBeenCalledOnce();
+  },
+);
+
+it.each(["github_copilot", "xai_oauth"] as const)(
   "offers re-login for a rejected %s subscription without sending an unsupported target",
   (provider) => {
     auth.accounts[0].requires_reauth = true;
@@ -242,6 +259,9 @@ it("supports selecting and clearing all discovered subscription models", async (
     "aria-pressed",
     "true",
   );
+  expect(
+    screen.getByRole("button", { name: "One" }).querySelector("svg"),
+  ).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Two" })).toHaveAttribute(
     "aria-pressed",
     "true",
@@ -253,6 +273,9 @@ it("supports selecting and clearing all discovered subscription models", async (
     "aria-pressed",
     "false",
   );
+  expect(
+    screen.getByRole("button", { name: "One" }).querySelector("svg"),
+  ).not.toBeInTheDocument();
 });
 
 it("adds an exact manual subscription model ID without duplicating it", () => {

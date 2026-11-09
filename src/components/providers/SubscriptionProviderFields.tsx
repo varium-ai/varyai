@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Copy, ExternalLink, Plus, RefreshCw } from "lucide-react";
+import { Copy, ExternalLink } from "lucide-react";
 import { useManagedAuth } from "./forms/hooks/useManagedAuth";
 import { type RoutingUpstream } from "@/lib/api/routingUpstreams";
 import { copilotGetModelsForAccount } from "@/lib/api/copilot";
@@ -14,6 +14,8 @@ import { ProviderModelPreferences } from "./ProviderModelPreferences";
 import { Input } from "@/components/ui/input";
 import { SubscriptionAccountQuota } from "./SubscriptionAccountQuota";
 import { NativeSubscriptionAccounts } from "./NativeSubscriptionAccounts";
+import { SubscriptionAccountActions } from "./SubscriptionAccountActions";
+import { SubscriptionModelChip } from "./SubscriptionModelChip";
 import {
   nativeSubscriptionApi,
   type NativeSubscriptionProvider,
@@ -330,6 +332,9 @@ function SubscriptionFields({
                     {account.plan && (
                       <span className="cx-plan">{account.plan}</span>
                     )}
+                    {source.accountId === account.id && (
+                      <span className="cx-using">{t("provider.inUse")}</span>
+                    )}
                     {(account.requires_reauth || account.reauth_required) && (
                       <>
                         <span className="cx-plan cx-reauth">
@@ -375,6 +380,21 @@ function SubscriptionFields({
                   />
                 </div>
               ))}
+              {!authenticating && (
+                <SubscriptionAccountActions
+                  disabled={locked}
+                  actions={[
+                    {
+                      key: "add",
+                      label: t("subscriptionProvider.addAccount"),
+                      onClick: () => {
+                        loginTarget.current = undefined;
+                        auth.addAccount();
+                      },
+                    },
+                  ]}
+                />
+              )}
             </div>
             {source.accountId &&
               auth.isStatusSuccess &&
@@ -388,21 +408,6 @@ function SubscriptionFields({
                   {t("codexProvider.reauth")}
                 </p>
               )}
-            {!authenticating && (
-              <Button
-                type="button"
-                variant="ghost"
-                disabled={locked}
-                className="pv-subscription-action"
-                onClick={() => {
-                  loginTarget.current = undefined;
-                  auth.addAccount();
-                }}
-              >
-                <Plus size={14} />
-                {t("subscriptionProvider.addAccount")}
-              </Button>
-            )}
             {auth.deviceCode && (
               <div className="cx-login">
                 <p>{t("subscriptionProvider.deviceHint")}</p>
@@ -466,17 +471,6 @@ function SubscriptionFields({
               </button>
             ))}
           </div>
-          <p className="pv-hint">{t(`providerParity.hint_${source.mode}`)}</p>
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={locked || !source.accountId}
-            className="pv-subscription-action"
-            onClick={() => void discover()}
-          >
-            <RefreshCw size={13} />
-            {t("codexProvider.fetchModels")}
-          </Button>
           {catalogFailed && (
             <p role="status" className="pv-error">
               {t("codexProvider.catalogFailed")}
@@ -486,7 +480,7 @@ function SubscriptionFields({
             <p className="pv-hint">{t("subscriptionProvider.fetchHint")}</p>
           )}
           {!!models.length && (
-            <div className="flex items-center gap-3 text-xs">
+            <div className="pv-probe-actions">
               <button
                 type="button"
                 disabled={locked}
@@ -522,11 +516,9 @@ function SubscriptionFields({
               const id = String(row.model ?? row.id);
               const checked = selected.has(id);
               return (
-                <button
-                  type="button"
+                <SubscriptionModelChip
                   key={id}
-                  className={`pv-model-chip ${checked ? "selected" : ""}`}
-                  aria-pressed={checked}
+                  selected={checked}
                   disabled={locked || (!checked && selected.size >= 256)}
                   onClick={() =>
                     onChange({
@@ -545,12 +537,16 @@ function SubscriptionFields({
                     })
                   }
                 >
-                  {String(row.displayName ?? id)}
-                </button>
+                  {String(
+                    (row.modelPreferences as { name?: string })?.name ??
+                      row.displayName ??
+                      id,
+                  )}
+                </SubscriptionModelChip>
               );
             })}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="pv-probe-actions">
             <Input
               value={typed}
               disabled={locked}
@@ -558,9 +554,8 @@ function SubscriptionFields({
               placeholder={t("providerEditor.addModelId")}
               aria-label={t("providerEditor.addModelId")}
             />
-            <Button
+            <button
               type="button"
-              variant="ghost"
               disabled={locked || !typed.trim() || selected.size >= 256}
               onClick={() => {
                 const model = typed.trim();
@@ -583,7 +578,15 @@ function SubscriptionFields({
               }}
             >
               {t("providerEditor.addModel")}
-            </Button>
+            </button>
+            <button
+              type="button"
+              aria-label={t("codexProvider.fetchModels")}
+              disabled={locked || !source.accountId}
+              onClick={() => void discover()}
+            >
+              {fetching ? t("common.loading") : t("codexProvider.fetchModels")}
+            </button>
           </div>
           {!!source.models.length && (
             <ProviderModelPreferences
@@ -608,6 +611,7 @@ function SubscriptionFields({
             />
             {t("codexProvider.groupsOnly")}
           </label>
+          <p className="pv-hint">{t(`providerParity.hint_${source.mode}`)}</p>
         </div>
       </div>
     </>

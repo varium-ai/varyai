@@ -92,6 +92,19 @@ fn references(snapshot: &continuation::Snapshot, body: &Value, consumer: &str) -
     })
 }
 
+#[derive(Clone, Copy, Default)]
+pub(super) enum HistoryPolicy {
+    #[default]
+    Strict,
+    Portable,
+    ResponsesReplay,
+}
+impl HistoryPolicy {
+    fn allows_fresh(self) -> bool {
+        !matches!(self, Self::Strict)
+    }
+}
+
 impl Conversations {
     pub fn acquire_durable(
         &self,
@@ -113,17 +126,34 @@ impl Conversations {
         store: Option<Arc<continuation::Store>>,
         portable_history: bool,
     ) -> Result<Arc<Conversation>, &'static str> {
+        self.acquire_durable_with_policy(
+            consumer,
+            session,
+            name,
+            body,
+            store,
+            if portable_history {
+                HistoryPolicy::Portable
+            } else {
+                HistoryPolicy::Strict
+            },
+        )
+    }
+
+    pub fn acquire_durable_with_policy(
+        &self,
+        consumer: &str,
+        session: &Session,
+        name: Option<&str>,
+        body: &Value,
+        store: Option<Arc<continuation::Store>>,
+        policy: HistoryPolicy,
+    ) -> Result<Arc<Conversation>, &'static str> {
         let Some(store) = store else {
-            if !portable_history {
+            if !policy.allows_fresh() {
                 return self.acquire(consumer, &session.bindings, name, body);
             }
-            return self.acquire_with_history(
-                consumer,
-                &session.bindings,
-                name,
-                body,
-                portable_history,
-            );
+            return self.acquire_with_history(consumer, &session.bindings, name, body, policy);
         };
         let Some(targets) = session
             .targets
@@ -131,13 +161,7 @@ impl Conversations {
             .map(Target::continuation_destination)
             .collect::<Option<Vec<_>>>()
         else {
-            return self.acquire_with_history(
-                consumer,
-                &session.bindings,
-                name,
-                body,
-                portable_history,
-            );
+            return self.acquire_with_history(consumer, &session.bindings, name, body, policy);
         };
         if targets
             .iter()
@@ -177,21 +201,32 @@ impl Conversations {
             }
             let mut saved = snapshot.targets.clone();
             saved.sort();
-            if saved != expected || saved.is_empty() {
+            if saved.is_empty() && matches!(policy, HistoryPolicy::ResponsesReplay) {
+                // A stale affinity snapshot cannot veto a new Codex request.
+                continue;
+            }
+            if (saved != expected || saved.is_empty())
+                && !matches!(policy, HistoryPolicy::ResponsesReplay)
+            {
                 return Err("routing_unknown_continuation");
             }
             if entries.len() >= MAX_CONVERSATIONS {
                 return Err("routing_session_capacity");
             }
             let remap = |map: std::collections::BTreeMap<String, Option<String>>| -> Result<HashMap<String, usize>, &'static str> {
-                map.into_iter().map(|(key, target)| {
+                let mut restored = HashMap::new();
+                for (key, target) in map {
                     let index = match target {
                         None => usize::MAX,
-                        Some(target) => targets.iter().position(|value| value == &target)
-                            .ok_or("routing_unknown_continuation")?,
+                        Some(target) => match targets.iter().position(|value| value == &target) {
+                            Some(index) => index,
+                            None if matches!(policy, HistoryPolicy::ResponsesReplay) => continue,
+                            None => return Err("routing_unknown_continuation"),
+                        },
                     };
-                    Ok((key, index))
-                }).collect()
+                    restored.insert(key, index);
+                }
+                Ok(restored)
             };
             let bindings = Bindings {
                 responses: remap(snapshot.responses)?,
@@ -224,7 +259,7 @@ impl Conversations {
             &session.bindings,
             name.as_deref(),
             body,
-            portable_history,
+            policy,
         )?;
         if let Ok(mut bindings) = state.bindings.try_lock() {
             if bindings.durable.is_none() {
@@ -255,7 +290,7 @@ impl Conversations {
         name: Option<&str>,
         body: &Value,
     ) -> Result<Arc<Conversation>, &'static str> {
-        self.acquire_with_history(consumer, identity, name, body, false)
+        self.acquire_with_history(consumer, identity, name, body, HistoryPolicy::Strict)
     }
 
     fn acquire_with_history(
@@ -264,7 +299,7 @@ impl Conversations {
         identity: &Arc<tokio::sync::Mutex<Bindings>>,
         name: Option<&str>,
         body: &Value,
-        portable_history: bool,
+        policy: HistoryPolicy,
     ) -> Result<Arc<Conversation>, &'static str> {
         let mut entries = self.0.lock().map_err(|_| "routing_state_unavailable")?;
         entries
@@ -276,7 +311,7 @@ impl Conversations {
             identity,
             name.as_deref(),
             body,
-            portable_history,
+            policy,
         )
     }
 
@@ -286,7 +321,7 @@ impl Conversations {
         identity: &Arc<tokio::sync::Mutex<Bindings>>,
         name: Option<&str>,
         body: &Value,
-        portable_history: bool,
+        policy: HistoryPolicy,
     ) -> Result<Arc<Conversation>, &'static str> {
         let matches = |e: &Entry| e.consumer == consumer && Arc::ptr_eq(&e.identity, identity);
         let continuation = body
@@ -312,6 +347,9 @@ impl Conversations {
                             )
                     })
                 });
+        let continuation = continuation
+            || (matches!(policy, HistoryPolicy::ResponsesReplay)
+                && references_with(body, |_, _| true));
         let selected = if let Some(name) = name {
             entries
                 .iter()
@@ -330,7 +368,12 @@ impl Conversations {
                         };
                         map.contains_key(&continuation::hash(kind, id))
                     });
-                    match bindings.resolve(&projection, None) {
+                    let resolution = if matches!(policy, HistoryPolicy::ResponsesReplay) {
+                        bindings.resolve_replay(&projection, None)
+                    } else {
+                        bindings.resolve(&projection, None)
+                    };
+                    match resolution {
                         Ok(Some(_)) => {
                             if found.is_some() {
                                 return Err("routing_ambiguous_continuation");
@@ -355,8 +398,9 @@ impl Conversations {
             return Ok(entries[index].state.clone());
         }
         // Full ownership discovery and durable destination checks run first.
-        // Only a self-contained transcript with no known owner may start fresh.
-        if continuation && name.is_none() && !portable_history {
+        // Responses replay can also begin with vendor-owned state that this
+        // process has never observed; the vendor validates it on forwarding.
+        if continuation && name.is_none() && !policy.allows_fresh() {
             return Err("routing_unknown_continuation");
         }
         if entries.len() >= MAX_CONVERSATIONS {

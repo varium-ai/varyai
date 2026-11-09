@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Copy, ExternalLink, Plus, Upload } from "lucide-react";
+import { Copy, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -13,6 +13,7 @@ import {
 import { SubscriptionAccountQuota } from "./SubscriptionAccountQuota";
 import { copyText } from "@/lib/clipboard";
 import { settingsApi } from "@/lib/api/settings";
+import { SubscriptionAccountActions } from "./SubscriptionAccountActions";
 
 export function NativeSubscriptionAccounts({
   provider,
@@ -265,6 +266,9 @@ export function NativeSubscriptionAccounts({
                 {account.plan && (
                   <span className="cx-plan">{account.plan}</span>
                 )}
+                {accountId === account.id && (
+                  <span className="cx-using">{t("provider.inUse")}</span>
+                )}
                 {account.reauthRequired && (
                   <>
                     <span className="cx-plan cx-reauth">
@@ -310,6 +314,39 @@ export function NativeSubscriptionAccounts({
               />
             </div>
           ))}
+          {!authenticating && (
+            <SubscriptionAccountActions
+              disabled={disabled || busy}
+              actions={[
+                {
+                  key: "add",
+                  label:
+                    provider === "chatgpt_api"
+                      ? t("nativeSubscription.continueChatgpt")
+                      : t("subscriptionProvider.addAccount"),
+                  onClick: () => void run(() => startLogin(), false),
+                },
+                ...(provider === "claude" || provider === "gemini_cli"
+                  ? [
+                      {
+                        key: "local",
+                        label: t("nativeSubscription.importLocal"),
+                        onClick: () => void run(() => importAccount(false)),
+                      },
+                    ]
+                  : []),
+                ...(provider !== "chatgpt_api"
+                  ? [
+                      {
+                        key: "file",
+                        label: t("nativeSubscription.importFile"),
+                        onClick: () => void run(() => importAccount(true)),
+                      },
+                    ]
+                  : []),
+              ]}
+            />
+          )}
         </div>
         {accountId &&
           accounts.isSuccess &&
@@ -318,42 +355,6 @@ export function NativeSubscriptionAccounts({
               {t("codexProvider.reauth")}
             </p>
           )}
-        {!authenticating && (
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              disabled={disabled || busy}
-              onClick={() => void run(() => startLogin(), false)}
-            >
-              <Plus size={14} />
-              {provider === "chatgpt_api"
-                ? t("nativeSubscription.continueChatgpt")
-                : t("subscriptionProvider.addAccount")}
-            </Button>
-            {(provider === "claude" || provider === "gemini_cli") && (
-              <Button
-                type="button"
-                variant="ghost"
-                disabled={disabled || busy}
-                onClick={() => void run(() => importAccount(false))}
-              >
-                <Upload size={14} />
-                {t("nativeSubscription.importLocal")}
-              </Button>
-            )}
-            {provider !== "chatgpt_api" && (
-              <Button
-                type="button"
-                variant="ghost"
-                disabled={disabled || busy}
-                onClick={() => void run(() => importAccount(true))}
-              >
-                {t("nativeSubscription.importFile")}
-              </Button>
-            )}
-          </div>
-        )}
         {flow?.state === "waiting" && (
           <div className="cx-login">
             <p role="status">

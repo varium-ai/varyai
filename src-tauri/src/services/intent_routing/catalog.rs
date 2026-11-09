@@ -480,7 +480,13 @@ pub(crate) async fn prepare_provider(
             } else {
                 identity.native_token.clone()?
             };
-            crate::services::codex_oauth_models::fetch_catalog_with_token(
+            let client = if let Some(id) = &identity.managed_id {
+                manager.account_client(id).await.ok()?
+            } else {
+                crate::proxy::http_client::get_without_redirects().ok()?
+            };
+            crate::services::codex_oauth_models::fetch_catalog_with_client(
+                &client,
                 &token,
                 &identity.workspace,
             )

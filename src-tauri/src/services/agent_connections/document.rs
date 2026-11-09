@@ -6,6 +6,9 @@ use serde_json::{json, Value};
 pub(super) enum Format {
     #[default]
     Json,
+    // Persist the old receipt format; OpenCode upgrades it when loading.
+    #[serde(rename(serialize = "Json5"))]
+    Jsonc,
     Json5,
     Toml,
     Yaml,
@@ -17,7 +20,11 @@ impl Format {
         let value = match self {
             Self::Cordis => return crate::services::deepseek_harness::parse(text.unwrap_or("")),
             Self::Json => return parse(text),
-            Self::Json5 => json5::from_str(text.unwrap_or("{}")).map_err(|_| FAILED)?,
+            // Accept legacy receipts for recovery; Jsonc encoding validates the
+            // emitted document against OpenCode's stricter syntax.
+            Self::Jsonc | Self::Json5 => {
+                json5::from_str(text.unwrap_or("{}")).map_err(|_| FAILED)?
+            }
             Self::Toml => serde_json::to_value(
                 text.unwrap_or("")
                     .parse::<toml::Value>()
@@ -59,6 +66,7 @@ impl Format {
         match self {
             Self::Cordis => crate::services::deepseek_harness::encode(source.unwrap_or(""), next),
             Self::Json => serde_json::to_string_pretty(next).map_err(|_| FAILED.into()),
+            Self::Jsonc => super::jsonc::encode(source.unwrap_or("{}"), &before, next),
             Self::Json5 => {
                 crate::openclaw_config::patch_document(source.unwrap_or("{}"), &before, next)
                     .map_err(|_| FAILED.into())

@@ -352,6 +352,39 @@ async fn codex_group_and_temporary_routes_preserve_bound_gateway_policies(
 }
 
 #[test]
+fn codex_magpie_replay_uses_observed_affinity_not_a_local_id_allowlist() {
+    let mut bindings = Bindings::default();
+    let body = json!({"previous_response_id":"synthetic-unobserved", "input":[
+        {"type":"message","role":"user","content":"hello","encrypted_content":null},
+        {"type":"reasoning","id":"synthetic-item","summary":[],"encrypted_content":"synthetic-seal"},
+        {"type":"function_call_output","call_id":"synthetic-call","output":"synthetic"}
+    ]});
+    let original = body.clone();
+    assert_eq!(bindings.resolve_replay(&body, None), Ok(None));
+    bindings.bind_session("synthetic-session", 2);
+    assert_eq!(
+        bindings.resolve_replay(&body, Some("synthetic-session")),
+        Ok(Some(2))
+    );
+    remember(
+        &mut bindings.responses,
+        "response",
+        "synthetic-unobserved",
+        1,
+    );
+    assert!(bindings
+        .resolve_replay(&body, Some("synthetic-session"))
+        .is_err());
+    assert_eq!(bindings.resolve_replay(&body, None), Ok(Some(1)));
+    remember(&mut bindings.calls, "call", "synthetic-call", 3);
+    assert!(bindings.resolve_replay(&body, None).is_err());
+    assert_eq!(
+        body, original,
+        "Replay must preserve the caller's protocol fields"
+    );
+}
+
+#[test]
 fn unknown_or_conflicting_continuations_fail_closed() {
     let mut bindings = Bindings::default();
     assert!(bindings
@@ -1266,10 +1299,14 @@ async fn live_session_forwards_exact_models_and_pins_tools_without_current_provi
     let response = send(json!({"model":"vary-auto/development","previous_response_id":"unknown"}))
         .await
         .expect("unknown continuation");
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(response.status(), StatusCode::OK);
     {
         let seen = seen.lock().expect("fixture lock");
-        assert_eq!(seen.len(), 3);
+        // The first candidate is cooling down after its earlier 503, so
+        // unobserved state goes directly to the still-available candidate.
+        assert_eq!(seen.len(), 4);
+        assert_eq!(seen[3].1["previous_response_id"], "unknown");
+        assert_eq!(seen[3].1["model"], "strong-model");
         assert_eq!(seen[0].1["model"], "balanced-model");
         assert_eq!(seen[1].1["model"], "strong-model");
         assert_eq!(seen[2].1["model"], "strong-model");
@@ -1486,8 +1523,20 @@ async fn live_session_forwards_exact_models_and_pins_tools_without_current_provi
         .json(&json!({"model":"vary-auto/second","previous_response_id":"response-stream"}))
         .send()
         .await
-        .expect("foreign continuation");
-    assert_eq!(result.status(), StatusCode::CONFLICT);
+        .expect("unobserved continuation at the selected alias");
+    assert_eq!(result.status(), StatusCode::OK);
+    let _: Value = result.json().await.expect("upstream validation response");
+    {
+        let records = seen.lock().expect("records");
+        assert_eq!(records.len(), calls_before_unavailable + 1);
+        let forwarded = records.last().expect("forwarded reference");
+        assert_eq!(forwarded.1["previous_response_id"], "response-stream");
+        assert_eq!(forwarded.1["model"], "second-exact-model");
+        assert_eq!(
+            forwarded.0[header::AUTHORIZATION],
+            "Bearer synthetic-second"
+        );
+    }
     runtime.clear_menu();
     assert_eq!(
         client

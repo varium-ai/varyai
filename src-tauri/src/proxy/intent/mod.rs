@@ -10,6 +10,9 @@ mod native_gateway;
 mod official_bridge;
 #[cfg(test)]
 mod parity_tests;
+mod replay_recovery;
+#[cfg(test)]
+mod replay_tests;
 #[cfg(test)]
 mod resume_tests;
 pub(crate) mod scheduling;
@@ -655,6 +658,50 @@ impl Bindings {
             .get(&continuation::hash("session", key))
             .copied()
     }
+    /// Responses replay follows observed affinity. Unknown vendor state is
+    /// forwarded intact for the vendor to validate, as in Magpie.
+    fn resolve_replay(&self, body: &Value, session: Option<&str>) -> Result<Option<usize>, ()> {
+        let mut selected = None;
+        let mut merge = |candidate: Option<usize>| -> Result<(), ()> {
+            if let Some(candidate) = candidate {
+                if candidate == usize::MAX || selected.is_some_and(|owner| owner != candidate) {
+                    return Err(());
+                }
+                selected = Some(candidate);
+            }
+            Ok(())
+        };
+        merge(session.and_then(|name| self.session(name)))?;
+        if let Some(id) = body["previous_response_id"].as_str() {
+            merge(
+                self.responses
+                    .get(&continuation::hash("response", id))
+                    .copied(),
+            )?;
+        }
+        if let Some(items) = body["input"].as_array() {
+            for item in items {
+                if length::visible_reasoning(item) {
+                    continue;
+                }
+                if let Some(id) = item["call_id"].as_str() {
+                    merge(self.calls.get(&continuation::hash("call", id)).copied())?;
+                }
+                if let Some(id) = item["id"].as_str() {
+                    merge(self.items.get(&continuation::hash("item", id)).copied())?;
+                }
+                if let Some(seal) = item["encrypted_content"].as_str() {
+                    merge(
+                        self.opaque
+                            .get(&continuation::hash("opaque", seal))
+                            .copied(),
+                    )?;
+                }
+            }
+        }
+        Ok(selected)
+    }
+
     fn resolve(&self, body: &Value, session: Option<&str>) -> Result<Option<usize>, ()> {
         let mut selected = session.and_then(|s| self.session(s));
         if selected == Some(usize::MAX) {
@@ -1448,6 +1495,7 @@ async fn execute(
     } else {
         None
     };
+    let responses_replay = protocol == Protocol::Responses && agent == "codex";
     let portable_tool_history = (matches!(agent, "workbuddy" | "workbuddy-ai")
         || session.targets.iter().all(|target| target.official))
         && protocol != Protocol::Responses
@@ -1458,7 +1506,19 @@ async fn execute(
     let scoped = if count_tokens {
         Arc::new(scopes::Conversation::default())
     } else {
-        let scoped = if portable_tool_history {
+        let scoped = if responses_replay {
+            state
+                .intent_runtime
+                .conversations
+                .acquire_durable_with_policy(
+                    &consumer,
+                    &session,
+                    conversation.as_deref(),
+                    &projection,
+                    durable,
+                    scopes::HistoryPolicy::ResponsesReplay,
+                )
+        } else if portable_tool_history {
             state
                 .intent_runtime
                 .conversations
@@ -1524,6 +1584,8 @@ async fn execute(
         } else {
             Ok(pinned)
         }
+    } else if responses_replay {
+        bindings.resolve_replay(&projection, conversation.as_deref())
     } else {
         bindings.resolve(&projection, conversation.as_deref())
     };
@@ -1552,7 +1614,7 @@ async fn execute(
             }
         }
     }
-    if native_lease.is_some() && !bindings.known_opaque(&projection) {
+    if native_lease.is_some() && !responses_replay && !bindings.known_opaque(&projection) {
         return fail(StatusCode::CONFLICT, "routing_unknown_continuation");
     }
     if let Some(forced) = parts.extensions.get::<native::ForcedTarget>() {
@@ -1880,7 +1942,8 @@ async fn execute(
         .collect::<std::collections::VecDeque<_>>();
     let mut transient: Vec<(usize, usize)> = Vec::new();
     let mut retry_deadline = None;
-    loop {
+    let mut replay_recovery = replay_recovery::Recovery::default();
+    'attempts: loop {
         if attempts.is_empty() && !transient.is_empty() && retry_seconds > 0 {
             let deadline = *retry_deadline
                 .get_or_insert_with(|| Instant::now() + Duration::from_secs(retry_seconds));
@@ -2368,37 +2431,83 @@ async fn execute(
                 }
                 url.query_pairs_mut().append_pair("alt", "sse");
             }
-            let mut request = session.client.post(url).headers(headers).body(payload);
-            if !streaming {
-                request = request.timeout(super::http_client::UPSTREAM_HEADER_WAIT);
-            }
-            let dispatch = super::http_client::send_with_header_timeout(
-                request,
-                super::http_client::UPSTREAM_HEADER_WAIT,
-            );
-            let dispatched =
-                match wait_for_attempt(attempt_deadline, native_lease.as_deref(), dispatch).await {
-                    Ok(result) => result,
-                    Err(AttemptWait::Revoked) => {
-                        return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable")
-                    }
-                    Err(AttemptWait::Deadline) => {
-                        if retry_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                            break;
+            let mut payload = payload;
+            loop {
+                let mut request = session
+                    .client
+                    .post(url.clone())
+                    .headers(headers.clone())
+                    .body(payload.clone());
+                if !streaming {
+                    request = request.timeout(super::http_client::UPSTREAM_HEADER_WAIT);
+                }
+                let dispatch = super::http_client::send_with_header_timeout(
+                    request,
+                    super::http_client::UPSTREAM_HEADER_WAIT,
+                );
+                let dispatched =
+                    match wait_for_attempt(attempt_deadline, native_lease.as_deref(), dispatch)
+                        .await
+                    {
+                        Ok(result) => result,
+                        Err(AttemptWait::Revoked) => {
+                            return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable")
                         }
-                        trace.step(trace::Kind::FirstTokenTimeout, Some(candidate), None);
-                        continue;
+                        Err(AttemptWait::Deadline) => {
+                            if retry_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                                break 'attempts;
+                            }
+                            trace.step(trace::Kind::FirstTokenTimeout, Some(candidate), None);
+                            continue 'attempts;
+                        }
+                    };
+                let response = match dispatched {
+                    Ok(response) => super::hyper_client::ProxyResponse::Reqwest(response),
+                    // Ambiguous network failures are never replayed at another account.
+                    Err(_) => {
+                        return fail(
+                            StatusCode::BAD_GATEWAY,
+                            "routing_upstream_connection_failed",
+                        )
                     }
                 };
-            match dispatched {
-                Ok(response) => super::hyper_client::ProxyResponse::Reqwest(response),
-                // Ambiguous network failures are never replayed at another account.
-                Err(_) => {
-                    return fail(
-                        StatusCode::BAD_GATEWAY,
-                        "routing_upstream_connection_failed",
-                    )
+                if !responses_replay || response.status().is_success() {
+                    break response;
                 }
+                let status = response.status();
+                let response_headers = response.headers().clone();
+                let read_error = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    response.bytes_with_limit(64 * 1024),
+                );
+                let error_bytes =
+                    match wait_for_attempt(attempt_deadline, native_lease.as_deref(), read_error)
+                        .await
+                    {
+                        Ok(Ok(Ok(bytes))) => bytes,
+                        Err(AttemptWait::Revoked) => {
+                            return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable")
+                        }
+                        _ => return fail(StatusCode::BAD_GATEWAY, "routing_upstream_rejected"),
+                    };
+                let allow_compaction = compact.is_none()
+                    && native_lease.is_none()
+                    && parts.extensions.get::<native::ForcedTarget>().is_none();
+                if let Some(recovered) = replay_recovery.recover_wire(
+                    status.as_u16(),
+                    &error_bytes,
+                    &payload,
+                    allow_compaction,
+                ) {
+                    payload = recovered;
+                    trace.step(trace::Kind::Retry, Some(candidate), Some(status.as_u16()));
+                    continue;
+                }
+                break super::hyper_client::ProxyResponse::buffered(
+                    status,
+                    response_headers,
+                    error_bytes,
+                );
             }
         };
         let status = response.status();

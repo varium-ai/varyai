@@ -50,7 +50,7 @@ export async function authStartLogin(
     authProvider,
     githubDomain: githubDomain || null,
     targetAccountId: targetAccountId || null,
-    proxy: proxy || null,
+    proxy: proxy ?? null,
   });
 }
 

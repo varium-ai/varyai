@@ -125,7 +125,8 @@ fn read_selection(app: &str, path: &Path) -> Result<Option<String>, String> {
         "codex" | "grokbuild" | "kimi" => Format::Toml,
         "hermes" => Format::Yaml,
         "deepseek-harness" => Format::Cordis,
-        "opencode" | "openclaw" | "pi" => Format::Json5,
+        "opencode" => Format::Jsonc,
+        "openclaw" | "pi" => Format::Json5,
         _ => Format::Json,
     };
     let value = format.parse(read(path)?.as_deref())?;

@@ -378,6 +378,7 @@
     "sensitiveTypesSample": "{{types}} sensitive information types in the latest {{sampleSize}} security events"
   },
   "common": {
+    "retry": "Retry",
     "add": "Add",
     "edit": "Edit",
     "delete": "Delete",
@@ -5613,6 +5614,7 @@
     "reopen": "Open again",
     "proxy": "Proxy",
     "globalProxy": "Global proxy",
+    "accountProxy": "Saved account proxy",
     "direct": "Direct",
     "customProxy": "Custom…",
     "proxyUrl": "Proxy URL",
@@ -5626,6 +5628,12 @@
     "finish": "Finish sign-in",
     "finishing": "Finishing sign-in…",
     "failed": "Sign-in did not finish. Try again or switch sign-in methods.",
+    "tokenRejected": "ChatGPT refused the sign-in request (HTTP {{status}}). Start a new sign-in; if it persists, check the selected proxy.",
+    "networkFailed": "Could not reach ChatGPT to finish sign-in. Check the selected proxy and try again.",
+    "exchangeTimeout": "ChatGPT did not finish sign-in within 30 seconds. Check the selected proxy and start again.",
+    "invalidTokenResponse": "ChatGPT returned incomplete or unreadable sign-in credentials. Start a new sign-in.",
+    "saveFailed": "Could not save the signed-in account. Check available disk space and try again.",
+    "identityMismatch": "This sign-in belongs to a different account. Use the matching account or add it separately.",
     "callbackInvalid": "The callback URL does not match this sign-in. Copy the complete final address from the browser.",
     "proxyInvalid": "Enter an HTTP, HTTPS or SOCKS proxy URL.",
     "expired": "The sign-in expired. Start it again.",
@@ -5932,14 +5940,10 @@
     "invalidConnection": "Enter an HTTP(S) API URL without embedded credentials, query parameters or fragments, and a Key.",
     "connectionFailed": "Could not connect or save. Check the URL, Key and API protocol, then try again.",
     "noModels": "The provider returned no models. Check the URL and protocol, or add the provider manually in Models.",
-    "connected": "Connected. Found {{count}} models.",
-    "accountConnected": "Account connected.",
     "savingAccount": "Saving the signed-in account…",
+    "accountModelsFailed": "Signed in, but available models could not be loaded. Please retry.",
     "accountFailed": "Sign-in finished, but the connection could not be saved. Please retry.",
     "codexHint": "Your browser may display Codex during ChatGPT sign-in. This is expected.",
-    "imported": "Selected connections imported.",
-    "nextHint": "Open Tools to connect Claude Code, Codex or another supported tool.",
-    "enterTools": "Open Tools",
     "finishFailed": "Could not save setup completion. Please retry; your saved connections will be kept."
   }
 }

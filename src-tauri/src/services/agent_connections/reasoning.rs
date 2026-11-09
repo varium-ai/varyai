@@ -120,6 +120,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn opencode_limits_always_include_both_required_fields() {
+        for (context_window, output_tokens, expected) in [
+            (Some(272000), None, json!({"context":272000,"output":0})),
+            (None, Some(32768), json!({"context":0,"output":32768})),
+            (None, None, Value::Null),
+        ] {
+            let model = Model {
+                id: "synthetic".into(),
+                name: "Synthetic".into(),
+                context_window,
+                output_tokens,
+                cost: None,
+                compact_at: None,
+                group: "Synthetic".into(),
+                reasoning_levels: vec![],
+                reasoning: false,
+                default_reasoning_level: None,
+                images: false,
+                icon: None,
+            };
+            assert_eq!(super::super::opencode_model(&model)["limit"], expected);
+        }
+    }
+
+    #[test]
     fn parity_known_output_and_cache_prices_reach_native_agents() {
         let capability =
             crate::services::intent_routing::effort::Capability::parse(&json!({"output":32768}));

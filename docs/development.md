@@ -101,6 +101,7 @@ Ordinary source builds have no statistics destination and do not report installa
 - Keep tests isolated from real client configuration, credentials, running apps and the default proxy port.
 - Use synthetic provider endpoints, keys and sample content. Sanitize logs and screenshots before sharing.
 - Keep the four runtime locale files aligned; the application remains multilingual.
+- Single-choice native selects share `src/components/ui/native-select.css` for a flat surface, theme-aware chevron, keyboard focus and disabled states. Keep page-specific heights, and avoid resetting the chevron or its reserved end padding with equally specific background/padding shorthands. The compact login proxy retains its own SVG indicator; multiple and sized list boxes retain native rendering. Forced-color mode restores the system select indicator.
 - Read the [storage design](architecture/storage.md) before changing migrations or backup formats.
 - Use the [platform build guides](README.md) for local packaging. Production release infrastructure is separate.
 

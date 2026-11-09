@@ -378,6 +378,7 @@
     "sensitiveTypesSample": "最近 {{sampleSize}} 条安全事件涉及 {{types}} 类敏感信息"
   },
   "common": {
+    "retry": "重试",
     "add": "添加",
     "edit": "编辑",
     "delete": "删除",
@@ -5611,6 +5612,7 @@
     "reopen": "重新打开",
     "proxy": "代理",
     "globalProxy": "全局代理",
+    "accountProxy": "沿用账号代理",
     "direct": "直连",
     "customProxy": "自定义…",
     "proxyUrl": "代理地址",
@@ -5624,6 +5626,12 @@
     "finish": "完成登录",
     "finishing": "正在完成登录…",
     "failed": "登录未完成，请重试或切换登录方式。",
+    "tokenRejected": "ChatGPT 拒绝了登录请求（HTTP {{status}}）。请重新发起登录；若持续失败，请检查所选代理。",
+    "networkFailed": "无法连接 ChatGPT 完成登录，请检查所选代理后重试。",
+    "exchangeTimeout": "ChatGPT 未在 30 秒内完成登录，请检查所选代理并重新发起登录。",
+    "invalidTokenResponse": "ChatGPT 返回的登录凭据不完整或无法解析，请重新发起登录。",
+    "saveFailed": "无法保存已登录账号，请检查磁盘可用空间后重试。",
+    "identityMismatch": "此次登录与原账号不一致，请登录对应账号或单独添加此账号。",
     "callbackInvalid": "回调地址与当前登录不匹配，请复制浏览器最终页面的完整地址。",
     "proxyInvalid": "请输入 HTTP、HTTPS 或 SOCKS 代理地址。",
     "expired": "登录已过期，请重新开始。",
@@ -5930,14 +5938,10 @@
     "invalidConnection": "请输入 HTTP(S) API 网址和 Key；网址不能包含登录凭据、查询参数或片段。",
     "connectionFailed": "连接或保存失败，请检查网址、Key 和 API 协议后重试。",
     "noModels": "没有获取到可用模型。请检查网址和协议，或在「模型」中手动添加供应商。",
-    "connected": "连接成功，找到 {{count}} 个模型。",
-    "accountConnected": "账号接入成功。",
     "savingAccount": "正在保存已登录的账号…",
+    "accountModelsFailed": "登录已完成，但未能获取可用模型，请重试。",
     "accountFailed": "登录已完成，但连接保存失败，请重试。",
     "codexHint": "浏览器里可能会显示 Codex，这是正常的。",
-    "imported": "已导入选中的连接。",
-    "nextHint": "进入工具页，连接 Claude Code、Codex 或其他受支持的工具。",
-    "enterTools": "进入工具页",
     "finishFailed": "引导完成状态保存失败，请重试；已保存的连接会保留。"
   }
 }

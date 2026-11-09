@@ -1,0 +1,55 @@
+:root {
+  --native-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23637184' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+.dark {
+  --native-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2399acc5' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+
+/* Keep page-specific control sizes while sharing the single-select surface. */
+:where(select:not([multiple]):not([size]):not(.cx-signing-proxy select)) {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--mp-line);
+  border-radius: 8px;
+  background-color: var(--mp-card);
+  color: var(--mp-fg);
+  font: inherit;
+  box-shadow: none;
+}
+
+/* Reserve arrow space even when a page sets its own horizontal padding. */
+select:not([multiple]):not([size]):where(:not(.cx-signing-proxy select)) {
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: var(--native-select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 16px 16px;
+  padding-inline-end: 36px;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+select:not([multiple]):not([size]):where(
+    :not(.cx-signing-proxy select)
+  ):focus-visible {
+  outline: 2px solid var(--mp-accent);
+  outline-offset: 2px;
+}
+select:not([multiple]):not([size]):where(
+    :not(.cx-signing-proxy select)
+  ):disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+@media (forced-colors: active) {
+  select:not([multiple]):not([size]):where(:not(.cx-signing-proxy select)) {
+    -webkit-appearance: auto;
+    appearance: auto;
+    background-image: none;
+    padding-inline-end: 12px;
+  }
+}

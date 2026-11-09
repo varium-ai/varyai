@@ -138,6 +138,7 @@ function CodexSignIn({ onCancel, onComplete }: Props) {
       submitting={browser?.submitting}
       submitted={browser?.submitted}
       error={failure}
+      httpStatus={browser?.flow?.diagnostic?.httpStatus}
       callbackBlocked={browser?.flow?.callbackBlocked}
       openFailed={browser?.openFailed}
       onCancel={() => {
