@@ -31,6 +31,7 @@ struct Server {
     catalog: Option<[u8; 32]>,
     catalog_stale: bool,
     attempted: bool,
+    attempts: u8,
 }
 
 #[derive(Default)]
@@ -48,6 +49,7 @@ struct Pending {
     manual: Vec<Instance>,
     last_attempt: Vec<Instance>,
     deadline: Option<u64>,
+    replacement_deadline: Option<u64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -63,7 +65,8 @@ impl Monitor {
         if let Some(pending) = &mut self.pending {
             for server in &mut self.running {
                 if pending.last_attempt.contains(&server.identity) {
-                    server.attempted = false;
+                    server.attempts = server.attempts.saturating_sub(1);
+                    server.attempted = server.attempts > 0;
                 }
             }
             pending.last_attempt.clear();
@@ -96,6 +99,7 @@ impl Monitor {
                 .iter()
                 .any(|server| pending.old.contains(&server.identity) && server.attempted)
                 || pending.deadline.is_some()
+                || pending.replacement_deadline.is_some()
             {
                 return ReloadState::Restarting;
             }
@@ -125,12 +129,14 @@ impl Monitor {
         let old: Vec<_> = self.running.iter().map(|s| s.identity.clone()).collect();
         for server in &mut self.running {
             server.attempted = false;
+            server.attempts = 0;
         }
         self.pending = Some(Pending {
             manual: old.clone(),
             old,
             last_attempt: Vec::new(),
             deadline: None,
+            replacement_deadline: None,
         });
         self.failed = false;
         self.changed_at = now;
@@ -158,13 +164,14 @@ impl Monitor {
                     catalog: None,
                     catalog_stale: false,
                     attempted: false,
+                    attempts: 0,
                 });
             }
         }
         let stale: Vec<_> = self
             .running
             .iter()
-            .filter(|server| server.route != route && !server.attempted)
+            .filter(|server| server.route != route && server.attempts < 3)
             .map(|server| server.identity.clone())
             .collect();
         if !stale.is_empty() {
@@ -173,6 +180,7 @@ impl Monitor {
                 manual: Vec::new(),
                 last_attempt: Vec::new(),
                 deadline: None,
+                replacement_deadline: None,
             });
             for identity in stale {
                 if !pending.old.contains(&identity) {
@@ -208,23 +216,35 @@ impl Monitor {
             self.failed = false;
             return Action::Recovered;
         }
-        if pending.deadline.is_some_and(|deadline| now >= deadline) {
+        // Exiting the old process and receiving a replacement are separate
+        // phases. A slow exit must not consume the replacement's 30-second
+        // allowance or trigger Windows desktop recovery as the old server exits.
+        let deadline = if old.is_empty() {
+            Some(
+                *pending
+                    .replacement_deadline
+                    .get_or_insert(now.saturating_add(30)),
+            )
+        } else {
+            pending.replacement_deadline = None;
+            pending.deadline
+        };
+        if deadline.is_some_and(|deadline| now >= deadline) {
             self.pending = None;
             self.failed = true;
             return Action::TimedOut;
         }
-        if old.is_empty() {
-            pending.deadline.get_or_insert(now.saturating_add(20));
-        } else if !busy && now.saturating_sub(self.changed_at) >= 3 {
+        if !old.is_empty() && !busy && now.saturating_sub(self.changed_at) >= 3 {
             let targets: Vec<_> = old
                 .into_iter()
-                .filter(|server| !server.attempted)
+                .filter(|server| server.attempts < 3)
                 .map(|server| server.identity.clone())
                 .collect();
             if !targets.is_empty() {
                 for server in &mut self.running {
                     if targets.contains(&server.identity) {
                         server.attempted = true;
+                        server.attempts += 1;
                     }
                 }
                 pending.last_attempt = targets.clone();
@@ -234,6 +254,17 @@ impl Monitor {
         }
         Action::None
     }
+}
+
+fn terminate_targets(
+    targets: &[Instance],
+    mut terminate: impl FnMut(&Instance) -> Result<(), ()>,
+) -> Vec<Instance> {
+    targets
+        .iter()
+        .filter(|target| terminate(target).is_err())
+        .cloned()
+        .collect()
 }
 
 fn read(path: &Path) -> Result<Option<Vec<u8>>, ()> {
@@ -513,7 +544,7 @@ pub(crate) fn start(
                                 || final_requests.busy()
                                 || activity::busy(home, since).unwrap_or(true)
                             {
-                                return Ok(false);
+                                return Ok(None);
                             }
                             if client.sync_threads().is_err() {
                                 log::warn!("Codex conversation provider recovery remains pending");
@@ -522,19 +553,24 @@ pub(crate) fn start(
                                 || final_requests.busy()
                                 || activity::busy(home, since).unwrap_or(true)
                             {
-                                return Ok(false);
+                                return Ok(None);
                             }
-                            for target in targets {
-                                platform::terminate(&target, home)?;
-                            }
-                            Ok::<_, ()>(true)
+                            let failed = terminate_targets(&targets, |target| {
+                                platform::terminate(target, home)
+                            });
+                            Ok::<_, ()>(Some(failed))
                         })
                         .await;
                         match result {
-                            Ok(Ok(true)) => log::info!("Codex routing changed; waiting for the desktop app-server to restart"),
-                            Ok(Ok(false)) => monitor.defer(),
+                            Ok(Ok(Some(failed))) => {
+                                if failed.is_empty() {
+                                    log::info!("Codex routing changed; waiting for the desktop app-server to restart");
+                                } else {
+                                    log::warn!("Codex app-server restart remains pending");
+                                }
+                            }
+                            Ok(Ok(None)) => monitor.defer(),
                             _ => {
-                                // A partial signal failure is bounded, with no repeat termination.
                                 log::warn!("Codex app-server restart unavailable");
                             }
                         }

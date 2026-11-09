@@ -535,3 +535,175 @@ fn ordinary_desktop_aliases_do_not_enter_native_small_fast_selection(
     }
     Ok(())
 }
+
+#[tokio::test]
+#[serial_test::serial]
+async fn desktop_electron_probe_keeps_authentication_and_real_upstream_failures(
+) -> Result<(), Box<dyn std::error::Error>> {
+    struct Restore(crate::proxy::security::SecurityRuntimeConfig);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::proxy::security::runtime::set_security_runtime_for_test(self.0.clone());
+        }
+    }
+    let _restore = Restore((*crate::proxy::security::get_security_runtime()).clone());
+    crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let rejected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let upstream_rejected = rejected.clone();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/v1/messages", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let tx = tx.clone();
+            let rejected = upstream_rejected.load(std::sync::atomic::Ordering::SeqCst);
+            async move {
+                let _ = tx.send((headers, body)).await;
+                if rejected {
+                    return (StatusCode::FORBIDDEN, Json(json!({"error":{"type":"permission_error","message":"Synthetic upstream rejection"}})));
+                }
+                (StatusCode::OK, Json(json!({"id":"synthetic-response","type":"message","role":"assistant","model":"synthetic","content":[{"type":"text","text":"synthetic"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}})))
+            }
+        }))).await
+    });
+    let published = menu(&format!("http://{address}/v1/messages"))?;
+    let connection = connection(&published);
+    let runtime = Arc::new(Runtime::default());
+    runtime.set_global(published, 0)?;
+    let receipt = Receipt {
+        app: "claude-desktop".into(),
+        token: connection.token,
+        model: "vary-provider/chat".into(),
+        model_map: connection.model_map,
+        visible_models: None,
+        files: vec![],
+        suspended: false,
+        applied_at_ms: None,
+    };
+    runtime.connections.install(&receipt)?;
+    let server = ProxyServer::new(
+        ProxyConfig {
+            listen_port: 0,
+            ..Default::default()
+        },
+        Arc::new(Database::memory()?),
+        None,
+    )
+    .with_intent_runtime(runtime.clone());
+    let info = server.start().await?;
+    let root = format!(
+        "http://127.0.0.1:{}/connections/claude-desktop/v1",
+        info.port
+    );
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let probe = json!({"model":crate::claude_desktop_config::shared_plain_model_name("vary-provider/chat"),"max_tokens":1,"messages":[{"role":"user","content":"."}]});
+    for origin in [None, Some("null"), Some("app://localhost")] {
+        for auth_header in ["authorization", "x-api-key"] {
+            let credential = if auth_header == "authorization" {
+                format!("Bearer {}", receipt.token)
+            } else {
+                receipt.token.clone()
+            };
+            for (suffix, method) in [
+                ("models", http::Method::GET),
+                ("messages", http::Method::POST),
+            ] {
+                let mut request = client
+                    .request(method.clone(), format!("{root}/{suffix}"))
+                    .header(auth_header, &credential)
+                    .header("sec-fetch-site", "none")
+                    .header("sec-fetch-mode", "no-cors")
+                    .header("sec-fetch-dest", "empty");
+                if let Some(origin) = origin {
+                    request = request.header("origin", origin);
+                }
+                if method == http::Method::POST {
+                    request = request.json(&probe);
+                }
+                let response = request.send().await?;
+                assert_eq!(response.status(), StatusCode::OK);
+                assert!(!response
+                    .headers()
+                    .contains_key("access-control-allow-origin"));
+                if method == http::Method::POST {
+                    let (headers, sent) =
+                        tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                            .await?
+                            .ok_or("missing fixture request")?;
+                    assert_eq!(sent["max_tokens"], 16);
+                    assert_eq!(sent["model"], "synthetic-chat");
+                    assert!(!headers.contains_key("authorization"));
+                    assert!(!headers.contains_key("x-api-key"));
+                }
+            }
+        }
+    }
+    for token in [None, Some("synthetic-wrong-key")] {
+        for (suffix, method) in [
+            ("models", http::Method::GET),
+            ("messages", http::Method::POST),
+        ] {
+            let mut request = client
+                .request(method.clone(), format!("{root}/{suffix}"))
+                .header("origin", "null")
+                .header("sec-fetch-site", "none");
+            if method == http::Method::POST {
+                request = request.json(&probe);
+            }
+            if let Some(token) = token {
+                request = request.bearer_auth(token);
+            }
+            let response = request.send().await?;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(
+                response.json::<Value>().await?["error"]["code"],
+                "agent_connection_unavailable"
+            );
+            assert!(rx.try_recv().is_err());
+        }
+    }
+    let response = client
+        .post(format!("{root}/messages"))
+        .bearer_auth(&receipt.token)
+        .header("origin", "https://fixture.invalid")
+        .header("sec-fetch-site", "cross-site")
+        .json(&probe)
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(rx.try_recv().is_err());
+    rejected.store(true, std::sync::atomic::Ordering::SeqCst);
+    let response = client
+        .post(format!("{root}/messages"))
+        .bearer_auth(&receipt.token)
+        .header("origin", "null")
+        .header("sec-fetch-site", "none")
+        .json(&probe)
+        .send()
+        .await?;
+    // The shared router sanitizes upstream rejection into its existing 502 response.
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        response.json::<Value>().await?["error"]["code"],
+        "routing_candidates_unavailable"
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await?
+            .is_some()
+    );
+    runtime.connections.revoke("claude-desktop");
+    let response = client
+        .post(format!("{root}/messages"))
+        .bearer_auth(&receipt.token)
+        .header("origin", "null")
+        .header("sec-fetch-site", "none")
+        .json(&probe)
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(rx.try_recv().is_err());
+    server.stop().await?;
+    task.abort();
+    Ok(())
+}

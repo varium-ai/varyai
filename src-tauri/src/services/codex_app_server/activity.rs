@@ -60,8 +60,15 @@ fn sessions(root: &Path, since_us: u64, now_us: u128) -> Result<bool, ()> {
     };
     for entry in entries {
         let entry = entry.map_err(|_| ())?;
-        let meta = entry.metadata().map_err(|_| ())?;
-        if entry.file_type().map_err(|_| ())?.is_symlink() {
+        // Windows caches directory-entry timestamps while Codex keeps its
+        // rollout open. Query the file itself so an active turn cannot look
+        // abandoned after the directory's cached timestamp ages out.
+        let meta = match fs::symlink_metadata(entry.path()) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err(()),
+        };
+        if meta.file_type().is_symlink() {
             return Err(());
         }
         if meta.is_dir() {

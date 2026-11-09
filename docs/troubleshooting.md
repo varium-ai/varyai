@@ -453,6 +453,19 @@ establish whether the local credential or the upstream account was rejected.
 Expand **Details** and inspect the corresponding request's sanitized status
 before replacing an upstream key.
 
+Claude Desktop 4.23118 can send Electron Fetch Metadata headers and an absent,
+`null`, or `app://localhost` origin during its connection check. Earlier VaryAI
+builds rejected these native requests with HTTP 403
+`routing_local_clients_only`, which Desktop displayed as a credential failure
+before VaryAI checked the connection token. The Desktop model-list and Messages
+endpoints now accept this metadata from a verified loopback peer, retaining the
+connection-token check and rejecting web origins, duplicate origins, and
+forwarding headers. This behavior applies to both macOS and Windows. Load the
+updated VaryAI backend and use **Check again** in Desktop. A genuine upstream
+rejection still follows the shared router's existing error handling, including
+HTTP 502 `routing_upstream_rejected`; this compatibility fix does not replace
+failed probes with success.
+
 Catalog synchronization repairs a missing or rejected readable key only in the
 journaled Desktop gateway profile, while retaining the active connection token.
 A changed gateway address, provider, authentication scheme, model list or applied
@@ -497,9 +510,10 @@ Local proxy configuration can refer to `http://127.0.0.1:15722` or its `/v1` end
 
 ### The Codex connection switch stays on and its model picker is disabled
 
-When Tools reports **Connection recovery record is missing**, Codex still has a
-Vary provider section, but Vary no longer has the receipt needed to restore the
-earlier configuration. Older builds treated that recovery warning as an enabled
+When Tools reports **Connection recovery record is missing**, Codex still selects
+Vary routing fields, but Vary no longer has the receipt needed to restore the
+earlier configuration. A retained inactive provider section alone does not
+trigger this warning. Older builds treated that recovery warning as an enabled
 connection. Disconnect revoked the runtime and cleared the saved enablement, but
 the next status refresh turned the switch on again because the provider section
 remained. The same warning also disabled the starting-model picker.
@@ -549,7 +563,7 @@ The watcher starts with the application's current configuration as its baseline.
 
 Windows discovery supports the Store package, its cached Codex executable and recognized classic installations. It verifies process ownership, the desktop parent, process creation time and the process's own `CODEX_HOME` or Windows profile. After the idle check, Windows terminates the old server and its verified descendants so inherited output-pipe handles cannot prevent reconnection. Process IDs and creation times are rechecked before termination; other users, other Codex homes and replacement processes are preserved. If no app-server returns while the verified Windows Store Codex application still runs, VaryAI can close and reopen that application once, matching the reference recovery path. Unsent drafts can be lost in this fallback. macOS does not reopen the entire application automatically; a failed row offers retry and manual quit/reopen guidance.
 
-With supported ChatGPT authentication, the connection keeps the native OpenAI provider; API-only or custom-provider connections use the VaryAI provider. Existing conversation provider records are synchronized in the background, separately from the model menu. Busy conversations are retried without changing the connection status or disabling model selection. If Codex itself reports a provider mismatch, close that conversation and let the background retry finish before reopening it.
+With supported ChatGPT authentication, the connection keeps the native OpenAI provider; recognized OpenAI mirror providers can join this mode too. API-only or other custom-provider connections use the VaryAI provider. Existing conversation provider records are synchronized in the background, separately from the model menu and saved model availability. Busy conversations are retried without changing the connection status or disabling model selection. Native-mode transitions track the conversations brought from the previous provider so disconnect restores only those conversations. When a custom-provider takeover also brings OpenAI conversations along, their recorded IDs allow them to return once OpenAI is selected again. Disconnect retains the VaryAI provider definition for historical conversations; an inactive definition alone does not mean VaryAI is connected or recovery is required. If Codex itself still reports a provider mismatch after background synchronization and idle reload, close that conversation and let the retry finish before reopening it.
 
 Tools retains the requested Codex connection and selected shared model for startup recovery. Configuration receipts track ownership separately from that preference. Automatic startup recovery completes interrupted projection or conversation recovery before restoring the saved connection. A pending recovery receipt remains available until quiet conversation files and their SQLite provider rows agree. Turning a connection off restores its owned configuration fields without deleting conversation history.
 
@@ -588,13 +602,18 @@ bytes and pagination offsets. Older builds tried to rewrite the rollout too;
 changing a short provider ID to a longer one could therefore stay pending forever,
 while the reverse switch succeeded. The standalone provider ID is now `varyai`.
 
-Close the affected conversation to release Codex's writer lock, apply the Codex
-connection with an updated build, and allow the background retry to complete
-before reopening it. Recent writes also defer migration for one minute. Inbound
-migration also requires a saved model that is executable in the current menu.
-An incompatible model remains with its original provider; a provider-column
-change alone cannot translate that model. Do not delete the conversation,
-change pagination offsets, or remove recovery records.
+Updated builds follow Magpie's provider transition independently of model
+availability. Saved model IDs, conversation content, and pagination offsets
+are preserved; an unavailable saved model can still require a model selection
+after provider recovery. Identical displayed provider names do not establish
+identical internal provider IDs. OpenAI conversations brought into a custom
+provider are tracked by ID so they can return when OpenAI becomes active.
+Recent writes defer migration for one minute, and writer locks defer it until
+the conversation is released. Route changes reload Codex's desktop background
+service after its tasks finish; replacement has a separate 30-second wait after
+the old service exits. If a conversation remains locked, close it and allow the
+background retry to complete before reopening it. Do not delete the
+conversation, change pagination offsets, or remove recovery records.
 
 ### Codex reports routing_model_unavailable in a conversation imported from Magpie
 

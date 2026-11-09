@@ -12,6 +12,8 @@ Vary AI routes configured AI traffic through a local gateway. This document dist
 | Remote page analytics     | The renderer includes no Google Analytics loader or page-tracking bootstrap.                                                 | See [`src/index.html`](../src/index.html) and the content security policy in [`tauri.conf.json`](../src-tauri/tauri.conf.json).                                                                                                  |
 | Application update checks | The application checks the configured updater feed shortly after startup.                                                    | Manual checks and user-triggered installation are available. Dismissing an update notice does not disable future checks. See [`UpdateContext.tsx`](../src/contexts/UpdateContext.tsx) and [`updater.ts`](../src/lib/updater.ts). |
 
+Settings → About shows Vary AI's own version, update check and official website. It no longer lists client application versions, diagnoses installation conflicts, or offers client installation, upgrade or manual installation commands. Opening or revisiting About does not launch client version probes or request their latest versions. This applies to macOS and Windows alike; it does not uninstall clients or remove the separate Tools-page lifecycle controls.
+
 Local audit storage and redaction do not prevent a configured provider from receiving the content that remains in a forwarded request. Review detection rules, handling methods and client coverage for your workflow. The gateway is a local application service, not an authenticated network service for other machines.
 
 ## Storage and optional synchronization

@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f4efe4" />
+    <title>Panda on a Bike</title>
+    <style>
+      :root {
+        --ink: #171918;
+        --paper: #f4efe4;
+        --paper-deep: #e9dfcf;
+        --leaf: #657b61;
+        --leaf-dark: #334b3b;
+        --terracotta: #bd674c;
+        --sun: #edc66b;
+        --sky: #cfe1de;
+        --road: #d8c6ad;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        min-height: 100%;
+        margin: 0;
+      }
+
+      body {
+        display: grid;
+        min-height: 100vh;
+        place-items: center;
+        overflow: hidden;
+        background: var(--paper);
+        color: var(--ink);
+        font-family: Georgia, 'Times New Roman', serif;
+      }
+
+      .stage {
+        position: relative;
+        width: min(100vw, 1440px);
+        aspect-ratio: 16 / 9;
+        overflow: hidden;
+        isolation: isolate;
+        background: var(--paper);
+      }
+
+      .stage::before,
+      .stage::after {
+        position: absolute;
+        z-index: 10;
+        pointer-events: none;
+        content: '';
+      }
+
+      .stage::before {
+        inset: 0;
+        opacity: 0.17;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.24'/%3E%3C/svg%3E");
+        mix-blend-mode: multiply;
+      }
+
+      .stage::after {
+        inset: 3.8%;
+        border: 1px solid color-mix(in srgb, var(--ink) 16%, transparent);
+        border-radius: 2px;
+      }
+
+      svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      .sky-glow {
+        fill: var(--sky);
+        opacity: 0.72;
+      }
+
+      .sun {
+        transform-box: fill-box;
+        transform-origin: center;
+        animation: sun-pulse 5s ease-in-out infinite;
+      }
+
+      .sun-core {
+        fill: var(--sun);
+        stroke: var(--ink);
+        stroke-width: 5;
+      }
+
+      .sun-ray {
+        fill: none;
+        stroke: var(--terracotta);
+        stroke-linecap: round;
+        stroke-width: 5;
+      }
+
+      .cloud {
+        opacity: 0.8;
+      }
+
+      .cloud-shape {
+        fill: #faf7ef;
+        stroke: var(--ink);
+        stroke-linejoin: round;
+        stroke-width: 4;
+      }
+
+      .back-hills {
+        fill: #9eb5a0;
+        stroke: var(--ink);
+        stroke-linejoin: round;
+        stroke-width: 5;
+      }
+
+      .back-hills-shade {
+        fill: #aec2aa;
+      }
+
+      .front-hills {
+        fill: var(--leaf);
+        stroke: var(--ink);
+        stroke-linejoin: round;
+        stroke-width: 5;
+      }
+
+      .hill-path {
+        animation: hill-sway 9s ease-in-out infinite;
+        transform-box: fill-box;
+        transform-origin: center bottom;
+      }
+
+      .tree-trunk {
+        fill: #6a523e;
+        stroke: var(--ink);
+        stroke-linejoin: round;
+        stroke-width: 4;
+      }
+
+      .tree-crown {
+        fill: var(--leaf-dark);
+        stroke: var(--ink);
+        stroke-linejoin: round;
+        stroke-width: 4;
+      }
+
+      .tree-leaf {
+        fill: #7f9a75;
+        stroke: var(--ink);
+        stroke-linejoin: round;
+        stroke-width: 3;
+      }
+
+      .ground {
+        fill: var(--road);
+        stroke: var(--ink);
+        stroke-width: 5;
+      }
+
+      .road-markers {
+        animation: road-slide 2.4s linear infinite;
+      }
+
+      .road-marker {
+        fill: var(--paper);
+        opacity: 0.88;
+      }
+
+      .bike-frame {
+        fill: none;
+        stroke: var(--terracotta);
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 7;
+      }
+
+      .bike-frame-dark {
+        fill: none;
+        stroke: var(--ink);
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 5;
+      }
+
+      .wheel {
+        fill: none;
+        stroke: var(--ink);
+        stroke-width: 6;
+      }
+
+      .wheel-inner {
+        fill: none;
+        stroke: var(--terracotta);
+        stroke-dasharray: 2 13;
+        stroke-linecap: round;
+        stroke-width: 3;
+      }
+
+      .wheel-spin {
+        animation: wheel-spin 1.1s linear infinite;
+        transform-box: fill-box;
+        transform-origin: center;
+      }
+
+      .panda-fur {
+        fill: #f8f5ec;
+        stroke: var(--ink);
+        stroke-linejoin: round;
+        stroke-width: 5;
+      }
+
+      .panda-black {
+        fill: var(--ink);
+        stroke: var(--ink);
+        stroke-linejoin: round;
+        stroke-width: 4;
+      }
+
+      .panda-cheek {
+        fill: #eeb4a0;
+        opacity: 0.8;
+      }
+
+      .panda-eye {
+        fill: var(--paper);
+        stroke: var(--ink);
+        stroke-width: 3;
+      }
+
+      .panda-eye-dot {
+        fill: var(--ink);
+      }
+
+      .panda-mouth {
+        fill: none;
+        stroke: var(--ink);
+        stroke-linecap: round;
+        stroke-width: 3;
+      }
+
+      .scarf {
+        fill: var(--terracotta);
+        stroke: var(--ink);
+        stroke-linejoin: round;
+        stroke-width: 4;
+      }
+
+      .ear {
+        animation: ear-bounce 1.5s ease-in-out infinite;
+        transform-box: fill-box;
+        transform-origin: center bottom;
+      }
+
+      .panda-body {
+        animation: body-bob 0.86s ease-in-out infinite;
+        transform-box: fill-box;
+        transform-origin: center bottom;
+      }
+
+      .leg {
+        animation: pedal 0.86s ease-in-out infinite;
+        transform-box: fill-box;
+        transform-origin: 50% 16%;
+      }
+
+      .leg.back {
+        animation-delay: -0.43s;
+      }
+
+      .arm {
+        animation: handlebar-rock 0.86s ease-in-out infinite;
+        transform-box: fill-box;
+        transform-origin: 84% 18%;
+      }
+
+      .tail {
+        animation: tail-wag 1.7s ease-in-out infinite;
+        transform-box: fill-box;
+        transform-origin: 90% 50%;
+      }
+
+      .floating-leaf {
+        animation: float-leaf 4.2s ease-in-out infinite;
+        transform-box: fill-box;
+        transform-origin: center;
+      }
+
+      .floating-leaf.two {
+        animation-delay: -2.1s;
+      }
+
+      .caption {
+        fill: var(--ink);
+        font-family: Arial, sans-serif;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.24em;
+        text-transform: uppercase;
+      }
+
+      @keyframes ride-across {
+        0% {
+          transform: translateX(-33%);
+        }
+        10% {
+          transform: translateX(-25%);
+        }
+        46%,
+        58% {
+          transform: translateX(0);
+        }
+        90% {
+          transform: translateX(25%);
+        }
+        100% {
+          transform: translateX(33%);
+        }
+      }
+
+      @keyframes wheel-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @keyframes pedal {
+        0%,
+        100% {
+          transform: rotate(-18deg);
+        }
+        50% {
+          transform: rotate(26deg);
+        }
+      }
+
+      @keyframes body-bob {
+        0%,
+        100% {
+          transform: translateY(0);
+        }
+        50% {
+          transform: translateY(-5px);
+        }
+      }
+
+      @keyframes handlebar-rock {
+        0%,
+        100% {
+          transform: rotate(-2deg);
+        }
+        50% {
+          transform: rotate(4deg);
+        }
+      }
+
+      @keyframes tail-wag {
+        0%,
+        100% {
+          transform: rotate(0deg);
+        }
+        50% {
+          transform: rotate(13deg);
+        }
+      }
+
+      @keyframes ear-bounce {
+        0%,
+        100% {
+          transform: rotate(0deg);
+        }
+        50% {
+          transform: rotate(-7deg);
+        }
+      }
+
+      @keyframes road-slide {
+        from {
+          transform: translateX(0);
+        }
+        to {
+          transform: translateX(-220px);
+        }
+      }
+
+      @keyframes drift {
+        from {
+          transform: translateX(-35px);
+        }
+        to {
+          transform: translateX(90px);
+        }
+      }
+
+      @keyframes drift-reverse {
+        from {
+          transform: translateX(30px);
+        }
+        to {
+          transform: translateX(-80px);
+        }
+      }
+
+      @keyframes hill-sway {
+        0%,
+        100% {
+          transform: translateX(0);
+        }
+        50% {
+          transform: translateX(-10px);
+        }
+      }
+
+      @keyframes sun-pulse {
+        0%,
+        100% {
+          transform: scale(1);
+        }
+        50% {
+          transform: scale(1.06);
+        }
+      }
+
+      @keyframes float-leaf {
+        0%,
+        100% {
+          transform: translate(0, 0) rotate(-8deg);
+          opacity: 0.6;
+        }
+        50% {
+          transform: translate(18px, -22px) rotate(24deg);
+          opacity: 1;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.001ms !important;
+          animation-iteration-count: 1 !important;
+          scroll-behavior: auto !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="stage" aria-label="A looping 2D animation of a panda riding a bicycle through the countryside">
+      <svg viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+        <title id="title">Panda riding a bicycle</title>
+        <desc id="desc">A black and white panda pedals a coral bicycle across a hand-drawn landscape.</desc>
+
+        <rect width="1200" height="675" fill="var(--paper)" />
+        <path class="sky-glow" d="M0 0h1200v410c-165-50-310-43-462 8-161 53-296 43-438-2C185 369 88 374 0 402Z" />
+
+        <g transform="translate(928 134)">
+          <g class="sun">
+            <circle class="sun-core" r="48" />
+            <path class="sun-ray" d="M0-76v-22M0 76v22M-76 0h-22M76 0h22M-54-54-70-70M54 54l16 16M54-54l16-16M-54 54-70 70" />
+          </g>
+        </g>
+
+        <g class="cloud one" transform="translate(80 120)">
+          <path class="cloud-shape" d="M0 42c0-22 18-40 40-40 12 0 23 5 30 14C78 7 92 0 108 0c24 0 44 18 47 41h8c17 0 31 14 31 31s-14 31-31 31H34C15 103 0 88 0 70c0-10 4-20 12-28C5 57 0 50 0 42Z" />
+        </g>
+
+        <g class="cloud two" transform="translate(450 190) scale(.72)">
+          <path class="cloud-shape" d="M0 42c0-22 18-40 40-40 12 0 23 5 30 14C78 7 92 0 108 0c24 0 44 18 47 41h8c17 0 31 14 31 31s-14 31-31 31H34C15 103 0 88 0 70c0-10 4-20 12-28C5 57 0 50 0 42Z" />
+        </g>
+
+        <g class="hill-path">
+          <path class="back-hills" d="M0 400c145-85 215-105 331-28 112 74 190 51 298-29 112-83 208-96 342-6 111 74 167 45 229 6v215H0Z" />
+          <path class="back-hills-shade" d="M0 418c165-65 237-56 332 10 106 74 199 54 297-20 102-78 190-82 306-8 103 66 182 61 265 14v144H0Z" opacity=".52" />
+        </g>
+
+        <g transform="translate(145 323)">
+          <path class="tree-trunk" d="M42 149 55 84 44 25h36L69 84l15 65Z" />
+          <path class="tree-crown" d="M8 61c-19-19-13-49 16-55-6-30 23-50 51-34 18-28 58-20 66 13 29-4 48 29 30 52 26 14 22 51-8 59-18 34-61 29-78 2-27 16-61-1-64-37-10 3-18 2-13 0Z" />
+          <path class="tree-leaf" d="M41 29c9-18 34-20 47-5M87 73c15-14 35-12 48 1M61 89c12-13 30-16 42-4" fill="none" />
+        </g>
+
+        <g transform="translate(1014 365) scale(.82)">
+          <path class="tree-trunk" d="M42 149 55 84 44 25h36L69 84l15 65Z" />
+          <path class="tree-crown" d="M8 61c-19-19-13-49 16-55-6-30 23-50 51-34 18-28 58-20 66 13 29-4 48 29 30 52 26 14 22 51-8 59-18 34-61 29-78 2-27 16-61-1-64-37-10 3-18 2-13 0Z" />
+        </g>
+
+        <path class="front-hills" d="M0 489c121-43 245-53 364-16 131 41 211 42 341-7 127-52 237-46 346 11 58 30 99 30 149 18v180H0Z" />
+        <path class="ground" d="M0 566c197-33 370-36 557-17 166 17 350 19 643-5v131H0Z" />
+
+        <g class="road-markers" opacity=".8">
+          <path class="road-marker" d="M0 632h120v7H0zM220 632h128v7H220zM454 632h120v7H454zM680 632h128v7H680zM914 632h130v7H914zM1140 632h120v7H1140z" />
+          <path class="road-marker" d="M95 648h76v5H95zM370 648h92v5H370zM594 648h74v5H594zM837 648h95v5H837zM1075 648h88v5H1075z" opacity=".55" />
+        </g>
+
+        <g transform="translate(270 272)">
+          <g class="floating-leaf">
+            <path class="tree-leaf" d="M0 13c10-24 31-30 52-28-4 24-19 42-52 28Z" />
+          </g>
+        </g>
+        <g transform="translate(842 330) scale(.7)">
+          <g class="floating-leaf two">
+            <path class="tree-leaf" d="M0 13c10-24 31-30 52-28-4 24-19 42-52 28Z" />
+          </g>
+        </g>
+
+        <g class="ride-path" transform="translate(-70 0)">
+          <animateTransform attributeName="transform" type="translate" values="-70 0;-40 0;0 0;40 0;70 0;-70 0" dur="8.5s" repeatCount="indefinite" />
+          <g transform="translate(600 0)">
+            <g transform="translate(-186 0)">
+            <g transform="translate(0 545)">
+              <g class="wheel-spin">
+              <circle class="wheel" r="78" />
+              <circle class="wheel-inner" r="69" />
+              <path class="bike-frame-dark" d="M0-78V78M-78 0H78M-55-55 55 55M55-55-55 55" opacity=".35" />
+              </g>
+            </g>
+            <g transform="translate(292 545)">
+              <g class="wheel-spin">
+              <circle class="wheel" r="78" />
+              <circle class="wheel-inner" r="69" />
+              <path class="bike-frame-dark" d="M0-78V78M-78 0H78M-55-55 55 55M55-55-55 55" opacity=".35" />
+              </g>
+            </g>
+
+            <path class="bike-frame" d="M0 545h113l57-127H74L0 545Zm113 0 57-127 122 127M74 418l39 127M170 418h50l20-41M218 377h47" />
+            <path class="bike-frame-dark" d="M67 405h52M113 545h-22M279 545h13M262 376h-26" />
+            <path class="bike-frame" d="M113 545a26 26 0 1 0 0-1" />
+            <circle cx="113" cy="545" r="8" fill="var(--ink)" />
+            <path class="bike-frame-dark" d="M113 545l-27 20M113 545l30-20" />
+
+            <g class="panda-body">
+              <path class="panda-fur" d="M87 391c-4-64 30-105 83-105 47 0 75 41 68 100l-26 53c-36 23-84 18-112-8Z" />
+              <path class="panda-black" d="M105 372c-12 34-6 67 14 78l33-50-3-45Z" opacity=".98" />
+              <path class="panda-black" d="M197 368c12 34 7 64-10 80l-31-48 2-45Z" opacity=".98" />
+              <path class="tail" d="M220 409c33-10 48 3 43 20-5 14-27 16-45 4" fill="none" stroke="var(--ink)" stroke-linecap="round" stroke-width="16" />
+
+              <g class="leg back">
+                <path class="panda-black" d="M155 427c-8 34-6 66 18 87l19-10-10-86Z" />
+                <path class="panda-fur" d="m172 510 20-12 25 22c6 8 0 16-10 16h-33c-10-4-12-15-2-26Z" />
+              </g>
+              <g class="leg front">
+                <path class="panda-black" d="M184 426c-1 37 11 60 37 76l17-15-27-73Z" />
+                <path class="panda-fur" d="m220 493 19-15 29 18c8 7 3 17-7 19l-32-1c-11-2-14-12-9-21Z" />
+              </g>
+
+              <path class="scarf" d="M123 319c36 18 72 19 102 1l-3 33c-30 14-65 14-97-3Z" />
+              <path class="scarf" d="m198 345 48 12-18 24-30-19Z" />
+            </g>
+
+            <g class="arm">
+              <path class="panda-black" d="M202 326c26 15 39 38 53 69l-20 10c-14-28-29-45-49-58Z" />
+              <path class="panda-fur" d="m231 397 17-11 28 3c10 1 12 13 3 17l-28 5c-9 1-15-5-20-14Z" />
+            </g>
+
+            <g transform="translate(163 282)">
+              <g transform="translate(-31 -43)">
+                <g class="ear">
+                  <circle class="panda-black" r="29" />
+                </g>
+              </g>
+              <g transform="translate(55 -41)">
+                <g class="ear">
+                  <circle class="panda-black" r="29" />
+                </g>
+              </g>
+              <path class="panda-fur" d="M-39-21c0-48 34-76 82-72 42 3 68 33 62 77-5 42-37 72-83 69-43-3-62-33-61-74Z" />
+              <path class="panda-black" d="M-16-34c-16 9-18 32-5 42 12 9 28 3 36-12 7-14 0-38-31-30ZM50-35c16 8 20 29 8 42-10 11-28 6-37-9-9-15-1-39 29-33Z" />
+              <ellipse class="panda-eye" cx="-1" cy="-13" rx="9" ry="13" transform="rotate(27 -1 -13)" />
+              <ellipse class="panda-eye" cx="39" cy="-13" rx="9" ry="13" transform="rotate(-27 39 -13)" />
+              <circle class="panda-eye-dot" cx="1" cy="-11" r="4" />
+              <circle class="panda-eye-dot" cx="37" cy="-11" r="4" />
+              <circle class="panda-cheek" cx="-18" cy="18" r="10" />
+              <circle class="panda-cheek" cx="52" cy="18" r="10" />
+              <path class="panda-black" d="M13 8c5-8 15-8 20 0 0 12-20 12-20 0Z" />
+              <path class="panda-mouth" d="M23 20c-4 9-13 11-19 5M23 20c4 9 13 11 19 5" />
+            </g>
+
+            <path class="scarf" d="M135 311c-15 8-26 21-27 39l22 5 19-34Z" />
+            </g>
+          </g>
+        </g>
+
+        <text class="caption" x="72" y="88">A LITTLE RIDE</text>
+        <text class="caption" x="1127" y="610" text-anchor="end">KEEP ROLLING</text>
+      </svg>
+    </main>
+  </body>
+</html>

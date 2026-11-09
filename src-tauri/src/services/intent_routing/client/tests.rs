@@ -14,6 +14,36 @@ pub(super) fn group() -> RoutingGroup {
     super::super::tests::fixture()
 }
 
+pub(crate) fn assert_restored_config(manager: &Manager, original: &str) {
+    let text = fs::read_to_string(&manager.config).expect("restored configuration");
+    let mut actual: toml::Value = text.parse().expect("restored TOML");
+    let expected: toml::Value = original.parse().expect("original TOML");
+    if expected
+        .get("model_providers")
+        .and_then(|providers| providers.get(PROVIDER))
+        .is_none()
+    {
+        let providers = actual
+            .get_mut("model_providers")
+            .and_then(toml::Value::as_table_mut)
+            .expect("retained historical provider table");
+        let retained = providers
+            .remove(PROVIDER)
+            .expect("retained VaryAI provider");
+        assert_eq!(retained["wire_api"].as_str(), Some("responses"));
+        if providers.is_empty() && expected.get("model_providers").is_none() {
+            actual
+                .as_table_mut()
+                .expect("root")
+                .remove("model_providers");
+        }
+    }
+    assert_eq!(actual, expected);
+    for comment in original.lines().filter(|line| line.starts_with('#')) {
+        assert!(text.contains(comment), "original comment was lost");
+    }
+}
+
 #[test]
 fn provider_refresh_preserves_capabilities_and_header_table_shapes(
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -123,10 +153,7 @@ fn projection_keeps_openai_login_visible_without_using_it_for_forwarding() {
             assert_eq!(fs::read(&auth_path).expect("unchanged auth"), auth_bytes);
         }
         manager.restore().expect("restore");
-        assert_eq!(
-            fs::read_to_string(&manager.config).expect("restored"),
-            original
-        );
+        assert_restored_config(&manager, original);
         assert_eq!(fs::read(auth_path).expect("unchanged auth"), auth_bytes);
     }
 }
@@ -330,10 +357,7 @@ fn dangling_projection_without_provider_requires_explicit_reconnect() {
                 .starts_with("vary-routing-orphan-backup-")
         }));
     manager.restore().expect("restore");
-    assert_eq!(
-        fs::read_to_string(&manager.config).expect("restored"),
-        before
-    );
+    assert_restored_config(&manager, before);
 }
 
 #[test]
@@ -344,7 +368,8 @@ fn orphaned_inactive_projection_has_explicit_private_backup_cleanup() {
     fs::write(&auth, "synthetic-login").expect("auth");
     let status = manager.status().expect("status");
     assert!(!status.enabled);
-    assert!(status.recovery_pending && status.orphaned_config && status.orphan_cleanup_available);
+    assert!(!status.recovery_pending && !status.orphaned_config);
+    assert!(status.orphan_cleanup_available);
     assert!(!serde_json::to_string(&status)
         .expect("status json")
         .contains("synthetic-orphan-token"));
@@ -398,7 +423,7 @@ fn orphaned_inactive_projection_has_explicit_private_backup_cleanup() {
         )
         .expect("reconnect");
     manager.restore().expect("restore");
-    assert_eq!(fs::read_to_string(&manager.config).expect("config"), after);
+    assert_restored_config(&manager, &after);
 }
 
 fn foreign_native_takeover(
@@ -606,7 +631,13 @@ fn foreign_native_projection_requires_complete_unambiguous_evidence(
         }
         assert!(!foreign_native_projection(&doc), "{case}");
         fs::write(&manager.config, toml::to_string(&doc)?)?;
-        assert!(manager.status()?.orphaned_config, "{case}");
+        let status = manager.status()?;
+        let inactive_definition = matches!(
+            case,
+            "retained_origin" | "native_origin" | "native_path" | "native_query" | "native_missing"
+        );
+        assert_eq!(status.orphaned_config, !inactive_definition, "{case}");
+        assert!(!status.enabled && !status.configuration_owned, "{case}");
     }
     Ok(())
 }
@@ -853,10 +884,12 @@ fn orphan_cleanup_never_guesses_active_or_custom_ownership() {
         let before = doc.to_string();
         fs::write(&manager.config, &before).expect("config");
         let status = manager.status().expect("status");
-        assert!(
-            status.orphaned_config && status.recovery_pending,
-            "{change}"
+        let references_route = matches!(
+            change,
+            "active" | "profile" | "nested-reference" | "alias" | "catalog"
         );
+        assert_eq!(status.orphaned_config, references_route, "{change}");
+        assert_eq!(status.recovery_pending, references_route, "{change}");
         assert!(!status.orphan_cleanup_available, "{change}");
         assert!(manager.cleanup_orphan(true).is_err(), "{change}");
         assert_eq!(
@@ -1156,7 +1189,7 @@ fn restores_original_config_without_touching_auth_or_unrelated_edits() {
         .expect("toml");
     assert_eq!(restored["model"].as_str(), Some("original"));
     assert_eq!(restored["new_setting"].as_bool(), Some(true));
-    assert!(restored["model_providers"].get(PROVIDER).is_none());
+    assert!(restored["model_providers"].get(PROVIDER).is_some());
     assert_eq!(fs::read_to_string(auth).expect("auth"), "synthetic-auth");
     assert!(!manager.receipt.exists());
 }
@@ -1182,7 +1215,10 @@ fn recovery_is_durable_and_preserves_newer_owned_field_edits() {
     restarted.restore().expect("recover");
     let text = fs::read_to_string(&manager.config).expect("restored");
     assert!(text.contains("user-new-model"));
-    assert!(!text.contains("varyai"));
+    let restored: toml::Value = text.parse().expect("restored TOML");
+    assert!(restored.get("model_provider").is_none());
+    assert!(restored.get("model_catalog_json").is_none());
+    assert!(restored["model_providers"].get(PROVIDER).is_some());
 }
 
 #[test]
@@ -1199,10 +1235,7 @@ fn updating_catalog_keeps_original_backup_and_detects_external_takeover() {
         .write_projection(&[second], "token-two", "http://127.0.0.1:1234/intent/v1")
         .expect("second");
     manager.restore().expect("restore");
-    assert_eq!(
-        fs::read_to_string(&manager.config).expect("config"),
-        original
-    );
+    assert_restored_config(&manager, original);
     manager
         .write_projection(&[group()], "token", "http://127.0.0.1:1234/intent/v1")
         .expect("first");
@@ -1308,7 +1341,13 @@ fn no_original_file_and_private_receipt_are_recoverable() {
         );
     }
     manager.restore().expect("recover");
-    assert!(!manager.config.exists());
+    assert_restored_config(&manager, "");
+    assert!(
+        !manager
+            .status()
+            .expect("disconnected status")
+            .orphaned_config
+    );
 }
 
 #[test]
@@ -1352,10 +1391,7 @@ async fn gateway_stop_recovers_menu_config_without_an_active_server() {
         .expect("project");
     assert!(service.set_takeover_for_app("codex", true).await.is_err());
     let _ = service.stop().await;
-    assert_eq!(
-        fs::read_to_string(&manager.config).expect("restored"),
-        "model='original'\n"
-    );
+    assert_restored_config(manager, "model='original'\n");
     assert!(!manager.receipt.exists());
 }
 
@@ -1476,10 +1512,7 @@ fn native_projection_refuses_any_unowned_url_including_identical_loopback() {
             receipt
         );
         manager.restore().expect("restore");
-        assert_eq!(
-            fs::read_to_string(&manager.config).expect("config"),
-            original
-        );
+        assert_restored_config(&manager, &original);
     }
 }
 
@@ -1537,10 +1570,7 @@ fn native_v2_install_refresh_and_restore_preserve_ownership_without_implicit_acq
         Some(NATIVE_TWO.into())
     );
     manager.restore().expect("restore");
-    assert_eq!(
-        fs::read_to_string(&manager.config).expect("restored"),
-        original
-    );
+    assert_restored_config(&manager, original);
     manager
         .write_projection(&[group()], "token", MENU_BASE)
         .expect("menu only");
