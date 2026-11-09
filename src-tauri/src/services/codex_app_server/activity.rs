@@ -60,9 +60,7 @@ fn sessions(root: &Path, since_us: u64, now_us: u128) -> Result<bool, ()> {
     };
     for entry in entries {
         let entry = entry.map_err(|_| ())?;
-        // Windows caches directory-entry timestamps while Codex keeps its
-        // rollout open. Query the file itself so an active turn cannot look
-        // abandoned after the directory's cached timestamp ages out.
+        // Inspect the path without following symlinks before opening rollouts.
         let meta = match fs::symlink_metadata(entry.path()) {
             Ok(meta) => meta,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -76,7 +74,17 @@ fn sessions(root: &Path, since_us: u64, now_us: u128) -> Result<bool, ()> {
                 return Ok(true);
             }
         } else if entry.path().extension().is_some_and(|ext| ext == "jsonl") {
-            let modified = meta
+            // Read the timestamp from the file handle rather than the directory
+            // entry. Windows may cache the latter while Codex keeps the rollout
+            // open, which can make a live turn look abandoned.
+            let mut file = match fs::File::open(entry.path()) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return Err(()),
+            };
+            let modified = file
+                .metadata()
+                .map_err(|_| ())?
                 .modified()
                 .map_err(|_| ())?
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -87,7 +95,7 @@ fn sessions(root: &Path, since_us: u64, now_us: u128) -> Result<bool, ()> {
             {
                 continue;
             }
-            if turn_open(&entry.path(), since_us)? {
+            if turn_open(&mut file, since_us)? {
                 return Ok(true);
             }
         }
@@ -111,8 +119,7 @@ struct Event<'a> {
     kind: Option<&'a str>,
 }
 
-fn turn_open(path: &Path, since_us: u64) -> Result<bool, ()> {
-    let mut file = fs::File::open(path).map_err(|_| ())?;
+fn turn_open(file: &mut fs::File, since_us: u64) -> Result<bool, ()> {
     let len = file.metadata().map_err(|_| ())?.len();
     let skip = len.saturating_sub(512 * 1024);
     file.seek(SeekFrom::Start(skip)).map_err(|_| ())?;
