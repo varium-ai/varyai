@@ -65,10 +65,12 @@ Claude Desktop and WorkBuddy process inspection and confirmed restart support ma
 For Rust compatibility changes, run the backend checks with the exact CI toolchain as well as the previously supported local toolchain; passing on one version does not establish compatibility with another. DLP accounting uses the private `src-tauri/src/proxy/security/atomic_update.rs` compare-and-exchange helper to avoid both the deprecated `fetch_update` API and a replacement newer than the declared minimum Rust version. Its tests cover retry observations, refusal without mutation, budget bounds and saturated owners. API compatibility alone is not evidence that the entire dependency graph has been tested on the minimum version.
 
 Codex rollout activity reads the modification time and bounded event suffix from
-the same open file handle. Windows directory-entry metadata can retain an old
-timestamp while a writer keeps the rollout open. Keep the held-open writer
-regression test in the cross-platform backend suite so active turns continue to
-block restart without changing the expiry of abandoned rollouts.
+the same open file handle. Windows can retain an old modification time even on
+that handle while a writer keeps the rollout open, so freshness also considers
+timestamps recorded in the bounded suffix. Recent events keep active turns
+protected; completed turns and expired archives remain idle. Malformed recent
+suffixes block restart, while malformed expired archives remain expired. Keep
+the held-open writer and stale-metadata regressions in the cross-platform suite.
 
 Provider tests that read Hermes configuration must isolate `HERMES_HOME` and
 `LOCALAPPDATA` alongside the temporary home directory, and restore their previous

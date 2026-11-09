@@ -626,6 +626,59 @@ fn held_open_session_uses_its_current_write_time() -> Result<(), Box<dyn std::er
 }
 
 #[test]
+fn recent_rollout_events_override_a_stale_file_timestamp() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    fs::create_dir_all(dir.path().join("sessions"))?;
+    let rollout = dir.path().join("sessions/stale-metadata.jsonl");
+    let started = chrono::Utc::now();
+    let since = started.timestamp_micros() as u64;
+    let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 60);
+    for (kind, expected) in [("task_started", true), ("task_complete", false)] {
+        let mut events = format!(
+            "{}\n",
+            json!({"timestamp":started.to_rfc3339(), "type":"event_msg", "payload":{"type":"task_started"}})
+        );
+        if kind == "task_complete" {
+            events.push_str(&format!(
+                "{}\n",
+                json!({"timestamp":started.to_rfc3339(), "type":"event_msg", "payload":{"type":kind}})
+            ));
+        }
+        fs::write(&rollout, events)?;
+        fs::File::options()
+            .write(true)
+            .open(&rollout)?
+            .set_times(fs::FileTimes::new().set_modified(stale))?;
+        assert_eq!(
+            activity::busy(dir.path(), since).map_err(|_| "activity")?,
+            expected,
+        );
+    }
+    // A partial write after a recent event must still block restart.
+    fs::write(
+        &rollout,
+        format!(
+            "{}\n{{",
+            json!({"timestamp":started.to_rfc3339(), "type":"event_msg", "payload":{"type":"task_started"}})
+        ),
+    )?;
+    fs::File::options()
+        .write(true)
+        .open(&rollout)?
+        .set_times(fs::FileTimes::new().set_modified(stale))?;
+    assert!(activity::busy(dir.path(), since).is_err());
+    // Expired malformed archives retain their existing non-blocking behavior.
+    fs::write(&rollout, "incomplete archive\n")?;
+    fs::File::options()
+        .write(true)
+        .open(&rollout)?
+        .set_times(fs::FileTimes::new().set_modified(stale))?;
+    assert!(!activity::busy(dir.path(), since).map_err(|_| "activity")?);
+    Ok(())
+}
+
+#[test]
 fn abandoned_database_turns_expire_by_database_and_wal_activity(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
