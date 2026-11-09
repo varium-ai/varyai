@@ -1430,17 +1430,22 @@ impl RequestForwarder {
         }
         let tool_context =
             super::providers::transform_codex_chat::build_codex_tool_context_from_request(&body);
-        let observation_client =
-            if !exact && crate::services::tool_risk::runtime::collection_enabled() {
+        let observation_client = if crate::services::tool_risk::runtime::collection_enabled() {
+            if exact {
+                extensions
+                    .get::<super::tool_observation::mount::ClientToolObservation>()
+                    .map(|context| context.0)
+            } else {
                 match app_type {
                     AppType::Claude => Some("claude"),
                     AppType::ClaudeDesktop => Some("claude-desktop"),
                     AppType::Codex => Some("codex"),
                     _ => None,
                 }
-            } else {
-                None
-            };
+            }
+        } else {
+            None
+        };
         let original_tool_schemas = observation_client
             .map(|client| super::tool_observation::mount::collect_tool_schemas(&body, client));
         let mut parsed = super::protocol_bridge::ir::parse::request(bridge.input, &body, endpoint)?;
@@ -2961,7 +2966,10 @@ impl RequestForwarder {
             ordered_headers.insert(name, value);
         }
 
-        let upstream_tool_schemas = if !exact
+        let upstream_tool_schemas = if (!exact
+            || extensions
+                .get::<super::tool_observation::mount::ClientToolObservation>()
+                .is_some())
             && (needs_transform || wire_ready)
             && matches!(
                 app_type,
@@ -2971,11 +2979,14 @@ impl RequestForwarder {
         {
             super::tool_observation::mount::collect_tool_schemas(
                 &filtered_body,
-                match app_type {
-                    AppType::ClaudeDesktop => "claude-desktop",
-                    AppType::Codex => "codex",
-                    _ => "claude",
-                },
+                extensions
+                    .get::<super::tool_observation::mount::ClientToolObservation>()
+                    .map(|context| context.0)
+                    .unwrap_or(match app_type {
+                        AppType::ClaudeDesktop => "claude-desktop",
+                        AppType::Codex => "codex",
+                        _ => "claude",
+                    }),
             )
         } else {
             Arc::new(Vec::new())

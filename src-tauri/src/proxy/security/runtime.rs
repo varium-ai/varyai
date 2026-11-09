@@ -30,6 +30,7 @@ pub struct SecurityRuntimeConfig {
     pub(crate) rule_versions: HashMap<String, (RiskLevel, u64)>,
     pub enabled: bool,
     pub custom_rules: Vec<CompiledCustomRule>,
+    pub(crate) audit_custom_rules: Vec<CompiledCustomRule>,
     pub builtin_action_overrides: HashMap<String, AuditAction>,
 }
 
@@ -42,6 +43,7 @@ impl Default for SecurityRuntimeConfig {
             rule_versions: HashMap::new(),
             enabled: true,
             custom_rules: Vec::new(),
+            audit_custom_rules: Vec::new(),
             builtin_action_overrides: HashMap::new(),
         }
     }
@@ -135,6 +137,14 @@ pub fn get_security_runtime() -> Arc<SecurityRuntimeConfig> {
         .ok()
         .flatten()
         .unwrap_or_else(|| Arc::new(SecurityRuntimeConfig::default()))
+}
+
+/// Audit storage must not fall back to an empty policy during failed publication.
+pub(crate) fn audit_security_runtime() -> Option<Arc<SecurityRuntimeConfig>> {
+    policy_gate()
+        .admit()
+        .ok()
+        .map(|admission| admission.runtime)
 }
 
 /// Set a synthetic runtime without reading persistent configuration.
@@ -246,10 +256,8 @@ fn load_runtime(
             .map(|r| (r.id.clone(), parse_risk(&r.risk_level))),
     );
     let mut compiled_rules = Vec::new();
+    let mut audit_custom_rules = Vec::new();
     for rule in custom_rules {
-        if !rule.enabled {
-            continue;
-        }
         let (regex, is_valid) = if rule.rule_type == "regex" {
             match regex::Regex::new(&rule.pattern) {
                 Ok(re) => (Some(re), true),
@@ -270,36 +278,39 @@ fn load_runtime(
             (None, true)
         };
 
-        if is_valid {
-            let risk_level = match rule.risk_level.to_ascii_uppercase().as_str() {
-                "CRITICAL" => RiskLevel::Critical,
-                "HIGH" => RiskLevel::High,
-                "LOW" => RiskLevel::Low,
-                _ => RiskLevel::Medium,
-            };
-            let action = match rule.action.to_ascii_lowercase().as_str() {
-                "audit" => AuditAction::Audit,
-                "redact" => AuditAction::Redact,
-                "redact_restore" => AuditAction::RedactRestore,
-                "allow" => AuditAction::Allow,
-                _ => AuditAction::Block,
-            };
-            compiled_rules.push(CompiledCustomRule {
-                id: rule.id,
-                name: rule.name,
-                rule_type: rule.rule_type,
-                pattern: rule.pattern,
-                regex,
-                risk_level,
-                action,
-                enabled: rule.enabled,
-            });
+        let risk_level = match rule.risk_level.to_ascii_uppercase().as_str() {
+            "CRITICAL" => RiskLevel::Critical,
+            "HIGH" => RiskLevel::High,
+            "LOW" => RiskLevel::Low,
+            _ => RiskLevel::Medium,
+        };
+        let action = match rule.action.to_ascii_lowercase().as_str() {
+            "audit" => AuditAction::Audit,
+            "redact" => AuditAction::Redact,
+            "redact_restore" => AuditAction::RedactRestore,
+            "allow" => AuditAction::Allow,
+            _ => AuditAction::Block,
+        };
+        let compiled = CompiledCustomRule {
+            id: rule.id,
+            name: rule.name,
+            rule_type: rule.rule_type,
+            pattern: rule.pattern,
+            regex,
+            risk_level,
+            action,
+            enabled: rule.enabled,
+        };
+        if is_valid && compiled.enabled {
+            compiled_rules.push(compiled.clone());
         }
+        audit_custom_rules.push(compiled);
     }
 
     let mut new_cfg = SecurityRuntimeConfig {
         enabled: settings.enabled,
         custom_rules: compiled_rules,
+        audit_custom_rules,
         builtin_action_overrides,
         ..Default::default()
     };
@@ -339,6 +350,53 @@ mod version_tests {
 mod redact_restore_tests {
     use super::super::{request_detection::detect_spans, request_plan::EffectiveAction};
     use super::*;
+
+    #[test]
+    fn audit_snapshot_retains_disabled_and_invalid_rules_without_enabling_detection(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = Database::memory()?;
+        for (id, kind, pattern, enabled) in [
+            ("disabled", "keyword", "SYNTHETIC_ORG_MARKER", false),
+            ("invalid", "regex", "[", true),
+        ] {
+            db.save_custom_security_rule(&crate::database::CustomSecurityRule {
+                id: id.into(),
+                name: "Synthetic audit rule".into(),
+                rule_type: kind.into(),
+                pattern: pattern.into(),
+                risk_level: "HIGH".into(),
+                action: "audit".into(),
+                enabled,
+                description: None,
+                updated_at: 0,
+            })?;
+        }
+        let gate = DlpPolicyGate::new();
+        reload_with_gate(&db, &gate)?;
+        let snapshot = gate.admit()?.runtime;
+        assert!(snapshot.custom_rules.is_empty());
+        assert_eq!(snapshot.audit_custom_rules.len(), 2);
+        assert_eq!(
+            crate::services::tool_risk::sanitize::summarize_command_with_policy(
+                "echo SYNTHETIC_ORG_MARKER",
+                &snapshot
+            ),
+            "<redacted>"
+        );
+        assert_eq!(
+            crate::services::tool_risk::sanitize::summarize_command_with_policy(
+                "echo public-fixture",
+                &snapshot
+            ),
+            "<redacted>"
+        );
+        let _update = gate.begin_update()?;
+        assert!(
+            gate.admit().is_err(),
+            "unavailable policy must not authorize summary storage"
+        );
+        Ok(())
+    }
 
     #[test]
     fn redact_restore_runtime_preserves_action_and_policy_generation(

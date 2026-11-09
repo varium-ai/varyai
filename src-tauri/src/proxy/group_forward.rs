@@ -373,6 +373,7 @@ mod tests {
     use axum::{
         body::Bytes,
         extract::{OriginalUri, State},
+        response::IntoResponse,
         routing::post,
         Json, Router,
     };
@@ -472,6 +473,97 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         (format!("http://{address}"), rx, task)
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn exact_group_bridge_observes_native_tool_calls_before_conversion() {
+        use super::super::tool_observation::{channel, mount::ClientToolObservation};
+        use crate::services::tool_risk::{response_parser::ResponseProcessor, runtime, worker};
+        let previous = (*runtime::get_tool_risk_runtime()).clone();
+        struct Restore(runtime::ToolRiskRuntime);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                runtime::set_tool_risk_runtime_for_test(self.0.clone());
+            }
+        }
+        let _restore = Restore(previous);
+        runtime::set_tool_risk_runtime_for_test(runtime::ToolRiskRuntime::build(
+            true,
+            1,
+            crate::services::tool_risk::builtin::builtin_rules(),
+            &HashMap::new(),
+        ));
+        let (_, mut receiver) = channel::test_channel().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let reply = json!({"id":"synthetic-chat","object":"chat.completion","model":"fixture",
+            "choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{
+                "id":"synthetic-call","type":"function","function":{"name":"exec_command",
+                "arguments":"{\"cmd\":\"echo SYNTHETIC_AUDIT_MARKER\"}"}}]},"finish_reason":"tool_calls"}]});
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, Router::new().route("/chat/completions", post(move |Json(request): Json<Value>| {
+                let reply=reply.clone();
+                async move {
+                    if request["stream"] == true {
+                        let chunk=json!({"id":"synthetic-chat","object":"chat.completion.chunk","choices":[{"index":0,"delta":{
+                            "tool_calls": [{"index":0,"id":"synthetic-call","type":"function","function":{"name":"exec_command","arguments":"{\"cmd\":\"echo SYNTHETIC_AUDIT_MARKER\"}"}}]
+                        },"finish_reason":null}]});
+                        let done=json!({"id":"synthetic-chat","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]});
+                        ([("content-type","text/event-stream")],format!("data: {chunk}\n\ndata: {done}\n\ndata: [DONE]\n\n")).into_response()
+                    } else { Json(reply).into_response() }
+                }
+            }))).await;
+        });
+        let mut extensions = http::Extensions::new();
+        extensions.insert(ClientToolObservation("codex"));
+        let mut body = json!({"model":"selected-exact","input":"synthetic","tools":[{
+            "type":"function","name":"exec_command","parameters":{"type":"object",
+            "properties":{"cmd":{"type":"string"}},"required":["cmd"]}}]});
+        for streaming in [false, true] {
+            body["stream"] = json!(streaming);
+            let response = forward(
+                &state(),
+                Protocol::Responses,
+                &provider(&format!("http://{address}"), Protocol::Chat),
+                &http::Method::POST,
+                "/responses",
+                &body,
+                &HeaderMap::new(),
+                &extensions,
+                None,
+                Arc::default(),
+                Arc::default(),
+            )
+            .await
+            .unwrap();
+            assert!(response.status().is_success());
+            let forwarded = response.bytes_with_limit(1024 * 1024).await.unwrap();
+            assert!(String::from_utf8_lossy(&forwarded).contains("SYNTHETIC_AUDIT_MARKER"));
+            let mut processor = ResponseProcessor::default();
+            let observations = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    let piece = receiver.recv().await.unwrap();
+                    let observations = processor.ingest(&piece);
+                    if !observations.is_empty() {
+                        break observations;
+                    }
+                }
+            })
+            .await
+            .expect("the native upstream tool observation must be delivered");
+            assert_eq!(observations.len(), 1);
+            assert_eq!(observations[0].tool.client.as_deref(), Some("codex"));
+            let event = worker::project_event(&observations[0])
+                .expect("recognized shell must be auditable");
+            assert_eq!(event.operation_category.as_deref(), Some("shell_exec"));
+            assert_eq!(event.integrity_status, "complete");
+            assert_eq!(
+                event.command_summary.as_deref(),
+                Some("echo SYNTHETIC_AUDIT_MARKER")
+            );
+        }
+        task.abort();
     }
 
     #[tokio::test]

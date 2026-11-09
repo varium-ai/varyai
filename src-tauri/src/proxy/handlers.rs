@@ -4006,7 +4006,7 @@ mod tests {
                 assert_eq!(events[0].client_category.as_deref(), Some("codex"));
                 assert_eq!(events[0].verdict.as_deref(), Some("risky"));
                 assert!(events[0].rule_ids.iter().any(|id| id == rule));
-                assert!(events[0].command_summary.is_none());
+                assert_eq!(events[0].command_summary.as_deref(), Some(command));
                 let arguments: Value =
                     serde_json::from_str(client["output"][0]["arguments"].as_str().unwrap())
                         .unwrap();
@@ -4108,7 +4108,12 @@ mod tests {
                         run(req, wire, Some("text/event-stream"), true, true).await;
                     assert_eq!(observations.len(), 1);
                     assert_eq!(events.len(), 1);
-                    assert!(events[0].command_summary.is_none());
+                    assert_eq!(
+                        events[0].command_summary.as_deref(),
+                        (observations[0].input.status
+                            == crate::proxy::tool_observation::types::InputStatus::Complete)
+                            .then_some(command)
+                    );
                     assert_eq!(events[0].operation_category.as_deref(), Some("shell_exec"));
                     let expected = if command == "cat ~/.env" {
                         "risky"
@@ -4163,7 +4168,7 @@ mod tests {
                     assert_eq!(observations.len(), 1);
                     assert_eq!(events.len(), 1);
                     assert_eq!(events[0].verdict.as_deref(), Some("low_risk"));
-                    assert!(events[0].command_summary.is_none());
+                    assert_eq!(events[0].command_summary.as_deref(), Some(command));
                     let forwarded: Value =
                         serde_json::from_str(client["output"][0]["arguments"].as_str().unwrap())
                             .unwrap();
@@ -4369,7 +4374,7 @@ mod tests {
         }
         #[tokio::test]
         #[serial_test::serial]
-        async fn event_omits_command_summary_and_keeps_forwarded_command() {
+        async fn event_redacts_command_summary_and_keeps_forwarded_command() {
             let command = format!("{}={} sudo ls -la", "API_KEY", "TEST_PRIVATE_TOKEN");
             let (client, _, events) = run(
                 request(),
@@ -4380,7 +4385,10 @@ mod tests {
             )
             .await;
             assert_eq!(events.len(), 1);
-            assert!(events[0].command_summary.is_none());
+            assert_eq!(
+                events[0].command_summary.as_deref(),
+                Some("API_KEY=<redacted> sudo ls -la")
+            );
             assert!(!serde_json::to_string(&events)
                 .unwrap()
                 .contains("TEST_PRIVATE_TOKEN"));

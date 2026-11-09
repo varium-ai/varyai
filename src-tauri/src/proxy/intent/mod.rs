@@ -2210,6 +2210,14 @@ async fn execute(
                     )
                     .await;
                 }
+                let mut observation_extensions = parts.extensions.clone();
+                if !external {
+                    observation_extensions.insert(
+                        super::tool_observation::mount::ClientToolObservation(
+                            consumer_app.unwrap_or("codex"),
+                        ),
+                    );
+                }
                 super::group_forward::forward(
                     &state,
                     protocol,
@@ -2218,7 +2226,7 @@ async fn execute(
                     &endpoint,
                     &bridge_body,
                     &caller_headers,
-                    &parts.extensions,
+                    &observation_extensions,
                     conversation.as_deref(),
                     scoped.history.clone(),
                     scoped.shadow.clone(),

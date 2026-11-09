@@ -66,7 +66,7 @@ impl ObservationCounters {
 // No raw payload in this state. End/Drop and ingress failure do not need queue space.
 pub struct ResponseState {
     pub id: u64,
-    pub policy_version: u64,
+    pub generation: u64,
     pub metadata: ResponseMetadata,
     pub faulted: AtomicBool,
     fault_reason: AtomicU8,
@@ -148,7 +148,7 @@ pub struct ResponseTap {
     policy_bound: bool,
 }
 impl ObservationSender {
-    pub fn start(&self, metadata: ResponseMetadata, policy_version: u64) -> Option<ResponseTap> {
+    pub fn start(&self, metadata: ResponseMetadata, generation: u64) -> Option<ResponseTap> {
         if self.tx.is_closed() {
             return None;
         }
@@ -167,7 +167,7 @@ impl ObservationSender {
             sender: self.clone(),
             state: Arc::new(ResponseState {
                 id: NEXT_SCOPE.fetch_add(1, Ordering::Relaxed),
-                policy_version,
+                generation,
                 metadata,
                 faulted: AtomicBool::new(false),
                 fault_reason: AtomicU8::new(0),
@@ -188,10 +188,8 @@ impl ObservationSender {
 impl ResponseTap {
     pub fn push(&mut self, bytes: &Bytes) {
         if self.policy_bound {
-            use crate::services::tool_risk::runtime::{
-                collection_enabled, collection_policy_version,
-            };
-            self.push_with_policy(bytes, collection_enabled(), collection_policy_version());
+            use crate::services::tool_risk::runtime::{collection_enabled, collection_generation};
+            self.push_with_policy(bytes, collection_enabled(), collection_generation());
         } else {
             self.enqueue(bytes);
         }
@@ -257,7 +255,7 @@ impl ResponseTap {
         }
     }
     fn push_with_policy(&mut self, bytes: &Bytes, enabled: bool, policy: u64) {
-        if !enabled || policy != self.state.policy_version {
+        if !enabled || policy != self.state.generation {
             self.fail_with_reason(if !enabled { 6 } else { 7 });
             return;
         }
@@ -293,13 +291,13 @@ pub fn install_global_sender(sender: ObservationSender) -> bool {
     GLOBAL_SENDER.set(sender).is_ok()
 }
 pub fn start_response(metadata: ResponseMetadata) -> Option<ResponseTap> {
-    use crate::services::tool_risk::runtime::{collection_enabled, collection_policy_version};
+    use crate::services::tool_risk::runtime::{collection_enabled, collection_generation};
     if !collection_enabled() {
         return None;
     }
     let mut tap = GLOBAL_SENDER
         .get()?
-        .start(metadata, collection_policy_version())?;
+        .start(metadata, collection_generation())?;
     tap.policy_bound = true;
     Some(tap)
 }
@@ -323,6 +321,31 @@ pub async fn test_channel() -> (
 #[cfg(test)]
 mod budget_regression_tests {
     use super::*;
+    #[test]
+    #[serial_test::serial]
+    fn old_tap_cannot_resume_after_same_version_disable_and_reenable() {
+        use crate::services::tool_risk::runtime::{
+            collection_generation, publish_tool_risk_runtime, ToolRiskRuntime,
+        };
+        let runtime = ToolRiskRuntime {
+            enabled: true,
+            policy_version: 7,
+            ..Default::default()
+        };
+        publish_tool_risk_runtime(runtime.clone());
+        let (tx, mut rx) = create_channel(2);
+        let mut tap = tx.start(metadata(), collection_generation()).unwrap();
+        tap.policy_bound = true;
+        publish_tool_risk_runtime(ToolRiskRuntime {
+            enabled: false,
+            ..runtime.clone()
+        });
+        publish_tool_risk_runtime(runtime);
+        tap.push(&Bytes::from_static(b"synthetic stale response"));
+        assert!(tap.state.faulted.load(Ordering::Acquire));
+        assert!(rx.rx.try_recv().is_err());
+        publish_tool_risk_runtime(ToolRiskRuntime::default());
+    }
     fn metadata() -> ResponseMetadata {
         ResponseMetadata {
             protocol: "anthropic_messages",

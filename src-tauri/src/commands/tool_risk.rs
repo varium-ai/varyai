@@ -579,7 +579,7 @@ mod policy_changes_tests {
         let saved = service::update_settings(&db, &settings).unwrap();
         assert_eq!(
             serde_json::to_value(saved).unwrap(),
-            json!({"value": null, "persistedPolicyVersion": 3, "auditStatus": "recorded", "runtimeStatus": "applied"})
+            json!({"value": null, "persistedPolicyVersion": 2, "auditStatus": "recorded", "runtimeStatus": "applied"})
         );
     }
 
@@ -605,7 +605,7 @@ mod policy_changes_tests {
         let wire = serde_json::to_value(&rows[0]).unwrap();
         assert_eq!(
             wire,
-            json!({"id": rows[0].id, "at": rows[0].at, "policyVersion": 1, "actor": "local_ui", "kind": "settings_update", "targetId": null, "changedFields": ["enabled"], "auditStatus": "recorded"})
+            json!({"id": rows[0].id, "at": rows[0].at, "policyVersion": 0, "actor": "local_ui", "kind": "settings_update", "targetId": null, "changedFields": ["enabled"], "auditStatus": "recorded"})
         );
         assert_eq!(
             serde_json::to_value(clear_policy_changes(&db).unwrap()).unwrap(),

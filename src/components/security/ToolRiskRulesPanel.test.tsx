@@ -10,6 +10,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   parseToolRiskToolRefs,
   type ToolRiskEventRecord,
+  type CommandListEntry,
+  type SandboxTestResult,
   type ToolRiskRule,
   type ToolRiskRuleItem,
 } from "@/types/toolRisk";
@@ -23,6 +25,8 @@ const deleteRule = vi.fn().mockResolvedValue(undefined);
 const testSandbox = vi.fn().mockResolvedValue(undefined);
 let items: ToolRiskRuleItem[];
 let observationEnabled = true;
+let sandboxResult: SandboxTestResult | undefined;
+let commandEntries: CommandListEntry[] = [];
 let events: ToolRiskEventRecord[] = [];
 
 const customItem: ToolRiskRuleItem = {
@@ -66,7 +70,7 @@ const fullRule: ToolRiskRule = {
 
 vi.mock("@/hooks/useToolRisk", () => ({
   useToolRiskCommandLists: () => ({
-    entries: [],
+    entries: commandEntries,
     isLoading: false,
     isError: false,
     saveEntry: vi.fn(),
@@ -92,7 +96,7 @@ vi.mock("@/hooks/useToolRisk", () => ({
   }),
   useToolRiskSandbox: () => ({
     test: testSandbox,
-    result: undefined,
+    result: sandboxResult,
     isTesting: false,
     reset: vi.fn(),
   }),
@@ -121,6 +125,8 @@ vi.mock("@/lib/api", () => ({
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) => {
+      if (key === "toolRisk.builtinRule.destructive_change.name")
+        return "Destructive change";
       if (key === "toolRisk.rulesSummary")
         return `${key}: total=${options?.total}, enabled=${options?.enabled}`;
       if (key === "toolRisk.policyVersion")
@@ -322,6 +328,70 @@ describe("ToolRiskRulesPanel sandbox trust", () => {
     testSandbox.mockClear();
     items = [];
     observationEnabled = true;
+  });
+
+  const matched = (...ids: string[]): SandboxTestResult => ({
+    scope: "in_scope",
+    verdict: "risky",
+    matchedRuleIds: ids,
+    riskCategories: ["destructive_change"],
+    applicableRules: 4,
+  });
+
+  it("shows a localized builtin name with the stable ID as secondary information", () => {
+    sandboxResult = matched("builtin.destructive_change");
+    render(<ToolRiskRulesPanel />);
+    const result = within(screen.getByTestId("tool-risk-sandbox-result"));
+    expect(result.getByText("Destructive change")).toBeVisible();
+    expect(result.getByText("builtin.destructive_change")).toBeVisible();
+  });
+
+  it("shows the custom rule name and follows current configuration renames", () => {
+    items = [customItem];
+    sandboxResult = matched("custom-1");
+    const { rerender } = render(<ToolRiskRulesPanel />);
+    const result = within(screen.getByTestId("tool-risk-sandbox-result"));
+    expect(result.getByText("My rule")).toBeVisible();
+    expect(result.getByText("custom-1")).toBeVisible();
+    items = [{ ...customItem, name: "Renamed synthetic rule" }];
+    rerender(<ToolRiskRulesPanel />);
+    expect(result.getByText("Renamed synthetic rule")).toBeVisible();
+    expect(result.queryByText("My rule")).toBeNull();
+  });
+
+  it("identifies Shell list hits by list type, match scope and configured pattern", () => {
+    commandEntries = [
+      {
+        id: "shell-list-synthetic",
+        revision: 1,
+        listType: "blacklist",
+        matchKind: "prefix",
+        pattern: "kubectl delete",
+        enabled: true,
+        severity: "high",
+        riskCategory: "destructive_change",
+      },
+    ];
+    sandboxResult = matched("shell-list-synthetic");
+    render(<ToolRiskRulesPanel />);
+    const result = within(screen.getByTestId("tool-risk-sandbox-result"));
+    expect(
+      result.getByText(
+        "toolRisk.commandLists.blacklist · toolRisk.commandLists.kind.prefix · kubectl delete",
+      ),
+    ).toBeVisible();
+    expect(result.getByText("shell-list-synthetic")).toBeVisible();
+  });
+
+  it("retains unknown IDs without inventing names or copying sandbox arguments", () => {
+    sandboxResult = matched("custom-deleted");
+    render(<ToolRiskRulesPanel />);
+    fireEvent.change(screen.getByPlaceholderText('{"command": "ls"}'), {
+      target: { value: '{"command":"echo SYNTHETIC_PRIVATE_INPUT"}' },
+    });
+    const result = screen.getByTestId("tool-risk-sandbox-result");
+    expect(within(result).getByText("custom-deleted")).toBeVisible();
+    expect(result).not.toHaveTextContent("SYNTHETIC_PRIVATE_INPUT");
   });
 
   it("rejects malformed JSON without silently testing it as plain text", async () => {
@@ -693,6 +763,8 @@ describe("ToolRiskRulesPanel visible rules", () => {
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
   events = [];
+  sandboxResult = undefined;
+  commandEntries = [];
 });
 
 /** Operation targets use semantic fields; tool targets keep free-text JSON Pointers. */

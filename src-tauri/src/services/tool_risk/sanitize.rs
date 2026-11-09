@@ -47,6 +47,16 @@ static PATTERNS: LazyLock<Option<SummaryPatterns>> = LazyLock::new(|| {
 });
 
 pub fn summarize_command(command: &str) -> String {
+    let Some(policy) = crate::proxy::security::runtime::audit_security_runtime() else {
+        return REDACTED.into();
+    };
+    summarize_command_with_policy(command, &policy)
+}
+
+pub(crate) fn summarize_command_with_policy(
+    command: &str,
+    policy: &crate::proxy::security::SecurityRuntimeConfig,
+) -> String {
     if command.len() > MAX_SOURCE_BYTES {
         return REDACTED.into();
     }
@@ -56,17 +66,49 @@ pub fn summarize_command(command: &str) -> String {
     let Some(patterns) = PATTERNS.as_ref() else {
         return REDACTED.into();
     };
+    // Audit storage is not forwarding: even disabled or notice-only custom
+    // patterns must not become plaintext in command history. Hide the entire
+    // command on a match or invalid matcher, without persisting matched values.
+    if custom_summary_sensitive(command, policy) {
+        return REDACTED.into();
+    }
     let mut summary = truncate_summary(redact(command, patterns));
     // A cut can create a new token boundary. Settle that bounded output before
     // persistence; an unexpected non-convergence fails closed without echoing.
     for _ in 0..4 {
         let next = truncate_summary(redact(&summary, patterns));
         if next == summary {
+            if custom_summary_sensitive(&summary, policy) {
+                return REDACTED.into();
+            }
             return summary;
         }
         summary = next;
     }
     REDACTED.into()
+}
+
+fn custom_summary_sensitive(
+    text: &str,
+    policy: &crate::proxy::security::SecurityRuntimeConfig,
+) -> bool {
+    // This is conservative matcher text only, never a shell rewrite.
+    let matching: String = text
+        .chars()
+        .filter(|ch| !matches!(ch, '\\' | '\'' | '"'))
+        .collect();
+    policy
+        .audit_custom_rules
+        .iter()
+        .chain(policy.custom_rules.iter())
+        .any(|rule| {
+            if !matches!(rule.rule_type.as_str(), "keyword" | "regex") || rule.pattern.is_empty() {
+                return true;
+            }
+            rule.regex
+                .as_ref()
+                .is_none_or(|regex| regex.is_match(text) || regex.is_match(&matching))
+        })
 }
 
 fn sensitive_name(name: &str) -> bool {
@@ -388,6 +430,69 @@ mod tests {
             summary,
             "summary must be idempotent"
         );
+    }
+
+    fn summarize_command(command: &str) -> String {
+        summarize_command_with_policy(
+            command,
+            &crate::proxy::security::SecurityRuntimeConfig::default(),
+        )
+    }
+
+    #[test]
+    fn custom_dlp_patterns_hide_the_whole_summary_even_for_disabled_or_notice_rules() {
+        use crate::proxy::security::{
+            runtime::CompiledCustomRule,
+            types::{AuditAction, RiskLevel},
+            SecurityRuntimeConfig,
+        };
+        for (rule_type, pattern) in [
+            ("keyword", "SYNTHETIC_ORG_MARKER"),
+            ("regex", "SYNTHETIC_[A-Z]+_MARKER"),
+        ] {
+            let mut policy = SecurityRuntimeConfig::default();
+            policy.enabled = false;
+            policy.custom_rules.push(CompiledCustomRule {
+                id: "synthetic-rule".into(),
+                name: "Synthetic rule".into(),
+                rule_type: rule_type.into(),
+                pattern: pattern.into(),
+                regex: Some(if rule_type == "regex" {
+                    Regex::new(pattern).unwrap()
+                } else {
+                    regex::RegexBuilder::new(&regex::escape(pattern))
+                        .case_insensitive(true)
+                        .build()
+                        .unwrap()
+                }),
+                risk_level: RiskLevel::High,
+                action: AuditAction::Audit,
+                enabled: false,
+            });
+            for command in ["echo SYNTHETIC_ORG_MARKER", "echo SYNTHETIC_'ORG'_MARKER"] {
+                assert_eq!(
+                    summarize_command_with_policy(command, &policy),
+                    "<redacted>"
+                );
+            }
+            assert_eq!(
+                summarize_command_with_policy("echo public-fixture", &policy),
+                "echo public-fixture"
+            );
+            if rule_type == "keyword" {
+                assert_eq!(
+                    summarize_command_with_policy("echo synthetic_org_marker", &policy),
+                    "<redacted>"
+                );
+            }
+            {
+                policy.custom_rules[0].regex = None;
+                assert_eq!(
+                    summarize_command_with_policy("echo public-fixture", &policy),
+                    "<redacted>"
+                );
+            }
+        }
     }
 
     #[test]

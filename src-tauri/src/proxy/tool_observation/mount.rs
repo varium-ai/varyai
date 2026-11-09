@@ -1,4 +1,8 @@
 //! Explicit client-output protocol and transport selection. Never infer protocol from app identity.
+/// Original client identity supplied by the local group router, not request headers.
+#[derive(Clone, Copy)]
+pub(crate) struct ClientToolObservation(pub &'static str);
+
 use super::channel::{
     start_response, OutputQuality, ResponseMetadata, ResponseTap, ToolSchemaRef, Transport,
 };
