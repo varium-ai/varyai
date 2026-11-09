@@ -109,3 +109,18 @@ it("refreshes managed account status and publishes completion only for the curre
   });
   expect(result.current.isPending).toBe(false);
 });
+it.each([
+  "codexBrowser.tokenRejected",
+  "codexBrowser.networkFailed",
+  "codexBrowser.exchangeTimeout",
+  "codexBrowser.invalidTokenResponse",
+  "codexBrowser.saveFailed",
+  "codexBrowser.identityMismatch",
+])("shows the safe login failure category %s", async (error) => {
+  vi.mocked(api.poll).mockResolvedValue({ ...flow, status: "failed", error });
+  const { result } = mount();
+  await act(() => result.current.start());
+  await waitFor(() => expect(result.current.error).toBe(error), {
+    timeout: 3000,
+  });
+});

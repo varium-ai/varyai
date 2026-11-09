@@ -134,13 +134,31 @@
   color: var(--mp-fg-2);
   line-height: 1.7;
 }
-.ob-method-list {
+.ob-source-icons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   list-style: none;
   margin: 0 0 4px;
-  padding: 12px 14px;
+  padding: 0;
+}
+.ob-source-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--mp-line-2);
   background: var(--mp-card-2);
-  border-radius: 8px;
-  line-height: 1.9;
+  border-radius: 10px;
+}
+.ob-source-icon > span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.dark .ob-source-icon[data-source="magpie"] img,
+.dark .ob-source-icon[data-source="opencode"] svg {
+  filter: invert(1);
 }
 .ob-method > button {
   margin-top: auto;
@@ -245,20 +263,6 @@
   outline: 2px solid hsl(var(--primary));
   outline-offset: 3px;
 }
-.ob-success {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  padding: 20px;
-  border: 1px solid var(--mp-green);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--mp-green) 9%, var(--mp-card));
-  color: var(--mp-green);
-}
-.ob-success p {
-  margin-top: 4px;
-  color: var(--mp-fg-2);
-}
 .ob-error {
   margin-top: 18px;
   color: var(--mp-red);
@@ -324,11 +328,6 @@
     width: 44px;
     height: 44px;
   }
-  .ob-method-list {
-    padding: 10px 12px;
-    font-size: 13px;
-    line-height: 1.6;
-  }
   .ob-help {
     margin-top: 20px;
   }
@@ -336,9 +335,6 @@
 @media (max-width: 560px) {
   .ob-methods {
     grid-template-columns: 1fr;
-  }
-  .ob-method-list {
-    display: none;
   }
   .ob-help {
     align-items: flex-start;

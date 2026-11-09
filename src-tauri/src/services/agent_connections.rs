@@ -4,6 +4,7 @@ mod claude_policy;
 pub(crate) mod desktop;
 pub(crate) mod desktop_config;
 mod document;
+mod jsonc;
 pub(crate) mod native;
 #[cfg(test)]
 mod parity_tests;
@@ -181,11 +182,12 @@ pub(crate) fn opencode_model(model: &Model) -> Value {
     row["modalities"] = json!({"input":if model.images {vec!["text", "image"]} else {vec!["text"]},"output":["text"]});
     row["reasoning"] =
         json!(model.reasoning || model.reasoning_levels.iter().any(|level| level != "none"));
-    if let Some(context) = model.context_window {
-        row["limit"] = json!({"context":context});
-    }
-    if let Some(tokens) = output_limit(model) {
-        row["limit"]["output"] = json!(tokens);
+    let output = output_limit(model);
+    if model.context_window.is_some() || output.is_some() {
+        row["limit"] = json!({
+            "context":model.context_window.unwrap_or(0),
+            "output":output.unwrap_or(0)
+        });
     }
     if let Some(cost) = &model.cost {
         row["cost"] = json!({"input":cost["input"],"output":cost["output"],"cache_read":cost["cacheRead"],"cache_write":cost["cacheWrite"]});
@@ -476,8 +478,17 @@ impl FileEdit {
                     .is_some_and(|previous| at(&live, field) == at(previous, field))
         }))
     }
+    fn needs_jsonc_repair(&self) -> bool {
+        matches!(self.format, Format::Jsonc)
+            && self
+                .original
+                .as_deref()
+                .is_some_and(|text| jsonc::parse(text).is_err())
+    }
     fn write(&self) -> Result<(), String> {
-        if self.format.parse(self.original.as_deref())? == self.installed {
+        if self.format.parse(self.original.as_deref())? == self.installed
+            && !self.needs_jsonc_repair()
+        {
             return replace_checked(
                 &self.path,
                 self.original.as_deref(),
@@ -554,7 +565,7 @@ impl FileEdit {
                 live["selection"] = original["selection"].clone();
             }
         }
-        let restored = if live == original {
+        let restored = if live == original && !self.needs_jsonc_repair() {
             self.original.clone()
         } else {
             Some(self.format.encode(text.as_deref(), &live)?)
@@ -671,6 +682,13 @@ impl Manager {
         let mut receipt: Receipt = serde_json::from_str(&text).map_err(|_| FAILED)?;
         if receipt.app != app || receipt.files.is_empty() {
             return Err(FAILED.into());
+        }
+        if app == "opencode" {
+            for file in &mut receipt.files {
+                if matches!(file.format, Format::Json5) {
+                    file.format = Format::Jsonc;
+                }
+            }
         }
         desktop_config::adopt(&mut receipt);
         let mut adopted = receipt.clone();
@@ -953,6 +971,7 @@ impl Manager {
             file.format
                 .parse(file.original.as_deref())
                 .is_ok_and(|original| original == file.installed)
+                && !file.needs_jsonc_repair()
         });
         if unchanged {
             next.applied_at_ms = old.applied_at_ms;
@@ -1220,7 +1239,7 @@ fn build_with_token(
             Ok(())
         })?);
         },
-        "opencode" => receipt.files.push(FileEdit::prepare_format(crate::opencode_config::get_opencode_projection_path(), Format::Json5, |value| {
+        "opencode" => receipt.files.push(FileEdit::prepare_format(crate::opencode_config::get_opencode_projection_path(), Format::Jsonc, |value| {
             let models = catalog.iter().map(|m| (m.id.clone(), opencode_model(m))).collect::<serde_json::Map<_,_>>();
             put(value, &["provider".into(), "varyai".into()], Some(json!({"npm":"@ai-sdk/openai-compatible","name":"Vary AI","options":{"baseURL":format!("{base}/v1"),"apiKey":token},"models":models})))?;
             put(value, &["model".into()], Some(json!(format!("varyai/{selected}"))))

@@ -13,6 +13,12 @@ const safeError = (error: unknown) =>
     "codexBrowser.proxyInvalid",
     "codexBrowser.expired",
     "codexBrowser.duplicate",
+    "codexBrowser.tokenRejected",
+    "codexBrowser.networkFailed",
+    "codexBrowser.exchangeTimeout",
+    "codexBrowser.invalidTokenResponse",
+    "codexBrowser.saveFailed",
+    "codexBrowser.identityMismatch",
   ].includes(error)
     ? error
     : "codexBrowser.failed";

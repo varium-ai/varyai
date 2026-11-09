@@ -119,10 +119,11 @@
 .vary-routing .rt-execution-settings select {
   width: 100%;
   height: 28px;
-  padding: 0 8px;
+  padding-block: 0;
+  padding-inline-start: 8px;
   border: 1px solid var(--rt-line);
   border-radius: 6px;
-  background: var(--rt-card);
+  background-color: var(--rt-card);
   color: var(--rt-fg);
   font-size: 12px;
 }

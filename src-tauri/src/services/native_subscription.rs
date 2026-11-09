@@ -20,6 +20,9 @@ const FAILED: &str = "nativeSubscription.failed";
 const EXPIRED: &str = "nativeSubscription.expired";
 const PROJECT: &str = "nativeSubscription.projectRequired";
 
+#[cfg(test)]
+mod google_observation_tests;
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Account {
@@ -1425,14 +1428,16 @@ async fn codeassist(
     method: &str,
     body: &Value,
 ) -> Result<Value, String> {
-    let response = crate::proxy::http_client::get()
+    let mut request = crate::proxy::http_client::get()
         .post(format!("{base}/v1internal:{method}"))
         .bearer_auth(&account.access)
         .json(body)
-        .timeout(Duration::from_secs(25))
-        .send()
-        .await
-        .map_err(|_| FAILED)?;
+        .timeout(Duration::from_secs(25));
+    request = request.header("User-Agent", google_user_agent(account.provider));
+    if account.provider == SubscriptionProvider::Antigravity {
+        request = request.header("X-Goog-Api-Client", "gl-node/22.21.1");
+    }
+    let response = request.send().await.map_err(|_| FAILED)?;
     if !response.status().is_success() {
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             observe_rejection(account).await;
@@ -1441,6 +1446,71 @@ async fn codeassist(
         return Err(FAILED.into());
     }
     response.json().await.map_err(|_| FAILED.into())
+}
+
+fn google_user_agent(provider: SubscriptionProvider) -> String {
+    let platform = match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        value => value,
+    };
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        value => value,
+    };
+    match provider {
+        SubscriptionProvider::Antigravity => {
+            format!("antigravity/hub/2.9.1 {platform}/{arch}")
+        }
+        SubscriptionProvider::GeminiCli => {
+            format!("GeminiCLI/0.61.0/gemini-2.5-pro ({platform}; {arch}; terminal)")
+        }
+        _ => "vary-ai".into(),
+    }
+}
+
+async fn antigravity_models(account: &Account, project: &str) -> Result<Value, String> {
+    let mut tiers = Vec::new();
+    if let Ok(response) = codeassist(
+        account,
+        "https://cloudcode-pa.googleapis.com",
+        "loadCodeAssist",
+        &json!({"metadata":{"ideType":"ANTIGRAVITY"}}),
+    )
+    .await
+    {
+        for tier in [
+            response["paidTier"]["id"].as_str(),
+            response["currentTier"]["id"].as_str(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !tier.is_empty() && tier != "free-tier" && !tiers.iter().any(|item| item == tier) {
+                tiers.push(tier.to_owned());
+            }
+        }
+    }
+    for tier in tiers {
+        let result = codeassist(
+            account,
+            account.provider.endpoint(),
+            "fetchAvailableModels",
+            &json!({"project":project,"entitlement":{"userTier":tier}}),
+        )
+        .await;
+        if result.is_ok() {
+            return result;
+        }
+    }
+    codeassist(
+        account,
+        account.provider.endpoint(),
+        "fetchAvailableModels",
+        &json!({"project":project}),
+    )
+    .await
 }
 async fn observe_google_plan(account: &Account) {
     if account.plan.is_none() && !account.project.is_empty() {
@@ -1581,13 +1651,17 @@ pub(crate) async fn models(provider: SubscriptionProvider, id: &str) -> Result<V
         let flags = gemini_flags(&account, &project).await;
         return Ok(gemini_models(&flags, preview));
     }
-    let body = codeassist(
-        &account,
-        provider.endpoint(),
-        "fetchAvailableModels",
-        &json!({"project":project}),
-    )
-    .await?;
+    let body = if provider == SubscriptionProvider::Antigravity {
+        antigravity_models(&account, &project).await?
+    } else {
+        codeassist(
+            &account,
+            provider.endpoint(),
+            "fetchAvailableModels",
+            &json!({"project":project}),
+        )
+        .await?
+    };
     Ok(body["models"].as_object().ok_or(FAILED)?.iter().filter(|(_, row)| row["disabled"] != true).map(|(id, row)| json!({"model":id,"displayName":row["displayName"].as_str().unwrap_or(id),"contextWindow":row["maxTokens"],"maxOutputTokens":row["maxOutputTokens"]})).collect())
 }
 
@@ -1595,6 +1669,24 @@ fn quota_tier(name: &str, value: &Value) -> Option<super::subscription::QuotaTie
     let remaining = value["remainingFraction"]
         .as_f64()
         .filter(|v| v.is_finite())?
+        .clamp(0.0, 1.0);
+    Some(super::subscription::QuotaTier {
+        name: name.into(),
+        utilization: (1.0 - remaining) * 100.0,
+        resets_at: value["resetTime"].as_str().map(str::to_owned),
+        used_value_usd: None,
+        max_value_usd: None,
+    })
+}
+
+fn quota_group_tier(name: &str, value: &Value) -> Option<super::subscription::QuotaTier> {
+    if value["disabled"] == true {
+        return None;
+    }
+    let remaining = value["remainingFraction"]
+        .as_f64()
+        .filter(|v| v.is_finite())
+        .unwrap_or(0.0)
         .clamp(0.0, 1.0);
     Some(super::subscription::QuotaTier {
         name: name.into(),
@@ -1627,7 +1719,7 @@ fn parse_google_quota(
                             .or_else(|| bucket["window"].as_str())
                             .unwrap_or("")
                     );
-                    quota_tier(&name, bucket)
+                    quota_group_tier(&name, bucket)
                 })
         })
         .collect();
@@ -1689,13 +1781,17 @@ pub(crate) async fn quota(
             } else {
                 "fetchAvailableModels"
             };
-            let value = codeassist(
-                &account,
-                provider.endpoint(),
-                method,
-                &json!({"project":project}),
-            )
-            .await?;
+            let value = if provider == SubscriptionProvider::Antigravity {
+                antigravity_models(&account, &project).await?
+            } else {
+                codeassist(
+                    &account,
+                    provider.endpoint(),
+                    method,
+                    &json!({"project":project}),
+                )
+                .await?
+            };
             if provider == SubscriptionProvider::Antigravity {
                 if let Ok(summary) = codeassist(
                     &account,
@@ -2304,8 +2400,9 @@ mod tests {
             SubscriptionProvider::Antigravity,
             &json!({"groups":[{"displayName":"Gemini models", "buckets":[{"window":"weekly","remainingFraction":0.2}, {"window":"five_hour"}, {"disabled":true,"remainingFraction":1.0}]}]}),
         );
-        assert_eq!(pools.tiers.len(), 1);
+        assert_eq!(pools.tiers.len(), 2);
         assert_eq!(pools.tiers[0].utilization, 80.0);
+        assert_eq!(pools.tiers[1].utilization, 100.0);
         assert!(pools.tiers[0].name.contains("weekly"));
     }
 

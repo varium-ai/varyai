@@ -1745,7 +1745,6 @@ mod tests {
                 .status(),
             StatusCode::NOT_FOUND
         );
-        assert_eq!(post(serde_json::json!({"model":alias,"input":[{"type":"reasoning","encrypted_content":"unknown-state"}]})).await?.status(),StatusCode::CONFLICT);
         assert_eq!(
             post(serde_json::json!({"model":"Removed synthetic model","input":"synthetic"}))
                 .await?
@@ -1889,10 +1888,176 @@ mod tests {
                     .1["input"],
                 input
             );
-            body["input"][0]["encrypted_content"] = serde_json::json!("synthetic-unknown-seal");
-            assert_eq!(post(body).await?.status(), StatusCode::CONFLICT);
         }
         assert_eq!(seen.lock().expect("fixture").len(), 9);
+        server.stop().await?;
+        task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn native_responses_fresh_named_session_preserves_empty_reasoning_and_unknown_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{
+            database::Database,
+            proxy::{server::ProxyServer, ProxyConfig},
+        };
+        use axum::{routing::post, Json, Router};
+        use std::{collections::HashMap, sync::Mutex};
+
+        let _security = security();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observed = seen.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let upstream = listener.local_addr()?;
+        let task = tokio::spawn(async move {
+            let app = Router::new().route(
+                "/responses",
+                post(move |headers: HeaderMap, Json(body): Json<Value>| {
+                    observed.lock().expect("fixture").push((headers, body));
+                    std::future::ready(Json(serde_json::json!({
+                        "id":"synthetic-native-hello-response", "object":"response",
+                        "status":"completed", "output":[{"type":"message",
+                            "role":"assistant", "content":[{"type":"output_text", "text":"hello"}]}]
+                    })))
+                }),
+            );
+            let _ = axum::serve(listener, app).await;
+        });
+        let group: super::super::RoutingGroup = serde_json::from_value(serde_json::json!({
+            "id":"native-first-hello", "name":"Synthetic first hello", "revision":0,
+            "client":"codex", "enabled":false,
+            "members":[{"id":"a", "providerId":"synthetic", "modelId":"synthetic-model"}],
+            "defaultMemberId":"a", "fallbackMemberIds":[], "intentRecognitionEnabled":false,
+            "classifierTarget":null, "classificationBudgetMs":2000, "rules":[]
+        }))?;
+        let alias = group.alias();
+        let session = Arc::new(super::super::Session {
+            group,
+            targets: vec![super::super::Target {
+                fixed_effort: None,
+                provider_id: "synthetic".into(),
+                model: "synthetic-model".into(),
+                upstream: None,
+                effort: Default::default(),
+                url: format!("http://{upstream}/responses").parse()?,
+                headers: HeaderMap::from_iter([(
+                    header::AUTHORIZATION,
+                    "Bearer synthetic-upstream-token".parse()?,
+                )]),
+                official: false,
+                credentials: None,
+                scheduling: Arc::default(),
+            }],
+            classifier: None,
+            client: reqwest::Client::builder().no_proxy().build()?,
+            created: Instant::now(),
+            bindings: Arc::default(),
+        });
+        let menu = Arc::new(super::super::Menu {
+            token: "synthetic-menu-token".into(),
+            models: HashMap::new(),
+            default_model: Some(alias.clone()),
+            omitted_entries: 0,
+            context_settings: Default::default(),
+            groups: HashMap::from([(alias.clone(), session)]),
+        });
+        let runtime = Arc::new(super::super::Runtime::default());
+        let catalog = crate::services::intent_routing::client::menu_catalog(&menu, "high")?;
+        runtime
+            .native
+            .publish_menu(menu.clone(), catalog, BTreeMap::new())?;
+        runtime.set_menu(menu)?;
+        let directory = tempfile::tempdir()?;
+        runtime
+            .native
+            .prepare_checkpoints(&directory.path().join("checkpoint.key"))?;
+        runtime
+            .native
+            .install(credentials("synthetic-native-token", "synthetic-user"))?;
+        let server = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            Arc::new(Database::memory()?),
+            None,
+        )
+        .with_intent_runtime(runtime.clone());
+        let info = server.start().await?;
+        let url = format!("http://127.0.0.1:{}/backend-api/codex/responses", info.port);
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let mut body = serde_json::json!({
+            "model":alias, "prompt_cache_key":"synthetic-brand-new-session",
+            "previous_response_id":null,
+            "input":[
+                {"type":"reasoning", "id":"synthetic-unobserved-reasoning",
+                 "summary":[], "content":null, "encrypted_content":null},
+                {"type":"message", "role":"user",
+                 "content":[{"type":"input_text", "text":"hello"}]}
+            ]
+        });
+        for auth in [None, Some("synthetic-invalid-token")] {
+            let request = client.post(&url).header("version", "0.167.0").json(&body);
+            let request = match auth {
+                Some(token) => request.bearer_auth(token),
+                None => request,
+            };
+            assert_eq!(request.send().await?.status(), StatusCode::UNAUTHORIZED);
+        }
+        assert!(seen.lock().expect("fixture").is_empty());
+
+        for unknown_state in [false, true] {
+            if unknown_state {
+                body["prompt_cache_key"] = serde_json::json!("synthetic-other-brand-new-session");
+                body["previous_response_id"] = serde_json::json!("synthetic-unobserved-response");
+                body["input"][0]["id"] = serde_json::json!("synthetic-other-unobserved-reasoning");
+                body["input"][0]["encrypted_content"] =
+                    serde_json::json!("synthetic-unobserved-state");
+            }
+            let response = client
+                .post(&url)
+                .bearer_auth("synthetic-native-token")
+                .header("version", "0.167.0")
+                .json(&body)
+                .send()
+                .await?;
+            assert_eq!(response.status(), StatusCode::OK);
+            let _ = response.bytes().await?;
+            let seen = seen.lock().expect("fixture");
+            assert_eq!(seen.len(), if unknown_state { 2 } else { 1 });
+            let (headers, forwarded) = seen.last().ok_or("missing upstream request")?;
+            assert_eq!(
+                headers[header::AUTHORIZATION],
+                "Bearer synthetic-upstream-token"
+            );
+            assert_eq!(forwarded["model"], "synthetic-model");
+            assert_eq!(forwarded["input"], body["input"]);
+            assert_eq!(
+                forwarded.get("previous_response_id"),
+                body.get("previous_response_id")
+            );
+        }
+        let wrong_workspace = client
+            .post(&url)
+            .bearer_auth("synthetic-native-token")
+            .header("chatgpt-account-id", "synthetic-different-workspace")
+            .header("version", "0.167.0")
+            .json(&body)
+            .send()
+            .await?;
+        assert_eq!(wrong_workspace.status(), StatusCode::UNAUTHORIZED);
+        runtime.native.revoke();
+        let revoked = client
+            .post(&url)
+            .bearer_auth("synthetic-native-token")
+            .header("version", "0.167.0")
+            .json(&body)
+            .send()
+            .await?;
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(seen.lock().expect("fixture").len(), 2);
         server.stop().await?;
         task.abort();
         Ok(())

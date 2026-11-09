@@ -308,6 +308,7 @@
     "sensitiveTypesSample": "直近 {{sampleSize}} 件のセキュリティイベントに含まれる機密情報：{{types}} 種類"
   },
   "common": {
+    "retry": "再試行",
     "add": "追加",
     "edit": "編集",
     "delete": "削除",
@@ -5537,6 +5538,7 @@
     "reopen": "もう一度開く",
     "proxy": "プロキシ",
     "globalProxy": "グローバルプロキシ",
+    "accountProxy": "保存済みアカウントのプロキシ",
     "direct": "直接接続",
     "customProxy": "カスタム…",
     "proxyUrl": "プロキシ URL",
@@ -5550,6 +5552,12 @@
     "finish": "ログインを完了",
     "finishing": "ログインを完了しています…",
     "failed": "ログインが完了しませんでした。再試行するか、別の方法を選んでください。",
+    "tokenRejected": "ChatGPT がログイン要求を拒否しました（HTTP {{status}}）。ログインをやり直し、続く場合は選択したプロキシを確認してください。",
+    "networkFailed": "ChatGPT に接続できませんでした。選択したプロキシを確認して再試行してください。",
+    "exchangeTimeout": "ChatGPT のログインが 30 秒以内に完了しませんでした。プロキシを確認してやり直してください。",
+    "invalidTokenResponse": "ChatGPT のログイン情報が不完全か、読み取れませんでした。ログインをやり直してください。",
+    "saveFailed": "ログインしたアカウントを保存できませんでした。ディスクの空き容量を確認して再試行してください。",
+    "identityMismatch": "元のアカウントと一致しません。対応するアカウントでログインするか、別途追加してください。",
     "callbackInvalid": "コールバック URL が今回のログインと一致しません。ブラウザーの最後の完全な URL をコピーしてください。",
     "proxyInvalid": "HTTP、HTTPS、または SOCKS のプロキシ URL を入力してください。",
     "expired": "ログインの有効期限が切れました。もう一度開始してください。",
@@ -5856,14 +5864,10 @@
     "invalidConnection": "HTTP(S) の API URL と Key を入力してください。URL に認証情報、クエリ、フラグメントは使用できません。",
     "connectionFailed": "接続または保存に失敗しました。URL、Key、API プロトコルを確認して再試行してください。",
     "noModels": "モデルが返されませんでした。URL とプロトコルを確認するか、「モデル」で手動追加してください。",
-    "connected": "接続成功。{{count}} 個のモデルが見つかりました。",
-    "accountConnected": "アカウントを接続しました。",
     "savingAccount": "ログイン済みアカウントを保存中…",
+    "accountModelsFailed": "ログインは完了しましたが、利用可能なモデルを取得できませんでした。再試行してください。",
     "accountFailed": "ログインは完了しましたが、接続を保存できませんでした。再試行してください。",
     "codexHint": "ChatGPT のログイン中にブラウザーに Codex と表示される場合があります。正常な動作です。",
-    "imported": "選択した接続をインポートしました。",
-    "nextHint": "ツール画面で Claude Code、Codex などの対応ツールを接続してください。",
-    "enterTools": "ツールを開く",
     "finishFailed": "セットアップの完了状態を保存できませんでした。再試行してください。保存済みの接続は保持されます。"
   }
 }

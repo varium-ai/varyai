@@ -109,7 +109,7 @@ fn validate_codex_official_authorization(
                     .and_then(|value| value.to_str().ok())
                     .map(str::trim)
                     .filter(|account_id| !account_id.is_empty());
-                if request_account_id != expected_chatgpt_account_id
+                if request_account_id != expected_chatgpt_account_id.filter(|id| !id.is_empty())
                     || managed_session_matches != Some(true)
                 {
                     return Err(ProxyError::AuthError(
@@ -1989,6 +1989,25 @@ impl RequestForwarder {
 
         // Codex OAuth 需要注入的 ChatGPT-Account-Id（在动态 token 获取期间填充）
         let mut codex_oauth_account_id: Option<String> = None;
+        let mut codex_oauth_client: Option<reqwest::Client> = None;
+        if codex_official_auth_passthrough {
+            if let (Some(app), Some(id)) = (
+                self.app_handle.as_ref(),
+                provider
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.managed_account_id_for("codex_oauth")),
+            ) {
+                codex_oauth_client = app
+                    .state::<CodexOAuthState>()
+                    .0
+                    .account_forwarding_client(&id)
+                    .await
+                    .map_err(|_| {
+                        ProxyError::AuthError("Codex account connection unavailable".into())
+                    })?;
+            }
+        }
         let mut should_send_codex_oauth_session_headers = false;
 
         // 获取认证头（提前准备，用于内联替换），同时保留仅用于日志脱敏的
@@ -2078,6 +2097,16 @@ impl RequestForwarder {
                     match token_result {
                         Ok(token) => {
                             auth = AuthInfo::new(token, AuthStrategy::CodexOAuth);
+                            if let Some(id) = resolved_account_id.as_deref() {
+                                codex_oauth_client = codex_auth
+                                    .account_forwarding_client(id)
+                                    .await
+                                    .map_err(|_| {
+                                        ProxyError::AuthError(
+                                            "Codex account connection unavailable".into(),
+                                        )
+                                    })?;
+                            }
                             should_send_codex_oauth_session_headers = true;
                             // 本地账号 ID 只用于绑定；请求头必须使用上游 workspace ID。
                             codex_oauth_account_id = match resolved_account_id.as_deref() {
@@ -2505,7 +2534,9 @@ impl RequestForwarder {
             }
         }
         if let Some(account) = codex_oauth_account_id.as_deref() {
-            if let Ok(value) = http::HeaderValue::from_str(account) {
+            if account.is_empty() {
+                principal_headers.remove("chatgpt-account-id");
+            } else if let Ok(value) = http::HeaderValue::from_str(account) {
                 principal_headers.insert("chatgpt-account-id", value);
             }
         }
@@ -3025,7 +3056,9 @@ impl RequestForwarder {
 
         // 托管 OAuth 的 workspace 由账号绑定决定，覆盖客户端或本地代理配置的旧值。
         if let Some(ref account_id) = codex_oauth_account_id {
-            if let Ok(value) = http::HeaderValue::from_str(account_id) {
+            if account_id.is_empty() {
+                ordered_headers.remove("chatgpt-account-id");
+            } else if let Ok(value) = http::HeaderValue::from_str(account_id) {
                 ordered_headers.insert("chatgpt-account-id", value);
             }
         }
@@ -3125,7 +3158,7 @@ impl RequestForwarder {
                 attempt.record_permitted_attempt(&provider.id, None);
             }
             injected?
-        } else if is_socks_proxy || !preserve_exact_header_case {
+        } else if is_socks_proxy || !preserve_exact_header_case || codex_oauth_client.is_some() {
             // OpenAI / Copilot / Codex 类后端不依赖原始 header 大小写；走 reqwest
             // 连接池，避免 raw TCP/TLS path 每次请求都重新握手。SOCKS5 也只能走 reqwest。
             log::debug!(
@@ -3138,6 +3171,8 @@ impl RequestForwarder {
             #[cfg(not(test))]
             let test_client: Option<reqwest::Client> = None;
             let client = if let Some(client) = test_client {
+                client
+            } else if let Some(client) = codex_oauth_client {
                 client
             } else if bound_attempt {
                 super::http_client::get_without_redirects().map_err(|_| {
@@ -3153,8 +3188,12 @@ impl RequestForwarder {
                 // reqwest 的 timeout 是整请求超时；流式请求交给 response_processor
                 // 的首包/静默期超时控制，避免长流被总时长误杀。
                 request = request.timeout(std::time::Duration::from_secs(24 * 60 * 60));
-            } else if !self.non_streaming_timeout.is_zero() {
-                request = request.timeout(self.non_streaming_timeout);
+            } else {
+                request = request.timeout(if self.non_streaming_timeout.is_zero() {
+                    std::time::Duration::from_secs(600)
+                } else {
+                    self.non_streaming_timeout
+                });
             }
             for (key, value) in &ordered_headers {
                 request = request.header(key, value);

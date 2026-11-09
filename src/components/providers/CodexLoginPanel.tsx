@@ -7,13 +7,14 @@ type Props = {
   mode: "browser" | "device";
   url?: string;
   code?: string;
-  proxy: string;
+  proxy?: string;
   providerName?: string;
   waitingMessage?: string;
   starting?: boolean;
   submitting?: boolean;
   submitted?: boolean;
   error?: string;
+  httpStatus?: number;
   openFailed?: boolean;
   callbackBlocked?: boolean;
   onCancel: () => void;
@@ -22,6 +23,8 @@ type Props = {
   onDevice?: () => void;
   onImport?: () => void;
   onProxy?: (proxy: string) => void;
+  inheritProxy?: boolean;
+  onInheritProxy?: () => void;
   onSubmit?: (url: string) => void;
   onCodeCopy?: () => void;
   onRetry?: () => void;
@@ -33,7 +36,7 @@ export function CodexLoginPanel(props: Props) {
     !!props.proxy && props.proxy !== "direct",
   );
   const [proxyUrl, setProxyUrl] = useState(
-    props.proxy === "direct" ? "" : props.proxy,
+    props.proxy === "direct" ? "" : (props.proxy ?? ""),
   );
   const callbackLocked = props.submitting || props.submitted;
   const title = props.providerName
@@ -116,16 +119,25 @@ export function CodexLoginPanel(props: Props) {
                         ? "direct"
                         : props.proxy
                           ? "custom"
-                          : ""
+                          : props.inheritProxy && props.proxy === undefined
+                            ? "inherit"
+                            : ""
                   }
                   onChange={(event) => {
                     if (event.target.value === "custom") setCustom(true);
                     else {
                       setCustom(false);
-                      props.onProxy?.(event.target.value);
+                      if (event.target.value === "inherit")
+                        props.onInheritProxy?.();
+                      else props.onProxy?.(event.target.value);
                     }
                   }}
                 >
+                  {props.inheritProxy && (
+                    <option value="inherit">
+                      {t("codexBrowser.accountProxy")}
+                    </option>
+                  )}
                   <option value="">{t("codexBrowser.globalProxy")}</option>
                   <option value="direct">{t("codexBrowser.direct")}</option>
                   <option value="custom">
@@ -220,7 +232,14 @@ export function CodexLoginPanel(props: Props) {
         )}
         {props.error && (
           <p role="alert" className="pv-error">
-            {t(props.error)}
+            {t(props.error, {
+              status:
+                Number.isInteger(props.httpStatus) &&
+                props.httpStatus! >= 100 &&
+                props.httpStatus! <= 599
+                  ? props.httpStatus
+                  : "—",
+            })}
           </p>
         )}
       </div>

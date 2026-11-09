@@ -464,6 +464,7 @@ impl CodexOAuthManager {
                     token_updated_at_ms,
                     reauth_required: false,
                     imported_access,
+                    browser_session: None,
                 },
             );
             ids.push(id);

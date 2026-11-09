@@ -107,6 +107,32 @@ it("places Magpie first and opens it even when another source has selected provi
     screen.getByRole("button", { name: "providerFlow.import" }),
   ).toBeDisabled();
 });
+it("uses the same source order in onboarding while selecting an importable source", async () => {
+  render(
+    <ProviderImportDialog
+      open
+      embedded
+      onClose={vi.fn()}
+      onImported={vi.fn()}
+    />,
+  );
+  const tablist = await screen.findByRole("tablist");
+  expect(
+    within(tablist)
+      .getAllByRole("tab")
+      .map((tab) => tab.id),
+  ).toEqual([
+    "import-tab-magpie",
+    "import-tab-cc-switch",
+    "import-tab-claude-code",
+    "import-tab-codex",
+    "import-tab-opencode",
+  ]);
+  expect(
+    within(tablist).getByRole("tab", { name: /CC Switch/ }),
+  ).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("checkbox", { name: "New relay" })).toBeChecked();
+});
 it("moves between source tabs in their displayed order with the keyboard", async () => {
   mount();
   const tablist = await screen.findByRole("tablist");

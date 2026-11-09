@@ -89,6 +89,14 @@ export function SubscriptionAccountQuota({
             queryKey: ["managed-auth-status", provider],
           });
           void client.invalidateQueries({ queryKey: ["routing-upstreams"] });
+        } else if (
+          quota.success &&
+          (provider === "antigravity" || provider === "gemini_cli")
+        ) {
+          void client.invalidateQueries({
+            queryKey: ["native-subscription-accounts", provider],
+          });
+          void client.invalidateQueries({ queryKey: ["routing-upstreams"] });
         }
         return {
           quota:
@@ -116,14 +124,42 @@ export function SubscriptionAccountQuota({
       chat: t("subscriptionProvider.chatQuota"),
       completions: t("subscriptionProvider.completionQuota"),
     };
-    return (
-      known[name] ??
-      t(
-        `subscription.${name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())}`,
-        { defaultValue: name },
-      )
+    if (known[name]) return known[name];
+    return t(
+      `subscription.${name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())}`,
+      { defaultValue: name },
     );
   };
+  const quotaGroups = (() => {
+    const groups: Array<{
+      key: string;
+      tiers: Array<{ tier: QuotaTier; label: string }>;
+    }> = [];
+    for (const tier of tiers) {
+      const separator = tier.name.indexOf(" · ");
+      const group = separator > 0 ? tier.name.slice(0, separator) : "";
+      const window = separator > 0 ? tier.name.slice(separator + 3) : "";
+      const normalizedGroup = group
+        .replace(/\s+models?$/i, "")
+        .replace(/^Claude and GPT$/i, "Claude & GPT");
+      const normalizedWindow = window
+        .replace("five_hour", "5h")
+        .replace("weekly", "7d");
+      const key = normalizedGroup || tier.name;
+      let entry = groups.find((item) => item.key === key);
+      if (!entry) {
+        entry = { key, tiers: [] };
+        groups.push(entry);
+      }
+      entry.tiers.push({
+        tier,
+        label: normalizedGroup
+          ? `${normalizedGroup} ${normalizedWindow}`
+          : tierLabel(tier.name),
+      });
+    }
+    return groups;
+  })();
   const status =
     !ready || quota?.credentialStatus === "expired"
       ? "quotaLoginRequired"
@@ -157,48 +193,59 @@ export function SubscriptionAccountQuota({
         </span>
       ) : (
         <>
-          <button
-            type="button"
-            aria-label={`${t("codexProvider.refreshQuota")} ${login}`}
-            disabled={disabled || !ready || query.isFetching}
-            onClick={() => void query.refetch({ cancelRefetch: false })}
-          >
-            <RefreshCw
-              size={12}
-              className={
-                query.isFetching
-                  ? "animate-spin motion-reduce:animate-none"
-                  : undefined
-              }
-            />
-          </button>
-          {tiers.map((tier, index) => (
-            <div key={`${tier.name}-${index}`}>
-              <span>{tierLabel(tier.name)}</span>
-              <span className="cx-meter">
-                <i
-                  style={{
-                    width: `${Math.max(0, Math.min(100, 100 - tier.utilization))}%`,
-                  }}
-                />
-              </span>
-              <b>
-                {t("codexProvider.remaining", {
-                  n: Math.max(
-                    0,
-                    Math.min(100, Math.round(100 - tier.utilization)),
-                  ),
-                })}
-              </b>
-              {tier.resetsAt && Number.isFinite(Date.parse(tier.resetsAt)) && (
-                <span>
-                  {t("codexProvider.resets", {
-                    time: new Date(tier.resetsAt).toLocaleString(i18n.language),
-                  })}
-                </span>
-              )}
-            </div>
-          ))}
+          <div className="cx-quota-toolbar">
+            <button
+              type="button"
+              aria-label={`${t("codexProvider.refreshQuota")} ${login}`}
+              disabled={disabled || !ready || query.isFetching}
+              onClick={() => void query.refetch({ cancelRefetch: false })}
+            >
+              <RefreshCw
+                size={12}
+                className={
+                  query.isFetching
+                    ? "animate-spin motion-reduce:animate-none"
+                    : undefined
+                }
+              />
+            </button>
+          </div>
+          <div className="cx-quota-grid">
+            {quotaGroups.map((group) => (
+              <div className="cx-quota-group" key={group.key}>
+                {group.tiers.map(({ tier, label }, index) => (
+                  <div className="cx-quota-item" key={`${tier.name}-${index}`}>
+                    <span className="cx-quota-label">{label}</span>
+                    <span className="cx-meter">
+                      <i
+                        style={{
+                          width: `${Math.max(0, Math.min(100, 100 - tier.utilization))}%`,
+                        }}
+                      />
+                    </span>
+                    <b>
+                      {t("codexProvider.remaining", {
+                        n: Math.max(
+                          0,
+                          Math.min(100, Math.round(100 - tier.utilization)),
+                        ),
+                      })}
+                    </b>
+                    {tier.resetsAt &&
+                      Number.isFinite(Date.parse(tier.resetsAt)) && (
+                        <span className="cx-quota-reset">
+                          {t("codexProvider.resets", {
+                            time: new Date(tier.resetsAt).toLocaleString(
+                              i18n.language,
+                            ),
+                          })}
+                        </span>
+                      )}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
           {status && <span>{t(`codexProvider.${status}`)}</span>}
         </>
       )}

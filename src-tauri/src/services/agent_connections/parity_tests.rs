@@ -1,6 +1,59 @@
 use super::*;
 use std::sync::Arc;
 
+#[test]
+#[ignore = "requires installed OpenCode CLI"]
+fn installed_opencode_accepts_generated_jsonc() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("fixture.json");
+    fs::write(
+        &path,
+        "{ // retained\n \"$schema\":\"https://opencode.ai/config.json\",\n}",
+    )?;
+    let model = Model {
+        id: "synthetic".into(),
+        name: "Synthetic".into(),
+        context_window: Some(272000),
+        output_tokens: None,
+        cost: None,
+        compact_at: None,
+        group: "Synthetic".into(),
+        reasoning_levels: vec!["low".into(), "high".into()],
+        reasoning: true,
+        default_reasoning_level: None,
+        images: true,
+        icon: None,
+    };
+    let file = FileEdit::prepare_format(path.clone(), Format::Jsonc, |value| {
+        value["provider"] = json!({
+            "fixture": {
+                "npm":"@ai-sdk/openai-compatible",
+                "options":{"baseURL":"http://127.0.0.1:1/v1","apiKey":"synthetic-only"},
+                "models":{"synthetic":opencode_model(&model)}
+            }
+        });
+        value["model"] = json!("fixture/synthetic");
+        Ok(())
+    })?;
+    file.write()?;
+    let output = std::process::Command::new("opencode")
+        .args(["debug", "config"])
+        .current_dir(dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_CACHE_HOME", dir.path().join("cache"))
+        .env("OPENCODE_CONFIG_DIR", dir.path().join("opencode"))
+        .env("OPENCODE_CONFIG", &path)
+        .env("OPENCODE_DISABLE_PROJECT_CONFIG", "true")
+        .env("OPENCODE_DISABLE_MODELS_FETCH", "true")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "OpenCode rejected the synthetic projection"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
@@ -51,14 +104,62 @@ async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
     receipt.files[0].restore()?;
     assert_eq!(fs::read_to_string(&claude_path)?, original);
     let json_path = crate::opencode_config::get_opencode_dir().join("opencode.json");
+    fs::create_dir_all(json_path.parent().ok_or("parent")?)?;
+    let original = r#"{"small_model":"mine/small","provider":{"mine":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"https://synthetic.invalid/v1","apiKey":"synthetic-only"},"models":{"small":{"name":"Small"}}}}}"#;
+    fs::write(&json_path, original)?;
+    let receipt = build("opencode", &menu, "http://127.0.0.1:1", selected)?;
+    receipt.files[0].write()?;
+    let installed: Value = serde_json::from_str(&fs::read_to_string(&json_path)?)?;
+    assert_eq!(installed["model"], format!("varyai/{selected}"));
+    assert_eq!(installed["small_model"], "mine/small");
+    assert_eq!(
+        installed["provider"]["mine"]["models"]["small"]["name"],
+        "Small"
+    );
+    receipt.files[0].restore()?;
+    assert_eq!(fs::read_to_string(&json_path)?, original);
+    let legacy_manager = Manager {
+        root: dir.path().join("legacy-opencode-receipts"),
+    };
+    let mut legacy = build("opencode", &menu, "http://127.0.0.1:1", selected)?;
+    legacy.files[0].format = Format::Json5;
+    legacy_manager.install(legacy)?;
+    assert!(serde_json::from_str::<Value>(&fs::read_to_string(&json_path)?).is_err());
+    let migrated = legacy_manager.load("opencode")?.ok_or("legacy receipt")?;
+    assert!(matches!(migrated.files[0].format, Format::Jsonc));
+    legacy_manager.refresh("opencode", &menu, "http://127.0.0.1:1")?;
+    serde_json::from_str::<Value>(&fs::read_to_string(&json_path)?)?;
+    legacy_manager.disconnect("opencode")?;
+    assert_eq!(fs::read_to_string(&json_path)?, original);
+    fs::remove_file(&json_path)?;
     let jsonc = json_path.with_extension("jsonc");
     fs::create_dir_all(jsonc.parent().ok_or("parent")?)?;
-    fs::write(&jsonc, "{ // retained comment\n theme: 'synthetic',\n}")?;
+    fs::write(
+        &jsonc,
+        "{ // retained comment\n \"theme\": \"synthetic\",\n}",
+    )?;
     let receipt = build("opencode", &menu, "http://127.0.0.1:1", selected)?;
     assert_eq!(receipt.files[0].path, jsonc);
     receipt.files[0].write()?;
     assert!(fs::read_to_string(&jsonc)?.contains("// retained comment"));
+    crate::services::agent_connections::jsonc::parse(&fs::read_to_string(&jsonc)?)?;
     assert!(!json_path.exists());
+    receipt.files[0].restore()?;
+    let manager = Manager {
+        root: dir.path().join("opencode-receipts"),
+    };
+    manager.install(receipt)?;
+    manager.refresh("opencode", &menu, "http://127.0.0.1:1")?;
+    let live = fs::read_to_string(&jsonc)?;
+    crate::services::agent_connections::jsonc::parse(&live)?;
+    let edited = live.replace("\"theme\": \"synthetic\"", "\"theme\": \"edited\"");
+    assert_ne!(live, edited);
+    fs::write(&jsonc, edited)?;
+    manager.disconnect("opencode")?;
+    let restored = crate::services::agent_connections::jsonc::parse(&fs::read_to_string(&jsonc)?)?;
+    assert_eq!(restored["theme"], "edited");
+    assert!(restored.get("model").is_none());
+    assert!(fs::read_to_string(&jsonc)?.contains("// retained comment"));
     for app in ["kimi", "qwen", "zcode", "workbuddy"] {
         let first = build(app, &menu, "http://127.0.0.1:1", selected)?;
         assert!(!first.model_map.is_empty(), "{app}");

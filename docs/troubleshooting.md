@@ -2,6 +2,50 @@
 
 Use synthetic examples when reporting a problem. Logs, provider configuration, client authentication files and database backups may contain credentials or private prompts. Review and redact them before sharing.
 
+## OpenCode rejects its configuration after connecting
+
+OpenCode reads JSON or JSONC, not JSON5. A projection that adds
+`model: "varyai/synthetic"` without quotes around the key fails with
+`InvalidSymbol` and `PropertyNameExpected`. Comments and trailing commas are
+allowed; unquoted keys and single-quoted strings are not.
+
+The corrected OpenCode writer quotes new root keys and validates the emitted
+document as JSONC before replacing the file. It preserves comments in existing
+provider objects and CRLF line endings. Existing connection receipts keep their
+stored format for compatibility, while OpenCode loads them through the corrected
+writer for refresh and disconnect.
+
+Models with a `limit` object must provide both `context` and `output`.
+OpenCode 1.19.5 rejects a context-only limit even after the JSON syntax is fixed.
+The projection now supplies zero for an unknown limit, matching OpenCode's
+default and Magpie's unknown-output behavior.
+
+Load the corrected VaryAI backend before reconnecting OpenCode. Source edits
+do not update an already running backend. These fixes cover JSONC publication
+and complete model limits; they do not establish complete Magpie feature parity
+or a successful inference request. See the
+[verification record](qa/2026-11-09-opencode-jsonc.md).
+
+## Claude Desktop repeatedly retries an official Codex model
+
+A `502 routing_upstream_rejected` can hide an upstream HTTP 400 when Claude
+Desktop's Anthropic request is converted for an official ChatGPT/Codex account.
+Claude includes `metadata`, including `user_id`, on ordinary turns. The official
+Codex endpoint rejects that field, even when the same model completes a request
+without it. Retrying the unchanged request repeats the rejection.
+
+The official conversion path omits this unsupported field. Native Anthropic
+requests retain their metadata, and other Responses providers keep their
+existing behavior. This matches Magpie's separation of Anthropic metadata from
+its Responses projection. Sign-in alignment and a successful model catalog
+fetch do not establish compatibility of the inference request.
+
+Source changes require the corrected backend to be loaded before the live
+Desktop request can succeed. Do not clear credentials or history to work around
+this conversion bug. Verify a complete reply and terminal stream event with
+Desktop's request fields, rather than only an HTTP 200 from a minimal probe.
+See the [diagnosis and verification record](qa/2026-11-09-desktop-codex-metadata.md).
+
 ## Codex receives HTTP 400 from Gemini with search and functions
 
 Codex includes both native search and function declarations even on a greeting.
@@ -569,22 +613,38 @@ Already migrated conversations still require an explicit model selection; the
 fix does not bulk-rewrite historical choices. See the
 [historical-model verification report](qa/2026-11-06-codex-historical-model-routing.md).
 
-### Codex reports routing_unknown_continuation after reconnecting
+### Codex reports routing_unknown_continuation, including in a new conversation
 
-When a conversation switches from GLM, Grok or another model that returned a
-visible reasoning summary, Codex can replay that summary with `content: null`,
-`encrypted_content: null` and `internal_chat_message_metadata_passthrough`.
-Earlier builds mistook those optional fields for account-bound state and returned
-409 before contacting the newly selected model. The router now recognizes this
-plain summary without deleting or rewriting its fields. Actual encrypted state,
-unresolved item references and unknown tool results still require their original
-ownership evidence. This fix does not require deleting the conversation.
+Earlier builds required local ownership records for Responses replay items before
+forwarding them. This could reject a new Codex conversation: an empty reasoning
+summary, `encrypted_content: null` on a message, or a previously unobserved response
+or tool ID was enough to trigger HTTP 409. Reconnecting repeatedly cannot resolve
+that local validation failure, and creating another conversation is not a reliable
+workaround.
 
-This 409 means VaryAI cannot establish one exact owner for the supplied response ID, tool call or opaque continuation. Older builds retained ordinary ownership only in memory, so restarting VaryAI or reconnecting the Codex menu could lose it. Starting a new conversation avoids submitting unknown account-bound state; do not remove reasoning or compaction items from an existing history to bypass the check.
+Codex Responses now follows Magpie's upstream-validation approach. Optional fields,
+empty reasoning, unknown response IDs, tool results, and encrypted state are sent
+intact to the selected upstream. Observed ownership still pins the destination;
+conflicting known owners and collided IDs remain errors. Authentication, current
+account/workspace checks, lease revocation, and native checkpoint validation still
+apply. This change does not require deleting conversation history.
 
-Updated builds asynchronously save bounded, encrypted ownership records for normal Codex-menu/native and authenticated gateway conversations. After reconnecting and reloading Codex configuration, the same consumer, alias and complete destination set can resume observed bindings. An old local bearer token still requires configuration reload; persistence never bypasses current authentication. Records expire after 24 hours, are bounded to 512 conversations, and are not portable conversation history. Temporary editor sessions remain memory-only.
+For direct Responses forwarding, a concrete upstream refusal of encrypted state
+can trigger Magpie's bounded recovery on the same destination, before any reply is
+released. The first stage removes reasoning and nonempty encrypted copies of
+ordinary items while retaining visible messages and tool pairs. A second stage can
+remove sealed compaction history for a non-native request; native compaction and
+checkpoint requests retain that history. Removing compaction loses its earlier
+context. An ordinary conflict, timeout, or unrelated error never triggers this
+rewrite, and there are at most two recovery mutations per request.
 
-Previously lost bindings cannot be recovered retroactively. Changed accounts, API keys, endpoints, models or execution settings; expired/evicted records; corrupt or unavailable local recovery files; and conflicting IDs still fail closed. A crash before queued writes reach disk can lose recent observations. No request is moved to another account, and no opaque history is silently discarded. See [continuation recovery](guides/intent-routing.md#continuation-recovery-after-restart).
+Bounded encrypted ownership records survive normal restarts for the same consumer
+and alias. Codex can restore still-available destinations when unrelated members
+change; missing destinations are treated as unavailable affinity instead of
+blocking the request locally. Records expire after 24 hours and retain at most
+512 conversations. Temporary editor sessions remain memory-only, and local bearer
+tokens still require current authentication. Other clients retain their existing
+strict continuation checks. See [continuation recovery](guides/intent-routing.md#continuation-recovery-after-restart).
 
 ### Codex Official login asks to sign in again after switching
 
@@ -734,6 +794,64 @@ readback. Open TRAE CN yourself, and restart it once after the initial bridge
 setup if requested. The floating assistant alone is not a supported chat window.
 Ordinary catalog refreshes preserve subsequent model choices made inside TRAE;
 explicit reapplication applies the preference saved in Vary again.
+
+### ChatGPT browser sign-in keeps waiting after consent
+
+Browser consent must return to `http://localhost:1455/auth/callback` before
+Vary AI can exchange the authorization code and save the account. If the browser
+cannot open that final local page, paste its complete address into **Callback
+URL** in the same active login panel and select **Finish sign-in**. Keep the
+address private: its query contains temporary authorization material. Login
+attempts expire after ten minutes; start a new attempt if it has expired.
+
+The login panel's proxy selection controls Vary AI's authorization requests,
+independently of the browser's network configuration. A successful browser page
+does not establish that the token endpoint is reachable from Vary AI. Token
+exchange has a 30-second request deadline, including reading the response body,
+for global, direct, and custom proxy selections. Older builds inherited the
+shared client's ten-minute timeout when using the global proxy selection, which
+could leave the panel waiting long after consent.
+
+The callback starts token exchange in the backend; renderer polling only reads
+status. The browser reports success after the account is stored. A stale Codex
+login listener is asked to release port 1455 before bounded retries; an unrelated
+listener is left in place and the pasted-address fallback remains available.
+Local callback aliases (`localhost`, `127.0.0.1`, and `::1`) are accepted only
+with the expected port, path, and state.
+
+This behavior follows [Magpie browser sign-in at revision
+`8a7f77c`](https://github.com/yetone/magpie/blob/8a7f77cb716da80d48767b1dcd03bbe8629eec1d/internal/provider/signin.go).
+Token requests send Codex originator and versioned client identity and accept
+JSON, with a one-MiB response limit.
+
+The client identity includes Codex's operating-system version, architecture, and
+terminal label on macOS and Windows. Browser and device sign-in require the
+three credentials and an email in the ID-token payload, as Magpie does; they
+do not impose an additional JWT-header, subject, or workspace requirement.
+Missing workspace IDs are kept empty and omitted from upstream headers rather
+than replaced with a local account ID. Legacy imports retain their existing
+identity and workspace checks.
+
+Signing in to an existing email/workspace updates its credentials in place and
+preserves its local account ID and provider bindings. Different workspace seats
+remain separate. Targeted reauthentication still rejects a different account,
+and cancellation or a newer login generation prevents an older commit.
+
+A directly selected or custom login proxy is saved with the account, including
+across restarts, and used for token refresh, quota, discovery, and forwarding.
+Reauthentication inherits that selection unless explicitly changed. Selecting
+**Global proxy** clears the account override and follows future global changes.
+These account settings and credentials stay in the existing private OAuth store;
+older records need no migration.
+
+Failure pages and the login panel distinguish transport failures, the
+30-second deadline, HTTP rejection, invalid credentials, account mismatch, and
+storage failure. HTTP rejection shows its numeric status. Diagnostics record
+fixed stage names and explicitly recognized OAuth error codes, never arbitrary
+vendor descriptions. They omit callback URLs, authorization codes, PKCE
+verifiers, tokens, proxy addresses, and upstream response bodies. **Device code
+sign-in** is available from the panel when the browser callback cannot be
+completed.
 
 ### Codex subscription plan and sign-in status disagree
 

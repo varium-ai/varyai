@@ -824,13 +824,38 @@ pub(crate) async fn query_codex_quota(
 ) -> Result<SubscriptionQuota, String> {
     let client = crate::proxy::http_client::get();
 
+    query_codex_quota_with_client(
+        &client,
+        access_token,
+        account_id,
+        tool_label,
+        expired_message,
+    )
+    .await
+}
+
+pub(crate) async fn query_codex_quota_with_client(
+    client: &reqwest::Client,
+    access_token: &str,
+    account_id: Option<&str>,
+    tool_label: &str,
+    expired_message: &str,
+) -> Result<SubscriptionQuota, String> {
+    crate::codex_client::resolve_version().await;
     let mut req = client
         .get("https://chatgpt.com/backend-api/wham/usage")
         .header("Authorization", format!("Bearer {access_token}"))
-        .header("User-Agent", "codex-cli")
+        .header(
+            "originator",
+            crate::proxy::providers::codex_oauth_auth::CODEX_OAUTH_ORIGINATOR,
+        )
+        .header(
+            "User-Agent",
+            crate::codex_client::user_agent(&crate::codex_client::current_version()),
+        )
         .header("Accept", "application/json");
 
-    if let Some(id) = account_id {
+    if let Some(id) = account_id.filter(|id| !id.is_empty()) {
         req = req.header("ChatGPT-Account-Id", id);
     }
 

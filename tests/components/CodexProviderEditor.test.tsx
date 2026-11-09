@@ -1157,7 +1157,7 @@ it("starts browser login by default and renders its complete panel inside the ac
   fireEvent.click(
     await screen.findByRole("button", { name: "codexProvider.addAccount" }),
   );
-  await waitFor(() => expect(start).toHaveBeenCalledWith(undefined, ""));
+  await waitFor(() => expect(start).toHaveBeenCalledWith(undefined, undefined));
   expect(managedAccounts.addAccount).not.toHaveBeenCalled();
   managedAccounts.browser.flow = {
     id: "synthetic-browser-flow",
@@ -1194,6 +1194,60 @@ it("starts browser login by default and renders its complete panel inside the ac
     "http://localhost:1455/auth/callback?state=synthetic&code=synthetic",
   );
   expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
+  managedAccounts.browser.error = "codexBrowser.tokenRejected";
+  managedAccounts.browser.isPending = false;
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <RoutingUpstreamsPanel />
+    </QueryClientProvider>,
+  );
+  fireEvent.click(within(panel).getByRole("button", { name: "common.retry" }));
+  await waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+  expect(start).toHaveBeenLastCalledWith(undefined, undefined);
+});
+
+it("inherits the saved account proxy on re-login and can explicitly choose global or direct", async () => {
+  const start = vi.fn().mockResolvedValue(undefined);
+  managedAccounts.browser = {
+    start,
+    cancel: vi.fn().mockResolvedValue(undefined),
+    reopen: vi.fn(),
+    submit: vi.fn(),
+    isPending: false,
+    starting: false,
+  };
+  managedAccounts.rows = [
+    { id: "managed", login: "person@example.test", reauth_required: true },
+  ];
+  vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+    ...upstream,
+    codex: {
+      ...codex,
+      settings: { ...codex.settings, accounts: ["managed"] },
+      accounts: [{ ...codex.accounts[0], id: "managed", native: false }],
+    },
+  } as never);
+  await open();
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "codexOauth.reauthLogin person@example.test",
+    }),
+  );
+  await waitFor(() =>
+    expect(start).toHaveBeenLastCalledWith("managed", undefined),
+  );
+  const proxy = screen.getByRole("combobox", { name: "codexBrowser.proxy" });
+  expect(proxy).toHaveValue("inherit");
+  fireEvent.change(proxy, { target: { value: "" } });
+  await waitFor(() => expect(start).toHaveBeenLastCalledWith("managed", ""));
+  fireEvent.change(proxy, { target: { value: "direct" } });
+  await waitFor(() =>
+    expect(start).toHaveBeenLastCalledWith("managed", "direct"),
+  );
+  fireEvent.change(proxy, { target: { value: "inherit" } });
+  await waitFor(() =>
+    expect(start).toHaveBeenLastCalledWith("managed", undefined),
+  );
 });
 
 it.each(["cancel", "device"] as const)(
@@ -1229,7 +1283,7 @@ it.each(["cancel", "device"] as const)(
     await act(async () => release());
     expect(start).not.toHaveBeenCalled();
     if (action === "device") {
-      expect(managedAccounts.addAccount).toHaveBeenCalledWith("");
+      expect(managedAccounts.addAccount).toHaveBeenCalledWith();
     } else {
       expect(
         screen.queryByRole("region", { name: "codexBrowser.title" }),
