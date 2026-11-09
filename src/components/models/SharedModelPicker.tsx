@@ -562,7 +562,7 @@ export function SharedModelPicker({
                               aria-checked={readOnly ? undefined : visible}
                               aria-label={modelName(model)}
                               key={model.id}
-                              title={model.modelId ?? model.id}
+                              title={modelName(model)}
                               data-model-choice={readOnly ? undefined : true}
                               className={`mp-am-row${visibility && !visible ? " off" : ""}`}
                               disabled={

@@ -69,6 +69,13 @@ describe("AboutSection agent environment checks", () => {
         latest_version: null,
         source: null,
       },
+      "workbuddy-ai": {
+        supported: true,
+        installed: true,
+        version: "1.2.3",
+        latest_version: null,
+        source: "desktop",
+      },
       qoder: {
         supported: true,
         installed: true,
@@ -153,7 +160,7 @@ describe("AboutSection agent environment checks", () => {
     ).not.toBeInTheDocument();
     expect(await card("Qoder CN").findByText("0.4.8")).toBeInTheDocument();
     expect(
-      card("WorkBuddy").getByText(zh.common.notInstalled),
+      card(APP_ICON_MAP.workbuddy.label).getByText(zh.common.notInstalled),
     ).toBeInTheDocument();
 
     vi.mocked(settingsApi.getToolVersions).mockRejectedValue(
@@ -173,7 +180,7 @@ describe("AboutSection agent environment checks", () => {
       await card("Qoder CN").findByText("检测失败，请刷新重试"),
     ).toBeInTheDocument();
     expect(
-      card("WorkBuddy").queryByText(zh.common.notInstalled),
+      card(APP_ICON_MAP.workbuddy.label).queryByText(zh.common.notInstalled),
     ).not.toBeInTheDocument();
   });
 
@@ -202,6 +209,7 @@ describe("AboutSection agent environment checks", () => {
     expect(
       card("Qoder CN").queryByText(zh.settings.toolReady),
     ).not.toBeInTheDocument();
+    expect(card("WorkBuddy AI").getByText("1.2.3")).toBeInTheDocument();
     expect(card("Qwen Code").getByText("0.25.2")).toBeInTheDocument();
     expect(card("Qwen Code").getByText("0.26.2")).toBeInTheDocument();
     expect(
@@ -211,7 +219,7 @@ describe("AboutSection agent environment checks", () => {
       card("Kimi Code").getByText("版本读取失败，请刷新重试"),
     ).toBeInTheDocument();
     expect(
-      card("WorkBuddy").getByText(zh.settings.currentVersion),
+      card(APP_ICON_MAP.workbuddy.label).getByText(zh.settings.currentVersion),
     ).toBeInTheDocument();
   });
   it("uses the existing upgrade action for Qwen and refreshes its installed version", async () => {

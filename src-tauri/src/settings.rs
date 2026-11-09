@@ -50,6 +50,8 @@ pub struct VisibleApps {
     pub pi: bool,
     #[serde(default)]
     pub workbuddy: bool,
+    #[serde(default, rename = "workbuddy-ai")]
+    pub workbuddy_ai: bool,
     #[serde(default)]
     pub qoder: bool,
     #[serde(default)]
@@ -79,6 +81,7 @@ impl Default for VisibleApps {
             hermes: false, // 默认不显示，需用户手动启用
             pi: true,
             workbuddy: false,
+            workbuddy_ai: false,
             qoder: false,
             kimi: false,
             qwen: false,
@@ -104,6 +107,7 @@ impl VisibleApps {
             AppType::Hermes => self.hermes,
             AppType::Pi => self.pi,
             AppType::WorkBuddy => self.workbuddy,
+            AppType::WorkBuddyAi => self.workbuddy_ai,
             AppType::Qoder => self.qoder,
             AppType::Kimi => self.kimi,
             AppType::Qwen => self.qwen,
@@ -1053,6 +1057,7 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
         AppType::Hermes => settings.current_provider_hermes.clone(),
         AppType::Pi
         | AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen
@@ -1080,6 +1085,7 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         AppType::Hermes => settings.current_provider_hermes = id_owned.clone(),
         AppType::Pi
         | AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen

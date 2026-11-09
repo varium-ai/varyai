@@ -95,6 +95,7 @@ impl Database {
             | AppType::OpenClaw
             | AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen

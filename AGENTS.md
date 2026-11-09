@@ -12,6 +12,7 @@ Vary AI is a Tauri application using Rust, React, and TypeScript. The historical
 - The local proxy defaults to `127.0.0.1:15722`. Tests must use temporary directories, in-memory databases, and dynamic ports instead of competing with a running application.
 - The single-instance plugin may foreground an existing app and exit a new process. Do not launch, install, or replace the user's running application as a routine check.
 - Use test-first changes for new behavior and reproducible bugs. Keep implementation changes focused and update the applicable documentation.
+- Implement logic changes for both macOS and Windows in the same change, including any required platform-specific implementations, so behavior stays consistent across both platforms.
 - Write commit messages in English.
 
 ## Modules

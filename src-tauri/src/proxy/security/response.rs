@@ -38,6 +38,7 @@ pub fn build_blocked_response(app_type: &AppType, reason: &str) -> Result<Respon
         | AppType::Hermes
         | AppType::Pi
         | AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen

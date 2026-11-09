@@ -248,6 +248,15 @@ pub async fn set_proxy_takeover_for_app(
     app_type: String,
     enabled: bool,
 ) -> Result<(), String> {
+    if app_type == "workbuddy-ai" {
+        return super::agent_connections::set_native_connection(
+            state.inner(),
+            app_type,
+            enabled,
+            None,
+        )
+        .await;
+    }
     if app_type == "doubaowork" && enabled {
         ensure_doubao_consent(&app, state.inner()).await?;
     }

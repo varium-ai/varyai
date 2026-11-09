@@ -38,6 +38,7 @@ export function ToolRiskPolicyChangesPanel({
   const [offset, setOffset] = useState(0);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [clearFailed, setClearFailed] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const {
     changes,
     isLoading,
@@ -48,20 +49,24 @@ export function ToolRiskPolicyChangesPanel({
     isClearing,
   } = useToolRiskPolicyChanges(PAGE_SIZE, offset);
   const rows = projectToolRiskPolicyChanges(changes);
-  const { rules } = useToolRiskRules();
+  const { rules, refetch: refetchRules } = useToolRiskRules();
   const ruleName = (id: string) => {
     if (id.startsWith("builtin."))
       return getToolRiskRuleName(t, { id, origin: "builtin", name: id });
     return rules.find((rule) => rule.id === id)?.name;
   };
-  const busy = isFetching || isClearing;
+  const busy = isFetching || isClearing || isRefreshing;
   const refresh = async () => {
+    setIsRefreshing(true);
     try {
-      const result = await refetch();
-      if (result.isError) toast.error(t(key("refreshFailed")));
+      const results = await Promise.all([refetch(), refetchRules()]);
+      if (results.some((result) => result.isError))
+        toast.error(t(key("refreshFailed")));
       else toast.success(t(key("refreshed")));
     } catch {
       toast.error(t(key("refreshFailed")));
+    } finally {
+      setIsRefreshing(false);
     }
   };
   const clear = async () => {

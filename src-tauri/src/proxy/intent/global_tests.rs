@@ -107,85 +107,118 @@ async fn workbuddy_readable_picker_ids_and_legacy_ids_reach_the_same_upstream(
     session.targets[0].upstream = Some(upstream);
     runtime.set_global(published, 0)?;
     let name = "Synthetic model · Synthetic supplier · VaryAI";
-    runtime
-        .connections
-        .install(&crate::services::agent_connections::Receipt {
-            app: "workbuddy".into(),
-            token: "synthetic-local".into(),
-            model: group().alias(),
-            model_map: std::collections::BTreeMap::from([(name.into(), group().alias())]),
-            visible_models: None,
-            files: vec![],
-            suspended: false,
-            applied_at_ms: None,
-        })?;
+    for app in ["workbuddy", "workbuddy-ai"] {
+        runtime
+            .connections
+            .install(&crate::services::agent_connections::Receipt {
+                app: app.into(),
+                token: format!("synthetic-local-{app}"),
+                model: group().alias(),
+                model_map: std::collections::BTreeMap::from([(name.into(), group().alias())]),
+                visible_models: None,
+                files: vec![],
+                suspended: false,
+                applied_at_ms: None,
+            })?;
+    }
+    let db = Arc::new(Database::memory()?);
     let server = ProxyServer::new(
         ProxyConfig {
             listen_port: 0,
             ..Default::default()
         },
-        Arc::new(Database::memory()?),
+        db.clone(),
         None,
     )
-    .with_intent_runtime(runtime);
+    .with_intent_runtime(runtime.clone());
     let info = server.start().await?;
     let client = reqwest::Client::builder().no_proxy().build()?;
-    for (id, stream, assistant_history) in [
-        (name.to_owned(), false, None),
-        (name.to_owned(), true, None),
-        (group().alias(), false, None),
-        (group().alias(), true, None),
-        (
-            name.to_owned(),
-            false,
-            Some(
-                json!({"role":"assistant","content":[{"type":"text","text":"Synthetic prior answer","annotations":[]}],"agent":"synthetic-agent","conversationRequestId":"synthetic-conversation","messageId":"synthetic-message","model":"synthetic-model","rawUsage":{},"requestModelId":"synthetic-model","requestModelName":"Synthetic model","stepSeq":1,"traceId":"synthetic-trace","usage":{}}),
-            ),
-        ),
-    ] {
-        let mut payload = json!({"model":id,"stream":stream,"stream_options":{"include_usage":true},"reasoning_effort":"high",
-            "messages":[{"role":"system","content":[{"type":"text","text":"Synthetic system prompt"}]},{"role":"user","content":[{"type":"text","text":"Synthetic request"}],"agent":"synthetic-agent","conversationRequestId":"synthetic-conversation","rootRequestId":"synthetic-root","startsNewUserRequest":true}],
-            "tools":[{"type":"function","function":{"name":"synthetic_tool","description":"Synthetic tool","parameters":{"type":"object","properties":{"agent":{"type":"string"}}},"strict":false}}]});
-        if let Some(history) = assistant_history {
-            payload["messages"]
-                .as_array_mut()
-                .ok_or("missing messages")?
-                .insert(1, history);
-        }
-        let response = client
+    for app in ["workbuddy", "workbuddy-ai"] {
+        let rejected = client
             .post(format!(
-                "http://127.0.0.1:{}/connections/workbuddy/v1/chat/completions",
+                "http://127.0.0.1:{}/connections/{app}/v1/chat/completions",
                 info.port
             ))
-            .bearer_auth("synthetic-local")
-            .header("x-conversation-id", "synthetic-workbuddy-history")
-            .json(&payload)
+            .bearer_auth(if app == "workbuddy" {
+                "synthetic-local-workbuddy-ai"
+            } else {
+                "synthetic-local-workbuddy"
+            })
+            .json(&json!({"model":name,"messages":[{"role":"user","content":"Synthetic request"}]}))
             .send()
             .await?;
-        let status = response.status();
-        let body = response.text().await?;
-        assert_eq!(status, StatusCode::OK, "synthetic response: {body}");
-        assert!(body.contains("Synthetic answer"));
-        if stream {
-            assert!(body.contains("[DONE]"));
+        assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+        for (id, stream, assistant_history) in [
+            (name.to_owned(), false, None),
+            (name.to_owned(), true, None),
+            (group().alias(), false, None),
+            (group().alias(), true, None),
+            (
+                name.to_owned(),
+                false,
+                Some(
+                    json!({"role":"assistant","content":[{"type":"text","text":"Synthetic prior answer","annotations":[]}],"agent":"synthetic-agent","conversationRequestId":"synthetic-conversation","messageId":"synthetic-message","model":"synthetic-model","rawUsage":{},"requestModelId":"synthetic-model","requestModelName":"Synthetic model","stepSeq":1,"traceId":"synthetic-trace","usage":{}}),
+                ),
+            ),
+        ] {
+            let mut payload = json!({"model":id,"stream":stream,"stream_options":{"include_usage":true},"reasoning_effort":"high",
+            "messages":[{"role":"system","content":[{"type":"text","text":"Synthetic system prompt"}]},{"role":"user","content":[{"type":"text","text":"Synthetic request"}],"agent":"synthetic-agent","conversationRequestId":"synthetic-conversation","rootRequestId":"synthetic-root","startsNewUserRequest":true}],
+            "tools":[{"type":"function","function":{"name":"synthetic_tool","description":"Synthetic tool","parameters":{"type":"object","properties":{"agent":{"type":"string"}}},"strict":false}}]});
+            if let Some(history) = assistant_history {
+                payload["messages"]
+                    .as_array_mut()
+                    .ok_or("missing messages")?
+                    .insert(1, history);
+            }
+            let response = client
+                .post(format!(
+                    "http://127.0.0.1:{}/connections/{app}/v1/chat/completions",
+                    info.port
+                ))
+                .bearer_auth(format!("synthetic-local-{app}"))
+                .header("x-conversation-id", "synthetic-workbuddy-history")
+                .json(&payload)
+                .send()
+                .await?;
+            let status = response.status();
+            let body = response.text().await?;
+            assert_eq!(status, StatusCode::OK, "synthetic response: {body}");
+            assert!(body.contains("Synthetic answer"));
+            if stream {
+                assert!(body.contains("[DONE]"));
+            }
+            let sent = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await?
+                .ok_or("missing request")?;
+            let last = sent["contents"]
+                .as_array()
+                .and_then(|items| items.last())
+                .ok_or("missing upstream content")?;
+            assert_eq!(last["parts"][0]["text"], "Synthetic request");
+            assert_eq!(
+                sent["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+                "HIGH"
+            );
+            assert_eq!(
+                sent["tools"][0]["functionDeclarations"][0]["name"],
+                "synthetic_tool"
+            );
         }
-        let sent = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-            .await?
-            .ok_or("missing request")?;
-        let last = sent["contents"]
-            .as_array()
-            .and_then(|items| items.last())
-            .ok_or("missing upstream content")?;
-        assert_eq!(last["parts"][0]["text"], "Synthetic request");
-        assert_eq!(
-            sent["generationConfig"]["thinkingConfig"]["thinkingLevel"],
-            "HIGH"
-        );
-        assert_eq!(
-            sent["tools"][0]["functionDeclarations"][0]["name"],
-            "synthetic_tool"
-        );
     }
+    for app in ["workbuddy", "workbuddy-ai"] {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let summary = db.get_usage_summary(None, None, Some(app), None, None)?;
+                if summary.total_requests == 5 {
+                    break Ok::<(), crate::error::AppError>(());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await??;
+    }
+    runtime.connections.revoke("workbuddy");
+    assert!(runtime.connections.active("workbuddy-ai"));
     server.stop().await?;
     task.abort();
     Ok(())

@@ -401,6 +401,236 @@ fn orphaned_inactive_projection_has_explicit_private_backup_cleanup() {
     assert_eq!(fs::read_to_string(&manager.config).expect("config"), after);
 }
 
+fn foreign_native_takeover(
+    manager: &Manager,
+    origin: &str,
+    profile: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
+    orphan(manager);
+    let mut doc: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+    let external = if profile {
+        "external_gateway"
+    } else {
+        "magpie"
+    };
+    doc["model_providers"][PROVIDER]["base_url"] = toml_edit::value(format!("{origin}/v1"));
+    doc["model_providers"][external]["base_url"] = toml_edit::value(format!("{origin}/v1"));
+    doc["model_providers"][external]["wire_api"] = toml_edit::value("responses");
+    doc["openai_base_url"] = toml_edit::value(format!("{origin}/backend-api/codex"));
+    if profile {
+        doc["profile"] = toml_edit::value("external");
+        doc["profiles"]["external"]["model_provider"] = toml_edit::value(external);
+        doc["profiles"]["external"]["model"] = toml_edit::value("external-model");
+    } else {
+        doc["model_provider"] = toml_edit::value(external);
+    }
+    let text = doc.to_string();
+    fs::write(&manager.config, &text)?;
+    Ok(text)
+}
+
+#[test]
+fn receiptless_foreign_native_disconnect_preserves_the_active_gateway(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for profile in [false, true] {
+        let (dir, manager) = setup();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let origin = format!("http://{}", listener.local_addr()?);
+        let before = foreign_native_takeover(&manager, &origin, profile)?;
+        let auth = dir.path().join("auth.json");
+        fs::write(&auth, "synthetic-foreign-login")?;
+        let status = manager.status()?;
+        assert!(!status.enabled && !status.recovery_pending && !status.orphaned_config);
+        assert!(!status.orphan_cleanup_available);
+        for _ in 0..2 {
+            manager.disconnect()?;
+            assert_eq!(fs::read_to_string(&manager.config)?, before);
+            assert_eq!(fs::read_to_string(&auth)?, "synthetic-foreign-login");
+            let status = manager.status()?;
+            assert!(!status.recovery_pending && !status.orphaned_config);
+        }
+        assert!(!manager.receipt.exists());
+        assert!(!fs::read_dir(dir.path())?
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("vary-routing-orphan-backup-")
+            }));
+    }
+    Ok(())
+}
+
+#[test]
+fn foreign_baseline_disconnect_succeeds_after_explicit_reconnection(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (dir, manager) = setup();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let origin = format!("http://{}", listener.local_addr()?);
+    let foreign = foreign_native_takeover(&manager, &origin, false)?;
+    let auth = dir.path().join("auth.json");
+    fs::write(&auth, "fixture-login-preserved")?;
+    manager.write_projection_inner(
+        &[group()],
+        "fixture-reconnection-token",
+        &format!("{origin}/intent/v1"),
+        None,
+        true,
+        None,
+    )?;
+    assert!(manager.receipt.exists());
+    manager.disconnect()?;
+    let restored = fs::read_to_string(&manager.config)?;
+    assert_eq!(
+        restored.parse::<toml::Value>()?,
+        foreign.parse::<toml::Value>()?
+    );
+    assert_eq!(fs::read_to_string(auth)?, "fixture-login-preserved");
+    assert!(!manager.receipt.exists());
+    assert!(!manager.status()?.orphaned_config);
+    manager.disconnect()?;
+    assert_eq!(fs::read_to_string(&manager.config)?, restored);
+    Ok(())
+}
+
+#[test]
+fn foreign_native_projection_requires_complete_unambiguous_evidence(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, manager) = setup();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let origin = format!("http://{}", listener.local_addr()?);
+    let before = foreign_native_takeover(&manager, &origin, false)?;
+    let original: toml::Value = before.parse()?;
+    assert!(foreign_native_projection(&original));
+    for case in [
+        "external_origin",
+        "retained_origin",
+        "native_origin",
+        "own_intent_path",
+        "external_path",
+        "retained_trailing_slash",
+        "external_query",
+        "external_userinfo",
+        "native_path",
+        "native_query",
+        "native_missing",
+        "remote",
+        "implicit_port",
+        "zero_port",
+        "unknown_provider",
+        "openai",
+        "own_provider",
+        "own_profile",
+        "own_alias",
+        "own_catalog",
+        "inactive_profile",
+        "nested_reference",
+        "unknown_marker",
+    ] {
+        let mut doc = original.clone();
+        let other = "http://127.0.0.2:12345";
+        match case {
+            "external_origin" => {
+                doc["model_providers"]["magpie"]["base_url"] = format!("{other}/v1").into()
+            }
+            "retained_origin" => {
+                doc["model_providers"][PROVIDER]["base_url"] = format!("{other}/v1").into()
+            }
+            "native_origin" => doc["openai_base_url"] = format!("{other}/backend-api/codex").into(),
+            "own_intent_path" => {
+                doc["model_providers"][PROVIDER]["base_url"] = format!("{origin}/intent/v1").into()
+            }
+            "external_path" => {
+                doc["model_providers"]["magpie"]["base_url"] = format!("{origin}/custom").into()
+            }
+            "retained_trailing_slash" => {
+                doc["model_providers"][PROVIDER]["base_url"] = format!("{origin}/v1/").into()
+            }
+            "external_query" => {
+                doc["model_providers"]["magpie"]["base_url"] =
+                    format!("{origin}/v1?fixture=1").into()
+            }
+            "external_userinfo" => {
+                doc["model_providers"]["magpie"]["base_url"] =
+                    format!("{}/v1", origin.replacen("http://", "http://fixture@", 1)).into()
+            }
+            "native_path" => doc["openai_base_url"] = format!("{origin}/other").into(),
+            "native_query" => {
+                doc["openai_base_url"] = format!("{origin}/backend-api/codex?fixture=1").into()
+            }
+            "native_missing" => {
+                doc.as_table_mut().ok_or("table")?.remove("openai_base_url");
+            }
+            "remote" => {
+                doc["model_providers"]["magpie"]["base_url"] = "https://fixture.example/v1".into()
+            }
+            "implicit_port" => {
+                doc["model_providers"]["magpie"]["base_url"] = "http://127.0.0.1/v1".into()
+            }
+            "zero_port" => {
+                doc["model_providers"]["magpie"]["base_url"] = "http://127.0.0.1:0/v1".into()
+            }
+            "unknown_provider" => doc["model_provider"] = "missing-provider".into(),
+            "openai" => doc["model_provider"] = "openai".into(),
+            "own_provider" => doc["model_provider"] = PROVIDER.into(),
+            "own_profile" => {
+                let extra: toml::Value =
+                    "profile='fixture'\n[profiles.fixture]\nmodel_provider='varyai'\n".parse()?;
+                let table = doc.as_table_mut().ok_or("table")?;
+                table.insert("profile".into(), extra["profile"].clone());
+                table.insert("profiles".into(), extra["profiles"].clone());
+            }
+            "own_alias" => doc["model"] = "vary-auto/fixture".into(),
+            "own_catalog" => {
+                doc.as_table_mut().ok_or("table")?.insert(
+                    "model_catalog_json".into(),
+                    "vary-routing-catalog-0123456789abcdef0123456789abcdef.json".into(),
+                );
+            }
+            "inactive_profile" => {
+                let extra: toml::Value =
+                    "[profiles.inactive]\nmodel_provider='varyai'\n".parse()?;
+                doc.as_table_mut()
+                    .ok_or("table")?
+                    .insert("profiles".into(), extra["profiles"].clone());
+            }
+            "nested_reference" => {
+                let extra: toml::Value = "external=[{model_provider='varyai'}]".parse()?;
+                doc.as_table_mut()
+                    .ok_or("table")?
+                    .insert("external".into(), extra["external"].clone());
+            }
+            "unknown_marker" => doc["model_providers"][PROVIDER]["name"] = "User owned".into(),
+            _ => return Err("unknown fixture".into()),
+        }
+        assert!(!foreign_native_projection(&doc), "{case}");
+        fs::write(&manager.config, toml::to_string(&doc)?)?;
+        assert!(manager.status()?.orphaned_config, "{case}");
+    }
+    Ok(())
+}
+
+#[test]
+fn foreign_disconnect_does_not_bypass_unreadable_recovery_evidence(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, manager) = setup();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let before = foreign_native_takeover(
+        &manager,
+        &format!("http://{}", listener.local_addr()?),
+        false,
+    )?;
+    fs::write(&manager.receipt, "invalid fixture receipt")?;
+    assert!(manager.disconnect().is_err());
+    assert_eq!(fs::read_to_string(&manager.config)?, before);
+    assert_eq!(
+        fs::read_to_string(&manager.receipt)?,
+        "invalid fixture receipt"
+    );
+    Ok(())
+}
+
 #[test]
 fn explicit_disconnect_removes_receiptless_routes_and_keeps_provider_and_login(
 ) -> Result<(), Box<dyn std::error::Error>> {

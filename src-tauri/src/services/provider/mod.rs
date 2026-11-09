@@ -6303,6 +6303,7 @@ impl ProviderService {
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
@@ -6329,6 +6330,7 @@ impl ProviderService {
             AppType::Hermes => Ok(String::new()), // Hermes doesn't use common config snippets
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
@@ -7120,7 +7122,7 @@ impl ProviderService {
                     crate::qoder_config::validate_provider(&provider.settings_config)?;
                 }
             }
-            AppType::WorkBuddy => {
+            AppType::WorkBuddy | AppType::WorkBuddyAi => {
                 if provider.category.as_deref() != Some("official") {
                     crate::workbuddy_config::configured_models(&provider.settings_config)?;
                 }
@@ -7336,6 +7338,7 @@ impl ProviderService {
             | AppType::Hermes
             | AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen

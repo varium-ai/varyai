@@ -34,6 +34,7 @@ pub fn configuration_paths(app: &AppType) -> Result<Vec<PathBuf>, AppError> {
             crate::workbuddy_config::get_workbuddy_config_path(),
             crate::workbuddy_config::ownership_path(),
         ],
+        AppType::WorkBuddyAi => vec![crate::workbuddy_config::get_workbuddy_ai_config_path()],
         AppType::Qoder => vec![crate::qoder_config::path()],
         AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::DeepSeekHarness => {
             vec![crate::services::agent_clients::config_path(app.as_str())?]

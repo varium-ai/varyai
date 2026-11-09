@@ -17,7 +17,8 @@ use std::{
 
 const FAILED: &str = "routing_native_unavailable";
 const LEASE: Duration = Duration::from_secs(5);
-const BODY_LIMIT: usize = 8 * 1024 * 1024;
+// Match the general proxy ingress budget for image-heavy conversations.
+const BODY_LIMIT: usize = 200 * 1024 * 1024;
 type TokenMac = Hmac<Sha256>;
 
 fn canonicalize_model(
@@ -668,6 +669,130 @@ async fn validated_native_compaction(
     }
 }
 
+fn body_error(
+    parts: &http::request::Parts,
+    received_bytes: Option<usize>,
+    status: StatusCode,
+    code: &'static str,
+    reason: &'static str,
+    explanation: &'static str,
+) -> Box<axum::response::Response> {
+    use axum::response::IntoResponse;
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let endpoint = if parts.uri.path() == "/backend-api/codex/responses/compact" {
+        "/backend-api/codex/responses/compact"
+    } else {
+        "/backend-api/codex/responses"
+    };
+    let stage = if received_bytes.is_some() {
+        "native_request_decompress"
+    } else {
+        "native_request_read"
+    };
+    // Only allowlisted coding names may appear in diagnostics, never raw headers.
+    let encoding = super::super::content_encoding::get_content_encoding(&parts.headers)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .take(8)
+                .map(|coding| {
+                    if coding == "identity"
+                        || super::super::content_encoding::is_supported_content_encoding(coding)
+                    {
+                        coding
+                    } else {
+                        "unsupported"
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "identity".into());
+    let advice = if status == StatusCode::PAYLOAD_TOO_LARGE {
+        "Reduce screenshots, attachments, or conversation history; compact or start a new conversation, then retry."
+    } else {
+        "Retry the request; if it persists, check the client version and request compression (supported: gzip, deflate, br, zstd)."
+    };
+    let received = received_bytes.map_or_else(|| "unknown".into(), |bytes| bytes.to_string());
+    let limit_mib = BODY_LIMIT / (1024 * 1024);
+    let message = format!(
+        "[VaryAI] Request rejected before forwarding: {explanation} Endpoint={endpoint}; stage={stage}; reason={reason}; encoding={encoding}; received_bytes={received}; limit={BODY_LIMIT} bytes ({limit_mib} MiB). {advice} Request ID: {request_id}"
+    );
+    let details = serde_json::json!({
+        "source":"varyai", "endpoint":endpoint, "stage":stage, "reason":reason,
+        "encoding":encoding, "received_bytes":received_bytes, "body_limit_bytes":BODY_LIMIT
+    });
+    log::warn!(
+        "NativeRequestBodyRejected request_id={request_id} status={} code={code} details={details}",
+        status.as_u16()
+    );
+    let mut response = (
+        status,
+        axum::Json(serde_json::json!({"error":{
+            "type":"invalid_request_error", "code":code, "message":message,
+            "request_id":request_id, "details":details
+        }})),
+    )
+        .into_response();
+    if let Ok(value) = http::HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert("x-request-id", value);
+    }
+    Box::new(response)
+}
+
+async fn read_body(
+    parts: &http::request::Parts,
+    body: axum::body::Body,
+) -> Result<bytes::Bytes, Box<axum::response::Response>> {
+    use super::super::content_encoding::{self, DecompressError};
+    let bytes = axum::body::to_bytes(body, BODY_LIMIT)
+        .await
+        .map_err(|error| {
+            let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+            while let Some(error) = source {
+                if error.is::<http_body_util::LengthLimitError>() {
+                    return body_error(
+                        parts,
+                        None,
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "routing_body_limit",
+                        "encoded_body_too_large",
+                        "The received request body exceeds the local body limit.",
+                    );
+                }
+                source = error.source();
+            }
+            body_error(
+                parts,
+                None,
+                StatusCode::BAD_REQUEST,
+                "routing_invalid_encoding",
+                "body_read_failed",
+                "The request body could not be fully read.",
+            )
+        })?;
+    let Some(encoding) = content_encoding::get_content_encoding(&parts.headers) else {
+        return Ok(bytes);
+    };
+    // Reject unknown codings before the shared decoder can log the raw header.
+    if !content_encoding::is_supported_content_encoding(&encoding) {
+        return Err(body_error(
+            parts,
+            Some(bytes.len()),
+            StatusCode::BAD_REQUEST,
+            "routing_invalid_encoding",
+            "unsupported_encoding",
+            "The request uses an unsupported Content-Encoding.",
+        ));
+    }
+    match content_encoding::decompress_body_with_limit(&encoding, &bytes, BODY_LIMIT) {
+        Ok(Some(bytes)) => Ok(bytes::Bytes::from(bytes)),
+        Err(DecompressError::TooLarge { .. }) => Err(body_error(parts, Some(bytes.len()), StatusCode::PAYLOAD_TOO_LARGE, "routing_body_limit", "decompressed_body_too_large", "The decompressed request body exceeds the local body limit.")),
+        _ => Err(body_error(parts, Some(bytes.len()), StatusCode::BAD_REQUEST, "routing_invalid_encoding", "decode_failed", "The compressed request could not be decoded: data may be damaged, truncated, or inconsistent with Content-Encoding.")),
+    }
+}
+
 /// Outer middleware authenticates before gateway policy decoding or database work.
 pub(crate) async fn admission(
     axum::extract::State(state): axum::extract::State<super::super::server::ProxyState>,
@@ -699,21 +824,9 @@ pub(crate) async fn admission(
                 "/backend-api/codex/responses" | "/backend-api/codex/responses/compact"
             ) {
             let (mut parts, body) = request.into_parts();
-            let bytes = match axum::body::to_bytes(body, BODY_LIMIT).await {
+            let bytes = match read_body(&parts, body).await {
                 Ok(bytes) => bytes,
-                Err(_) => return super::error(StatusCode::PAYLOAD_TOO_LARGE, "routing_body_limit"),
-            };
-            let bytes = if let Some(encoding) =
-                super::super::content_encoding::get_content_encoding(&parts.headers)
-            {
-                match super::super::content_encoding::decompress_body_with_limit(
-                    &encoding, &bytes, BODY_LIMIT,
-                ) {
-                    Ok(Some(bytes)) => bytes::Bytes::from(bytes),
-                    _ => return super::error(StatusCode::BAD_REQUEST, "routing_invalid_encoding"),
-                }
-            } else {
-                bytes
+                Err(response) => return *response,
             };
             for name in [
                 header::CONTENT_ENCODING,
@@ -836,21 +949,9 @@ pub(crate) async fn handle(
         return super::error(StatusCode::NOT_FOUND, "routing_endpoint_unsupported");
     }
     let (mut parts, body) = request.into_parts();
-    let bytes = match axum::body::to_bytes(body, BODY_LIMIT).await {
+    let bytes = match read_body(&parts, body).await {
         Ok(bytes) => bytes,
-        Err(_) => return super::error(StatusCode::PAYLOAD_TOO_LARGE, "routing_body_limit"),
-    };
-    let bytes = if let Some(encoding) =
-        super::super::content_encoding::get_content_encoding(&parts.headers)
-    {
-        match super::super::content_encoding::decompress_body_with_limit(
-            &encoding, &bytes, BODY_LIMIT,
-        ) {
-            Ok(Some(bytes)) => bytes::Bytes::from(bytes),
-            _ => return super::error(StatusCode::BAD_REQUEST, "routing_invalid_encoding"),
-        }
-    } else {
-        bytes
+        Err(response) => return *response,
     };
     for name in [
         header::CONTENT_ENCODING,
@@ -1040,6 +1141,234 @@ mod tests {
         let previous = RestoreSecurity((*crate::proxy::security::get_security_runtime()).clone());
         crate::proxy::security::runtime::set_security_runtime_for_test(Default::default());
         previous
+    }
+
+    #[tokio::test]
+    async fn native_body_accepts_requests_above_legacy_eight_mib_limit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "model":"synthetic",
+            "input":[{"role":"user","content":[{"type":"input_image",
+                "image_url":format!("data:image/png;base64,{}", "A".repeat(9 * 1024 * 1024))}]}]
+        }))?;
+        let compressed = zstd::stream::encode_all(std::io::Cursor::new(&payload), 0)?;
+        for path in ["responses", "responses/compact"] {
+            for (encoding, body) in [("identity", &payload), ("zstd", &compressed)] {
+                let (parts, body) = axum::extract::Request::builder()
+                    .uri(format!("/backend-api/codex/{path}"))
+                    .header(header::CONTENT_ENCODING, encoding)
+                    .body(axum::body::Body::from(body.clone()))?
+                    .into_parts();
+                let decoded = read_body(&parts, body)
+                    .await
+                    .map_err(|_| "screenshot-sized body rejected")?;
+                assert_eq!(decoded.as_ref(), payload);
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_body_decoding_preserves_payload_and_accepts_exact_limit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+        let payload = br#"{"model":"synthetic","value":1.0000000000000000001}"#;
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip.write_all(payload)?;
+        let gzip = gzip.finish()?;
+        for (encoding, body) in [
+            ("identity", payload.to_vec()),
+            ("gzip", gzip.clone()),
+            (
+                "zstd",
+                zstd::stream::encode_all(std::io::Cursor::new(payload), 0)?,
+            ),
+            (
+                "gzip, zstd",
+                zstd::stream::encode_all(std::io::Cursor::new(gzip), 0)?,
+            ),
+        ] {
+            let (parts, body) = axum::extract::Request::builder()
+                .uri("/backend-api/codex/responses")
+                .header(header::CONTENT_ENCODING, encoding)
+                .body(axum::body::Body::from(body))?
+                .into_parts();
+            let decoded = read_body(&parts, body)
+                .await
+                .map_err(|_| "valid body rejected")?;
+            assert_eq!(decoded.as_ref(), payload);
+        }
+        let body = zstd::stream::encode_all(std::io::repeat(b'x').take(BODY_LIMIT as u64), 0)?;
+        let (parts, body) = axum::extract::Request::builder()
+            .uri("/backend-api/codex/responses")
+            .header(header::CONTENT_ENCODING, "zstd")
+            .body(axum::body::Body::from(body))?
+            .into_parts();
+        let decoded = read_body(&parts, body)
+            .await
+            .map_err(|_| "exact limit rejected")?;
+        assert_eq!(decoded.len(), BODY_LIMIT);
+        assert!(decoded.iter().all(|byte| *byte == b'x'));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_body_rejects_received_and_decompressed_data_above_limit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Generate large fixtures incrementally instead of allocating their input.
+        const CHUNK: &[u8] = &[b'x'; 64 * 1024];
+        let compressed =
+            zstd::stream::encode_all(std::io::repeat(b'x').take(BODY_LIMIT as u64 + 1), 0)?;
+        let stream = futures::stream::iter(
+            (0..=BODY_LIMIT / CHUNK.len())
+                .map(|_| Ok::<_, std::io::Error>(bytes::Bytes::from_static(CHUNK))),
+        );
+        for (encoding, body, reason) in [
+            (
+                "identity",
+                axum::body::Body::from_stream(stream),
+                "encoded_body_too_large",
+            ),
+            (
+                "zstd",
+                axum::body::Body::from(compressed),
+                "decompressed_body_too_large",
+            ),
+        ] {
+            let (parts, body) = axum::extract::Request::builder()
+                .uri("/backend-api/codex/responses")
+                .header(header::CONTENT_ENCODING, encoding)
+                .body(body)?
+                .into_parts();
+            let response = read_body(&parts, body)
+                .await
+                .err()
+                .ok_or("oversized body accepted")?;
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            let bytes = axum::body::to_bytes(response.into_body(), 8192).await?;
+            let body: Value = serde_json::from_slice(&bytes)?;
+            assert_eq!(body["error"]["code"], "routing_body_limit");
+            assert_eq!(body["error"]["details"]["reason"], reason);
+            assert_eq!(body["error"]["details"]["body_limit_bytes"], 209715200);
+            let message = body["error"]["message"].as_str().ok_or("missing message")?;
+            assert!(message.contains("209715200 bytes (200 MiB)"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_body_read_failure_is_not_reported_as_size_limit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let stream = futures::stream::once(async {
+            Err::<bytes::Bytes, _>(std::io::Error::other("synthetic-private-stream-error"))
+        });
+        let (parts, body) = axum::extract::Request::builder()
+            .uri("/backend-api/codex/responses?synthetic-private-query")
+            .body(axum::body::Body::from_stream(stream))?
+            .into_parts();
+        let response = read_body(&parts, body)
+            .await
+            .err()
+            .ok_or("expected read failure")?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), BODY_LIMIT).await?;
+        let text = std::str::from_utf8(&bytes)?;
+        assert!(!text.contains("synthetic-private"));
+        let body: Value = serde_json::from_slice(&bytes)?;
+        assert_eq!(body["error"]["details"]["reason"], "body_read_failed");
+        assert_eq!(body["error"]["details"]["received_bytes"], Value::Null);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn native_body_errors_explain_failures_without_exposing_request_data(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::{
+            database::Database,
+            proxy::{server::ProxyServer, ProxyConfig},
+        };
+        let runtime = Arc::new(super::super::Runtime::default());
+        runtime
+            .native
+            .install(credentials("fixture-token", "fixture-user"))?;
+        let server = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            Arc::new(Database::memory()?),
+            None,
+        )
+        .with_intent_runtime(runtime);
+        let info = server.start().await?;
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        for path in ["responses", "responses/compact"] {
+            for (encoding, body, status, code, reason, stage) in [
+                (
+                    "zstd",
+                    b"synthetic-private-body".to_vec(),
+                    StatusCode::BAD_REQUEST,
+                    "routing_invalid_encoding",
+                    "decode_failed",
+                    "native_request_decompress",
+                ),
+                (
+                    "synthetic-private-header",
+                    b"synthetic-private-body".to_vec(),
+                    StatusCode::BAD_REQUEST,
+                    "routing_invalid_encoding",
+                    "unsupported_encoding",
+                    "native_request_decompress",
+                ),
+            ] {
+                let response = client
+                    .post(format!(
+                        "http://127.0.0.1:{}/backend-api/codex/{path}",
+                        info.port
+                    ))
+                    .bearer_auth("fixture-token")
+                    .header(header::CONTENT_ENCODING, encoding)
+                    .body(body.clone())
+                    .send()
+                    .await?;
+                assert_eq!(response.status(), status);
+                let request_id = response
+                    .headers()
+                    .get("x-request-id")
+                    .ok_or("missing request ID")?
+                    .to_str()?
+                    .to_owned();
+                uuid::Uuid::parse_str(&request_id)?;
+                let text = response.text().await?;
+                assert!(!text.contains("synthetic-private"));
+                assert!(!text.contains("fixture-token"));
+                let error: Value = serde_json::from_str(&text)?;
+                let error = &error["error"];
+                assert_eq!(error["code"], code);
+                assert_eq!(error["request_id"], request_id);
+                assert_eq!(error["details"]["source"], "varyai");
+                assert_eq!(error["details"]["reason"], reason);
+                assert_eq!(error["details"]["stage"], stage);
+                assert_eq!(
+                    error["details"]["endpoint"],
+                    format!("/backend-api/codex/{path}")
+                );
+                assert_eq!(error["details"]["body_limit_bytes"], BODY_LIMIT);
+                if stage == "native_request_decompress" {
+                    assert_eq!(error["details"]["received_bytes"], body.len());
+                }
+                let message = error["message"].as_str().ok_or("missing message")?;
+                assert!(message.contains("VaryAI"));
+                assert!(message.contains(&request_id));
+                assert!(message.contains("209715200"));
+                assert!(message.contains("200 MiB"));
+                assert!(message.contains("before forwarding"));
+                assert!(message.contains("retry") || message.contains("Retry"));
+            }
+        }
+        server.stop().await?;
+        Ok(())
     }
 
     #[test]

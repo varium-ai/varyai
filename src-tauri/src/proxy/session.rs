@@ -163,7 +163,7 @@ pub(crate) fn extract_client_session_id(
         }
         return None;
     }
-    if client_format == "workbuddy" {
+    if matches!(client_format, "workbuddy" | "workbuddy-ai") {
         // WorkBuddy sets this to its current session.id. Request/message/parent
         // IDs describe different scopes and must not identify this conversation.
         if let Some(session_id) = headers

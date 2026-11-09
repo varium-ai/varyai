@@ -405,6 +405,7 @@ pub(crate) fn audit_session_id(
         let id = if matches!(
             app_type,
             AppType::WorkBuddy
+                | AppType::WorkBuddyAi
                 | AppType::Kimi
                 | AppType::Qwen
                 | AppType::ZCode

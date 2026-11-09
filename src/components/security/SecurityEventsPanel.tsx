@@ -239,6 +239,7 @@ export function SecurityEventsPanel({
     "opencode",
     "openclaw",
     "workbuddy",
+    "workbuddy-ai",
     "qoder",
     "doubaowork",
     "trae",

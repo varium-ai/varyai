@@ -9,6 +9,7 @@ import type { ResolvedDirectories } from "@/hooks/useSettings";
 type DirectoryAppId = Exclude<
   AppId,
   | "claude-desktop"
+  | "workbuddy-ai"
   | "qoder"
   | "doubaowork"
   | "trae"

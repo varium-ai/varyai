@@ -6,6 +6,7 @@ pub(crate) mod agent_clients;
 pub mod body_filter;
 pub mod cache_injector;
 pub mod circuit_breaker;
+pub(crate) mod client_activity;
 pub(crate) mod content_encoding;
 pub mod copilot_optimizer;
 pub mod error;

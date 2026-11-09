@@ -283,6 +283,7 @@ const UnifiedSkillsPanel = React.forwardRef<
   const handleToggleAll = async (app: AppId, enabled: boolean) => {
     if (
       app === "workbuddy" ||
+      app === "workbuddy-ai" ||
       app === "qoder" ||
       app === "doubaowork" ||
       app === "trae" ||

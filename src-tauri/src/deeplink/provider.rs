@@ -153,6 +153,7 @@ pub(crate) fn build_provider_from_request(
         AppType::OpenClaw => build_additive_app_settings(request),
         AppType::Hermes => build_hermes_settings(request),
         AppType::WorkBuddy
+        | AppType::WorkBuddyAi
         | AppType::Qoder
         | AppType::Kimi
         | AppType::Qwen

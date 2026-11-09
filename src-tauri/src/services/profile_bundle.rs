@@ -225,6 +225,7 @@ fn initialize_providers(
         if matches!(
             app,
             AppType::WorkBuddy
+                | AppType::WorkBuddyAi
                 | AppType::Qoder
                 | AppType::Kimi
                 | AppType::Qwen
@@ -244,6 +245,7 @@ fn captures_current_supplier(app: &AppType) -> bool {
     matches!(
         app,
         AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen

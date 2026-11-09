@@ -117,6 +117,28 @@ pub(crate) fn transition(
     from: &str,
     to: &str,
 ) -> Result<ThreadTransitionReport, String> {
+    transition_inner(home, recovery_dir, from, to, None)
+}
+
+/// Enter a custom provider only when the saved model is an exact published alias.
+/// Restoration and transitions out of the provider retain their existing semantics.
+pub(crate) fn transition_with_models(
+    home: &Path,
+    recovery_dir: &Path,
+    from: &str,
+    to: &str,
+    models: &HashSet<String>,
+) -> Result<ThreadTransitionReport, String> {
+    transition_inner(home, recovery_dir, from, to, Some(models))
+}
+
+fn transition_inner(
+    home: &Path,
+    recovery_dir: &Path,
+    from: &str,
+    to: &str,
+    models: Option<&HashSet<String>>,
+) -> Result<ThreadTransitionReport, String> {
     validate_provider_pair(from, to)?;
     let mut receipt = load_or_create_receipt(home, recovery_dir, from, to)?;
     let mut report = ThreadTransitionReport::default();
@@ -152,9 +174,10 @@ pub(crate) fn transition(
             }
         };
         if row.paginated {
-            match paginated::transition(home, recovery_dir, &row, &mut receipt) {
-                Ok(true) => report.moved += 1,
-                Ok(false) => {}
+            match paginated::transition(home, recovery_dir, &row, &mut receipt, models) {
+                Ok(paginated::Transition::Moved) => report.moved += 1,
+                Ok(paginated::Transition::Unchanged) => {}
+                Ok(paginated::Transition::UnsupportedModel) => report.skipped += 1,
                 Err(_) => {
                     report.skipped += 1;
                     report.incomplete = true;
@@ -207,6 +230,21 @@ pub(crate) fn transition(
         }) {
             continue;
         }
+        let saved_model = models.and_then(|_| read_row_model(&row.db, &row.id).ok().flatten());
+        if models.is_some_and(|models| {
+            db_provider == from
+                && !receipt.entries.iter().any(|entry| {
+                    entry.db == row.db && entry.id == row.id && entry.state == ReceiptState::Pending
+                })
+                && !saved_model
+                    .as_ref()
+                    .is_some_and(|model| models.contains(model))
+        }) {
+            // A known incompatible source thread needs no history scan or retry,
+            // even when its history is active, oversized, or beyond this scan budget.
+            report.skipped += 1;
+            continue;
+        }
 
         let file_size = match fs::metadata(&rollout) {
             Ok(metadata) if metadata.is_file() => metadata.len(),
@@ -245,6 +283,25 @@ pub(crate) fn transition(
             report.incomplete = true;
             continue;
         }
+        let validated_model = if let Some(models) = models {
+            let model = saved_model;
+            if !model.as_ref().is_some_and(|model| {
+                models.contains(model)
+                    && latest_turn_model(&snapshot.decoded).as_ref() == Some(model)
+            }) {
+                report.skipped += 1;
+                // An interrupted owned operation may already have changed one side.
+                // Keep that journal recoverable rather than reporting it synchronized.
+                report.incomplete |= entry_index_option.is_some_and(|index| {
+                    receipt.entries[index].state == ReceiptState::Pending
+                        && (db_provider == to || provider == RolloutProvider::Target)
+                });
+                continue;
+            }
+            model
+        } else {
+            None
+        };
         let (entry_index, backup) = if let Some(index) = entry_index_option {
             (index, receipt.entries[index].backup.clone())
         } else {
@@ -275,11 +332,17 @@ pub(crate) fn transition(
                 continue;
             }
             if db_provider == from {
-                match update_row(&row.db, &row.id, from, to) {
+                match update_row_with_model(&row.db, &row.id, from, to, validated_model.as_deref())
+                {
                     Ok(1) => {}
                     Ok(0) => {
                         let current = read_row_provider(&row.db, &row.id)?;
-                        if current.as_deref() != Some(to) {
+                        if current.as_deref() != Some(to)
+                            || validated_model.as_deref().is_some_and(|model| {
+                                read_row_model(&row.db, &row.id).ok().flatten().as_deref()
+                                    != Some(model)
+                            })
+                        {
                             report.skipped += 1;
                             report.incomplete = true;
                             continue;
@@ -332,11 +395,16 @@ pub(crate) fn transition(
         };
 
         if db_provider == from {
-            match update_row(&row.db, &row.id, from, to) {
+            match update_row_with_model(&row.db, &row.id, from, to, validated_model.as_deref()) {
                 Ok(1) => {}
                 Ok(0) => {
                     let current = read_row_provider(&row.db, &row.id)?;
-                    if current.as_deref() != Some(to) {
+                    if current.as_deref() != Some(to)
+                        || validated_model.as_deref().is_some_and(|model| {
+                            read_row_model(&row.db, &row.id).ok().flatten().as_deref()
+                                != Some(model)
+                        })
+                    {
                         if let Some(written) = rewritten.as_deref() {
                             let _ = restore_raw(
                                 &rollout,
@@ -1242,7 +1310,41 @@ fn read_row_provider(db: &Path, id: &str) -> Result<Option<String>, String> {
     }
 }
 
+fn read_row_model(db: &Path, id: &str) -> Result<Option<String>, String> {
+    validate_db_path(db)?;
+    let conn =
+        Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|_| FAILED)?;
+    conn.query_row("SELECT model FROM threads WHERE id = ?1", [id], |row| {
+        row.get(0)
+    })
+    .map_err(|_| CONFLICT.into())
+}
+
+fn latest_turn_model(decoded: &[u8]) -> Option<String> {
+    let mut latest = None;
+    for line in decoded.split(|byte| *byte == b'\n') {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let event: serde_json::Value = serde_json::from_slice(line).ok()?;
+        if event.get("type").and_then(serde_json::Value::as_str) == Some("turn_context") {
+            latest = Some(event.get("payload")?.get("model")?.as_str()?.to_owned());
+        }
+    }
+    latest
+}
+
 fn update_row(db: &Path, id: &str, from: &str, to: &str) -> Result<usize, String> {
+    update_row_with_model(db, id, from, to, None)
+}
+
+fn update_row_with_model(
+    db: &Path,
+    id: &str,
+    from: &str,
+    to: &str,
+    model: Option<&str>,
+) -> Result<usize, String> {
     validate_db_path(db)?;
     let mut conn = Connection::open_with_flags(
         db,
@@ -1252,12 +1354,18 @@ fn update_row(db: &Path, id: &str, from: &str, to: &str) -> Result<usize, String
     conn.busy_timeout(Duration::from_secs(2))
         .map_err(|_| FAILED)?;
     let tx = conn.transaction().map_err(|_| CONFLICT)?;
-    let changed = tx
-        .execute(
+    let changed = if let Some(model) = model {
+        tx.execute(
+            "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND model_provider = ?3 AND model = ?4",
+            params![to, id, from, model],
+        )
+    } else {
+        tx.execute(
             "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND model_provider = ?3",
             params![to, id, from],
         )
-        .map_err(|_| CONFLICT)?;
+    }
+    .map_err(|_| CONFLICT)?;
     tx.commit().map_err(|_| CONFLICT)?;
     Ok(changed)
 }
@@ -1406,6 +1514,142 @@ mod tests {
             .as_str()
             .unwrap()
             .to_owned()
+    }
+
+    #[test]
+    fn gated_pending_legacy_transition_requires_the_same_published_model(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let alias = "vary-auto/fixture";
+        for compatible in [true, false] {
+            let dir = tempdir()?;
+            let home = dir.path().join("codex");
+            let recovery = dir.path().join("recovery");
+            fs::create_dir_all(&home)?;
+            let (rollout, state) = fixture(&home, ID, "magpie", ".jsonl");
+            db(&state, ID, &rollout, "magpie");
+            let conn = Connection::open(&state)?;
+            conn.execute("ALTER TABLE threads ADD COLUMN model TEXT", [])?;
+            conn.execute("UPDATE threads SET model=?1", [alias])?;
+            let mut contents = fs::read_to_string(&rollout)?;
+            contents.push_str(&format!(
+                "{}\n",
+                serde_json::json!({"type":"turn_context","payload":{"model":alias}})
+            ));
+            fs::write(&rollout, contents)?;
+            OpenOptions::new().write(true).open(&rollout)?.set_times(
+                FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(120)),
+            )?;
+            transition(&home, &recovery, "magpie", "varyai")?;
+            let mut journal = read_receipt(&receipt_path(&recovery, "magpie", "varyai"))?
+                .ok_or("missing journal")?;
+            journal.entries[0].state = ReceiptState::Pending;
+            persist_receipt(&recovery, "magpie", "varyai", &journal)?;
+            // Simulate interruption after the rollout rewrite but before the row update.
+            conn.execute(
+                "UPDATE threads SET model_provider='magpie', model=?1",
+                [if compatible {
+                    alias
+                } else {
+                    "codex/fixture-old"
+                }],
+            )?;
+            let before = fs::read(&rollout)?;
+            let report = transition_with_models(
+                &home,
+                &recovery,
+                "magpie",
+                "varyai",
+                &HashSet::from([alias.to_owned()]),
+            )?;
+            assert_eq!(report.moved, usize::from(compatible));
+            assert_eq!(report.incomplete, !compatible);
+            assert_eq!(fs::read(&rollout)?, before);
+            assert_eq!(
+                read_row_provider(&state, ID)?.as_deref(),
+                Some(if compatible { "varyai" } else { "magpie" })
+            );
+            let journal = read_receipt(&receipt_path(&recovery, "magpie", "varyai"))?
+                .ok_or("missing journal")?;
+            assert_eq!(
+                journal.entries[0].state,
+                if compatible {
+                    ReceiptState::Moved
+                } else {
+                    ReceiptState::Pending
+                }
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unpublished_source_model_skips_oversized_history_without_pending_retry(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let home = dir.path().join("codex");
+        let recovery = dir.path().join("recovery");
+        fs::create_dir_all(&home)?;
+        let (rollout, state) = fixture(&home, ID, "magpie", ".jsonl");
+        db(&state, ID, &rollout, "magpie");
+        let conn = Connection::open(&state)?;
+        conn.execute("ALTER TABLE threads ADD COLUMN model TEXT", [])?;
+        conn.execute("UPDATE threads SET model='codex/fixture-unpublished'", [])?;
+        OpenOptions::new()
+            .write(true)
+            .open(&rollout)?
+            .set_len(MAX_ROLLOUT_BYTES + 1)?;
+        let before = fs::metadata(&rollout)?;
+        let report = transition_with_models(
+            &home,
+            &recovery,
+            "magpie",
+            "varyai",
+            &HashSet::from(["vary-auto/fixture".to_owned()]),
+        )?;
+        assert_eq!(report.moved, 0);
+        assert_eq!(report.skipped, 1);
+        assert!(!report.incomplete);
+        assert_eq!(read_row_provider(&state, ID)?.as_deref(), Some("magpie"));
+        let after = fs::metadata(&rollout)?;
+        assert_eq!(after.len(), before.len());
+        assert_eq!(after.modified()?, before.modified()?);
+        assert!(!receipt_path(&recovery, "magpie", "varyai").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn model_checked_update_refuses_a_concurrent_model_change(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let home = dir.path().join("codex");
+        fs::create_dir_all(&home)?;
+        let (rollout, state) = fixture(&home, ID, "magpie", ".jsonl");
+        db(&state, ID, &rollout, "magpie");
+        let conn = Connection::open(&state)?;
+        conn.execute("ALTER TABLE threads ADD COLUMN model TEXT", [])?;
+        conn.execute("UPDATE threads SET model='codex/fixture-new'", [])?;
+        assert_eq!(
+            update_row_with_model(&state, ID, "magpie", "varyai", Some("vary-auto/fixture"))?,
+            0
+        );
+        assert_eq!(read_row_provider(&state, ID)?.as_deref(), Some("magpie"));
+        Ok(())
+    }
+
+    #[test]
+    fn latest_turn_model_fails_closed_for_unknown_or_malformed_metadata() {
+        for bytes in [
+            &b""[..],
+            &b"{\"type\":\"turn_context\",\"payload\":{}}\n"[..],
+            &b"{\"type\":\"turn_context\",\"payload\":{\"model\":5}}\n"[..],
+            &b"{malformed\n"[..],
+        ] {
+            assert!(latest_turn_model(bytes).is_none());
+        }
+        assert_eq!(
+            latest_turn_model(b"{\"type\":\"turn_context\",\"payload\":{\"model\":\"first\"}}\n{\"type\":\"turn_context\",\"payload\":{\"model\":\"last\"}}\n").as_deref(),
+            Some("last")
+        );
     }
 
     #[test]

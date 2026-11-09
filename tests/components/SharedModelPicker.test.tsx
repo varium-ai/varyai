@@ -2,6 +2,46 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { SharedModelPicker } from "@/components/models/SharedModelPicker";
 
+it.each([
+  { variant: "agent" as const },
+  {},
+  { multiple: true },
+  { readOnly: true },
+])("shows readable model tooltips with picker options %j", (options) => {
+  const pick = vi.fn();
+  const directId = `vary-provider/model-${"a".repeat(64)}`;
+  const { container } = render(
+    <SharedModelPicker
+      {...options}
+      models={[
+        { id: directId, name: "GPT Example · Vendor", group: "Vendor" },
+        {
+          id: "vary-auto/group-example",
+          name: "Smart · routing group",
+          group: "routing",
+        },
+        {
+          id: "native",
+          modelId: "vendor/wire-model",
+          name: "Native model",
+          source: "native",
+        },
+      ]}
+      selected={[]}
+      onPick={pick}
+    />,
+  );
+  expect(screen.getByTitle("GPT Example")).toHaveTextContent("GPT Example");
+  expect(screen.getByTitle("Smart")).toHaveTextContent("Smart");
+  expect(screen.getByTitle("Native model")).toHaveTextContent("Native model");
+  expect(container.querySelector('[title^="vary-"]')).toBeNull();
+  expect(screen.queryByTitle("vendor/wire-model")).not.toBeInTheDocument();
+  if (!options.readOnly) {
+    fireEvent.click(screen.getByTitle("GPT Example"));
+    expect(pick).toHaveBeenCalledExactlyOnceWith(directId);
+  }
+});
+
 it("uses the same provider panel for single selection without visibility controls", () => {
   const pick = vi.fn();
   const { container } = render(

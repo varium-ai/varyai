@@ -147,6 +147,7 @@ impl McpService {
             }
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
@@ -192,6 +193,7 @@ impl McpService {
             }
             AppType::Pi
             | AppType::WorkBuddy
+            | AppType::WorkBuddyAi
             | AppType::Qoder
             | AppType::Kimi
             | AppType::Qwen
@@ -249,6 +251,7 @@ impl McpService {
                 | AppType::ClaudeDesktop
                 | AppType::Pi
                 | AppType::WorkBuddy
+                | AppType::WorkBuddyAi
                 | AppType::Qoder
                 | AppType::Kimi
                 | AppType::Qwen

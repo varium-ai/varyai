@@ -8,6 +8,13 @@ The home **Tools / Agent** list checks installed CLI and desktop versions. Suppo
 
 See [DeepSeek Harness Desktop](deepseek-harness.md) for its profile, native model selection and inspection boundaries.
 
+Tools confirmed as uninstalled appear under **More tools**, including tools with a
+saved connection. These entries show only installation and website shortcuts;
+check-in, model selection, routing switches and connection status are hidden.
+Saved connection records remain local for recovery after reinstallation. Installed
+tools stay in the main list; an unavailable installation check does not discard a
+saved connection from that list.
+
 Checking versions does not launch or update a client. Selecting an update uses the existing official installer flow; a desktop update can close and reopen that client. Each result is verified against a fresh installed version from the same desktop or CLI source. Kimi installations detected only as a CLI show their CLI version without using the desktop update feed.
 
 ## Configure a provider

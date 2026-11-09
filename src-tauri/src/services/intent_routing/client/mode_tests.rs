@@ -15,8 +15,9 @@ fn thread_fixture(
     fs::write(
         &path,
         format!(
-            "{}\n{{\"type\":\"event_msg\",\"payload\":{{\"message\":\"synthetic\"}}}}\n",
-            json!({"type":"session_meta","payload":{"id":id,"model_provider":provider}})
+            "{}\n{}\n{{\"type\":\"event_msg\",\"payload\":{{\"message\":\"synthetic\"}}}}\n",
+            json!({"type":"session_meta","payload":{"id":id,"model_provider":provider}}),
+            json!({"type":"turn_context","payload":{"model":tests::group().alias()}})
         ),
     )?;
     if quiet {
@@ -28,10 +29,10 @@ fn thread_fixture(
             ))?;
     }
     let db = rusqlite::Connection::open(dir.join("state_5.sqlite"))?;
-    db.execute("CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, model_provider TEXT NOT NULL)", [])?;
+    db.execute("CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, model_provider TEXT NOT NULL, model TEXT)", [])?;
     db.execute(
-        "INSERT INTO threads (id, rollout_path, model_provider) VALUES (?1,?2,?3)",
-        rusqlite::params![id, path.to_string_lossy(), provider],
+        "INSERT INTO threads (id, rollout_path, model_provider, model) VALUES (?1,?2,?3,?4)",
+        rusqlite::params![id, path.to_string_lossy(), provider, tests::group().alias()],
     )?;
     Ok(path)
 }
@@ -107,6 +108,176 @@ fn magpie_paginated_chats_follow_takeover_without_rewriting_history(
             thread_provider(dir.path(), "unrelated-paged")?,
             "other-provider"
         );
+    }
+    Ok(())
+}
+
+pub(super) fn thread_model_fixture(
+    dir: &Path,
+    id: &str,
+    provider: &str,
+    paginated: bool,
+    database_model: Option<&str>,
+    latest_turn_model: Option<&str>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let db = rusqlite::Connection::open(dir.join("state_5.sqlite"))?;
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS threads (
+            id TEXT PRIMARY KEY,
+            rollout_path TEXT NOT NULL,
+            model_provider TEXT NOT NULL,
+            model TEXT,
+            history_mode TEXT NOT NULL DEFAULT 'legacy'
+        )",
+    )?;
+    let path = thread_fixture(dir, id, provider, true)?;
+    db.execute(
+        "UPDATE threads SET model=?1, history_mode=?2 WHERE id=?3",
+        rusqlite::params![
+            database_model,
+            if paginated { "paginated" } else { "legacy" },
+            id
+        ],
+    )?;
+    let contents = if paginated {
+        // The paginated row is authoritative; a local suffix has no model metadata.
+        format!(
+            "{}\n",
+            json!({"type":"event_msg","payload":{"message":"fixture suffix"}})
+        )
+    } else {
+        let mut contents = format!(
+            "{}\n",
+            json!({"type":"session_meta","payload":{"id":id,"model_provider":provider}})
+        );
+        if let Some(model) = latest_turn_model {
+            contents.push_str(&format!(
+                "{}\n",
+                json!({"type":"turn_context","payload":{"model":model}})
+            ));
+        }
+        contents
+    };
+    fs::write(&path, contents)?;
+    fs::File::options().write(true).open(&path)?.set_times(
+        fs::FileTimes::new()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(120)),
+    )?;
+    Ok(path)
+}
+
+#[test]
+fn standalone_connection_keeps_unpublished_legacy_thread_models_on_their_source_provider(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let alias = tests::group().alias();
+    let unpublished = "codex/fixture-native-model";
+    for (database_model, latest_turn_model) in [
+        (unpublished, unpublished),
+        (alias.as_str(), unpublished),
+        (unpublished, alias.as_str()),
+    ] {
+        let (dir, manager) = tests::setup();
+        fs::write(
+            &manager.config,
+            "model_provider='magpie'\nmodel='codex/fixture-native-model'\n",
+        )?;
+        let path = thread_model_fixture(
+            dir.path(),
+            "unpublished-thread",
+            "magpie",
+            false,
+            Some(database_model),
+            Some(latest_turn_model),
+        )?;
+        thread_model_fixture(
+            dir.path(),
+            "compatible-thread",
+            "magpie",
+            false,
+            Some(&alias),
+            Some(&alias),
+        )?;
+        let before = fs::read(&path)?;
+        let modified = fs::metadata(&path)?.modified()?;
+        for _ in 0..2 {
+            manager.write_projection(&[tests::group()], "fixture-local-token", BASE)?;
+            manager.sync_threads()?;
+            let installed: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
+            assert_eq!(installed["model_provider"].as_str(), Some(PROVIDER));
+            assert_eq!(
+                installed["model"].as_str(),
+                Some("Development-routing-group")
+            );
+            assert_eq!(manager.selected_model()?.as_deref(), Some(alias.as_str()));
+            assert_eq!(
+                thread_provider(dir.path(), "unpublished-thread")?,
+                "magpie",
+                "a provider transition cannot make an unpublished saved model executable"
+            );
+            assert_eq!(thread_provider(dir.path(), "compatible-thread")?, PROVIDER);
+            assert_eq!(fs::read(&path)?, before);
+            assert_eq!(fs::metadata(&path)?.modified()?, modified);
+            let model: String = rusqlite::Connection::open(dir.path().join("state_5.sqlite"))?
+                .query_row(
+                    "SELECT model FROM threads WHERE id='unpublished-thread'",
+                    [],
+                    |row| row.get(0),
+                )?;
+            assert_eq!(model, database_model);
+            assert!(!manager.thread_sync_pending());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn standalone_connection_keeps_unpublished_paginated_thread_models_on_their_source_provider(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let alias = tests::group().alias();
+    for database_model in [Some("codex/fixture-native-model"), Some(""), None] {
+        let (dir, manager) = tests::setup();
+        fs::write(
+            &manager.config,
+            "model_provider='magpie'\nmodel='codex/fixture-native-model'\n",
+        )?;
+        let path = thread_model_fixture(
+            dir.path(),
+            "unpublished-paged",
+            "magpie",
+            true,
+            database_model,
+            None,
+        )?;
+        thread_model_fixture(
+            dir.path(),
+            "compatible-paged",
+            "magpie",
+            true,
+            Some(&alias),
+            None,
+        )?;
+        let before = fs::read(&path)?;
+        let modified = fs::metadata(&path)?.modified()?;
+        for _ in 0..2 {
+            manager.write_projection(&[tests::group()], "fixture-local-token", BASE)?;
+            manager.sync_threads()?;
+            assert_eq!(
+                thread_provider(dir.path(), "unpublished-paged")?,
+                "magpie",
+                "paginated history must validate its saved model before changing providers"
+            );
+            assert_eq!(thread_provider(dir.path(), "compatible-paged")?, PROVIDER);
+            assert_eq!(fs::read(&path)?, before);
+            assert_eq!(fs::metadata(&path)?.modified()?, modified);
+            let model: Option<String> =
+                rusqlite::Connection::open(dir.path().join("state_5.sqlite"))?.query_row(
+                    "SELECT model FROM threads WHERE id='unpublished-paged'",
+                    [],
+                    |row| row.get(0),
+                )?;
+            assert_eq!(model.as_deref(), database_model);
+            assert!(!manager.thread_sync_pending());
+        }
     }
     Ok(())
 }

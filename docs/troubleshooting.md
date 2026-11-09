@@ -92,6 +92,14 @@ For a genuinely absent client configuration, add or import a provider and apply 
 
 Claude, Codex, Gemini and Grok Build show setup guidance when native configuration is missing, without starting the gateway or creating a live backup. Other integrations also require supported models, native product configuration, connection consent or certificate trust. Follow the [per-agent prerequisites](guides/provider-routing.md#routing-prerequisites-on-a-new-installation). Empty synthetic files used in isolated tests are not installed for ordinary users.
 
+## A desktop tool has not loaded its connection changes
+
+Claude Desktop and WorkBuddy can retain the model catalog they read when starting. On macOS and supported Windows installations, a running copy older than VaryAI's last configuration change offers **Restart** in Tools. Save work and confirm the dialog. macOS requests a normal quit and leaves a refused quit for you to resolve. Windows first asks windows to close, then can end verified remaining application processes, including a tray instance, before reopening the same installation. WorkBuddy's managed configuration directory selects its domestic or international build; the international Windows build has no verified automatic restart contract.
+
+The restart action also remains available after disconnecting while a running copy still holds the previous connection. VaryAI keeps only a private timestamp and file fingerprints for this check, and refuses the action after an external edit or replacement process invalidates it. Configuration repair, restart and successful upstream inference are separate states. A configured row still needs a message in the tool and a corresponding request in Statistics for validation.
+
+For unsupported or unidentified installations, fully quit and reopen the tool yourself. CLI tools read changes in a new process or session. TRAE uses its own acknowledged bridge delivery and cleanup; follow its pending-bridge guidance and use **Apply again** to retry delivery. A pending bridge alone is not evidence that restarting would fix it.
+
 ## WorkBuddy reports an unsupported cross-protocol field
 
 A `400 Unsupported field in cross-protocol request` from local routing means the request could not be converted before contacting the provider. WorkBuddy sends Chat Completions requests, including local conversation markers and optional reasoning controls. Use a build that handles these markers during conversion and preserves explicit reasoning and verbosity controls for a Responses upstream. An explicit `reasoning_effort: "none"` also disables reasoning when converting to Anthropic or Gemini.
@@ -127,6 +135,14 @@ Use the configured listener address if it differs. `PROXY_MANAGED` is the local 
 Inspect the relevant status code and sanitized logs. Current logs use `~/.varyai/logs/`; historical logs may remain in `~/.cc-switch/logs/`. Use the application's diagnostics to locate the active file.
 
 For a generic Gemini `INVALID_ARGUMENT`, compare the `GeminiRequestShape` entries for the affected clients. These entries record message and function counts, parameter formats, and output-token ranges without model names, prompts, tool names, schemas, or argument values. The summary helps identify request differences; it does not establish which field the upstream rejected.
+
+### Codex native request decoding and body limits
+
+The native Codex `/backend-api/codex/responses` and `/backend-api/codex/responses/compact` endpoints allow both the received request body and each decompression stage up to 200 MiB (209,715,200 bytes), matching the general proxy ingress budget. Earlier native ingress used an additional 8 MiB (8,388,608-byte) limit that could reject ordinary screenshot-heavy conversations and their compaction requests. Screenshots and accumulated tool output can increase the serialized conversation size even when the latest user message is short. Earlier builds also returned HTTP 400 with only `routing_invalid_encoding` for unsupported encodings, damaged compressed data, and decompression output exceeding the old limit. That historical error alone cannot establish which condition occurred. The local byte limit is separate from the client's token-based context budget and does not trigger automatic compaction; upstream providers may impose their own limits.
+
+Body rejection errors now explain that VaryAI rejected the request before forwarding, describe the cause, and suggest a next step. HTTP 413 with `routing_body_limit` distinguishes `encoded_body_too_large` from `decompressed_body_too_large`; HTTP 400 with `routing_invalid_encoding` distinguishes `unsupported_encoding`, `decode_failed`, and `body_read_failed`. For an oversized conversation, reduce attachments or tool output and retry; use the client's compaction command if possible, or start a new conversation if compaction also exceeds the limit. For a decoding or transfer failure, retry and check the client version and any intermediary that changes request compression.
+
+The message, JSON `error.request_id`, response `x-request-id` header, and `NativeRequestBodyRejected` log entry share a locally generated request ID. Search the active log for this ID to correlate a report. JSON `error.details` and the log include the fixed source `varyai`, endpoint, read/decompression stage, failure reason, sanitized encoding, body limit, and received byte count when the complete body was read. Unknown encodings are labeled `unsupported`; body-read failures have no complete received byte count. Decompression is bounded, so an oversized decoded body is known only to exceed the limit, rather than having a measured total size. These diagnostics exclude request content, credentials, raw header values, and decoder error text. A rejection at this stage does not reach the upstream and has no upstream request ID.
 
 ### HTTP 404: endpoint or protocol mismatch
 
@@ -318,7 +334,9 @@ Settings > About > Local environment check lists every supported agent. The eigh
 
 Claude Desktop, WorkBuddy, Qoder CN, Doubao Work, TRAE CN, Kimi Code, Qwen Code and ZCode also display their installed version. On macOS, desktop cards read the product version from the installed application's bundle metadata without launching it. Desktop installations take precedence over CLI installations and are labeled explicitly; an embedded editor's version is not the desktop product version. Kimi can instead run a bounded `--version` check when only its CLI is installed. Qwen Code uses the same version checks, installation diagnostics and upgrade pipeline as the other managed CLI tools. A WorkBuddy launcher alone establishes presence but is not executed as a version-only CLI. Missing metadata or failed version commands leave the installation marked present and show a version-read failure. Desktop application detection currently supports macOS; unsupported checks on other platforms are labeled explicitly.
 
-All supported Agents are checked for installation when the Tools page opens, every 30 seconds while it is active, and when its window becomes active again. Detection adds an installed Agent to the main list without enabling its connection. On macOS, presence and version checks share discovery across `/Applications`, `~/Applications`, one folder level below each, and Spotlight results for known application identities. Renamed bundles are recognized by their identity; leftover configuration directories do not establish installation. Both `WorkBuddy.app` and `WorkBuddy AI.app` are recognized. The international WorkBuddy build is kept separate from the domestic update feed. CLI detection retains the existing installer-directory and PATH search for every supported CLI Agent.
+All supported Agents are checked for installation when the Tools page opens, every 30 seconds while it is active, and when its window becomes active again. Detection adds an installed Agent to the main list without enabling its connection. On macOS, presence and version checks share discovery across `/Applications`, `~/Applications`, one folder level below each, and Spotlight results for known application identities. Renamed bundles are recognized by their identity; leftover configuration directories do not establish installation. WorkBuddy desktop detection uses the China edition's bundle identity, including renamed China bundles. The international `WorkBuddy AI.app` appears as a separate WorkBuddy AI tool with its own connection, version and website; it is not evidence that WorkBuddy China is installed and is not substituted for its version or updates. CLI detection retains the existing installer-directory and PATH search for every supported CLI Agent.
+
+Applications moved to macOS Trash are excluded from presence and version discovery, including application symlinks pointing into Trash. After uninstalling an Agent, return to Vary AI or refresh the Tools list to rerun detection. Tools confirmed as uninstalled move to **More tools** and show only installation and website actions, even if a connection was previously saved. Check-in, model selection, routing switches and connection status are shown only for installed tools.
 
 The About page uses one shared card layout for CLI and desktop agents: current version, latest version and an Upgrade button when a newer version is available. On macOS, Claude Desktop, WorkBuddy, Qoder CN, Doubao Work, TRAE CN, Kimi Desktop and ZCode query verified publisher release sources. Missing or older remote metadata is not evidence that an installation is current. Refresh reruns detection.
 
@@ -452,15 +470,42 @@ not an enabled connection. Unknown or modified provider definitions are refused.
 Backup failure prevents configuration writes. Background recovery without a
 receipt still leaves configuration untouched.
 
-The confirmation explains that removed settings use Codex defaults; the missing
-historical settings cannot be recovered. Choose a shared model or use **Apply
+A different gateway can retain the Vary provider definition for historical
+conversations. Magpie, for example, can redirect that definition to its own `/v1`
+endpoint while retaining Vary's label and flags. If the effective external
+provider and the retained definition use the same explicit loopback `/v1`
+origin as the native Codex URL, and no Vary model, catalog or provider reference
+remains, that is an external connection. Its definition alone is not a missing
+Vary recovery record. **Disconnect** clears Vary's saved connection request while
+preserving the external endpoint, provider definitions, model selection and
+login. The confirmation explains this narrower operation. Unknown or ambiguous
+settings still require normal recovery; a `/v1` URL alone is not proof of ownership.
+
+If the active provider or recovery receipt changes while troubleshooting,
+refresh Tools before choosing an action. Reapplying Vary may create a new receipt
+whose baseline is the external connection; subsequent disconnect must preserve
+that baseline. Use an updated build containing this fix. Do not delete the
+retained provider or authentication/history files to suppress the warning.
+
+For recognized Vary routes, the confirmation explains that removed settings use
+Codex defaults; the missing historical settings cannot be recovered. Choose a shared model or use **Apply
 again** to back up the current configuration and reconnect with a new receipt.
 Configuration drift with an existing receipt still requires the normal recovery
 flow. Authentication files and unrelated settings are preserved.
 
 ### Codex stays on "Loading models..." after enabling routing
 
-Keep Vary AI and its local proxy running. After enabling the unified Codex model menu, fully quit and reopen Codex rather than only closing its window. With supported ChatGPT authentication, the connection keeps the native OpenAI provider; API-only or custom-provider connections use the VaryAI provider. Existing conversation provider records are synchronized in the background, separately from the model menu. Busy conversations are retried without changing the connection status or disabling model selection. If Codex itself reports a provider mismatch, close that conversation and let the background retry finish before reopening it.
+Keep Vary AI and its local proxy running. On macOS and Windows, VaryAI watches the effective Codex provider, endpoint, local credential and applicable login identity for route changes, including a switch from Magpie. Once configuration settles, running turns finish and Codex requests have been quiet for ten seconds, it reloads the desktop application's old stdio app-server and waits for a replacement. A replacement already started by Magpie is adopted without another restart. Access-token refreshes, inactive-provider edits, display-name changes and ordinary model selections do not trigger this restart. A login change also leaves an account-independent custom provider running.
+
+A model-catalog change alone never automatically restarts Codex. Its row reports that the list changed and offers **Restart** with confirmation; this queues the same idle-aware background-service reload. The row distinguishes waiting for idle, reloading and failed replacement. **Apply again** repairs configuration ownership and does not itself mean the running application loaded it.
+
+The proxy activity check covers complete streaming responses and native context-compaction requests. Completion, cancellation or a response error starts the ten-second quiet period, so a configuration change does not restart the background service between adjacent requests in a task.
+
+The watcher starts with the application's current configuration as its baseline. It defers invalid or incomplete configuration and unreadable activity records, and recognizes both rollout events and paginated history. It targets only desktop-owned processes using the configured Codex home; terminal daemons, editor servers and explicit listeners are excluded. A replacement-process observation does not establish successful authentication or inference. If replacement times out, or on other platforms, fully quit and reopen Codex rather than only closing its window.
+
+Windows discovery supports the Store package, its cached Codex executable and recognized classic installations. It verifies process ownership, the desktop parent, process creation time and the process's own `CODEX_HOME` or Windows profile. After the idle check, Windows terminates the old server and its verified descendants so inherited output-pipe handles cannot prevent reconnection. Process IDs and creation times are rechecked before termination; other users, other Codex homes and replacement processes are preserved. If no app-server returns while the verified Windows Store Codex application still runs, VaryAI can close and reopen that application once, matching the reference recovery path. Unsent drafts can be lost in this fallback. macOS does not reopen the entire application automatically; a failed row offers retry and manual quit/reopen guidance.
+
+With supported ChatGPT authentication, the connection keeps the native OpenAI provider; API-only or custom-provider connections use the VaryAI provider. Existing conversation provider records are synchronized in the background, separately from the model menu. Busy conversations are retried without changing the connection status or disabling model selection. If Codex itself reports a provider mismatch, close that conversation and let the background retry finish before reopening it.
 
 Tools retains the requested Codex connection and selected shared model for startup recovery. Configuration receipts track ownership separately from that preference. Automatic startup recovery completes interrupted projection or conversation recovery before restoring the saved connection. A pending recovery receipt remains available until quiet conversation files and their SQLite provider rows agree. Turning a connection off restores its owned configuration fields without deleting conversation history.
 
@@ -471,6 +516,16 @@ A partial leftover configuration can select `model_provider = "varyai"` without 
 An older unified-menu writer always set `requires_openai_auth = false`. Codex then hid a preserved ChatGPT login from account discovery even though `auth.json` was unchanged. Desktop authentication and workspace initialization could fail while the model picker stayed on "Loading models...". The writer now distinguishes ChatGPT sign-in from an API key: a supported ChatGPT sign-in keeps account discovery, while an API key alone does not require OpenAI authentication. Keyring/auto stores preserve the active provider's policy because disk alone cannot establish their login state. An ephemeral store remains signed out, and incomplete login-file reads preserve the established policy.
 
 The local `experimental_bearer_token` remains installed on the Vary AI provider and takes precedence for forwarded request authentication; the preserved OpenAI credential is not substituted for it. Publishing and restoring the menu do not rewrite `auth.json`. Refreshing or reconnecting with a fixed build repairs a still-owned projection; external configuration edits still require the normal conflict/recovery flow. Do not delete authentication files, conversation databases, or recovery receipts to clear a loading indicator. A stale desktop initialization failure can still require a full Codex restart after repairing configuration.
+
+### Codex cannot reach local routing through a proxy
+
+When the Codex connection is owned and configured and the local gateway is running, Tools checks whether the proxy route predicted from Codex's configuration can reach VaryAI. A warning appears only when a direct gateway health check succeeds, the explicit proxy health check fails, and a second direct check succeeds. Open **How to fix** beside the warning to see the local target, the proxy address without credentials, and whether it came from the environment or system settings. **Check again** repeats the diagnosis. A gateway outage, an unknown result, or an upstream model's HTTP 502 alone does not establish proxy interception.
+
+The diagnostic follows the Magpie reference's Codex proxy selection, including `[features].respect_system_proxy`. Default routing can use `HTTP_PROXY`/`http_proxy`, the system HTTP proxy, or `ALL_PROXY`/`all_proxy`. An HTTPS-only proxy setting does not select a proxy for the local HTTP gateway. For a numeric loopback target, use an exact address or CIDR in `NO_PROXY`: `localhost` or `127.*` alone can be insufficient. Native system exceptions behave differently when `respect_system_proxy` is enabled. macOS checks exported proxy variables from the login shell as well as VaryAI's environment; this predicts a client route and cannot prove the environment of every already-running terminal or desktop process.
+
+Configure the proxy engine to send `127.0.0.0/8`, `::1/128`, and `localhost` directly. In Clash/Mihomo, use Rule mode so these rules actually apply; Global mode skips them. Alternatively, append `127.0.0.1,localhost,::1` to `NO_PROXY` and `no_proxy` in the environment inherited by Codex, preserving existing exclusions. Shell profile changes affect clients that read or inherit them; they do not guarantee that every GUI application receives the variables. On Windows, set the corresponding user environment variables or an exact `127.0.0.1` proxy exception where applicable. Fully quit and reopen Codex after changes, then verify a normal conversation. See [proxy configuration examples](guides/proxy-configs/README.md).
+
+**Disconnect and restore** uses the existing confirmation and ownership-checked recovery flow. The diagnostic itself does not rewrite Codex configuration, shell profiles, or system proxy settings. The warning describes a failed health probe through a predicted route; it does not establish an observed Codex HTTP status, a particular proxy mode, or failure of every model. This resolver is based on the pinned Magpie behavior, whose comments reference Codex 0.162.1; other client versions and process environments still require live verification.
 
 ### Codex shows only 31k context for a routing model
 
@@ -491,8 +546,28 @@ while the reverse switch succeeded. The standalone provider ID is now `varyai`.
 
 Close the affected conversation to release Codex's writer lock, apply the Codex
 connection with an updated build, and allow the background retry to complete
-before reopening it. Recent writes also defer migration for one minute. Do not
-delete the conversation, change pagination offsets, or remove recovery records.
+before reopening it. Recent writes also defer migration for one minute. Inbound
+migration also requires a saved model that is executable in the current menu.
+An incompatible model remains with its original provider; a provider-column
+change alone cannot translate that model. Do not delete the conversation,
+change pagination offsets, or remove recovery records.
+
+### Codex reports routing_model_unavailable in a conversation imported from Magpie
+
+This 404 means the request's model is absent from the authenticated VaryAI menu.
+The current default model can be valid while an old conversation still sends a
+provider-qualified name from a previous gateway. Restarting or retrying that
+conversation preserves its saved model and can repeat the error. This is
+separate from a gateway outage or expired local credential.
+
+Select a model from the current VaryAI model list inside Codex. If automatic
+compaction blocks the old conversation before the selection takes effect, start
+a new conversation and choose the model there. Keep the old conversation for
+reference. Updated migration checks leave incompatible histories on their
+original provider and do not guess a new account or model from a matching name.
+Already migrated conversations still require an explicit model selection; the
+fix does not bulk-rewrite historical choices. See the
+[historical-model verification report](qa/2026-11-06-codex-historical-model-routing.md).
 
 ### Codex reports routing_unknown_continuation after reconnecting
 

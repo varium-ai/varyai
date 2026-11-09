@@ -22,7 +22,11 @@ import {
   RefreshCw,
   ChevronDown,
 } from "lucide-react";
-import { agentConnectionsApi } from "@/lib/api/agentConnections";
+import {
+  agentConnectionsApi,
+  type CodexProxyIssue,
+} from "@/lib/api/agentConnections";
+import { CodexProxyWarning } from "./CodexProxyWarning";
 import { SharedModelPicker } from "@/components/models/SharedModelPicker";
 import { ModelPickerPopoverContent } from "@/components/models/ModelPickerPopoverContent";
 import { AgentModelVisibility } from "./AgentModelVisibility";
@@ -81,12 +85,19 @@ type ConnectionOperation =
   | "visibility";
 const nativePicker = (app: AppId | null) =>
   app !== null &&
-  ["claude-desktop", "workbuddy", "qoder", "doubaowork"].includes(app);
+  [
+    "claude-desktop",
+    "workbuddy",
+    "workbuddy-ai",
+    "qoder",
+    "doubaowork",
+  ].includes(app);
 const websites: Record<AppId, string> = {
   "claude-desktop": "https://claude.ai/download",
   claude: "https://code.claude.com/docs/en/overview",
   pi: "https://pi.dev/",
-  workbuddy: "https://www.workbuddy.ai/",
+  workbuddy: "https://www.workbuddy.cn/",
+  "workbuddy-ai": "https://www.workbuddy.ai/",
   codex: "https://developers.openai.com/codex/",
   opencode: "https://opencode.ai/",
   gemini: "https://geminicli.com/",
@@ -94,7 +105,7 @@ const websites: Record<AppId, string> = {
   openclaw: "https://openclaw.ai/",
   hermes: "https://github.com/NousResearch/hermes-agent",
   qoder: "https://qoder.com/",
-  doubaowork: "https://www.doubao.com/",
+  doubaowork: "https://www.doubao.com/work",
   trae: "https://www.trae.ai/",
   kimi: "https://www.kimi.com/code",
   qwen: "https://qwenlm.github.io/qwen-code-docs/",
@@ -147,6 +158,19 @@ export function AgentConnectionsPage({
     queryFn: proxyApi.getProxyStatus,
     refetchInterval: 5000,
   });
+  const [codexProxyIssue, setCodexProxyIssue] =
+    useState<CodexProxyIssue | null>(null);
+  const codexConnection = connections[APP_IDS.indexOf("codex")];
+  const codexProxyDiagnosticEnabled =
+    !!codexConnection.data?.enabled &&
+    !!codexConnection.data.configured &&
+    !codexConnection.data.recoveryPending &&
+    !codexConnection.data.configurationIssue &&
+    !codexConnection.isError &&
+    !codexConnection.isPending &&
+    !gateway.isError &&
+    !gateway.isPending &&
+    !!gateway.data?.running;
   const [setup, setSetup] = useState<AppId | null>(null);
   const [selected, setSelected] = useState("");
   const [operations, setOperations] = useState<
@@ -172,6 +196,14 @@ export function AgentConnectionsPage({
     disconnecting === "codex" &&
     states.data?.some(
       (state) => state.app === "codex" && state.recoveryReason === "orphaned",
+    );
+  const inactiveCodexDisconnect =
+    disconnecting === "codex" &&
+    states.data?.some(
+      (state) =>
+        state.app === "codex" &&
+        !state.enabled &&
+        state.recoveryReason === "connection_inactive",
     );
   const [restarting, setRestarting] = useState<AppId | null>(null);
   const updates = useAgentUpdates(
@@ -324,13 +356,20 @@ export function AgentConnectionsPage({
       : catalog.data[0].id;
     void apply(app, true, model);
   }
+  const hasSavedConnection = (app: AppId) =>
+    states.data.some(
+      (state) =>
+        state.app === app &&
+        (state.enabled ||
+          state.recoveryPending ||
+          state.desktopState === "restart_required" ||
+          state.reloadState === "stale_catalog" ||
+          state.reloadState === "failed"),
+    );
   const shown = appOrder.filter(
     (app) =>
-      installations.data?.[app] ||
-      states.data?.some(
-        (state) =>
-          state.app === app && (state.enabled || state.recoveryPending),
-      ),
+      installations.data?.[app] !== false &&
+      (installations.data?.[app] || hasSavedConnection(app)),
   );
   const connectionRank = (app: AppId) => {
     const query = connections[APP_IDS.indexOf(app)];
@@ -372,6 +411,29 @@ export function AgentConnectionsPage({
     const nativeQuery = nativeModels[APP_IDS.indexOf(app)];
     const enabled = !!state?.enabled;
     const orphaned = app === "codex" && state?.recoveryReason === "orphaned";
+    const inactiveCodexIntent =
+      app === "codex" &&
+      state?.enabled === false &&
+      state.recoveryReason === "connection_inactive";
+    const reloadStatus =
+      app === "codex"
+        ? state?.reloadState === "waiting_for_idle"
+          ? "waitingForIdle"
+          : state?.reloadState === "restarting"
+            ? "reloading"
+            : state?.reloadState === "failed"
+              ? "reloadFailed"
+              : state?.reloadState === "stale_catalog"
+                ? "catalogStale"
+                : null
+        : null;
+    const canRestart =
+      !state?.recoveryPending &&
+      (state?.configured || !state?.enabled) &&
+      (state?.desktopState === "restart_required" ||
+        (app === "codex" &&
+          (state?.reloadState === "stale_catalog" ||
+            state?.reloadState === "failed")));
     const nativeUnavailable =
       app === "codex" &&
       state?.configured &&
@@ -428,24 +490,37 @@ export function AgentConnectionsPage({
                   : state.recoveryReason === "orphaned"
                     ? "orphaned"
                     : "recovery"
-            : enabled
-              ? gateway.isError
-                ? "unavailable"
-                : gateway.data?.running
-                  ? state?.configured
-                    ? app === "doubaowork"
-                      ? "auditConnected"
-                      : nativeUnavailable
-                        ? "nativeUnavailable"
-                        : state.desktopState === "restart_required"
-                          ? "restartRequired"
-                          : "configured"
-                    : app === "doubaowork"
-                      ? "auditWaiting"
-                      : "recovery"
-                  : "gatewayStopped"
-              : "off";
-    const modelCatalog = ["workbuddy", "qoder", "trae"].includes(app) ? (
+            : app === "codex" && codexProxyDiagnosticEnabled && codexProxyIssue
+              ? "codexProxyBlocked"
+              : reloadStatus
+                ? reloadStatus
+                : canRestart
+                  ? enabled
+                    ? "restartRequired"
+                    : "restoredRestartRequired"
+                  : enabled
+                    ? gateway.isError
+                      ? "unavailable"
+                      : gateway.data?.running
+                        ? state?.configured
+                          ? app === "doubaowork"
+                            ? "auditConnected"
+                            : nativeUnavailable
+                              ? "nativeUnavailable"
+                              : state.desktopState === "restart_required"
+                                ? "restartRequired"
+                                : "configured"
+                          : app === "doubaowork"
+                            ? "auditWaiting"
+                            : "recovery"
+                        : "gatewayStopped"
+                    : "off";
+    const modelCatalog = [
+      "workbuddy",
+      "workbuddy-ai",
+      "qoder",
+      "trae",
+    ].includes(app) ? (
       <Popover
         open={browsing === app}
         onOpenChange={(open) => setBrowsing(open ? app : null)}
@@ -499,7 +574,7 @@ export function AgentConnectionsPage({
         key={app}
         app={app}
         name={name(app)}
-        sortable={!compact}
+        sortable={!compact && shown.includes(app)}
         className={`mp-agent-row${compact && expanded === app ? " expanded" : ""}`}
         aria-label={t(`apps.${app}`)}
         onClick={
@@ -579,31 +654,46 @@ export function AgentConnectionsPage({
                   <span>{t("agentConnections.reapply")}</span>
                 </button>
               )}
-            {state?.configured &&
-              !state.recoveryPending &&
-              state.desktopState === "restart_required" &&
-              !connection.isError && (
-                <button
-                  type="button"
-                  className="mp-agent-fix"
-                  aria-label={t("agentConnections.restart")}
-                  disabled={rowBusy(app)}
-                  onClick={() => setRestarting(app)}
-                >
-                  <RefreshCw
-                    size={11}
-                    className={
-                      operations[app] === "restarting"
-                        ? "animate-spin motion-reduce:animate-none"
-                        : ""
-                    }
-                  />
-                  <span>{t("agentConnections.restart")}</span>
-                </button>
-              )}
+            {app === "codex" && (
+              <CodexProxyWarning
+                key={`${gateway.data?.address}:${gateway.data?.port}`}
+                enabled={codexProxyDiagnosticEnabled}
+                busy={rowBusy(app)}
+                suspended={
+                  !!setup ||
+                  !!disconnecting ||
+                  !!picking ||
+                  !!browsing ||
+                  !!restarting ||
+                  !!updates.pending ||
+                  !!updates.installTarget
+                }
+                onIssueChange={setCodexProxyIssue}
+                onDisconnect={() => setDisconnecting("codex")}
+              />
+            )}
+            {canRestart && !connection.isError && (
+              <button
+                type="button"
+                className="mp-agent-fix"
+                aria-label={t("agentConnections.restart")}
+                disabled={rowBusy(app)}
+                onClick={() => setRestarting(app)}
+              >
+                <RefreshCw
+                  size={11}
+                  className={
+                    operations[app] === "restarting"
+                      ? "animate-spin motion-reduce:animate-none"
+                      : ""
+                  }
+                />
+                <span>{t("agentConnections.restart")}</span>
+              </button>
+            )}
           </div>
           <p
-            className={`mp-agent-status ${status === "unavailable" ? "bad" : status === "checking" ? "checking" : enabled || operations[app] ? "wait" : ""}`}
+            className={`mp-agent-status ${status === "unavailable" || status === "codexProxyBlocked" ? "bad" : status === "checking" ? "checking" : enabled || operations[app] ? "wait" : ""}`}
             role="status"
             title={t(
               `agentConnections.states.${operations[app] && operations[app] !== "visibility" ? operations[app] : status}`,
@@ -716,6 +806,7 @@ export function AgentConnectionsPage({
                     connection.isError ||
                     (!!state?.recoveryPending &&
                       !orphaned &&
+                      !inactiveCodexIntent &&
                       !(
                         app === "trae" &&
                         state.recoveryReason === "bridge_pending"
@@ -791,7 +882,7 @@ export function AgentConnectionsPage({
                   }
                   onPick={(model) => void apply(app, true, model)}
                   onDisconnect={
-                    enabled || orphaned
+                    enabled || orphaned || inactiveCodexIntent
                       ? () => {
                           setPicking(null);
                           setDisconnecting(app);
@@ -799,7 +890,9 @@ export function AgentConnectionsPage({
                       : undefined
                   }
                   disconnectLabel={
-                    orphaned ? t("agentConnections.disconnectOnly") : undefined
+                    orphaned || inactiveCodexIntent
+                      ? t("agentConnections.disconnectOnly")
+                      : undefined
                   }
                 />
                 {(!catalog.data?.length || catalog.isError) && (
@@ -1026,11 +1119,28 @@ export function AgentConnectionsPage({
                   <span className="mp-agent-install-name" title={name(app)}>
                     {name(app)}
                   </span>
-                  <AgentVersionTag
-                    app={app}
-                    updates={updates}
-                    disabled={rowBusy(app)}
-                  />
+                  {app === "codex" &&
+                    ["failed", "stale_catalog"].includes(
+                      connections[APP_IDS.indexOf(app)].data?.reloadState ?? "",
+                    ) && (
+                      <span className="mp-agent-status bad" role="status">
+                        {t(
+                          `agentConnections.states.${
+                            connections[APP_IDS.indexOf(app)].data
+                              ?.reloadState === "failed"
+                              ? "reloadFailed"
+                              : "catalogStale"
+                          }`,
+                        )}
+                      </span>
+                    )}
+                  {installations.data?.[app] === true && (
+                    <AgentVersionTag
+                      app={app}
+                      updates={updates}
+                      disabled={rowBusy(app)}
+                    />
+                  )}
                 </div>
                 <div className="mp-agent-install-actions">
                   {(updates.installing === app ||
@@ -1104,7 +1214,11 @@ export function AgentConnectionsPage({
         title={t("agentConnections.restartTitle", {
           app: restarting ? name(restarting) : "",
         })}
-        description={t("agentConnections.restartConfirmHint")}
+        description={t(
+          restarting === "codex"
+            ? "agentConnections.codexRestartConfirmHint"
+            : "agentConnections.restartConfirmHint",
+        )}
         footer={
           <>
             <Button
@@ -1142,11 +1256,13 @@ export function AgentConnectionsPage({
         description={t(
           orphanedDisconnect
             ? "agentConnections.orphanDisconnectHint"
-            : disconnecting === "doubaowork"
-              ? "agentConnections.auditDisconnectHint"
-              : disconnecting === "trae"
-                ? "agentConnections.bridgeDisconnectHint"
-                : "agentConnections.disconnectHint",
+            : inactiveCodexDisconnect
+              ? "agentConnections.inactiveCodexDisconnectHint"
+              : disconnecting === "doubaowork"
+                ? "agentConnections.auditDisconnectHint"
+                : disconnecting === "trae"
+                  ? "agentConnections.bridgeDisconnectHint"
+                  : "agentConnections.disconnectHint",
         )}
         footer={
           <>
@@ -1163,7 +1279,7 @@ export function AgentConnectionsPage({
               onClick={() => disconnecting && void apply(disconnecting, false)}
             >
               {t(
-                orphanedDisconnect
+                orphanedDisconnect || inactiveCodexDisconnect
                   ? "agentConnections.disconnectOnly"
                   : "agentConnections.disconnectRestore",
               )}

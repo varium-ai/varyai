@@ -33,6 +33,7 @@ export interface ProxyServerInfo {
 export interface ProxyTakeoverStatus {
   pi?: boolean;
   workbuddy?: boolean;
+  "workbuddy-ai"?: boolean;
   qoder?: boolean;
   doubaowork?: boolean;
   doubaowork_waiting?: boolean;
