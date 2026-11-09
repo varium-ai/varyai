@@ -186,7 +186,7 @@ describe.skipIf(process.platform === "win32")(
     });
 
     it.each(["history", "submit"])(
-      "does not echo failed notary %s diagnostics",
+      "echoes failed notary %s diagnostics without the profile value",
       (operation) => {
         const result = fixture().run("notarize-macos.sh", {
           ...configuration,
@@ -194,7 +194,8 @@ describe.skipIf(process.platform === "win32")(
         });
         expect(result.status).not.toBe(0);
         expect(result.calls).toContain(`xcrun notarytool ${operation} `);
-        expect(result.output).not.toContain("synthetic-secret-diagnostic");
+        expect(result.output).toContain("synthetic-secret-diagnostic");
+        expect(result.output).not.toContain("example-release");
       },
     );
 

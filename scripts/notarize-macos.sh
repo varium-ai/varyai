@@ -80,26 +80,48 @@ if ! available_identities="$(security find-identity -v -p codesigning 2>/dev/nul
   echo "The app signing identity is not available in the keychain for DMG signing." >&2
   exit 1
 fi
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/varyai-notarize.XXXXXX")"
+trap 'rm -rf "$work_dir"' EXIT
+
 notary_profile="$NOTARY_KEYCHAIN_PROFILE"
-if ! xcrun notarytool history --keychain-profile "$notary_profile" >/dev/null 2>&1; then
-  echo "The configured notarization profile is unavailable or could not authenticate. Check it privately before retrying." >&2
+history_stderr="$work_dir/notarytool-history.stderr"
+: >"$history_stderr"
+if ! xcrun notarytool history --keychain-profile "$notary_profile" >/dev/null 2>"$history_stderr"; then
+  echo "The configured notarization profile is unavailable or could not authenticate. notarytool diagnostics:" >&2
+  if [ -s "$history_stderr" ]; then
+    sed -E \
+      -e 's/(--keychain-profile[[:space:]]+)[^[:space:]]+/\1[REDACTED]/g' \
+      -e 's/(keychain profile[[:space:]]*[:=][[:space:]]*)[^[:space:]]+/\1[REDACTED]/gi' \
+      "$history_stderr" >&2
+  else
+    echo "(notarytool did not provide stderr output)" >&2
+  fi
   exit 1
 fi
 
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/varyai-notarize.XXXXXX")"
-trap 'rm -rf "$work_dir"' EXIT
 dmg_path="$work_dir/Vary AI_${version}_universal.dmg"
 
 notarize() {
-  local artifact="$1" result
+  local artifact="$1" result stderr_file
+  stderr_file="$work_dir/notarytool.stderr"
+  : >"$stderr_file"
   if ! result="$(xcrun notarytool submit "$artifact" \
     --keychain-profile "$notary_profile" --wait --timeout 30m \
-    --output-format json 2>/dev/null)"; then
-    echo "Notarization request failed; inspect the submission privately with the configured profile." >&2
+    --output-format json 2>"$stderr_file")"; then
+    echo "Notarization request failed. notarytool diagnostics:" >&2
+    if [ -s "$stderr_file" ]; then
+      sed -E \
+        -e 's/(--keychain-profile[[:space:]]+)[^[:space:]]+/\1[REDACTED]/g' \
+        -e 's/(keychain profile[[:space:]]*[:=][[:space:]]*)[^[:space:]]+/\1[REDACTED]/gi' \
+        "$stderr_file" >&2
+    else
+      echo "(notarytool did not provide stderr output)" >&2
+    fi
     exit 1
   fi
   if ! printf '%s' "$result" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{if(JSON.parse(s).status!=="Accepted")process.exitCode=1;}catch{process.exitCode=1;}})' >/dev/null 2>&1; then
-    echo "Notarization was not accepted; inspect the submission privately with the configured profile." >&2
+    echo "Notarization was not accepted. notarytool response:" >&2
+    printf '%s\n' "$result" >&2
     exit 1
   fi
   echo "    Notarization accepted"
