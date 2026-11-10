@@ -5,7 +5,8 @@ import {
   ArrowDownToLine,
   ArrowLeft,
   Check,
-  Copy,
+  Eye,
+  EyeOff,
   Link,
   Loader2,
   UserRound,
@@ -37,7 +38,7 @@ import {
 } from "@/lib/api/model-fetch";
 import { copilotGetModelsForAccount } from "@/lib/api/copilot";
 import { nativeSubscriptionApi } from "@/lib/api/nativeSubscription";
-import { copyText } from "@/lib/clipboard";
+import { CopyAgentSetupButton } from "@/components/CopyAgentSetupButton";
 import { DRAG_REGION_ATTR, isMac } from "@/lib/platform";
 import appIcon from "@/assets/icons/app-icon.png";
 import "./onboarding.css";
@@ -63,6 +64,7 @@ export function OnboardingWizard({
   const [method, setMethod] = useState<Method>();
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [showApiKey, setShowApiKey] = useState(false);
   const [format, setFormat] = useState<ApiFormat>("openai_chat");
   const [signing, setSigning] = useState<SubscriptionProviderId>();
   const [account, setAccount] = useState<string>();
@@ -70,7 +72,6 @@ export function OnboardingWizard({
   const [importBusy, setImportBusy] = useState(false);
   const [error, setError] = useState("");
   const [connected, setConnected] = useState(false);
-  const [copied, setCopied] = useState(false);
   const saving = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
   const locked = busy || importBusy;
@@ -477,17 +478,14 @@ export function OnboardingWizard({
                 </div>
                 <div className="ob-help">
                   <p>{t("onboarding.help")}</p>
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      void copyText(t("onboarding.helpPrompt"))
-                        .then(() => setCopied(true))
-                        .catch(() => setError("onboarding.copyFailed"));
-                    }}
-                  >
-                    {copied ? <Check size={15} /> : <Copy size={15} />}
-                    {t(copied ? "common.copied" : "common.copy")}
-                  </Button>
+                  <CopyAgentSetupButton
+                    onCopied={() =>
+                      setError((current) =>
+                        current === "onboarding.copyFailed" ? "" : current,
+                      )
+                    }
+                    onCopyFailed={() => setError("onboarding.copyFailed")}
+                  />
                 </div>
               </>
             )}
@@ -511,19 +509,43 @@ export function OnboardingWizard({
                   }}
                 />
                 <label htmlFor="onboarding-key">{t("onboarding.key")}</label>
-                <Input
-                  id="onboarding-key"
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={apiKey}
-                  disabled={locked}
-                  required
-                  onChange={(event) => {
-                    setApiKey(event.target.value);
-                    setError("");
-                  }}
-                />
+                <div className="ob-key-input">
+                  <Input
+                    id="onboarding-key"
+                    type={showApiKey ? "text" : "password"}
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={apiKey}
+                    disabled={locked}
+                    required
+                    onChange={(event) => {
+                      setApiKey(event.target.value);
+                      setError("");
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="ob-key-visibility"
+                    aria-label={t(
+                      showApiKey ? "apiKeyInput.hide" : "apiKeyInput.show",
+                    )}
+                    title={t(
+                      showApiKey ? "apiKeyInput.hide" : "apiKeyInput.show",
+                    )}
+                    aria-controls="onboarding-key"
+                    aria-pressed={showApiKey}
+                    disabled={locked}
+                    onClick={() => setShowApiKey((visible) => !visible)}
+                  >
+                    {showApiKey ? (
+                      <EyeOff size={16} aria-hidden />
+                    ) : (
+                      <Eye size={16} aria-hidden />
+                    )}
+                  </Button>
+                </div>
                 <p className="ob-hint">{t("onboarding.keyHint")}</p>
                 <label htmlFor="onboarding-protocol">
                   {t("onboarding.protocol")}
@@ -625,6 +647,7 @@ export function OnboardingWizard({
                 disabled={locked}
                 onClick={() => {
                   setMethod(undefined);
+                  setShowApiKey(false);
                   setSigning(undefined);
                   setAccount(undefined);
                   setError("");

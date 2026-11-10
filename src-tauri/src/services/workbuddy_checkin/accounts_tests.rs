@@ -14,6 +14,26 @@ fn grant(uid: &str) -> ManagedAccount {
 }
 
 #[tokio::test]
+async fn saved_auto_mode_survives_reopening_without_a_native_account() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let path = dir.path().join("checkin.json");
+    let auth = dir.path().join("missing-native.info");
+    let manager = Manager::with_paths(path.clone(), auth.clone());
+    let mut store = Store::default();
+    store.account_auto.insert("synthetic-account".into(), true);
+    manager.write_store(&store).await.expect("save preference");
+    let reopened = Manager::with_paths(path, auth);
+    let list = reopened
+        .accounts()
+        .await
+        .expect("unavailable native account");
+    assert!(list.accounts.is_empty());
+    let value = serde_json::to_value(list).expect("status");
+    assert_eq!(value["nativeStatus"]["autoConfigured"], true);
+    assert_eq!(value["nativeStatus"]["autoEnabled"], false);
+}
+
+#[tokio::test]
 async fn account_selection_and_auto_flags_never_claim_for_another_account() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let auth = dir.path().join("native.info");

@@ -99,7 +99,7 @@ async fn prepare_inner(
             .filter(|p| eligible_provider(p, true))
             .ok_or("intentRouting.providerUnavailable")?;
         Some(
-            crate::services::routing_upstreams::variants(provider)
+            crate::services::routing_upstreams::variants_for_model(provider, &target.model_id)
                 .into_iter()
                 .find(|variant| eligible_provider(variant, true))
                 .ok_or("intentRouting.providerUnavailable")?,
@@ -126,7 +126,12 @@ async fn prepare_inner(
             continue;
         }
         let before = targets.len();
-        for provider in crate::services::routing_upstreams::variants(source) {
+        let variants = if enforce_account_models {
+            crate::services::routing_upstreams::variants_for_model(source, &member.model_id)
+        } else {
+            crate::services::routing_upstreams::variants(source)
+        };
+        for provider in variants {
             let provider =
                 crate::services::subscription_provider::for_model(&provider, &member.model_id)?;
             if enforce_account_models
@@ -203,12 +208,16 @@ async fn prepare_inner(
                 }
                 Ok::<Target, String>(Target {
                     fixed_effort: member.effort.clone(),
-                    provider_id: member.provider_id.clone(),
+                    provider_id: crate::services::routing_upstreams::execution_identity(provider)
+                        .into(),
                     model: member.model_id.clone(),
                     upstream: if official {
                         None
                     } else {
-                        Some(normalized_static_provider(provider)?)
+                        Some(normalized_static_provider(
+                            provider,
+                            !enforce_account_models,
+                        )?)
                     },
                     effort: super::effort::Capability::for_provider(provider, &member.model_id),
                     url: reqwest::Url::parse(&url)
@@ -263,6 +272,8 @@ async fn prepare_inner(
             target.scheduling.prime(&client, &target.headers).await;
         }
     }
+    let mut group = group;
+    crate::services::routing_upstreams::execution_group(&mut group, providers.values());
     Ok(Session {
         group,
         targets,
@@ -275,8 +286,16 @@ async fn prepare_inner(
 
 fn normalized_static_provider(
     provider: &crate::provider::Provider,
+    preserve_key_scope: bool,
 ) -> Result<crate::provider::Provider, String> {
     let mut provider = provider.clone();
+    if !preserve_key_scope {
+        crate::services::routing_upstreams::strip_key_model_scope(&mut provider);
+    }
+    provider.id = crate::services::routing_upstreams::execution_identity(&provider).into();
+    if let Some(settings) = provider.settings_config.as_object_mut() {
+        settings.remove(crate::services::routing_upstreams::EXECUTION_IDENTITY);
+    }
     super::context::Metadata::strip_from_settings(&mut provider.settings_config);
     let format = provider
         .meta
@@ -304,13 +323,17 @@ fn normalized_static_provider(
 }
 
 pub(super) fn retarget(target: &mut Target, model: &str) -> Result<(), String> {
-    target.model = model.into();
     if let Some(provider) = &target.upstream {
-        let provider = crate::services::subscription_provider::for_model(provider, model)?;
+        if !crate::services::routing_upstreams::key_serves(provider, model) {
+            return Err("intentRouting.providerUnavailable".into());
+        }
+        let mut provider = crate::services::subscription_provider::for_model(provider, model)?;
+        crate::services::routing_upstreams::strip_key_model_scope(&mut provider);
         let (url, _) = static_transport(&provider, model)?;
         target.url = reqwest::Url::parse(&url).map_err(|_| "intentRouting.providerUnavailable")?;
         target.upstream = Some(provider);
     }
+    target.model = model.into();
     Ok(())
 }
 
@@ -553,8 +576,8 @@ mod tests {
             json!({"fixture-model":{"reasoningLevels":["low","high"]}});
         enriched.settings_config["routingPublicCapabilities"] =
             json!({"fixture-model":{"reasoning":true}});
-        let first = normalized_static_provider(&provider).expect("plain snapshot");
-        let next = normalized_static_provider(&enriched).expect("enriched snapshot");
+        let first = normalized_static_provider(&provider, false).expect("plain snapshot");
+        let next = normalized_static_provider(&enriched, false).expect("enriched snapshot");
         assert_eq!(first.settings_config, next.settings_config);
         let mut targets = synthetic_session().targets;
         targets[0].upstream = Some(first);
@@ -576,19 +599,19 @@ mod tests {
             json!({"apiFormat":"openai_chat","modelCatalog":{"models":[{"model":"exact-model","displayName":"Original","reasoningLevels":["high"]}]}}),
             None,
         );
-        let first = normalized_static_provider(&provider).expect("snapshot");
+        let first = normalized_static_provider(&provider, false).expect("snapshot");
         provider.settings_config["modelCatalog"]["models"][0]["displayName"] = json!("Changed");
         provider.settings_config["modelCatalog"]["models"][0]["modelPreferences"] =
             json!({"name":"Custom"});
-        let renamed = normalized_static_provider(&provider).expect("renamed");
+        let renamed = normalized_static_provider(&provider, false).expect("renamed");
         assert_eq!(first.settings_config, renamed.settings_config);
         provider.settings_config["modelCatalog"]["models"][0]["modelPreferences"]["sameAs"] =
             json!("canonical-model");
-        let equivalent = normalized_static_provider(&provider).expect("equivalent");
+        let equivalent = normalized_static_provider(&provider, false).expect("equivalent");
         assert_eq!(first.settings_config, equivalent.settings_config);
         provider.settings_config["modelCatalog"]["models"][0]["modelPreferences"]
             ["reasoningLevels"] = json!([]);
-        let changed = normalized_static_provider(&provider).expect("changed");
+        let changed = normalized_static_provider(&provider, false).expect("changed");
         assert_ne!(first.settings_config, changed.settings_config);
     }
 

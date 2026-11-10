@@ -1,0 +1,97 @@
+{
+  "now": "2026-11-10T00:00:00Z",
+  "models": {
+    "models": {
+      "gemini-3.8-flash": {
+        "displayName": "Gemini 3.8 Flash",
+        "quotaInfo": {
+          "remainingFraction": 1,
+          "resetTime": "2026-11-10T05:00:00Z"
+        }
+      },
+      "gemini-3.8-flash-low": {
+        "displayName": "Gemini 3.8 Flash (Low)",
+        "quotaInfo": {
+          "remainingFraction": 1,
+          "resetTime": "2026-11-10T05:00:00Z"
+        }
+      },
+      "gemini-4-argon": {
+        "displayName": "Gemini 4 Argon",
+        "quotaInfo": { "resetTime": "2026-11-17T00:00:00Z" }
+      },
+      "claude-opus-5-5": { "displayName": "Claude Opus 5.5", "quotaInfo": {} },
+      "claude-sonnet-5-5": {
+        "displayName": "Claude Sonnet 5.5",
+        "quotaInfo": {}
+      },
+      "gpt-oss-120b-medium": {
+        "displayName": "GPT-OSS 120B (Medium)",
+        "quotaInfo": {}
+      },
+      "disabled-model": {
+        "disabled": true,
+        "quotaInfo": { "remainingFraction": 1 }
+      },
+      "unknown-model": { "displayName": "Unknown allowance" }
+    }
+  },
+  "summary": {
+    "groups": [
+      {
+        "displayName": "Gemini Models",
+        "description": "Models within this group: Gemini Flash, Gemini Pro",
+        "buckets": [
+          {
+            "window": "weekly",
+            "displayName": "Gemini Weekly Limit Remaining",
+            "remainingFraction": 0.968,
+            "resetTime": "2026-11-17T00:00:00Z"
+          },
+          {
+            "window": "5h",
+            "displayName": "Gemini Five Hour Limit Remaining",
+            "remainingFraction": 1,
+            "resetTime": "2026-11-10T05:00:00Z"
+          }
+        ]
+      },
+      {
+        "displayName": "Claude and GPT models",
+        "description": "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
+        "buckets": [
+          {
+            "window": "weekly",
+            "displayName": "Claude & GPT Weekly Limit Remaining",
+            "resetTime": "2026-11-17T00:00:00Z"
+          },
+          { "window": "5h", "disabled": true }
+        ]
+      }
+    ]
+  },
+  "expectedTiers": [
+    {
+      "name": "Gemini · five_hour",
+      "utilization": 0,
+      "resetsAt": "2026-11-10T05:00:00Z"
+    },
+    {
+      "name": "Gemini · seven_day",
+      "utilization": 3.2,
+      "resetsAt": "2026-11-17T00:00:00Z"
+    },
+    {
+      "name": "Claude & GPT · seven_day",
+      "utilization": 100,
+      "resetsAt": "2026-11-17T00:00:00Z"
+    },
+    {
+      "name": "Gemini 4 Argon · seven_day",
+      "utilization": 100,
+      "resetsAt": "2026-11-17T00:00:00Z"
+    },
+    { "name": "Claude · five_hour", "utilization": 100, "resetsAt": null },
+    { "name": "GPT-OSS · five_hour", "utilization": 100, "resetsAt": null }
+  ]
+}

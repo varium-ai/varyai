@@ -451,7 +451,9 @@ mod tests {
         for (app, id, team) in [
             ("qoder", "com.qodercn.app", "9DFNGU9AK5"),
             ("doubaowork", "com.work.pc.doubao", "96L78H6LMH"),
+            ("kimi", "com.kimi.code.desktop", "2J9472RW75"),
         ] {
+            eprintln!("Staging official {app} package without installing");
             let release = latest(&client, app, arch)
                 .await
                 .expect("public release metadata");

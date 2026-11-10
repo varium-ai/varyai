@@ -156,3 +156,15 @@ mod tests {
         .is_empty());
     }
 }
+
+#[tauri::command]
+pub async fn get_model_context_windows(ids: Vec<String>) -> Result<BTreeMap<String, u64>, String> {
+    if ids.len() > 4096
+        || ids
+            .iter()
+            .any(|id| id.is_empty() || id.len() > 256 || id.chars().any(char::is_control))
+    {
+        return Err("modelProviders.fetchFailed".into());
+    }
+    Ok(crate::services::intent_routing::model_context::model_windows(&ids).await)
+}

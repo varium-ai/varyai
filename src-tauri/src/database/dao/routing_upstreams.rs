@@ -10,6 +10,8 @@ use std::collections::HashSet;
 const FAILED: &str = "routingUpstreams.failed";
 const CONFLICT: &str = "routingUpstreams.conflict";
 const LIMIT: &str = "routingUpstreams.limit";
+#[path = "routing_upstreams_identity.rs"]
+mod identity;
 fn read_records(conn: &Connection) -> Result<Vec<RoutingUpstream>, String> {
     let mut stmt = conn
         .prepare("SELECT id,revision,config FROM routing_upstreams ORDER BY rowid LIMIT 257")
@@ -181,6 +183,44 @@ impl Database {
         };
         for selection in selected {
             let mut incoming = selection.record;
+            if selection.overwrite && !selection.join {
+                incoming.has_api_key = false;
+                incoming.validate()?;
+                let current = records
+                    .iter()
+                    .find(|record| record.id == incoming.id)
+                    .cloned();
+                let legacy = records
+                    .iter()
+                    .filter(|record| {
+                        record.id != incoming.id
+                            && uuid::Uuid::parse_str(&record.id).is_ok()
+                            && already_added(record, &incoming)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if current.is_none() && records.len().saturating_sub(legacy.len()) >= MAX_UPSTREAMS
+                {
+                    return Err(LIMIT.into());
+                }
+                incoming.revision = current.as_ref().map_or(Ok(1), |record| {
+                    record.revision.checked_add(1).ok_or(CONFLICT)
+                })?;
+                for old in &legacy {
+                    identity::retire(&tx, old)?;
+                    identity::migrate_references(&tx, &old.id, &incoming.id)?;
+                    tx.execute("DELETE FROM routing_upstreams WHERE id=?1", [&old.id])
+                        .map_err(|_| FAILED)?;
+                }
+                identity::update(&tx, current.as_ref(), &incoming)?;
+                write_record(&tx, &incoming)?;
+                records.retain(|record| {
+                    record.id != incoming.id && !legacy.iter().any(|old| old.id == record.id)
+                });
+                records.push(incoming);
+                result.added += 1;
+                continue;
+            }
             if records.iter().any(|r| already_added(r, &incoming)) {
                 result.skipped += 1;
                 continue;
@@ -209,6 +249,7 @@ impl Database {
                 incoming.revision = 1;
                 incoming.has_api_key = false;
                 incoming.validate()?;
+                identity::update(&tx, None, &incoming)?;
                 write_record(&tx, &incoming)?;
                 records.push(incoming);
             }
@@ -239,11 +280,24 @@ impl Database {
     }
     pub(crate) fn save_routing_upstream(
         &self,
+        record: RoutingUpstream,
+    ) -> Result<RoutingUpstream, String> {
+        self.save_routing_upstream_as(record, None)
+    }
+    pub(crate) fn save_routing_upstream_as(
+        &self,
         mut record: RoutingUpstream,
+        original_id: Option<&str>,
     ) -> Result<RoutingUpstream, String> {
         let mut conn = self.extension_connection().lock().map_err(|_| FAILED)?;
         let tx = conn.transaction().map_err(|_| FAILED)?;
         let records = read_records(&tx)?;
+        if original_id.is_some_and(|id| !valid_identity(id)) {
+            return Err(INVALID.into());
+        }
+        if record.id.is_empty() && original_id.is_some() {
+            return Err(INVALID.into());
+        }
         if record.id.is_empty() {
             let base: String = record
                 .name
@@ -260,7 +314,18 @@ impl Database {
                 suffix += 1;
             }
         }
-        let current = records.iter().find(|r| r.id == record.id);
+        let current = records
+            .iter()
+            .find(|r| r.id == original_id.unwrap_or(&record.id));
+        if original_id.is_some() && current.is_none() {
+            return Err(CONFLICT.into());
+        }
+        if original_id.is_some_and(|id| id != record.id)
+            && (records.iter().any(|r| r.id == record.id)
+                || !current.is_some_and(|r| matches!(r.source, UpstreamSource::Api { .. })))
+        {
+            return Err(CONFLICT.into());
+        }
         if current.map_or(0, |r| r.revision) != record.revision {
             return Err(CONFLICT.into());
         }
@@ -306,6 +371,14 @@ impl Database {
         record.has_api_key = false;
         record.validate()?;
         record.revision = record.revision.checked_add(1).ok_or(CONFLICT)?;
+        identity::update(&tx, current, &record)?;
+        if let Some(current) = current.filter(|old| old.id != record.id) {
+            tx.execute(
+                "UPDATE routing_upstreams SET id=?1 WHERE id=?2 AND revision=?3",
+                params![record.id, current.id, current.revision],
+            )
+            .map_err(|_| FAILED)?;
+        }
         write_record(&tx, &record)?;
         tx.commit().map_err(|_| FAILED)?;
         self.invalidate_routing_resources();
@@ -402,6 +475,7 @@ impl Database {
             }
         }
         drop(stmt);
+        identity::retire(&tx, &current)?;
         tx.execute(
             "DELETE FROM routing_upstreams WHERE id=?1 AND revision=?2",
             params![id, revision],
@@ -419,9 +493,9 @@ impl Database {
         &self,
         include_disabled: bool,
     ) -> Result<Vec<Provider>, String> {
-        let records = {
+        let (records, identities) = {
             let conn = self.extension_connection().lock().map_err(|_| FAILED)?;
-            read_records(&conn)?
+            (read_records(&conn)?, identity::read(&conn)?)
         };
         records
             .into_iter()
@@ -429,6 +503,11 @@ impl Database {
             .filter(|(_, r)| include_disabled || r.enabled && r.has_enabled_key())
             .map(|(position, record)| {
                 let mut provider = resolve_provider(&record)?;
+                if let Some(identity) = identities.get(&record.id) {
+                    provider.settings_config
+                        [crate::services::routing_upstreams::EXECUTION_IDENTITY] =
+                        serde_json::json!(identity);
+                }
                 provider.sort_index = Some(position);
                 Ok(provider)
             })

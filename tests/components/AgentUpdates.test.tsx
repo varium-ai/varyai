@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import i18n from "i18next";
 import { AgentConnectionsPage } from "@/components/agents/AgentConnectionsPage";
 import { settingsApi } from "@/lib/api/settings";
 import { proxyApi } from "@/lib/api/proxy";
@@ -241,6 +242,68 @@ describe("Agent versions and updates", () => {
       screen.queryByText(/synthetic-private-update-error/),
     ).not.toBeInTheDocument();
     expect(screen.getByText("App 1.1.0")).toBeInTheDocument();
+  });
+  it.each([
+    ["download", "download"],
+    ["checksum", "verification"],
+    ["signature", "verification"],
+    ["archive", "archive"],
+    ["running", "running"],
+    ["replace", "replace"],
+    ["restore", "restore"],
+    ["changed", "changed"],
+    ["unsupported", "unsupported"],
+    ["notInstalled", "notInstalled"],
+  ])(
+    "explains a desktop update error %s without raw output",
+    async (code, reason) => {
+      const translate = vi.spyOn(i18n, "t");
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        kimi: true,
+      });
+      vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({
+        kimi: {
+          supported: true,
+          installed: true,
+          version: "1.0.0",
+          latest_version: "1.1.0",
+          source: "desktop",
+        },
+      });
+      vi.mocked(settingsApi.updateDesktopAgent).mockRejectedValue(code);
+      mount();
+      fireEvent.click(
+        await screen.findByRole("button", { name: "agentUpdates.update" }),
+      );
+      expect(
+        await screen.findByText("agentUpdates.failedReason"),
+      ).toBeInTheDocument();
+      expect(translate).toHaveBeenCalledWith(
+        `agentUpdates.failureReasons.${reason}`,
+        expect.any(Object),
+      );
+      translate.mockRestore();
+    },
+  );
+  it("explains a Homebrew trust block without disclosing raw CLI output", async () => {
+    const translate = vi.spyOn(i18n, "t");
+    vi.mocked(settingsApi.runToolLifecycleAction).mockRejectedValue(
+      "Refusing to load formula from untrusted tap synthetic-private-tap",
+    );
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.claude" });
+    fireEvent.click(
+      await within(row).findByRole("button", { name: "agentUpdates.update" }),
+    );
+    expect(
+      await screen.findByText("agentUpdates.failedReason"),
+    ).toBeInTheDocument();
+    expect(translate).toHaveBeenCalledWith(
+      "agentUpdates.failureReasons.homebrewTrust",
+      expect.any(Object),
+    );
+    expect(screen.queryByText(/synthetic-private-tap/)).not.toBeInTheDocument();
+    translate.mockRestore();
   });
   it.each(["unchanged", "unreadable", "cli"])(
     "does not claim a desktop upgrade succeeded when its version is %s",
@@ -764,14 +827,58 @@ describe("Agent versions and updates", () => {
     finishes.forEach((finish) => finish());
     await screen.findByText(/agentUpdates.summary/);
   });
+  it.each(["missing", "rejected"])(
+    "rechecks a temporarily %s CLI version after updating without rerunning the installer",
+    async (state) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        hermes: true,
+      });
+      let updating = false;
+      let checks = 0;
+      vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
+        async () => {
+          updating = true;
+        },
+      );
+      vi.mocked(settingsApi.getToolVersions).mockImplementation(async () => {
+        if (!updating) return versions("hermes", "0.22.7");
+        if (++checks === 1) {
+          if (state === "rejected") throw new Error("synthetic-private-probe");
+          return [{ ...versions("hermes")[0], version: null }];
+        }
+        return versions("hermes", "0.23.1");
+      });
+      mount();
+      const row = await screen.findByRole("article", { name: "apps.hermes" });
+      fireEvent.click(
+        await within(row).findByRole("button", { name: "agentUpdates.update" }),
+      );
+      expect(
+        await screen.findByText(/agentUpdates.changed/, {}, { timeout: 4000 }),
+      ).toBeInTheDocument();
+      expect(within(row).getByText("0.23.1")).toBeInTheDocument();
+      expect(checks).toBe(2);
+      expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledOnce();
+      expect(
+        screen.queryByText(/agentUpdates.unverified/),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/synthetic-private-probe/),
+      ).not.toBeInTheDocument();
+    },
+  );
   it.each(["unchanged", "unreadable"])(
     "does not report an %s version as a successful upgrade",
     async (state) => {
+      let checks = 0;
       if (state === "unreadable")
         vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
           async () => {
-            vi.mocked(settingsApi.getToolVersions).mockRejectedValue(
-              "synthetic-private-version-output",
+            vi.mocked(settingsApi.getToolVersions).mockImplementation(
+              async () => {
+                checks++;
+                throw new Error("synthetic-private-version-output");
+              },
             );
           },
         );
@@ -781,7 +888,11 @@ describe("Agent versions and updates", () => {
         await within(row).findByRole("button", { name: "agentUpdates.update" }),
       );
       expect(
-        await screen.findByText(/agentUpdates.unverified/),
+        await screen.findByText(
+          /agentUpdates.unverified/,
+          {},
+          { timeout: 4000 },
+        ),
       ).toBeInTheDocument();
       expect(
         screen.queryByText(/agentUpdates.changed/),
@@ -790,6 +901,7 @@ describe("Agent versions and updates", () => {
         screen.queryByText(/synthetic-private-version-output/),
       ).not.toBeInTheDocument();
       expect(within(row).getByRole("switch")).toBeEnabled();
+      if (state === "unreadable") expect(checks).toBe(3);
     },
   );
   it("does not offer updates when the installed version is already ahead", async () => {

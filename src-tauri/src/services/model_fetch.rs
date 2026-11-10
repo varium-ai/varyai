@@ -27,6 +27,10 @@ pub struct FetchedModel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_modalities: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_modalities: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) service_tiers: Option<Vec<crate::services::intent_routing::speed::Tier>>,
 }
 
@@ -63,6 +67,25 @@ impl FetchedModel {
                     vec!["text".into()]
                 }
             }),
+            output_modalities: entry
+                .get("outputModalities")
+                .or_else(|| entry.get("output_modalities"))
+                .or_else(|| entry.pointer("/architecture/output_modalities"))
+                .or_else(|| entry.pointer("/modalities/output"))
+                .and_then(serde_json::Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .filter(|value| matches!(*value, "text" | "image" | "audio" | "video"))
+                        .map(str::to_owned)
+                        .collect()
+                }),
+            kind: entry
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .filter(|kind| matches!(*kind, "chat" | "image" | "video"))
+                .map(str::to_owned),
         }
     }
 
@@ -79,6 +102,12 @@ impl FetchedModel {
         }
         if let Some(modalities) = &self.input_modalities {
             entry["inputModalities"] = serde_json::json!(modalities);
+        }
+        if let Some(modalities) = &self.output_modalities {
+            entry["outputModalities"] = serde_json::json!(modalities);
+        }
+        if let Some(kind) = &self.kind {
+            entry["kind"] = serde_json::json!(kind);
         }
         entry
     }
@@ -1153,5 +1182,23 @@ mod tests {
             catalog_model_ids(resp.models),
             vec!["glm", "other", "valid"]
         );
+    }
+
+    #[test]
+    fn discovery_keeps_image_generation_metadata_for_the_provider_editor() {
+        let model = FetchedModel::from_entry(
+            "vendor-drawing".into(),
+            None,
+            &serde_json::json!({
+                "kind":"image", "architecture":{"output_modalities":["image"]},
+                "input_modalities":["text","image"]
+            }),
+        );
+        let fetched = serde_json::to_value(&model).unwrap_or_default();
+        assert_eq!(fetched["kind"], "image");
+        assert_eq!(fetched["outputModalities"], serde_json::json!(["image"]));
+        assert!(crate::model_capabilities::is_image_generation_model(
+            &model.capability_entry()
+        ));
     }
 }

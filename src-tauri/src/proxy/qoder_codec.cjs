@@ -42,6 +42,16 @@ function main() {
       bootstrap:
         'n1i();u1i();sAl({module:Buffer.from(Yel,"base64")});module.exports=l1i;',
     },
+    "0d42d8e68ec7fe45ab04d4c9fda8111952b7ca4f82fe89364813afe42cdb618e": {
+      start: "var gel,",
+      end: "W9i=F(",
+      xor: "_$d1",
+      salt: "LLiTy0jxmshR",
+      exports: "Bt",
+      once: "w",
+      bootstrap:
+        'N9i();V9i();bel({module:Buffer.from(gel,"base64")});module.exports=j9i;',
+    },
   };
   const binding =
     bindings[crypto.createHash("sha256").update(source).digest("hex")];

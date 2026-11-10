@@ -177,7 +177,10 @@ fn codex_replay_scope_discovers_known_owner_among_unobserved_items(
         scopes::HistoryPolicy::ResponsesReplay,
     )?;
     {
-        let mut bindings = first.bindings.try_lock()?;
+        let mut bindings = first
+            .bindings
+            .lock()
+            .map_err(|_| "synthetic state poisoned")?;
         bindings.observe(&json!({"id":"synthetic-owned-response","output":[{"type":"message","id":"synthetic-owned-message","encrypted_content":"synthetic-owned-seal"}]}), 1);
     }
     let replay = json!({"previous_response_id":"synthetic-owned-response","input":[{"type":"function_call_output","call_id":"synthetic-new-call","output":"synthetic"}]});
@@ -191,7 +194,11 @@ fn codex_replay_scope_discovers_known_owner_among_unobserved_items(
     )?;
     assert!(Arc::ptr_eq(&first, &restored));
     assert_eq!(
-        restored.bindings.try_lock()?.resolve_replay(&replay, None),
+        restored
+            .bindings
+            .lock()
+            .map_err(|_| "synthetic state poisoned")?
+            .resolve_replay(&replay, None),
         Ok(Some(1))
     );
     let ordinary = json!({"input":[{"type":"message","id":"synthetic-owned-message","encrypted_content":"synthetic-owned-seal","role":"assistant","content":"synthetic"}]});
@@ -207,7 +214,8 @@ fn codex_replay_scope_discovers_known_owner_among_unobserved_items(
     assert_eq!(
         ordinary_scope
             .bindings
-            .try_lock()?
+            .lock()
+            .map_err(|_| "synthetic state poisoned")?
             .resolve_replay(&ordinary, None),
         Ok(Some(1))
     );
@@ -232,7 +240,7 @@ async fn codex_replay_restores_remaining_affinity_after_destination_set_changes(
         scopes::HistoryPolicy::ResponsesReplay,
     )?;
     {
-        let mut bindings = first.bindings.lock().await;
+        let mut bindings = first.bindings.lock().unwrap();
         bindings.bind_session("synthetic-thread", 0);
         bindings.observe(&json!({"id":"synthetic-owned-response"}), 0);
     }
@@ -254,7 +262,7 @@ async fn codex_replay_restores_remaining_affinity_after_destination_set_changes(
         restored
             .bindings
             .lock()
-            .await
+            .unwrap()
             .resolve_replay(&body, Some("synthetic-thread")),
         Ok(Some(1))
     );
@@ -271,7 +279,7 @@ async fn codex_replay_restores_remaining_affinity_after_destination_set_changes(
         removed
             .bindings
             .lock()
-            .await
+            .unwrap()
             .resolve_replay(&body, Some("synthetic-thread")),
         Ok(None)
     );

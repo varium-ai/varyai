@@ -19,6 +19,8 @@ use tokio::{
 const FAILED: &str = "nativeSubscription.failed";
 const EXPIRED: &str = "nativeSubscription.expired";
 const PROJECT: &str = "nativeSubscription.projectRequired";
+mod antigravity_quota;
+pub(crate) mod provider_import;
 
 #[cfg(test)]
 mod google_observation_tests;
@@ -119,7 +121,7 @@ fn flows() -> &'static FlowMap {
 fn root() -> PathBuf {
     crate::config::get_device_config_dir().join("subscription-accounts")
 }
-fn store_path() -> PathBuf {
+pub(crate) fn store_path() -> PathBuf {
     root().join("accounts.json")
 }
 fn random() -> String {
@@ -178,8 +180,10 @@ fn reauth_matches(target: &Account, account: &Account) -> bool {
         && if account.provider == SubscriptionProvider::Claude {
             target.login.eq_ignore_ascii_case(&account.login)
         } else {
-            !target.subject.is_empty()
-                && target.subject == account.subject
+            ((!target.subject.is_empty() && target.subject == account.subject)
+                || (google(account.provider)
+                    && target.subject.is_empty()
+                    && target.login.eq_ignore_ascii_case(&account.login)))
                 && (account.provider == SubscriptionProvider::ChatgptApi
                     || target.client_id == account.client_id)
         }
@@ -329,6 +333,20 @@ fn token_endpoint(provider: SubscriptionProvider) -> &'static str {
         "https://oauth2.googleapis.com/token"
     }
 }
+
+fn refresh_client_secret(account: &Account) -> Result<String, String> {
+    if account.provider == SubscriptionProvider::Antigravity
+        && account.client_id == ANTIGRAVITY_OAUTH_CLIENT_ID
+    {
+        Ok(ANTIGRAVITY_OAUTH_CLIENT_SECRET.into())
+    } else if account.provider == SubscriptionProvider::GeminiCli
+        && account.client_id == super::subscription::GEMINI_OAUTH_CLIENT_ID
+    {
+        Ok(super::subscription::GEMINI_OAUTH_CLIENT_SECRET.into())
+    } else {
+        client(account.provider).map(|(_, secret)| secret)
+    }
+}
 async fn token_request(
     provider: SubscriptionProvider,
     form: &[(String, String)],
@@ -417,7 +435,7 @@ pub(crate) async fn resolve(provider: SubscriptionProvider, id: &str) -> Result<
         ("client_id".into(), account.client_id.clone()),
     ];
     if google(provider) {
-        form.push(("client_secret".into(), client(provider)?.1));
+        form.push(("client_secret".into(), refresh_client_secret(&account)?));
     } else {
         form.push(("resource".into(), provider.endpoint().into()));
     }
@@ -1792,22 +1810,18 @@ pub(crate) async fn quota(
                 )
                 .await?
             };
+            let mut quota = parse_google_quota(provider, &value);
             if provider == SubscriptionProvider::Antigravity {
-                if let Ok(summary) = codeassist(
+                let summary = codeassist(
                     &account,
                     provider.endpoint(),
                     "retrieveUserQuotaSummary",
                     &json!({"project":project}),
                 )
                 .await
-                {
-                    let pools = parse_google_quota(provider, &summary);
-                    if !pools.tiers.is_empty() {
-                        return Ok(pools);
-                    }
-                }
+                .ok();
+                quota.tiers = antigravity_quota::parse(&value, summary.as_ref());
             }
-            let mut quota = parse_google_quota(provider, &value);
             if provider == SubscriptionProvider::GeminiCli {
                 let flags = gemini_flags(&account, &project).await;
                 for tier in &mut quota.tiers {

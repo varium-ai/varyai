@@ -189,7 +189,9 @@ pub(crate) async fn get_agent_connection(
         status.configured &= active;
         if status.enabled && !status.configured {
             status.recovery_pending = true;
-            status.recovery_reason = Some(RecoveryReason::BridgePending);
+            status
+                .recovery_reason
+                .get_or_insert(RecoveryReason::BridgePending);
         }
     } else if status.configured && !active {
         status.configured = false;
@@ -272,7 +274,9 @@ pub(crate) async fn list_agent_connections(
         .active("trae");
     if bridge.enabled && !bridge.configured {
         bridge.recovery_pending = true;
-        bridge.recovery_reason = Some(RecoveryReason::BridgePending);
+        bridge
+            .recovery_reason
+            .get_or_insert(RecoveryReason::BridgePending);
     }
     statuses.push(bridge);
     let (audit_active, audit_waiting) = state.proxy_service.doubaowork_connection_status();

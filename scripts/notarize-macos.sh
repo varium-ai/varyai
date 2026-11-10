@@ -135,10 +135,7 @@ xcrun stapler validate "$app_path"
 spctl --assess --type execute --verbose=4 "$app_path"
 
 echo "==> Creating DMG with stapled app"
-mkdir -p "$work_dir/dmg"
-ditto "$app_path" "$work_dir/dmg/Vary AI.app"
-ln -s /Applications "$work_dir/dmg/Applications"
-hdiutil create -volname "Vary AI" -srcfolder "$work_dir/dmg" -format UDZO -ov "$dmg_path" >/dev/null
+node scripts/create-macos-dmg.mjs "$app_path" "$dmg_path"
 codesign --force --sign "$signing_identity" --timestamp "$dmg_path"
 codesign --verify --verbose=2 "$dmg_path"
 

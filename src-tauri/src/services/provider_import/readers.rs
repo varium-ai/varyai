@@ -500,6 +500,37 @@ pub(super) fn opencode(paths: &ImportPaths) -> Result<Vec<Candidate>, String> {
     Ok(out)
 }
 
+fn magpie_key_models(provider: &Value, key: &str) -> Option<Vec<String>> {
+    let reference = format!("{:x}", Sha256::digest(key.as_bytes()))[..10].to_owned();
+    if let Some(rows) = provider["accountModels"]
+        .get(&reference)
+        .and_then(Value::as_array)
+    {
+        if !rows.is_empty() {
+            return Some(
+                rows.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect(),
+            );
+        }
+    }
+    if provider["accountModelsAll"][&reference] == true {
+        return None;
+    }
+    let rows = models(&provider["models"]);
+    rows.iter().any(|row| row["keys"].is_array()).then(|| {
+        rows.iter()
+            .filter(|row| {
+                row["keys"]
+                    .as_array()
+                    .is_some_and(|keys| keys.iter().any(|key| key.as_str() == Some(&reference)))
+            })
+            .filter_map(|row| crate::services::routing_upstreams::model_id(row).map(str::to_owned))
+            .collect()
+    })
+}
+
 pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
     let value = json_file(path)?;
     let settings_path = path.with_file_name("settings.json");
@@ -517,6 +548,9 @@ pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
         .ok_or(INVALID)?;
     let mut out = vec![];
     for (index, p) in providers.iter().enumerate() {
+        if p["hidden"] == true {
+            continue;
+        }
         let id = text(p, &["id"]);
         let reference = format!("{index}/{id}");
         let mut endpoints = BTreeMap::new();
@@ -558,6 +592,7 @@ pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
             &selected,
             models(&p["models"]),
         );
+        result.record.id = id.clone();
         result.record.icon =
             crate::services::provider_icons::imported(&text(p, &["icon"]), path.parent());
         result.record.enabled = p["off"] != true;
@@ -567,6 +602,7 @@ pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
                 .and_then(serde_json::Value::as_str)
                 .filter(|name| !name.is_empty())
                 .map(str::to_owned),
+            primary_models: magpie_key_models(p, &text(p, &["key"])),
             endpoints,
             primary_protocol: (!primary_protocol.is_empty()).then_some(selected.clone()),
             ..Default::default()
@@ -574,19 +610,13 @@ pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
         if let Some(keys) = p["keys"].as_array() {
             for (index, key) in keys.iter().enumerate() {
                 let protocol = text(key, &["protocol"]);
-                if !text(key, &["plan"]).is_empty()
-                    || key["weight"]
-                        .as_i64()
-                        .is_some_and(|weight| !matches!(weight, 0 | 1))
-                {
-                    result.skip = Some("unsupported".into());
-                }
                 transport.keys.push(ImportedKey {
                     id: format!("import-key-{index}"),
                     name: text(key, &["name"]),
                     key: Some(text(key, &["key"])),
                     enabled: key["off"] != true,
                     api_format: (!protocol.is_empty()).then(|| format(&protocol).into()),
+                    models: magpie_key_models(p, &text(key, &["key"])),
                 });
             }
         }
@@ -679,49 +709,6 @@ pub(super) fn provider_backup(path: &Path) -> Result<Vec<Candidate>, String> {
                 && matches!(id.as_str(), "codex" | "claude" | "copilot" | "workbuddy"))
         {
             result.skip = Some("subscription".into());
-        }
-        if ["proxy", "extraBody", "keyPlan"].iter().any(|key| {
-            p.get(*key)
-                .is_some_and(|v| !v.is_null() && v != "" && v != &json!({}))
-        }) || p["insecureTLS"] == true
-            || [
-                "keySpendCaps",
-                "maxConcurrency",
-                "accountConcurrency",
-                "maxAccounts",
-                "accountWeights",
-                "accountCaps",
-                "accountWindowCaps",
-                "maxRPM",
-                "queueLimit",
-                "queueWait",
-                "queueTimeout",
-                "maxQueue",
-                "queueTimeoutMs",
-            ]
-            .iter()
-            .any(|key| {
-                p.get(*key).is_some_and(|v| {
-                    !v.is_null()
-                        && v != ""
-                        && v != &json!({})
-                        && v != &json!([])
-                        && v != &json!(0)
-                        && v != &json!(false)
-                })
-            })
-            || p["keyWeight"]
-                .as_i64()
-                .is_some_and(|weight| !matches!(weight, 0 | 1))
-            || p["priceRate"]
-                .as_f64()
-                .is_some_and(|rate| rate != 0.0 && rate != 1.0)
-            || !matches!(text(p, &["routing"]).as_str(), "" | "order")
-            || p["sink"] == true
-            || p["fallback"].as_array().is_some_and(|v| !v.is_empty())
-            || p["decide"].as_str().is_some_and(|v| !v.is_empty())
-        {
-            result.skip = Some("unsupported".into());
         }
         out.push(result);
     }

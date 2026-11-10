@@ -21,11 +21,27 @@ const cliTools: Partial<Record<AppId, string>> = {
   pi: "pi",
   qwen: "qwen",
 };
+const desktopUpdateFailures = new Map([
+  ["unavailable", "download"],
+  ["download", "download"],
+  ["checksum", "verification"],
+  ["identity", "verification"],
+  ["signature", "verification"],
+  ["architecture", "verification"],
+  ["archive", "archive"],
+  ["running", "running"],
+  ["replace", "replace"],
+  ["restore", "restore"],
+  ["changed", "changed"],
+  ["unsupported", "unsupported"],
+  ["notInstalled", "notInstalled"],
+]);
 export type AgentUpdateResult = {
   app: AppId;
   from?: string | null;
   to?: string | null;
   outcome: "changed" | "failed" | "unverified" | "preflightFailed";
+  failureReason?: string;
 };
 const cliKey = (tool: string) => ["agent-cli-version", tool];
 const desktopKey = ["agent-desktop-versions"];
@@ -182,26 +198,43 @@ export function useAgentUpdates(installed: AppId[]) {
             ? cli.get(app)?.version
             : desktop.data?.[app]?.version;
           let failed = false;
+          let failureReason: string | undefined;
           try {
             if (tool) {
               await settingsApi.runToolLifecycleAction([tool], "update");
             } else {
               await settingsApi.updateDesktopAgent(app);
             }
-          } catch {
+          } catch (cause) {
             failed = true;
+            // Only known desktop error codes are safe to show; CLI output stays private.
+            if (!tool && typeof cause === "string") {
+              failureReason = desktopUpdateFailures.get(cause);
+            } else if (
+              tool &&
+              typeof cause === "string" &&
+              cause.includes("from untrusted tap ")
+            ) {
+              failureReason = "homebrewTrust";
+            }
           }
           let to: string | null | undefined;
           if (tool) {
-            try {
-              const fresh = (await settingsApi.getToolVersions([tool])).find(
-                (v) => v.name === tool,
-              );
-              client.setQueryData(cliKey(tool), fresh ?? null);
-              to = fresh?.version;
-            } catch {
-              // Never retain a stale version as evidence that the upgrade succeeded.
-              client.setQueryData(cliKey(tool), null);
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                const fresh = (await settingsApi.getToolVersions([tool])).find(
+                  (v) => v.name === tool,
+                );
+                client.setQueryData(cliKey(tool), fresh ?? null);
+                to = fresh?.version;
+              } catch {
+                // Never retain a stale version as evidence that the upgrade succeeded.
+                client.setQueryData(cliKey(tool), null);
+              }
+              if (to || failed || attempt === 2) break;
+              // A just-updated CLI can temporarily fail its first startup probe.
+              // Retry only observation, never the update command itself.
+              await new Promise((resolve) => setTimeout(resolve, 1000));
             }
           } else {
             let fresh: AgentVersion | undefined;
@@ -233,6 +266,7 @@ export function useAgentUpdates(installed: AppId[]) {
             from,
             to,
             outcome: failed ? "failed" : verified ? "changed" : "unverified",
+            failureReason,
           });
           setResults(
             selected.flatMap((id) =>

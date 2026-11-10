@@ -6,6 +6,28 @@ use std::sync::{
 };
 use tokio_tungstenite::accept_async;
 
+#[tokio::test]
+async fn saved_auto_mode_survives_reopening_without_a_native_account() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let path = dir.path().join("checkin.json");
+    let db = Arc::new(crate::database::Database::memory().expect("database"));
+    let manager = Manager::new(path.clone(), db.clone());
+    let mut store = Store::default();
+    store.enabled.insert(key("synthetic-account"), true);
+    manager.write_store(&store).await.expect("save preference");
+    let reopened = Manager::new(path, db);
+    let store = reopened.read_store().await.expect("read saved preference");
+    let value = serde_json::to_value(Manager::snapshot(&store, None)).expect("status");
+    assert_eq!(value["autoConfigured"], true);
+    assert_eq!(value["connected"], false);
+    assert_eq!(value["accounts"], json!([]));
+    assert_eq!(
+        serde_json::to_value(Manager::snapshot(&Store::default(), None)).expect("status")
+            ["autoConfigured"],
+        false
+    );
+}
+
 struct Fixture {
     _directory: tempfile::TempDir,
     manager: Manager,

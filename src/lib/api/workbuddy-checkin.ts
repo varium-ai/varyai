@@ -14,6 +14,7 @@ export type WorkBuddyCheckinOutcome =
 
 export interface WorkBuddyCheckinStatus {
   autoEnabled: boolean;
+  autoConfigured?: boolean;
   day: string;
   outcome: WorkBuddyCheckinOutcome;
   checkedAt: number | null;

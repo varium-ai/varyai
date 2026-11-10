@@ -10,6 +10,8 @@ import {
 import { useCodexProviderQuotas } from "@/lib/query/codexProviderQuota";
 import { useCodexOauth } from "./forms/hooks/useCodexOauth";
 import { CodexLoginPanel } from "./CodexLoginPanel";
+import { isImageGenerationModel } from "@/lib/providerModelKind";
+import { ProviderImageModels } from "./ProviderImageModels";
 import { ProviderModelPreferences } from "./ProviderModelPreferences";
 import { settingsApi } from "@/lib/api/settings";
 import { copyText } from "@/lib/clipboard";
@@ -55,7 +57,7 @@ export function CodexProviderFields({
   const autoFetched = useRef(new Set<string>());
   const [importing, setImporting] = useState(false);
   const [typed, setTyped] = useState("");
-  const [showOthers, setShowOthers] = useState(false);
+  const [filter, setFilter] = useState("");
   const [managing, setManaging] = useState(false);
   const [loginWay, setLoginWay] = useState<"browser" | "device">("browser");
   const [loginProxy, setLoginProxy] = useState<string>();
@@ -276,19 +278,25 @@ export function CodexProviderFields({
     [...catalog, ...policy.models].map((row) => [String(row.model), row]),
   );
   const selected = new Set(policy.models.map((row) => String(row.model)));
-  const shown =
-    policy.mode === "picked" && !showOthers
-      ? policy.models
-      : policy.mode === "picked"
-        ? [...all.values()]
-        : catalog;
-  const preferences =
+  const chatModels = [...all.values()].filter(
+    (row) => !isImageGenerationModel(row),
+  );
+  const imageModels = [...all.values()].filter(isImageGenerationModel);
+  const imagePicks = policy.models.filter(isImageGenerationModel);
+  const term = filter.trim().toLocaleLowerCase();
+  const matches = (row: Record<string, unknown>) =>
+    `${row.model} ${(row.modelPreferences as { name?: string })?.name ?? row.displayName ?? ""}`
+      .toLocaleLowerCase()
+      .includes(term);
+  const shown = chatModels.filter(matches);
+  const preferences = (
     policy.mode === "picked"
       ? policy.models
       : catalog.map((row) => ({
           ...row,
           ...policy.models.find((p) => p.model === row.model),
-        }));
+        }))
+  ).filter((row) => !isImageGenerationModel(row));
   function update(next: Partial<CodexProviderSettings>) {
     onChange({
       ...draft,
@@ -296,7 +304,6 @@ export function CodexProviderFields({
     });
   }
   function choose(id: string) {
-    setShowOthers(true);
     update({
       mode: "picked",
       models:
@@ -375,7 +382,9 @@ export function CodexProviderFields({
       for (const row of (policy.mode === "picked"
         ? policy.models
         : catalog.slice(0, 24)
-      ).slice(0, 30)) {
+      )
+        .filter((row) => !isImageGenerationModel(row))
+        .slice(0, 30)) {
         const model = String(row.model);
         const result = await routingUpstreamsApi.testCodexModel(
           draft.id,
@@ -410,12 +419,6 @@ export function CodexProviderFields({
   });
   return (
     <>
-      <div className="pv-field">
-        <span className="pv-field-label">Agent</span>
-        <div>
-          <span className="cx-agent">Codex</span>
-        </div>
-      </div>
       <div className="pv-field">
         <span className="pv-field-label">{t("codexProvider.accounts")}</span>
         <div>
@@ -746,7 +749,7 @@ export function CodexProviderFields({
       </div>
       <div className="pv-field">
         <span className="pv-field-label">{t("codexProvider.models")}</span>
-        <div className="pv-stack">
+        <div className="pv-models">
           {!catalog.length && (
             <p className="pv-hint" role="status">
               {t(
@@ -760,43 +763,34 @@ export function CodexProviderFields({
               )}
             </p>
           )}
-          <div className="pv-protocols">
-            {(
-              [
-                ["vendor", "modeVendor"],
-                ["picked", "modePicked"],
-                ["best", "modeBest"],
-                ["usage", "modeUsage"],
-              ] as const
-            ).map(([mode, label]) => (
-              <button
-                type="button"
-                key={mode}
-                aria-pressed={policy.mode === mode}
-                className={policy.mode === mode ? "on" : ""}
+          <div className="pv-model-actions">
+            {chatModels.length > 24 && (
+              <input
+                type="search"
+                className="pv-model-search"
+                value={filter}
+                aria-label={t("providerEditor.filterModels", {
+                  count: chatModels.length,
+                })}
+                placeholder={t("providerEditor.filterModels", {
+                  count: chatModels.length,
+                })}
                 disabled={locked}
-                onClick={() => {
-                  setShowOthers(false);
-                  update({
-                    mode,
-                    ...(mode === "picked" && !policy.models.length
-                      ? { models: catalog.slice(0, 24) }
-                      : {}),
-                  });
-                }}
-              >
-                {t(`codexProvider.${label}`)}
-              </button>
-            ))}
-          </div>
-          <div className="pv-probe-actions">
+                onChange={(event) => setFilter(event.target.value)}
+              />
+            )}
             <button
               type="button"
               disabled={locked}
               onClick={() =>
                 update({
                   mode: "picked",
-                  models: [...all.values()].slice(0, 256),
+                  models: [
+                    ...imagePicks,
+                    ...chatModels.filter(
+                      (row) => selected.has(String(row.model)) || matches(row),
+                    ),
+                  ].slice(0, 256),
                 })
               }
             >
@@ -805,12 +799,16 @@ export function CodexProviderFields({
             <button
               type="button"
               disabled={locked}
-              onClick={() => update({ mode: "usage", models: [] })}
+              onClick={() => update({ mode: "picked", models: imagePicks })}
             >
               {t("providerEditor.selectNone")}
             </button>
           </div>
-          <div className="pv-model-chips">
+          <div
+            className="pv-model-chips"
+            role="group"
+            aria-label={t("modelPicker.models")}
+          >
             {shown.map((row) => (
               <SubscriptionModelChip
                 key={String(row.model)}
@@ -838,85 +836,81 @@ export function CodexProviderFields({
               </SubscriptionModelChip>
             ))}
           </div>
-          {policy.mode === "picked" &&
-            !showOthers &&
-            all.size > selected.size && (
+          <div className="pv-model-footer">
+            <div className="pv-add-model">
+              <input
+                aria-label={t("providerEditor.addModelId")}
+                placeholder={t("providerEditor.addModelId")}
+                value={typed}
+                disabled={locked}
+                onChange={(event) => setTyped(event.target.value)}
+              />
               <button
                 type="button"
-                className="text"
-                disabled={locked}
-                onClick={() => setShowOthers(true)}
+                disabled={locked || !typed.trim() || selected.size >= 256}
+                onClick={() => {
+                  const id = typed.trim();
+                  if (!selected.has(id))
+                    update({
+                      mode: "picked",
+                      models: [...policy.models, { model: id }],
+                    });
+                  setTyped("");
+                }}
               >
-                {t("codexProvider.showOthers", { n: all.size - selected.size })}
+                {t("providerEditor.addModel")}
               </button>
-            )}
-          <div className="pv-probe-actions">
-            <input
-              aria-label={t("providerEditor.addModelId")}
-              placeholder={t("providerEditor.addModelId")}
-              value={typed}
-              disabled={locked}
-              onChange={(event) => setTyped(event.target.value)}
-            />
-            <button
-              type="button"
-              disabled={locked || !typed.trim() || selected.size >= 256}
-              onClick={() => {
-                const id = typed.trim();
-                if (!selected.has(id))
-                  update({
-                    mode: "picked",
-                    models: [...policy.models, { model: id }],
-                  });
-                setTyped("");
-              }}
-            >
-              {t("providerEditor.addModel")}
-            </button>
-            <button
-              type="button"
-              disabled={locked || !policy.accounts.length}
-              onClick={() => void discover()}
-            >
-              {fetching ? t("common.loading") : t("codexProvider.fetchModels")}
-            </button>
-            <button
-              type="button"
-              disabled={
-                locked ||
-                !policy.accounts.length ||
-                !shown.length ||
-                policy.mode === "usage"
-              }
-              onClick={() => void testModels()}
-            >
-              {testing ? t("common.loading") : t("codexProvider.testModels")}
-            </button>
-          </div>
-          <p className="pv-hint">{t("codexProvider.testHint")}</p>
-          {!!Object.keys(tests).length && (
-            <div className="cx-tests" role="status">
-              {Object.entries(tests).map(([model, result]) => (
-                <p key={model}>
-                  <code>{model}</code>{" "}
-                  {t(
-                    result.ok
-                      ? "codexProvider.testPassed"
-                      : "codexProvider.testFailed",
-                    { ms: result.elapsedMs },
-                  )}
-                </p>
-              ))}
+              <button
+                type="button"
+                disabled={locked || !policy.accounts.length}
+                onClick={() => void discover()}
+              >
+                {fetching
+                  ? t("common.loading")
+                  : t("codexProvider.fetchModels")}
+              </button>
+              <button
+                type="button"
+                disabled={
+                  locked ||
+                  !policy.accounts.length ||
+                  !shown.length ||
+                  policy.mode === "usage"
+                }
+                title={t("codexProvider.testHint")}
+                onClick={() => void testModels()}
+              >
+                {testing ? t("common.loading") : t("codexProvider.testModels")}
+              </button>
             </div>
-          )}
-          <ProviderModelPreferences
-            models={preferences}
-            disabled={locked}
-            onChange={(models) =>
-              update({ models: models as Array<Record<string, unknown>> })
-            }
-          />
-          <label className="cx-check">
+            {!!Object.keys(tests).length && (
+              <div className="cx-tests" role="status">
+                {Object.entries(tests).map(([model, result]) => (
+                  <p key={model}>
+                    <code>{model}</code>{" "}
+                    {t(
+                      result.ok
+                        ? "codexProvider.testPassed"
+                        : "codexProvider.testFailed",
+                      { ms: result.elapsedMs },
+                    )}
+                  </p>
+                ))}
+              </div>
+            )}
+            <ProviderModelPreferences
+              models={preferences}
+              disabled={locked}
+              onChange={(models) =>
+                update({
+                  models: [...models, ...imagePicks] as Array<
+                    Record<string, unknown>
+                  >,
+                })
+              }
+            />
+          </div>
+          <label className="cx-check pv-groups-only">
             <input
               type="checkbox"
               checked={policy.groupsOnly}
@@ -928,12 +922,25 @@ export function CodexProviderFields({
           <p className="pv-hint">{t(`codexProvider.${policy.mode}Hint`)}</p>
         </div>
       </div>
-      <div className="pv-field">
-        <span className="pv-field-label">{t("codexProvider.endpoint")}</span>
-        <div className="cx-endpoint">
-          Responses <code>https://chatgpt.com/backend-api/codex</code>
-        </div>
-      </div>
+      <ProviderImageModels
+        models={imageModels.map((row) => ({
+          id: String(row.model),
+          name: String(
+            (row.modelPreferences as { name?: string })?.name ??
+              row.displayName ??
+              row.model,
+          ),
+        }))}
+        selected={selected}
+        disabled={locked}
+        onToggle={(id) =>
+          update({
+            models: selected.has(id)
+              ? policy.models.filter((row) => row.model !== id)
+              : [...policy.models, all.get(id)!],
+          })
+        }
+      />
     </>
   );
 }

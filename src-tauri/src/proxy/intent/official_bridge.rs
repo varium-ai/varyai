@@ -26,6 +26,81 @@ struct Stored {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anthropic_deferred_tool_discovery_stays_callable_on_official_responses(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let body = json!({
+            "model":"synthetic-model",
+            "messages":[
+                {"role":"assistant","content":[{"type":"tool_use","id":"synthetic-search","name":"ToolSearch","input":{"query":"lookup"}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"synthetic-search","content":[{"type":"tool_reference","tool_name":"lookup"}]}]}
+            ],
+            "tools":[
+                {"name":"ToolSearch","input_schema":{"type":"object"}},
+                {"name":"lookup","defer_loading":true,"input_schema":{"type":"object","properties":{"query":{"type":"string"}}}}
+            ]
+        });
+        let wire = request_wire(
+            &serde_json::to_vec(&body)?,
+            Protocol::Anthropic,
+            "/v1/messages",
+            "synthetic-model",
+            &History::default(),
+            0,
+            false,
+        )?;
+        let sent: Value = serde_json::from_slice(&wire)?;
+        assert_eq!(sent["tools"][1]["name"], "lookup");
+        assert_eq!(
+            sent["tools"][1]["parameters"],
+            body["tools"][1]["input_schema"]
+        );
+        assert!(sent["tools"][1].get("defer_loading").is_none());
+        assert!(sent["input"].to_string().contains("Tool available: lookup"));
+
+        let parsed = ir::parse::request(Protocol::Anthropic, &body, "/v1/messages")?;
+        assert!(
+            ir::build::request(&parsed, Protocol::Responses)?["tools"][1]
+                .get("defer_loading")
+                .is_none()
+        );
+        assert_eq!(
+            ir::build::request(&parsed, Protocol::Anthropic)?["tools"][1]["defer_loading"],
+            true
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_responses_keep_their_explicit_deferred_tool_search_contract(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let body = json!({
+            "model":"synthetic-model","input":"Synthetic question",
+            "tools":[
+                {"type":"tool_search"},
+                {"type":"function","name":"lookup","defer_loading":true,"parameters":{"type":"object"}}
+            ]
+        });
+        let wire = request_wire(
+            &serde_json::to_vec(&body)?,
+            Protocol::Responses,
+            "/v1/responses",
+            "synthetic-model",
+            &History::default(),
+            0,
+            false,
+        )?;
+        let sent: Value = serde_json::from_slice(&wire)?;
+        assert_eq!(sent["tools"][0], body["tools"][0]);
+        assert_eq!(sent["tools"][1]["defer_loading"], true);
+        assert_eq!(
+            sent["tools"][1]["parameters"],
+            body["tools"][1]["parameters"]
+        );
+        Ok(())
+    }
+
     fn reply() -> ir::Reply {
         ir::Reply {
             id: "synthetic-official-reply".into(),

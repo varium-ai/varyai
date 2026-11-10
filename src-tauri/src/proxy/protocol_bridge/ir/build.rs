@@ -686,7 +686,13 @@ fn responses(r: &Request) -> Result<Value, ProxyError> {
         if let Some(strict) = t.strict {
             f["strict"] = json!(strict);
         }
-        if t.deferred {
+        // Magpie's responsesTool offers translated functions eagerly.
+        // A Responses client's own native search contract stays on its wire.
+        if t.deferred
+            && t.native
+                .as_ref()
+                .is_some_and(|tool| tool["type"] == "function")
+        {
             f["defer_loading"] = json!(true);
         }
         tools.push(f);
@@ -1154,6 +1160,9 @@ mod tests {
             assert!(encoded.contains("ToolSearch"));
             if target != Protocol::Anthropic {
                 assert!(encoded.contains("Tool available: lookup"));
+            }
+            if target == Protocol::Responses {
+                assert!(wire["tools"][1].get("defer_loading").is_none());
             }
         }
         Ok(())

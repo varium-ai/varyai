@@ -1,6 +1,5 @@
-//! Authenticated native Codex ingress, separate from custom-provider bearer tokens.
+//! Codex native ingress follows the caller's own sign-in, as in Magpie.
 
-use hmac::{Hmac, Mac};
 use http::{header, HeaderMap, StatusCode};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -8,18 +7,17 @@ use std::{
     collections::BTreeMap,
     io::Read,
     path::Path,
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, RwLock,
-    },
-    time::{Duration, Instant},
+    sync::{Arc, RwLock},
+    time::Instant,
 };
 
 const FAILED: &str = "routing_native_unavailable";
-const LEASE: Duration = Duration::from_secs(5);
 // Match the general proxy ingress budget for image-heavy conversations.
 const BODY_LIMIT: usize = 200 * 1024 * 1024;
-type TokenMac = Hmac<Sha256>;
+
+#[cfg(test)]
+#[path = "native_parity_tests.rs"]
+mod parity_tests;
 
 fn canonicalize_model(
     bytes: bytes::Bytes,
@@ -43,66 +41,27 @@ fn canonicalize_model(
         .map_err(|_| "routing_unsafe_payload_edit")
 }
 
-pub(crate) struct Credentials {
-    token: String,
-    identity: String,
-    workspace: String,
-}
-impl Credentials {
-    pub fn same_identity(&self, other: &Self) -> bool {
-        self.identity == other.identity && self.workspace == other.workspace
-    }
-}
-struct Proof {
-    key: [u8; 32],
-    digest: Vec<u8>,
-    until: Instant,
-}
-pub(crate) struct Lease {
-    pub epoch: u64,
+/// A conversation namespace, not an authentication decision. Magpie keys native
+/// account state by the request's workspace, falling back to its bearer header.
+#[derive(Clone)]
+pub(crate) struct Context {
     pub identity: String,
-    workspace: String,
-    proof: RwLock<Proof>,
-    revoked: AtomicBool,
-    cancelled: tokio::sync::watch::Sender<bool>,
 }
-impl Lease {
-    pub(super) fn workspace(&self) -> &str {
-        &self.workspace
-    }
-
-    pub fn valid(&self) -> bool {
-        !self.revoked.load(Ordering::Acquire)
-            && self.proof.read().is_ok_and(|p| Instant::now() < p.until)
-    }
-    fn revoke(&self) {
-        self.revoked.store(true, Ordering::Release);
-        self.cancelled.send_replace(true);
-    }
-    pub async fn cancelled(&self) {
-        let mut cancelled = self.cancelled.subscribe();
-        loop {
-            if *cancelled.borrow() || self.revoked.load(Ordering::Acquire) {
-                return;
-            }
-            let until = match self.proof.read() {
-                Ok(proof) if Instant::now() < proof.until => proof.until,
-                _ => {
-                    self.revoke();
-                    return;
-                }
-            };
-            tokio::select! {
-                _ = cancelled.changed() => return,
-                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(until)) => {}
-            }
+impl Context {
+    pub fn from_headers(headers: &HeaderMap) -> Self {
+        let account = headers
+            .get("chatgpt-account-id")
+            .or_else(|| headers.get(header::AUTHORIZATION));
+        Self {
+            identity: format!(
+                "{:x}",
+                Sha256::digest(account.map(|h| h.as_bytes()).unwrap_or_default())
+            ),
         }
     }
 }
 #[derive(Default)]
 pub(crate) struct Native {
-    current: RwLock<Option<Arc<Lease>>>,
-    epoch: AtomicU64,
     status: RwLock<Option<&'static str>>,
     checkpoints: RwLock<Option<Arc<super::checkpoint::Store>>>,
     projection: RwLock<Option<Projection>>,
@@ -160,16 +119,8 @@ impl Native {
             None => Ok(bytes),
         }
     }
-    fn observed(&self, lease: &Arc<Lease>) {
-        if let Ok(slot) = self.current.read() {
-            if slot
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, lease))
-                && lease.valid()
-            {
-                self.set_status("active");
-            }
-        }
+    fn observed(&self) {
+        self.set_status("active");
     }
     pub fn prepare_checkpoints(&self, path: &Path) -> Result<(), &'static str> {
         let store = super::checkpoint::Store::load_or_create(path)?;
@@ -184,11 +135,6 @@ impl Native {
             .ok_or(FAILED)
     }
     pub fn status(&self) -> &'static str {
-        if let Ok(slot) = self.current.read() {
-            if slot.as_ref().is_some_and(|lease| !lease.valid()) {
-                return "revoked";
-            }
-        }
         self.status
             .read()
             .ok()
@@ -200,155 +146,9 @@ impl Native {
             *slot = Some(status);
         }
     }
-    pub fn revoke(&self) {
-        self.epoch.fetch_add(1, Ordering::AcqRel);
-        if let Ok(mut slot) = self.current.write() {
-            if let Some(lease) = slot.take() {
-                lease.revoke();
-            }
-        }
-        self.set_status("revoked");
+    pub fn reset_status(&self) {
+        self.set_status("disabled");
     }
-    pub fn install(&self, credentials: Credentials) -> Result<Arc<Lease>, &'static str> {
-        self.revoke();
-        let epoch = self.epoch.load(Ordering::Acquire);
-        let mut key = [0u8; 32];
-        getrandom::getrandom(&mut key).map_err(|_| FAILED)?;
-        let digest = token_digest(&key, &credentials.token)?;
-        let (cancelled, _) = tokio::sync::watch::channel(false);
-        let lease = Arc::new(Lease {
-            epoch,
-            identity: credentials.identity,
-            workspace: credentials.workspace,
-            proof: RwLock::new(Proof {
-                key,
-                digest,
-                until: Instant::now() + LEASE,
-            }),
-            revoked: AtomicBool::new(false),
-            cancelled,
-        });
-        let mut slot = self.current.write().map_err(|_| FAILED)?;
-        if self.epoch.load(Ordering::Acquire) != lease.epoch {
-            lease.revoke();
-            return Err(FAILED);
-        }
-        *slot = Some(lease.clone());
-        drop(slot);
-        self.set_status("pending");
-        Ok(lease)
-    }
-    pub fn revoke_if(&self, lease: &Arc<Lease>) {
-        if let Ok(mut slot) = self.current.write() {
-            if slot
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, lease))
-            {
-                self.epoch.fetch_add(1, Ordering::AcqRel);
-                lease.revoke();
-                *slot = None;
-                self.set_status("reconnect_required");
-            }
-        }
-    }
-    pub fn bind(
-        &self,
-        credentials: Credentials,
-        reconnect: bool,
-    ) -> Result<Arc<Lease>, &'static str> {
-        let current = self.current.read().map_err(|_| FAILED)?.clone();
-        if let Some(lease) = current {
-            if lease.valid()
-                && lease.identity == credentials.identity
-                && lease.workspace == credentials.workspace
-            {
-                if self.refresh(&lease, credentials) {
-                    return Ok(lease);
-                }
-                return Err(FAILED);
-            }
-            if !reconnect {
-                self.revoke_if(&lease);
-                return Err(FAILED);
-            }
-        } else if !reconnect {
-            return Err(FAILED);
-        }
-        self.install(credentials)
-    }
-    pub fn refresh(&self, lease: &Arc<Lease>, credentials: Credentials) -> bool {
-        let Ok(slot) = self.current.read() else {
-            return false;
-        };
-        if !slot
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, lease))
-            || !lease.valid()
-        {
-            return false;
-        }
-        if credentials.identity != lease.identity || credentials.workspace != lease.workspace {
-            lease.revoke();
-            return false;
-        }
-        let Ok(mut proof) = lease.proof.write() else {
-            lease.revoke();
-            return false;
-        };
-        if lease.revoked.load(Ordering::Acquire) || Instant::now() >= proof.until {
-            lease.revoke();
-            return false;
-        }
-        let Ok(digest) = token_digest(&proof.key, &credentials.token) else {
-            lease.revoke();
-            return false;
-        };
-        proof.digest = digest;
-        proof.until = Instant::now() + LEASE;
-        true
-    }
-    pub fn authenticate(&self, headers: &HeaderMap) -> Result<Arc<Lease>, &'static str> {
-        let mut authorization = headers.get_all(header::AUTHORIZATION).iter();
-        let token = authorization
-            .next()
-            .and_then(|h| h.to_str().ok())
-            .and_then(|h| h.strip_prefix("Bearer "))
-            .filter(|s| {
-                !s.is_empty() && s.len() <= 32 * 1024 && s.bytes().all(|b| b.is_ascii_graphic())
-            })
-            .ok_or(FAILED)?;
-        if authorization.next().is_some() {
-            return Err(FAILED);
-        }
-        let lease = self
-            .current
-            .read()
-            .map_err(|_| FAILED)?
-            .clone()
-            .ok_or(FAILED)?;
-        if !lease.valid() {
-            return Err(FAILED);
-        }
-        for workspace in headers.get_all("chatgpt-account-id").iter() {
-            if workspace.to_str().ok() != Some(lease.workspace.as_str()) {
-                return Err(FAILED);
-            }
-        }
-        let proof = lease.proof.read().map_err(|_| FAILED)?;
-        if lease.revoked.load(Ordering::Acquire) || Instant::now() >= proof.until {
-            return Err(FAILED);
-        }
-        let mut mac = TokenMac::new_from_slice(&proof.key).map_err(|_| FAILED)?;
-        mac.update(token.as_bytes());
-        mac.verify_slice(&proof.digest).map_err(|_| FAILED)?;
-        drop(proof);
-        Ok(lease)
-    }
-}
-fn token_digest(key: &[u8], token: &str) -> Result<Vec<u8>, &'static str> {
-    let mut mac = TokenMac::new_from_slice(key).map_err(|_| FAILED)?;
-    mac.update(token.as_bytes());
-    Ok(mac.finalize().into_bytes().to_vec())
 }
 fn read_private(path: &Path) -> Result<Option<String>, &'static str> {
     let metadata = match std::fs::symlink_metadata(path) {
@@ -394,128 +194,37 @@ fn read_private(path: &Path) -> Result<Option<String>, &'static str> {
     }
     Ok(Some(text))
 }
-/// Only called while preparing or reconciling a binding, never during forwarding.
-pub(crate) fn read_credentials(config: &Path, marker: &Path) -> Result<Credentials, &'static str> {
-    let auth = config.parent().ok_or(FAILED)?.join("auth.json");
-    let before = (
-        read_private(config)?,
-        read_private(&auth)?,
-        read_private(marker)?,
-    );
-    let credentials = parse_credentials(
-        before.0.as_deref().unwrap_or(""),
-        &serde_json::from_str::<Value>(before.1.as_deref().ok_or(FAILED)?).map_err(|_| FAILED)?,
-        before
-            .2
-            .as_deref()
-            .map(serde_json::from_str::<Value>)
-            .transpose()
-            .map_err(|_| FAILED)?
-            .as_ref(),
-    )?;
-    let after = (
-        read_private(config)?,
-        read_private(&auth)?,
-        read_private(marker)?,
-    );
-    if before != after {
-        return Err(FAILED);
-    }
-    Ok(credentials)
-}
-fn parse_credentials(
-    config: &str,
-    auth: &Value,
-    marker: Option<&Value>,
-) -> Result<Credentials, &'static str> {
-    use crate::codex_config::{
-        codex_config_auth_store_mode, extract_codex_id_token_user_identity, CodexAuthStoreMode,
-    };
-    let doc: toml::Value = config.parse().map_err(|_| FAILED)?;
-    if codex_config_auth_store_mode(config) != CodexAuthStoreMode::File
-        || doc
-            .get("profiles")
-            .and_then(toml::Value::as_table)
-            .is_some_and(|profiles| {
-                profiles.values().any(|profile| {
-                    profile.get("openai_base_url").is_some()
-                        || profile.get("cli_auth_credentials_store").is_some()
-                })
-            })
-        || auth["auth_mode"] != "chatgpt"
-        || doc
-            .get("forced_login_method")
-            .and_then(toml::Value::as_str)
-            .is_some_and(|method| method.trim().eq_ignore_ascii_case("api"))
-        || [
-            "OPENAI_API_KEY",
-            "personal_access_token",
-            "bedrock_api_key",
-            "bedrock_access_keys",
-            "agent_identity",
-        ]
-        .iter()
-        .any(|key| auth.get(*key).is_some_and(|v| !v.is_null()))
+/// Discovery only controls how the client is configured. An incomplete read is
+/// unknown, not a logout; forwarding always uses the request's own credentials.
+pub(crate) fn signed_in(config: &Path) -> Option<bool> {
+    use crate::codex_config::{codex_config_auth_store_mode, CodexAuthStoreMode};
+    let text = read_private(config).ok()?.unwrap_or_default();
+    let doc: toml::Value = text.parse().ok()?;
+    if doc
+        .get("forced_login_method")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("api"))
     {
-        return Err(FAILED);
+        return Some(false);
     }
-    let field = |key| {
-        auth.pointer(key)
-            .and_then(Value::as_str)
-            .filter(|s| !s.trim().is_empty() && s.len() <= 32 * 1024)
-    };
-    let token = field("/tokens/access_token").ok_or(FAILED)?.to_owned();
-    let workspace = field("/tokens/account_id").ok_or(FAILED)?.to_owned();
-    let user = extract_codex_id_token_user_identity(field("/tokens/id_token").ok_or(FAILED)?)
-        .ok_or(FAILED)?;
-    let managed = if let Some(marker) = marker {
-        if marker["version"] != 3
-            || marker["chatgpt_account_id"].as_str() != Some(&workspace)
-            || marker["user_identity"].as_str() != Some(&user)
-        {
-            return Err(FAILED);
+    let auth = match codex_config_auth_store_mode(&text) {
+        CodexAuthStoreMode::File | CodexAuthStoreMode::Auto => {
+            read_private(&config.parent()?.join("auth.json")).ok()?
         }
-        marker["account_id"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .ok_or(FAILED)?
-    } else {
-        "native"
+        CodexAuthStoreMode::Ephemeral => return Some(false),
+        CodexAuthStoreMode::Keyring | CodexAuthStoreMode::Unknown => return None,
     };
-    let identity = format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&(user, &workspace, managed)).map_err(|_| FAILED)?)
-    );
-    Ok(Credentials {
-        token,
-        identity,
-        workspace,
-    })
-}
-fn version(text: &str) -> Option<[u32; 3]> {
-    if text.is_empty()
-        || text.len() > 80
-        || !text
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b))
-    {
-        return None;
-    }
-    let core = text.split(['-', '+']).next()?;
-    let parts = core
-        .split('.')
-        .map(str::parse::<u32>)
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    parts.try_into().ok()
-}
-fn models_query(query: Option<&str>) -> bool {
-    query.is_none_or(|q| {
-        q.len() <= 128
-            && q.strip_prefix("client_version=")
-                .and_then(version)
-                .is_some()
-    })
+    let Some(auth) = auth else {
+        return Some(false);
+    };
+    let auth: Value = serde_json::from_str(&auth).ok()?;
+    let auth = auth.as_object()?;
+    Some(
+        auth.get("tokens")
+            .and_then(|t| t.get("access_token"))
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty()),
+    )
 }
 
 /// Preserve untouched wire lexemes even when a checkpoint/control adapter edits structure.
@@ -587,7 +296,7 @@ pub(super) struct Compact {
     pub native: bool,
 }
 fn checkpoint_context(
-    lease: &Lease,
+    context: &Context,
     alias: &str,
     target: &super::Target,
 ) -> super::checkpoint::Context {
@@ -609,7 +318,7 @@ fn checkpoint_context(
         }
     }
     super::checkpoint::Context {
-        identity: lease.identity.clone(),
+        identity: context.identity.clone(),
         alias: alias.into(),
         destination: format!("{:x}", hash.finalize()),
     }
@@ -617,7 +326,7 @@ fn checkpoint_context(
 fn restore_checkpoints(
     body: &mut Value,
     session: &super::Session,
-    lease: &Lease,
+    context: &Context,
     alias: &str,
     store: &super::checkpoint::Store,
 ) -> Result<Option<usize>, &'static str> {
@@ -639,7 +348,7 @@ fn restore_checkpoints(
             }
             let mut decoded = None;
             for (index, target) in session.targets.iter().enumerate() {
-                if let Ok(summary) = store.open(&checkpoint_context(lease, alias, target), seal) {
+                if let Ok(summary) = store.open(&checkpoint_context(context, alias, target), seal) {
                     if decoded.is_some() {
                         return Err("routing_checkpoint_ambiguous");
                     }
@@ -793,9 +502,10 @@ async fn read_body(
     }
 }
 
-/// Outer middleware authenticates before gateway policy decoding or database work.
+/// Native clients on loopback retain Codex's own authentication. No local
+/// token snapshot or expiring authorization is placed in front of forwarding.
 pub(crate) async fn admission(
-    axum::extract::State(state): axum::extract::State<super::super::server::ProxyState>,
+    axum::extract::State(_state): axum::extract::State<super::super::server::ProxyState>,
     mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -811,91 +521,39 @@ pub(crate) async fn admission(
     {
         return super::error(StatusCode::FORBIDDEN, "routing_local_clients_only");
     }
-    let lease = match state.intent_runtime.native.authenticate(request.headers()) {
-        Ok(lease) => lease,
-        Err(_) => return super::error(StatusCode::UNAUTHORIZED, FAILED),
-    };
-    request.extensions_mut().insert(lease.clone());
-    let forward = async {
-        // Bound native decoding before the shared gateway policy reads its model.
-        let request = if request.method() == http::Method::POST
-            && matches!(
-                request.uri().path(),
-                "/backend-api/codex/responses" | "/backend-api/codex/responses/compact"
-            ) {
-            let (mut parts, body) = request.into_parts();
-            let bytes = match read_body(&parts, body).await {
-                Ok(bytes) => bytes,
-                Err(response) => return *response,
-            };
-            for name in [
-                header::CONTENT_ENCODING,
-                header::CONTENT_LENGTH,
-                header::TRANSFER_ENCODING,
-            ] {
-                parts.headers.remove(name);
-            }
-            axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes))
-        } else {
-            request
+    let context = Arc::new(Context::from_headers(request.headers()));
+    request.extensions_mut().insert(context);
+    let request = if request.method() == http::Method::POST
+        && matches!(
+            request.uri().path(),
+            "/backend-api/codex/responses" | "/backend-api/codex/responses/compact"
+        ) {
+        let (mut parts, body) = request.into_parts();
+        let bytes = match read_body(&parts, body).await {
+            Ok(bytes) => bytes,
+            Err(response) => return *response,
         };
-        next.run(request).await
+        for name in [
+            header::CONTENT_ENCODING,
+            header::CONTENT_LENGTH,
+            header::TRANSFER_ENCODING,
+        ] {
+            parts.headers.remove(name);
+        }
+        axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes))
+    } else {
+        request
     };
-    tokio::select! {
-        biased;
-        _ = lease.cancelled() => super::error(StatusCode::UNAUTHORIZED, FAILED),
-        response = forward => response,
-    }
+    next.run(request).await
 }
 
 pub(crate) async fn handle(
     axum::extract::State(state): axum::extract::State<super::super::server::ProxyState>,
     request: axum::extract::Request,
 ) -> axum::response::Response {
-    let Some(lease) = request
-        .extensions()
-        .get::<Arc<Lease>>()
-        .cloned()
-        .filter(|l| l.valid())
-    else {
-        return super::error(StatusCode::UNAUTHORIZED, FAILED);
-    };
+    let context = Arc::new(Context::from_headers(request.headers()));
     let path = request.uri().path();
     let models = request.method() == http::Method::GET && path == "/backend-api/codex/models";
-    if (models && !models_query(request.uri().query()))
-        || (!models && request.uri().query().is_some())
-    {
-        return super::error(StatusCode::BAD_REQUEST, "routing_query_unsupported");
-    }
-    let observed = request
-        .headers()
-        .get("version")
-        .and_then(|h| h.to_str().ok())
-        .and_then(version)
-        .or_else(|| {
-            request
-                .headers()
-                .get(header::USER_AGENT)
-                .and_then(|h| h.to_str().ok())
-                .filter(|ua| ua.to_ascii_lowercase().starts_with("codex"))
-                .and_then(|ua| ua.split_once('/')?.1.split_whitespace().next())
-                .and_then(version)
-        })
-        .or_else(|| {
-            models
-                .then(|| {
-                    request
-                        .uri()
-                        .query()?
-                        .strip_prefix("client_version=")
-                        .and_then(version)
-                })
-                .flatten()
-        });
-    if !observed.is_some_and(|v| v[0] == 0 && matches!(v[1], 114 | 165 | 166 | 167)) {
-        state.intent_runtime.native.set_status("unsupported");
-        return super::error(StatusCode::BAD_REQUEST, "routing_native_client_unsupported");
-    }
     crate::codex_client::observe(request.headers());
     if path == "/backend-api/codex/responses"
         && request.method() == http::Method::GET
@@ -906,43 +564,27 @@ pub(crate) async fn handle(
     {
         return super::error(StatusCode::UPGRADE_REQUIRED, "routing_native_use_http");
     }
-    let Projection {
-        menu,
-        catalog,
-        model_map,
-    } = match state.intent_runtime.native.projection() {
-        Ok(projection) => projection,
-        Err(_) => return super::error(StatusCode::SERVICE_UNAVAILABLE, FAILED),
-    };
+    let projection = state.intent_runtime.native.projection().ok();
     if models {
-        use axum::response::IntoResponse;
-        let client_version = request
-            .uri()
-            .query()
-            .and_then(|query| query.strip_prefix("client_version="))
-            .or_else(|| {
-                request
-                    .headers()
-                    .get("version")
-                    .and_then(|value| value.to_str().ok())
-                    .filter(|value| version(value).is_some())
-            })
-            .map(str::to_owned)
-            .unwrap_or_else(crate::codex_client::current_version);
-        let catalog = super::native_gateway::merged_catalog(
-            &lease,
+        let catalog = projection
+            .as_ref()
+            .map(|p| p.catalog.clone())
+            .unwrap_or_else(|| serde_json::json!({"models":[]}));
+        return super::native_gateway::merged_catalog(
             request.headers(),
-            &client_version,
+            request.uri().query(),
             catalog,
+            projection
+                .as_ref()
+                .map(|p| super::native_gateway::CatalogPolicy::for_menu(&p.menu, &p.model_map))
+                .unwrap_or_default(),
         )
         .await;
-        let mut response = axum::Json(catalog).into_response();
-        response.headers_mut().insert(
-            header::CACHE_CONTROL,
-            http::HeaderValue::from_static("no-store"),
-        );
-        return response;
     }
+    let (menu, model_map) = match projection {
+        Some(p) => (Some(p.menu), p.model_map),
+        None => (None, Arc::new(BTreeMap::new())),
+    };
     let legacy = path == "/backend-api/codex/responses/compact";
     if request.method() != http::Method::POST || !(legacy || path == "/backend-api/codex/responses")
     {
@@ -974,7 +616,11 @@ pub(crate) async fn handle(
             "routing_native_select_published_model",
         );
     };
-    let Some(session) = menu.groups.get(model).cloned() else {
+    let Some(session) = menu
+        .as_ref()
+        .and_then(|menu| menu.groups.get(model))
+        .cloned()
+    else {
         if super::native_gateway::is_vary_alias(model) {
             return super::error(
                 StatusCode::NOT_FOUND,
@@ -1005,7 +651,6 @@ pub(crate) async fn handle(
             }
         };
         let response = super::native_gateway::forward(
-            lease.clone(),
             if legacy {
                 super::native_gateway::Endpoint::Compact
             } else {
@@ -1013,10 +658,11 @@ pub(crate) async fn handle(
             },
             parts.headers,
             bytes,
+            parts.uri.query(),
         )
         .await;
         if response.status().is_success() {
-            state.intent_runtime.native.observed(&lease);
+            state.intent_runtime.native.observed();
         }
         return response;
     };
@@ -1030,7 +676,7 @@ pub(crate) async fn handle(
         Ok(store) => store,
         Err(code) => return super::error(StatusCode::SERVICE_UNAVAILABLE, code),
     };
-    let forced = match restore_checkpoints(&mut original, &session, &lease, &alias, &store) {
+    let forced = match restore_checkpoints(&mut original, &session, &context, &alias, &store) {
         Ok(forced) => forced,
         Err(code) => return super::error(StatusCode::CONFLICT, code),
     };
@@ -1075,7 +721,7 @@ pub(crate) async fn handle(
             "/v1/responses"
         }
         .into(),
-        format!("native-codex:{}", lease.identity),
+        format!("native-codex:{}", context.identity),
         true,
         false,
         None,
@@ -1084,14 +730,14 @@ pub(crate) async fn handle(
     .await;
     let Some(operation) = operation else {
         if response.status().is_success() {
-            runtime.native.observed(&lease);
+            runtime.native.observed();
         }
         return response;
     };
     if native_compact {
         let response = validated_native_compaction(response, operation).await;
         if response.status().is_success() {
-            runtime.native.observed(&lease);
+            runtime.native.observed();
         }
         return response;
     }
@@ -1108,10 +754,10 @@ pub(crate) async fn handle(
     let Some(target) = session.targets.get(index) else {
         return super::error(StatusCode::BAD_GATEWAY, FAILED);
     };
-    let context = checkpoint_context(&lease, &alias, target);
+    let context = checkpoint_context(&context, &alias, target);
     match store.seal(&context, &summary) {
-        Ok(seal) if lease.valid() => {
-            runtime.native.observed(&lease);
+        Ok(seal) => {
+            runtime.native.observed();
             super::compaction::checkpoint_response(operation, seal, usage)
         }
         _ => super::error(StatusCode::BAD_GATEWAY, "routing_checkpoint_unavailable"),
@@ -1122,14 +768,7 @@ pub(crate) async fn handle(
 mod tests {
     use super::*;
     use http::{header, HeaderMap};
-
-    fn credentials(token: &str, user: &str) -> Credentials {
-        Credentials {
-            token: token.into(),
-            identity: user.into(),
-            workspace: "fixture-workspace".into(),
-        }
-    }
+    use std::time::Duration;
 
     struct RestoreSecurity(crate::proxy::security::SecurityRuntimeConfig);
     impl Drop for RestoreSecurity {
@@ -1289,9 +928,6 @@ mod tests {
             proxy::{server::ProxyServer, ProxyConfig},
         };
         let runtime = Arc::new(super::super::Runtime::default());
-        runtime
-            .native
-            .install(credentials("fixture-token", "fixture-user"))?;
         let server = ProxyServer::new(
             ProxyConfig {
                 listen_port: 0,
@@ -1371,60 +1007,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn native_bearer_is_exact_and_bound_to_workspace() {
-        let runtime = Native::default();
-        let lease = runtime
-            .install(credentials("fixture-token", "fixture-user"))
-            .expect("install");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer fixture-token".parse().expect("header"),
-        );
-        assert!(runtime.authenticate(&headers).is_ok());
-        headers.insert(
-            "chatgpt-account-id",
-            "different-workspace".parse().expect("header"),
-        );
-        assert!(runtime.authenticate(&headers).is_err());
-        headers.remove("chatgpt-account-id");
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer arbitrary-token".parse().expect("header"),
-        );
-        assert!(runtime.authenticate(&headers).is_err());
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer fixture-token".parse().expect("header"),
-        );
-        headers.append(
-            header::AUTHORIZATION,
-            "Bearer fixture-token".parse().expect("header"),
-        );
-        assert!(runtime.authenticate(&headers).is_err());
-        assert!(lease.valid());
-    }
-
-    #[test]
-    fn revoked_or_expired_authorization_cannot_be_republished() {
-        let runtime = Native::default();
-        let lease = runtime
-            .install(credentials("fixture-old", "fixture-user"))
-            .expect("install");
-        runtime.revoke();
-        assert!(!lease.valid());
-        assert!(!runtime.refresh(&lease, credentials("fixture-new", "fixture-user")));
-        let next = runtime
-            .install(credentials("fixture-new", "fixture-user"))
-            .expect("install");
-        assert_ne!(lease.epoch, next.epoch);
-        next.proof.write().expect("proof").until = Instant::now();
-        assert!(!next.valid());
-    }
-
     #[tokio::test]
-    async fn reconnect_recovers_ownership_without_reviving_native_authorization(
+    async fn native_continuation_scope_survives_token_rotation_and_isolates_workspaces(
     ) -> Result<(), Box<dyn std::error::Error>> {
         use super::super::{continuation, scopes, Bindings, Session, Target};
         let dir = tempfile::tempdir()?;
@@ -1455,8 +1039,10 @@ mod tests {
             created: Instant::now(),
             bindings: Arc::new(tokio::sync::Mutex::new(Bindings::default())),
         };
-        let native = Native::default();
-        let first = native.install(credentials("synthetic-old-token", "synthetic-user"))?;
+        let mut headers = HeaderMap::new();
+        headers.insert("chatgpt-account-id", "synthetic-workspace".parse()?);
+        headers.insert(header::AUTHORIZATION, "Bearer synthetic-old-token".parse()?);
+        let first = Context::from_headers(&headers);
         let store = continuation::Store::load(path.clone(), key.clone()).await?;
         let conversations = scopes::Conversations::default();
         let state = conversations.acquire_durable(
@@ -1469,21 +1055,15 @@ mod tests {
         state
             .bindings
             .lock()
-            .await
+            .unwrap()
             .observe(&serde_json::json!({"id":"native-response"}), 0);
         store.flush().await?;
         drop(state);
         drop(conversations);
         drop(store);
-        native.revoke();
-        let next = native.install(credentials("synthetic-new-token", "synthetic-user"))?;
-        assert_ne!(first.epoch, next.epoch);
-        assert!(!first.valid());
-        let mut headers = HeaderMap::new();
-        headers.insert(header::AUTHORIZATION, "Bearer synthetic-old-token".parse()?);
-        assert!(native.authenticate(&headers).is_err());
         headers.insert(header::AUTHORIZATION, "Bearer synthetic-new-token".parse()?);
-        assert!(native.authenticate(&headers).is_ok());
+        let next = Context::from_headers(&headers);
+        assert_eq!(first.identity, next.identity);
         session.bindings = Arc::default();
         let store = continuation::Store::load(path, key).await?;
         let body = serde_json::json!({"previous_response_id":"native-response"});
@@ -1495,11 +1075,11 @@ mod tests {
             Some(store.clone()),
         )?;
         assert_eq!(
-            restored.bindings.lock().await.resolve(&body, None),
+            restored.bindings.lock().unwrap().resolve(&body, None),
             Ok(Some(0))
         );
-        native.revoke();
-        let different = native.install(credentials("synthetic-new-token", "different-user"))?;
+        headers.insert("chatgpt-account-id", "synthetic-other-workspace".parse()?);
+        let different = Context::from_headers(&headers);
         let isolated = scopes::Conversations::default().acquire_durable(
             &format!("native-codex:{}", different.identity),
             &session,
@@ -1507,23 +1087,13 @@ mod tests {
             &body,
             Some(store),
         )?;
-        assert!(isolated.bindings.lock().await.resolve(&body, None).is_err());
+        assert!(isolated
+            .bindings
+            .lock()
+            .unwrap()
+            .resolve(&body, None)
+            .is_err());
         Ok(())
-    }
-
-    #[tokio::test]
-    async fn lease_expiry_cancels_without_waiting_for_a_reconciliation_worker() {
-        let runtime = Native::default();
-        let lease = runtime
-            .install(credentials("fixture-token", "fixture-user"))
-            .expect("install");
-        lease.proof.write().expect("proof").until = Instant::now() + Duration::from_millis(20);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(250), lease.cancelled())
-                .await
-                .is_ok()
-        );
-        assert!(!runtime.refresh(&lease, credentials("fixture-new", "fixture-user")));
     }
 
     #[test]
@@ -1556,28 +1126,6 @@ mod tests {
             canonicalize_model(normalized.clone(), &mut original, &map).expect("legacy"),
             normalized
         );
-    }
-
-    #[test]
-    fn refresh_rejects_same_workspace_different_user_and_rotates_exact_token() {
-        let runtime = Native::default();
-        let lease = runtime
-            .install(credentials("fixture-old", "fixture-user"))
-            .expect("install");
-        assert!(runtime.refresh(&lease, credentials("fixture-new", "fixture-user")));
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer fixture-old".parse().expect("header"),
-        );
-        assert!(runtime.authenticate(&headers).is_err());
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer fixture-new".parse().expect("header"),
-        );
-        assert!(runtime.authenticate(&headers).is_ok());
-        assert!(!runtime.refresh(&lease, credentials("fixture-new", "different-user")));
-        assert!(!lease.valid());
     }
 
     #[tokio::test]
@@ -1658,12 +1206,6 @@ mod tests {
         runtime
             .native
             .prepare_checkpoints(&directory.path().join("checkpoint.key"))?;
-        let credentials = || Credentials {
-            token: concat!("synthetic", "-native-auth").into(),
-            identity: "fixture-user".into(),
-            workspace: "fixture-workspace".into(),
-        };
-        runtime.native.install(credentials())?;
         let db = Arc::new(Database::memory()?);
         let server = ProxyServer::new(
             ProxyConfig {
@@ -1691,7 +1233,7 @@ mod tests {
             .bearer_auth("arbitrary")
             .send()
             .await?;
-        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(unauthorized.status(), StatusCode::OK);
         let browser = client
             .get(format!("{base}/models?client_version=0.166.0"))
             .bearer_auth(concat!("synthetic", "-native-auth"))
@@ -1735,7 +1277,7 @@ mod tests {
                 .header("version", version)
                 .send()
                 .await?;
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{version}");
+            assert_eq!(response.status(), StatusCode::OK, "{version}");
         }
         runtime.native.set_status("pending");
         assert_eq!(runtime.native.status(), "pending");
@@ -1765,11 +1307,9 @@ mod tests {
             .to_owned();
         assert!(seal.starts_with("varyai1:"));
         assert!(!seal.contains("Synthetic continuation"));
-        runtime.native.revoke();
         runtime
             .native
             .prepare_checkpoints(&directory.path().join("checkpoint.key"))?;
-        runtime.native.install(credentials())?;
         let response = post(serde_json::json!({"model":"Previous synthetic name","input":[{"type":"compaction","encrypted_content":seal.clone()},{"type":"message","role":"user","content":"continue"}]})).await?;
         assert_eq!(response.status(), StatusCode::OK);
         let _ = response.bytes().await?;
@@ -1789,16 +1329,13 @@ mod tests {
                 .to_string()
                 .contains("Synthetic continuation summary"));
         }
-        runtime.native.revoke();
-        runtime.native.install(Credentials {
-            token: concat!("synthetic", "-native-auth").into(),
-            identity: "different-user".into(),
-            workspace: "fixture-workspace".into(),
-        })?;
-        assert_eq!(post(serde_json::json!({"model":alias,"input":[{"type":"compaction","encrypted_content":seal}]})).await?.status(),StatusCode::CONFLICT);
+        let different = client.post(format!("{base}/responses"))
+            .bearer_auth(concat!("synthetic", "-native-auth"))
+            .header("chatgpt-account-id", "synthetic-other-workspace")
+            .json(&serde_json::json!({"model":alias,"input":[{"type":"compaction","encrypted_content":seal}]}))
+            .send().await?;
+        assert_eq!(different.status(), StatusCode::CONFLICT);
         assert_eq!(seen.lock().expect("fixture").len(), 3);
-        runtime.native.revoke();
-        runtime.native.install(credentials())?;
         let key = db.create_gateway_key(crate::proxy::gateway::KeyPolicy {
             name: "Synthetic native policy".into(),
             models: vec!["different-published-alias".into()],
@@ -1837,14 +1374,6 @@ mod tests {
         .await?;
         let _ = axum::body::to_bytes(validated.into_body(), BODY_LIMIT).await?;
         assert_eq!(seen.lock().expect("fixture").len(), 4);
-        runtime.native.revoke();
-        assert_eq!(
-            post(serde_json::json!({"model":alias,"input":"synthetic"}))
-                .await?
-                .status(),
-            StatusCode::UNAUTHORIZED
-        );
-        assert_eq!(seen.lock().expect("fixture").len(), 4);
         for model in [
             &alias,
             "Readable synthetic model",
@@ -1863,7 +1392,6 @@ mod tests {
             let _ = response.bytes().await?;
         }
         assert_eq!(seen.lock().expect("fixture").len(), 7);
-        runtime.native.install(credentials())?;
         for named in [false, true] {
             let input = serde_json::json!([
                 {"type":"reasoning","id":"synthetic-prior-model-item",
@@ -1973,9 +1501,6 @@ mod tests {
         runtime
             .native
             .prepare_checkpoints(&directory.path().join("checkpoint.key"))?;
-        runtime
-            .native
-            .install(credentials("synthetic-native-token", "synthetic-user"))?;
         let server = ProxyServer::new(
             ProxyConfig {
                 listen_port: 0,
@@ -2004,9 +1529,12 @@ mod tests {
                 Some(token) => request.bearer_auth(token),
                 None => request,
             };
-            assert_eq!(request.send().await?.status(), StatusCode::UNAUTHORIZED);
+            let response = request.send().await?;
+            assert_eq!(response.status(), StatusCode::OK);
+            let _ = response.bytes().await?;
         }
-        assert!(seen.lock().expect("fixture").is_empty());
+        assert_eq!(seen.lock().expect("fixture").len(), 2);
+        seen.lock().expect("fixture").clear();
 
         for unknown_state in [false, true] {
             if unknown_state {
@@ -2039,85 +1567,9 @@ mod tests {
                 body.get("previous_response_id")
             );
         }
-        let wrong_workspace = client
-            .post(&url)
-            .bearer_auth("synthetic-native-token")
-            .header("chatgpt-account-id", "synthetic-different-workspace")
-            .header("version", "0.167.0")
-            .json(&body)
-            .send()
-            .await?;
-        assert_eq!(wrong_workspace.status(), StatusCode::UNAUTHORIZED);
-        runtime.native.revoke();
-        let revoked = client
-            .post(&url)
-            .bearer_auth("synthetic-native-token")
-            .header("version", "0.167.0")
-            .json(&body)
-            .send()
-            .await?;
-        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(seen.lock().expect("fixture").len(), 2);
         server.stop().await?;
         task.abort();
         Ok(())
-    }
-
-    #[test]
-    fn file_credentials_require_stable_identity_and_exact_managed_marker() {
-        let auth = serde_json::json!({"auth_mode":"chatgpt","tokens":{
-            "access_token":"synthetic-file-token","account_id":"synthetic-workspace",
-            "id_token":crate::codex_config::test_codex_id_token("synthetic-user")
-        }});
-        let unmanaged = parse_credentials("", &auth, None).expect("native file login");
-        let marker = serde_json::json!({"version":3,"chatgpt_account_id":"synthetic-workspace","user_identity":"sub:synthetic-user","account_id":"managed-fixture"});
-        let managed = parse_credentials("", &auth, Some(&marker)).expect("managed file login");
-        assert!(!unmanaged.same_identity(&managed));
-        for (key, value) in [
-            ("version", serde_json::json!(2)),
-            ("user_identity", serde_json::json!("another-user")),
-            ("chatgpt_account_id", serde_json::json!("another-workspace")),
-            ("account_id", serde_json::json!("")),
-        ] {
-            let mut invalid = marker.clone();
-            invalid[key] = value;
-            assert!(parse_credentials("", &auth, Some(&invalid)).is_err());
-        }
-        for config in [
-            "cli_auth_credentials_store='keyring'",
-            "cli_auth_credentials_store='auto'",
-            "cli_auth_credentials_store='ephemeral'",
-            "[profiles.fixture]\nopenai_base_url='https://synthetic.invalid'",
-            "forced_login_method='api'",
-            "forced_login_method='API'",
-        ] {
-            assert!(parse_credentials(config, &auth, None).is_err());
-        }
-        let mut invalid = auth.clone();
-        invalid["auth_mode"] = serde_json::json!("chatgptAuthTokens");
-        assert!(parse_credentials("", &invalid, None).is_err());
-        invalid = auth.clone();
-        invalid["tokens"]["id_token"] = serde_json::Value::Null;
-        assert!(parse_credentials("", &invalid, None).is_err());
-    }
-
-    #[test]
-    fn native_queries_are_bounded_and_not_forwarded() {
-        assert!(models_query(None));
-        assert!(models_query(Some("client_version=0.114.0")));
-        assert!(models_query(Some("client_version=0.165.0-alpha.1")));
-        assert!(models_query(Some("client_version=0.166.0")));
-        for query in [
-            "",
-            "client_version=",
-            "client_version=0.1.0&client_version=0.1.0",
-            "x=0.1.0",
-            "client_version=0.1.0&x=1",
-            "client_version=../../../",
-            "client_version=0.1",
-        ] {
-            assert!(!models_query(Some(query)));
-        }
     }
 
     #[tokio::test]
@@ -2202,8 +1654,6 @@ mod tests {
         let _origin = super::super::native_gateway::set_test_origin(format!(
             "http://{address}/backend-api/codex"
         ));
-        let runtime = Native::default();
-        let lease = runtime.install(credentials("fixture-token", "fixture-user"))?;
         let mut headers = HeaderMap::new();
         headers.insert(header::AUTHORIZATION, "Bearer fixture-token".parse()?);
         headers.insert("chatgpt-account-id", "fixture-workspace".parse()?);
@@ -2215,24 +1665,36 @@ mod tests {
         let vary = serde_json::json!({
             "models": [{"slug": "vary-auto/development", "display_name": "Vary"}]
         });
-        let merged =
-            super::super::native_gateway::merged_catalog(&lease, &headers, "0.166.0", vary.clone())
-                .await;
+        let merged = super::super::native_gateway::merged_catalog(
+            &headers,
+            Some("client_version=0.166.0"),
+            vary.clone(),
+            Default::default(),
+        )
+        .await;
+        let merged: Value =
+            serde_json::from_slice(&axum::body::to_bytes(merged.into_body(), BODY_LIMIT).await?)?;
         assert_eq!(merged["account"], "fixture");
         assert_eq!(merged["models"].as_array().map(Vec::len), Some(2));
         assert_eq!(merged["models"][1]["slug"], "vary-auto/development");
-        let fallback =
-            super::super::native_gateway::merged_catalog(&lease, &headers, "0.165.0", vary.clone())
-                .await;
+        let fallback = super::super::native_gateway::merged_catalog(
+            &headers,
+            Some("client_version=0.165.0"),
+            vary.clone(),
+            Default::default(),
+        )
+        .await;
+        let fallback: Value =
+            serde_json::from_slice(&axum::body::to_bytes(fallback.into_body(), BODY_LIMIT).await?)?;
         assert_eq!(fallback, vary);
 
         let raw =
             Bytes::from_static(br#"{"model":"gpt-5","opaque":[1,2],"service_tier":"priority"}"#);
         let response = super::super::native_gateway::forward(
-            lease.clone(),
             super::super::native_gateway::Endpoint::Responses,
             headers.clone(),
             raw.clone(),
+            None,
         )
         .await;
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -2244,10 +1706,10 @@ mod tests {
         );
 
         let compact = super::super::native_gateway::forward(
-            lease.clone(),
             super::super::native_gateway::Endpoint::Compact,
             headers.clone(),
             Bytes::from_static(b"compact-body"),
+            None,
         )
         .await;
         assert_eq!(compact.status(), StatusCode::CREATED);
@@ -2278,10 +1740,10 @@ mod tests {
         let mut redirect_headers = headers.clone();
         redirect_headers.insert("x-native-redirect", "1".parse()?);
         let redirected = super::super::native_gateway::forward(
-            lease.clone(),
             super::super::native_gateway::Endpoint::Responses,
             redirect_headers,
             Bytes::from_static(b"redirect-body"),
+            None,
         )
         .await;
         assert_eq!(redirected.status(), StatusCode::TEMPORARY_REDIRECT);
@@ -2290,10 +1752,10 @@ mod tests {
         let mut stream_headers = headers.clone();
         stream_headers.insert("x-native-stream", "1".parse()?);
         let streamed = super::super::native_gateway::forward(
-            lease.clone(),
             super::super::native_gateway::Endpoint::Responses,
             stream_headers,
             Bytes::from_static(b"stream-body"),
+            None,
         )
         .await;
         assert_eq!(streamed.status(), StatusCode::OK);
@@ -2305,24 +1767,17 @@ mod tests {
             .into_data()
             .map_err(|_| std::io::Error::other("unexpected stream trailer"))?;
         assert_eq!(first, Bytes::from_static(b"first-chunk"));
-        runtime.revoke();
-        assert!(tokio::time::timeout(Duration::from_secs(1), body.frame())
-            .await?
-            .is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), body.frame())
+                .await
+                .is_err()
+        );
 
         let requests = seen.lock().expect("fixture");
         assert_eq!(requests.len(), 6);
         assert_eq!(requests[4].0, "/backend-api/codex/responses");
         assert_eq!(requests[5].0, "/backend-api/codex/responses");
 
-        let canceled = super::super::native_gateway::forward(
-            lease,
-            super::super::native_gateway::Endpoint::Responses,
-            headers,
-            Bytes::from_static(b"revoked"),
-        )
-        .await;
-        assert_eq!(canceled.status(), StatusCode::UNAUTHORIZED);
         task.abort();
         Ok(())
     }
@@ -2382,9 +1837,6 @@ mod tests {
             serde_json::json!({"models": [{"slug": "vary-auto/development"}]}),
             BTreeMap::new(),
         )?;
-        runtime
-            .native
-            .install(credentials("fixture-token", "fixture-user"))?;
         let db = Arc::new(Database::memory()?);
         let server = ProxyServer::new(
             ProxyConfig {
@@ -2416,7 +1868,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].1, raw);
         assert_eq!(requests[0].0[header::AUTHORIZATION], "Bearer fixture-token");
-        assert_eq!(requests[0].0["chatgpt-account-id"], "fixture-workspace");
+        assert!(!requests[0].0.contains_key("chatgpt-account-id"));
         assert_eq!(requests[0].0["x-native-test"], "preserved");
         drop(requests);
 

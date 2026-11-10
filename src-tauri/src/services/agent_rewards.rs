@@ -117,6 +117,7 @@ pub(crate) struct Status {
     account_id: Option<String>,
     label: Option<String>,
     auto_enabled: bool,
+    auto_configured: bool,
     outcome: Outcome,
     credit: Option<f64>,
     checked_at: Option<i64>,
@@ -264,6 +265,17 @@ impl Manager {
             return Err(ERROR.into());
         }
         let value: Value = serde_json::from_slice(&output.stdout).map_err(|_| ERROR.to_owned())?;
+        #[cfg(target_os = "macos")]
+        if app == "qoder"
+            && input["native"]["password"].is_string()
+            && value["source"] == "native"
+            && value["outcome"] == "credentials_protected"
+        {
+            // A rejected cached key may have rotated; the next explicit read can reauthorize.
+            if let Ok(mut cache) = self.native_cache.lock() {
+                cache.clear();
+            }
+        }
         if value["outcome"] == "storage_error" {
             return Err(STORAGE.into());
         }
@@ -292,6 +304,10 @@ impl Manager {
                 .and_then(|id| store.enabled.get(id))
                 .copied()
                 .unwrap_or(false),
+            auto_configured: store
+                .enabled
+                .iter()
+                .any(|(id, enabled)| *enabled && id.starts_with(&format!("{app}|"))),
             outcome: confirmed.map_or(native.outcome, |r| r.outcome),
             credit: native.credit.or_else(|| confirmed.and_then(|r| r.credit)),
             checked_at: record.map(|r| r.checked_at),
@@ -484,6 +500,31 @@ impl Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn saved_auto_mode_survives_reopening_without_a_native_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rewards.json");
+        let db = Arc::new(crate::database::Database::memory().unwrap());
+        let manager = Manager::new(path.clone(), db.clone());
+        let mut store = Store::default();
+        store
+            .enabled
+            .insert(key("qoder", "synthetic-account"), true);
+        manager.save(&store).await.unwrap();
+        let reopened = Manager::new(path, db);
+        let store = reopened.read().await.unwrap();
+        for outcome in [Outcome::CredentialsProtected, Outcome::ConnectionRequired] {
+            let native = Observation::outcome(outcome);
+            let value = serde_json::to_value(Manager::snapshot("qoder", &store, &native)).unwrap();
+            assert_eq!(value["autoConfigured"], true);
+            assert_eq!(value["autoEnabled"], false);
+            let other = serde_json::to_value(Manager::snapshot("trae", &store, &native)).unwrap();
+            assert_eq!(other["autoConfigured"], false);
+        }
+        let mut native = Observation::outcome(Outcome::NotChecked);
+        native.account_id = Some("another-account".into());
+        assert!(!Manager::snapshot("qoder", &store, &native).auto_enabled);
+    }
     #[test]
     fn confirmed_rewards_expire_at_the_activity_boundary_and_never_mask_a_new_offer() {
         let record = Record {

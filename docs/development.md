@@ -32,6 +32,7 @@ pnpm typecheck
 pnpm build:renderer
 pnpm test:unit
 pnpm test:dev
+pnpm test:macos-dmg
 pnpm test:trae-bridge
 pnpm test:workbuddy-checkin-auth
 pnpm test:doubao-checkin

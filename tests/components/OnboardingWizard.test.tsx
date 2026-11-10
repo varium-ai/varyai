@@ -1,5 +1,6 @@
 import {
   act,
+  cleanup,
   fireEvent,
   render,
   screen,
@@ -160,6 +161,74 @@ it("starts with three paths, copies setup help and allows skipping", async () =>
   fireEvent.click(screen.getByRole("button", { name: "onboarding.skip" }));
   await waitFor(() => expect(finish).toHaveBeenCalledWith(false));
 });
+it("resets copied feedback two seconds after the latest successful copy", async () => {
+  vi.useFakeTimers();
+  try {
+    mount();
+    const button = screen.getByRole("button", { name: "common.copy" });
+    await act(async () => fireEvent.click(button));
+    expect(button).toHaveAccessibleName("common.copied");
+    expect(button).toBeEnabled();
+
+    act(() => vi.advanceTimersByTime(1500));
+    await act(async () => fireEvent.click(button));
+    expect(copyText).toHaveBeenCalledTimes(2);
+    act(() => vi.advanceTimersByTime(500));
+    expect(button).toHaveAccessibleName("common.copied");
+    act(() => vi.advanceTimersByTime(1499));
+    expect(button).toHaveAccessibleName("common.copied");
+    act(() => vi.advanceTimersByTime(1));
+    expect(button).toHaveAccessibleName("common.copy");
+
+    await act(async () => fireEvent.click(button));
+    expect(copyText).toHaveBeenCalledTimes(3);
+    expect(copyText).toHaveBeenLastCalledWith("onboarding.helpPrompt");
+    expect(button).toHaveAccessibleName("common.copied");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("clears the copied feedback timer when onboarding unmounts", async () => {
+  vi.useFakeTimers();
+  const schedule = vi.spyOn(globalThis, "setTimeout");
+  const cancel = vi.spyOn(globalThis, "clearTimeout");
+  try {
+    mount();
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "common.copy" })),
+    );
+    const timerIndex = schedule.mock.calls.findIndex(
+      ([, delay]) => delay === 2000,
+    );
+    expect(timerIndex).toBeGreaterThanOrEqual(0);
+    const timer = schedule.mock.results[timerIndex].value;
+    cleanup();
+    expect(cancel).toHaveBeenCalledWith(timer);
+  } finally {
+    schedule.mockRestore();
+    cancel.mockRestore();
+    vi.useRealTimers();
+  }
+});
+
+it("allows retrying a failed help copy and clears the copy error on success", async () => {
+  vi.mocked(copyText).mockRejectedValueOnce(
+    new Error("Synthetic copy failure"),
+  );
+  mount();
+  const button = screen.getByRole("button", { name: "common.copy" });
+  await act(async () => fireEvent.click(button));
+  expect(screen.getByText("onboarding.copyFailed")).toBeVisible();
+  expect(button).toHaveAccessibleName("common.copy");
+  expect(button).toBeEnabled();
+
+  await act(async () => fireEvent.click(button));
+  expect(copyText).toHaveBeenCalledTimes(2);
+  expect(button).toHaveAccessibleName("common.copied");
+  expect(screen.queryByText("onboarding.copyFailed")).not.toBeInTheDocument();
+});
+
 it("previews account and import sources as named brand icons", () => {
   mount();
   const accounts = screen.getByRole("list", {
@@ -204,6 +273,41 @@ it("keeps both OpenAI login methods available behind the shared brand preview", 
   expect(screen.getByRole("button", { name: "ChatGPT / Codex" })).toBeVisible();
   expect(screen.getByRole("button", { name: "ChatGPT API" })).toBeVisible();
 });
+it("toggles the onboarding key visibility without changing or submitting it", () => {
+  mount();
+  enterKey();
+  const input = screen.getByLabelText("onboarding.key");
+  const show = screen.getByRole("button", { name: "apiKeyInput.show" });
+  expect(input).toHaveAttribute("type", "password");
+  expect(show).toHaveAttribute("type", "button");
+  expect(show).toHaveAttribute("aria-pressed", "false");
+
+  fireEvent.click(show);
+  expect(input).toHaveAttribute("type", "text");
+  expect(input).toHaveValue("sk-synthetic-fixture");
+  const hide = screen.getByRole("button", { name: "apiKeyInput.hide" });
+  expect(hide).toHaveAttribute("aria-pressed", "true");
+  fireEvent.click(hide);
+  expect(input).toHaveAttribute("type", "password");
+  expect(input).toHaveValue("sk-synthetic-fixture");
+  expect(fetchModelsForConfig).not.toHaveBeenCalled();
+  expect(routing.save).not.toHaveBeenCalled();
+});
+
+it("masks the key again when returning to the onboarding key form", () => {
+  mount();
+  enterKey();
+  fireEvent.click(screen.getByRole("button", { name: "apiKeyInput.show" }));
+  fireEvent.click(screen.getByRole("button", { name: "common.back" }));
+  fireEvent.click(screen.getByRole("button", { name: "onboarding.keyAction" }));
+  const input = screen.getByLabelText("onboarding.key");
+  expect(input).toHaveAttribute("type", "password");
+  expect(input).toHaveValue("sk-synthetic-fixture");
+  expect(
+    screen.getByRole("button", { name: "apiKeyInput.show" }),
+  ).toBeEnabled();
+});
+
 it("checks credentials before saving and keeps the key masked", async () => {
   const finish = mount();
   enterKey();
@@ -272,6 +376,9 @@ it("locks navigation and prevents duplicate saves while connecting", async () =>
   const connect = screen.getByRole("button", { name: "onboarding.connect" });
   fireEvent.click(connect);
   fireEvent.click(connect);
+  expect(
+    screen.getByRole("button", { name: "apiKeyInput.show" }),
+  ).toBeDisabled();
   expect(screen.getByRole("button", { name: "common.back" })).toBeDisabled();
   expect(
     screen.getByRole("button", { name: "onboarding.skip" }),

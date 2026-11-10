@@ -71,6 +71,7 @@ pub use usage_stats::{
 pub(crate) mod agent_clients;
 pub(crate) mod deepseek_harness;
 pub(crate) mod intent_routing;
+pub(crate) mod routing_provider_quota;
 pub(crate) mod routing_upstreams;
 
 pub(crate) mod trae_bridge;

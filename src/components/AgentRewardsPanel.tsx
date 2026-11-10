@@ -30,6 +30,7 @@ export function AgentRewardsPanel({
   const query = useQuery({
     queryKey,
     queryFn: () => agentRewardsApi.status(app),
+    staleTime: 60_000,
     refetchInterval: 60_000,
   });
   const update = (value: AgentRewardStatus) =>
@@ -274,7 +275,10 @@ export function AgentRewardsPanel({
           <Switch
             id={autoId}
             className="mp-switch"
-            checked={data?.autoEnabled ?? false}
+            checked={
+              (data?.accountId ? data.autoEnabled : data?.autoConfigured) ??
+              false
+            }
             disabled={
               !data?.accountId || busy || query.isFetching || query.isError
             }

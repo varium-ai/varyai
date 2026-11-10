@@ -48,7 +48,7 @@ async function custom() {
   fireEvent.click(add);
   expect(
     screen.queryByRole("button", { name: "providerFlow.import" }),
-  ).toBeInTheDocument();
+  ).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "providerFlow.custom" }));
   const dialog = screen.getByRole("dialog");
   fireEvent.change(within(dialog).getByLabelText("modelProviders.name"), {
@@ -109,6 +109,21 @@ it("saves an empty selection without a blocking discovery and follows the vendor
     vi.mocked(routingUpstreamsApi.save).mock.calls[0][0].source,
   ).toMatchObject({ mode: "vendor", models: [] });
   expect(fetchModelsForConfig).not.toHaveBeenCalled();
+});
+
+it("keeps image-only picks from switching a new provider's chat list to picked mode", async () => {
+  const dialog = await custom();
+  fireEvent.change(within(dialog).getByLabelText("providerEditor.addModelId"), {
+    target: { value: "gpt-image-2" },
+  });
+  fireEvent.submit(dialog.querySelector("form")!);
+  await waitFor(() => expect(routingUpstreamsApi.save).toHaveBeenCalled());
+  expect(
+    vi.mocked(routingUpstreamsApi.save).mock.calls[0][0].source,
+  ).toMatchObject({
+    mode: "vendor",
+    models: [{ model: "gpt-image-2" }],
+  });
 });
 it("accepts comma-separated manual model IDs", async () => {
   const dialog = await custom();

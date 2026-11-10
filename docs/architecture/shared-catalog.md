@@ -44,6 +44,20 @@ though their transport deliberately has no static upstream configuration.
 Routing mutations invalidate the Agent model catalog as well as the gateway
 catalog, so opening a picker after a group edit does not reuse an obsolete list.
 
+The provider list header places Import Provider directly before Add Provider.
+Import opens the existing preview dialog without entering provider selection;
+closing it restores focus to the import action and preserves list filters and
+selection. Provider selection retains subscription sign-in, vendor search and
+custom provider creation.
+
+Custom API provider editors place the icon controls above the provider name.
+
+Batch provider deletion shows a spinner on the confirmation button and keeps the
+confirmed count fixed until the batch finishes. It does not set the page-wide busy
+state. Completed removals update the local list before background catalog refresh,
+so deleting the last provider leaves Add Provider available immediately. A failed
+batch retains only the providers that were not removed for a later retry.
+
 Pi, Hermes, Grok Build, Kimi, Qwen and ZCode use readable native model selectors
 with the same model, supplier and VaryAI labels as the shared catalog. Equal labels
 receive numeric suffixes while retaining distinct internal routes. Catalog refresh
@@ -213,6 +227,20 @@ model counts, duplicate status and opaque source fingerprints; credentials and
 private headers never enter the renderer. Confirmation re-reads the files and
 rejects stale fingerprints before writing a batch.
 
+Magpie imports use the source's provider ID verbatim. Confirmation replaces a
+provider already stored under that ID; it does not invent UUIDs, suffixes or
+alternate names. Previously imported UUID records matching the imported API
+credentials/endpoints or subscription identity are replaced with the Magpie ID.
+Stored group references move to the source ID, while old client aliases are not
+preserved. Invalid or missing Magpie IDs use the existing unavailable-import
+state instead of generating an ID. Imported sign-ins use their source login IDs.
+
+Magpie rows remain selectable on reimport so a fresh source configuration can
+overwrite the saved configuration. The replacement is atomic with account-store
+publication and respects the provider limit. Explicit key-only imports retain
+the destination ID. Other source import policies are unchanged. Source files are
+read-only, and the same Rust path serves macOS and Windows.
+
 Generated local gateway entries are excluded from both the preview and the
 import candidates. Detection checks every protocol endpoint against Magpie,
 CC Switch and Vary defaults and configured listener ports, plus known local
@@ -252,15 +280,25 @@ fail the source read with a sanitized error. Import leaves source files intact.
 Imported defaults are published where the native schema supports a model default;
 an explicit current-client choice still wins and supported levels remain selectable.
 
-Saved Codex / ChatGPT subscriptions from the source app are also selectable. Their stored
-Codex authorization must include a refresh token and an ID-token identity with a
-consistent workspace. Tokens stay in the backend and are copied into Vary's
-managed Codex account store, never into an API-key field or a native client's
-login. The provider retains the saved model policy and binds to that managed
-account. Reimport deduplicates by user and workspace without overwriting an
-existing account's newer authorization. Import does not refresh credentials or
-verify a remote login; first use may require reauthentication. Other source-app
-subscription types remain unavailable until Vary has their account lifecycle.
+Saved Codex, Claude, Copilot, ChatGPT API, Gemini CLI and Antigravity subscriptions
+are selectable alongside API providers. Endpoint-free `providers.json` rows are
+subscription model-policy records, not API connections with missing addresses.
+They are combined with the corresponding saved authorization into one import
+item per account. Hidden providers, removed logins, empty policy-only records and
+unlisted plugin login history are excluded. Single-account entries use the source
+provider's name; multiple accounts have distinct labels. Model counts include
+subscription picks.
+
+Tokens stay in the backend and go into Vary's service-specific private account
+stores, never API-key fields or native client sign-ins. Codex authorization must
+include a refresh token and an ID-token identity with a consistent workspace.
+Google accounts retain their project, access-token expiry and original installed
+OAuth client. Claude credentials and account profiles go into a new private CLI
+home. Copilot tokens are limited to GitHub or validated GHE hosts; an imported
+account's opaque binding remains stable when GitHub later supplies its numeric
+identity. Reimport deduplicates without overwriting a newer local sign-in.
+Import does not refresh credentials or verify a remote login; first use may
+require reauthentication.
 Explicit account selection is independent of the reference implementation's saved `on` rotation flag,
 which can be absent for its active native login. Paused accounts and a switched-off
 provider still import disabled.
@@ -268,11 +306,19 @@ provider still import disabled.
 Refresh tokens can rotate. Stop using the imported account in the source app before
 using it in Vary; concurrently refreshing the copied authorization can invalidate
 either app's session. Import leaves the source app and native client files untouched.
-Provider writes are transactional. Account-store persistence is rolled back on a
-rejected provider transaction, though these two private stores do not form a
+Provider writes are transactional. Native subscription, Copilot and Codex account
+copies are rolled back when the provider batch fails, including newly created
+Claude credential directories. The separate private stores do not form a
 cross-file crash transaction. Treat local databases, account files and portable
-exports as sensitive. Advanced source-app routing/plan/body/auth settings without an
-execution equivalent are rejected instead of silently discarded.
+exports as sensitive. Magpie API imports transfer the usable connection: endpoint,
+credentials, models and supported custom headers. Advanced source-app settings
+such as spending caps, rate/concurrency/queue limits, key plans and weights,
+pricing multipliers, routing/fallback rules, proxies, extra request bodies and
+insecure TLS are not migrated and do not block an otherwise valid connection.
+The Magpie tab explains this scope before import; Vary does not enforce the
+source application's omitted limits. TLS verification retains Vary's default.
+Malformed addresses, missing credentials, unsafe headers and generated local
+gateways remain rejected or excluded. Source files are never modified.
 
 ## Configuration ownership
 
@@ -314,8 +360,10 @@ Turning off an Agent does not delete a provider or disable global security.
 
 Connection status distinguishes externally changed fields from an inactive
 runtime or a missing recovery record. A saved connection intent alone is not
-reported as a configuration edit. A pending connection shows the reference implementation's **Apply
-again** action beside the tool name. This explicit action checks the shared
+reported as a configuration edit. An externally changed connection shows a red
+cross and **{{app}} no longer goes through Vary**, with a **Reconnect** button
+on the same line below the tool name. Other pending connections also offer
+**Reconnect**. This explicit action checks the shared
 catalog before changing any connection fields, restores fields still owned by
 Vary, and preserves external edits as the next connection's recovery baseline.
 It then installs the current shared catalog without editing login credentials.
@@ -339,6 +387,14 @@ malformed configuration, or externally changed owned arrays, fails without
 guessing its contents or element ownership. Successful
 reapplication establishes configuration and local authorization, not proof of
 a real upstream response; open a new tool session to verify.
+Codex's official-login compatibility channel is separate from the managed model
+route. Its disabled, pending, active, unsupported, revoked or recovery state does
+not establish whether the selected shared model route works. The Agent row uses
+configuration ownership, gateway, reload and explicit proxy diagnostics for its
+main status; native compatibility alone does not show a route failure or a
+Reconnect action. Actual configuration recovery still offers Reconnect, even
+when official-login compatibility is unsupported. A configured status remains
+configuration evidence, not a claim of successful inference.
 
 Gateway shutdown suspends managed native projections and restores their owned
 fields while keeping connection intent. A later start or explicit reconnect
@@ -437,12 +493,30 @@ TRAE uses a separate private delivery outbox, not Agent-owned provider records.
 Explicit consent prepares its local bridge without launching the client or
 enabling official-session audit hooks. The user opens/restarts TRAE; Vary can set
 the starting model, and TRAE retains its native picker for conversation changes.
+
+TRAE bridge revision 11 discovers the initialized workbench container through
+its exported contract and resolves model services by their native identifiers,
+rather than using build-specific module numbers. The native helper and extension
+renderer share this resolver. Legacy starting-model verification discovers its
+Agent-type mapper through a unique matching factory; ambiguous or unavailable
+bindings remain unsupported. This covers the module renumbering in TRAE CN
+3.4.17 without loading unrelated module candidates.
+
 An acknowledgement is required before configuration is
 reported as delivered. Offline cleanup remains pending; only this connection's
 model namespace is removed. Authorization is revoked on failed refresh or stop.
 An unchanged catalog is checked against native model ownership, endpoint and
 credential inside the bridge; only a boolean returns. External native edits
 revoke authorization and require explicit reapplication instead of silent writes.
+An unavailable bridge is kept distinct from a verified configuration mismatch:
+normal delivery waiting does not offer an Apply again action. Only a confirmed
+mismatch exposes configuration repair. The page does not add a client-launch
+button; users open Agents normally. Restart is offered only for a verified
+running client whose launch predates its launch-settings change. TRAE uses
+`argv.json` freshness for this check, so retrying delivery does not make a newly
+opened client look stale. Connection queries refresh every five seconds and
+remove the restart action after observing a manual reopen. The existing
+background bridge refresh continues to deliver the saved connection automatically.
 These adapters are tested with synthetic documents and bridge callbacks, not by
 changing a real installation or account.
 
@@ -520,6 +594,33 @@ selection page, while successful saves or imports return to the provider list.
 The provider page follows the reference implementation's compact rows, host/model summaries,
 separate switched-off fold, unframed vendor tiles, and a centered provider dialog.
 Both new and existing providers use the same framed editor.
+The upper form follows Magpie's field order across API, Codex and subscription
+providers. Model filtering and bulk selection sit above the chat chips; manual
+IDs, discovery, testing and model preferences sit below them. Image-generation
+models have a separate field and selection, unaffected by chat filtering or bulk
+selection. Image input on a chat model does not move it into that section.
+Explicit model kind and output modalities take precedence over recognized
+image-generation model families. Saved media choices and the full editor catalog
+remain intact, but image-generation rows are excluded from Agent chat catalogs
+and chat-model tests, before applying vendor-list limits. The frontend and Rust
+classification share synthetic fixtures on macOS and Windows.
+New API providers show a single API-key input with Show/Hide, matching Magpie's
+new-provider state. Saved providers expose their key-account list. The new form
+omits primary/preferred-key actions and saved-key replacement instructions.
+Custom Name, ID, model IDs and Base URL have reference placeholders; the URL
+example follows the selected protocol. The storage hint identifies Vary AI's
+local database rather than an unrelated Magpie file.
+The extra Notes and Codex Agent rows are omitted. Existing API providers expose
+an editable public ID, normalized with Magpie's lowercase ASCII slug rules. Saving
+a rename atomically updates owned routing-group members, classifier targets and
+auto-group exclusions. A private execution identity preserves published Agent
+model aliases and active transport snapshots across the rename. Reusing a retired
+public ID creates a distinct owner. Existing notes remain stored unchanged.
+Advanced settings and the separate endpoint section are omitted from this form;
+custom API providers retain the main Base URL and protocol controls. Preset
+providers use their preset connection settings. New preset forms omit custom
+name, icon and model controls unless another instance needs a name. Existing transport and
+authentication settings are preserved when the upper form is saved.
 Search includes names, safe endpoint hosts, and model IDs; matching switched-off
 providers appear without changing the user's fold preference. Credential status
 indicates whether a key is saved, without retrieving or displaying that key.
@@ -558,8 +659,8 @@ with a newer revision so stale edits and deletions still fail.
 Preset identity and regional choice survive redacted saves and reopening the
 editor. A saved preset retains its protocol-specific regional endpoints while
 preserving an explicitly customized endpoint for its active protocol.
-API keys and model selection are primary fields, while authentication
-overrides and raw model metadata are advanced settings. First-save discovery
+API keys and model selection are primary fields. Authentication overrides and
+raw model metadata are not exposed in the upper form. First-save discovery
 preserves vendor context metadata. Large catalogs require an explicit selection
 of at most 256 models. Importing an existing configuration does not connect an
 Agent. Provider enablement defaults to true for older records; disabling keeps
@@ -643,7 +744,20 @@ API connection resolves a redacted snapshot at the requested registry revision.
 Opening and canceling do not change source files or credentials.
 
 The API editor presents a key pool with masked credential labels, selection
-checkboxes, copy/edit actions, a preferred-key marker and an add-key action.
+checkboxes, copy/edit actions, per-key model scopes, live concurrency status,
+unrestricted-spend status, inline enable/remove actions and an In use/First
+marker. Disabled keys do not expose Make first. There is no separate API
+allowance row in this form.
+Per-key model scopes are optional lists in the private transport configuration.
+An absent list serves every provider model; an explicit empty list serves none.
+Magpie imports preserve `accountModels` by the source key fingerprint, or per-key
+catalog membership when present. Model filtering applies to direct menus,
+routing-group targets and classifiers. Reusable transport templates retain their
+scope until model retargeting checks it, then discard that internal marker from
+the executable snapshot. The provider-wide model choices are independent.
+Concurrency and spend labels describe the current unrestricted engine; this
+form does not add limit editors or claim that Magpie's advanced caps are imported.
+
 Enabling, preference, replacement, removal and additions are provider draft edits;
 cancel discards them, and saving applies them atomically with revision checks.
 Disabling every key removes the provider from executable catalogs without
@@ -659,10 +773,14 @@ fingerprints remain in memory and are excluded from persisted routing traces and
 execution configuration, preserving existing continuation identities. An explicit copy action retrieves
 only the selected secret and writes it directly to the clipboard; normal editor
 and list responses remain redacted. Editing starts with an empty replacement
-input, and Show/Hide applies only to the newly entered value. Leaving it blank
-keeps the selected key. Opening the editor never sends an inference probe.
+input beside the masked label in the selected row, with keyboard focus moved to
+that input. Adding a key opens its input in the new row. Only one row is edited
+at a time; switching rows retains draft values. Show/Hide applies only to the
+newly entered value. Leaving it blank keeps the selected key. Opening the editor
+never sends an inference probe.
 
-Saving retains the global resource ID and existing route references. The private
+Saving retains existing route references; editing the public ID migrates them
+atomically as described above. The private
 key stays in backend storage. Reusing it requires an unchanged trusted endpoint,
 protocol and authentication mode; an imported protocol endpoint may be selected
 when the retained key is unrestricted. Changing the destination requires an
@@ -769,3 +887,30 @@ never trigger replay, and HTTP success alone does not clear failure cooldown.
 Unsupported source spending, concurrency, account-cap/weight and queue/RPM
 controls make an imported resource unavailable in preview rather than disappearing
 from an executable copy.
+
+## Claude Desktop context presentation
+
+Claude Desktop always uses Magpie's largest-window representation. Models with
+known input capacity of at least 1,000,000 tokens advertise a single `[1m]`
+entry, and managed native profiles set both `supports1m` and `prefer1m`.
+The legacy provider discovery endpoint uses the same single long-ID representation.
+Smaller and unknown capacities remain unchanged. Actual input limits are
+retained, including capacities above 1M. Plain, long and historical aliases
+remain valid for existing chats.
+
+The Agent list retains the Claude Desktop connection switch, but has no separate
+context-window switch. Opening or refreshing the list does not connect Desktop
+automatically. Turning the connection switch on explicitly connects it; turning
+it off requires confirmation before restoring the previous configuration. An
+explicitly disabled connection stays off when the list is reopened. Recovery
+conflicts remain available through the explicit recovery action. This does not
+launch or restart the installed client. The same React connection flow and Rust
+profile/discovery logic serve macOS and Windows.
+
+API provider chips retain capacity metadata when sparse selected rows are merged
+with the discovered catalog. Vendor and explicit selected capacities take
+precedence. Missing values use cached public model facts and a reduced licensed
+models.dev snapshot, without changing saved model IDs or context overrides.
+Following Magpie, only capacities of at least 1M receive a tag, integral millions
+use `1M`/`2M`, and other values use one decimal, for example `1.0M` for 1,048,576.
+Names that already include a token such as `1M` do not receive a duplicate tag.

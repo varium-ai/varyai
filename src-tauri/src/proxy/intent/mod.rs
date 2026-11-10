@@ -3,7 +3,10 @@
 mod capacity_tests;
 mod checkpoint;
 mod compaction;
+#[cfg(test)]
+mod concurrency_tests;
 mod continuation;
+mod identity;
 pub(super) mod length;
 pub(crate) mod native;
 mod native_gateway;
@@ -531,7 +534,7 @@ impl Runtime {
         self.menu.read().map(|v| v.is_some()).unwrap_or(false)
     }
     pub fn clear_menu(&self) {
-        self.native.revoke();
+        self.native.reset_status();
         self.native.clear_menu();
         if let Ok(mut v) = self.menu.write() {
             *v = None;
@@ -1440,10 +1443,7 @@ async fn execute(
         trace.finish(status.as_u16(), trace::State::Failed);
         error(status, code)
     };
-    let native_lease = parts.extensions.get::<Arc<native::Lease>>().cloned();
-    if native_lease.as_ref().is_some_and(|lease| !lease.valid()) {
-        return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable");
-    }
+    let native_request = parts.extensions.get::<Arc<native::Context>>().is_some();
     let streaming = !count_tokens
         && (original["stream"] == true
             || (protocol == Protocol::Gemini
@@ -1461,27 +1461,8 @@ async fn execute(
         },
         Err(_) => return fail(StatusCode::BAD_REQUEST, "routing_invalid_input"),
     };
-    let conversation = original["prompt_cache_key"]
-        .as_str()
-        .filter(|s| !s.is_empty() && s.len() <= 256)
-        .or_else(|| {
-            [
-                "session_id",
-                "session-id",
-                "thread-id",
-                "thread_id",
-                "x-conversation-id",
-            ]
-            .into_iter()
-            .find_map(|name| {
-                parts
-                    .headers
-                    .get(name)
-                    .and_then(|s| s.to_str().ok())
-                    .filter(|s| !s.is_empty() && s.len() <= 256)
-            })
-        })
-        .map(str::to_owned);
+    let named_conversation = identity::named(&parts.headers).is_some();
+    let conversation = Some(identity::affinity(&parts.headers, &bytes));
     if let Some(key) = &conversation {
         trace.session(key, &consumer);
     }
@@ -1506,117 +1487,105 @@ async fn execute(
     let scoped = if count_tokens {
         Arc::new(scopes::Conversation::default())
     } else {
-        let scoped = if responses_replay {
-            state
-                .intent_runtime
-                .conversations
-                .acquire_durable_with_policy(
-                    &consumer,
-                    &session,
-                    conversation.as_deref(),
-                    &projection,
-                    durable,
-                    scopes::HistoryPolicy::ResponsesReplay,
-                )
+        let policy = if responses_replay {
+            scopes::HistoryPolicy::ResponsesReplay
         } else if portable_tool_history {
-            state
-                .intent_runtime
-                .conversations
-                .acquire_durable_with_history(
-                    &consumer,
-                    &session,
-                    conversation.as_deref(),
-                    &projection,
-                    durable,
-                    true,
-                )
+            scopes::HistoryPolicy::Portable
         } else {
-            state.intent_runtime.conversations.acquire_durable(
-                &consumer,
-                &session,
-                conversation.as_deref(),
-                &projection,
-                durable,
-            )
+            scopes::HistoryPolicy::Strict
         };
+        let scoped = state.intent_runtime.conversations.acquire_named(
+            &consumer,
+            &session,
+            scopes::Name {
+                key: conversation.as_deref(),
+                derived: !named_conversation,
+            },
+            &projection,
+            durable,
+            policy,
+        );
         match scoped {
             Ok(scoped) => scoped,
             Err(code) => return fail(StatusCode::CONFLICT, code),
         }
     };
-    let mut bindings = match scoped.bindings.clone().try_lock_owned() {
-        Ok(bindings) => bindings,
-        Err(_) => return fail(StatusCode::CONFLICT, "routing_session_busy"),
-    };
-    if bindings.full() {
-        return fail(StatusCode::CONFLICT, "routing_session_capacity");
-    }
-    let resolution = if count_tokens {
-        Ok(None)
-    } else if protocol != Protocol::Responses {
-        let pinned = conversation
-            .as_ref()
-            .and_then(|name| bindings.session(name));
-        let tools = projection
-            .get("input")
-            .and_then(Value::as_array)
-            .is_some_and(|items| {
-                items.iter().any(|item| {
-                    matches!(
-                        item["type"].as_str(),
-                        Some("function_call" | "function_call_output")
-                    )
-                })
-            });
-        if portable_tool_history {
-            // An existing named scope still pins its destination. A self-contained
-            // transcript can start a new single-target scope after a model switch.
-            Ok(pinned)
-        } else if tools && pinned.is_none() && conversation.is_none() {
-            // Clients can omit session headers. The scope already matched observed call IDs;
-            // resolve every call again so unknown, colliding or mixed owners still fail closed.
-            bindings.resolve(
-                &bindings.continuation_projection(&consumer, &projection),
-                None,
-            )
-        } else if (tools || opaque_continuation(protocol, &original)) && pinned.is_none() {
-            Err(())
+    let (mut pinned, mut affinity, last_input_tokens) = {
+        let bindings = match scoped.bindings.lock() {
+            Ok(bindings) => bindings,
+            Err(_) => return fail(StatusCode::SERVICE_UNAVAILABLE, "routing_state_unavailable"),
+        };
+        if bindings.full() {
+            return fail(StatusCode::CONFLICT, "routing_session_capacity");
+        }
+        let resolution = if count_tokens {
+            Ok(None)
+        } else if protocol != Protocol::Responses {
+            let pinned = conversation
+                .as_ref()
+                .and_then(|name| bindings.session(name));
+            let tools = projection
+                .get("input")
+                .and_then(Value::as_array)
+                .is_some_and(|items| {
+                    items.iter().any(|item| {
+                        matches!(
+                            item["type"].as_str(),
+                            Some("function_call" | "function_call_output")
+                        )
+                    })
+                });
+            if portable_tool_history {
+                // An existing named scope still pins its destination. A self-contained
+                // transcript can start a new single-target scope after a model switch.
+                Ok(pinned)
+            } else if tools && !named_conversation {
+                // A derived opening is affinity, not tool-call ownership. Resolve
+                // every call so unknown, colliding or mixed owners still fail closed.
+                bindings.resolve(
+                    &bindings.continuation_projection(&consumer, &projection),
+                    None,
+                )
+            } else if (tools || opaque_continuation(protocol, &original)) && pinned.is_none() {
+                Err(())
+            } else {
+                Ok(pinned)
+            }
+        } else if responses_replay {
+            bindings.resolve_replay(&projection, conversation.as_deref())
         } else {
-            Ok(pinned)
-        }
-    } else if responses_replay {
-        bindings.resolve_replay(&projection, conversation.as_deref())
-    } else {
-        bindings.resolve(&projection, conversation.as_deref())
-    };
-    let mut pinned = match resolution {
-        Ok(p) => p,
-        Err(_) => return fail(StatusCode::CONFLICT, "routing_unknown_continuation"),
-    };
-    let mut affinity = None;
-    if compact.is_none()
-        && session.group.routing != crate::services::intent_routing::RoutingStrategy::Manual
-        && length::portable(&projection)
-        && !opaque_continuation(protocol, &original)
-        && conversation.as_ref().is_some_and(|key| {
-            bindings
-                .completed_sessions
-                .contains(&continuation::hash("session", key))
-        })
-    {
-        match session.group.affinity.as_str() {
-            "strict" => {}
-            "off" | "turn" => {
-                pinned = None;
-            }
-            _ => {
-                affinity = pinned.take();
+            bindings.resolve(&projection, conversation.as_deref())
+        };
+        let mut pinned = match resolution {
+            Ok(p) => p,
+            Err(_) => return fail(StatusCode::CONFLICT, "routing_unknown_continuation"),
+        };
+        let mut affinity = None;
+        if compact.is_none()
+            && session.group.routing != crate::services::intent_routing::RoutingStrategy::Manual
+            && length::portable(&projection)
+            && !opaque_continuation(protocol, &original)
+            && conversation.as_ref().is_some_and(|key| {
+                bindings
+                    .completed_sessions
+                    .contains(&continuation::hash("session", key))
+            })
+        {
+            match session.group.affinity.as_str() {
+                "strict" => {}
+                "off" | "turn" => {
+                    pinned = None;
+                }
+                _ => {
+                    affinity = pinned.take();
+                }
             }
         }
-    }
-    if native_lease.is_some() && !responses_replay && !bindings.known_opaque(&projection) {
-        return fail(StatusCode::CONFLICT, "routing_unknown_continuation");
-    }
+        if native_request && !responses_replay && !bindings.known_opaque(&projection) {
+            return fail(StatusCode::CONFLICT, "routing_unknown_continuation");
+        }
+        (pinned, affinity, bindings.last_input_tokens)
+    };
     if let Some(forced) = parts.extensions.get::<native::ForcedTarget>() {
         if pinned.is_some_and(|index| index != forced.0) {
             return fail(StatusCode::CONFLICT, "routing_checkpoint_conflict");
@@ -1677,8 +1646,8 @@ async fn execute(
     let folder = crate::services::intent_routing::folders::declared(&inspected_projection);
     let facts = crate::services::intent_routing::rules::Facts {
         tokens: estimated_tokens
-            .map(|estimate| estimate.max(bindings.last_input_tokens))
-            .or((bindings.last_input_tokens > 0).then_some(bindings.last_input_tokens)),
+            .map(|estimate| estimate.max(last_input_tokens))
+            .or((last_input_tokens > 0).then_some(last_input_tokens)),
         images: has_images,
         effort: requested_effort.as_deref(),
         agent,
@@ -1711,7 +1680,7 @@ async fn execute(
     if pinned.is_some_and(is_paused) {
         if length::portable(&projection)
             && !opaque_continuation(protocol, &original)
-            && native_lease.is_none()
+            && !native_request
         {
             pinned = None;
         } else {
@@ -1748,7 +1717,7 @@ async fn execute(
     } else {
         None
     };
-    let matched_rules =
+    let matched_rules = match scoped.update(|bindings| {
         if session.group.routing == crate::services::intent_routing::RoutingStrategy::Manual {
             Vec::new()
         } else if pinned.is_some() {
@@ -1761,7 +1730,11 @@ async fn execute(
             );
             bindings.held_rules = rules.clone();
             rules
-        };
+        }
+    }) {
+        Ok(rules) => rules,
+        Err(code) => return fail(StatusCode::SERVICE_UNAVAILABLE, code),
+    };
     let approved = match session.group.plan_prepared(None) {
         Ok(p) => p
             .candidates
@@ -1959,14 +1932,7 @@ async fn execute(
                 .min()
                 .unwrap_or(1);
             let pause = left.min(Duration::from_secs(until_ready.max(1)));
-            if let Some(lease) = &native_lease {
-                tokio::select! {
-                    _ = lease.cancelled() => return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable"),
-                    _ = tokio::time::sleep(pause) => {}
-                }
-            } else {
-                tokio::time::sleep(pause).await;
-            }
+            tokio::time::sleep(pause).await;
             if Instant::now() >= deadline {
                 break;
             }
@@ -2209,12 +2175,11 @@ async fn execute(
         if generation.is_some_and(|generation| generation != state.db.routing_generation()) {
             return fail(StatusCode::SERVICE_UNAVAILABLE, "routing_catalog_stale");
         }
-        if native_lease.as_ref().is_some_and(|lease| !lease.valid()) {
-            return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable");
-        }
         // Once dispatched, a named conversation cannot move after an ambiguous failure.
         if let Some(key) = conversation.as_ref().filter(|_| !count_tokens) {
-            bindings.bind_session(key, index);
+            if let Err(code) = scoped.update(|bindings| bindings.bind_session(key, index)) {
+                return fail(StatusCode::SERVICE_UNAVAILABLE, code);
+            }
         }
         if let Some(selected) = parts.extensions.get::<native::SelectedTarget>() {
             let Ok(mut selected) = selected.0.write() else {
@@ -2296,20 +2261,16 @@ async fn execute(
                 )
                 .await
             };
-            let forwarded =
-                match wait_for_attempt(attempt_deadline, native_lease.as_deref(), forward).await {
-                    Ok(result) => result,
-                    Err(AttemptWait::Revoked) => {
-                        return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable")
+            let forwarded = match wait_for_attempt(attempt_deadline, forward).await {
+                Ok(result) => result,
+                Err(AttemptWait::Deadline) => {
+                    if retry_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                        break;
                     }
-                    Err(AttemptWait::Deadline) => {
-                        if retry_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                            break;
-                        }
-                        trace.step(trace::Kind::FirstTokenTimeout, Some(candidate), None);
-                        continue;
-                    }
-                };
+                    trace.step(trace::Kind::FirstTokenTimeout, Some(candidate), None);
+                    continue;
+                }
+            };
             match forwarded {
                 Ok(response) => response,
                 Err(super::ProxyError::UpstreamError {
@@ -2445,22 +2406,16 @@ async fn execute(
                     request,
                     super::http_client::UPSTREAM_HEADER_WAIT,
                 );
-                let dispatched =
-                    match wait_for_attempt(attempt_deadline, native_lease.as_deref(), dispatch)
-                        .await
-                    {
-                        Ok(result) => result,
-                        Err(AttemptWait::Revoked) => {
-                            return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable")
+                let dispatched = match wait_for_attempt(attempt_deadline, dispatch).await {
+                    Ok(result) => result,
+                    Err(AttemptWait::Deadline) => {
+                        if retry_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                            break 'attempts;
                         }
-                        Err(AttemptWait::Deadline) => {
-                            if retry_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                                break 'attempts;
-                            }
-                            trace.step(trace::Kind::FirstTokenTimeout, Some(candidate), None);
-                            continue 'attempts;
-                        }
-                    };
+                        trace.step(trace::Kind::FirstTokenTimeout, Some(candidate), None);
+                        continue 'attempts;
+                    }
+                };
                 let response = match dispatched {
                     Ok(response) => super::hyper_client::ProxyResponse::Reqwest(response),
                     // Ambiguous network failures are never replayed at another account.
@@ -2480,18 +2435,12 @@ async fn execute(
                     Duration::from_secs(5),
                     response.bytes_with_limit(64 * 1024),
                 );
-                let error_bytes =
-                    match wait_for_attempt(attempt_deadline, native_lease.as_deref(), read_error)
-                        .await
-                    {
-                        Ok(Ok(Ok(bytes))) => bytes,
-                        Err(AttemptWait::Revoked) => {
-                            return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable")
-                        }
-                        _ => return fail(StatusCode::BAD_GATEWAY, "routing_upstream_rejected"),
-                    };
+                let error_bytes = match wait_for_attempt(attempt_deadline, read_error).await {
+                    Ok(Ok(Ok(bytes))) => bytes,
+                    _ => return fail(StatusCode::BAD_GATEWAY, "routing_upstream_rejected"),
+                };
                 let allow_compaction = compact.is_none()
-                    && native_lease.is_none()
+                    && !native_request
                     && parts.extensions.get::<native::ForcedTarget>().is_none();
                 if let Some(recovered) = replay_recovery.recover_wire(
                     status.as_u16(),
@@ -2648,11 +2597,8 @@ async fn execute(
                 output,
             }
             .response(response, streaming, timeout, context);
-            match wait_for_attempt(attempt_deadline, native_lease.as_deref(), convert).await {
+            match wait_for_attempt(attempt_deadline, convert).await {
                 Ok(Ok(response)) => response,
-                Err(AttemptWait::Revoked) => {
-                    return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable")
-                }
                 Err(AttemptWait::Deadline) => {
                     log::warn!("[Intent] Official bridge response deadline elapsed");
                     return fail(StatusCode::BAD_GATEWAY, "routing_upstream_response_invalid");
@@ -2709,12 +2655,8 @@ async fn execute(
             let mut buffered_bytes = 0usize;
             let mut timed_out = false;
             loop {
-                let next =
-                    wait_for_attempt(deadline, native_lease.as_deref(), upstream.next()).await;
+                let next = wait_for_attempt(deadline, upstream.next()).await;
                 match next {
-                    Err(AttemptWait::Revoked) => {
-                        return fail(StatusCode::UNAUTHORIZED, "routing_native_unavailable")
-                    }
                     Err(AttemptWait::Deadline) => {
                         timed_out = true;
                         break;
@@ -2770,7 +2712,9 @@ async fn execute(
                 .reassign(weighted_charge, index);
         }
         if let Some(key) = conversation.as_ref() {
-            bindings.bind_session(key, index);
+            if let Err(code) = scoped.update(|bindings| bindings.bind_session(key, index)) {
+                return fail(StatusCode::SERVICE_UNAVAILABLE, code);
+            }
         }
         let mut observer = Observer::default();
         observer.trae = agent == "trae" && protocol == Protocol::Chat;
@@ -2832,24 +2776,18 @@ async fn execute(
         );
         let account_scheduling = target.scheduling.clone();
         let stream = async_stream::stream! {
-            let _lease = scoped;
             let mut content_timed = false;
-            // Keep the conversation guard until EOF/drop, including cancellation.
+            // Magpie holds its affinity mutex only for a lookup/update. The
+            // conversation Arc, not a mutex guard, retains state through EOF/drop.
             loop {
-                let next = if let Some(lease) = &native_lease {
-                    tokio::select! {
-                        biased;
-                        _ = lease.cancelled() => {
-                            trace.finish(401, trace::State::Failed);
-                            yield Err(std::io::Error::other("Routing authorization revoked"));
-                            return;
-                        }
-                        next = upstream.next() => next,
-                    }
-                } else { upstream.next().await };
+                let next = upstream.next().await;
                 let Some(next) = next else { break; };
                 match next {
-                    Ok(bytes) => { observer.push(&bytes, &mut bindings, index);
+                    Ok(bytes) => {
+                        if scoped.update(|bindings| observer.push(&bytes, bindings, index)).is_err() {
+                            trace.finish(503, trace::State::Failed);
+                            yield Err(std::io::Error::other("Routing state unavailable")); return;
+                        }
                         if !content_timed {
                             if let Some(at) = observer.first_content {
                                 trace.first_content(at);
@@ -2863,21 +2801,27 @@ async fn execute(
                     }
                 }
             }
-            observer.finish(&mut bindings, index);
-            if portable_tool_history && observer.completed && !observer.failed && !observer.oversized {
-                // Keep imported calls with the scope that accepted them, so a
-                // later round can resolve old and newly generated calls together.
-                let mut changed = false;
-                if let Some(items) = projection["input"].as_array() {
-                    for id in items.iter().filter(|item| item["type"] == "function_call").filter_map(|item| item["call_id"].as_str()) {
-                        if bindings.full() { break; }
-                        changed |= remember(&mut bindings.calls, "call", id, index);
+            let updated = scoped.update(|bindings| {
+                observer.finish(bindings, index);
+                if portable_tool_history && observer.completed && !observer.failed && !observer.oversized {
+                    // Keep imported calls with the scope that accepted them, so a
+                    // later round can resolve old and newly generated calls together.
+                    let mut changed = false;
+                    if let Some(items) = projection["input"].as_array() {
+                        for id in items.iter().filter(|item| item["type"] == "function_call").filter_map(|item| item["call_id"].as_str()) {
+                            if bindings.full() { break; }
+                            changed |= remember(&mut bindings.calls, "call", id, index);
+                        }
                     }
+                    if changed { bindings.persist(); }
                 }
-                if changed { bindings.persist(); }
-            }
-            if observer.completed && !observer.failed && !observer.pending_tools && !observer.oversized {
-                if let Some(key) = conversation.as_ref() { bindings.complete_session(key); }
+                if observer.completed && !observer.failed && !observer.pending_tools && !observer.oversized {
+                    if let Some(key) = conversation.as_ref() { bindings.complete_session(key); }
+                }
+            });
+            if updated.is_err() {
+                trace.finish(503, trace::State::Failed);
+                yield Err(std::io::Error::other("Routing state unavailable")); return;
             }
             collector.finish();
             if collector.observed {
@@ -2922,30 +2866,19 @@ async fn execute(
 }
 enum AttemptWait {
     Deadline,
-    Revoked,
 }
 async fn wait_for_attempt<T>(
     deadline: Option<Instant>,
-    lease: Option<&native::Lease>,
     future: impl std::future::Future<Output = T>,
 ) -> Result<T, AttemptWait> {
-    let wait = async {
-        match deadline {
-            Some(deadline) => tokio::time::timeout_at(deadline.into(), future)
-                .await
-                .map_err(|_| AttemptWait::Deadline),
-            None => Ok(future.await),
-        }
-    };
-    match lease {
-        Some(lease) => tokio::select! {
-            biased;
-            _ = lease.cancelled() => Err(AttemptWait::Revoked),
-            result = wait => result,
-        },
-        None => wait.await,
+    match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline.into(), future)
+            .await
+            .map_err(|_| AttemptWait::Deadline),
+        None => Ok(future.await),
     }
 }
+
 fn public_response_headers(source: &http::HeaderMap) -> http::HeaderMap {
     let mut output = http::HeaderMap::new();
     for name in [

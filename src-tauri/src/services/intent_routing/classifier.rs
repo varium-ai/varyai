@@ -270,15 +270,15 @@ async fn trial_with_runtime(
             tauri::async_runtime::spawn_blocking(move || prepare_payload(&config, &text, &runtime))
                 .await
                 .map_err(|_| "privacy")??;
-        let provider = crate::services::routing_upstreams::variants(&provider)
-            .into_iter()
-            .find(|variant| eligible_provider(variant, true))
-            .ok_or("unavailable")?;
         let model = &group
             .classifier_target
             .as_ref()
             .ok_or("unavailable")?
             .model_id;
+        let provider = crate::services::routing_upstreams::variants_for_model(&provider, model)
+            .into_iter()
+            .find(|variant| eligible_provider(variant, true))
+            .ok_or("unavailable")?;
         let (endpoint, headers) =
             super::execution::static_transport(&provider, model).map_err(|_| "unavailable")?;
         let url = reqwest::Url::parse(&endpoint).map_err(|_| "unavailable")?;

@@ -1,8 +1,10 @@
 # Daily rewards and account selection
 
-On **Tools / Agent**, select **Check in** immediately before the Agent's model picker. In the compact Agent list, open its details to reveal the same controls. The panels use the workspace's compact controls and theme colors; account controls and reward details wrap to fit narrower windows.
+On **Tools / Agent**, select **Manual check-in** or **Automatic check-in** immediately before the Agent's model picker. In the compact Agent list, open its details to reveal the same controls. The panels use the workspace's compact controls and theme colors; account controls and reward details wrap to fit narrower windows.
 
-Check-in panels start hidden. The same **Check in** button expands or collapses the panel below its Agent row. Only one panel is shown at a time, without a second heading toggle or a separate home-page card. Collapsing a panel preserves the selected account and pending authorization; automatic check-in continues independently.
+The button shows **Automatic check-in** when any saved account for that Agent has automatic check-in enabled; otherwise it shows **Manual check-in**. Its label updates when the setting changes. Saved mode is independent of current client connectivity and credential availability: restarting VaryAI, closing a native client, or temporarily losing account access does not clear automatic check-in. Before preferences are available, the button shows **Check-in** without guessing a mode. When no account is available, the panel shows the saved automatic mode with its switch disabled; connection and sign-in outcomes remain separate. A newly selected account still needs its own opt-in.
+
+Check-in panels start hidden. The same button expands or collapses the panel below its Agent row. Only one panel is shown at a time, without a second heading toggle or a separate home-page card. Collapsing a panel preserves the selected account and pending authorization; automatic check-in continues independently.
 
 | Client          | Daily reward                                                | Account selection                                                                                                          |
 | --------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
@@ -30,6 +32,13 @@ Qoder CN's [official daily campaign](https://docs.qoder.cn/events/100credits) cu
 On macOS, VaryAI prefers Qoder CN's current native login. It reads the installed `product.json` to find the actual Electron application name and authentication directory; the Keychain entry is named from `electronApplicationName`, which can differ from the window title. For Qoder CN 0.4.8, the service is `Qoder CN App Safe Storage` and the account is `Qoder CN App Key`. The existing `v10` record is decrypted locally with the OS-approved secret, and only the current access token is used. The native credential file is never rewritten, its refresh token is never used or copied, and an expired native token is left for Qoder to refresh. Account identity is reread after each reward request.
 
 Background reads skip Keychain entries that require authentication. If access is protected, **Read client login** can request the system's permission to read that existing entry; it does not start another Qoder login. The secret remains in memory for the current VaryAI process and is passed privately to its helper, never to the renderer or synchronized storage. A fixed source label distinguishes the native login from an independent backup account.
+
+Once authorized, ordinary refreshes, claims, and repeated **Read client login**
+actions reuse that process's cached secret instead of forcing another Keychain
+read. A changed Safe Storage service or a rejected cached decryption key invalidates
+the cache. Restarting VaryAI starts a new cache; macOS may require authorization
+again for the first read. VaryAI does not change the Keychain item's access rules
+or retain the native decryption secret across restarts.
 
 **Add account** optionally authorizes an independent backup account. It opens the official account-selection page, creates VaryAI's own PKCE device login and stores the resulting device credential privately. This is a separate Qoder login credential used only by the rewards module, not a restriction on the permissions granted by Qoder's device authorization. Starting, completing or canceling authorization does not claim a reward or enable automatic claims. Cancel discards the pending verifier. **Remove backup authorization** deletes only VaryAI's local grant and disables that account's automatic claims; it does not clear the native login or revoke the grant at Qoder. The installed client's native machine identity helper is required.
 

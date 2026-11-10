@@ -1,7 +1,7 @@
-import { useEffect, useId, useState, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Check, Copy, Pencil, Plus, Trash2 } from "lucide-react";
+import { Check, Copy, Pencil, Plus } from "lucide-react";
 import {
   routingUpstreamsApi,
   type RoutingUpstream,
@@ -39,10 +39,21 @@ export function ProviderKeysField({
   const [editing, setEditing] = useState<string | null>(
     draft.hasApiKey && draft.revision ? null : "",
   );
+  const replacementInput = useRef<HTMLInputElement | null>(null);
+  const previousEditing = useRef(editing);
+  useEffect(() => {
+    if (editing !== null && previousEditing.current !== editing)
+      (inputRef ?? replacementInput).current?.focus();
+    previousEditing.current = editing;
+  }, [editing, inputRef]);
   const [show, setShow] = useState(false);
   const [copying, setCopying] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const [error, setError] = useState(false);
+  const [modelPicker, setModelPicker] = useState<{
+    keyId: string;
+    models: string[];
+  } | null>(null);
   useEffect(() => {
     onBusyChange(copying);
   }, [copying, onBusyChange]);
@@ -62,15 +73,36 @@ export function ProviderKeysField({
   const keys = [
     {
       id: "",
-      name: t("providerEditor.primaryKey"),
+      name: transport.primaryName || t("providerEditor.primaryKey"),
       enabled: !transport.primaryOff,
       key: apiKey,
+      models: transport.primaryModels,
     },
     ...transport.keys,
   ];
   const preferred = transport.preferredKey ?? "";
+  const enabledKeys = keys.filter((key) => key.enabled);
+  const active =
+    enabledKeys.find((key) => key.id === preferred)?.id ?? enabledKeys[0]?.id;
+  const several = enabledKeys.length > 1;
+  const modelIds = [
+    ...new Set(
+      [...draft.source.models, ...draft.source.catalog]
+        .map((row) =>
+          typeof row === "string"
+            ? row
+            : row && typeof row === "object"
+              ? String(
+                  (row as Record<string, unknown>).model ??
+                    (row as Record<string, unknown>).id ??
+                    "",
+                )
+              : "",
+        )
+        .filter(Boolean),
+    ),
+  ];
   const blocked = disabled || copying;
-  const current = keys.find((key) => key.id === editing);
   function updateTransport(next: typeof transport) {
     onDraftChange({ ...draft, transport: next });
   }
@@ -125,13 +157,27 @@ export function ProviderKeysField({
         ),
       });
   }
-  function remove() {
+  function remove(keyId = editing) {
     updateTransport({
       ...transport,
-      preferredKey: preferred === editing ? null : transport.preferredKey,
-      keys: transport.keys.filter((key) => key.id !== editing),
+      preferredKey: preferred === keyId ? null : transport.preferredKey,
+      keys: transport.keys.filter((key) => key.id !== keyId),
     });
     setEditing(null);
+  }
+  function saveModels(models?: string[]) {
+    if (!modelPicker) return;
+    updateTransport(
+      modelPicker.keyId === ""
+        ? { ...transport, primaryModels: models }
+        : {
+            ...transport,
+            keys: transport.keys.map((key) =>
+              key.id === modelPicker.keyId ? { ...key, models } : key,
+            ),
+          },
+    );
+    setModelPicker(null);
   }
   async function copy(keyId: string) {
     setCopying(true);
@@ -149,6 +195,36 @@ export function ProviderKeysField({
       setCopying(false);
     }
   }
+  if (!draft.revision)
+    return (
+      <div className="pv-field">
+        <label htmlFor={`${id}-new-key`}>{t("modelProviders.apiKey")}</label>
+        <div className="pv-field-content">
+          <div className="pv-new-key">
+            <Input
+              id={`${id}-new-key`}
+              ref={inputRef}
+              type={show ? "text" : "password"}
+              value={apiKey}
+              placeholder={t("providerEditor.keyPlaceholder")}
+              autoComplete="off"
+              spellCheck={false}
+              disabled={disabled}
+              onChange={(event) => onKeyChange(event.target.value)}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={disabled}
+              onClick={() => setShow(!show)}
+            >
+              {t(show ? "providerEditor.hideKey" : "providerEditor.showKey")}
+            </Button>
+          </div>
+          <p className="pv-hint">{t("providerEditor.newKeyHint")}</p>
+        </div>
+      </div>
+    );
   return (
     <div className="pv-field">
       <span className="pv-field-label" id={`${id}-label`}>
@@ -169,7 +245,7 @@ export function ProviderKeysField({
                 key.name || t("providerEditor.additionalKey", { n: index });
               return (
                 <li
-                  className={`pv-account pv-key-row ${key.enabled ? "" : "off"}`}
+                  className={`pv-account pv-key-row ${key.enabled ? "" : "off"} ${editing === key.id ? "editing" : ""}`}
                   key={key.id}
                 >
                   <button
@@ -183,13 +259,66 @@ export function ProviderKeysField({
                   >
                     <Check size={13} aria-hidden="true" />
                   </button>
-                  <span className="pv-key-label" title={name}>
-                    {summary?.label && !key.key
-                      ? summary.label
-                      : key.key
-                        ? mask(key.key)
-                        : name}
-                  </span>
+                  {editing === key.id ? (
+                    <div className="pv-key-edit">
+                      <div className="pv-key-input">
+                        <label htmlFor={`${id}-key`} className="sr-only">
+                          {t("modelProviders.apiKey")}
+                        </label>
+                        <Input
+                          ref={inputRef ?? replacementInput}
+                          id={`${id}-key`}
+                          type={show ? "text" : "password"}
+                          autoComplete="new-password"
+                          value={key.key ?? ""}
+                          required={
+                            editing === ""
+                              ? !draft.hasApiKey
+                              : !summaries.data?.some(
+                                  (entry) => entry.id === editing,
+                                )
+                          }
+                          disabled={blocked}
+                          onChange={(event) => changeKey(event.target.value)}
+                          placeholder={
+                            summary
+                              ? t("modelProviders.keepKey")
+                              : t("providerEditor.keyPlaceholder")
+                          }
+                        />
+                        {!!key.key && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            disabled={blocked}
+                            onClick={() => setShow(!show)}
+                          >
+                            {t(
+                              show
+                                ? "providerEditor.hideKey"
+                                : "providerEditor.showKey",
+                            )}
+                          </Button>
+                        )}
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          disabled={blocked}
+                          onClick={() => setEditing(null)}
+                        >
+                          {t("common.done")}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <span className="pv-key-label" title={name}>
+                      {summary?.label && !key.key
+                        ? summary.label
+                        : key.key
+                          ? mask(key.key)
+                          : name}
+                    </span>
+                  )}
                   <button
                     type="button"
                     className="pv-key-action"
@@ -214,24 +343,191 @@ export function ProviderKeysField({
                   >
                     <Pencil size={12} />
                   </button>
-                  {summary?.running != null && summary.running > 0 && (
-                    <span className="pv-key-running">
-                      {t("providerEditor.keyRunning", {
-                        count: summary.running,
-                      })}
-                    </span>
-                  )}
-                  {preferred === key.id ? (
-                    <small>{t("providerEditor.preferredKey")}</small>
-                  ) : (
+                  {(keys.length > 1 || key.models != null) && (
                     <button
                       type="button"
-                      className="pv-key-prefer"
+                      className={`pv-key-models${key.models != null ? " set" : ""}`}
                       disabled={blocked}
-                      onClick={() => prefer(key.id)}
+                      aria-expanded={modelPicker?.keyId === key.id}
+                      onClick={() =>
+                        setModelPicker(
+                          modelPicker?.keyId === key.id
+                            ? null
+                            : {
+                                keyId: key.id,
+                                models: [...(key.models ?? [])],
+                              },
+                        )
+                      }
                     >
-                      {t("providerEditor.makePreferred")}
+                      {t(
+                        key.models != null
+                          ? "providerEditor.keyModels"
+                          : "providerEditor.keyAllModels",
+                        { count: key.models?.length ?? 0 },
+                      )}
                     </button>
+                  )}
+                  <span className="pv-key-limit">
+                    {summary?.running
+                      ? t("providerEditor.keyRunning", {
+                          count: summary.running,
+                        })
+                      : t("providerEditor.keyUnlimitedConcurrency")}
+                  </span>
+                  <span className="pv-key-limit">
+                    {t("providerEditor.keyNoSpendCap")}
+                  </span>
+                  <span className="pv-key-acts">
+                    {(!key.enabled || several) && (
+                      <button
+                        type="button"
+                        disabled={blocked}
+                        onClick={() => toggle(key.id, !key.enabled)}
+                      >
+                        {t(
+                          key.enabled
+                            ? "providerEditor.keySwitchOff"
+                            : "common.enable",
+                        )}
+                      </button>
+                    )}
+                    {key.id !== "" && (
+                      <button
+                        type="button"
+                        aria-label={t("providerEditor.removeKey")}
+                        disabled={blocked}
+                        onClick={() => remove(key.id)}
+                      >
+                        {t("providerEditor.keyRemove")}
+                      </button>
+                    )}
+                    {active === key.id ? (
+                      <small>
+                        {t(
+                          several
+                            ? "providerEditor.firstKey"
+                            : "providerEditor.inUse",
+                        )}
+                      </small>
+                    ) : (
+                      key.enabled && (
+                        <button
+                          type="button"
+                          disabled={blocked}
+                          onClick={() => prefer(key.id)}
+                        >
+                          {t("providerEditor.makePreferred")}
+                        </button>
+                      )
+                    )}
+                  </span>
+                  {modelPicker?.keyId === key.id && (
+                    <div
+                      className="pv-key-model-picker"
+                      role="group"
+                      aria-label={t("providerEditor.keyModelPicker")}
+                    >
+                      <div className="pv-model-chips">
+                        {[...new Set([...modelIds, ...modelPicker.models])].map(
+                          (model) => (
+                            <button
+                              key={model}
+                              type="button"
+                              className={`pv-model-chip${modelPicker.models.includes(model) ? " selected" : ""}`}
+                              aria-pressed={modelPicker.models.includes(model)}
+                              disabled={blocked}
+                              onClick={() =>
+                                setModelPicker({
+                                  ...modelPicker,
+                                  models: modelPicker.models.includes(model)
+                                    ? modelPicker.models.filter(
+                                        (id) => id !== model,
+                                      )
+                                    : [...modelPicker.models, model],
+                                })
+                              }
+                            >
+                              {model}
+                            </button>
+                          ),
+                        )}
+                      </div>
+                      <p className="pv-hint">
+                        {t("providerEditor.keyModelsHint")}
+                      </p>
+                      <div className="pv-key-model-foot">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={blocked}
+                          onClick={() =>
+                            setModelPicker({
+                              ...modelPicker,
+                              models: [
+                                ...new Set([
+                                  ...modelIds,
+                                  ...modelPicker.models,
+                                ]),
+                              ],
+                            })
+                          }
+                        >
+                          {t("providerEditor.keySelectAvailable")}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={blocked}
+                          onClick={() => saveModels()}
+                        >
+                          {t("providerEditor.keyAllModels")}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          disabled={blocked}
+                          onClick={() => setModelPicker(null)}
+                        >
+                          {t("common.cancel")}
+                        </Button>
+                        <Button
+                          type="button"
+                          className="mp-primary"
+                          disabled={blocked || !modelPicker.models.length}
+                          onClick={() => saveModels(modelPicker.models)}
+                        >
+                          {t("common.save")}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  {editing === key.id && (
+                    <div className="pv-key-details pv-stack">
+                      {editing !== "" && (
+                        <Input
+                          aria-label={t("providerEditor.keyName")}
+                          value={key.name}
+                          placeholder={t("providerEditor.keyName")}
+                          disabled={blocked}
+                          onChange={(event) =>
+                            updateTransport({
+                              ...transport,
+                              keys: transport.keys.map((key) =>
+                                key.id === editing
+                                  ? { ...key, name: event.target.value }
+                                  : key,
+                              ),
+                            })
+                          }
+                        />
+                      )}
+                      {summary && (
+                        <p className="pv-hint">
+                          {t("providerEditor.savedKeyHint")}
+                        </p>
+                      )}
+                    </div>
                   )}
                 </li>
               );
@@ -248,84 +544,6 @@ export function ProviderKeysField({
           </button>
         </div>
         <p className="pv-hint">{t("providerEditor.keyPoolHint")}</p>
-        {current && (
-          <div className="pv-key-edit pv-stack">
-            {editing !== "" && (
-              <Input
-                aria-label={t("providerEditor.keyName")}
-                value={current.name}
-                placeholder={t("providerEditor.keyName")}
-                disabled={blocked}
-                onChange={(event) =>
-                  updateTransport({
-                    ...transport,
-                    keys: transport.keys.map((key) =>
-                      key.id === editing
-                        ? { ...key, name: event.target.value }
-                        : key,
-                    ),
-                  })
-                }
-              />
-            )}
-            <div className="pv-key-input">
-              <label htmlFor={`${id}-key`} className="sr-only">
-                {t("modelProviders.apiKey")}
-              </label>
-              <Input
-                ref={inputRef}
-                id={`${id}-key`}
-                type={show ? "text" : "password"}
-                autoComplete="new-password"
-                value={current.key ?? ""}
-                required={
-                  editing === ""
-                    ? !draft.hasApiKey
-                    : !summaries.data?.some((entry) => entry.id === editing)
-                }
-                disabled={blocked}
-                onChange={(event) => changeKey(event.target.value)}
-                placeholder={
-                  draft.hasApiKey
-                    ? t("modelProviders.keepKey")
-                    : t("providerEditor.keyPlaceholder")
-                }
-              />
-              {!!current.key && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  disabled={blocked}
-                  onClick={() => setShow(!show)}
-                >
-                  {t(
-                    show ? "providerEditor.hideKey" : "providerEditor.showKey",
-                  )}
-                </Button>
-              )}
-              <Button
-                type="button"
-                variant="ghost"
-                disabled={blocked}
-                onClick={() => setEditing(null)}
-              >
-                {t("common.done")}
-              </Button>
-              {editing !== "" && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  aria-label={t("providerEditor.removeKey")}
-                  disabled={blocked}
-                  onClick={remove}
-                >
-                  <Trash2 size={13} />
-                </Button>
-              )}
-            </div>
-            <p className="pv-hint">{t("providerEditor.savedKeyHint")}</p>
-          </div>
-        )}
         {error && (
           <p role="alert" className="pv-error">
             {t("providerEditor.copyKeyFailed")}

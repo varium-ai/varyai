@@ -202,6 +202,45 @@ fn normalize_model_id(value: &str) -> String {
     normalized
 }
 
+/// Image input on a chat model is distinct from generating images.
+pub(crate) fn is_image_generation_model(row: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    if let Some(kind) = row
+        .pointer("/modelPreferences/kind")
+        .or_else(|| row.get("kind"))
+        .and_then(Value::as_str)
+        .filter(|kind| !kind.is_empty())
+    {
+        return kind == "image";
+    }
+    if row
+        .get("outputModalities")
+        .or_else(|| row.get("output_modalities"))
+        .and_then(Value::as_array)
+        .is_some_and(|values| values.iter().any(|v| v == "image"))
+    {
+        return true;
+    }
+    let id = row
+        .as_str()
+        .or_else(|| {
+            row.get("model")
+                .or_else(|| row.get("id"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let tokens: Vec<_> = id.split(['/', '_', '-', '.']).collect();
+    id.contains("gpt-image")
+        || id.contains("chatgpt-image")
+        || id.contains("dall-e")
+        || id.contains("stable-diffusion")
+        || tokens
+            .iter()
+            .any(|token| matches!(*token, "imagen" | "flux" | "sdxl"))
+        || (id.contains("gemini") && id.split(['/', '_', '-']).any(|token| token == "image"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,5 +322,20 @@ mod tests {
             image_input_capability_from_settings(&settings, "text", true),
             ImageInputCapability::Unsupported
         );
+    }
+
+    #[test]
+    fn image_generation_matches_the_editor_fixtures() -> Result<(), Box<dyn std::error::Error>> {
+        let fixtures: Vec<Value> = serde_json::from_str(include_str!(
+            "../../tests/fixtures/provider-image-models.json"
+        ))?;
+        for fixture in fixtures {
+            assert_eq!(
+                is_image_generation_model(&fixture["value"]),
+                fixture["image"].as_bool().ok_or("missing expected kind")?,
+                "synthetic model classification"
+            );
+        }
+        Ok(())
     }
 }

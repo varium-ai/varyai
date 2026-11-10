@@ -1,0 +1,40 @@
+[
+  { "value": "gpt-image-2.5-flare", "image": true },
+  { "value": { "model": "relay/gpt-image-2" }, "image": true },
+  { "value": { "id": "dall-e-3" }, "image": true },
+  { "value": "imagen-4.0-generate", "image": true },
+  { "value": "vendor/flux-1", "image": true },
+  { "value": "stable-diffusion-xl", "image": true },
+  { "value": "sdxl-fixture", "image": true },
+  { "value": "gemini-2.5-flash-image", "image": true },
+  {
+    "value": {
+      "model": "vendor-output",
+      "outputModalities": ["text", "image"]
+    },
+    "image": true
+  },
+  {
+    "value": { "model": "vendor-output", "output_modalities": ["image"] },
+    "image": true
+  },
+  { "value": { "model": "vendor-drawing", "kind": "image" }, "image": true },
+  {
+    "value": { "model": "chat-fixture", "inputModalities": ["text", "image"] },
+    "image": false
+  },
+  {
+    "value": {
+      "model": "chat-fixture",
+      "modelPreferences": { "images": true }
+    },
+    "image": false
+  },
+  {
+    "value": { "model": "chat-fixture", "displayName": "Image assistant" },
+    "image": false
+  },
+  { "value": "fixture-image-analysis-chat", "image": false },
+  { "value": "fluxion-chat", "image": false },
+  { "value": { "model": "gpt-image-fixture", "kind": "chat" }, "image": false }
+]

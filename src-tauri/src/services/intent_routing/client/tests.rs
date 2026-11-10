@@ -771,6 +771,82 @@ fn receiptless_disconnect_preserves_external_fields_and_refuses_unknown_provider
 }
 
 #[test]
+fn explicit_disconnect_keeps_supplemental_provider_fields_without_blocking(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for reconnect in [false, true] {
+        let (dir, manager) = setup();
+        orphan(&manager);
+        let mut baseline: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+        baseline["model_provider"] = toml_edit::value(PROVIDER);
+        baseline["model"] = toml_edit::value(group().alias());
+        baseline["theme"] = toml_edit::value("user-theme");
+        baseline["model_providers"][PROVIDER]["request_timeout_ms"] = toml_edit::value(1234);
+        baseline["model_providers"][PROVIDER]["custom_flag"] = toml_edit::value(true);
+        let provider = baseline["model_providers"][PROVIDER].to_string();
+        fs::write(&manager.config, baseline.to_string())?;
+        let auth = dir.path().join("auth.json");
+        fs::write(&auth, "synthetic-login")?;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        if reconnect {
+            manager.write_projection_inner(
+                &[group()],
+                "synthetic-customized-provider",
+                &format!("http://{}/intent/v1", listener.local_addr()?),
+                None,
+                true,
+                None,
+            )?;
+        }
+        manager.disconnect()?;
+        let after: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+        assert!(after.get("model_provider").is_none());
+        assert!(after.get("model").is_none());
+        assert_eq!(after["theme"].as_str(), Some("user-theme"));
+        assert_eq!(after["model_providers"][PROVIDER].to_string(), provider);
+        assert_eq!(fs::read_to_string(&auth)?, "synthetic-login");
+        assert!(!manager.receipt.exists());
+        manager.disconnect()?;
+    }
+    Ok(())
+}
+
+#[test]
+fn disconnect_failure_preserves_recovery_evidence_and_installed_configuration(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, manager) = setup();
+    orphan(&manager);
+    let mut baseline: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+    baseline["model_provider"] = toml_edit::value(PROVIDER);
+    baseline["model"] = toml_edit::value(group().alias());
+    baseline["model_providers"][PROVIDER]["base_url"] =
+        toml_edit::value("https://synthetic.example/intent/v1");
+    fs::write(&manager.config, baseline.to_string())?;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    manager.write_projection_inner(
+        &[group()],
+        "synthetic-disconnect-evidence",
+        &format!("http://{}/intent/v1", listener.local_addr()?),
+        None,
+        true,
+        None,
+    )?;
+    let installed = fs::read_to_string(&manager.config)?;
+    let original = manager.load()?.ok_or("missing fixture receipt")?.original;
+    assert_eq!(manager.disconnect(), Err(CONFLICT.into()));
+    assert!(
+        manager.receipt.exists(),
+        "a rejected disconnect must retain recovery evidence"
+    );
+    assert!(
+        fs::read_to_string(&manager.config)? == installed,
+        "a rejected disconnect must not partially restore configuration"
+    );
+    assert!(manager.load()?.ok_or("lost receipt")?.original == original);
+    assert!(!manager.status()?.orphaned_config);
+    Ok(())
+}
+
+#[test]
 fn explicit_disconnect_detaches_an_orphan_baseline_after_reconnect(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (_dir, manager) = setup();

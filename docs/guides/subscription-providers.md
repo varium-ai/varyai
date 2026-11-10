@@ -66,6 +66,14 @@ controls. If the operating system cannot open the browser, the pending flow
 remains available and the panel explains how to open the URL manually. Login
 failures are reported in the account panel rather than as catalog failures.
 
+The provider list displays subscription allowance beneath each provider name,
+including the remaining percentage for each reported window. Selected Codex
+accounts are shown separately; API-key providers keep their endpoint and model
+count subtitle alongside supported relay balances. Account editors retain their
+full allowance meters, reset times and refresh controls. Both views share the same per-account quota cache, including
+safe failure and stale-reading states. Providers without an allowance endpoint
+show that limitation instead of an estimated balance.
+
 Provider rows and account editors share subscription-plan labels. Codex native
 sign-ins, managed accounts and ChatGPT API read the same plan claim, including
 Prolite, Promax, Go, Team and education/workspace tiers. New bounded plan
@@ -92,7 +100,6 @@ this draft without inserting a provider. Save persists it once, using the
 draft's stable ID so a repeated save cannot create a second record. Cancel or
 restart before saving leaves no newly created provider. The account credentials
 are independent of the provider draft and remain available after successful sign-in.
-
 
 ## Execution
 
@@ -124,6 +131,33 @@ validation with the user's own authorized account.
   `claude_dirs.go`, `claude_code_models.go`, and
   `internal/gateway/claude_subscription.go` / `codeassist.go`.
 
+## Relay key allowances
+
+Saved custom API providers and relay presets also show allowance in the list
+and provider form. Like Magpie, discovery tries the configured origin's
+`/v1/usage` (sub2api), then `/api/usage/token` (new-api/one-api), using the first
+enabled saved key. It never uses a panel login token or asks an account profile
+endpoint. Sub2api wallet amounts and 5-hour, daily and weekly limits remain
+separate; a response containing only windows does not imply a zero wallet.
+New-api's reported quota units are converted at 500,000 units per USD. Unknown
+or unlimited balances are not estimated. The form retains window meters, reset
+times and a manual refresh button.
+
+Both list and form reuse per-provider, per-revision query results. Allowances
+are fresh for 60 seconds; re-entering after that reads them again. Unsupported
+relay queries are cached for six hours. Staying on the list does not poll quota
+endpoints periodically. Manual refresh in the form bypasses the freshness cache.
+Transient failures preserve the last successful observation with a stale status;
+an explicit key rejection clears amounts. Vendor response bodies, request URLs
+and credentials never appear in allowance errors. Reads reject redirects, bound
+response sizes and run outside forwarding and database locks. Platform-neutral
+Rust and React implementations provide the same behavior on macOS and Windows.
+
+Reference: Magpie revision `a79d16c6843051ee75088949d6f8f611ea868dd8`,
+`internal/provider/balance_probe.go`, `balance.go` and `sub2api_usage.go`.
+The endpoint contracts were reimplemented for Vary AI; arbitrary balance field
+expressions and panel JWT configuration are outside this change.
+
 ## Account observations and model discovery
 
 Selecting a subscription account starts model discovery for that binding. Results
@@ -154,6 +188,21 @@ reads that cache without an experiment-service request; a failed observation
 retains the last known rollout. Quota labels use the same displayed model aliases.
 Quota inspection also observes Google plan labels when a project was already
 saved. Unknown model limits remain unknown.
+
+Antigravity merges `fetchAvailableModels` model allowances with
+`retrieveUserQuotaSummary` shared windows. A shared window replaces a model's
+reading only when it describes the same pool and period; a weekly-only group
+keeps the model's separate short window. Versioned groups such as Gemini 4 Argon
+remain independent of the broader Gemini family, and a model whose remaining
+share or reset differs from the shared short window stays visible separately.
+Repeated readings for a shared model family are consolidated without hiding
+different readings. An explicit Antigravity quota object with no remaining
+fraction means exhausted; a model with no quota object remains unknown. Disabled
+models and windows are excluded. The list and account form share compact pool
+labels and remaining percentages rounded to one decimal place.
+
+Pool-merging reference: Magpie `a45dd9c6573ab19cf19afd621501c9aef2e3f462`,
+`internal/provider/google.go` (`quota`, `pools`, `PooledWindows`).
 
 Managed Grok subscriptions use the CLI proxy for model discovery, Responses
 inference and credit billing, including CLI request headers and context-window

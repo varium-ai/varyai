@@ -661,7 +661,19 @@ mod command_list_tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn command_lists_preview_uses_only_twenty_latest_sanitized_summaries_and_never_echoes_them() {
+        use crate::proxy::security::runtime::{
+            get_security_runtime, set_security_runtime_for_test, SecurityRuntimeConfig,
+        };
+        struct SecurityReset(SecurityRuntimeConfig);
+        impl Drop for SecurityReset {
+            fn drop(&mut self) {
+                set_security_runtime_for_test(self.0.clone());
+            }
+        }
+        let _reset = SecurityReset((*get_security_runtime()).clone());
+        set_security_runtime_for_test(SecurityRuntimeConfig::default());
         let db = Database::memory().unwrap();
         for timestamp in 0..25 {
             db.conn.lock().unwrap().execute("INSERT INTO tool_risk_events (timestamp, source, stage, detection_scope, integrity_status, policy_version, command_summary)

@@ -135,7 +135,7 @@
 .vary-workspace {
   --workspace-sidebar-width: 184px;
   --workspace-page-top: 24px;
-  --workspace-brand-top: 48px;
+  --workspace-brand-top: 24px;
   background: var(--mp-workspace-bg);
 }
 .workspace-drag-region + div {
@@ -558,7 +558,10 @@ html:has(.vary-workspace) .tray-profile-menu {
   padding: 10px 0;
 }
 .mp-agent-install-row > div:first-child {
+  display: flex;
+  align-items: center;
   flex: 1;
+  gap: 10px;
   min-width: 100px;
 }
 .mp-agent-install-actions {
@@ -651,6 +654,19 @@ html:has(.vary-workspace) .tray-profile-menu {
 .mp-agent-status.bad > .mp-agent-dot {
   background: var(--mp-red);
 }
+.mp-agent-status > svg {
+  flex: none;
+}
+.mp-agent-reconnect {
+  background: color-mix(in srgb, var(--mp-red) 10%, transparent);
+  color: var(--mp-red);
+}
+.mp-agent-reconnect:hover {
+  background: color-mix(in srgb, var(--mp-red) 16%, transparent);
+}
+.mp-agent-reconnect:focus-visible {
+  outline-color: var(--mp-red);
+}
 .mp-agent-status-text {
   min-width: 0;
   overflow: hidden;
@@ -720,6 +736,58 @@ html:has(.vary-workspace) .tray-profile-menu {
 }
 .mp-switch[role="switch"][data-state="unchecked"] > span {
   transform: none;
+}
+.mp-agent-empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  padding: 24px;
+}
+.mp-agent-empty-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--mp-line-2);
+  border-radius: 10px;
+  background: var(--mp-card-2);
+  color: var(--mp-muted);
+}
+.mp-agent-empty-copy {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.mp-agent-empty-copy h2 {
+  margin: 0 0 6px;
+  color: var(--mp-fg);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.mp-agent-empty-copy p {
+  max-width: 44ch;
+  margin: 0;
+  color: var(--mp-fg-2);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.mp-agent-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mp-agent-empty-actions button {
+  height: 32px;
+  border-radius: 6px;
+  box-shadow: none;
+  font-size: 12px;
+}
+.tray-agents .mp-agent-empty {
+  gap: 12px;
+  padding: 16px;
 }
 .mp-agent-more {
   margin-top: 12px;

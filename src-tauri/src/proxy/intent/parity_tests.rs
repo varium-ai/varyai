@@ -146,13 +146,15 @@ async fn parity_official_account_rotation_and_unavailable_credentials_keep_appro
     .with_intent_runtime(runtime);
     let info = server.start().await?;
     let client = reqwest::Client::builder().no_proxy().build()?;
-    for expected in ["one", "two", "one", "two"] {
+    for (index, expected) in ["one", "two", "one", "two"].into_iter().enumerate() {
         let response = client
             .post(format!(
                 "http://127.0.0.1:{}/intent/v1/responses",
                 info.port
             ))
             .bearer_auth(&token)
+            // These are new conversations, not repeated turns of one opening.
+            .header("session-id", format!("synthetic-rotation-{index}"))
             .json(&json!({"model":alias,"input":"synthetic","stream":true,"store":false}))
             .send()
             .await?;

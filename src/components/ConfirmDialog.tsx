@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
 import { AppDialog } from "@/components/ui/app-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -71,8 +72,12 @@ export function ConfirmDialog({
           <Button
             variant={variant === "info" ? "default" : "destructive"}
             disabled={pending}
+            aria-busy={pending || undefined}
             onClick={() => onConfirm(checkboxLabel ? checkboxChecked : false)}
           >
+            {pending && (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            )}
             {confirmText || t("common.confirm")}
           </Button>
         </>

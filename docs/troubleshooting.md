@@ -26,6 +26,53 @@ and complete model limits; they do not establish complete Magpie feature parity
 or a successful inference request. See the
 [verification record](qa/2026-11-09-opencode-jsonc.md).
 
+## Codex native routing reports HTTP 401
+
+Native Codex forwarding follows Magpie revision
+[`4869d0c`](https://github.com/yetone/magpie/tree/4869d0c9665e1a815fee3a1a4d67a575e0baab93).
+Each request uses the authorization and workspace headers supplied by Codex.
+Forwarding does not require a local credential binding, ownership receipt,
+client-version allowlist, token fingerprint, or periodically renewed lease.
+Codex owns its native sign-in and can refresh it after an upstream HTTP 401.
+Account changes and token rotation take effect on the next request.
+
+Earlier builds could generate `401 routing_native_unavailable` locally when a
+five-second lease expired or its background reconciliation failed. A temporary
+authentication-file rewrite, a configuration change, or waiting for a switch
+lock could leave that authorization revoked until an explicit reconnect.
+That additional authentication mechanism has been removed.
+
+Native model discovery also follows Magpie: account-scoped lists are fresh for
+one minute, concurrent callers share one fetch, stale lists return immediately
+while refreshing, and a cold caller waits at most three seconds while the
+background fetch can continue for thirty seconds. Ordinary upstream HTTP 401
+and 403 responses reach Codex so it can renew its sign-in. A model-list HTTP 401
+that explicitly identifies a revoked sign-in falls back to the available model
+catalog so managed models remain visible; it is not retained as a permanent
+authentication failure. Native generation requests still receive the upstream
+authentication response. An incomplete sign-in file is an unknown discovery
+state and does not change an established native connection.
+
+These changes apply to the shared macOS and Windows forwarding code. Loading
+the corrected backend is required; editing the source does not update an
+already running application.
+
+## Codex interleaves native models and managed model aliases
+
+When Codex keeps its native ChatGPT sign-in beside a VaryAI connection, model
+discovery follows Magpie's `CodexListedBeside`: an official direct model already
+listed by the native backend is not offered again under a managed alias.
+An official model available only through another account remains listed.
+Routing groups and other providers remain separate entries even when their
+display names match. Existing alias mappings remain executable for saved chats.
+
+The merge follows Magpie's `codexMerged` and `FitOwn`: native entries and remaining
+managed entries are ordered together, hidden entries go last, and priorities are
+numbered consecutively. Native models remain in the first 100 entries read by
+the desktop picker. This replaces overlapping independent priorities and does
+not introduce a separate native/managed grouping feature.
+Use the corrected backend and refresh model discovery.
+
 ## Claude Desktop repeatedly retries an official Codex model
 
 A `502 routing_upstream_rejected` can hide an upstream HTTP 400 when Claude
@@ -40,11 +87,25 @@ existing behavior. This matches Magpie's separation of Anthropic metadata from
 its Responses projection. Sign-in alignment and a successful model catalog
 fetch do not establish compatibility of the inference request.
 
+Tool-bearing turns can also fail when an Anthropic function declares
+`defer_loading: true`. The official Responses endpoint requires its native
+`tool_search` contract for deferred functions. Claude Desktop's client-side
+`ToolSearch` function does not establish that contract, so a minimal model probe
+can succeed while an ordinary conversation repeatedly receives HTTP 400.
+As in Magpie's `responsesTool`, translated Responses function definitions omit
+`defer_loading`, making those functions available immediately while preserving
+names, schemas, explicit strictness and tool choice. This applies to the shared
+Responses builder, including other Responses providers. Anthropic-to-Anthropic
+requests retain deferred loading. Tool references remain available in converted
+history, and native Responses requests retain their native tool-search contract.
+
 Source changes require the corrected backend to be loaded before the live
 Desktop request can succeed. Do not clear credentials or history to work around
 this conversion bug. Verify a complete reply and terminal stream event with
 Desktop's request fields, rather than only an HTTP 200 from a minimal probe.
 See the [diagnosis and verification record](qa/2026-11-09-desktop-codex-metadata.md).
+The deferred-tool and picker-order follow-up is recorded in
+[the November 10 verification record](qa/2026-11-10-desktop-deferred-tools-and-codex-picker.md).
 
 ## Codex receives HTTP 400 from Gemini with search and functions
 
@@ -524,9 +585,11 @@ and in the selected profile. It removes a native compatibility URL only when its
 local origin matches the recognized Vary menu endpoint. User-selected models,
 catalogs, other endpoints and inactive profiles remain unchanged. The provider
 definition stays available for sessions that name it, so its presence alone is
-not an enabled connection. Unknown or modified provider definitions are refused.
-Backup failure prevents configuration writes. Background recovery without a
-receipt still leaves configuration untouched.
+not an enabled connection. Unrecognized provider identities or endpoints are
+refused. Supplemental provider fields are preserved and do not by themselves
+block an explicit disconnect. Automatic orphan cleanup keeps its stricter
+whole-definition check. Backup failure prevents configuration writes.
+Background recovery without a receipt still leaves configuration untouched.
 
 A different gateway can retain the Vary provider definition for historical
 conversations. Magpie, for example, can redirect that definition to its own `/v1`
@@ -536,8 +599,8 @@ origin as the native Codex URL, and no Vary model, catalog or provider reference
 remains, that is an external connection. Its definition alone is not a missing
 Vary recovery record. **Disconnect** clears Vary's saved connection request while
 preserving the external endpoint, provider definitions, model selection and
-login. The confirmation explains this narrower operation. Unknown or ambiguous
-settings still require normal recovery; a `/v1` URL alone is not proof of ownership.
+login. Unknown or ambiguous settings still require normal recovery; a `/v1`
+URL alone is not proof of ownership.
 
 If the active provider or recovery receipt changes while troubleshooting,
 refresh Tools before choosing an action. Reapplying Vary may create a new receipt
@@ -545,11 +608,21 @@ whose baseline is the external connection; subsequent disconnect must preserve
 that baseline. Use an updated build containing this fix. Do not delete the
 retained provider or authentication/history files to suppress the warning.
 
-For recognized Vary routes, the confirmation explains that removed settings use
-Codex defaults; the missing historical settings cannot be recovered. Choose a shared model or use **Apply
-again** to back up the current configuration and reconnect with a new receipt.
-Configuration drift with an existing receipt still requires the normal recovery
-flow. Authentication files and unrelated settings are preserved.
+The disconnect confirmation uses the same restore explanation regardless of
+whether a recovery receipt is available. Codex also explains that its provider
+definition is retained for existing conversations. Internal configuration-conflict
+codes are not rendered as a separate instruction to inspect tool configuration.
+An unsuccessful operation remains unsuccessful and can be retried.
+
+With a receipt, explicit disconnect validates the restored configuration and any
+remaining Vary routing fields before replacing the live document or deleting the
+receipt. If this validation fails, both the installed configuration and the
+recovery evidence remain available; a failed attempt must not create a missing
+receipt state. Authentication files and unrelated settings are preserved.
+
+Choose a shared model or use **Apply again** to back up the current configuration
+and reconnect with a new receipt. Configuration drift with an existing receipt
+still requires the normal recovery flow.
 
 ### Codex stays on "Loading models..." after enabling routing
 

@@ -115,6 +115,7 @@ struct Store {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Status {
     auto_enabled: bool,
+    auto_configured: bool,
     day: String,
     outcome: Outcome,
     checked_at: Option<i64>,
@@ -330,6 +331,8 @@ impl Manager {
             .and_then(|a| store.records.get(&a.key()))
             .filter(|record| record.day == day);
         Status {
+            auto_configured: store.auto_enabled
+                || store.account_auto.values().any(|enabled| *enabled),
             auto_enabled: account.as_ref().ok().is_some_and(|account| {
                 store
                     .account_auto

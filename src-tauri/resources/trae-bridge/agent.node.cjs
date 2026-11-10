@@ -3,6 +3,64 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { isChatTarget, bootstrapSource, PipeClient } = require("./agent.cjs");
 const { PassThrough } = require("node:stream");
+test("IDE services survive module renumbering without loading unrelated modules", async () => {
+  const { workbenchServices } = require("./agent.cjs");
+  for (const id of [19208, 99001]) {
+    for (const state of ["ready", "uninitialized", "ambiguous", "missing"]) {
+      const loaded = [],
+        calls = [];
+      const service = { getModelList() {} };
+      const di = {
+        isInitialized: () => state !== "uninitialized",
+        resolve(key) {
+          if (key === Symbol.for("aiAgent.IAiNativeModelService"))
+            return service;
+          if (key === Symbol.for("IModelService"))
+            return {
+              refreshModelStore: async (value) =>
+                calls.push(["refresh", value]),
+            };
+          if (key === "iICubeModelManagementService")
+            return {
+              notifyModelChanges: (value) => calls.push(["notify", value]),
+            };
+          throw Error("Unexpected service");
+        },
+      };
+      const factory = function () {
+        return { mcf: "synthetic-container" };
+      };
+      const req = (key) => {
+        loaded.push(String(key));
+        assert.equal(String(key), String(id));
+        return { mcf: { getInstance: () => di } };
+      };
+      req.m = {
+        unrelated() {
+          throw Error("must not load");
+        },
+      };
+      if (state !== "missing") req.m[id] = factory;
+      if (state === "ambiguous") req.m.other = factory;
+      if (state !== "ready") {
+        assert.throws(() => workbenchServices(req), /unsupported_ide_version/);
+        assert.deepEqual(calls, []);
+      } else {
+        const actual = workbenchServices(req);
+        assert.equal(actual.service, service);
+        await actual.refresh();
+        assert.deepEqual(calls, [
+          ["refresh", { source: "varyai" }],
+          ["notify", { source: "varyai" }],
+        ]);
+      }
+      assert.equal(
+        loaded.length,
+        ["ready", "uninitialized"].includes(state) ? 1 : 0,
+      );
+    }
+  }
+});
 test("model diagnostics expose only a recognized operation and numeric code", () => {
   const { safeModelError } = require("./agent.cjs");
   for (const value of [
@@ -435,7 +493,7 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
       legacyAudits++;
       throw Error("older helper is disabled");
     },
-    __varyaiTraeAuditV10(payload) {
+    __varyaiTraeAuditV11(payload) {
       audits++;
       const { id, value } = JSON.parse(payload);
       value.body.messages[0].content[0].text = "[REDACTED]";
@@ -448,7 +506,7 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
   assert.equal(released, 1);
   assert.equal(context.__varyaiTraeNativeBridge.revision, 2);
   assert.equal(context.__varyaiTraeNativeBridge.modelVerification, 1);
-  assert.equal(context.__varyaiTraeNativeBridge.hookRevision, 10);
+  assert.equal(context.__varyaiTraeNativeBridge.hookRevision, 11);
   assert.equal(context.__varyaiTraeNativeBridge.startingModel, 1);
   const current = context.__varyaiTraeNativeBridge;
   assert.equal(typeof current.bridge.replace, "function");
@@ -481,8 +539,8 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
   assert.equal(current.bridge.enabled, true);
   const newer = {
     ...current,
-    hookRevision: 10,
-    auditBinding: "__varyaiTraeAuditV10",
+    hookRevision: 12,
+    auditBinding: "__varyaiTraeAuditV12",
   };
   context.__varyaiTraeNativeBridge = newer;
   await vm.runInNewContext(bootstrapSource(), context);

@@ -11,6 +11,10 @@ active tools and counts completed tasks, including failures. Each task checks th
 installed version after its update command exits; a successful exit without a
 verified version increase is reported as unverified. One tool's failure does not
 stop the other tasks, and raw command output is not shown in the update notice.
+If a successful CLI update's first version probe returns no version or fails,
+the page retries that observation twice at one-second intervals. It does not
+rerun the update command, retry an unchanged readable version, or turn a failed
+update command into a success. Persistent probe failures remain unverified.
 
 For a single tool, the notice names the outcome directly, such as
 `Pi updated: 1.4.0 → 1.5.0`, without a batch count. Multiple verified updates show
@@ -40,3 +44,33 @@ Vary AI application.
 
 Regression tests use deferred synthetic update commands and temporary fixtures;
 they do not run real installers or modify installed tools.
+
+Updates keep the active installation's package manager: Homebrew formulae and
+casks use Homebrew, npm installations use their associated npm, and pnpm
+installations use pnpm on both POSIX and Windows. Managed Pi installations use
+the absolute Pi launcher with `update`, preserving the managed release directory
+and its bundled Node runtime. When no package-manager anchor is available, Pi's
+fallback is `pi update` without an npm fallback that could update another copy.
+This follows the [official Pi update contract](https://pi.dev/docs/latest/cli).
+
+Official Homebrew formulae and casks read their latest version from Homebrew's
+public metadata, after identifying the channel from the installed receipt. A
+newer npm release does not produce an update button when that version is not
+available through Homebrew. Failed Homebrew metadata checks do not fall back to
+npm. Third-party taps retain their existing upstream checks and update commands;
+they are never replaced with a similarly named Homebrew core package. A
+Homebrew refusal to load an untrusted tap gets a specific, sanitized explanation.
+Vary does not change Homebrew trust settings automatically.
+
+Desktop update failures show a localized explanation for known failure codes:
+download, package verification, archive extraction, application exit,
+replacement, recovery, changed installation, unsupported channel/platform, or
+missing installation. Unknown errors and raw CLI output remain private. A
+successful command still requires an observed version increase before the UI
+reports success. Pi's obsolete fixed "Individual settings" label is removed;
+the actual per-Agent settings action remains in connected tray details.
+
+The explicitly ignored publisher acceptance test downloads and stages Qoder CN,
+Doubao Work, and Kimi Code packages, then checks their signature, identity,
+architecture, and version. It never installs or launches these applications and
+is separate from the synthetic default test suite.

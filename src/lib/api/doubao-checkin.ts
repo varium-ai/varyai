@@ -25,6 +25,7 @@ export interface DoubaoCheckinAccount {
 
 export interface DoubaoCheckinStatus {
   connected: boolean;
+  autoConfigured?: boolean;
   day: string;
   outcome: DoubaoCheckinOutcome;
   accounts: DoubaoCheckinAccount[];

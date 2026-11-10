@@ -95,6 +95,8 @@ describe("ConfirmDialog", () => {
     });
     expect(cancelButton).toBeDisabled();
     expect(confirmButton).toBeDisabled();
+    expect(confirmButton).toHaveAttribute("aria-busy", "true");
+    expect(confirmButton.querySelector("svg.animate-spin")).toBeInTheDocument();
 
     fireEvent.click(cancelButton);
     fireEvent.click(confirmButton);

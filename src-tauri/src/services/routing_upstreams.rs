@@ -11,6 +11,36 @@ pub(crate) const MAX_UPSTREAMS: usize = 256;
 pub(crate) const MAX_CONFIG_BYTES: usize = 512 * 1024;
 pub(crate) const MODEL_POLICY: &str = "routingModelPolicy";
 pub(crate) const KEY_LABEL: &str = "routingKeyLabel";
+const KEY_MODELS: &str = "routingKeyModels";
+pub(crate) const EXECUTION_IDENTITY: &str = "routingExecutionIdentity";
+
+pub(crate) fn execution_identity(provider: &Provider) -> &str {
+    provider
+        .settings_config
+        .get(EXECUTION_IDENTITY)
+        .and_then(Value::as_str)
+        .filter(|id| valid_identity(id))
+        .unwrap_or(&provider.id)
+}
+
+pub(crate) fn execution_group<'a>(
+    group: &mut crate::services::intent_routing::RoutingGroup,
+    providers: impl Iterator<Item = &'a Provider>,
+) {
+    let identities: std::collections::HashMap<_, _> = providers
+        .map(|p| (p.id.as_str(), execution_identity(p)))
+        .collect();
+    for member in &mut group.members {
+        if let Some(id) = identities.get(member.provider_id.as_str()) {
+            member.provider_id = (*id).into();
+        }
+    }
+    if let Some(target) = &mut group.classifier_target {
+        if let Some(id) = identities.get(target.provider_id.as_str()) {
+            target.provider_id = (*id).into();
+        }
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -46,6 +76,8 @@ pub(crate) struct ImportedTransport {
     #[serde(default)]
     pub primary_off: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_models: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_protocol: Option<String>,
@@ -59,7 +91,7 @@ pub(crate) struct ImportedTransport {
     pub full_url: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ImportedKey {
     pub id: String,
@@ -69,6 +101,8 @@ pub(crate) struct ImportedKey {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<String>>,
 }
 fn default_enabled() -> bool {
     true
@@ -306,6 +340,8 @@ impl RoutingUpstream {
         if let Some(transport) = &self.transport {
             let mut ids = std::collections::HashSet::new();
             if !matches!(self.source, UpstreamSource::Api { .. })
+                || transport.primary_models.as_ref().is_some_and(|models| !valid_key_models(models))
+                || transport.keys.iter().any(|key| key.models.as_ref().is_some_and(|models| !valid_key_models(models)))
                 || transport.endpoints.iter().any(|(format, url)| !valid_format(format) || !valid_url(url))
                 || transport.primary_name.as_ref().is_some_and(|name| name.chars().count() > 120 || name.chars().any(char::is_control))
                 || transport.keys.len() > 64
@@ -521,6 +557,9 @@ pub(crate) fn variants(provider: &Provider) -> Vec<Provider> {
         if let Some(settings) = variant.settings_config.as_object_mut() {
             settings.remove("routingImportedTransport");
             settings.remove(KEY_LABEL);
+            if let Some(models) = &transport.primary_models {
+                settings.insert(KEY_MODELS.into(), json!(models));
+            }
             if shared {
                 settings.insert(
                     KEY_LABEL.into(),
@@ -560,6 +599,10 @@ pub(crate) fn variants(provider: &Provider) -> Vec<Provider> {
         ) {
             next.remove("routingImportedTransport");
             next.remove(KEY_LABEL);
+            next.remove(KEY_MODELS);
+            if let Some(models) = &key.models {
+                next.insert(KEY_MODELS.into(), json!(models));
+            }
             if shared {
                 next.insert(KEY_LABEL.into(), json!(key_label(token, Some(&key.name))));
             }
@@ -586,6 +629,7 @@ pub(crate) fn variants(provider: &Provider) -> Vec<Provider> {
             variant.settings_config["authType"].to_string(),
             variant.settings_config["headers"].to_string(),
             variant.settings_config["config"].to_string(),
+            variant.settings_config[KEY_MODELS].to_string(),
         ))
     });
     variants
@@ -596,6 +640,31 @@ pub(crate) fn first_enabled(provider: &Provider) -> Result<Provider, String> {
         .into_iter()
         .next()
         .ok_or_else(|| UNAVAILABLE.into())
+}
+
+fn valid_key_models(models: &[String]) -> bool {
+    valid_models(&models.iter().map(|id| json!(id)).collect::<Vec<_>>())
+}
+
+pub(crate) fn variants_for_model(provider: &Provider, model: &str) -> Vec<Provider> {
+    variants(provider)
+        .into_iter()
+        .filter(|variant| key_serves(variant, model))
+        .collect()
+}
+
+pub(crate) fn key_serves(provider: &Provider, model: &str) -> bool {
+    provider
+        .settings_config
+        .get(KEY_MODELS)
+        .and_then(Value::as_array)
+        .is_none_or(|models| models.iter().any(|id| id.as_str() == Some(model)))
+}
+
+pub(crate) fn strip_key_model_scope(provider: &mut Provider) {
+    if let Some(settings) = provider.settings_config.as_object_mut() {
+        settings.remove(KEY_MODELS);
+    }
 }
 
 pub(crate) fn filter_models(provider: &mut Provider) {
@@ -615,6 +684,11 @@ pub(crate) fn filter_models(provider: &mut Provider) {
                 .unwrap_or_default()
         });
     provider.settings_config["routingVendorCatalog"] = json!(catalog);
+    let chat_catalog: Vec<_> = catalog
+        .iter()
+        .filter(|row| !crate::model_capabilities::is_image_generation_model(row))
+        .cloned()
+        .collect();
     let mut rows = match policy["mode"].as_str() {
         Some("usage") => vec![],
         Some("picked") => picks
@@ -642,8 +716,8 @@ pub(crate) fn filter_models(provider: &mut Provider) {
                 row
             })
             .collect(),
-        Some("best") => crate::services::codex_provider::best_models(catalog),
-        _ => catalog.into_iter().take(24).collect(),
+        Some("best") => crate::services::codex_provider::best_models(chat_catalog),
+        _ => chat_catalog.into_iter().take(24).collect(),
     };
     for row in &mut rows {
         if let Some(id) = row.as_str() {
@@ -658,6 +732,7 @@ pub(crate) fn filter_models(provider: &mut Provider) {
             }
         }
     }
+    rows.retain(|row| !crate::model_capabilities::is_image_generation_model(row));
     provider.settings_config["modelCatalog"] = json!({"models":rows});
 }
 
@@ -677,7 +752,107 @@ pub(crate) fn serves(provider: &Provider, model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn key_model_scopes_never_send_an_unlisted_model_to_a_key() -> Result<(), String> {
+        let record: RoutingUpstream = serde_json::from_value(json!({
+            "schemaVersion":1,"id":"fixture","name":"Fixture","revision":1,
+            "source":{"kind":"api","baseUrl":"https://fixture.example/v1","apiKey":"synthetic-primary-key","apiFormat":"openai_chat","mode":"picked","models":[{"model":"chat-a"},{"model":"chat-b"}],"catalog":[]},
+            "transport":{"endpoints":{},"fullUrl":false,"primaryModels":["chat-a"],"keys":[{"id":"backup","name":"Backup","enabled":true,"key":"synthetic-backup-key","models":["chat-b"]}]}
+        })).map_err(|_| INVALID)?;
+        record.validate()?;
+        let provider = resolve_provider(&record)?;
+        for (model, key) in [
+            ("chat-a", "synthetic-primary-key"),
+            ("chat-b", "synthetic-backup-key"),
+        ] {
+            let choices = variants_for_model(&provider, model);
+            assert_eq!(choices.len(), 1);
+            assert!(
+                choices[0]
+                    .resolve_usage_credentials(&crate::app_config::AppType::Codex)
+                    .1
+                    == key
+            );
+        }
+        assert!(variants_for_model(&provider, "other").is_empty());
+        let db = crate::database::Database::memory().map_err(|_| INVALID)?;
+        let mut persisted = record.clone();
+        persisted.revision = 0;
+        let saved = db.save_routing_upstream(persisted)?;
+        let mut edited = db.routing_upstream_editor(&saved.id, saved.revision)?;
+        let transport = edited.transport.as_mut().ok_or(INVALID)?;
+        assert_eq!(transport.primary_models, Some(vec!["chat-a".to_owned()]));
+        assert_eq!(transport.keys[0].models, Some(vec!["chat-b".to_owned()]));
+        transport.primary_models = Some(vec![]);
+        transport.keys[0].models = None;
+        let saved = db.save_routing_upstream(edited)?;
+        let updated = db.routing_discovery_provider(&saved.id, saved.revision)?;
+        let choices = variants_for_model(&updated, "chat-a");
+        assert_eq!(choices.len(), 1);
+        assert!(
+            choices[0]
+                .resolve_usage_credentials(&crate::app_config::AppType::Codex)
+                .1
+                == "synthetic-backup-key"
+        );
+        let directory = tempfile::tempdir().map_err(|_| INVALID)?;
+        let manager = std::sync::Arc::new(
+            crate::proxy::providers::codex_oauth_auth::CodexOAuthManager::new(
+                directory.path().to_owned(),
+            ),
+        );
+        let menu =
+            crate::services::intent_routing::menu::prepare(manager, vec![provider], vec![], None)
+                .await?;
+        assert_eq!(menu.groups.len(), 2);
+        for session in menu.groups.values() {
+            assert_eq!(session.targets.len(), 1);
+            let target = &session.targets[0];
+            let expected = if target.model == "chat-a" {
+                "synthetic-primary-key"
+            } else {
+                "synthetic-backup-key"
+            };
+            let upstream = target.upstream.as_ref().ok_or(INVALID)?;
+            assert!(
+                upstream
+                    .resolve_usage_credentials(&crate::app_config::AppType::Codex)
+                    .1
+                    == expected
+            );
+            assert!(upstream.settings_config.get(KEY_MODELS).is_none());
+        }
+        Ok(())
+    }
     use crate::app_config::AppType;
+
+    #[test]
+    fn image_models_stay_in_the_editor_catalog_but_leave_agent_chat_lists() -> Result<(), String> {
+        let catalog = json!([
+            {"model":"gpt-image-2"},
+            {"model":"vendor-drawing", "kind":"image"},
+            {"model":"vendor-output", "outputModalities":["image"]},
+            {"model":"chat-fixture", "inputModalities":["text","image"]}
+        ]);
+        for mode in ["vendor", "picked", "best", "usage"] {
+            let record: RoutingUpstream = serde_json::from_value(json!({
+                "schemaVersion":1,"id":"fixture","name":"Fixture","revision":1,
+                "source":{"kind":"api","baseUrl":"https://fixture.example/v1",
+                    "apiFormat":"openai_chat","apiKey":"synthetic-fixture-key","mode":mode,"models":catalog,"catalog":catalog}
+            })).map_err(|_| INVALID)?;
+            let provider = resolve_provider(&record)?;
+            assert_eq!(provider.settings_config["routingVendorCatalog"], catalog);
+            let rows = provider.settings_config["modelCatalog"]["models"]
+                .as_array()
+                .ok_or(INVALID)?;
+            assert_eq!(rows.len(), usize::from(mode != "usage"), "{mode}");
+            if mode != "usage" {
+                assert_eq!(rows[0]["model"], "chat-fixture", "{mode}");
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn selected_subscription_models_keep_refreshed_capabilities_and_preferences(

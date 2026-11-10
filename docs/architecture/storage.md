@@ -61,14 +61,28 @@ Claude Desktop uses the same per-agent routing control as other clients. Its swi
 
 New Codex catalog files are `varyai-model-catalog.json`. The historical catalog name remains readable inside the verified Codex directory. The `custom` provider bucket and `cc-switch-official` route ID remain stable because session history can refer to them.
 
+Public API-provider IDs are editable. The extension preference
+`provider_identities` maps renamed or retired public IDs to private execution
+identities. A single extension transaction updates the provider row, routing-group
+members, classifier targets and auto-group exclusions. Retired IDs retain their
+old ownership marker, so reuse cannot inherit another provider's opaque model
+aliases. This metadata uses the existing preference table and requires no shared
+schema migration. Runtime snapshots strip the marker from upstream settings.
+
+Per-key model scopes live alongside the existing private API transport JSON:
+`primaryModels` for the primary key and `models` for each backup key. Missing
+means unrestricted; an empty list denies every model. Existing extension-table,
+revision, backup and import boundaries are retained without a schema migration.
+
 Native API providers store their primary key, backup keys and private headers
 in the extension record. The registry does not encrypt these values. List,
 editor, save and import responses redact credentials and headers. Omitted keys
 retain stored values only at their original trusted destinations; private
 backup keys are matched by stable IDs. Import previews expose only safe metadata
 and source fingerprints, then re-read the source for explicit confirmation.
-Imported Codex subscriptions use the separate managed OAuth account file and native
-Codex provider policies. No OAuth token is stored in an API-key field. Source
+Imported subscriptions use their separate service account files and provider
+policies: managed Codex OAuth, native subscription accounts and the Copilot store.
+Claude credentials additionally use an isolated private CLI home. No OAuth token is stored in an API-key field. Source
 applications and native client sign-ins are not rewritten. Treat both database
 files, private account files and portable exports as sensitive. See
 [external imports](shared-catalog.md#external-provider-imports).

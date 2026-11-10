@@ -275,7 +275,7 @@ it("supports selecting and clearing all discovered subscription models", async (
   );
   expect(
     screen.getByRole("button", { name: "One" }).querySelector("svg"),
-  ).not.toBeInTheDocument();
+  ).toHaveStyle({ visibility: "hidden" });
 });
 
 it("adds an exact manual subscription model ID without duplicating it", () => {
@@ -343,9 +343,7 @@ it("automatically starts re-login once when opened from a row re-login action", 
 it("keeps the subscription editor editable during managed device authorization", () => {
   auth.isAddingAccount = true;
   mount();
-  expect(
-    screen.getByRole("radio", { name: "providerParity.mode_picked" }),
-  ).toBeEnabled();
+  expect(screen.getByRole("radio", { name: "fixture-user" })).toBeEnabled();
   expect(
     screen.queryByRole("button", { name: "subscriptionProvider.addAccount" }),
   ).not.toBeInTheDocument();
