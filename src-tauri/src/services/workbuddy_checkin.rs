@@ -118,6 +118,7 @@ pub(crate) struct Status {
     auto_configured: bool,
     day: String,
     outcome: Outcome,
+    saved_outcome: Option<Outcome>,
     checked_at: Option<i64>,
     credit: Option<f64>,
     streak: Option<u32>,
@@ -330,6 +331,16 @@ impl Manager {
             .ok()
             .and_then(|a| store.records.get(&a.key()))
             .filter(|record| record.day == day);
+        let saved = account.as_ref().err().and_then(|_| {
+            store
+                .records
+                .values()
+                .filter(|r| {
+                    r.day == day && matches!(r.outcome, Outcome::Claimed | Outcome::AlreadyChecked)
+                })
+                .max_by_key(|r| r.checked_at)
+        });
+        let reward = record.or(saved);
         Status {
             auto_configured: store.auto_enabled
                 || store.account_auto.values().any(|enabled| *enabled),
@@ -346,10 +357,11 @@ impl Manager {
                 .err()
                 .copied()
                 .unwrap_or_else(|| record.map_or(Outcome::NotChecked, |r| r.outcome)),
-            checked_at: record.map(|r| r.checked_at),
-            credit: record.and_then(|r| r.credit),
-            streak: record.and_then(|r| r.streak),
-            credit_delayed: record.is_some_and(|r| r.credit_delayed),
+            saved_outcome: saved.map(|r| r.outcome),
+            checked_at: reward.map(|r| r.checked_at),
+            credit: reward.and_then(|r| r.credit),
+            streak: reward.and_then(|r| r.streak),
+            credit_delayed: reward.is_some_and(|r| r.credit_delayed),
         }
     }
 

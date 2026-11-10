@@ -27,6 +27,7 @@ export interface AgentRewardStatus {
   autoEnabled: boolean;
   autoConfigured?: boolean;
   outcome: RewardOutcome;
+  savedOutcome?: RewardOutcome | null;
   credit: number | null;
   checkedAt: number | null;
   nextCheckAt: number | null;

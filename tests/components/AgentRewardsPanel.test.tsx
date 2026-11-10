@@ -59,6 +59,28 @@ beforeEach(() => {
     autoEnabled: true,
   });
 });
+it("keeps the saved completion visible alongside a disconnected client warning", async () => {
+  vi.mocked(agentRewardsApi.status).mockResolvedValue({
+    ...initial,
+    app: "trae",
+    accountId: null,
+    label: null,
+    outcome: "connection_required",
+    savedOutcome: "claimed",
+    checkedAt: Date.UTC(2026, 10, 10),
+  });
+  mount("trae");
+  await screen.findByText("agentRewards.outcomes.claimed");
+  expect(
+    screen.getByText(/agentRewards.outcomes.connection_required/),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "agentRewards.checkedIn" }),
+  ).toBeDisabled();
+  expect(screen.getByRole("switch")).toBeDisabled();
+  expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+});
+
 it("refreshes without claiming and passes the current account identity to an explicit claim", async () => {
   mount();
   await screen.findByText("Synthetic account");

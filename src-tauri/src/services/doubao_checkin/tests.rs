@@ -7,6 +7,46 @@ use std::sync::{
 use tokio_tungstenite::accept_async;
 
 #[tokio::test]
+async fn confirmed_daily_records_survive_disconnect_and_reopen_without_claiming() {
+    let f = fixture().await;
+    let id = key("synthetic-a");
+    f.manager.check_in(&id).await.expect("claim");
+    f.manager
+        .db
+        .set_setting(super::super::doubao_work::CONSENT_KEY, "false")
+        .expect("disconnect");
+    let reopened = Manager::new(f.manager.path.clone(), f.manager.db.clone());
+    let status = reopened.status().await.expect("saved status");
+    assert!(!status.connected);
+    assert_eq!(status.outcome, Outcome::ConnectionRequired);
+    assert_eq!(status.accounts.len(), 1);
+    assert_eq!(status.accounts[0].id, id);
+    assert_eq!(status.accounts[0].outcome, Outcome::Claimed);
+    assert!(!status.accounts[0].current);
+    assert_eq!(f.claims.load(Ordering::SeqCst), 1);
+    let mut store = reopened.read_store().await.expect("records");
+    store.records.get_mut(&id).expect("record").day = "2000-01-01".into();
+    assert!(Manager::snapshot(&store, None).accounts.is_empty());
+}
+
+#[tokio::test]
+async fn official_existing_checkins_are_remembered_before_disconnect() {
+    let f = fixture().await;
+    f.completed
+        .lock()
+        .expect("completed")
+        .insert("synthetic-a".into());
+    f.manager.status().await.expect("official status");
+    f.manager
+        .db
+        .set_setting(super::super::doubao_work::CONSENT_KEY, "false")
+        .expect("disconnect");
+    let status = f.manager.status().await.expect("saved status");
+    assert_eq!(status.accounts[0].outcome, Outcome::AlreadyChecked);
+    assert_eq!(f.claims.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn saved_auto_mode_survives_reopening_without_a_native_account() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let path = dir.path().join("checkin.json");

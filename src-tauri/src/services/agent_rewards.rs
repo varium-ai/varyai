@@ -32,6 +32,17 @@ impl Outcome {
     fn confirmed(self) -> bool {
         matches!(self, Self::Claimed | Self::AlreadyChecked)
     }
+    fn unavailable(self) -> bool {
+        matches!(
+            self,
+            Self::ConnectionRequired
+                | Self::SignInRequired
+                | Self::CredentialsProtected
+                | Self::CredentialsUnavailable
+                | Self::Unsupported
+                | Self::Failed
+        )
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -49,7 +60,6 @@ struct Observation {
     window_key: Option<String>,
 }
 impl Observation {
-    #[cfg(test)]
     fn outcome(outcome: Outcome) -> Self {
         Self {
             browser_account_id: None,
@@ -119,6 +129,7 @@ pub(crate) struct Status {
     auto_enabled: bool,
     auto_configured: bool,
     outcome: Outcome,
+    saved_outcome: Option<Outcome>,
     credit: Option<f64>,
     checked_at: Option<i64>,
     next_check_at: Option<i64>,
@@ -299,6 +310,35 @@ impl Manager {
         let id = native.account_id.as_ref().map(|id| key(app, id));
         let record = id.as_ref().and_then(|id| store.records.get(id));
         let confirmed = record.filter(|record| cached(record, native, now));
+        let saved = native
+            .outcome
+            .unavailable()
+            .then(|| {
+                if native.account_id.is_some() {
+                    record
+                } else {
+                    store
+                        .records
+                        .iter()
+                        .filter(|(id, r)| {
+                            id.starts_with(&format!("{app}|"))
+                                && r.outcome.confirmed()
+                                && now < r.until
+                        })
+                        .max_by_key(|(_, r)| r.checked_at)
+                        .map(|(_, r)| r)
+                }
+            })
+            .flatten()
+            .filter(|r| {
+                r.outcome.confirmed()
+                    && now < r.until
+                    && native
+                        .window_key
+                        .as_ref()
+                        .is_none_or(|window| r.window.as_ref() == Some(window))
+            });
+        let reward = confirmed.or(saved);
         Status {
             browser_account_id: native.browser_account_id.clone(),
             source: native.source,
@@ -316,27 +356,72 @@ impl Manager {
                 .iter()
                 .any(|(id, enabled)| *enabled && id.starts_with(&format!("{app}|"))),
             outcome: confirmed.map_or(native.outcome, |r| r.outcome),
-            credit: native.credit.or_else(|| confirmed.and_then(|r| r.credit)),
-            checked_at: record.map(|r| r.checked_at),
-            next_check_at: native.until.or_else(|| record.map(|r| r.until)),
+            saved_outcome: saved.map(|r| r.outcome),
+            credit: native.credit.or_else(|| reward.and_then(|r| r.credit)),
+            checked_at: record.or(saved).map(|r| r.checked_at),
+            next_check_at: native.until.or_else(|| record.or(saved).map(|r| r.until)),
         }
+    }
+    async fn remember_confirmed(
+        &self,
+        app: &str,
+        store: &mut Store,
+        native: &Observation,
+    ) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let Some(id) = native
+            .account_id
+            .as_ref()
+            .filter(|_| native.outcome.confirmed())
+        else {
+            return Ok(());
+        };
+        let Some(until) = native.until.filter(|until| *until > now) else {
+            return Ok(());
+        };
+        let id = key(app, id);
+        if !store
+            .records
+            .get(&id)
+            .is_some_and(|r| cached(r, native, now))
+        {
+            store.records.insert(
+                id,
+                Record {
+                    outcome: native.outcome,
+                    credit: native.credit,
+                    checked_at: now,
+                    until,
+                    window: native.window_key.clone(),
+                },
+            );
+            self.save(store).await?;
+        }
+        Ok(())
     }
     pub(crate) async fn status(&self, app: &str) -> Result<Status, String> {
         valid_app(app)?;
         let _guard = self.lock.lock().await;
-        let store = self.read().await?;
-        let native = self.observe(app, None).await?;
+        let mut store = self.read().await?;
+        let native = match self.observe(app, None).await {
+            Ok(native) => native,
+            Err(error) if error == STORAGE => return Err(error),
+            Err(_) => Observation::outcome(Outcome::Failed),
+        };
+        self.remember_confirmed(app, &mut store, &native).await?;
         Ok(Self::snapshot(app, &store, &native))
     }
     pub(crate) async fn connect_qoder_native(&self) -> Result<Status, String> {
         let _guard = self.lock.lock().await;
-        let store = self.read().await?;
+        let mut store = self.read().await?;
         let value = self
             .helper("qoder", json!({"mode":"status","nativeInteractive":true}))
             .await?;
         let native = serde_json::from_value::<Observation>(value)
             .map_err(|_| ERROR.to_owned())?
             .validate()?;
+        self.remember_confirmed("qoder", &mut store, &native)
+            .await?;
         Ok(Self::snapshot("qoder", &store, &native))
     }
     pub(crate) async fn set_auto(
@@ -379,7 +464,13 @@ impl Manager {
         } else {
             native
         };
-        if result.account_id.as_deref() == Some(id) {
+        if result.account_id.as_deref() == Some(id)
+            && !(result.outcome.unavailable()
+                && store
+                    .records
+                    .get(&key(app, id))
+                    .is_some_and(|r| r.outcome.confirmed() && now < r.until))
+        {
             store.records.insert(
                 key(app, id),
                 Record {
@@ -507,6 +598,79 @@ impl Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn official_confirmation_survives_reopening_without_a_native_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rewards.json");
+        let db = Arc::new(crate::database::Database::memory().unwrap());
+        let manager = Manager::new(path.clone(), db.clone());
+        let mut store = Store::default();
+        let mut native = Observation::outcome(Outcome::AlreadyChecked);
+        native.account_id = Some("a".repeat(64));
+        native.until = Some(chrono::Utc::now().timestamp_millis() + 60_000);
+        native.window_key = Some("daily".into());
+        manager
+            .remember_confirmed("trae", &mut store, &native)
+            .await
+            .unwrap();
+        let reopened = Manager::new(path, db);
+        let store = reopened.read().await.unwrap();
+        let status = Manager::snapshot(
+            "trae",
+            &store,
+            &Observation::outcome(Outcome::ConnectionRequired),
+        );
+        assert_eq!(status.saved_outcome, Some(Outcome::AlreadyChecked));
+    }
+
+    #[test]
+    fn unavailable_clients_keep_only_unexpired_confirmed_rewards_for_the_account() {
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut store = Store::default();
+        store.records.insert(
+            key("trae", "saved-account"),
+            Record {
+                outcome: Outcome::Claimed,
+                credit: Some(200.0),
+                checked_at: now - 1000,
+                until: now + 60_000,
+                window: Some("daily".into()),
+            },
+        );
+        let mut native = Observation::outcome(Outcome::ConnectionRequired);
+        let status = Manager::snapshot("trae", &store, &native);
+        assert_eq!(status.outcome, Outcome::ConnectionRequired);
+        assert_eq!(status.saved_outcome, Some(Outcome::Claimed));
+        assert_eq!(status.credit, Some(200.0));
+        assert!(status.account_id.is_none());
+        assert!(Manager::snapshot("qoder", &store, &native)
+            .saved_outcome
+            .is_none());
+        native.account_id = Some("another-account".into());
+        assert!(Manager::snapshot("trae", &store, &native)
+            .saved_outcome
+            .is_none());
+        native.account_id = Some("saved-account".into());
+        assert_eq!(
+            Manager::snapshot("trae", &store, &native).saved_outcome,
+            Some(Outcome::Claimed)
+        );
+        native.outcome = Outcome::NotChecked;
+        native.window_key = Some("new-window".into());
+        assert!(Manager::snapshot("trae", &store, &native)
+            .saved_outcome
+            .is_none());
+        native = Observation::outcome(Outcome::ConnectionRequired);
+        store
+            .records
+            .get_mut(&key("trae", "saved-account"))
+            .unwrap()
+            .until = now;
+        assert!(Manager::snapshot("trae", &store, &native)
+            .saved_outcome
+            .is_none());
+    }
+
     #[tokio::test]
     async fn saved_auto_mode_survives_reopening_without_a_native_account() {
         let dir = tempfile::tempdir().unwrap();

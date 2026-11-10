@@ -5855,6 +5855,8 @@
     "checkedIn": "チェックイン済み",
     "verificationRequired": "クライアントで認証が必要",
     "zcodeVerificationHint": "ZCode の公式クライアントで安全確認が必要です。ZCode の左下にある Claim を押し、認証または受け取りを完了してから、ここで更新してください。自動チェックインではこの認証を代行できません。",
+    "savedResult": "以前に確認されたアカウントの保存済みチェックイン記録を表示しています。",
+    "savedAccount": "以前に確認されたアカウント",
     "authorize": "アカウントを追加",
     "forget": "予備の認証を削除",
     "loginWaiting": "Qoder CN 公式ページで認証してください。認証だけでは報酬取得や自動取得は有効になりません。",

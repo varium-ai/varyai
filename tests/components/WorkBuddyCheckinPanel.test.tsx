@@ -79,6 +79,28 @@ beforeEach(() => {
 });
 
 describe("WorkBuddy daily check-in", () => {
+  it("shows a saved completion separately when the native account is unavailable", async () => {
+    vi.mocked(workbuddyCheckinApi.accounts).mockResolvedValue({
+      accounts: [],
+      nativeStatus: {
+        ...initial,
+        outcome: "credentials_unavailable",
+        savedOutcome: "claimed",
+        credit: 100,
+      },
+    });
+    mount();
+    await screen.findByText("workbuddy.checkin.outcomes.claimed");
+    expect(
+      screen.getByText(/workbuddy.checkin.outcomes.credentials_unavailable/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "agentRewards.checkedIn" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("switch")).toBeDisabled();
+    expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
+  });
+
   it("adds an independently authorized account without claiming or enabling automation", async () => {
     const native = {
       id: "native-account",

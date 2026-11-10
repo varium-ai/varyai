@@ -64,6 +64,25 @@ beforeEach(() => {
   vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue(initial);
 });
 
+it("shows confirmed daily records without a current native account and disables mutations", async () => {
+  vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue({
+    ...initial,
+    connected: false,
+    outcome: "connection_required",
+    accounts: [{ ...initial.accounts[0], current: false, outcome: "claimed" }],
+  });
+  mount();
+  await screen.findByText("doubaowork.checkin.outcomes.claimed");
+  expect(
+    screen.getByText(/doubaowork.checkin.outcomes.connection_required/),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "agentRewards.checkedIn" }),
+  ).toBeDisabled();
+  expect(screen.getByRole("switch")).toBeDisabled();
+  expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
+});
+
 it("lists accounts without claiming and offers an explicit switch action for the selected account", async () => {
   mount();
   const select = await screen.findByRole("combobox", {

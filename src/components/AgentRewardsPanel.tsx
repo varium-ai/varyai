@@ -95,8 +95,8 @@ export function AgentRewardsPanel({
     forget.isPending ||
     native.isPending ||
     !!loginId;
-  const complete =
-    data && ["claimed", "already_checked"].includes(data.outcome);
+  const outcome = data?.savedOutcome ?? data?.outcome;
+  const complete = outcome && ["claimed", "already_checked"].includes(outcome);
   const hasError =
     claim.isError ||
     auto.isError ||
@@ -168,7 +168,12 @@ export function AgentRewardsPanel({
             <label htmlFor={accountId}>{t("agentRewards.account")}</label>
             <select id={accountId} value={data?.accountId ?? ""} disabled>
               <option value={data?.accountId ?? ""}>
-                {data?.label ?? t("agentRewards.outcomes.sign_in_required")}
+                {data?.label ??
+                  t(
+                    data?.savedOutcome
+                      ? "agentRewards.savedAccount"
+                      : "agentRewards.outcomes.sign_in_required",
+                  )}
               </option>
             </select>
           </div>
@@ -249,11 +254,17 @@ export function AgentRewardsPanel({
           <div role="status" className="mp-checkin-status">
             <p className="mp-checkin-outcome" data-complete={complete}>
               {t(
-                app === "zcode" && data.outcome === "own_app_required"
+                app === "zcode" && data?.outcome === "own_app_required"
                   ? "agentRewards.zcodeVerificationHint"
-                  : `agentRewards.outcomes.${data.outcome}`,
+                  : `agentRewards.outcomes.${outcome}`,
               )}
             </p>
+            {data.savedOutcome && (
+              <p className="mp-checkin-muted">
+                {t("agentRewards.savedResult")}{" "}
+                {t(`agentRewards.outcomes.${data.outcome}`)}
+              </p>
+            )}
             {data.credit != null && (
               <p>
                 {t(
@@ -288,7 +299,11 @@ export function AgentRewardsPanel({
               false
             }
             disabled={
-              !data?.accountId || busy || query.isFetching || query.isError
+              !data?.accountId ||
+              !!data.savedOutcome ||
+              busy ||
+              query.isFetching ||
+              query.isError
             }
             onCheckedChange={(enabled) => {
               claim.reset();

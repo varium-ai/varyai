@@ -4797,7 +4797,7 @@ impl ProviderService {
         }
     }
 
-    fn provider_live_config_managed(provider: &Provider) -> Option<bool> {
+    pub(crate) fn provider_live_config_managed(provider: &Provider) -> Option<bool> {
         provider
             .meta
             .as_ref()
