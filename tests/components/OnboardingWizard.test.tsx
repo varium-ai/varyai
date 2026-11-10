@@ -334,7 +334,9 @@ it("checks credentials before saving and keeps the key masked", async () => {
         apiKey: "sk-synthetic-fixture",
         apiFormat: "openai_chat",
         catalog: [expect.objectContaining({ model: "fixture-model" })],
-        mode: "vendor",
+        mode: "picked",
+        models: [expect.objectContaining({ model: "fixture-model" })],
+        groupsOnly: false,
       }),
     }),
   );
@@ -342,6 +344,69 @@ it("checks credentials before saving and keeps the key masked", async () => {
     screen.queryByRole("button", { name: "onboarding.enterTools" }),
   ).toBeNull();
   expect(screen.queryByText("onboarding.nextHint")).toBeNull();
+});
+it.each(["openai_chat", "openai_responses", "anthropic", "gemini_native"])(
+  "selects every discovered %s key model with its metadata",
+  async (apiFormat) => {
+    const finish = mount();
+    enterKey();
+    fireEvent.change(screen.getByLabelText("onboarding.protocol"), {
+      target: { value: apiFormat },
+    });
+    vi.mocked(fetchModelsForConfig).mockResolvedValueOnce([
+      {
+        id: "fixture-model",
+        ownedBy: null,
+        displayName: "Fixture model",
+        context_window: 200000,
+        reasoningLevels: ["low", "high"],
+        inputModalities: ["text", "image"],
+      },
+      { id: "fixture-other", ownedBy: null },
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "onboarding.connect" }));
+    await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
+    const source = vi.mocked(routing.save).mock.calls[0][0].source;
+    expect(source).toMatchObject({
+      apiFormat,
+      mode: "picked",
+      groupsOnly: false,
+      models: [
+        {
+          model: "fixture-model",
+          ownedBy: null,
+          displayName: "Fixture model",
+          contextWindow: 200000,
+          contextSource: "vendor",
+          reasoningLevels: ["low", "high"],
+          inputModalities: ["text", "image"],
+        },
+        { model: "fixture-other", ownedBy: null },
+      ],
+    });
+    expect(source.kind === "api" && source.catalog).toEqual(
+      source.kind === "api" && source.models,
+    );
+  },
+);
+it("keeps the full key catalog while respecting the model selection limit", async () => {
+  const finish = mount();
+  enterKey();
+  vi.mocked(fetchModelsForConfig).mockResolvedValueOnce(
+    Array.from({ length: 257 }, (_, index) => ({
+      id: `fixture-model-${index}`,
+      ownedBy: null,
+    })),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "onboarding.connect" }));
+  await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
+  const source = vi.mocked(routing.save).mock.calls[0][0].source;
+  expect(source.kind).toBe("api");
+  if (source.kind !== "api") throw new Error("Expected API fixture");
+  expect(source.mode).toBe("picked");
+  expect(source.models).toHaveLength(256);
+  expect(source.catalog).toHaveLength(257);
+  expect(source.models).toEqual(source.catalog.slice(0, 256));
 });
 it("keeps failed connections editable, sanitizes errors and never saves an empty catalog", async () => {
   mount();
