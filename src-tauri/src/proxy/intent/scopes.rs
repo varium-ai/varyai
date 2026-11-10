@@ -17,11 +17,39 @@ struct Entry {
 }
 #[derive(Default)]
 pub(super) struct Conversation {
-    pub bindings: Arc<tokio::sync::Mutex<Bindings>>,
+    pub bindings: std::sync::Mutex<Bindings>,
     pub history: Arc<CodexChatHistoryStore>,
     pub shadow: Arc<GeminiShadowStore>,
     // The scope identity freezes the exact ordered destination set.
     pub official: Arc<super::official_bridge::History>,
+}
+
+impl Conversation {
+    // Like Magpie's sticks mutex, this guard is only used for in-memory
+    // lookups/updates. No guard may span a network await or a stream yield.
+    pub fn update<T>(&self, f: impl FnOnce(&mut Bindings) -> T) -> Result<T, &'static str> {
+        let mut bindings = self
+            .bindings
+            .lock()
+            .map_err(|_| "routing_state_unavailable")?;
+        Ok(f(&mut bindings))
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Name<'a> {
+    pub key: Option<&'a str>,
+    // A derived opening can still recover an observed continuation whose
+    // original opening was omitted by its client. Explicit names stay isolated.
+    pub derived: bool,
+}
+impl<'a> From<Option<&'a str>> for Name<'a> {
+    fn from(key: Option<&'a str>) -> Self {
+        Self {
+            key,
+            derived: false,
+        }
+    }
 }
 
 pub(super) struct Durable {
@@ -106,6 +134,7 @@ impl HistoryPolicy {
 }
 
 impl Conversations {
+    #[cfg(test)]
     pub fn acquire_durable(
         &self,
         consumer: &str,
@@ -117,6 +146,7 @@ impl Conversations {
         self.acquire_durable_with_history(consumer, session, name, body, store, false)
     }
 
+    #[cfg(test)]
     pub fn acquire_durable_with_history(
         &self,
         consumer: &str,
@@ -140,6 +170,7 @@ impl Conversations {
         )
     }
 
+    #[cfg(test)]
     pub fn acquire_durable_with_policy(
         &self,
         consumer: &str,
@@ -149,10 +180,19 @@ impl Conversations {
         store: Option<Arc<continuation::Store>>,
         policy: HistoryPolicy,
     ) -> Result<Arc<Conversation>, &'static str> {
+        self.acquire_named(consumer, session, name.into(), body, store, policy)
+    }
+
+    pub fn acquire_named(
+        &self,
+        consumer: &str,
+        session: &Session,
+        name: Name<'_>,
+        body: &Value,
+        store: Option<Arc<continuation::Store>>,
+        policy: HistoryPolicy,
+    ) -> Result<Arc<Conversation>, &'static str> {
         let Some(store) = store else {
-            if !policy.allows_fresh() {
-                return self.acquire(consumer, &session.bindings, name, body);
-            }
             return self.acquire_with_history(consumer, &session.bindings, name, body, policy);
         };
         let Some(targets) = session
@@ -183,14 +223,20 @@ impl Conversations {
             .retain(|e| e.touched.elapsed() < CONVERSATION_TTL || Arc::strong_count(&e.state) > 1);
         let matches =
             |e: &Entry| e.consumer == consumer && Arc::ptr_eq(&e.identity, &session.bindings);
-        let name = name.map(|name| continuation::hash("conversation", name));
+        let hashed_name = name
+            .key
+            .map(|name| continuation::hash("conversation", name));
+        let name = Name {
+            key: hashed_name.as_deref(),
+            derived: name.derived,
+        };
         let mut expected = targets.clone();
         expected.sort();
         for (id, snapshot) in store.scope(&scope) {
-            if name.as_ref().is_some_and(|name| name != &id) {
+            if !name.derived && name.key.is_some_and(|name| name != id) {
                 continue;
             }
-            if name.is_none() && !references(&snapshot, body, consumer) {
+            if name.key != Some(id.as_str()) && !references(&snapshot, body, consumer) {
                 continue;
             }
             if entries
@@ -248,7 +294,7 @@ impl Conversations {
                 name: Some(id),
                 touched: Instant::now(),
                 state: Arc::new(Conversation {
-                    bindings: Arc::new(tokio::sync::Mutex::new(bindings)),
+                    bindings: std::sync::Mutex::new(bindings),
                     ..Default::default()
                 }),
             });
@@ -257,13 +303,17 @@ impl Conversations {
             &mut entries,
             consumer,
             &session.bindings,
-            name.as_deref(),
+            name,
             body,
             policy,
         )?;
-        if let Ok(mut bindings) = state.bindings.try_lock() {
+        {
+            let mut bindings = state
+                .bindings
+                .lock()
+                .map_err(|_| "routing_state_unavailable")?;
             if bindings.durable.is_none() {
-                let id = name.unwrap_or_else(|| {
+                let id = name.key.map(str::to_owned).unwrap_or_else(|| {
                     continuation::hash("unnamed", &uuid::Uuid::new_v4().to_string())
                 });
                 if let Some(entry) = entries
@@ -283,6 +333,7 @@ impl Conversations {
         Ok(state)
     }
 
+    #[cfg(test)]
     pub fn acquire(
         &self,
         consumer: &str,
@@ -290,36 +341,35 @@ impl Conversations {
         name: Option<&str>,
         body: &Value,
     ) -> Result<Arc<Conversation>, &'static str> {
-        self.acquire_with_history(consumer, identity, name, body, HistoryPolicy::Strict)
+        self.acquire_with_history(consumer, identity, name.into(), body, HistoryPolicy::Strict)
     }
 
     fn acquire_with_history(
         &self,
         consumer: &str,
         identity: &Arc<tokio::sync::Mutex<Bindings>>,
-        name: Option<&str>,
+        name: Name<'_>,
         body: &Value,
         policy: HistoryPolicy,
     ) -> Result<Arc<Conversation>, &'static str> {
         let mut entries = self.0.lock().map_err(|_| "routing_state_unavailable")?;
         entries
             .retain(|e| e.touched.elapsed() < CONVERSATION_TTL || Arc::strong_count(&e.state) > 1);
-        let name = name.map(|name| continuation::hash("conversation", name));
-        Self::select(
-            &mut entries,
-            consumer,
-            identity,
-            name.as_deref(),
-            body,
-            policy,
-        )
+        let hashed_name = name
+            .key
+            .map(|name| continuation::hash("conversation", name));
+        let name = Name {
+            key: hashed_name.as_deref(),
+            derived: name.derived,
+        };
+        Self::select(&mut entries, consumer, identity, name, body, policy)
     }
 
     fn select(
         entries: &mut Vec<Entry>,
         consumer: &str,
         identity: &Arc<tokio::sync::Mutex<Bindings>>,
-        name: Option<&str>,
+        name: Name<'_>,
         body: &Value,
         policy: HistoryPolicy,
     ) -> Result<Arc<Conversation>, &'static str> {
@@ -350,14 +400,22 @@ impl Conversations {
         let continuation = continuation
             || (matches!(policy, HistoryPolicy::ResponsesReplay)
                 && references_with(body, |_, _| true));
-        let selected = if let Some(name) = name {
+        let named = name.key.and_then(|key| {
             entries
                 .iter()
-                .position(|e| matches(e) && e.name.as_deref() == Some(name))
+                .position(|e| matches(e) && e.name.as_deref() == Some(key))
+        });
+        let selected = if named.is_some() || (name.key.is_some() && !name.derived) {
+            named
         } else if continuation {
             let mut found = None;
             for (index, entry) in entries.iter().enumerate().filter(|(_, e)| matches(e)) {
-                if let Ok(bindings) = entry.state.bindings.try_lock() {
+                {
+                    let bindings = entry
+                        .state
+                        .bindings
+                        .lock()
+                        .map_err(|_| "routing_state_unavailable")?;
                     let projection = bindings.continuation_projection(consumer, body);
                     let evidence = references_with(&projection, |kind, id| {
                         let map = match kind {
@@ -385,8 +443,6 @@ impl Conversations {
                         }
                         _ => {}
                     }
-                } else {
-                    return Err("routing_session_busy");
                 }
             }
             found
@@ -400,7 +456,7 @@ impl Conversations {
         // Full ownership discovery and durable destination checks run first.
         // Responses replay can also begin with vendor-owned state that this
         // process has never observed; the vendor validates it on forwarding.
-        if continuation && name.is_none() && !policy.allows_fresh() {
+        if continuation && name.key.is_none() && !policy.allows_fresh() {
             return Err("routing_unknown_continuation");
         }
         if entries.len() >= MAX_CONVERSATIONS {
@@ -410,7 +466,7 @@ impl Conversations {
         entries.push(Entry {
             consumer: consumer.into(),
             identity: identity.clone(),
-            name: name.map(str::to_owned),
+            name: name.key.map(str::to_owned),
             touched: Instant::now(),
             state: state.clone(),
         });

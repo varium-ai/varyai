@@ -83,7 +83,7 @@ esac
 
 echo "==> Recreating the DMG with the signed application"
 mkdir -p "$(dirname "$DMG_PATH")"
-hdiutil create -volname "$APP_NAME" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_PATH" >/dev/null
+node scripts/create-macos-dmg.mjs "$APP_PATH" "$DMG_PATH"
 hdiutil verify "$DMG_PATH" >/dev/null
 echo "    DMG verification passed"
 

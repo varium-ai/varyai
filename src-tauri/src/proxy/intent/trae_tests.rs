@@ -277,7 +277,10 @@ fn trae_rewritten_payload_collisions_remain_isolated() -> Result<(), Box<dyn std
         let state = conversations.acquire("agent:trae", &identity, Some(name), &json!({}))?;
         let mut observer = Observer::default();
         observer.trae = true;
-        let mut bindings = state.bindings.try_lock()?;
+        let mut bindings = state
+            .bindings
+            .lock()
+            .map_err(|_| "synthetic state poisoned")?;
         observer.observe_at(
             &json!({"choices":[{"message":{"tool_calls":[{"id":format!("original-{name}"),"function":{"name":"read_fixture","arguments":"{}"}}]}}]}),
             &mut bindings,
@@ -305,7 +308,10 @@ fn trae_tool_scopes_reject_unknown_mixed_colliding_and_changed_owners(
     let identity = Arc::default();
     let observe = |name: &str, id: &str, target: usize| -> Result<(), Box<dyn std::error::Error>> {
         let state = conversations.acquire("agent:trae", &identity, Some(name), &json!({}))?;
-        let mut bindings = state.bindings.try_lock()?;
+        let mut bindings = state
+            .bindings
+            .lock()
+            .map_err(|_| "synthetic state poisoned")?;
         bindings.observe(
             &json!({"choices":[{"message":{"tool_calls":[{"id":id}]}}]}),
             target,
@@ -329,7 +335,11 @@ fn trae_tool_scopes_reject_unknown_mixed_colliding_and_changed_owners(
     let first = body(&["synthetic-first"]);
     let state = conversations.acquire("agent:trae", &identity, None, &first)?;
     assert_eq!(
-        state.bindings.try_lock()?.resolve(&first, None),
+        state
+            .bindings
+            .lock()
+            .map_err(|_| "synthetic state poisoned")?
+            .resolve(&first, None),
         Ok(Some(0))
     );
     assert!(conversations

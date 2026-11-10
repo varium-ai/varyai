@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Vary AI",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "identifier": "com.varyai.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -53,7 +53,13 @@
       }
     },
     "macOS": {
-      "minimumSystemVersion": "12.0"
+      "minimumSystemVersion": "12.0",
+      "dmg": {
+        "background": "icons/dmg-background.png",
+        "windowSize": { "width": 660, "height": 420 },
+        "appPosition": { "x": 165, "y": 155 },
+        "applicationFolderPosition": { "x": 495, "y": 155 }
+      }
     }
   },
   "plugins": {

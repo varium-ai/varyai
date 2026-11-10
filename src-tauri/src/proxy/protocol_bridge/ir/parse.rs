@@ -528,7 +528,9 @@ fn responses(body: &Value, request: &mut Request) -> Result<(), ProxyError> {
             object(tool)?;
             let kind = required_string(tool, "type")?;
             if kind == "function" {
-                request.tools.push(function(tool, "parameters")?);
+                let mut function = function(tool, "parameters")?;
+                function.native = Some(tool.clone());
+                request.tools.push(function);
             } else {
                 request.tools.push(native_tool(tool, &kind)?);
             }

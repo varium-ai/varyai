@@ -524,20 +524,10 @@ fn conversation_scopes_isolate_consumers_lanes_and_active_leases() {
             .acquire("consumer-a", &identity, Some("same"), &json!({}))
             .unwrap()
     ));
-    let guard = first.bindings.try_lock().unwrap();
-    assert!(conversations
-        .acquire(
-            "consumer-a",
-            &identity,
-            None,
-            &json!({"previous_response_id":"resp-one"})
-        )
-        .is_err());
     let unrelated = conversations
         .acquire("consumer-a", &identity, Some("unrelated"), &json!({}))
         .unwrap();
     assert!(unrelated.bindings.try_lock().is_ok());
-    drop(guard);
     assert!(Arc::ptr_eq(
         &first,
         &conversations
@@ -963,7 +953,7 @@ fn forwarding_response_headers_are_bounded_and_never_include_credentials() {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn unrelated_gateway_streams_run_concurrently_but_same_conversation_is_busy(
+async fn gateway_streams_in_same_and_independent_conversations_run_concurrently(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use axum::response::IntoResponse;
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
@@ -1017,16 +1007,17 @@ async fn unrelated_gateway_streams_run_concurrently_but_same_conversation_is_bus
     };
     let first = tokio::time::timeout(Duration::from_secs(3), send(&key.secret, "same")).await??;
     assert_eq!(first.status(), StatusCode::OK);
-    let busy = tokio::time::timeout(Duration::from_secs(3), send(&key.secret, "same")).await??;
-    assert_eq!(busy.status(), StatusCode::CONFLICT);
+    let concurrent =
+        tokio::time::timeout(Duration::from_secs(3), send(&key.secret, "same")).await??;
+    assert_eq!(concurrent.status(), StatusCode::OK);
     let unrelated =
         tokio::time::timeout(Duration::from_secs(3), send(&key.secret, "other")).await??;
     assert_eq!(unrelated.status(), StatusCode::OK);
     let isolated =
         tokio::time::timeout(Duration::from_secs(3), send(&other.secret, "same")).await??;
     assert_eq!(isolated.status(), StatusCode::OK);
-    gate.add_permits(3);
-    for response in [first, unrelated, isolated] {
+    gate.add_permits(4);
+    for response in [first, concurrent, unrelated, isolated] {
         tokio::time::timeout(Duration::from_secs(3), response.text()).await??;
     }
     server.stop().await?;

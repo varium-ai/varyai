@@ -121,7 +121,11 @@ impl Fixture {
                 let tx = tx.clone(); let counter = counter.clone();
                 async move {
                     let index = counter.fetch_add(1, Ordering::SeqCst);
-                    let valid = body["stream"] == true && body["store"] == false && body["instructions"].is_string() && body.get("metadata").is_none();
+                    let valid = body["stream"] == true && body["store"] == false && body["instructions"].is_string() && body.get("metadata").is_none()
+                        && body["tools"].as_array().is_some_and(|tools| {
+                            tools.iter().any(|tool| tool["type"] == "tool_search")
+                                || tools.iter().all(|tool| tool.get("defer_loading").is_none())
+                        });
                     let _ = tx.send((headers, body)).await;
                     if !valid { return (StatusCode::BAD_REQUEST, Json(json!({"error":{"message":"Synthetic official contract violation"}}))).into_response(); }
                     let wire = match reply {
@@ -429,6 +433,57 @@ async fn desktop_official_anthropic_metadata_does_not_reject_the_turn(
         assert_eq!(
             sent["tools"][0]["parameters"],
             request["tools"][0]["input_schema"]
+        );
+        assert_eq!(sent["reasoning"]["effort"], "high");
+        fixture.stop().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn desktop_official_deferred_functions_are_available_without_native_tool_search(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _security = security();
+    for streaming in [false, true] {
+        let mut fixture = Fixture::new("claude-desktop", Reply::Text).await?;
+        let schema =
+            json!({"type":"object","properties":{"value":{"type":"integer"}},"required":["value"]});
+        let request = json!({
+            "model":fixture.alias,
+            "stream":streaming,
+            "max_tokens":128,
+            "system":"Synthetic desktop instructions",
+            "messages":[{"role":"user","content":"Synthetic desktop question"}],
+            "tools":[
+                {"name":"ToolSearch","description":"Synthetic client search","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},
+                {"name":"synthetic_tool","description":"Synthetic deferred function","input_schema":schema,"defer_loading":true,"strict":false}
+            ],
+            "tool_choice":{"type":"tool","name":"synthetic_tool"},
+            "output_config":{"effort":"high"}
+        });
+        let response = fixture.send("messages", &request).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let wire = response.text().await?;
+        assert!(wire.contains("Synthetic official answer"));
+        if streaming {
+            assert!(wire.contains("message_stop"));
+        } else {
+            assert_eq!(
+                serde_json::from_str::<Value>(&wire)?["stop_reason"],
+                "end_turn"
+            );
+        }
+        let sent = fixture.request().await?;
+        assert_eq!(sent["tools"].as_array().map(Vec::len), Some(2));
+        assert_eq!(sent["tools"][0]["name"], "ToolSearch");
+        assert_eq!(sent["tools"][1]["name"], "synthetic_tool");
+        assert_eq!(sent["tools"][1]["parameters"], schema);
+        assert_eq!(sent["tools"][1]["strict"], false);
+        assert!(sent["tools"][1].get("defer_loading").is_none());
+        assert_eq!(
+            sent["tool_choice"],
+            json!({"type":"function","name":"synthetic_tool"})
         );
         assert_eq!(sent["reasoning"]["effort"], "high");
         fixture.stop().await?;
