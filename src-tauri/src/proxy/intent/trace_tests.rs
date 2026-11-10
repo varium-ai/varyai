@@ -844,7 +844,7 @@ async fn deterministic_conditions_route_and_fail_over_in_rule_order_with_fitted_
     .with_intent_runtime(runtime.clone());
     let info = server.start().await?;
     for (asked, expected) in [("high", vec!["b", "c"]), ("low", vec!["a"])] {
-        let response=client.post(format!("http://127.0.0.1:{}/intent/v1/responses",info.port)).bearer_auth(&token).json(&json!({
+        let response=client.post(format!("http://127.0.0.1:{}/intent/v1/responses",info.port)).bearer_auth(&token).header("session-id", format!("synthetic-conditions-{asked}")).json(&json!({
             "model":"vary-auto/conditions", "reasoning":{"effort":asked},"input":[{"role":"user","content":[{"type":"input_text","text":"x".repeat(800)},{"type":"input_image","image_url":"data:image/png;base64,c3ludGhldGlj"}]}]
         })).send().await?;
         assert_eq!(response.status(), http::StatusCode::OK);

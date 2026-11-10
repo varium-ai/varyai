@@ -995,7 +995,7 @@ impl Manager {
         Ok(())
     }
     pub(crate) fn disconnect(&self) -> Result<(), String> {
-        self.runtime.native.revoke();
+        self.runtime.native.reset_status();
         if self.load()?.is_some() {
             self.restore()?;
         }
@@ -1021,7 +1021,7 @@ impl Manager {
     }
     pub fn restore(&self) -> Result<(), String> {
         // Revoke before fallible recovery, including missing or unreadable receipts.
-        self.runtime.native.revoke();
+        self.runtime.native.reset_status();
         let Some(mut receipt) = self.load()? else {
             self.runtime.clear_menu();
             return Ok(());

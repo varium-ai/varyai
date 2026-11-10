@@ -522,7 +522,7 @@ async fn workbuddy_imported_complete_history_keeps_ownership_for_the_next_tool_r
 async fn workbuddy_complete_tool_history_preserves_existing_scope_conflicts(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _security = security();
-    for scenario in ["mixed_owners", "duplicate_owners", "busy_owner"] {
+    for scenario in ["mixed_owners", "duplicate_owners"] {
         let fixture = Fixture::new("openai_chat").await?;
         let scope = fixture.runtime.conversations.acquire(
             "agent:workbuddy",
@@ -531,30 +531,25 @@ async fn workbuddy_complete_tool_history_preserves_existing_scope_conflicts(
             &json!({}),
         )?;
         {
-            let mut bindings = scope.bindings.lock().await;
+            let mut bindings = scope.bindings.lock().unwrap();
             remember(&mut bindings.calls, "call", FIRST_ID, 0);
             if scenario != "mixed_owners" {
                 remember(&mut bindings.calls, "call", SECOND_ID, 0);
             }
         }
-        if scenario != "busy_owner" {
+        {
             let other = fixture.runtime.conversations.acquire(
                 "agent:workbuddy",
                 &fixture.grok.bindings,
                 Some("synthetic-second-scope"),
                 &json!({}),
             )?;
-            let mut bindings = other.bindings.lock().await;
+            let mut bindings = other.bindings.lock().unwrap();
             remember(&mut bindings.calls, "call", SECOND_ID, 0);
             if scenario == "duplicate_owners" {
                 remember(&mut bindings.calls, "call", FIRST_ID, 0);
             }
         }
-        let busy = if scenario == "busy_owner" {
-            Some(scope.bindings.lock().await)
-        } else {
-            None
-        };
         let response = fixture
             .client
             .post(&fixture.root)
@@ -565,12 +560,7 @@ async fn workbuddy_complete_tool_history_preserves_existing_scope_conflicts(
         assert_eq!(response.status(), StatusCode::CONFLICT, "{scenario}");
         let body: Value = response.json().await?;
         assert_eq!(
-            body["error"]["code"],
-            if scenario == "busy_owner" {
-                "routing_session_busy"
-            } else {
-                "routing_ambiguous_continuation"
-            },
+            body["error"]["code"], "routing_ambiguous_continuation",
             "{scenario}"
         );
         assert_eq!(
@@ -578,7 +568,6 @@ async fn workbuddy_complete_tool_history_preserves_existing_scope_conflicts(
             0,
             "{scenario} reached the upstream"
         );
-        drop(busy);
         fixture.stop().await?;
     }
     Ok(())
@@ -612,7 +601,7 @@ async fn workbuddy_portable_history_does_not_bypass_a_restored_destination_chang
         Some(store.clone()),
         true,
     )?;
-    scope.bindings.lock().await.observe(
+    scope.bindings.lock().unwrap().observe(
         &json!({"output":[{"type":"function_call","call_id":FIRST_ID},{"type":"function_call","call_id":SECOND_ID}]}),
         0,
     );

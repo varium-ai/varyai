@@ -851,13 +851,14 @@ async fn all_automatic_strategies_reach_their_selected_exact_upstream() {
         } else {
             1
         };
-        for _ in 0..n {
+        for turn in 0..n {
             let value = client
                 .post(format!(
                     "http://127.0.0.1:{}/intent/v1/responses",
                     info.port
                 ))
                 .bearer_auth(concat!("synthetic", "-strategies"))
+                .header("session-id", format!("synthetic-strategy-{k}-{turn}"))
                 .json(&json!({"model":format!("vary-auto/strategy-{k}"),"input":"synthetic"}))
                 .send()
                 .await
