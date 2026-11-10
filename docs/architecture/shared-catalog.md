@@ -437,6 +437,15 @@ TRAE uses a separate private delivery outbox, not Agent-owned provider records.
 Explicit consent prepares its local bridge without launching the client or
 enabling official-session audit hooks. The user opens/restarts TRAE; Vary can set
 the starting model, and TRAE retains its native picker for conversation changes.
+
+TRAE bridge revision 11 discovers the initialized workbench container through
+its exported contract and resolves model services by their native identifiers,
+rather than using build-specific module numbers. The native helper and extension
+renderer share this resolver. Legacy starting-model verification discovers its
+Agent-type mapper through a unique matching factory; ambiguous or unavailable
+bindings remain unsupported. This covers the module renumbering in TRAE CN
+3.4.17 without loading unrelated module candidates.
+
 An acknowledgement is required before configuration is
 reported as delivered. Offline cleanup remains pending; only this connection's
 model namespace is removed. Authorization is revoked on failed refresh or stop.

@@ -3,7 +3,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createStartingModelAdapter } = require("./starting-model.cjs");
 
-function fixture() {
+function fixture(legacyModuleId) {
   const recent = {},
     calls = [],
     sessions = { existing: { modelId: "original" } };
@@ -66,8 +66,22 @@ function fixture() {
       },
     },
   };
+  const req = (id) => modules[id];
+  if (legacyModuleId !== undefined) {
+    const mapping = modules[46623];
+    delete modules[46623];
+    modules[legacyModuleId] = mapping;
+    req.m = {
+      [legacyModuleId]: function () {
+        return { KP: "dev_agent", other: "builder_with_mcp" };
+      },
+      unrelated() {
+        throw Error("must not load");
+      },
+    };
+  }
   return {
-    adapter: createStartingModelAdapter((id) => modules[id]),
+    adapter: createStartingModelAdapter(req),
     calls,
     recent,
     rows,
@@ -143,31 +157,35 @@ test("does not acknowledge failed persistence or a native selection mismatch", a
 });
 
 test("awaits legacy IDE persistence and verifies its new-session selection", async () => {
-  for (const failure of [null, "save", "model", "mode"]) {
-    const f = fixture();
-    let saved = false;
-    f.port.legacyModelSelectionAdapter = {
-      sessionRelationStore: {
-        persistGlobalModelMap: async () => {
-          if (failure === "save") throw Error("fixture");
-          saved = true;
+  for (const moduleId of [undefined, 7494, 99002]) {
+    for (const failure of [null, "save", "model", "mode"]) {
+      const f = fixture(moduleId);
+      let saved = false;
+      f.port.legacyModelSelectionAdapter = {
+        sessionRelationStore: {
+          persistGlobalModelMap: async () => {
+            if (failure === "save") throw Error("fixture");
+            saved = true;
+          },
+          persistGlobalModeMap: async () => {},
         },
-        persistGlobalModeMap: async () => {},
-      },
-      getSelectedModel: (session) => {
-        assert.equal(session, undefined);
-        return { custom_model_id: failure === "model" ? "other" : "native-a" };
-      },
-      getSelectedMode: () => (failure === "mode" ? 1 : 0),
-    };
-    if (failure)
-      await assert.rejects(
-        f.adapter.select("native-a"),
-        /starting_model_unavailable/,
-      );
-    else {
-      await f.adapter.select("native-a");
-      assert.equal(saved, true);
+        getSelectedModel: (session) => {
+          assert.equal(session, undefined);
+          return {
+            custom_model_id: failure === "model" ? "other" : "native-a",
+          };
+        },
+        getSelectedMode: () => (failure === "mode" ? 1 : 0),
+      };
+      if (failure)
+        await assert.rejects(
+          f.adapter.select("native-a"),
+          /starting_model_unavailable/,
+        );
+      else {
+        await f.adapter.select("native-a");
+        assert.equal(saved, true);
+      }
     }
   }
 });

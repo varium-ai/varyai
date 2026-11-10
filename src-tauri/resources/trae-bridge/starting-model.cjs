@@ -1,6 +1,19 @@
 "use strict";
 // Self-contained: executed in each user-launched native chat window.
 function createStartingModelAdapter(req) {
+  function legacyAgentType(type) {
+    if (!req.m) return req(46623).KP(type);
+    const ids = Object.keys(req.m).filter((id) => {
+      const source = Function.prototype.toString.call(req.m[id]);
+      return (
+        /\bKP\s*:/.test(source) &&
+        source.includes('"dev_agent"') &&
+        source.includes('"builder_with_mcp"')
+      );
+    });
+    if (ids.length !== 1) throw Error("starting_model_unavailable");
+    return req(ids[0]).KP(type);
+  }
   return {
     async select(nativeId) {
       try {
@@ -64,7 +77,7 @@ function createStartingModelAdapter(req) {
             throw Error();
           const legacy = port?.legacyModelSelectionAdapter;
           if (legacy) {
-            const legacyType = req(46623).KP(type),
+            const legacyType = legacyAgentType(type),
               relation = legacy.sessionRelationStore;
             await relation.persistGlobalModelMap();
             await relation.persistGlobalModeMap();

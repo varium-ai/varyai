@@ -42,6 +42,10 @@ export function WorkBuddyCheckinPanel({
       (previous) =>
         previous && {
           ...previous,
+          nativeStatus: {
+            ...previous.nativeStatus,
+            autoConfigured: data.autoConfigured,
+          },
           accounts: previous.accounts.map((account) =>
             account.id === id ? { ...account, status: data } : account,
           ),
@@ -270,7 +274,9 @@ export function WorkBuddyCheckinPanel({
           <Switch
             id={toggleId}
             className="mp-switch"
-            checked={data?.autoEnabled ?? false}
+            checked={
+              (selected ? data?.autoEnabled : data?.autoConfigured) ?? false
+            }
             disabled={!selected || busy || status.isError}
             onCheckedChange={(enabled) => {
               claim.reset();

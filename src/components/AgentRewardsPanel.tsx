@@ -275,7 +275,10 @@ export function AgentRewardsPanel({
           <Switch
             id={autoId}
             className="mp-switch"
-            checked={data?.autoEnabled ?? false}
+            checked={
+              (data?.accountId ? data.autoEnabled : data?.autoConfigured) ??
+              false
+            }
             disabled={
               !data?.accountId || busy || query.isFetching || query.isError
             }

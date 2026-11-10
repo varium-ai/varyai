@@ -768,6 +768,31 @@ function createBridge(
   };
   return bridge;
 }
+function workbenchServices(req) {
+  const ids = Object.keys(req.m || {}).filter((id) =>
+    /\bmcf\s*:/.test(Function.prototype.toString.call(req.m[id])),
+  );
+  if (ids.length !== 1) throw Error("unsupported_ide_version");
+  const di = req(ids[0]).mcf?.getInstance();
+  if (!di?.isInitialized() || typeof di.resolve !== "function")
+    throw Error("unsupported_ide_version");
+  const service = di.resolve(Symbol.for("aiAgent.IAiNativeModelService"));
+  const store = di.resolve(Symbol.for("IModelService"));
+  const management = di.resolve("iICubeModelManagementService");
+  if (
+    typeof service?.getModelList !== "function" ||
+    typeof store?.refreshModelStore !== "function" ||
+    typeof management?.notifyModelChanges !== "function"
+  )
+    throw Error("unsupported_ide_version");
+  return {
+    service,
+    async refresh() {
+      await store.refreshModelStore({ source: "varyai" });
+      management.notifyModelChanges({ source: "varyai" });
+    },
+  };
+}
 function rendererSource() {
   return `(()=>{
 const tag='varyai-trae-bridge-v1';if(customElements.get(tag))return;
@@ -778,11 +803,12 @@ customElements.define(tag,class extends HTMLElement{
  send(value){this.dispatchEvent(new CustomEvent('icube-component',{detail:value}))}
  async init(){if(!this.ready)this.ready=(async()=>{
   const mod=await import(location.href.split('/out/')[0]+'/node_modules/@byted-icube/ai-modules-chat/dist/index.mjs');
-  const req=mod.__webpack_require__, service=req(20536).mc.getInstance().resolve(req(94656).b3);
+  const req=mod.__webpack_require__, workbenchServices=${workbenchServices.toString()};
+  const {service,refresh}=workbenchServices(req);
   return createBridge(service,value=>new Promise((resolve,reject)=>{
    const id=crypto.randomUUID(),timer=setTimeout(()=>{this.pending.delete(id);reject(Error('audit_unavailable'))},5000);
    this.pending.set(id,{resolve,reject,timer});this.send({audit:id,value});
-  }),()=>req(20536).mc.getInstance().resolve(req(1053).S).refreshModelStore({source:'varyai'}));})();return this.ready}
+  }),refresh);})();return this.ready}
  async receive(message){
   if(message.auditResult){const pending=this.pending.get(message.auditResult);if(pending){clearTimeout(pending.timer);this.pending.delete(message.auditResult);message.error?pending.reject(Error('audit_unavailable')):pending.resolve(message.value)}return}
   try{const bridge=await this.init();let result;
@@ -795,4 +821,4 @@ customElements.define(tag,class extends HTMLElement{
  }
 });})();`;
 }
-module.exports = { createBridge, rendererSource };
+module.exports = { createBridge, rendererSource, workbenchServices };

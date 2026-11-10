@@ -74,6 +74,7 @@ pub(crate) struct AccountStatus {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Snapshot {
     connected: bool,
+    auto_configured: bool,
     day: String,
     outcome: Outcome,
     accounts: Vec<AccountStatus>,
@@ -217,6 +218,7 @@ impl Manager {
             .unwrap_or_default();
         Snapshot {
             connected: native.is_some(),
+            auto_configured: store.enabled.values().any(|enabled| *enabled),
             day: today,
             outcome: native
                 .map(|n| {

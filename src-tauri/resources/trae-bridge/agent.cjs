@@ -4,11 +4,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const net = require("node:net");
 const { PassThrough } = require("node:stream");
-const { createBridge } = require("./renderer.cjs");
+const { createBridge, workbenchServices } = require("./renderer.cjs");
 const { createStartingModelAdapter } = require("./starting-model.cjs");
 const { createTraeRewards } = require("./rewards.cjs");
 const SLOT = "__varyaiTraeNativeBridge";
-const REVISION = 10;
+const REVISION = 11;
 // Keep the renderer API compatible so an older resident helper cannot replace the new hook.
 const RENDERER_REVISION = 2;
 // Older helpers remain resident; their disabled audit callbacks must not receive new events.
@@ -147,12 +147,9 @@ function bootstrapSource() {
       refresh=()=>solo.resolve('iICubeModelManagementService').notifyModelChanges({source:'varyai'});
     }else{
       const mod=await import(location.href.split('/out/')[0]+'/node_modules/@byted-icube/ai-modules-chat/dist/index.mjs');
-      req=mod.__webpack_require__;const di=req(20536).mc.getInstance();
-      service=di.resolve(req(94656).b3);
-      refresh=async()=>{
-        await di.resolve(req(1053).S).refreshModelStore({source:'varyai'});
-        di.resolve('iICubeModelManagementService').notifyModelChanges({source:'varyai'});
-      };
+      req=mod.__webpack_require__;
+      const workbenchServices=${workbenchServices.toString()};
+      ({service,refresh}=workbenchServices(req));
     }
     const pending=new Map(),createBridge=${createBridge.toString()},createStartingModelAdapter=${createStartingModelAdapter.toString()},createTraeRewards=${createTraeRewards.toString()};
     const bridge=createBridge(service,value=>new Promise((resolve,reject)=>{
@@ -541,7 +538,8 @@ async function run(endpoint, directory) {
     }
     const first = sessions.keys().next().value;
     if (!first) throw Error("no_chat_window");
-    if (command.op === "rewards") return invoke(first, "rewards", command.input);
+    if (command.op === "rewards")
+      return invoke(first, "rewards", command.input);
     if (command.op === "list") return invoke(first, "list");
     if (command.op === "matches")
       return invoke(first, "matches", command.id, command.config);
@@ -628,6 +626,7 @@ module.exports = {
   bootstrapSource,
   initializeSolo,
   nativeModelService,
+  workbenchServices,
   deduplicateUsage,
   PipeClient,
   connectEndpoint,

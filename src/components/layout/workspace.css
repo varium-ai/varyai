@@ -558,7 +558,10 @@ html:has(.vary-workspace) .tray-profile-menu {
   padding: 10px 0;
 }
 .mp-agent-install-row > div:first-child {
+  display: flex;
+  align-items: center;
   flex: 1;
+  gap: 10px;
   min-width: 100px;
 }
 .mp-agent-install-actions {

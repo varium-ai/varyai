@@ -12,7 +12,7 @@ use std::{
 use std::{path::PathBuf, sync::Mutex};
 pub(crate) const ENABLED_KEY: &str = "trae_audit_enabled";
 pub(crate) const CONSENT_KEY: &str = "trae_local_connection_consent";
-const HELPER_REVISION: u64 = 10;
+const HELPER_REVISION: u64 = 11;
 static AUDIT_TOKEN: Mutex<Option<String>> = Mutex::new(None);
 fn unavailable() -> AppError {
     AppError::localized(

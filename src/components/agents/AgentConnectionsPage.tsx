@@ -168,15 +168,23 @@ export function AgentConnectionsPage({
   const checkinLabel = (app: AppId) => {
     const autoEnabled =
       app === "workbuddy"
-        ? workbuddyCheckin.data?.accounts.some(
+        ? (workbuddyCheckin.data?.nativeStatus?.autoConfigured ??
+          workbuddyCheckin.data?.accounts.some(
             (account) => account.status.autoEnabled,
-          )
+          ))
         : app === "doubaowork"
-          ? doubaoCheckin.data?.accounts.some((account) => account.autoEnabled)
-          : hasAgentRewards(app) &&
-            rewards[rewardApps.indexOf(app)]?.data?.autoEnabled;
+          ? (doubaoCheckin.data?.autoConfigured ??
+            doubaoCheckin.data?.accounts.some((account) => account.autoEnabled))
+          : hasAgentRewards(app)
+            ? (rewards[rewardApps.indexOf(app)]?.data?.autoConfigured ??
+              rewards[rewardApps.indexOf(app)]?.data?.autoEnabled)
+            : undefined;
     return t(
-      autoEnabled ? "agentRewards.autoLabel" : "agentRewards.manualLabel",
+      autoEnabled === undefined
+        ? "agentRewards.title"
+        : autoEnabled
+          ? "agentRewards.autoLabel"
+          : "agentRewards.manualLabel",
     );
   };
   const catalog = useQuery({
@@ -1150,15 +1158,13 @@ export function AgentConnectionsPage({
                 className="mp-agent-install-row"
               >
                 <div>
-                  {compact && (
-                    <span className="mp-agent-install-icon">
-                      <ProviderIcon
-                        icon={APP_ICON_NAME[app]}
-                        name={name(app)}
-                        size={22}
-                      />
-                    </span>
-                  )}
+                  <span className="mp-agent-install-icon">
+                    <ProviderIcon
+                      icon={APP_ICON_NAME[app]}
+                      name={name(app)}
+                      size={compact ? 22 : 32}
+                    />
+                  </span>
                   <span className="mp-agent-install-name" title={name(app)}>
                     {name(app)}
                   </span>

@@ -14,7 +14,8 @@ import { agentConnectionsApi } from "@/lib/api/agentConnections";
 import { proxyApi } from "@/lib/api/proxy";
 import { settingsApi } from "@/lib/api/settings";
 import { intentRoutingApi } from "@/lib/api/intentRouting";
-import { APP_IDS } from "@/config/appConfig";
+import { APP_ICON_NAME, APP_IDS } from "@/config/appConfig";
+import { getIcon, getIconUrl, isUrlIcon } from "@/icons/extracted";
 import { workbuddyCheckinApi } from "@/lib/api/workbuddy-checkin";
 import { doubaoCheckinApi } from "@/lib/api/doubao-checkin";
 import { agentRewardsApi } from "@/lib/api/agent-rewards";
@@ -582,6 +583,7 @@ describe("Agent connections", () => {
       } as Awaited<ReturnType<typeof proxyApi.getAgentInstallations>>);
       const status = {
         autoEnabled: true,
+        autoConfigured: true,
         day: "2026-11-10",
         outcome: "not_checked" as const,
         checkedAt: null,
@@ -609,11 +611,16 @@ describe("Agent connections", () => {
           nativeStatus: status,
         });
         vi.mocked(workbuddyCheckinApi.setAutoEnabled).mockImplementation(
-          async (enabled) => ({ ...status, autoEnabled: enabled }),
+          async (enabled) => ({
+            ...status,
+            autoEnabled: enabled,
+            autoConfigured: enabled,
+          }),
         );
       } else if (app === "doubaowork") {
         const snapshot = {
           connected: true,
+          autoConfigured: true,
           day: status.day,
           outcome: status.outcome,
           accounts: [
@@ -638,6 +645,7 @@ describe("Agent connections", () => {
         vi.mocked(doubaoCheckinApi.setAutoEnabled).mockImplementation(
           async (_, enabled) => ({
             ...snapshot,
+            autoConfigured: enabled,
             accounts: snapshot.accounts.map((account) => ({
               ...account,
               autoEnabled: account.id === "auto" && enabled,
@@ -650,6 +658,7 @@ describe("Agent connections", () => {
           accountId: "auto",
           label: "Auto account",
           autoEnabled: true,
+          autoConfigured: true,
           outcome: status.outcome,
           credit: null,
           checkedAt: null,
@@ -657,7 +666,11 @@ describe("Agent connections", () => {
         };
         vi.mocked(agentRewardsApi.status).mockResolvedValue(reward);
         vi.mocked(agentRewardsApi.setAuto).mockImplementation(
-          async (_, __, enabled) => ({ ...reward, autoEnabled: enabled }),
+          async (_, __, enabled) => ({
+            ...reward,
+            autoEnabled: enabled,
+            autoConfigured: enabled,
+          }),
         );
       }
       mount(compact);
@@ -705,6 +718,93 @@ describe("Agent connections", () => {
       expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
       expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
       expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["workbuddy", "doubaowork", "qoder", "trae", "zcode"] as const)(
+    "keeps %s automatic mode after a fresh mount without an available account",
+    async (app) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      });
+      const status = {
+        autoEnabled: false,
+        autoConfigured: true,
+        day: "2026-11-10",
+        outcome: "connection_required" as const,
+        checkedAt: null,
+        credit: null,
+        streak: null,
+        creditDelayed: false,
+      };
+      if (app === "workbuddy") {
+        vi.mocked(workbuddyCheckinApi.accounts).mockResolvedValue({
+          accounts: [],
+          nativeStatus: { ...status, outcome: "credentials_protected" },
+        });
+      } else if (app === "doubaowork") {
+        vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue({
+          connected: false,
+          accounts: [],
+          ...status,
+        });
+      } else {
+        vi.mocked(agentRewardsApi.status).mockResolvedValue({
+          app,
+          accountId: null,
+          label: null,
+          nextCheckAt: null,
+          ...status,
+        });
+      }
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const view = mount();
+        const row = await screen.findByRole("article", { name: `apps.${app}` });
+        const trigger = await within(row).findByRole("button", {
+          name: `agentRewards.autoLabel apps.${app}`,
+        });
+        fireEvent.click(trigger);
+        const panel = within(row).getByRole("region", {
+          name:
+            app === "workbuddy"
+              ? "workbuddy.checkin.title"
+              : app === "doubaowork"
+                ? "doubaowork.checkin.title"
+                : "agentRewards.title",
+        });
+        expect(within(panel).getByRole("switch")).toBeChecked();
+        expect(within(panel).getByRole("switch")).toBeDisabled();
+        view.unmount();
+      }
+      expect(agentRewardsApi.setAuto).not.toHaveBeenCalled();
+      expect(doubaoCheckinApi.setAutoEnabled).not.toHaveBeenCalled();
+      expect(workbuddyCheckinApi.setAutoEnabled).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["pending", "failed"])(
+    "does not invent manual check-in mode while preferences are %s",
+    async (state) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        qoder: true,
+      });
+      vi.mocked(agentRewardsApi.status).mockImplementation(() =>
+        state === "pending"
+          ? new Promise(() => {})
+          : Promise.reject(new Error("synthetic-unavailable-status")),
+      );
+      mount();
+      const row = await screen.findByRole("article", { name: "apps.qoder" });
+      expect(
+        await within(row).findByRole("button", {
+          name: "agentRewards.title apps.qoder",
+        }),
+      ).toBeInTheDocument();
+      expect(
+        within(row).queryByRole("button", {
+          name: "agentRewards.manualLabel apps.qoder",
+        }),
+      ).not.toBeInTheDocument();
     },
   );
 
@@ -1825,6 +1925,43 @@ describe("Agent connections", () => {
       selection.mockRestore();
     }
   });
+
+  it.each([false, true])(
+    "shows each agent's icon in more tools (compact: %s)",
+    async (compact) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue(
+        Object.fromEntries(APP_IDS.map((app) => [app, false])),
+      );
+      mount(compact);
+      await waitFor(() =>
+        expect(document.querySelectorAll(".mp-agent-install-row")).toHaveLength(
+          APP_IDS.length,
+        ),
+      );
+      for (const app of APP_IDS) {
+        const label = app === "claude" ? "Claude Code" : `apps.${app}`;
+        const row = screen
+          .getByText(label, {
+            selector: ".mp-agent-install-name",
+          })
+          .closest("[role='group']")!;
+        const icon = row.querySelector(".mp-agent-install-icon [title]");
+        expect(icon).toHaveAttribute("title", label);
+        expect(icon).toHaveStyle({
+          width: compact ? "22px" : "32px",
+          height: compact ? "22px" : "32px",
+        });
+        const iconName = APP_ICON_NAME[app];
+        if (isUrlIcon(iconName)) {
+          expect(icon).toHaveAttribute("src", getIconUrl(iconName));
+        } else {
+          const expected = document.createElement("span");
+          expected.innerHTML = getIcon(iconName);
+          expect(icon?.innerHTML).toBe(expected.innerHTML);
+        }
+      }
+    },
+  );
 
   it("keeps the installation disclosure separate from the installed tool card", async () => {
     const { container } = mount();

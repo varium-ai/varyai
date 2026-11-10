@@ -8,6 +8,25 @@ use std::path::{Component, Path, PathBuf};
 pub(super) struct Cache {
     secret: Option<(String, String)>,
 }
+impl Cache {
+    pub(super) fn clear(&mut self) {
+        self.secret = None;
+    }
+    fn get_or_read(
+        &mut self,
+        service: &str,
+        interactive: bool,
+        read: impl FnOnce(bool) -> Option<String>,
+    ) -> Option<&str> {
+        if self.secret.as_ref().is_some_and(|(key, _)| key != service) {
+            self.clear();
+        }
+        if self.secret.is_none() {
+            self.secret = read(interactive).map(|secret| (service.into(), secret));
+        }
+        self.secret.as_ref().map(|(_, secret)| secret.as_str())
+    }
+}
 
 fn profile(root: &Path, home: &Path) -> Option<(PathBuf, String)> {
     let product: Value =
@@ -74,24 +93,43 @@ pub(super) fn input(home: &Path, cache: &mut Cache, interactive: bool) -> Option
     .iter()
     .find_map(|root| profile(root, home))?;
     let service = format!("{name} Safe Storage");
-    if interactive
-        || cache
-            .secret
-            .as_ref()
-            .is_some_and(|(key, _)| key != &service)
-    {
-        cache.secret = None;
-    }
-    if cache.secret.is_none() {
-        cache.secret = read_secret(&service, &format!("{name} Key"), interactive)
-            .map(|secret| (service, secret));
-    }
-    Some(json!({"file":file,"password":cache.secret.as_ref().map(|(_, secret)| secret)}))
+    let password = cache.get_or_read(&service, interactive, |allowed| {
+        read_secret(&service, &format!("{name} Key"), allowed)
+    });
+    Some(json!({"file":file,"password":password}))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn authorized_secret_is_reused_until_rejected_or_the_profile_changes() {
+        let reads = std::cell::Cell::new(0);
+        let mut cache = Cache::default();
+        for interactive in [true, true, false] {
+            let secret = cache.get_or_read("synthetic-service", interactive, |allowed| {
+                assert!(allowed);
+                reads.set(reads.get() + 1);
+                Some("synthetic-secret".into())
+            });
+            assert_eq!(secret, Some("synthetic-secret"));
+        }
+        assert_eq!(reads.get(), 1);
+        cache.clear();
+        assert_eq!(
+            cache.get_or_read("synthetic-service", true, |_| Some("rotated-secret".into())),
+            Some("rotated-secret")
+        );
+        assert_eq!(cache.get_or_read("other-service", false, |_| None), None);
+        assert_eq!(
+            cache.get_or_read("other-service", true, |_| Some("other-secret".into())),
+            Some("other-secret")
+        );
+        assert_eq!(
+            Cache::default().get_or_read("synthetic-service", false, |_| None),
+            None
+        );
+    }
     #[test]
     fn uses_the_installed_electron_name_and_rejects_unrelated_profiles() {
         let dir = tempfile::tempdir().unwrap();

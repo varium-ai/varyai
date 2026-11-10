@@ -188,7 +188,9 @@ export function DoubaoWorkCheckinPanel({
           <Switch
             id={autoId}
             className="mp-switch"
-            checked={selected?.autoEnabled ?? false}
+            checked={
+              selected?.autoEnabled ?? query.data?.autoConfigured ?? false
+            }
             disabled={!selected || busy || query.isError}
             onCheckedChange={(enabled) => {
               claim.reset();
