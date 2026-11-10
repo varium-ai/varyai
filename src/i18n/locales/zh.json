@@ -5927,6 +5927,8 @@
     "claim": "签到",
     "claiming": "正在签到…",
     "checkedIn": "已签到",
+    "verificationRequired": "需客户端验证",
+    "zcodeVerificationHint": "ZCode 要求在官方客户端完成安全验证。请点击 ZCode 左下角的 Claim 并在其中完成验证或领取，再回到这里刷新。自动签到无法代替此验证。",
     "authorize": "添加账号",
     "forget": "移除备用授权",
     "loginWaiting": "请在 Qoder CN 官方页面完成授权。授权不会领取奖励或开启自动领取。",

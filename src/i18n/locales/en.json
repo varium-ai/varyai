@@ -5929,6 +5929,8 @@
     "claim": "Check in",
     "claiming": "Checking in…",
     "checkedIn": "Checked in",
+    "verificationRequired": "Verification required",
+    "zcodeVerificationHint": "ZCode requires verification in its official client. Click Claim in ZCode and complete the verification there, then refresh here. Automatic check-in cannot complete this verification.",
     "authorize": "Add account",
     "forget": "Remove backup authorization",
     "loginWaiting": "Complete authorization on the official Qoder CN page. Authorization does not claim rewards or enable automatic claims.",

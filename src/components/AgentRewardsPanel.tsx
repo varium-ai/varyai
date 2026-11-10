@@ -156,7 +156,9 @@ export function AgentRewardsPanel({
                   ? "agentRewards.claiming"
                   : complete
                     ? "agentRewards.checkedIn"
-                    : "agentRewards.claim",
+                    : app === "zcode" && data?.outcome === "own_app_required"
+                      ? "agentRewards.verificationRequired"
+                      : "agentRewards.claim",
               )}
             </Button>
           </div>
@@ -246,7 +248,11 @@ export function AgentRewardsPanel({
         ) : data ? (
           <div role="status" className="mp-checkin-status">
             <p className="mp-checkin-outcome" data-complete={complete}>
-              {t(`agentRewards.outcomes.${data.outcome}`)}
+              {t(
+                app === "zcode" && data.outcome === "own_app_required"
+                  ? "agentRewards.zcodeVerificationHint"
+                  : `agentRewards.outcomes.${data.outcome}`,
+              )}
             </p>
             {data.credit != null && (
               <p>

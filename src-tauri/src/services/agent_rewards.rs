@@ -155,6 +155,13 @@ fn key(app: &str, account: &str) -> String {
     format!("{app}|{account}")
 }
 fn cached(record: &Record, native: &Observation, now: i64) -> bool {
+    // A read-only offer is not evidence that the client's verification was completed.
+    if record.outcome == Outcome::OwnAppRequired {
+        return now < record.until
+            && native.outcome == Outcome::NotChecked
+            && record.window.is_some()
+            && record.window == native.window_key;
+    }
     record.outcome.confirmed()
         && now < record.until
         && (record.window == native.window_key || native.outcome == Outcome::Inactive)

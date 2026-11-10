@@ -5854,6 +5854,8 @@
     "claim": "簽到",
     "claiming": "正在簽到…",
     "checkedIn": "已簽到",
+    "verificationRequired": "需客戶端驗證",
+    "zcodeVerificationHint": "ZCode 要求在官方客戶端完成安全驗證。請點選 ZCode 左下角的 Claim 並在其中完成驗證或領取，再回到這裡重新整理。自動簽到無法代替此驗證。",
     "authorize": "新增帳號",
     "forget": "移除備用授權",
     "loginWaiting": "請在 Qoder CN 官方頁面完成授權。授權不會領取獎勵或開啟自動領取。",

@@ -93,7 +93,10 @@ async function qoderCampaigns(call, claim, now = Date.now()) {
 }
 async function zcodePlans(call, claim, now = Date.now()) {
   const response = await call("/api/v1/marketing/touch?seq=0", "GET");
-  if (response?.code !== 0 || !Array.isArray(response.data?.deliveries))
+  if (
+    String(response?.code) !== "0" ||
+    !Array.isArray(response.data?.deliveries)
+  )
     throw failure("failed");
   const ids = new Set();
   const walk = (value, depth = 0) => {
@@ -118,12 +121,19 @@ async function zcodePlans(call, claim, now = Date.now()) {
     const result = await call("/api/v1/zcode-plan/billing/claim", "POST", {
       plan_id,
     });
-    if (result?.code === 3007)
+    const code = String(result?.code);
+    if (code === "3007")
       return { outcome: "own_app_required", until: nextDay(now), windowKey };
-    if (result?.code === 1004)
-      return { outcome: "ineligible", until, windowKey };
-    if (result?.code === 1003) continue;
-    if (result?.code !== 0) return { outcome: "failed", until };
+    if (code === "1004") return { outcome: "ineligible", until, windowKey };
+    if (code === "1003") continue;
+    const plan = result?.data?.plan;
+    if (
+      code !== "0" ||
+      !plan ||
+      typeof plan !== "object" ||
+      Array.isArray(plan)
+    )
+      return { outcome: "failed", until };
     outcome = "claimed";
   }
   return { outcome, until, windowKey };
@@ -197,7 +207,10 @@ async function http(origin, route, token, method = "GET", body, extra = {}) {
   }
   if (
     !response.ok &&
-    !(origin === ZCODE && [3007, 1003, 1004].includes(result?.code))
+    !(
+      origin === ZCODE &&
+      ["3007", "1003", "1004"].includes(String(result?.code))
+    )
   )
     throw failure("failed");
   return result;

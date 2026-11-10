@@ -226,7 +226,12 @@ test("ZCode discovers only explicit claim actions and defers captcha to the offi
             ],
           },
         };
-      return { code };
+      return {
+        code,
+        ...(code === 0
+          ? { data: { plan: { plan_id: "synthetic-plan" } } }
+          : {}),
+      };
     };
     const result = await zcodePlans(call, true, now);
     assert.equal(
