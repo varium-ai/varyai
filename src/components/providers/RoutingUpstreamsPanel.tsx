@@ -2,19 +2,21 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { fetchModelsForConfig, type FetchedModel } from "@/lib/api/model-fetch";
-import { Plus, ChevronRight } from "lucide-react";
+import { Plus, ChevronRight, Download } from "lucide-react";
+import { isImageGenerationModel } from "@/lib/providerModelKind";
 import {
   routingUpstreamsApi,
   type RoutingUpstream,
   type ProviderCopySource,
 } from "@/lib/api/routingUpstreams";
 import { Button } from "@/components/ui/button";
+import { CopyAgentSetupButton } from "@/components/CopyAgentSetupButton";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProviderAddSheet } from "./ProviderAddSheet";
 import { ProviderImportDialog } from "./ProviderImportDialog";
-import { ProviderEditorDialog } from "./ProviderEditorDialog";
+import { ProviderEditorDialog, providerIdSlug } from "./ProviderEditorDialog";
 import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
 import {
   globalProviderPresets,
@@ -28,6 +30,7 @@ import {
   type EditingState,
 } from "@/hooks/useWorkspaceEditing";
 import "./providers.css";
+import { ProviderListQuota } from "./ProviderListQuota";
 import { subscriptionProviders } from "@/config/subscriptionProviders";
 
 const orderStorageKey = "vary-provider-order";
@@ -85,6 +88,7 @@ export function RoutingUpstreamsPanel({
   const [deleting, setDeleting] = useState<RoutingUpstream | null>(null);
   const [selected, setSelected] = useState<Set<string> | null>(null);
   const [confirmBulk, setConfirmBulk] = useState(false);
+  const [deletingBulk, setDeletingBulk] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(startAdding);
@@ -355,7 +359,7 @@ export function RoutingUpstreamsPanel({
         : "modelProviders.failed",
     );
   }
-  async function save(event: React.FormEvent) {
+  async function save(event: React.FormEvent, stagedModels?: unknown[]) {
     event.preventDefault();
     if (!draft) return;
     if (draft.source.kind === "codex") {
@@ -396,7 +400,7 @@ export function RoutingUpstreamsPanel({
     }
     let raw: unknown;
     try {
-      raw = JSON.parse(models);
+      raw = stagedModels ?? JSON.parse(models);
     } catch {
       setError("modelProviders.invalidModels");
       return;
@@ -412,22 +416,44 @@ export function RoutingUpstreamsPanel({
       const { apiKey: _storedKey, ...source } = draft.source;
       const value = {
         ...draft,
+        id:
+          !draft.revision || draft.id === loadedRecord?.id
+            ? draft.id
+            : providerIdSlug(draft.id) || loadedRecord?.id || draft.id,
         name: draft.name.trim(),
         source: {
           ...source,
           baseUrl: source.baseUrl.trim(),
           models: parsed,
           mode: !draft.revision
-            ? parsed.length
+            ? parsed.some((row) => !isImageGenerationModel(row))
               ? "picked"
               : "vendor"
-            : source.mode,
+            : stagedModels?.some((row) => !isImageGenerationModel(row))
+              ? "picked"
+              : source.mode,
           catalog: source.catalog,
           ...(apiKey ? { apiKey } : {}),
         },
       };
       if (copyFrom) await routingUpstreamsApi.save(value, copyFrom);
-      else await routingUpstreamsApi.save(value);
+      else if (loadedRecord && value.id !== loadedRecord.id) {
+        const saved = await routingUpstreamsApi.save(
+          value,
+          undefined,
+          loadedRecord.id,
+        );
+        returnToProvider.current = saved.id;
+        const nextOrder = providerOrder.map((id) =>
+          id === loadedRecord.id ? saved.id : id,
+        );
+        setProviderOrder(nextOrder);
+        try {
+          localStorage.setItem(orderStorageKey, JSON.stringify(nextOrder));
+        } catch {
+          /* Sorting remains available for this session. */
+        }
+      } else await routingUpstreamsApi.save(value);
       setEditorOpen(false);
       await refresh();
       if (adding) closeAddPage();
@@ -440,6 +466,11 @@ export function RoutingUpstreamsPanel({
   function modelRow(model: FetchedModel) {
     return {
       model: model.id,
+      ...(model.displayName ? { displayName: model.displayName } : {}),
+      ...(model.kind ? { kind: model.kind } : {}),
+      ...(model.outputModalities
+        ? { outputModalities: model.outputModalities }
+        : {}),
       ...(model.reasoningLevels
         ? { reasoningLevels: model.reasoningLevels }
         : {}),
@@ -466,12 +497,11 @@ export function RoutingUpstreamsPanel({
   }
   function savedCredentialSource() {
     if (!draft || draft.source.kind !== "api") throw new Error("unavailable");
+    const originId = copyFrom?.id ?? loadedRecord?.id ?? draft.id;
     const saved =
-      loadedRecord?.id === (copyFrom?.id ?? draft.id)
+      loadedRecord?.id === originId
         ? loadedRecord
-        : records.data?.find(
-            (record) => record.id === (copyFrom?.id ?? draft.id),
-          );
+        : records.data?.find((record) => record.id === originId);
     if (
       saved?.source.kind !== "api" ||
       saved.revision !== (copyFrom?.revision ?? draft.revision) ||
@@ -501,7 +531,9 @@ export function RoutingUpstreamsPanel({
   }
   function duplicate() {
     if (!draft) return;
-    const saved = records.data?.find((record) => record.id === draft.id);
+    const saved = records.data?.find(
+      (record) => record.id === (loadedRecord?.id ?? draft.id),
+    );
     if (!saved) return;
     if (JSON.stringify({ draft, models, apiKey }) !== initial.current) {
       setDuplicating(true);
@@ -595,7 +627,9 @@ export function RoutingUpstreamsPanel({
       setDraft({ ...draft, enabled });
       return;
     }
-    const saved = records.data?.find((record) => record.id === draft.id);
+    const saved = records.data?.find(
+      (record) => record.id === (loadedRecord?.id ?? draft.id),
+    );
     if (!saved || saved.revision !== draft.revision) {
       report("routingUpstreams.conflict");
       return;
@@ -692,28 +726,32 @@ export function RoutingUpstreamsPanel({
     });
   }
   async function removeSelected() {
-    if (!selected?.size || !records.data) return;
-    setBusy(true);
+    if (deletingBulk || !selected?.size || !records.data) return;
+    setDeletingBulk(true);
     setError(null);
+    const removed = new Set<string>();
     try {
       for (const record of records.data.filter((record) =>
         selected.has(record.id),
       )) {
         await routingUpstreamsApi.remove(record.id, record.revision);
-        setSelected((previous) => {
-          if (!previous) return null;
-          const next = new Set(previous);
-          next.delete(record.id);
-          return next;
-        });
+        removed.add(record.id);
       }
-      setSelected(null);
     } catch (cause) {
       report(cause);
     } finally {
       setConfirmBulk(false);
+      setSelected((previous) => {
+        const remaining = new Set(
+          [...(previous ?? [])].filter((id) => !removed.has(id)),
+        );
+        return remaining.size ? remaining : null;
+      });
+      client.setQueryData<RoutingUpstream[]>(["routing-upstreams"], (current) =>
+        current?.filter((record) => !removed.has(record.id)),
+      );
+      setDeletingBulk(false);
       await refresh();
-      setBusy(false);
     }
   }
   async function openRecord(record: RoutingUpstream, reauth = false) {
@@ -823,17 +861,12 @@ export function RoutingUpstreamsPanel({
                 </span>
               )}
             </span>
-            <span className="pv-sub">
-              {record.source.kind === "api"
-                ? `${endpointHost(record) || t("providerFlow.custom")} \u00b7 ${t("modelProviders.modelCount", { count: record.source.models.length })}`
-                : record.source.kind === "subscription"
-                  ? subscriptionProviders.find(
-                      (p) =>
-                        record.source.kind === "subscription" &&
-                        p.id === record.source.provider,
-                    )?.name
-                  : "ChatGPT / Codex"}
-            </span>
+            {!editorOpen && <ProviderListQuota record={record} />}
+            {record.source.kind === "api" && (
+              <span className="pv-sub">
+                {`${endpointHost(record) || t("providerFlow.custom")} · ${t("modelProviders.modelCount", { count: record.source.models.length })}`}
+              </span>
+            )}
           </span>
         </button>
         <span
@@ -886,21 +919,44 @@ export function RoutingUpstreamsPanel({
     >
       {!adding && (
         <header className="pv-page-head">
-          <div>
+          <div className="pv-page-copy">
             <h1 className="mp-page-heading">{t("modelProviders.title")}</h1>
             <p className="mp-lead">{t("modelProviders.description")}</p>
           </div>
-          <Button
-            ref={addTrigger}
-            data-provider-add-trigger
-            className="mp-primary pv-add-trigger"
-            size="sm"
-            disabled={busy || !!draft || records.isPending || records.isError}
-            onClick={openAddPage}
-          >
-            <Plus size={13} />
-            {t("modelProviders.add")}
-          </Button>
+          <div className="pv-page-actions">
+            <CopyAgentSetupButton
+              labelKey="onboarding.copyForAgent"
+              className="pv-import-trigger"
+              size="sm"
+              onCopied={() =>
+                setError((current) =>
+                  current === "onboarding.copyFailed" ? null : current,
+                )
+              }
+              onCopyFailed={() => setError("onboarding.copyFailed")}
+            />
+            <Button
+              variant="outline"
+              className="pv-import-trigger"
+              size="sm"
+              disabled={busy || !!draft || importBusy}
+              onClick={() => setImporting(true)}
+            >
+              <Download size={13} aria-hidden />
+              {t("routingUpstreams.import")}
+            </Button>
+            <Button
+              ref={addTrigger}
+              data-provider-add-trigger
+              className="mp-primary pv-add-trigger"
+              size="sm"
+              disabled={busy || !!draft || records.isPending || records.isError}
+              onClick={openAddPage}
+            >
+              <Plus size={13} />
+              {t("modelProviders.add")}
+            </Button>
+          </div>
         </header>
       )}
       {!adding && !!records.data?.length && (
@@ -1008,7 +1064,6 @@ export function RoutingUpstreamsPanel({
       {adding && (
         <div ref={sheet}>
           <ProviderAddSheet
-            onImport={() => setImporting(true)}
             onClose={closeAddPage}
             onChoose={(preset) => edit(undefined, preset)}
             busy={busy || !!draft || importBusy}
@@ -1099,16 +1154,25 @@ export function RoutingUpstreamsPanel({
         open={importing}
         onBusyChange={setImportBusy}
         onClose={() => setImporting(false)}
-        onImported={async () => {
-          await refresh();
-          closeAddPage();
-        }}
+        onImported={refresh}
       />
       {draft && (
         <ProviderEditorDialog
-          key={draft.revision ? draft.id : `new-${copyFrom?.id ?? "custom"}`}
+          key={
+            draft.revision
+              ? (loadedRecord?.id ?? draft.id)
+              : `new-${copyFrom?.id ?? "custom"}`
+          }
           open={editorOpen}
           draft={draft}
+          originalId={loadedRecord?.id ?? draft.id}
+          another={
+            !!copyFrom ||
+            (!!draft.presetId &&
+              !!records.data?.some(
+                (record) => record.presetId === draft.presetId,
+              ))
+          }
           models={models}
           discovered={discovered}
           apiKey={apiKey}
@@ -1133,7 +1197,7 @@ export function RoutingUpstreamsPanel({
           onClose={closeEditor}
           onDelete={() => {
             setError(null);
-            setDeleting(draft);
+            setDeleting({ ...draft, id: loadedRecord?.id ?? draft.id });
           }}
           onDuplicate={duplicate}
           onReturnFocus={returnFocus}
@@ -1160,7 +1224,7 @@ export function RoutingUpstreamsPanel({
           setDiscard(false);
           if (duplicating && draft) {
             const saved = records.data?.find(
-              (record) => record.id === draft.id,
+              (record) => record.id === (loadedRecord?.id ?? draft.id),
             );
             if (saved) stageDuplicate(saved);
           } else {
@@ -1178,7 +1242,7 @@ export function RoutingUpstreamsPanel({
         message={t("modelProviders.removeSelectedHint", {
           count: selected?.size ?? 0,
         })}
-        pending={busy}
+        pending={deletingBulk}
         onCancel={() => setConfirmBulk(false)}
         onConfirm={() => void removeSelected()}
       />

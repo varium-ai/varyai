@@ -58,6 +58,7 @@ export interface RoutingUpstream {
   transport?: {
     primaryName?: string | null;
     primaryOff?: boolean;
+    primaryModels?: string[];
     preferredKey?: string | null;
     primaryProtocol?: string;
     endpoints: Partial<
@@ -70,6 +71,7 @@ export interface RoutingUpstream {
       enabled: boolean;
       key?: string;
       apiFormat?: string;
+      models?: string[];
     }>;
   } | null;
 }
@@ -91,7 +93,14 @@ export interface CodexProviderEditor {
   }>;
   models: Array<Record<string, unknown>>;
 }
+export interface ApiProviderAllowance {
+  status: "ready" | "unsupported" | "unauthorized";
+  balance: number | null;
+  tiers: import("@/types/subscription").QuotaTier[];
+}
 export const routingUpstreamsApi = {
+  quota: (id: string, revision: number) =>
+    invoke<ApiProviderAllowance>("routing_upstream_quota", { id, revision }),
   keys: (id: string, revision: number) =>
     invoke<Array<{ id: string; label: string; running: number | null }>>(
       "routing_upstream_keys",
@@ -148,7 +157,11 @@ export const routingUpstreamsApi = {
       revision,
     }),
   list: () => invoke<RoutingUpstream[]>("list_routing_upstreams"),
-  save: (upstream: RoutingUpstream, copyFrom?: ProviderCopySource) => {
+  save: (
+    upstream: RoutingUpstream,
+    copyFrom?: ProviderCopySource,
+    originalId?: string,
+  ) => {
     const {
       codex: _editor,
       subscriptionPlans: _plans,
@@ -158,6 +171,7 @@ export const routingUpstreamsApi = {
     return invoke<RoutingUpstream>("save_routing_upstream", {
       upstream: record,
       copyFrom,
+      ...(originalId ? { originalId } : {}),
     });
   },
   probe: (id: string, revision: number, model: string) =>

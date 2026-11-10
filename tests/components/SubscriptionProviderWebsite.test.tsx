@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ProviderEditorDialog } from "@/components/providers/ProviderEditorDialog";
 import { settingsApi } from "@/lib/api/settings";
 import type { RoutingUpstream } from "@/lib/api/routingUpstreams";
@@ -39,33 +40,39 @@ it.each([
       },
     };
     render(
-      <ProviderEditorDialog
-        draft={draft}
-        models="[]"
-        discovered={[]}
-        apiKey=""
-        busy={false}
-        error={null}
-        region="global"
-        regions={[]}
-        onDraftChange={vi.fn()}
-        onEnabledChange={vi.fn()}
-        onModelsChange={vi.fn()}
-        onKeyChange={vi.fn()}
-        onProtocolChange={vi.fn()}
-        onRegionChange={vi.fn()}
-        onDiscover={vi.fn()}
-        onFetchProbeModels={vi.fn()}
-        onProbe={vi.fn()}
-        onSave={vi.fn()}
-        onClose={vi.fn()}
-        onDelete={vi.fn()}
-        onDuplicate={vi.fn()}
-        onReturnFocus={vi.fn()}
-        onError={vi.fn()}
-        nestedOpen={false}
-        onProbingChange={vi.fn()}
-      />,
+      <QueryClientProvider
+        client={
+          new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        }
+      >
+        <ProviderEditorDialog
+          draft={draft}
+          models="[]"
+          discovered={[]}
+          apiKey=""
+          busy={false}
+          error={null}
+          region="global"
+          regions={[]}
+          onDraftChange={vi.fn()}
+          onEnabledChange={vi.fn()}
+          onModelsChange={vi.fn()}
+          onKeyChange={vi.fn()}
+          onProtocolChange={vi.fn()}
+          onRegionChange={vi.fn()}
+          onDiscover={vi.fn()}
+          onFetchProbeModels={vi.fn()}
+          onProbe={vi.fn()}
+          onSave={vi.fn()}
+          onClose={vi.fn()}
+          onDelete={vi.fn()}
+          onDuplicate={vi.fn()}
+          onReturnFocus={vi.fn()}
+          onError={vi.fn()}
+          nestedOpen={false}
+          onProbingChange={vi.fn()}
+        />
+      </QueryClientProvider>,
     );
     fireEvent.click(
       await screen.findByRole("button", { name: new URL(website).host }),

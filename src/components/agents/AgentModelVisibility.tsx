@@ -78,16 +78,12 @@ export function AgentModelVisibility({
           saved.current = update;
           client.setQueryData(key, update);
         }
-      } catch (cause) {
+      } catch {
         queue.current = [];
         latest.current = saved.current;
         if (mounted.current) {
           setValue(saved.current);
-          setError(
-            cause === "agentConnections.conflict"
-              ? cause
-              : "agentConnections.failed",
-          );
+          setError("agentConnections.failed");
         }
       } finally {
         running.current = false;

@@ -1494,6 +1494,7 @@ pub fn run() {
             commands::import_provider_sources,
             commands::routing_upstream_editor,
             commands::routing_upstream_keys,
+            commands::routing_upstream_quota,
             commands::reveal_routing_upstream_key,
             commands::save_codex_provider,
             commands::create_codex_provider,
@@ -1670,6 +1671,7 @@ pub fn run() {
             commands::undo_profile_bundle,
             // Fetch OpenAI-compatible and Anthropic model lists. Response data structure:
             // data[].id, data[]?.owned_by. Special: supports Zhipu OpenAI Responses models[].slug.
+            commands::get_model_context_windows,
             commands::fetch_models_for_config,
             commands::detect_provider_protocols,
             commands::get_opencode_models,

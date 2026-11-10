@@ -1,6 +1,6 @@
 # First-run connection guide
 
-Vary AI opens a two-step guide when setup has not been acknowledged and the shared provider catalog is empty. Existing configured installations keep their normal workspace. **Maybe later** dismisses the guide and persists the existing `firstRunNoticeConfirmed` setting. After completion or dismissal, the guide does not appear again. Models provides the regular provider addition and import flows without a separate onboarding entry.
+Vary AI opens a two-step guide when setup has not been acknowledged and the shared provider catalog is empty. Existing configured installations keep their normal workspace. **Maybe later** dismisses the guide and persists the existing `firstRunNoticeConfirmed` setting. After completion or dismissal, the guide does not appear again. Models provides the regular provider addition and import flows without a separate onboarding entry. Its header also includes **Copy for Agent**, immediately before **Import providers**. This shortcut copies the same localized setup-help prompt as the guide without opening onboarding or changing providers. Both buttons show **Copied** for two seconds after the latest successful copy, remain available for repeated copying, and show a retryable, sanitized error if copying fails. They use the same native clipboard operation with a browser fallback on macOS and Windows.
 
 The account and import cards preview their supported sources as brand icons.
 Hover an icon to see its full name; each icon also has an accessible name.

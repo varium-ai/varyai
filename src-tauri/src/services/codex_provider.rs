@@ -226,6 +226,11 @@ pub(crate) fn filter_models(provider: &mut Provider) {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let chat_models: Vec<_> = available
+        .iter()
+        .filter(|row| !crate::model_capabilities::is_image_generation_model(row))
+        .cloned()
+        .collect();
     let mut models = match policy.mode {
         ModelMode::Usage => vec![],
         ModelMode::Picked => policy
@@ -252,8 +257,8 @@ pub(crate) fn filter_models(provider: &mut Provider) {
                 row
             })
             .collect(),
-        ModelMode::Vendor => available.into_iter().take(24).collect(),
-        ModelMode::Best => best_models(available),
+        ModelMode::Vendor => chat_models.into_iter().take(24).collect(),
+        ModelMode::Best => best_models(chat_models),
     };
     for row in &mut models {
         if let Some(prefs) = policy
@@ -266,6 +271,7 @@ pub(crate) fn filter_models(provider: &mut Provider) {
         }
     }
     // A legacy default model must not reappear after deselection.
+    models.retain(|row| !crate::model_capabilities::is_image_generation_model(row));
     provider.settings_config["config"] = json!("");
     provider.settings_config["modelCatalog"] = json!({"models": models});
 }
@@ -425,6 +431,34 @@ pub(crate) fn best_models(rows: Vec<Value>) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn image_models_are_not_offered_as_codex_chat_models() {
+        let rows = json!([{"model":"gpt-image-2"}, {"model":"chat-fixture", "inputModalities":["text","image"]}]);
+        for mode in ["vendor", "picked", "best", "usage"] {
+            let mut provider = Provider::with_id(
+                "fixture".into(),
+                "Fixture".into(),
+                json!({"modelCatalog":{"models":rows}}),
+                None,
+            );
+            provider.settings_config[POLICY] =
+                json!({"mode":mode,"models":rows,"accounts":["fixture"],"groupsOnly":false});
+            assert_eq!(
+                serde_json::to_value(Settings::from_provider(&provider).mode).unwrap_or_default(),
+                mode
+            );
+            filter_models(&mut provider);
+            assert_eq!(
+                provider.settings_config["modelCatalog"]["models"],
+                if mode == "usage" {
+                    json!([])
+                } else {
+                    json!([{"model":"chat-fixture", "inputModalities":["text","image"]}])
+                },
+                "{mode}"
+            );
+        }
+    }
     #[tokio::test]
     async fn codex_model_probe_requires_verified_content_without_exposing_vendor_errors(
     ) -> Result<(), Box<dyn std::error::Error>> {

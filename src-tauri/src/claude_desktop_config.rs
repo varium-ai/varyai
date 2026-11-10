@@ -15,6 +15,8 @@ pub const PROFILE_ID: &str = "00000000-0000-4000-8000-000000157210";
 pub const PROFILE_NAME: &str = "Vary AI";
 
 #[cfg(test)]
+mod longest_tests;
+#[cfg(test)]
 mod reasoning_tests;
 #[cfg(test)]
 mod shared_recovery_tests;
@@ -354,6 +356,7 @@ fn inference_model_json(spec: &InferenceModelSpec) -> Value {
         }
         if spec.supports_1m {
             item["supports1m"] = json!(true);
+            item["prefer1m"] = json!(true);
         }
         if let Some(effort) = &spec.max_effort {
             item["maxEffort"] = json!(effort);
@@ -743,7 +746,11 @@ pub fn model_list_response(provider: &Provider) -> Result<Value, AppError> {
     let data: Vec<Value> = routes
         .iter()
         .map(|route| {
-            let model_id = route.route_id.clone();
+            let model_id = if route.supports_1m {
+                format!("{}[1m]", route.route_id)
+            } else {
+                route.route_id.clone()
+            };
             let mut item = json!({
                 "type": "model",
                 "id": model_id,
@@ -751,6 +758,7 @@ pub fn model_list_response(provider: &Provider) -> Result<Value, AppError> {
             });
             if route.supports_1m {
                 item["supports1m"] = json!(true);
+                item["description"] = json!("1M context window");
             }
             item
         })
@@ -1918,7 +1926,7 @@ mod tests {
         );
         assert_eq!(
             profile["inferenceModels"],
-            json!([{ "name": "claude-sonnet-4-6", "supports1m": true }])
+            json!([{ "name": "claude-sonnet-4-6", "supports1m": true, "prefer1m": true }])
         );
     }
 
@@ -1963,7 +1971,7 @@ mod tests {
             .starts_with("ccs-"));
         assert_eq!(
             profile["inferenceModels"],
-            json!([{ "name": "claude-sonnet-4-6", "labelOverride": "Kimi K2", "supports1m": true }])
+            json!([{ "name": "claude-sonnet-4-6", "labelOverride": "Kimi K2", "supports1m": true, "prefer1m": true }])
         );
         assert!(!profile.to_string().contains("kimi-k2"));
     }
@@ -2008,7 +2016,14 @@ mod tests {
         assert_eq!(mapped["model"], json!("kimi-k2"));
 
         let models = model_list_response(&provider).expect("model list");
-        assert_eq!(models["data"][0]["id"], json!("claude-sonnet-4-6"));
+        assert_eq!(models["data"][0]["id"], json!("claude-sonnet-4-6[1m]"));
+        assert_eq!(models["data"].as_array().map(Vec::len), Some(1));
+        let long_mapped = map_proxy_request_model(
+            json!({"model":"claude-sonnet-4-6[1m]","messages":[]}),
+            &provider,
+        )
+        .expect("map long route");
+        assert_eq!(long_mapped["model"], mapped["model"]);
         assert_eq!(models["data"][0]["supports1m"], json!(true));
 
         let err = map_proxy_request_model(json!({"model": "claude-opus-4-8"}), &provider)
@@ -2888,4 +2903,25 @@ fn shared_catalog_edits_at(
         }
     }
     Ok((files, mapping))
+}
+
+/// Match the native picker representation while retaining the actual input capacity.
+pub(crate) fn desktop_model_entry(
+    model: &crate::services::agent_connections::Model,
+    mut entry: Value,
+) -> Value {
+    let wire = shared_model_wire(model);
+    let long = model.context_window.is_some_and(|n| n >= 1_000_000);
+    entry["id"] = json!(if long { format!("{wire}[1m]") } else { wire });
+    if long {
+        entry["description"] = json!("1M context window");
+    }
+    if let Some(effort) = desktop_max_effort(model) {
+        entry["max_effort_level"] = json!(effort);
+    }
+    if let Some(window) = model.context_window {
+        entry["max_input_tokens"] = json!(window);
+        entry["supports_1m"] = json!(long);
+    }
+    entry
 }

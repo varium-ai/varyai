@@ -110,6 +110,32 @@ beforeEach(() => {
   });
 });
 
+it("keeps image models separate and omits advanced and endpoint sections", async () => {
+  vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+    ...upstream,
+    codex: {
+      ...codex,
+      models: [...codex.models, { model: "gpt-image-2" }],
+      settings: {
+        ...codex.settings,
+        models: [...codex.settings.models, { model: "gpt-image-2" }],
+      },
+    },
+  } as never);
+  await open();
+  const chat = screen.getByRole("group", { name: "modelPicker.models" });
+  expect(
+    within(chat).queryByRole("button", { name: "gpt-image-2" }),
+  ).not.toBeInTheDocument();
+  expect(
+    within(
+      screen.getByRole("group", { name: "providerEditor.imageModels" }),
+    ).getByRole("button", { name: "gpt-image-2" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("codexProvider.endpoint")).not.toBeInTheDocument();
+  expect(screen.queryByText("codexProvider.advanced")).not.toBeInTheDocument();
+});
+
 it("does not add the native alias back from the managed account status", async () => {
   managedAccounts.rows = [
     { id: "managed", login: "person@example.test", reauth_required: false },
@@ -271,14 +297,6 @@ it("keeps official catalog failures safe and offers an explicit retry", async ()
   fireEvent.click(
     screen.getByRole("button", { name: "codexProvider.fetchModels" }),
   );
-  await waitFor(() =>
-    expect(
-      screen.getByRole("button", { name: "codexProvider.showOthers" }),
-    ).toBeEnabled(),
-  );
-  fireEvent.click(
-    screen.getByRole("button", { name: "codexProvider.showOthers" }),
-  );
   expect(
     await screen.findByRole("button", { name: /^retry-model$/ }),
   ).toBeVisible();
@@ -289,25 +307,32 @@ it("opens the account/model editor and reads allowance without model discovery o
   await open();
   expect(await screen.findByText("person@example.test")).toBeVisible();
   expect(screen.getByText("ChatGPT Plus")).toBeVisible();
-  expect(
-    screen.getByRole("button", { name: "codexProvider.modeVendor" }),
-  ).toBeVisible();
-  expect(
-    screen.getByRole("button", { name: "codexProvider.modePicked" }),
-  ).toHaveAttribute("aria-pressed", "true");
+  for (const mode of ["Vendor", "Picked", "Best", "Usage"])
+    expect(
+      screen.queryByRole("button", { name: `codexProvider.mode${mode}` }),
+    ).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^model-a$/ })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(screen.getByRole("button", { name: /^model-b$/ })).toBeVisible();
   expect(screen.queryByText("providerEditor.importedAccountHint")).toBeNull();
   expect(screen.queryByRole("textbox", { name: "ID" })).toBeNull();
   expect(routingUpstreamsApi.codexModels).not.toHaveBeenCalled();
   expect(routingUpstreamsApi.codexQuota).toHaveBeenCalledWith("native");
   expect(routingUpstreamsApi.testCodexModel).not.toHaveBeenCalled();
 });
-it("stages usage-only and saves account policy without converting OAuth into an API key", async () => {
+it("preserves an existing usage-only policy when saving without converting OAuth into an API key", async () => {
+  vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+    ...upstream,
+    codex: {
+      ...codex,
+      settings: { ...codex.settings, mode: "usage" },
+    },
+  } as never);
   vi.mocked(routingUpstreamsApi.saveCodex).mockResolvedValue(upstream);
   await open();
   await screen.findByText("person@example.test");
-  fireEvent.click(
-    screen.getByRole("button", { name: "codexProvider.modeUsage" }),
-  );
   expect(routingUpstreamsApi.saveCodex).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "common.save" }));
   await waitFor(() =>
@@ -336,10 +361,7 @@ it("keeps model discovery explicit and stages a newly chosen model with its meta
       "native",
     ),
   );
-  fireEvent.click(
-    screen.getByRole("button", { name: "codexProvider.showOthers" }),
-  );
-  fireEvent.click(screen.getByRole("button", { name: /^model-c$/ }));
+  fireEvent.click(await screen.findByRole("button", { name: /^model-c$/ }));
   fireEvent.click(
     screen.getByRole("checkbox", { name: "codexProvider.groupsOnly" }),
   );
@@ -680,9 +702,7 @@ it("does not render a meter for non-finite or absent utilization", async () => {
 it("cancelled model edits never save a policy or credentials", async () => {
   await open();
   await screen.findByText("person@example.test");
-  fireEvent.click(
-    screen.getByRole("button", { name: "codexProvider.modeUsage" }),
-  );
+  fireEvent.click(screen.getByRole("button", { name: /^model-b$/ }));
   fireEvent.click(screen.getByRole("button", { name: "common.cancel" }));
   expect(routingUpstreamsApi.saveCodex).not.toHaveBeenCalled();
   expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
@@ -756,9 +776,6 @@ it("never labels a different account's catalog as the newly selected account's l
   );
   fireEvent.click(
     screen.getByRole("checkbox", { name: "person@example.test" }),
-  );
-  fireEvent.click(
-    screen.getByRole("button", { name: "codexProvider.modeVendor" }),
   );
   await screen.findByText("codexProvider.catalogEmpty");
   expect(screen.queryByRole("button", { name: /^model-b$/ })).toBeNull();

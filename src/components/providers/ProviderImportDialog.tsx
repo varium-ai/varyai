@@ -294,6 +294,11 @@ export function ProviderImportDialog({
                   </label>
                 )}
               </div>
+              {tab === "magpie" && current.found && !current.error && (
+                <p className="pv-import-note">
+                  {t("providerImport.magpieScope")}
+                </p>
+              )}
               {!current.found ? (
                 <p className="pv-import-empty">{t("providerImport.missing")}</p>
               ) : current.error ? (

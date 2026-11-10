@@ -26,7 +26,10 @@ fn direct_id(provider: &str, model: &str) -> String {
 }
 fn direct_group(provider: &Provider, model: &str) -> RoutingGroup {
     RoutingGroup {
-        id: direct_id(&provider.id, model),
+        id: direct_id(
+            crate::services::routing_upstreams::execution_identity(provider),
+            model,
+        ),
         name: "Direct model".into(),
         revision: 0,
         client: "codex".into(),
@@ -81,8 +84,14 @@ pub(crate) async fn prepare(
     current_provider: Option<String>,
 ) -> Result<Menu, String> {
     providers.sort_by(|a, b| {
-        (Some(&a.id) != current_provider.as_ref(), &a.id)
-            .cmp(&(Some(&b.id) != current_provider.as_ref(), &b.id))
+        (
+            Some(&a.id) != current_provider.as_ref(),
+            crate::services::routing_upstreams::execution_identity(a),
+        )
+            .cmp(&(
+                Some(&b.id) != current_provider.as_ref(),
+                crate::services::routing_upstreams::execution_identity(b),
+            ))
     });
     let mut omitted_groups = 0;
     let groups = groups
@@ -252,7 +261,8 @@ pub(crate) async fn prepare(
                 menu.omitted_entries += usize::from(direct);
                 continue;
             }
-            let group = direct_group(provider, &model);
+            let mut group = direct_group(provider, &model);
+            crate::services::routing_upstreams::execution_group(&mut group, providers.iter());
             let alias = format!("vary-provider/{}", group.id);
             let display = provider
                 .settings_config
@@ -323,19 +333,14 @@ pub(crate) async fn prepare(
                 .zip(&available)
                 .any(|(member, target)| group.includes_in_menu(member) && target.is_some());
         let classifier = if group.uses_classifier() {
-            group
-                .classifier_target
-                .as_ref()
-                .and_then(|t| {
-                    providers
-                        .iter()
-                        .find(|p| p.id == t.provider_id && eligible_provider(p, true))
-                })
-                .and_then(|provider| {
-                    crate::services::routing_upstreams::variants(provider)
-                        .into_iter()
-                        .find(|variant| eligible_provider(variant, true))
-                })
+            group.classifier_target.as_ref().and_then(|t| {
+                let provider = providers
+                    .iter()
+                    .find(|p| p.id == t.provider_id && eligible_provider(p, true))?;
+                crate::services::routing_upstreams::variants_for_model(provider, &t.model_id)
+                    .into_iter()
+                    .find(|variant| eligible_provider(variant, true))
+            })
         } else {
             None
         };
@@ -371,6 +376,8 @@ pub(crate) async fn prepare(
                 order: group_order.get(&group.id).copied().unwrap_or(usize::MAX),
             },
         );
+        let mut group = group;
+        crate::services::routing_upstreams::execution_group(&mut group, providers.iter());
         menu.groups.insert(
             alias,
             Arc::new(Session {
@@ -452,6 +459,15 @@ pub(crate) async fn prepare_with_stand_ins(
     current: Option<String>,
     stand_ins: Vec<RoutingGroup>,
 ) -> Result<Menu, String> {
+    let identities: HashMap<_, _> = providers
+        .iter()
+        .map(|p| {
+            (
+                p.id.clone(),
+                crate::services::routing_upstreams::execution_identity(p).to_owned(),
+            )
+        })
+        .collect();
     let mut menu = prepare(manager, providers, groups, current).await?;
     // Stand-ins remain executable for old sessions, never offered as routing groups.
     // Reuse direct destinations so compatibility aliases do not consume picker slots.
@@ -464,10 +480,22 @@ pub(crate) async fn prepare_with_stand_ins(
         let member = &group.members[0];
         let direct = format!(
             "vary-provider/{}",
-            direct_id(&member.provider_id, &member.model_id)
+            direct_id(
+                identities
+                    .get(&member.provider_id)
+                    .map(String::as_str)
+                    .unwrap_or(&member.provider_id),
+                &member.model_id
+            )
         );
         if let Some(source) = menu.groups.get(&direct) {
             let mut session = source.as_ref().clone();
+            let mut group = group;
+            for member in &mut group.members {
+                if let Some(id) = identities.get(&member.provider_id) {
+                    member.provider_id = id.clone();
+                }
+            }
             session.group = group;
             session.bindings = Arc::default();
             menu.groups.insert(alias, Arc::new(session));

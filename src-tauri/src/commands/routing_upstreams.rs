@@ -125,13 +125,16 @@ pub(crate) async fn fetch_provider_icon(url: String, automatic: bool) -> Result<
 #[tauri::command]
 pub(crate) async fn preview_provider_import(
     state: State<'_, AppState>,
+    copilot: State<'_, crate::commands::CopilotAuthState>,
     magpie_path: Option<String>,
 ) -> Result<Vec<crate::services::provider_import::Source>, String> {
     let db = state.db.clone();
     let paths = crate::services::provider_import::ImportPaths::local(magpie_path);
-    crate::services::provider_import::preview_with_accounts(
+    let copilot = copilot.0.read().await;
+    crate::services::provider_import::preview_with_managers(
         db,
         state.codex_oauth_manager.clone(),
+        &copilot,
         paths,
     )
     .await
@@ -140,18 +143,22 @@ pub(crate) async fn preview_provider_import(
 #[tauri::command]
 pub(crate) async fn import_provider_sources(
     state: State<'_, AppState>,
+    copilot: State<'_, crate::commands::CopilotAuthState>,
     picks: Vec<crate::services::provider_import::Pick>,
     magpie_path: Option<String>,
 ) -> Result<crate::services::provider_import::ImportResult, String> {
     let db = state.db.clone();
     let paths = crate::services::provider_import::ImportPaths::local(magpie_path);
-    let result = crate::services::provider_import::import_with_accounts(
+    let copilot = copilot.0.read().await;
+    let result = crate::services::provider_import::import_with_managers(
         db,
         state.codex_oauth_manager.clone(),
+        &copilot,
         paths,
         picks,
     )
     .await?;
+    drop(copilot);
     refresh(state.inner()).await;
     Ok(result)
 }
@@ -263,7 +270,11 @@ pub(crate) async fn save_routing_upstream(
     state: State<'_, AppState>,
     upstream: RoutingUpstream,
     copy_from: Option<CopySource>,
+    original_id: Option<String>,
 ) -> Result<RoutingUpstream, String> {
+    if copy_from.is_some() && original_id.is_some() {
+        return Err("routingUpstreams.invalid".into());
+    }
     if let UpstreamSource::Subscription {
         provider,
         account_id,
@@ -298,7 +309,7 @@ pub(crate) async fn save_routing_upstream(
     let db = state.db.clone();
     let saved = tokio::task::spawn_blocking(move || match copy_from {
         Some(source) => db.save_routing_upstream_copy(upstream, &source.id, source.revision),
-        None => db.save_routing_upstream(upstream),
+        None => db.save_routing_upstream_as(upstream, original_id.as_deref()),
     })
     .await
     .map_err(|_| "routingUpstreams.failed")??;
@@ -324,7 +335,10 @@ pub(crate) async fn probe_routing_upstream(
     if crate::services::subscription_provider::binding(&provider).is_some() {
         return Err("routingUpstreams.invalid".into());
     }
-    let provider = crate::services::routing_upstreams::first_enabled(&provider)?;
+    let provider = crate::services::routing_upstreams::variants_for_model(&provider, model.trim())
+        .into_iter()
+        .next()
+        .ok_or(crate::services::routing_upstreams::UNAVAILABLE)?;
     let (base_url, api_key) =
         provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
     let config = crate::services::provider_protocol_detection::DetectionConfig {
@@ -356,6 +370,27 @@ pub(crate) async fn delete_routing_upstream(
         .map_err(|_| "routingUpstreams.failed")??;
     refresh(state.inner()).await;
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn routing_upstream_quota(
+    state: State<'_, AppState>,
+    id: String,
+    revision: u32,
+) -> Result<crate::services::routing_provider_quota::Allowance, String> {
+    let db = state.db.clone();
+    let provider =
+        tokio::task::spawn_blocking(move || db.routing_discovery_provider(&id, revision))
+            .await
+            .map_err(|_| "routingUpstreams.failed")??;
+    if crate::services::codex_provider::is_codex(&provider)
+        || crate::services::subscription_provider::binding(&provider).is_some()
+    {
+        return Err("routingUpstreams.invalid".into());
+    }
+    let provider = crate::services::routing_upstreams::first_enabled(&provider)?;
+    let (base, key) = provider.resolve_usage_credentials(&crate::app_config::AppType::Codex);
+    crate::services::routing_provider_quota::query(&base, &key).await
 }
 
 #[tauri::command]

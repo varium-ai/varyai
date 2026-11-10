@@ -141,6 +141,9 @@ mod tests {
             let connection = connections
                 .get("claude-desktop", concat!("synthetic", "-local-token"))
                 .ok_or("missing fixture connection")?;
+            for id in [&current, &legacy, &reasoning, &plain] {
+                assert_eq!(connection.resolve(&format!("{id}[1m]")), alias);
+            }
             assert_eq!(
                 connection.model_map.get(&reasoning).map(String::as_str),
                 Some(alias)
@@ -348,14 +351,7 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
                     if connection.model_map.get(&wire) != Some(&model.id) {
                         return None;
                     }
-                    entry["id"] = json!(wire);
-                    if let Some(effort) = crate::claude_desktop_config::desktop_max_effort(&model) {
-                        entry["max_effort_level"] = json!(effort);
-                    }
-                    if let Some(window) = model.context_window {
-                        entry["max_input_tokens"] = json!(window);
-                        entry["supports_1m"] = json!(window >= 1_000_000);
-                    }
+                    entry = crate::claude_desktop_config::desktop_model_entry(&model, entry);
                 }
                 if [
                     "claude",

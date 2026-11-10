@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -10,6 +11,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutingUpstreamsPanel } from "@/components/providers/RoutingUpstreamsPanel";
 import { routingUpstreamsApi } from "@/lib/api/routingUpstreams";
 import { detectProviderProtocols } from "@/lib/api/provider-protocol-detection";
+import i18n from "i18next";
+import { copyText } from "@/lib/clipboard";
+
+vi.mock("@/lib/clipboard", () => ({ copyText: vi.fn() }));
 import {
   finishDialogAnimation,
   mockDialogAnimationStyles,
@@ -28,6 +33,7 @@ vi.mock("@/lib/api/routingUpstreams", () => ({
     remove: vi.fn(),
     probe: vi.fn(),
     editor: vi.fn(),
+    codexQuota: vi.fn(),
   },
 }));
 function mount() {
@@ -43,6 +49,7 @@ function mount() {
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(copyText).mockResolvedValue(undefined);
   vi.mocked(routingUpstreamsApi.list).mockResolvedValue([]);
   vi.mocked(routingUpstreamsApi.save).mockImplementation(async (value) => ({
     ...value,
@@ -54,6 +61,67 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+describe("provider setup-help shortcut", () => {
+  it("copies the onboarding prompt from the header before the import action", async () => {
+    mount();
+    const button = screen.getByRole("button", {
+      name: "onboarding.copyForAgent",
+    });
+    const actions = within(button.parentElement!);
+    expect(actions.getAllByRole("button")).toEqual([
+      button,
+      actions.getByRole("button", { name: "routingUpstreams.import" }),
+      actions.getByRole("button", { name: "modelProviders.add" }),
+    ]);
+    await act(async () => fireEvent.click(button));
+    expect(copyText).toHaveBeenCalledWith("onboarding.helpPrompt");
+    expect(button).toHaveAccessibleName("common.copied");
+    expect(button).toBeEnabled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(routingUpstreamsApi.save).not.toHaveBeenCalled();
+  });
+
+  it("shows a safe copy error and clears it after a successful retry", async () => {
+    vi.mocked(copyText).mockRejectedValueOnce(
+      new Error("Synthetic private detail"),
+    );
+    mount();
+    const button = screen.getByRole("button", {
+      name: "onboarding.copyForAgent",
+    });
+    await act(async () => fireEvent.click(button));
+    expect(screen.getByText("onboarding.copyFailed")).toBeVisible();
+    expect(
+      screen.queryByText("Synthetic private detail"),
+    ).not.toBeInTheDocument();
+    expect(button).toBeEnabled();
+    await act(async () => fireEvent.click(button));
+    expect(button).toHaveAccessibleName("common.copied");
+    expect(screen.queryByText("onboarding.copyFailed")).not.toBeInTheDocument();
+  });
+
+  it("returns to the Agent label two seconds after the latest copy", async () => {
+    vi.useFakeTimers();
+    try {
+      const view = mount();
+      const button = screen.getByRole("button", {
+        name: "onboarding.copyForAgent",
+      });
+      await act(async () => fireEvent.click(button));
+      act(() => vi.advanceTimersByTime(1500));
+      await act(async () => fireEvent.click(button));
+      act(() => vi.advanceTimersByTime(1999));
+      expect(button).toHaveAccessibleName("common.copied");
+      act(() => vi.advanceTimersByTime(1));
+      expect(button).toHaveAccessibleName("onboarding.copyForAgent");
+      expect(copyText).toHaveBeenCalledTimes(2);
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("global upstream editor", () => {
   const primary = {
     schemaVersion: 1 as const,
@@ -78,7 +146,7 @@ describe("global upstream editor", () => {
       ],
     },
   };
-  it("preserves and saves notes in the shared provider editor used by every Agent", async () => {
+  it("edits the provider ID like Magpie while preserving the saved credential identity", async () => {
     const saved = { ...primary, notes: "Synthetic original note" };
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([saved]);
     vi.mocked(routingUpstreamsApi.editor).mockResolvedValue(saved);
@@ -88,15 +156,112 @@ describe("global upstream editor", () => {
         name: "common.edit Synthetic primary",
       }),
     );
-    const notes = await screen.findByLabelText("provider.notes");
-    expect(notes).toHaveValue("Synthetic original note");
-    fireEvent.change(notes, { target: { value: "Synthetic revised note" } });
+    const id = await screen.findByLabelText("ID");
+    expect(id).toHaveValue(saved.id);
+    expect(id).not.toHaveAttribute("readonly");
+    expect(screen.queryByLabelText("provider.notes")).not.toBeInTheDocument();
+    fireEvent.change(id, { target: { value: "My New ID!" } });
+    fireEvent.blur(id);
+    expect(screen.getByLabelText("ID")).toHaveValue("my-new-id");
+    expect(screen.getByLabelText("ID")).toBe(id);
+    vi.mocked(routingUpstreamsApi.probe).mockResolvedValue([]);
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerEditor.detect" }),
+    );
+    await waitFor(() =>
+      expect(routingUpstreamsApi.probe).toHaveBeenCalledWith(
+        saved.id,
+        saved.revision,
+        "large-model",
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
       expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
-        expect.objectContaining({ notes: "Synthetic revised note" }),
+        expect.objectContaining({
+          id: "my-new-id",
+          notes: "Synthetic original note",
+        }),
+        undefined,
+        saved.id,
       ),
     );
+  });
+  it("saves a manually typed model ID as part of the provider draft without requiring Add", async () => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([primary]);
+    mount();
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "common.edit Synthetic primary",
+      }),
+    );
+    const input = await screen.findByLabelText("providerEditor.addModelId");
+    fireEvent.change(input, { target: { value: "manual-exact-model" } });
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() =>
+      expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: expect.objectContaining({
+            mode: "picked",
+            models: expect.arrayContaining([
+              expect.objectContaining({ model: "manual-exact-model" }),
+            ]),
+          }),
+        }),
+      ),
+    );
+  });
+  it("shows subscription allowance beneath the provider name without opening the form", async () => {
+    vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
+      {
+        ...primary,
+        id: "codex",
+        name: "Codex fixture",
+        hasApiKey: false,
+        source: { kind: "codex" },
+        subscriptionPlans: ["ChatGPT Prolite"],
+        reauthRequired: false,
+        codexSettings: {
+          accounts: ["selected"],
+          mode: "vendor",
+          models: [],
+          groupsOnly: false,
+        },
+      },
+    ]);
+    vi.mocked(routingUpstreamsApi.editor).mockResolvedValue({
+      ...primary,
+      source: { kind: "codex" },
+      codex: {
+        settings: {
+          accounts: ["selected"],
+          mode: "vendor",
+          models: [],
+          groupsOnly: false,
+        },
+        accounts: [
+          { id: "selected", login: "Fixture", native: false, ready: true },
+        ],
+        models: [],
+      },
+    });
+    vi.mocked(routingUpstreamsApi.codexQuota).mockResolvedValue({
+      credentialStatus: "valid",
+      success: true,
+      tiers: [{ name: "five_hour", utilization: 27, resetsAt: null }],
+    } as never);
+    mount();
+    const row = await screen.findByRole("article", { name: "Codex fixture" });
+    expect(
+      await within(row).findByText("codexProvider.remaining"),
+    ).toBeVisible();
+    expect(within(row).getByText("ChatGPT Prolite")).toBeVisible();
+    expect(within(row).queryByText("ChatGPT / Codex")).not.toBeInTheDocument();
+    expect(routingUpstreamsApi.codexQuota).toHaveBeenCalledWith("selected");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
   it.each([
     "ChatGPT Prolite",
@@ -183,6 +348,131 @@ describe("global upstream editor", () => {
       ).not.toBeInTheDocument(),
     );
   });
+  it.each([false, true])(
+    "keeps batch deletion local and the count stable until completion (failure: %s)",
+    async (failSecond) => {
+      const translations = structuredClone(
+        i18n.getResourceBundle("zh", "translation"),
+      );
+      i18n.addResourceBundle(
+        "zh",
+        "translation",
+        {
+          modelProviders: {
+            removeSelected: "Delete selected ({{count}})",
+            removeSelectedHint: "Delete {{count}} providers?",
+          },
+        },
+        true,
+        true,
+      );
+      try {
+        const secondary = {
+          ...primary,
+          id: "secondary",
+          name: "Synthetic secondary",
+          revision: 7,
+        };
+        let remaining = [primary, secondary];
+        vi.mocked(routingUpstreamsApi.list).mockImplementation(
+          async () => remaining,
+        );
+        let finishFirst!: () => void;
+        let finishSecond!: () => void;
+        vi.mocked(routingUpstreamsApi.remove)
+          .mockImplementationOnce(
+            () =>
+              new Promise<void>((resolve) => {
+                finishFirst = () => {
+                  remaining = [secondary];
+                  resolve();
+                };
+              }),
+          )
+          .mockImplementationOnce(
+            () =>
+              new Promise<void>((resolve, reject) => {
+                finishSecond = () => {
+                  if (failSecond) reject("routingUpstreams.referenced");
+                  else {
+                    remaining = [];
+                    resolve();
+                  }
+                };
+              }),
+          );
+        const { container } = mount();
+        fireEvent.click(
+          await screen.findByRole("button", { name: "modelProviders.manage" }),
+        );
+        fireEvent.click(
+          screen.getByRole("checkbox", { name: "modelProviders.selectAll" }),
+        );
+        fireEvent.click(
+          screen.getByRole("button", { name: "Delete selected (2)" }),
+        );
+        const dialog = screen.getByRole("dialog", {
+          name: "Delete selected (2)",
+        });
+        const confirm = within(dialog).getByRole("button", {
+          name: "common.confirm",
+        });
+        fireEvent.click(confirm);
+        expect(confirm).toHaveAttribute("aria-busy", "true");
+        expect(confirm).toBeDisabled();
+        expect(container.querySelector(".pv-query")).toBeEnabled();
+        expect(container.querySelector(".pv-add-trigger")).toBeEnabled();
+        fireEvent.click(confirm);
+        expect(routingUpstreamsApi.remove).toHaveBeenCalledTimes(1);
+        finishFirst();
+        await waitFor(() =>
+          expect(routingUpstreamsApi.remove).toHaveBeenCalledTimes(2),
+        );
+        expect(dialog).toHaveAccessibleName("Delete selected (2)");
+        expect(dialog).toHaveAccessibleDescription("Delete 2 providers?");
+        expect(dialog).toBeVisible();
+        expect(
+          container.querySelector('.pv-row input[type="checkbox"]'),
+        ).toBeChecked();
+        if (!failSecond) {
+          vi.mocked(routingUpstreamsApi.list).mockImplementation(
+            () => new Promise(() => {}),
+          );
+        }
+        finishSecond();
+        await waitFor(() =>
+          expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+        );
+        if (failSecond) {
+          expect(await screen.findByRole("alert")).toHaveTextContent(
+            "modelProviders.referenced",
+          );
+          expect(
+            screen.getByRole("checkbox", { name: "Synthetic secondary" }),
+          ).toBeChecked();
+          expect(
+            screen.getByRole("button", { name: "Delete selected (1)" }),
+          ).toBeEnabled();
+          expect(
+            screen.queryByRole("article", { name: "Synthetic primary" }),
+          ).not.toBeInTheDocument();
+        } else {
+          expect(screen.queryByRole("article")).not.toBeInTheDocument();
+          const add = screen.getByRole("button", {
+            name: "modelProviders.add",
+          });
+          expect(add).toBeEnabled();
+          fireEvent.click(add);
+          expect(
+            await screen.findByRole("button", { name: "providerFlow.custom" }),
+          ).toBeVisible();
+        }
+      } finally {
+        i18n.removeResourceBundle("zh", "translation");
+        i18n.addResourceBundle("zh", "translation", translations);
+      }
+    },
+  );
   it("shows the selected subscription plan in the provider row without opening the editor", async () => {
     vi.mocked(routingUpstreamsApi.list).mockResolvedValue([
       {
@@ -722,7 +1012,7 @@ describe("global upstream editor", () => {
     fireEvent.change(screen.getByLabelText("modelProviders.name"), {
       target: { value: "Synthetic copy" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    fireEvent.click(screen.getByRole("button", { name: "common.add" }));
     await waitFor(() =>
       expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -919,10 +1209,12 @@ describe("global upstream editor", () => {
     expect(
       screen.getByRole("radio", { name: "providerFlow.china" }),
     ).toBeChecked();
-    fireEvent.click(screen.getByRole("radio", { name: "Anthropic" }));
-    expect(screen.getByLabelText("modelProviders.baseUrl")).toHaveValue(
-      "https://api.moonshot.cn/anthropic",
-    );
+    expect(
+      screen.queryByLabelText("modelProviders.baseUrl"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("radio", { name: "Anthropic" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
       expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
@@ -930,6 +1222,10 @@ describe("global upstream editor", () => {
           presetId: "moonshot",
           region: "china",
           name: "My Kimi",
+          source: expect.objectContaining({
+            apiFormat: "openai_chat",
+            baseUrl: "https://api.moonshot.cn/v1",
+          }),
         }),
       ),
     );
@@ -953,14 +1249,23 @@ describe("global upstream editor", () => {
       await screen.findByRole("button", { name: "common.edit My plan" }),
     );
     expect(screen.getByRole("radio", { name: "Coding Plan" })).toBeChecked();
-    fireEvent.click(screen.getByRole("radio", { name: "Chat Completions" }));
-    expect(screen.getByLabelText("modelProviders.baseUrl")).toHaveValue(
-      "https://api.z.ai/api/coding/paas/v4",
-    );
+    expect(
+      screen.queryByLabelText("modelProviders.baseUrl"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("radio", { name: "Chat Completions" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() =>
       expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
-        expect.objectContaining({ region: "coding", name: "My plan" }),
+        expect.objectContaining({
+          region: "coding",
+          name: "My plan",
+          source: expect.objectContaining({
+            apiFormat: "openai_responses",
+            baseUrl: "https://api.z.ai/api/v1",
+          }),
+        }),
       ),
     );
   });

@@ -997,7 +997,7 @@ impl Manager {
     pub(crate) fn disconnect(&self) -> Result<(), String> {
         self.runtime.native.reset_status();
         if self.load()?.is_some() {
-            self.restore()?;
+            return self.restore_inner(true);
         }
         self.runtime.clear_menu();
         if self.thread_sync_pending() {
@@ -1020,6 +1020,9 @@ impl Manager {
         replace_checked(&self.config, Some(&current), Some(&disconnected))
     }
     pub fn restore(&self) -> Result<(), String> {
+        self.restore_inner(false)
+    }
+    fn restore_inner(&self, explicit_disconnect: bool) -> Result<(), String> {
         // Revoke before fallible recovery, including missing or unreadable receipts.
         self.runtime.native.reset_status();
         let Some(mut receipt) = self.load()? else {
@@ -1061,6 +1064,27 @@ impl Manager {
         } else {
             restored
         };
+        // Validate the complete explicit-disconnect result before replacing the
+        // live document or deleting the receipt. A rejected baseline must not
+        // turn a recoverable connection into a receiptless orphan.
+        let detached =
+            if explicit_disconnect && !receipt.thread_sync_pending && !self.thread_sync_pending() {
+                restored
+                    .as_deref()
+                    .map(|text| disconnect_orphan_text(text, self.receipt.parent().ok_or(FAILED)?))
+                    .transpose()?
+                    .flatten()
+            } else {
+                None
+            };
+        let restored = if let Some(detached) = detached {
+            if let Some(baseline) = restored.as_deref() {
+                self.backup_orphan(baseline)?;
+            }
+            Some(detached)
+        } else {
+            restored
+        };
         replace_checked(&self.config, current.as_deref(), restored.as_deref())?;
         self.runtime.clear_menu();
         if receipt.thread_sync_pending {
@@ -1085,23 +1109,38 @@ fn recognized_orphan_provider(table: &toml::map::Map<String, toml::Value>) -> bo
     menu_provider_signature(table, "/intent/v1")
 }
 
+fn menu_provider_field(key: &str) -> bool {
+    matches!(
+        key,
+        "name"
+            | "wire_api"
+            | "requires_openai_auth"
+            | "supports_websockets"
+            | "supports_standalone_web_search"
+            | "experimental_bearer_token"
+            | "base_url"
+            | "http_headers"
+    )
+}
+
+fn disconnectable_provider(table: &toml::map::Map<String, toml::Value>) -> bool {
+    // Explicit disconnect retains the entire table for historical chats. Extra
+    // fields do not invalidate its known identity or authorize changing them.
+    let identity = table
+        .iter()
+        .filter(|(key, _)| menu_provider_field(key))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    recognized_orphan_provider(&identity)
+}
+
 fn menu_provider_signature(table: &toml::map::Map<String, toml::Value>, path: &str) -> bool {
-    table.keys().all(|key| {
-        matches!(
-            key.as_str(),
-            "name"
-                | "wire_api"
-                | "requires_openai_auth"
-                | "supports_websockets"
-                | "supports_standalone_web_search"
-                | "experimental_bearer_token"
-                | "base_url"
-                | "http_headers"
+    table.keys().all(|key| menu_provider_field(key))
+        && matches!(
+            table.get("name").and_then(toml::Value::as_str),
+            Some("VaryAI models and routing groups" | "VaryAI routing groups")
         )
-    }) && matches!(
-        table.get("name").and_then(toml::Value::as_str),
-        Some("VaryAI models and routing groups" | "VaryAI routing groups")
-    ) && table.get("wire_api").and_then(toml::Value::as_str) == Some("responses")
+        && table.get("wire_api").and_then(toml::Value::as_str) == Some("responses")
         && table
             .get("requires_openai_auth")
             .and_then(toml::Value::as_bool)
@@ -1297,7 +1336,7 @@ fn disconnect_orphan_text(current: &str, catalog_root: &Path) -> Result<Option<S
                 .and_then(|url| url::Url::parse(url).ok()),
         )
         .is_some_and(|(native, menu)| native.origin() == menu.origin());
-    if !provider.is_some_and(recognized_orphan_provider) {
+    if !provider.is_some_and(disconnectable_provider) {
         return if top_routed || profile_routed || native_routed {
             Err(CONFLICT.into())
         } else {

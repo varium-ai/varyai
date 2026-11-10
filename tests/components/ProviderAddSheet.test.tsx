@@ -53,9 +53,9 @@ it("opens the provider selection page before opening a provider editor", async (
     await screen.findByRole("region", { name: "DeepSeek" }),
   ).toBeInTheDocument();
   expect(screen.getByRole("dialog", { name: "DeepSeek" })).toBeInTheDocument();
-  expect(screen.getByLabelText("modelProviders.baseUrl")).toHaveValue(
-    "https://api.deepseek.com/v1",
-  );
+  expect(
+    screen.queryByLabelText("modelProviders.baseUrl"),
+  ).not.toBeInTheDocument();
   expect(
     screen.queryByLabelText("modelProviders.name"),
   ).not.toBeInTheDocument();
@@ -86,6 +86,10 @@ it("moves Add provider to the page header and returns to the filtered list with 
   expect(add.closest("header")).toContainElement(
     screen.getByRole("heading", { level: 1, name: "modelProviders.title" }),
   );
+  const importButton = screen.getByRole("button", {
+    name: "routingUpstreams.import",
+  });
+  expect(add.previousElementSibling).toBe(importButton);
   fireEvent.change(
     screen.getByRole("searchbox", { name: "modelProviders.find" }),
     {
@@ -129,9 +133,9 @@ it("opens directly on the add page when requested by another workspace page", as
   expect(back.closest("header")).toContainElement(
     screen.getByRole("searchbox", { name: "providerFlow.findVendor" }),
   );
-  expect(back.closest("header")).toContainElement(
-    screen.getByRole("button", { name: "providerFlow.import" }),
-  );
+  expect(
+    screen.queryByRole("button", { name: "providerFlow.import" }),
+  ).not.toBeInTheDocument();
   expect(
     screen.queryByRole("heading", { name: "modelProviders.title" }),
   ).not.toBeInTheDocument();
@@ -151,7 +155,7 @@ it("returns to the list after saving a new provider", async () => {
   fireEvent.change(within(editor).getByLabelText("modelProviders.apiKey"), {
     target: { value: "synthetic-key" },
   });
-  fireEvent.click(within(editor).getByRole("button", { name: "common.save" }));
+  fireEvent.click(within(editor).getByRole("button", { name: "common.add" }));
   await waitFor(() =>
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );
@@ -188,8 +192,13 @@ it("returns to the list after importing and restores the header action's focus",
     added: 1,
     skipped: 0,
   });
-  mount(true);
-  fireEvent.click(screen.getByRole("button", { name: "providerFlow.import" }));
+  mount();
+  const importButton = await screen.findByRole("button", {
+    name: "routingUpstreams.import",
+  });
+  await waitFor(() => expect(importButton).toBeEnabled());
+  importButton.focus();
+  fireEvent.click(importButton);
   const dialog = await screen.findByRole("dialog");
   expect(
     await within(dialog).findByText("Synthetic imported provider"),
@@ -204,9 +213,7 @@ it("returns to the list after importing and restores the header action's focus",
   expect(
     screen.queryByRole("region", { name: "providerFlow.sheet" }),
   ).not.toBeInTheDocument();
-  expect(
-    screen.getByRole("button", { name: "modelProviders.add" }),
-  ).toHaveFocus();
+  expect(importButton).toHaveFocus();
 });
 it("requires confirmation before discarding edits and returns to the add page", async () => {
   mount();
@@ -230,25 +237,29 @@ it("requires confirmation before discarding edits and returns to the add page", 
     screen.getByRole("searchbox", { name: "providerFlow.findVendor" }),
   ).toBeInTheDocument();
 });
-it("switches a vendor's protocol to that protocol's own endpoint and keeps the entered key", async () => {
-  mount();
-  const add = await screen.findByRole("button", { name: "modelProviders.add" });
-  await waitFor(() => expect(add).toBeEnabled());
-  fireEvent.click(add);
+it("keeps a preset's endpoints out of the upper form and saves its default transport with the entered key", async () => {
+  mount(true);
   fireEvent.click(screen.getByRole("button", { name: "DeepSeek" }));
   fireEvent.change(screen.getByLabelText("modelProviders.apiKey"), {
     target: { value: "synthetic-key" },
   });
-  fireEvent.click(screen.getByRole("radio", { name: "Anthropic" }));
-  expect(screen.getByLabelText("modelProviders.baseUrl")).toHaveValue(
-    "https://api.deepseek.com/anthropic",
-  );
-  expect(screen.getByLabelText("modelProviders.apiKey")).toHaveValue(
-    "synthetic-key",
-  );
-  fireEvent.click(screen.getByRole("radio", { name: "Chat Completions" }));
-  expect(screen.getByLabelText("modelProviders.baseUrl")).toHaveValue(
-    "https://api.deepseek.com/v1",
+  expect(
+    screen.queryByRole("radio", { name: "Anthropic" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByLabelText("modelProviders.baseUrl"),
+  ).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "common.add" }));
+  await waitFor(() =>
+    expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: expect.objectContaining({
+          apiFormat: "openai_chat",
+          baseUrl: "https://api.deepseek.com/v1",
+          apiKey: "synthetic-key",
+        }),
+      }),
+    ),
   );
 });
 
@@ -261,50 +272,64 @@ it("pairs a vendor's global and China sites and preserves the unsaved key while 
   fireEvent.change(screen.getByLabelText("modelProviders.apiKey"), {
     target: { value: "synthetic-key" },
   });
-  expect(screen.getByLabelText("modelProviders.baseUrl")).toHaveValue(
-    "https://api.moonshot.ai/v1",
-  );
+  expect(
+    screen.queryByLabelText("modelProviders.baseUrl"),
+  ).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("radio", { name: "providerFlow.china" }));
-  expect(screen.getByLabelText("modelProviders.baseUrl")).toHaveValue(
-    "https://api.moonshot.cn/v1",
-  );
+  expect(
+    screen.queryByLabelText("modelProviders.baseUrl"),
+  ).not.toBeInTheDocument();
   expect(screen.getByLabelText("modelProviders.apiKey")).toHaveValue(
     "synthetic-key",
   );
   expect(
     screen.getByRole("dialog", { name: "Kimi (China)" }),
   ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "common.add" }));
+  await waitFor(() =>
+    expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        region: "china",
+        source: expect.objectContaining({
+          baseUrl: "https://api.moonshot.cn/v1",
+          apiKey: "synthetic-key",
+        }),
+      }),
+    ),
+  );
 });
 
-it("uses Z.ai's separate Coding Plan endpoints and retains its key when changing protocols", async () => {
-  mount();
-  const add = await screen.findByRole("button", { name: "modelProviders.add" });
-  await waitFor(() => expect(add).toBeEnabled());
-  fireEvent.click(add);
+it("uses Z.ai's Coding Plan endpoints without exposing the separate endpoint editor", async () => {
+  mount(true);
   fireEvent.click(screen.getByRole("button", { name: "Z.ai" }));
   fireEvent.change(screen.getByLabelText("modelProviders.apiKey"), {
     target: { value: "synthetic-key" },
   });
   fireEvent.click(screen.getByRole("radio", { name: "Coding Plan" }));
-  expect(screen.getByLabelText("modelProviders.baseUrl")).toHaveValue(
-    "https://api.z.ai/api/coding/paas/v4",
-  );
-  fireEvent.click(screen.getByRole("radio", { name: "Responses" }));
-  expect(screen.getByLabelText("modelProviders.baseUrl")).toHaveValue(
-    "https://api.z.ai/api/v1",
-  );
-  expect(screen.getByLabelText("modelProviders.apiKey")).toHaveValue(
-    "synthetic-key",
-  );
-  fireEvent.click(screen.getByRole("radio", { name: "Anthropic" }));
-  expect(screen.getByLabelText("modelProviders.baseUrl")).toHaveValue(
-    "https://api.z.ai/api/anthropic",
-  );
-  fireEvent.click(screen.getByRole("radio", { name: "Pay as you go" }));
+  expect(
+    screen.queryByLabelText("modelProviders.baseUrl"),
+  ).not.toBeInTheDocument();
   expect(
     screen.queryByRole("radio", { name: "Responses" }),
   ).not.toBeInTheDocument();
+  expect(screen.getByLabelText("modelProviders.apiKey")).toHaveValue(
+    "synthetic-key",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "common.add" }));
+  await waitFor(() =>
+    expect(routingUpstreamsApi.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        region: "coding",
+        source: expect.objectContaining({
+          apiFormat: "openai_chat",
+          baseUrl: "https://api.z.ai/api/coding/paas/v4",
+          apiKey: "synthetic-key",
+        }),
+      }),
+    ),
+  );
 });
+
 it("clears the vendor search with Escape before returning to the list", async () => {
   mount();
   const add = await screen.findByRole("button", { name: "modelProviders.add" });

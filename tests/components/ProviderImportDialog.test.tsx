@@ -107,6 +107,29 @@ it("places Magpie first and opens it even when another source has selected provi
     screen.getByRole("button", { name: "providerFlow.import" }),
   ).toBeDisabled();
 });
+it("explains basic Magpie import and lets providers with advanced source settings import", async () => {
+  const next = structuredClone(sources);
+  next[4].items = [{ ...next[0].items[0], name: "Magpie relay" }] as never;
+  vi.mocked(providerImportApi.preview).mockResolvedValue(next as never);
+  mount();
+  expect(await screen.findByText("providerImport.magpieScope")).toBeVisible();
+  expect(screen.getByRole("checkbox", { name: "Magpie relay" })).toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: "providerFlow.import" }));
+  await waitFor(() =>
+    expect(providerImportApi.import).toHaveBeenCalledExactlyOnceWith([
+      {
+        source: "magpie",
+        reference: "new",
+        fingerprint: "digest-new",
+        mode: "add",
+      },
+    ]),
+  );
+  fireEvent.click(screen.getByRole("tab", { name: /CC Switch/ }));
+  expect(
+    screen.queryByText("providerImport.magpieScope"),
+  ).not.toBeInTheDocument();
+});
 it("uses the same source order in onboarding while selecting an importable source", async () => {
   render(
     <ProviderImportDialog
@@ -245,6 +268,52 @@ it("offers a saved imported Codex subscription in the same picker and submits on
         source: "magpie",
         reference: "login/0/saved",
         fingerprint: "opaque-account",
+        mode: "add",
+      },
+    ]),
+  );
+});
+
+it("selects a visible Antigravity subscription alongside API providers and keeps already-added rows disabled", async () => {
+  const next = structuredClone(sources);
+  next[4].items = [
+    {
+      ...next[0].items[0],
+      reference: "api",
+      name: "API fixture",
+      modelCount: 21,
+    },
+    { ...next[0].items[1], name: "Saved API fixture" },
+    {
+      ...next[0].items[1],
+      reference: "codex",
+      name: "Codex",
+      subscription: true,
+    },
+    {
+      ...next[0].items[0],
+      reference: "login/0/google",
+      name: "Antigravity",
+      modelCount: 12,
+      host: "",
+      subscription: true,
+    },
+  ] as never;
+  vi.mocked(providerImportApi.preview).mockResolvedValue(next as never);
+  mount();
+  expect(
+    await screen.findByRole("checkbox", { name: "Antigravity" }),
+  ).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Codex" })).toBeDisabled();
+  expect(screen.getByText("Selected 2")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("checkbox", { name: "API fixture" }));
+  fireEvent.click(screen.getByRole("button", { name: "providerFlow.import" }));
+  await waitFor(() =>
+    expect(providerImportApi.import).toHaveBeenCalledExactlyOnceWith([
+      {
+        source: "magpie",
+        reference: "login/0/google",
+        fingerprint: "digest-new",
         mode: "add",
       },
     ]),

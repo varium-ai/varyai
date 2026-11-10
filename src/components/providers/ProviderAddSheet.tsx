@@ -18,7 +18,6 @@ export function ProviderAddSheet({
   onChoose,
   onClose,
   onAccount,
-  onImport,
   busy,
   addedSubscriptions = [],
 }: {
@@ -29,7 +28,6 @@ export function ProviderAddSheet({
     accountId: string,
   ) => Promise<void>;
   addedSubscriptions?: SubscriptionProviderId[];
-  onImport?: () => void;
   busy: boolean;
 }) {
   const { t } = useTranslation();
@@ -88,17 +86,6 @@ export function ProviderAddSheet({
               }}
             />
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={busy}
-            onClick={() => {
-              setSigning(undefined);
-              onImport?.();
-            }}
-          >
-            {t("providerFlow.import")}
-          </Button>
           <Button
             variant="ghost"
             size="sm"

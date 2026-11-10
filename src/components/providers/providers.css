@@ -9,6 +9,21 @@
 .vary-providers .pv-page-head > div {
   min-width: 0;
 }
+.vary-providers .pv-page-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  flex: none;
+  max-width: 100%;
+  gap: 8px;
+}
+.vary-providers .pv-import-trigger {
+  height: 30px;
+  gap: 5px;
+  padding: 0 10px;
+  font-size: 12px;
+}
 .vary-providers .pv-add-trigger {
   flex: none;
   height: 30px;
@@ -228,6 +243,38 @@
   line-height: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.vary-providers .pv-list-quotas,
+.vary-providers .pv-list-quota-account {
+  display: block;
+}
+.vary-providers .pv-quota-summary,
+.pv-provider-dialog .pv-quota-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin-top: 2px;
+  color: var(--mp-muted);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+.vary-providers .pv-quota-window,
+.pv-provider-dialog .pv-quota-window {
+  white-space: nowrap;
+}
+.vary-providers .pv-quota-window b,
+.pv-provider-dialog .pv-quota-window b {
+  color: var(--mp-fg-2);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.vary-providers .pv-quota-account-label {
+  display: block;
+  margin-top: 3px;
+  color: var(--mp-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 .vary-providers .pv-key {
   display: inline-flex;
@@ -722,11 +769,11 @@
 @media (max-width: 640px) {
   .vary-providers .pv-page-head {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     align-items: start;
     gap: 12px;
   }
-  .vary-providers .pv-page-head > div {
+  .vary-providers .pv-page-head > .pv-page-copy {
     display: contents;
   }
   .vary-providers .pv-page-head .mp-page-heading {
@@ -734,11 +781,12 @@
   }
   .vary-providers .pv-page-head .mp-lead {
     grid-column: 1 / -1;
-    margin-bottom: 16px;
+    margin-bottom: 0;
   }
-  .vary-providers .pv-add-trigger {
-    grid-column: 2;
-    grid-row: 1;
+  .vary-providers .pv-page-actions {
+    grid-column: 1;
+    grid-row: 3;
+    margin-bottom: 16px;
   }
   .vary-providers input.pv-query {
     flex: 1;
@@ -902,13 +950,39 @@
 
 /* The reference implementation's framed provider modal: only the fields scroll between both bars. */
 .pv-provider-dialog[role="dialog"] {
-  width: min(600px, calc(100vw - 48px));
+  --mp-card: #fff;
+  --mp-card-2: #f9f9fb;
+  --mp-pill: #f1f1f4;
+  --mp-pill-hover: #e9e9ee;
+  --mp-line: #e3e3e8;
+  --mp-line-2: #ececf0;
+  --mp-fg: #1c1c21;
+  --mp-fg-2: #4b4b53;
+  --mp-muted: #85858d;
+  --mp-faint: #b9b9c2;
+  --mp-control: #63636b;
+  --mp-accent-soft: color-mix(in srgb, var(--mp-accent) 10%, var(--mp-card));
+  width: min(max(600px, 56vw), 880px, calc(100vw - 48px));
   max-width: none;
   max-height: calc(100dvh - 56px);
   padding: 0;
   border: 1px solid var(--mp-line);
   border-radius: 12px;
   box-shadow: 0 8px 32px rgb(15 23 42 / 4%);
+}
+.dark .pv-provider-dialog[role="dialog"] {
+  --mp-card: #232327;
+  --mp-card-2: #1f1f23;
+  --mp-pill: #2d2d33;
+  --mp-pill-hover: #36363d;
+  --mp-line: #333339;
+  --mp-line-2: #2c2c32;
+  --mp-fg: #ededf1;
+  --mp-fg-2: #b9b9c1;
+  --mp-muted: #8b8b94;
+  --mp-faint: #56565f;
+  --mp-control: #a1a1aa;
+  --mp-accent-soft: color-mix(in srgb, var(--mp-accent) 18%, var(--mp-card));
 }
 .pv-provider-dialog .pv-editor {
   min-height: 0;
@@ -974,6 +1048,13 @@
   gap: 6px;
   min-width: 0;
 }
+.pv-provider-dialog .pv-field-content > .pv-hint {
+  margin: 4px 0 0;
+  color: var(--mp-fg-2);
+}
+.pv-provider-dialog .pv-model-chips:empty {
+  display: none;
+}
 .pv-provider-dialog .pv-editor input,
 .pv-provider-dialog .pv-editor select {
   height: 27px;
@@ -998,11 +1079,107 @@
   padding-inline: 7px;
 }
 .pv-provider-dialog .pv-probe-actions,
+.pv-provider-dialog .pv-new-key,
 .pv-provider-dialog .pv-add-model {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+}
+.pv-provider-dialog .pv-new-key {
+  flex-wrap: nowrap;
+}
+.pv-provider-dialog .pv-new-key input {
+  flex: 1;
+  min-width: 0;
+}
+.pv-provider-dialog .pv-models {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pv-provider-dialog .pv-models > .pv-hint {
+  margin: 0;
+}
+.pv-provider-dialog .pv-model-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.pv-provider-dialog .pv-model-footer .pv-add-model,
+.pv-provider-dialog .pv-model-footer .pv-model-preferences {
+  display: contents;
+}
+.pv-provider-dialog .pv-editor .pv-model-actions > button,
+.pv-provider-dialog
+  .pv-editor
+  .pv-model-footer
+  :is(.pv-add-model, .pv-model-preferences)
+  > button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 27px;
+  padding: 2px 7px;
+  border: 1px solid var(--mp-line);
+  border-radius: 6px;
+  background: var(--mp-card);
+  color: var(--mp-fg-2);
+  box-shadow: 0 1px 1px rgb(0 0 0 / 4%);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: normal;
+  opacity: 1;
+}
+.pv-provider-dialog .pv-editor .pv-model-actions > button:not(:disabled):hover,
+.pv-provider-dialog
+  .pv-editor
+  .pv-model-footer
+  :is(.pv-add-model, .pv-model-preferences)
+  > button:not(:disabled):hover {
+  border-color: var(--mp-muted);
+  background: var(--mp-card-2);
+  color: var(--mp-fg);
+}
+.pv-provider-dialog .pv-editor .pv-model-actions > button:disabled,
+.pv-provider-dialog
+  .pv-editor
+  .pv-model-footer
+  :is(.pv-add-model, .pv-model-preferences)
+  > button:disabled {
+  color: var(--mp-faint);
+  cursor: default;
+}
+.pv-provider-dialog
+  .pv-editor
+  .pv-model-footer
+  .pv-model-preferences
+  > button[aria-expanded="true"] {
+  color: var(--mp-fg);
+  background: var(--mp-card-2);
+}
+.pv-provider-dialog .pv-model-create .pv-add-model input {
+  max-width: none;
+}
+.pv-provider-dialog .pv-create-model-actions .pv-model-search {
+  order: -1;
+  flex-basis: 100%;
+  max-width: none;
+}
+.pv-provider-dialog .pv-model-footer .mnames,
+.pv-provider-dialog .pv-model-footer > .pv-hint,
+.pv-provider-dialog .pv-model-footer > .cx-tests {
+  flex-basis: 100%;
+}
+.pv-provider-dialog .pv-model-actions {
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0;
+}
+.pv-provider-dialog .pv-add-model input {
+  max-width: 200px;
 }
 .pv-provider-dialog .pv-probe-actions input,
 .pv-provider-dialog .pv-add-model input {
@@ -1017,6 +1194,7 @@
   background: var(--mp-card);
   color: var(--mp-fg-2);
   font-weight: 400;
+  font-size: 11.5px;
   box-shadow: 0 1px 2px rgb(0 0 0 / 6%);
 }
 .pv-provider-dialog .pv-probe-results {
@@ -1052,7 +1230,7 @@
 .pv-provider-dialog .pv-account > svg {
   padding: 2px;
   border-radius: 50%;
-  background: var(--mp-fg);
+  background: var(--mp-accent);
   color: var(--mp-card);
 }
 .pv-provider-dialog .pv-account small {
@@ -1081,6 +1259,7 @@
   gap: 10px;
 }
 .pv-provider-dialog .pv-key-pool .pv-key-row {
+  flex-wrap: wrap;
   gap: 9px;
   min-height: 39px;
 }
@@ -1091,8 +1270,77 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.pv-provider-dialog .pv-key-edit {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.pv-provider-dialog .pv-key-edit .pv-key-input {
+  gap: 5px;
+}
+.pv-provider-dialog .pv-key-details {
+  flex-basis: 100%;
+  min-width: 0;
+  padding-left: 27px;
+}
 .pv-provider-dialog .pv-key-row.off .pv-key-label {
   color: var(--mp-muted);
+}
+.pv-provider-dialog .pv-key-row .pv-key-models {
+  height: 23px;
+  padding: 2px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: var(--mp-accent-soft);
+  color: var(--mp-accent);
+  box-shadow: none;
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.pv-provider-dialog .pv-key-limit {
+  color: var(--mp-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.pv-provider-dialog .pv-key-acts {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+.pv-provider-dialog .pv-key-acts > button {
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--mp-muted);
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.pv-provider-dialog .pv-key-acts > small {
+  margin: 0;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.pv-provider-dialog .pv-key-model-picker {
+  flex-basis: 100%;
+  min-width: 0;
+  padding: 8px 0 0 27px;
+  border-top: 1px solid var(--mp-line-2);
+}
+.pv-provider-dialog .pv-key-model-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 6px;
+}
+.pv-provider-dialog .pv-key-model-foot > button {
+  height: 27px;
+  padding: 0 8px;
+  font-size: 12px;
 }
 .pv-provider-dialog .pv-key-check {
   display: grid;
@@ -1106,8 +1354,8 @@
   color: transparent;
 }
 .pv-provider-dialog .pv-key-check[aria-checked="true"] {
-  background: var(--mp-fg);
-  border-color: var(--mp-fg);
+  background: var(--mp-accent);
+  border-color: var(--mp-accent);
   color: var(--mp-card);
 }
 .pv-provider-dialog .pv-key-action {
@@ -1147,18 +1395,21 @@
   font-weight: 400;
 }
 .pv-provider-dialog .pv-model-chips {
-  gap: 5px 4px;
-  margin-bottom: 7px;
+  gap: 4px;
+  margin-bottom: 0;
 }
 .pv-provider-dialog .pv-model-search {
-  margin-bottom: 8px;
+  flex: 1 1 160px;
+  max-width: 260px;
+  margin: 0;
 }
 .pv-provider-dialog .pv-editor button.pv-model-chip {
   border-radius: 999px;
+  background: var(--mp-card);
 }
-.pv-provider-dialog .pv-model-chip.selected {
-  border-color: color-mix(in srgb, var(--mp-accent) 45%, var(--mp-line));
-  background: color-mix(in srgb, var(--mp-accent) 9%, var(--mp-card));
+.pv-provider-dialog .pv-editor button.pv-model-chip.selected {
+  border-color: color-mix(in srgb, var(--mp-accent) 45%, transparent);
+  background: var(--mp-accent-soft);
   color: var(--mp-accent);
 }
 .pv-provider-dialog .pv-model-chip.selected > svg {
@@ -1236,7 +1487,7 @@
 }
 .pv-provider-dialog .cx-agent {
   display: inline-flex;
-  border: 1px solid var(--mp-accent, #6560ec);
+  border: 1px solid var(--mp-accent);
   border-radius: 8px;
   padding: 4px 10px;
 }
@@ -1268,7 +1519,7 @@
   font-weight: 560;
 }
 .pv-provider-dialog .cx-account-name input {
-  accent-color: #242428;
+  accent-color: var(--mp-accent);
   width: 15px;
   height: 15px;
 }
@@ -1416,7 +1667,7 @@
 }
 .pv-provider-dialog .pv-model-chips {
   display: flex;
-  gap: 5px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 .pv-provider-dialog .pv-model-chips button {
@@ -1428,42 +1679,27 @@
   border-radius: 16px !important;
   font-size: 12px;
 }
-.pv-provider-dialog .pv-model-chips button.on {
-  border-color: #9c96ff;
-  color: #6555ee;
-  background: #efedff;
-}
 @media (max-width: 520px) {
   .pv-provider-dialog .cx-quota {
     margin-left: 0;
   }
 }
 
-/* The reference uses quiet text actions, not a second boxed model picker. */
 .pv-provider-dialog .pv-editor-body {
-  padding: 16px 18px 14px;
-}
-.pv-provider-dialog .pv-probe-actions button,
-.pv-provider-dialog .pv-add-model button,
-.pv-provider-dialog .pv-model-actions button {
-  padding: 0 3px;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--mp-accent);
+  padding: 14px 18px;
 }
 .pv-provider-dialog .pv-model-chip.served {
   border-style: dashed;
 }
 .pv-provider-dialog .pv-groups-only {
-  margin-top: 12px;
+  margin-top: 0;
   padding: 0;
   text-align: left;
 }
 .pv-provider-dialog .pv-groups-only input[type="checkbox"] {
   width: 13px;
   height: 13px;
-  accent-color: var(--mp-control);
+  accent-color: var(--mp-accent);
 }
 
 /* Read-only app importer, following the reference implementation's flat source list. */

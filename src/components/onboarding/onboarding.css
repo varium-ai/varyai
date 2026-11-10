@@ -213,6 +213,20 @@
 .ob-key-form select {
   max-width: 320px;
 }
+.ob-key-input {
+  position: relative;
+}
+.ob-key-input input {
+  padding-right: 44px;
+}
+.ob-key-visibility {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 32px;
+  height: 32px;
+  color: var(--mp-fg-2);
+}
 .ob-hint {
   color: var(--mp-fg-2);
   font-size: 13px;

@@ -9,6 +9,8 @@ import { copilotGetUsageForAccount } from "@/lib/api/copilot";
 import { subscriptionApi } from "@/lib/api/subscription";
 import type { SubscriptionQuota, QuotaTier } from "@/types/subscription";
 
+import { SubscriptionQuotaSummary } from "./SubscriptionQuotaSummary";
+
 type Provider = NativeSubscriptionProvider | "github_copilot" | "xai_oauth";
 type Snapshot = {
   quota?: Pick<SubscriptionQuota, "credentialStatus" | "success" | "tiers">;
@@ -21,12 +23,14 @@ export function SubscriptionAccountQuota({
   login,
   ready,
   disabled,
+  compact = false,
 }: {
   provider: Provider;
   id: string;
   login: string;
   ready: boolean;
   disabled: boolean;
+  compact?: boolean;
 }) {
   const { t, i18n } = useTranslation();
   const client = useQueryClient();
@@ -142,9 +146,14 @@ export function SubscriptionAccountQuota({
       const normalizedGroup = group
         .replace(/\s+models?$/i, "")
         .replace(/^Claude and GPT$/i, "Claude & GPT");
-      const normalizedWindow = window
-        .replace("five_hour", "5h")
-        .replace("weekly", "7d");
+      const normalizedWindow =
+        /^(5h|five_hour|.*five hour limit(?: remaining)?)$/i.test(window)
+          ? "5h"
+          : /^(7d|seven_day|weekly|.*weekly limit(?: remaining)?)$/i.test(
+                window,
+              )
+            ? "7d"
+            : window;
       const key = normalizedGroup || tier.name;
       let entry = groups.find((item) => item.key === key);
       if (!entry) {
@@ -176,6 +185,24 @@ export function SubscriptionAccountQuota({
               : tiers.length
                 ? null
                 : "quotaEmpty";
+  if (compact) {
+    return (
+      <SubscriptionQuotaSummary
+        label={`${t("subscriptionProvider.allowance")} ${login}`}
+        fetching={query.isFetching}
+        items={quotaGroups.flatMap((group) => group.tiers)}
+        status={
+          provider === "chatgpt_api"
+            ? ready
+              ? "subscriptionProvider.quotaUnavailable"
+              : "codexProvider.quotaLoginRequired"
+            : status
+              ? `codexProvider.${status}`
+              : null
+        }
+      />
+    );
+  }
   return (
     <div
       className="cx-quota"
@@ -227,7 +254,10 @@ export function SubscriptionAccountQuota({
                       {t("codexProvider.remaining", {
                         n: Math.max(
                           0,
-                          Math.min(100, Math.round(100 - tier.utilization)),
+                          Math.min(
+                            100,
+                            Math.round((100 - tier.utilization) * 10) / 10,
+                          ),
                         ),
                       })}
                     </b>

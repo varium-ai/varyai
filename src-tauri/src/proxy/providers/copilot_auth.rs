@@ -22,6 +22,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
+pub(crate) mod provider_import;
 
 /// GitHub OAuth 客户端 ID（VS Code）- 用于 github.com
 const GITHUB_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
@@ -633,7 +634,10 @@ impl CopilotAuthManager {
     /// 获取指定账号信息
     pub async fn get_account(&self, account_id: &str) -> Option<GitHubAccount> {
         let accounts = self.accounts.read().await;
-        accounts.get(account_id).map(GitHubAccount::from)
+        accounts.get(account_id).map(|data| GitHubAccount {
+            id: account_id.to_owned(),
+            ..GitHubAccount::from(data)
+        })
     }
 
     /// 移除指定账号
@@ -691,7 +695,6 @@ impl CopilotAuthManager {
         user: GitHubUser,
         github_domain: String,
     ) -> Result<GitHubAccount, CopilotAuthError> {
-        let account_id = composite_account_id(&github_domain, user.id);
         let now = chrono::Utc::now().timestamp();
 
         let account_data = GitHubAccountData {
@@ -703,6 +706,22 @@ impl CopilotAuthManager {
             github_domain: github_domain.clone(),
         };
 
+        let account_id = {
+            let mut accounts = self.accounts.write().await;
+            let id = accounts
+                .iter()
+                .find(|(_, old)| {
+                    old.github_domain == github_domain
+                        && (old.user.id == user.id
+                            || (old.user.id == 0
+                                && old.user.login.eq_ignore_ascii_case(&user.login)))
+                })
+                .map(|(id, _)| id.clone())
+                .unwrap_or_else(|| composite_account_id(&github_domain, user.id));
+            accounts.insert(id.clone(), account_data);
+            id
+        };
+
         let account = GitHubAccount {
             id: account_id.clone(),
             login: user.login.clone(),
@@ -711,11 +730,6 @@ impl CopilotAuthManager {
             github_domain,
             reauth_required: false,
         };
-
-        {
-            let mut accounts = self.accounts.write().await;
-            accounts.insert(account_id, account_data);
-        }
 
         {
             let mut default_account_id = self.default_account_id.write().await;
@@ -1368,8 +1382,13 @@ impl CopilotAuthManager {
         accounts: &HashMap<String, GitHubAccountData>,
         default_account_id: Option<&str>,
     ) -> Vec<GitHubAccount> {
-        let mut account_list: Vec<GitHubAccount> =
-            accounts.values().map(GitHubAccount::from).collect();
+        let mut account_list: Vec<GitHubAccount> = accounts
+            .iter()
+            .map(|(id, data)| GitHubAccount {
+                id: id.clone(),
+                ..GitHubAccount::from(data)
+            })
+            .collect();
         account_list.sort_by(|a, b| {
             let a_default = default_account_id == Some(a.id.as_str());
             let b_default = default_account_id == Some(b.id.as_str());

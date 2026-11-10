@@ -585,9 +585,11 @@ and in the selected profile. It removes a native compatibility URL only when its
 local origin matches the recognized Vary menu endpoint. User-selected models,
 catalogs, other endpoints and inactive profiles remain unchanged. The provider
 definition stays available for sessions that name it, so its presence alone is
-not an enabled connection. Unknown or modified provider definitions are refused.
-Backup failure prevents configuration writes. Background recovery without a
-receipt still leaves configuration untouched.
+not an enabled connection. Unrecognized provider identities or endpoints are
+refused. Supplemental provider fields are preserved and do not by themselves
+block an explicit disconnect. Automatic orphan cleanup keeps its stricter
+whole-definition check. Backup failure prevents configuration writes.
+Background recovery without a receipt still leaves configuration untouched.
 
 A different gateway can retain the Vary provider definition for historical
 conversations. Magpie, for example, can redirect that definition to its own `/v1`
@@ -597,8 +599,8 @@ origin as the native Codex URL, and no Vary model, catalog or provider reference
 remains, that is an external connection. Its definition alone is not a missing
 Vary recovery record. **Disconnect** clears Vary's saved connection request while
 preserving the external endpoint, provider definitions, model selection and
-login. The confirmation explains this narrower operation. Unknown or ambiguous
-settings still require normal recovery; a `/v1` URL alone is not proof of ownership.
+login. Unknown or ambiguous settings still require normal recovery; a `/v1`
+URL alone is not proof of ownership.
 
 If the active provider or recovery receipt changes while troubleshooting,
 refresh Tools before choosing an action. Reapplying Vary may create a new receipt
@@ -606,11 +608,21 @@ whose baseline is the external connection; subsequent disconnect must preserve
 that baseline. Use an updated build containing this fix. Do not delete the
 retained provider or authentication/history files to suppress the warning.
 
-For recognized Vary routes, the confirmation explains that removed settings use
-Codex defaults; the missing historical settings cannot be recovered. Choose a shared model or use **Apply
-again** to back up the current configuration and reconnect with a new receipt.
-Configuration drift with an existing receipt still requires the normal recovery
-flow. Authentication files and unrelated settings are preserved.
+The disconnect confirmation uses the same restore explanation regardless of
+whether a recovery receipt is available. Codex also explains that its provider
+definition is retained for existing conversations. Internal configuration-conflict
+codes are not rendered as a separate instruction to inspect tool configuration.
+An unsuccessful operation remains unsuccessful and can be retried.
+
+With a receipt, explicit disconnect validates the restored configuration and any
+remaining Vary routing fields before replacing the live document or deleting the
+receipt. If this validation fails, both the installed configuration and the
+recovery evidence remain available; a failed attempt must not create a missing
+receipt state. Authentication files and unrelated settings are preserved.
+
+Choose a shared model or use **Apply again** to back up the current configuration
+and reconnect with a new receipt. Configuration drift with an existing receipt
+still requires the normal recovery flow.
 
 ### Codex stays on "Loading models..." after enabling routing
 

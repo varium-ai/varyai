@@ -9,6 +9,8 @@ import { fetchXaiOauthModels } from "@/lib/api/model-fetch";
 import { settingsApi } from "@/lib/api/settings";
 import { copyText } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
+import { isImageGenerationModel } from "@/lib/providerModelKind";
+import { ProviderImageModels } from "./ProviderImageModels";
 import { ProviderModelPreferences } from "./ProviderModelPreferences";
 
 import { Input } from "@/components/ui/input";
@@ -71,6 +73,7 @@ function SubscriptionFields({
   );
   const [fetching, setFetching] = useState(false);
   const [typed, setTyped] = useState("");
+  const [filter, setFilter] = useState("");
   const [catalogFailed, setCatalogFailed] = useState(false);
   const working = fetching || nativeBusy || !!auth?.isRemovingAccount;
   useEffect(() => {
@@ -160,7 +163,30 @@ function SubscriptionFields({
     const id = String(value.model ?? value.id ?? row);
     available.set(id, { ...available.get(id), ...value });
   }
-  const models = [...available.values()];
+  const imageModels = [...available.values()].filter(isImageGenerationModel);
+  const models = [...available.values()].filter(
+    (row) => !isImageGenerationModel(row),
+  );
+  const term = filter.trim().toLocaleLowerCase();
+  const filtered = models.filter((row) =>
+    `${row.model ?? row.id} ${(row.modelPreferences as { name?: string })?.name ?? row.displayName ?? ""}`
+      .toLocaleLowerCase()
+      .includes(term),
+  );
+  const imagePicks = source.models.filter(isImageGenerationModel);
+  function toggleImage(id: string) {
+    onChange({
+      ...draft,
+      source: {
+        ...source,
+        models: selected.has(id)
+          ? source.models.filter(
+              (row) => String((row as Record<string, unknown>).model) !== id,
+            )
+          : [...source.models, available.get(id)!],
+      },
+    });
+  }
   const selected = new Set(
     source.models.map((row) => String((row as Record<string, unknown>).model)),
   );
@@ -450,27 +476,7 @@ function SubscriptionFields({
       )}
       <div className="pv-field">
         <span className="pv-field-label">{t("codexProvider.models")}</span>
-        <div className="pv-stack">
-          <div
-            className="pv-protocols"
-            role="radiogroup"
-            aria-label={t("providerEditor.modelView")}
-          >
-            {(["vendor", "picked", "best", "usage"] as const).map((mode) => (
-              <button
-                type="button"
-                key={mode}
-                role="radio"
-                aria-checked={source.mode === mode}
-                disabled={locked}
-                onClick={() =>
-                  onChange({ ...draft, source: { ...source, mode } })
-                }
-              >
-                {t(`providerParity.mode_${mode}`)}
-              </button>
-            ))}
-          </div>
+        <div className="pv-models">
           {catalogFailed && (
             <p role="status" className="pv-error">
               {t("codexProvider.catalogFailed")}
@@ -480,7 +486,22 @@ function SubscriptionFields({
             <p className="pv-hint">{t("subscriptionProvider.fetchHint")}</p>
           )}
           {!!models.length && (
-            <div className="pv-probe-actions">
+            <div className="pv-model-actions">
+              {models.length > 24 && (
+                <Input
+                  type="search"
+                  className="pv-model-search"
+                  value={filter}
+                  aria-label={t("providerEditor.filterModels", {
+                    count: models.length,
+                  })}
+                  placeholder={t("providerEditor.filterModels", {
+                    count: models.length,
+                  })}
+                  disabled={locked}
+                  onChange={(event) => setFilter(event.target.value)}
+                />
+              )}
               <button
                 type="button"
                 disabled={locked}
@@ -490,7 +511,14 @@ function SubscriptionFields({
                     source: {
                       ...source,
                       mode: "picked",
-                      models: models.slice(0, 256),
+                      models: [
+                        ...imagePicks,
+                        ...models.filter(
+                          (row) =>
+                            selected.has(String(row.model ?? row.id)) ||
+                            filtered.includes(row),
+                        ),
+                      ].slice(0, 256),
                     },
                   })
                 }
@@ -503,7 +531,7 @@ function SubscriptionFields({
                 onClick={() =>
                   onChange({
                     ...draft,
-                    source: { ...source, mode: "picked", models: [] },
+                    source: { ...source, mode: "picked", models: imagePicks },
                   })
                 }
               >
@@ -511,8 +539,12 @@ function SubscriptionFields({
               </button>
             </div>
           )}
-          <div className="pv-model-chips">
-            {models.map((row) => {
+          <div
+            className="pv-model-chips"
+            role="group"
+            aria-label={t("modelPicker.models")}
+          >
+            {filtered.map((row) => {
               const id = String(row.model ?? row.id);
               const checked = selected.has(id);
               return (
@@ -546,58 +578,67 @@ function SubscriptionFields({
               );
             })}
           </div>
-          <div className="pv-probe-actions">
-            <Input
-              value={typed}
-              disabled={locked}
-              onChange={(event) => setTyped(event.target.value)}
-              placeholder={t("providerEditor.addModelId")}
-              aria-label={t("providerEditor.addModelId")}
-            />
-            <button
-              type="button"
-              disabled={locked || !typed.trim() || selected.size >= 256}
-              onClick={() => {
-                const model = typed.trim();
-                if (
-                  !model ||
-                  model.length > 200 ||
-                  /[\x00-\x1f\x7f]/.test(model)
-                )
-                  return;
-                if (!selected.has(model))
+          <div className="pv-model-footer">
+            <div className="pv-add-model">
+              <Input
+                value={typed}
+                disabled={locked}
+                onChange={(event) => setTyped(event.target.value)}
+                placeholder={t("providerEditor.addModelId")}
+                aria-label={t("providerEditor.addModelId")}
+              />
+              <button
+                type="button"
+                disabled={locked || !typed.trim() || selected.size >= 256}
+                onClick={() => {
+                  const model = typed.trim();
+                  if (
+                    !model ||
+                    model.length > 200 ||
+                    /[\x00-\x1f\x7f]/.test(model)
+                  )
+                    return;
+                  if (!selected.has(model))
+                    onChange({
+                      ...draft,
+                      source: {
+                        ...source,
+                        mode: "picked",
+                        models: [...source.models, { model }],
+                      },
+                    });
+                  setTyped("");
+                }}
+              >
+                {t("providerEditor.addModel")}
+              </button>
+              <button
+                type="button"
+                aria-label={t("codexProvider.fetchModels")}
+                disabled={locked || !source.accountId}
+                onClick={() => void discover()}
+              >
+                {fetching
+                  ? t("common.loading")
+                  : t("codexProvider.fetchModels")}
+              </button>
+            </div>
+            {!!source.models.length && (
+              <ProviderModelPreferences
+                models={source.models.filter(
+                  (row) => !isImageGenerationModel(row),
+                )}
+                disabled={locked}
+                onChange={(models) =>
                   onChange({
                     ...draft,
-                    source: {
-                      ...source,
-                      mode: "picked",
-                      models: [...source.models, { model }],
-                    },
-                  });
-                setTyped("");
-              }}
-            >
-              {t("providerEditor.addModel")}
-            </button>
-            <button
-              type="button"
-              aria-label={t("codexProvider.fetchModels")}
-              disabled={locked || !source.accountId}
-              onClick={() => void discover()}
-            >
-              {fetching ? t("common.loading") : t("codexProvider.fetchModels")}
-            </button>
+                    source: { ...source, models: [...models, ...imagePicks] },
+                  })
+                }
+              />
+            )}
           </div>
-          {!!source.models.length && (
-            <ProviderModelPreferences
-              models={source.models}
-              disabled={locked}
-              onChange={(models) =>
-                onChange({ ...draft, source: { ...source, models } })
-              }
-            />
-          )}
-          <label className="cx-check">
+          <label className="cx-check pv-groups-only">
             <input
               type="checkbox"
               checked={source.groupsOnly}
@@ -614,6 +655,20 @@ function SubscriptionFields({
           <p className="pv-hint">{t(`providerParity.hint_${source.mode}`)}</p>
         </div>
       </div>
+      <ProviderImageModels
+        models={imageModels.map((row) => ({
+          id: String(row.model ?? row.id),
+          name: String(
+            (row.modelPreferences as { name?: string })?.name ??
+              row.displayName ??
+              row.model ??
+              row.id,
+          ),
+        }))}
+        selected={selected}
+        disabled={locked}
+        onToggle={toggleImage}
+      />
     </>
   );
 }

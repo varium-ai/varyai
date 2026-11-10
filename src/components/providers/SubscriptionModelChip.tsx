@@ -15,7 +15,11 @@ export function SubscriptionModelChip({
       className={`pv-model-chip ${selected ? "selected on" : ""}`}
       aria-pressed={selected}
     >
-      {selected && <Check size={12} aria-hidden />}
+      <Check
+        size={11}
+        aria-hidden
+        style={{ visibility: selected ? "visible" : "hidden" }}
+      />
       <span>{children}</span>
     </button>
   );
