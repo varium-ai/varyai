@@ -12,6 +12,7 @@ export type DirectoryAppId = Exclude<
   | "doubaowork"
   | "qoder"
   | "trae"
+  | "trae-intl"
   | "kimi"
   | "qwen"
   | "zcode"

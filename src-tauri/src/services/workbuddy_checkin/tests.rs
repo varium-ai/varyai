@@ -6,6 +6,36 @@ use std::sync::{
     Arc,
 };
 
+#[test]
+fn missing_native_account_keeps_confirmed_today_without_assigning_it_to_another_account() {
+    let now = Utc::now().timestamp();
+    let mut store = Store::default();
+    store.records.insert(
+        "saved-account".into(),
+        Record {
+            day: beijing_day(now),
+            checked_at: now - 1,
+            outcome: Outcome::Claimed,
+            credit: Some(100.0),
+            streak: Some(2),
+            credit_delayed: false,
+        },
+    );
+    let status = Manager::snapshot(&store, &Err(Outcome::CredentialsUnavailable), now);
+    assert_eq!(status.outcome, Outcome::CredentialsUnavailable);
+    assert_eq!(status.saved_outcome, Some(Outcome::Claimed));
+    assert_eq!(status.credit, Some(100.0));
+    assert!(
+        Manager::snapshot(&store, &Err(Outcome::CredentialsUnavailable), now + 86400)
+            .saved_outcome
+            .is_none()
+    );
+    let other: Account = serde_json::from_value(json!({"uid":"another-account","accessToken":"synthetic-access","domain":"www.workbuddy.cn"})).expect("synthetic account");
+    let status = Manager::snapshot(&store, &Ok(other), now);
+    assert!(status.saved_outcome.is_none());
+    assert_eq!(status.outcome, Outcome::NotChecked);
+}
+
 struct Fixture {
     _dir: tempfile::TempDir,
     manager: Manager,

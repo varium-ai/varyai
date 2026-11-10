@@ -62,6 +62,7 @@ pub(crate) fn supports_restart(app: &str) -> bool {
             | "codex"
             | "qoder"
             | "trae"
+            | "trae-intl"
             | "doubaowork"
             | "kimi"
             | "zcode"
@@ -78,6 +79,7 @@ fn bundle_ids(app: &str) -> &'static [&'static str] {
         "codex" => &["com.openai.codex"],
         "qoder" => &["com.qodercn.app"],
         "trae" => &["cn.trae.app"],
+        "trae-intl" => &["com.trae.app"],
         "doubaowork" => &["com.work.pc.doubao"],
         "kimi" => &["com.kimi.code.desktop"],
         "zcode" => &["dev.zcode.app"],
@@ -195,7 +197,10 @@ pub(crate) fn restart(
     #[cfg(target_os = "macos")]
     {
         // First-time TRAE/Doubao setup may only need the desktop app opened.
-        if matches!(app, "trae" | "doubaowork") && state(app, applied_ms) == Some(State::Stopped) {
+        if (matches!(app, "trae" | "trae-intl" | "doubaowork")
+            || super::model_control::authorized(app))
+            && state(app, applied_ms) == Some(State::Stopped)
+        {
             return open_installed(app, valid);
         }
         restart_with(&macos::Native { app }, applied_ms, valid)
@@ -237,6 +242,9 @@ fn open_installed(app: &str, valid: impl Fn() -> bool) -> Result<(), String> {
     if !valid() || !macos::bundle_matches(&target, ids, &roots) {
         return Err(if valid() { CHANGED } else { super::CONFLICT }.into());
     }
+    if macos::launch_model_control(app, &target)? {
+        return Ok(());
+    }
     let status = std::process::Command::new("/usr/bin/open")
         .arg(&target)
         .status()
@@ -258,6 +266,35 @@ mod macos {
 
     pub(super) struct Native<'a> {
         pub app: &'a str,
+    }
+    pub(super) fn launch_model_control(
+        app: &str,
+        bundle: &std::path::Path,
+    ) -> Result<bool, String> {
+        if !super::super::model_control::authorized(app) {
+            return Ok(false);
+        }
+        let output = std::process::Command::new("/usr/libexec/PlistBuddy")
+            .args(["-c", "Print :CFBundleExecutable"])
+            .arg(bundle.join("Contents/Info.plist"))
+            .output()
+            .map_err(|_| FAILED)?;
+        let name = std::str::from_utf8(&output.stdout)
+            .map_err(|_| FAILED)?
+            .trim();
+        if !output.status.success()
+            || name.is_empty()
+            || name.contains(['/', '\\'])
+            || name == "."
+            || name == ".."
+        {
+            return Err(CHANGED.into());
+        }
+        let executable = bundle.join("Contents/MacOS").join(name);
+        if !executable.is_file() || executable.is_symlink() {
+            return Err(CHANGED.into());
+        }
+        super::super::model_control::launch(app, &executable)
     }
     fn applications(
         id: &str,
@@ -302,6 +339,49 @@ mod macos {
             })
             .unwrap_or(false)
     }
+    pub(super) fn process_launched_ms(pid: i32) -> Option<i64> {
+        if pid <= 0 {
+            return None;
+        }
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+        // Read creation identity from the kernel: pipe-launched Electron apps can
+        // have no AppKit launchDate, even though their bundle identity is valid.
+        let read = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        if read != size {
+            return None;
+        }
+        // proc_pidinfo initialized the complete structure on a full-sized read.
+        let info = unsafe { info.assume_init() };
+        if info.pbi_pid != pid as u32
+            || info.pbi_start_tvsec == 0
+            || info.pbi_start_tvusec >= 1_000_000
+        {
+            return None;
+        }
+        let time = info
+            .pbi_start_tvsec
+            .checked_mul(1000)?
+            .checked_add(info.pbi_start_tvusec / 1000)?;
+        i64::try_from(time).ok()
+    }
+
+    pub(super) fn process_gone(pid: i32) -> bool {
+        // Signal zero checks existence without sending a signal. Permission or
+        // metadata failures must retain an unknown live identity, not imply exit.
+        pid > 0
+            && unsafe { libc::kill(pid, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+
     fn identity(app: &NSRunningApplication, ids: &[&str]) -> Result<Instance, String> {
         let id = app.bundleIdentifier().ok_or(FAILED)?.to_string();
         if !ids.contains(&id.as_str()) {
@@ -322,14 +402,10 @@ mod macos {
         if !bundle_matches(&path, &[&id], &roots) {
             return Err(FAILED.into());
         }
-        let date = app
-            .launchDate()
-            .map(|date| date.timeIntervalSince1970() * 1000.0)
-            .filter(|date| date.is_finite() && *date > 0.0);
         Ok(Instance {
             pid: app.processIdentifier(),
             bundle: path,
-            launched_ms: date.map(|date| date as i64),
+            launched_ms: process_launched_ms(app.processIdentifier()),
         })
     }
     impl Runtime for Native<'_> {
@@ -341,7 +417,12 @@ mod macos {
             let mut found = Vec::new();
             for id in ids {
                 for app in applications(id).iter().filter(|app| !app.isTerminated()) {
-                    found.push(identity(&app, ids)?);
+                    let instance = identity(&app, ids)?;
+                    // LaunchServices may retain an exiting app after its PID is gone.
+                    if instance.launched_ms.is_none() && process_gone(instance.pid) {
+                        continue;
+                    }
+                    found.push(instance);
                 }
             }
             found.sort_by_key(|instance| instance.pid);
@@ -382,6 +463,9 @@ mod macos {
             ];
             if !bundle_matches(bundle, selected_bundle_ids(self.app)?, &roots) {
                 return Err(CHANGED.into());
+            }
+            if launch_model_control(self.app, bundle)? {
+                return Ok(());
             }
             let status = std::process::Command::new("/usr/bin/open")
                 .arg(bundle)
@@ -529,6 +613,23 @@ mod tests {
             &["com.workbuddy.workbuddy-ai"],
             &roots
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pipe_launched_clients_have_stable_kernel_start_times_without_appkit_metadata() {
+        let pid = std::process::id() as i32;
+        let first = macos::process_launched_ms(pid);
+        assert!(first.is_some_and(|time| time > 0));
+        assert_eq!(macos::process_launched_ms(pid), first);
+        assert_eq!(macos::process_launched_ms(-1), None);
+        assert!(!macos::process_gone(pid));
+        assert!(!macos::process_gone(-1));
+        assert!(macos::process_gone(i32::MAX));
+        let running = vec![instance(first)];
+        let runtime = FakeRuntime::new(vec![running.clone(), running, vec![]]);
+        assert_eq!(restart_with(&runtime, first, || true), Ok(()));
+        assert!(runtime.events.borrow().contains(&"open"));
     }
 
     #[test]

@@ -21,6 +21,7 @@ fn trusted_url(app: &str, raw: &str) -> Option<reqwest::Url> {
         "qoder" => &["static.qoder.com.cn"],
         "doubaowork" => &["lf9-apk.ugapk.cn", "lf6-apk.ugapk.cn", "lf3-apk.ugapk.cn"],
         "trae" => &["lf-cdn.trae.com.cn"],
+        "trae-intl" => &["lf-cdn.trae.ai", "lf-static.traecdn.us"],
         "kimi" => &["code.kimi.com", "cdn.kimi.com"],
         "zcode" => &["cdn-zcode.z.ai", "cdn.codegeex.cn"],
         "deepseek-harness" => &["download.deepseek.com"],
@@ -182,6 +183,24 @@ pub(super) async fn latest(client: &reqwest::Client, app: &str, arch: &str) -> O
                 "https://www.workbuddy.cn/v2/update?platform=workbuddy-darwin-{arch}&version=0.0.0"
             );
             json_release(app, &get_text(client, &url).await?)
+        }
+        "trae-intl" => {
+            let data: serde_json::Value = serde_json::from_str(
+                &get_text(
+                    client,
+                    "https://api.trae.ai/icube/api/v1/native/version/trae/latest",
+                )
+                .await?,
+            )
+            .ok()?;
+            let versions = data.pointer("/data/manifest/darwin/versions")?.as_array()?;
+            let arch = if arch == "arm64" { "apple" } else { "intel" };
+            let entry = ["va", "sg", "usttp"].into_iter().find_map(|region| {
+                versions
+                    .iter()
+                    .find(|entry| entry["region"] == region && entry["arch"] == arch)
+            })?;
+            release(app, entry["version"].as_str()?, entry["url"].as_str()?)
         }
         "trae" => {
             let url = "https://api.trae.com.cn/icube/api/v1/package/check_update?pid=7409949320595642651&branch=release_desktop_yoma_cn&buildId=0&platform=mac&packageType=stable_cn&appVersion=0.0.0&buildVersion=0.0.0&mid=varyai-update-check&productCode=TRAE";

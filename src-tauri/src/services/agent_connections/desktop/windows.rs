@@ -42,6 +42,22 @@ fn matches_image(app: &str, image: &str, local: &str, programs: &str) -> bool {
             && (image == format!("{programs}\\workbuddy ai\\workbuddy.exe")
                 || image == format!("{programs}\\workbuddy-ai\\workbuddy.exe"));
     }
+    if matches!(app, "trae" | "trae-intl") {
+        let local = normalize(local);
+        let (folder, exe) = if app == "trae" {
+            ("trae cn", "trae cn.exe")
+        } else {
+            ("trae", "trae.exe")
+        };
+        return (!programs.is_empty() && image == format!("{programs}\\{folder}\\{exe}"))
+            || (!local.is_empty() && image == format!("{local}\\programs\\{folder}\\{exe}"));
+    }
+    if app == "qoder" {
+        let local = normalize(local);
+        return (!programs.is_empty() && image == format!("{programs}\\qoder cn\\qoder cn.exe"))
+            || (!local.is_empty()
+                && image == format!("{local}\\programs\\qoder cn\\qoder cn.exe"));
+    }
     if app == "codex" {
         return !programs.is_empty()
             && image
@@ -243,7 +259,7 @@ pub(super) fn supported(app: &str) -> bool {
     // Only apps with verified Windows process identity can restart here.
     // Other desktop agents keep macOS support via bundle identifiers.
     match app {
-        "claude-desktop" | "codex" | "workbuddy-ai" => true,
+        "claude-desktop" | "codex" | "workbuddy-ai" | "qoder" | "trae" | "trae-intl" => true,
         "workbuddy" => crate::workbuddy_config::get_workbuddy_dir()
             .file_name()
             .is_some_and(|name| name == ".workbuddy"),
@@ -270,6 +286,9 @@ pub(super) fn restart(
     if !supported(app) {
         return Err("agentConnections.restartUnsupported".into());
     }
+    if super::super::model_control::authorized(app) && state(app, applied_ms) == State::Stopped {
+        return native::open_model_control(app, valid);
+    }
     restart_with(&native::Native { app }, applied_ms, valid)
 }
 
@@ -277,6 +296,33 @@ pub(super) fn restart(
 mod tests {
     use super::*;
     use std::{cell::RefCell, collections::VecDeque};
+    #[test]
+    fn qoder_windows_identity_rejects_other_install_roots_and_other_products() {
+        assert!(matches_image(
+            "qoder",
+            r"C:\Program Files\Qoder CN\Qoder CN.exe",
+            r"C:\Users\synthetic\AppData\Local",
+            r"C:\Program Files"
+        ));
+        assert!(matches_image(
+            "qoder",
+            r"C:\Users\synthetic\AppData\Local\Programs\Qoder CN\Qoder CN.exe",
+            r"C:\Users\synthetic\AppData\Local",
+            r"C:\Program Files"
+        ));
+        assert!(!matches_image(
+            "qoder",
+            r"C:\Downloads\Qoder CN.exe",
+            r"C:\Users\synthetic\AppData\Local",
+            r"C:\Program Files"
+        ));
+        assert!(!matches_image(
+            "qoder",
+            r"C:\Program Files\Qoder\Qoder.exe",
+            r"C:\Users\synthetic\AppData\Local",
+            r"C:\Program Files"
+        ));
+    }
     fn process() -> Process {
         Process {
             pid: 10,

@@ -21,6 +21,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork
     ) {
         return Err(AppError::localized(
@@ -48,6 +49,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         | AppType::ZCode
         | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
         | AppType::DoubaoWork => {
             unreachable!("handled above")
         }
@@ -69,6 +71,7 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         | AppType::ZCode
         | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
         | AppType::DoubaoWork => {
             unreachable!("handled above")
         }

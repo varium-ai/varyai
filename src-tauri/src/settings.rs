@@ -64,6 +64,8 @@ pub struct VisibleApps {
     pub deepseek_harness: bool,
     #[serde(default)]
     pub trae: bool,
+    #[serde(default, rename = "trae-intl")]
+    pub trae_intl: bool,
     #[serde(default)]
     pub doubaowork: bool,
 }
@@ -88,6 +90,7 @@ impl Default for VisibleApps {
             zcode: false,
             deepseek_harness: false,
             trae: false,
+            trae_intl: false,
             doubaowork: false,
         }
     }
@@ -114,6 +117,7 @@ impl VisibleApps {
             AppType::ZCode => self.zcode,
             AppType::DeepSeekHarness => self.deepseek_harness,
             AppType::Trae => self.trae,
+            AppType::TraeIntl => self.trae_intl,
             AppType::DoubaoWork => self.doubaowork,
         }
     }
@@ -1064,6 +1068,7 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
         | AppType::ZCode
         | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
         | AppType::DoubaoWork => None,
     }
 }
@@ -1092,6 +1097,7 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         | AppType::ZCode
         | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
         | AppType::DoubaoWork => {}
     })
 }

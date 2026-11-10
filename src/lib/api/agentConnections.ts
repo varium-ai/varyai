@@ -57,11 +57,20 @@ export interface AgentNativeModel {
   model: string | null;
   available: boolean;
 }
+export interface AgentModelControl {
+  authorized: boolean;
+  ready: boolean;
+  pending: boolean;
+}
 export const agentConnectionsApi = {
   get: (app: string) =>
     invoke<AgentConnection>("get_agent_connection", { app }),
   nativeModel: (app: string) =>
     invoke<AgentNativeModel>("get_agent_native_model", { app }),
+  modelControl: (app: string) =>
+    invoke<AgentModelControl>("get_agent_model_control", { app }),
+  authorizeModelControl: (app: string, confirmed: boolean) =>
+    invoke<void>("authorize_agent_model_control", { app, confirmed }),
   list: () => invoke<AgentConnection[]>("list_agent_connections"),
   diagnoseCodexProxy: (force = false) =>
     invoke<CodexProxyIssue | null>("diagnose_codex_proxy", { force }),

@@ -8,6 +8,7 @@ const AGENTS: &[&str] = &[
     "qoder",
     "doubaowork",
     "trae",
+    "trae-intl",
     "kimi",
     "zcode",
     "deepseek-harness",
@@ -135,6 +136,16 @@ pub(super) async fn get_versions() -> Result<HashMap<String, AgentVersion>, Stri
                 &build_tool_search_paths(app),
                 cfg!(target_os = "macos"),
             );
+            #[cfg(target_os = "windows")]
+            let info = {
+                let mut info = info;
+                if crate::services::trae_bridge::shared::Edition::parse(app).is_some() {
+                    info.supported = true;
+                    info.installed = is_agent_installed(app);
+                    info.source = info.installed.then_some("desktop");
+                }
+                info
+            };
             let channel_matches =
                 bundle.is_none_or(|bundle| desktop_apps::update_channel_matches(app, &bundle));
             (info, channel_matches)

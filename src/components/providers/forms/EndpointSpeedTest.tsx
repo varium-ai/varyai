@@ -24,6 +24,7 @@ const ENDPOINT_TIMEOUT_SECS: Record<AppId, number> = {
   qoder: 5,
   doubaowork: 10,
   trae: 5,
+  "trae-intl": 5,
   kimi: 5,
   qwen: 5,
   zcode: 5,

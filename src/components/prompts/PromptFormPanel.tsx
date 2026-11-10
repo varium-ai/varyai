@@ -40,6 +40,7 @@ const PromptFormPanel: React.FC<PromptFormPanelProps> = ({
     qoder: "qoder",
     doubaowork: "",
     trae: "",
+    "trae-intl": "",
     kimi: "",
     qwen: "",
     zcode: "",

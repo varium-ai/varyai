@@ -13,6 +13,7 @@ type DirectoryAppId = Exclude<
   | "qoder"
   | "doubaowork"
   | "trae"
+  | "trae-intl"
   | "kimi"
   | "qwen"
   | "zcode"

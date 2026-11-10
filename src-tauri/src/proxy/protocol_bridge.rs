@@ -411,6 +411,7 @@ mod tests {
             AppType::ZCode,
             AppType::DeepSeekHarness,
             AppType::Trae,
+            AppType::TraeIntl,
             AppType::Hermes,
         ] {
             for (endpoint, input) in [

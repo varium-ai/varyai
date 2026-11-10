@@ -4797,7 +4797,7 @@ impl ProviderService {
         }
     }
 
-    fn provider_live_config_managed(provider: &Provider) -> Option<bool> {
+    pub(crate) fn provider_live_config_managed(provider: &Provider) -> Option<bool> {
         provider
             .meta
             .as_ref()
@@ -6310,6 +6310,7 @@ impl ProviderService {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => Ok(String::new()),
         }
     }
@@ -6337,6 +6338,7 @@ impl ProviderService {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => Ok(String::new()),
         }
     }
@@ -6998,7 +7000,8 @@ impl ProviderService {
             | AppType::Qwen
             | AppType::ZCode
             | AppType::DeepSeekHarness
-            | AppType::Trae => {
+            | AppType::Trae
+            | AppType::TraeIntl => {
                 if provider.category.as_deref() != Some("official") {
                     crate::services::agent_clients::validate(&provider.settings_config)?;
                 }
@@ -7345,6 +7348,7 @@ impl ProviderService {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => {
                 // These native formats use apiKey and baseUrl directly on the object.
                 let api_key = provider

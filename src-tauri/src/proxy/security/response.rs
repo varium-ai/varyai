@@ -45,6 +45,7 @@ pub fn build_blocked_response(app_type: &AppType, reason: &str) -> Result<Respon
         | AppType::ZCode
         | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
         | AppType::DoubaoWork => {
             json!({
                 "error": {

@@ -30,11 +30,12 @@ export function DoubaoWorkCheckinPanel({
     staleTime: 60_000,
     refetchInterval: 60_000,
   });
-  const selected = query.data?.accounts.find(
-    (account) =>
-      account.id ===
-      (selectedId ?? query.data.accounts.find((a) => a.current)?.id),
-  );
+  const selected =
+    query.data?.accounts.find(
+      (account) =>
+        account.id ===
+        (selectedId ?? query.data.accounts.find((a) => a.current)?.id),
+    ) ?? (!query.data?.connected ? query.data?.accounts[0] : undefined);
   const update = (value: DoubaoCheckinStatus) =>
     client.setQueryData(queryKey, value);
   const claim = useMutation({
@@ -98,9 +99,11 @@ export function DoubaoWorkCheckinPanel({
               {t(
                 claim.isPending
                   ? "doubaowork.checkin.checking"
-                  : selected && !selected.current
-                    ? "doubaowork.checkin.switchAndCheckin"
-                    : "doubaowork.checkin.checkNow",
+                  : hasReward
+                    ? "agentRewards.checkedIn"
+                    : selected && !selected.current
+                      ? "doubaowork.checkin.switchAndCheckin"
+                      : "doubaowork.checkin.checkNow",
               )}
             </Button>
           </div>
@@ -146,6 +149,12 @@ export function DoubaoWorkCheckinPanel({
                 `doubaowork.checkin.outcomes.${selected?.outcome ?? query.data.outcome}`,
               )}
             </p>
+            {!query.data.connected && selected && (
+              <p className="mp-checkin-muted">
+                {t("agentRewards.savedResult")}{" "}
+                {t(`doubaowork.checkin.outcomes.${query.data.outcome}`)}
+              </p>
+            )}
             {hasReward && (
               <div className="mp-checkin-rewards">
                 {selected.credit != null && (
@@ -191,7 +200,9 @@ export function DoubaoWorkCheckinPanel({
             checked={
               selected?.autoEnabled ?? query.data?.autoConfigured ?? false
             }
-            disabled={!selected || busy || query.isError}
+            disabled={
+              !query.data?.connected || !selected || busy || query.isError
+            }
             onCheckedChange={(enabled) => {
               claim.reset();
               if (selected) auto.mutate({ id: selected.id, enabled });

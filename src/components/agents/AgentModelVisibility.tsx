@@ -21,7 +21,9 @@ export function AgentModelVisibility({
   models,
   disabled,
   onBusyChange,
+  inline = false,
 }: {
+  inline?: boolean;
   app: string;
   name: string;
   connected: boolean;
@@ -103,6 +105,66 @@ export function AgentModelVisibility({
           total: models.length,
         });
 
+  const picker = (
+    <SharedModelPicker
+      models={models}
+      selected={selected.map((model) => model.id)}
+      multiple
+      disabled={disabled}
+      name={name}
+      title={t("agentConnections.modelListTitle", { agent: name })}
+      description={t("agentConnections.modelListDescription", {
+        agent: name,
+      })}
+      descriptionTitle={t(
+        connected
+          ? "agentConnections.modelListHint"
+          : "agentConnections.modelListDisconnectedHint",
+      )}
+      error={error}
+      saving={saving}
+      onPick={(id) => {
+        const current = latest.current;
+        if (!current) return;
+        const ids = new Set(current.ids);
+        ids.has(id) ? ids.delete(id) : ids.add(id);
+        change({ ...current, ids: [...ids] });
+      }}
+      visibility={{
+        only: value?.only ?? false,
+        order: value?.order,
+        onShownChange: (rows, visible) => {
+          const current = latest.current;
+          if (!current) return;
+          const ids = new Set(current.ids);
+          for (const id of rows) {
+            if (visible === current.only) ids.add(id);
+            else ids.delete(id);
+          }
+          change({ ...current, ids: [...ids] });
+        },
+        onOnlyChange: (only) => {
+          const current = latest.current;
+          if (!current) return;
+          change({
+            ...current,
+            only,
+            ids: models
+              .filter((m) => shown(current, m.id) === only)
+              .map((m) => m.id),
+          });
+        },
+        onOrderChange: (order) => {
+          const current = latest.current;
+          if (!current) return;
+          const { order: _order, ...rest } = current;
+          change(order.length ? { ...rest, order } : rest);
+        },
+      }}
+    />
+  );
+  if (inline) return picker;
+
   return (
     <Popover
       open={open}
@@ -137,62 +199,7 @@ export function AgentModelVisibility({
         onDismiss={() => setOpen(false)}
         aria-label={t("agentConnections.modelListTitle", { agent: name })}
       >
-        <SharedModelPicker
-          models={models}
-          selected={selected.map((model) => model.id)}
-          multiple
-          disabled={disabled}
-          name={name}
-          title={t("agentConnections.modelListTitle", { agent: name })}
-          description={t("agentConnections.modelListDescription", {
-            agent: name,
-          })}
-          descriptionTitle={t(
-            connected
-              ? "agentConnections.modelListHint"
-              : "agentConnections.modelListDisconnectedHint",
-          )}
-          error={error}
-          saving={saving}
-          onPick={(id) => {
-            const current = latest.current;
-            if (!current) return;
-            const ids = new Set(current.ids);
-            ids.has(id) ? ids.delete(id) : ids.add(id);
-            change({ ...current, ids: [...ids] });
-          }}
-          visibility={{
-            only: value?.only ?? false,
-            order: value?.order,
-            onShownChange: (rows, visible) => {
-              const current = latest.current;
-              if (!current) return;
-              const ids = new Set(current.ids);
-              for (const id of rows) {
-                if (visible === current.only) ids.add(id);
-                else ids.delete(id);
-              }
-              change({ ...current, ids: [...ids] });
-            },
-            onOnlyChange: (only) => {
-              const current = latest.current;
-              if (!current) return;
-              change({
-                ...current,
-                only,
-                ids: models
-                  .filter((m) => shown(current, m.id) === only)
-                  .map((m) => m.id),
-              });
-            },
-            onOrderChange: (order) => {
-              const current = latest.current;
-              if (!current) return;
-              const { order: _order, ...rest } = current;
-              change(order.length ? { ...rest, order } : rest);
-            },
-          }}
-        />
+        {picker}
       </ModelPickerPopoverContent>
     </Popover>
   );

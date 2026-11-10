@@ -215,7 +215,27 @@ impl Manager {
                     })
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                store
+                    .records
+                    .iter()
+                    .filter(|(_, r)| {
+                        r.day == today
+                            && matches!(r.outcome, Outcome::Claimed | Outcome::AlreadyChecked)
+                    })
+                    .map(|(id, r)| AccountStatus {
+                        id: id.clone(),
+                        label: format!("Doubao Work · {}", id.chars().take(6).collect::<String>()),
+                        current: false,
+                        auto_enabled: store.enabled.get(id).copied().unwrap_or(false),
+                        outcome: r.outcome,
+                        checked_at: Some(r.checked_at),
+                        credit: r.credit,
+                        streak: r.streak,
+                        total_days: r.total_days,
+                    })
+                    .collect()
+            });
         Snapshot {
             connected: native.is_some(),
             auto_configured: store.enabled.values().any(|enabled| *enabled),
@@ -235,11 +255,31 @@ impl Manager {
 
     pub(crate) async fn status(&self) -> Result<Snapshot, String> {
         let _guard = self.lock.lock().await;
-        let store = self.read_store().await?;
-        Ok(Self::snapshot(
-            &store,
-            self.native_with_status().await.ok().as_ref(),
-        ))
+        let mut store = self.read_store().await?;
+        let native = self.native_with_status().await.ok();
+        if let Some(native) = native
+            .as_ref()
+            .filter(|n| n.outcome == Some(Outcome::AlreadyChecked))
+        {
+            if let Some(id) = native.current_account_id.as_ref() {
+                let id = key(id);
+                if Self::due(&store, &id, true) {
+                    self.save_result(
+                        &mut store,
+                        &id,
+                        NativeSnapshot {
+                            outcome: native.outcome,
+                            credit: native.credit,
+                            streak: native.streak,
+                            total_days: native.total_days,
+                            ..NativeSnapshot::default()
+                        },
+                    )
+                    .await?;
+                }
+            }
+        }
+        Ok(Self::snapshot(&store, native.as_ref()))
     }
 
     pub(crate) async fn set_auto(&self, id: &str, enabled: bool) -> Result<Snapshot, String> {

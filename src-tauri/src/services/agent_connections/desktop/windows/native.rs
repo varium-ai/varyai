@@ -333,6 +333,9 @@ impl Runtime for Native<'_> {
         let exe = match self.app {
             "workbuddy" | "workbuddy-ai" => "WorkBuddy.exe",
             "codex" => "ChatGPT.exe",
+            "qoder" => "Qoder CN.exe",
+            "trae" => "Trae CN.exe",
+            "trae-intl" => "Trae.exe",
             _ => "claude.exe",
         };
         let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
@@ -483,6 +486,9 @@ impl Runtime for Native<'_> {
         if !image.is_file() || image.is_symlink() {
             return Err(FAILED.into());
         }
+        if super::super::super::model_control::launch(self.app, &image)? {
+            return Ok(());
+        }
         shell(&image.to_string_lossy(), None)
     }
     fn wait_back(&self) -> Result<(), String> {
@@ -497,4 +503,37 @@ impl Runtime for Native<'_> {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
+}
+
+pub(super) fn open_model_control(app: &str, valid: impl Fn() -> bool) -> Result<(), String> {
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let programs = std::env::var("ProgramFiles").unwrap_or_default();
+    let candidates = match app {
+        "workbuddy" => vec![format!(r"{programs}\WorkBuddy\WorkBuddy.exe")],
+        "workbuddy-ai" => vec![
+            format!(r"{programs}\WorkBuddy AI\WorkBuddy.exe"),
+            format!(r"{programs}\WorkBuddy-AI\WorkBuddy.exe"),
+        ],
+        "qoder" => vec![
+            format!(r"{programs}\Qoder CN\Qoder CN.exe"),
+            format!(r"{local}\Programs\Qoder CN\Qoder CN.exe"),
+        ],
+        _ => return Err(FAILED.into()),
+    };
+    let image = candidates
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .find(|path| {
+            path.is_file()
+                && !path.is_symlink()
+                && matches_image(app, &path.to_string_lossy(), &local, &programs)
+        })
+        .ok_or(FAILED)?;
+    if !valid() || !(Native { app }).processes()?.is_empty() {
+        return Err(CHANGED.into());
+    }
+    if !super::super::super::model_control::launch(app, &image)? {
+        return Err(FAILED.into());
+    }
+    Native { app }.wait_back()
 }

@@ -31,6 +31,7 @@ export const APP_ICON_NAME: Record<AppId, string> = {
   qoder: "qoder",
   doubaowork: "doubaowork",
   trae: "trae",
+  "trae-intl": "trae",
   kimi: "kimi-code",
   qwen: "qwen-code",
   zcode: "zcode",
@@ -52,6 +53,7 @@ export const APP_IDS: AppId[] = [
   "qoder",
   "doubaowork",
   "trae",
+  "trae-intl",
   "kimi",
   "qwen",
   "zcode",
@@ -73,6 +75,7 @@ export const DEFAULT_VISIBLE_APPS: VisibleApps = {
   qoder: false,
   doubaowork: false,
   trae: false,
+  "trae-intl": false,
   kimi: false,
   qwen: false,
   zcode: false,
@@ -89,6 +92,7 @@ export const SKILLS_APP_IDS: Exclude<
   | "qoder"
   | "doubaowork"
   | "trae"
+  | "trae-intl"
   | "kimi"
   | "qwen"
   | "zcode"
@@ -117,6 +121,7 @@ export const TAKEOVER_APP_IDS = [
   "qoder",
   "doubaowork",
   "trae",
+  "trae-intl",
   "kimi",
   "qwen",
   "zcode",
@@ -142,6 +147,7 @@ export function isTakeoverAppId(
   | "qoder"
   | "doubaowork"
   | "trae"
+  | "trae-intl"
   | "kimi"
   | "qwen"
   | "zcode"
@@ -163,6 +169,7 @@ export type AdditiveAppId = Extract<
   | "workbuddy-ai"
   | "qoder"
   | "trae"
+  | "trae-intl"
   | "kimi"
   | "qwen"
   | "zcode"
@@ -178,6 +185,7 @@ export const ADDITIVE_APP_IDS: AdditiveAppId[] = [
   "workbuddy-ai",
   "qoder",
   "trae",
+  "trae-intl",
   "kimi",
   "qwen",
   "zcode",
@@ -199,6 +207,7 @@ export type McpAppId = Exclude<
   | "qoder"
   | "doubaowork"
   | "trae"
+  | "trae-intl"
   | "kimi"
   | "qwen"
   | "zcode"
@@ -321,6 +330,18 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
     activeClass: "bg-sky-500/10 text-sky-600",
     badgeClass: "bg-sky-500/10 text-sky-700",
   },
+  "trae-intl": {
+    label: "TRAE International",
+    icon: (
+      <ProviderIcon
+        icon={APP_ICON_NAME.trae}
+        name="TRAE International"
+        size={14}
+      />
+    ),
+    activeClass: "bg-sky-500/10 text-sky-600",
+    badgeClass: "bg-sky-500/10 text-sky-700",
+  },
   kimi: {
     label: "Kimi Code",
     icon: <ProviderIcon icon={APP_ICON_NAME.kimi} name="Kimi Code" size={14} />,
@@ -394,5 +415,5 @@ export function getAppLabel(appId: string): string {
 }
 
 export function isManagedAgentApp(app: string): boolean {
-  return ["trae", "kimi", "qwen", "zcode"].includes(app);
+  return ["trae", "trae-intl", "kimi", "qwen", "zcode"].includes(app);
 }

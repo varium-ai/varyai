@@ -578,6 +578,7 @@ impl SkillService {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => {
                 return Err(anyhow!(
                     "Skill synchronization is not supported for this app"
@@ -647,6 +648,7 @@ impl SkillService {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => {
                 return Err(anyhow!(
                     "Skill synchronization is not supported for this app"
@@ -719,6 +721,7 @@ impl SkillService {
                     | AppType::ZCode
                     | AppType::DeepSeekHarness
                     | AppType::Trae
+                    | AppType::TraeIntl
                     | AppType::DoubaoWork
             )
         }) {
@@ -1085,6 +1088,7 @@ impl SkillService {
                                 | AppType::ZCode
                                 | AppType::DeepSeekHarness
                                 | AppType::Trae
+                                | AppType::TraeIntl
                                 | AppType::DoubaoWork
                         )
                     }) {
@@ -1737,6 +1741,7 @@ impl SkillService {
                     | AppType::ZCode
                     | AppType::DeepSeekHarness
                     | AppType::Trae
+                    | AppType::TraeIntl
                     | AppType::DoubaoWork
             )
         }) {
@@ -1951,6 +1956,7 @@ impl SkillService {
                     | AppType::ZCode
                     | AppType::DeepSeekHarness
                     | AppType::Trae
+                    | AppType::TraeIntl
                     | AppType::DoubaoWork
             )
         }) {
@@ -2035,6 +2041,7 @@ impl SkillService {
                     | AppType::ZCode
                     | AppType::DeepSeekHarness
                     | AppType::Trae
+                    | AppType::TraeIntl
                     | AppType::DoubaoWork
             )
         }) {
@@ -2564,6 +2571,7 @@ impl SkillService {
                 | AppType::ZCode
                 | AppType::DeepSeekHarness
                 | AppType::Trae
+                | AppType::TraeIntl
                 | AppType::DoubaoWork
         ) {
             return Ok(());
@@ -3586,6 +3594,7 @@ impl SkillService {
                     | AppType::ZCode
                     | AppType::DeepSeekHarness
                     | AppType::Trae
+                    | AppType::TraeIntl
                     | AppType::DoubaoWork
             )
         }) {
@@ -4337,6 +4346,7 @@ pub fn migrate_skills_to_ssot(db: &Arc<Database>) -> Result<usize> {
                 | AppType::ZCode
                 | AppType::DeepSeekHarness
                 | AppType::Trae
+                | AppType::TraeIntl
                 | AppType::DoubaoWork
         )
     }) {

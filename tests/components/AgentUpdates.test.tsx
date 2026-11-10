@@ -569,7 +569,7 @@ describe("Agent versions and updates", () => {
       name: "apps.claude-desktop",
     });
     const modelList = await within(desktop).findByRole("button", {
-      name: "agentConnections.modelList apps.claude-desktop",
+      name: "agentConnections.model apps.claude-desktop",
     });
     await waitFor(() => expect(modelList).toBeEnabled());
     fireEvent.click(
@@ -580,6 +580,11 @@ describe("Agent versions and updates", () => {
     );
     expect(modelList).toBeEnabled();
     fireEvent.click(modelList);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "agentConnections.manageVisibleModels",
+      }),
+    );
     fireEvent.click(
       await screen.findByRole("menuitemcheckbox", { name: /Shared model/ }),
     );

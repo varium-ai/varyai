@@ -164,6 +164,13 @@ export function OnboardingWizard({
         setError("onboarding.noModels");
         return;
       }
+      const catalog = found.map(({ id, context_window, ...metadata }) => ({
+        model: id,
+        ...metadata,
+        ...(context_window
+          ? { contextWindow: context_window, contextSource: "vendor" }
+          : {}),
+      }));
       await routingUpstreamsApi.save({
         schemaVersion: 1,
         id: "",
@@ -176,15 +183,9 @@ export function OnboardingWizard({
           apiFormat: format,
           apiKey: key,
           ...(format === "anthropic" ? { authType: "api-key" as const } : {}),
-          models: [],
-          catalog: found.map(({ id, context_window, ...metadata }) => ({
-            model: id,
-            ...metadata,
-            ...(context_window
-              ? { contextWindow: context_window, contextSource: "vendor" }
-              : {}),
-          })),
-          mode: "vendor",
+          models: catalog.slice(0, 256),
+          catalog,
+          mode: "picked",
           groupsOnly: false,
         },
       });

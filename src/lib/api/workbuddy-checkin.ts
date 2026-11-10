@@ -17,6 +17,7 @@ export interface WorkBuddyCheckinStatus {
   autoConfigured?: boolean;
   day: string;
   outcome: WorkBuddyCheckinOutcome;
+  savedOutcome?: WorkBuddyCheckinOutcome | null;
   checkedAt: number | null;
   credit: number | null;
   streak: number | null;

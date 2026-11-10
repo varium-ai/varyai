@@ -5,6 +5,7 @@ pub(crate) mod desktop;
 pub(crate) mod desktop_config;
 mod document;
 mod jsonc;
+pub(crate) mod model_control;
 pub(crate) mod native;
 #[cfg(test)]
 mod parity_tests;
@@ -664,8 +665,8 @@ impl Manager {
         )
     }
     pub fn owns(&self, app: &str) -> bool {
-        if app == "trae" {
-            return self.bridge_owned();
+        if let Some(edition) = crate::services::trae_bridge::shared::Edition::parse(app) {
+            return self.bridge_for(edition).bridge_owned();
         }
         APPS.contains(&app) && app != "codex" && self.load(app).map_or(true, |r| r.is_some())
     }
@@ -808,7 +809,13 @@ impl Manager {
             recovery_pending: receipt.as_ref().is_some_and(|r| !r.suspended) && !configured,
             recovery_reason: (receipt.as_ref().is_some_and(|r| !r.suspended) && !configured)
                 .then_some(RecoveryReason::ConfigurationChanged),
-            model: receipt.map(|r| r.model),
+            model: receipt.and_then(|r| {
+                if app == "claude-desktop" && r.visible_models.as_ref().is_some_and(Vec::is_empty) {
+                    None
+                } else {
+                    Some(r.model)
+                }
+            }),
             restart_required: desktop_state == Some(desktop::State::RestartRequired),
             reload_state: None,
             desktop_state,
@@ -821,6 +828,12 @@ impl Manager {
             return Err(CONFLICT.into());
         }
         self.restart_desktop_with(app, |applied_ms, valid| {
+            let applied_ms =
+                if model_control::supports(app) && self.model_control_status(app)?.pending {
+                    Some(chrono::Utc::now().timestamp_millis())
+                } else {
+                    applied_ms
+                };
             desktop::restart(app, applied_ms, || {
                 self.desktop_selection_matches(app) && valid()
             })
@@ -853,6 +866,7 @@ impl Manager {
                     !current.suspended
                         && current.token == receipt.token
                         && current.applied_at_ms == receipt.applied_at_ms
+                        && current.model == receipt.model
                         && current
                             .files
                             .iter()
@@ -884,6 +898,7 @@ impl Manager {
                 return Err(error);
             }
         }
+        self.sync_model_control(&receipt, false)?;
         Ok(())
     }
     pub fn refresh(&self, app: &str, menu: &Menu, origin: &str) -> Result<Option<Receipt>, String> {
@@ -935,6 +950,7 @@ impl Manager {
             for file in &next.files {
                 file.write()?;
             }
+            self.sync_model_control(&next, false)?;
             return Ok(Some(next));
         }
         if !old.files.iter().all(|file| {
@@ -1010,6 +1026,7 @@ impl Manager {
                 .zip(&old.files)
                 .all(|(next, old)| next.installed == old.installed)
         {
+            self.sync_model_control(&old, false)?;
             return Ok(Some(old));
         }
         atomic_write_private(
@@ -1020,6 +1037,7 @@ impl Manager {
         for file in &writes {
             file.write()?;
         }
+        self.sync_model_control(&next, false)?;
         Ok(Some(next))
     }
     pub fn disconnect(&self, app: &str) -> Result<(), String> {
@@ -1040,6 +1058,7 @@ impl Manager {
             file.restore()?;
         }
         self.record_desktop_restoration(&receipt, before)?;
+        self.sync_model_control(&receipt, true)?;
         fs::remove_file(self.path(app)?).map_err(|_| FAILED.into())
     }
     pub fn release_for_reapply(&self, app: &str) -> Result<(), String> {
@@ -1362,8 +1381,8 @@ fn build_with_token(
             put(value, &["model".into()], Some(json!(format!("varyai/{selected}"))))
         })?),
         "claude-desktop" => {
-            let mut visible = catalog.iter().filter(|m| visibility.visible(&m.id)).cloned().collect::<Vec<_>>();
-            visibility.apply_order(&mut visible);
+            let visible = visibility.desktop_models(&catalog, selected);
+            if let Some(default) = visible.first() { receipt.model = default.id.clone(); }
             let (mut files, _) = crate::claude_desktop_config::shared_catalog_edits(&base, &token, previous.filter(|old| !old.suspended).map(|old| old.token.as_str()), &visible)?;
             desktop_config::seed_tool_search(&mut files, previous);
             desktop_config::preserve_carried(&mut files, previous)?;

@@ -77,10 +77,14 @@ pub async fn get_config_status(
                 path: path.to_string_lossy().into_owned(),
             })
         }
-        AppType::Trae => {
-            let path = dirs::home_dir()
-                .ok_or("Home directory unavailable")?
-                .join(".trae-cn");
+        app @ (AppType::Trae | AppType::TraeIntl) => {
+            let path = dirs::home_dir().ok_or("Home directory unavailable")?.join(
+                if app == AppType::Trae {
+                    ".trae-cn"
+                } else {
+                    ".trae"
+                },
+            );
             Ok(ConfigStatus {
                 exists: path.exists(),
                 path: path.to_string_lossy().into_owned(),
@@ -207,6 +211,9 @@ pub async fn get_claude_code_config_path() -> Result<String, String> {
 pub async fn get_config_dir(app: String) -> Result<String, String> {
     let dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
         AppType::DoubaoWork => return Err("Doubao Work has no managed configuration file".into()),
+        AppType::TraeIntl => dirs::home_dir()
+            .ok_or("Home directory unavailable")?
+            .join(".trae"),
         app @ (AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode
@@ -239,6 +246,9 @@ pub async fn get_config_dir(app: String) -> Result<String, String> {
 pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, String> {
     let config_dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
         AppType::DoubaoWork => return Err("Doubao Work has no managed configuration file".into()),
+        AppType::TraeIntl => dirs::home_dir()
+            .ok_or("Home directory unavailable")?
+            .join(".trae"),
         app @ (AppType::Kimi
         | AppType::Qwen
         | AppType::ZCode

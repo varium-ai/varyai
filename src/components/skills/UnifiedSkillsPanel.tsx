@@ -287,6 +287,7 @@ const UnifiedSkillsPanel = React.forwardRef<
       app === "qoder" ||
       app === "doubaowork" ||
       app === "trae" ||
+      app === "trae-intl" ||
       app === "kimi" ||
       app === "qwen" ||
       app === "zcode" ||

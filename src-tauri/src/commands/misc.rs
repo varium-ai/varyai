@@ -3837,6 +3837,7 @@ fn agent_desktop_bundles(app: &str) -> &'static [&'static str] {
         "workbuddy-ai" => &["WorkBuddy AI.app"],
         "qoder" => &["Qoder CN.app"],
         "trae" => &["Trae CN.app"],
+        "trae-intl" => &["Trae.app"],
         "doubaowork" => &["DoubaoWork.app"],
         "zcode" => &["ZCode.app"],
         "kimi" => &["Kimi Code.app"],
@@ -3862,7 +3863,18 @@ fn agent_installed_in(app: &str, desktop_roots: &[PathBuf], cli_dirs: &[PathBuf]
     })
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn find_agent_desktop_bundle(app: &str) -> Option<PathBuf> {
+    desktop_apps::find(app)
+}
+
 pub(crate) fn is_agent_installed(app: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    if let Some(edition) = crate::services::trae_bridge::shared::Edition::parse(app) {
+        return crate::services::trae_bridge::shared::Client(edition)
+            .installed_executable()
+            .is_ok();
+    }
     let tool = if app == "grokbuild" { "grok" } else { app };
     desktop_apps::find(app).is_some()
         || agent_installed_in(app, &[], &build_tool_search_paths(tool))

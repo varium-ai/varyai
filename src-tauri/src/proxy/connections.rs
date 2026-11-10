@@ -218,9 +218,10 @@ fn local_client(request: &Request) -> bool {
         return false;
     }
     match (request.method(), request.uri().path()) {
-        (&http::Method::POST, "/connections/trae/v1/chat/completions") => {
-            origin.is_none_or(|origin| origin.as_bytes() == b"vscode-file://vscode-app")
-        }
+        (
+            &http::Method::POST,
+            "/connections/trae/v1/chat/completions" | "/connections/trae-intl/v1/chat/completions",
+        ) => origin.is_none_or(|origin| origin.as_bytes() == b"vscode-file://vscode-app"),
         (&http::Method::GET, "/connections/claude-desktop/v1/models")
         | (&http::Method::POST, "/connections/claude-desktop/v1/messages") => {
             origin.is_none_or(|origin| matches!(origin.as_bytes(), b"null" | b"app://localhost"))
@@ -254,7 +255,7 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
     let Some(app) = crate::services::agent_connections::APPS
         .iter()
         .copied()
-        .chain(std::iter::once("trae"))
+        .chain(["trae", "trae-intl"])
         .find(|id| *id == app && *id != "codex")
     else {
         return StatusCode::NOT_FOUND.into_response();
@@ -477,7 +478,7 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
     if rewritten {
         body["model"] = json!(alias);
     }
-    let normalized_trae = app == "trae"
+    let normalized_trae = matches!(app, "trae" | "trae-intl")
         && endpoint == "/v1/responses"
         && super::native_protocol::normalize_trae_responses(&mut body);
     let db = state.db.clone();

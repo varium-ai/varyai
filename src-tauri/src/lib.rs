@@ -1471,6 +1471,8 @@ pub fn run() {
             commands::get_agent_connection,
             commands::diagnose_codex_proxy,
             commands::get_agent_native_model,
+            commands::get_agent_model_control,
+            commands::authorize_agent_model_control,
             commands::get_agent_model_catalog,
             commands::get_agent_native_models,
             commands::get_agent_model_visibility,

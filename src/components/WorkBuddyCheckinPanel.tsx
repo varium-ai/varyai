@@ -105,11 +105,14 @@ export function WorkBuddyCheckinPanel({
   const canClaim =
     selected &&
     data &&
-    !["claimed", "credentials_protected", "credentials_unavailable"].includes(
-      data.outcome,
-    );
-  const hasReward =
-    data && ["claimed", "already_checked"].includes(data.outcome);
+    ![
+      "claimed",
+      "already_checked",
+      "credentials_protected",
+      "credentials_unavailable",
+    ].includes(data.outcome);
+  const outcome = data?.savedOutcome ?? data?.outcome;
+  const hasReward = outcome && ["claimed", "already_checked"].includes(outcome);
 
   return (
     <section aria-label={t("workbuddy.checkin.title")} className="mp-checkin">
@@ -155,7 +158,9 @@ export function WorkBuddyCheckinPanel({
               {t(
                 claim.isPending
                   ? "workbuddy.checkin.checking"
-                  : "workbuddy.checkin.checkNow",
+                  : hasReward
+                    ? "agentRewards.checkedIn"
+                    : "workbuddy.checkin.checkNow",
               )}
             </Button>
           </div>
@@ -176,7 +181,13 @@ export function WorkBuddyCheckinPanel({
               }}
             >
               {!selected && (
-                <option value="">{t("workbuddy.checkin.selectAccount")}</option>
+                <option value="">
+                  {t(
+                    data?.savedOutcome
+                      ? "agentRewards.savedAccount"
+                      : "workbuddy.checkin.selectAccount",
+                  )}
+                </option>
               )}
               {status.data?.accounts.map((account) => (
                 <option key={account.id} value={account.id}>
@@ -236,8 +247,14 @@ export function WorkBuddyCheckinPanel({
         ) : data ? (
           <div role="status" className="mp-checkin-status">
             <p className="mp-checkin-outcome" data-complete={hasReward}>
-              {t(`workbuddy.checkin.outcomes.${data.outcome}`)}
+              {t(`workbuddy.checkin.outcomes.${outcome}`)}
             </p>
+            {data.savedOutcome && (
+              <p className="mp-checkin-muted">
+                {t("agentRewards.savedResult")}{" "}
+                {t(`workbuddy.checkin.outcomes.${data.outcome}`)}
+              </p>
+            )}
             {hasReward && (
               <div className="mp-checkin-rewards">
                 {data.credit !== null && (

@@ -151,6 +151,10 @@ async function run(
     requireMock.m.api = function () {
       return initApiService("ugCampaign");
     };
+    modules.apiFacade = { service: {} };
+    requireMock.m.apiFacade = function () {
+      return [initApiService("ugCampaign"), "ugCampaignApiService:"];
+    };
   }
   let captures = 0;
   const chunks = [];

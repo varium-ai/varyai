@@ -18,6 +18,7 @@ interface ConfirmDialogProps {
   checkboxLabel?: string;
   checkboxDefaultChecked?: boolean;
   pending?: boolean;
+  errorMessage?: string;
   onConfirm: (checkboxChecked: boolean) => void;
   onCancel: () => void;
   onExited?: () => void;
@@ -35,6 +36,7 @@ export function ConfirmDialog({
   checkboxLabel,
   checkboxDefaultChecked = false,
   pending = false,
+  errorMessage,
   onConfirm,
   onCancel,
   onExited,
@@ -83,16 +85,25 @@ export function ConfirmDialog({
         </>
       }
     >
-      {checkboxLabel ? (
-        <label className="vary-dialog-checkbox cursor-pointer select-none">
-          <Checkbox
-            checked={checkboxChecked}
-            disabled={pending}
-            onCheckedChange={(value) => setCheckboxChecked(value === true)}
-            className="mt-0.5"
-          />
-          <span>{checkboxLabel}</span>
-        </label>
+      {errorMessage || checkboxLabel ? (
+        <div className="space-y-3">
+          {errorMessage && (
+            <p role="alert" className="text-sm text-destructive">
+              {errorMessage}
+            </p>
+          )}
+          {checkboxLabel && (
+            <label className="vary-dialog-checkbox cursor-pointer select-none">
+              <Checkbox
+                checked={checkboxChecked}
+                disabled={pending}
+                onCheckedChange={(value) => setCheckboxChecked(value === true)}
+                className="mt-0.5"
+              />
+              <span>{checkboxLabel}</span>
+            </label>
+          )}
+        </div>
       ) : null}
     </AppDialog>
   );

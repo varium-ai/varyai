@@ -1,4 +1,5 @@
 //! The public Agent API never asks for an Agent-owned provider identity.
+use crate::services::trae_bridge::shared::Edition;
 use crate::{
     services::agent_connections::{self, RecoveryReason, Status, FAILED},
     store::AppState,
@@ -163,14 +164,14 @@ pub(crate) async fn get_agent_connection(
         .await
         .map_err(|_| FAILED)?;
     }
-    if app != "trae" && !agent_connections::APPS.contains(&app.as_str()) {
+    if Edition::parse(&app).is_none() && !agent_connections::APPS.contains(&app.as_str()) {
         return Err(FAILED.into());
     }
     let manager = state.proxy_service.agent_connections.clone();
     let app_id = app.clone();
     let mut status = tokio::task::spawn_blocking(move || {
-        if app_id == "trae" {
-            manager.bridge_status()
+        if let Some(edition) = Edition::parse(&app_id) {
+            manager.bridge_for(edition).bridge_status()
         } else {
             manager.status(&app_id)
         }
@@ -178,14 +179,16 @@ pub(crate) async fn get_agent_connection(
     .await
     .map_err(|_| FAILED)??;
     if status.configured && !state.proxy_service.intent_runtime.connections.active(&app) {
-        if app == "trae" {
+        if app == "trae-intl" {
+            state.proxy_service.sync_shared_trae_intl(false).await;
+        } else if app == "trae" {
             state.proxy_service.sync_shared_trae(false).await;
         } else {
             state.proxy_service.sync_shared_agent_catalog(&app).await;
         }
     }
     let active = state.proxy_service.intent_runtime.connections.active(&app);
-    if app == "trae" {
+    if Edition::parse(&app).is_some() {
         status.configured &= active;
         if status.enabled && !status.configured {
             status.recovery_pending = true;
@@ -263,22 +266,25 @@ pub(crate) async fn list_agent_connections(
     .await
     .map_err(|_| FAILED)??;
     statuses.push(status);
-    let manager = state.proxy_service.agent_connections.clone();
-    let mut bridge = tokio::task::spawn_blocking(move || manager.bridge_status())
-        .await
-        .map_err(|_| FAILED)??;
-    bridge.configured &= state
-        .proxy_service
-        .intent_runtime
-        .connections
-        .active("trae");
-    if bridge.enabled && !bridge.configured {
-        bridge.recovery_pending = true;
-        bridge
-            .recovery_reason
-            .get_or_insert(RecoveryReason::BridgePending);
+    for edition in [Edition::China, Edition::International] {
+        let manager = state.proxy_service.agent_connections.clone();
+        let mut bridge =
+            tokio::task::spawn_blocking(move || manager.bridge_for(edition).bridge_status())
+                .await
+                .map_err(|_| FAILED)??;
+        bridge.configured &= state
+            .proxy_service
+            .intent_runtime
+            .connections
+            .active(edition.app());
+        if bridge.enabled && !bridge.configured {
+            bridge.recovery_pending = true;
+            bridge
+                .recovery_reason
+                .get_or_insert(RecoveryReason::BridgePending);
+        }
+        statuses.push(bridge);
     }
-    statuses.push(bridge);
     let (audit_active, audit_waiting) = state.proxy_service.doubaowork_connection_status();
     let manager = state.proxy_service.agent_connections.clone();
     let desktop_state = tokio::task::spawn_blocking(move || {
@@ -361,6 +367,30 @@ fn validate_restart_request(app: &str, confirmed: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub(crate) async fn get_agent_model_control(
+    state: State<'_, AppState>,
+    app: String,
+) -> Result<agent_connections::model_control::Status, String> {
+    let manager = state.proxy_service.agent_connections.clone();
+    tokio::task::spawn_blocking(move || manager.model_control_status(&app))
+        .await
+        .map_err(|_| FAILED)?
+}
+
+#[tauri::command]
+pub(crate) async fn authorize_agent_model_control(
+    state: State<'_, AppState>,
+    app: String,
+    confirmed: bool,
+) -> Result<(), String> {
+    let _guard = state.proxy_service.lock_switch_for_app(&app).await;
+    let manager = state.proxy_service.agent_connections.clone();
+    tokio::task::spawn_blocking(move || manager.authorize_model_control(&app, confirmed))
+        .await
+        .map_err(|_| FAILED)?
+}
+
+#[tauri::command]
 pub(crate) async fn restart_agent_connection(
     state: State<'_, AppState>,
     app: String,
@@ -368,11 +398,13 @@ pub(crate) async fn restart_agent_connection(
 ) -> Result<(), String> {
     validate_restart_request(&app, confirmed)?;
     let _guard = state.proxy_service.lock_switch_for_app(&app).await;
-    if app == "trae" {
+    if let Some(edition) = Edition::parse(&app) {
         let manager = state.proxy_service.agent_connections.clone();
-        return tokio::task::spawn_blocking(move || manager.restart_bridge_desktop())
-            .await
-            .map_err(|_| FAILED)?;
+        return tokio::task::spawn_blocking(move || {
+            manager.bridge_for(edition).restart_bridge_desktop()
+        })
+        .await
+        .map_err(|_| FAILED)?;
     }
     if app == "doubaowork" {
         let manager = state.proxy_service.agent_connections.clone();
@@ -440,6 +472,28 @@ pub(crate) async fn reapply_agent_connection(
     state: State<'_, AppState>,
     app: String,
 ) -> Result<(), String> {
+    if app == "trae-intl" {
+        let edition = Edition::International;
+        if state
+            .proxy_service
+            .agent_connections
+            .bridge_for(edition)
+            .bridge_enabled()
+        {
+            state.proxy_service.start().await?;
+        }
+        state.proxy_service.refresh_global_routing().await?;
+        {
+            let _guard = state.proxy_service.lock_switch_for_app(edition.app()).await;
+            state
+                .proxy_service
+                .agent_connections
+                .bridge_for(edition)
+                .bridge_retry()?;
+        }
+        state.proxy_service.sync_shared_trae_intl(false).await;
+        return Ok(());
+    }
     if app == "trae" {
         if state.proxy_service.agent_connections.bridge_enabled() {
             state.proxy_service.start().await?;
@@ -543,6 +597,62 @@ pub(crate) async fn set_agent_connection(
 ) -> Result<(), String> {
     if app == "doubaowork" {
         return super::proxy::set_proxy_takeover_for_app(app_handle, state, app, enabled).await;
+    }
+    if app == "trae-intl" {
+        let edition = Edition::International;
+        if enabled {
+            if state
+                .db
+                .get_all_providers(edition.app())
+                .map_err(|_| FAILED)?
+                .values()
+                .any(|provider| {
+                    provider
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.live_config_managed)
+                        == Some(true)
+                })
+            {
+                return Err(agent_connections::CONFLICT.into());
+            }
+            if !cfg!(any(target_os = "macos", target_os = "windows")) {
+                return Err("agentConnections.restartUnsupported".into());
+            }
+            super::proxy::ensure_trae_edition_consent(&app_handle, state.inner(), edition).await?;
+            state.proxy_service.start().await?;
+            state.proxy_service.refresh_global_routing().await?;
+            let catalog = state
+                .proxy_service
+                .intent_runtime
+                .global_snapshot()?
+                .as_ref()
+                .map(|menu| agent_connections::models(menu))
+                .unwrap_or_default();
+            if catalog.is_empty()
+                || model
+                    .as_ref()
+                    .is_some_and(|selected| !catalog.iter().any(|entry| &entry.id == selected))
+            {
+                return Err(agent_connections::EMPTY.into());
+            }
+        } else {
+            state
+                .proxy_service
+                .intent_runtime
+                .connections
+                .revoke(edition.app());
+        }
+        {
+            let _guard = state.proxy_service.lock_switch_for_app(edition.app()).await;
+            state
+                .proxy_service
+                .agent_connections
+                .bridge_for(edition)
+                .bridge_select_model(enabled, model)?;
+        }
+        state.proxy_service.sync_shared_trae_intl(false).await;
+        return Ok(());
     }
     if app == "trae" {
         if !enabled {
@@ -1342,7 +1452,7 @@ mod tests {
                     .connections
                     .install(&sorted)?;
                 let profile: Value = crate::config::read_json_file(&profile_path)?;
-                let wire = crate::claude_desktop_config::shared_plain_model_name(&ordered[0]);
+                let wire = crate::claude_desktop_config::shared_plain_model_name(&sorted.model);
                 assert_eq!(profile["inferenceModels"][0]["name"], wire);
                 let published: Value = client
                     .get(&endpoint)
@@ -1353,7 +1463,7 @@ mod tests {
                     .await?;
                 assert_eq!(
                     published["data"][0]["id"], wire,
-                    "the authenticated model list must use the saved Desktop order too"
+                    "the authenticated model list must publish the selected default first too"
                 );
             }
             set_native_connection(&state, "claude-desktop".into(), false, None).await?;

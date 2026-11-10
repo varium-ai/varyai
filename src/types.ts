@@ -312,6 +312,7 @@ export interface VisibleApps {
   qoder?: boolean;
   doubaowork?: boolean;
   trae?: boolean;
+  "trae-intl"?: boolean;
   kimi?: boolean;
   qwen?: boolean;
   zcode?: boolean;

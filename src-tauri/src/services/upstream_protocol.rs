@@ -38,7 +38,7 @@ pub(crate) fn project(
     let responses_route = *app == AppType::Trae
         && trae_native_responses(provider)
         && db.get_bool_flag(super::trae_bridge::ENABLED_KEY)?;
-    if !matches!(app, AppType::Hermes | AppType::Trae)
+    if !matches!(app, AppType::Hermes | AppType::Trae | AppType::TraeIntl)
         || !(requires_bridge(app, provider) || responses_route)
     {
         return Ok(provider.clone());

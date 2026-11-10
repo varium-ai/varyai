@@ -1679,6 +1679,7 @@ mod tests {
             "Synthetic model"
         );
         assert_eq!(profile["inferenceModels"][0]["supports1m"], true);
+        assert_eq!(profile["alwaysStartWithDefaultModel"], true);
         let meta: Value = read_json_file(&paths.meta_path).map_err(|_| "fixture")?;
         assert_eq!(meta["appliedId"], PROFILE_ID);
         assert_eq!(meta["entries"].as_array().map(Vec::len), Some(2));
@@ -2803,6 +2804,7 @@ fn shared_catalog_edits_at(
         })
         .collect::<Vec<_>>();
     let mut profile = build_gateway_profile(base, token, Some(&specs));
+    profile["alwaysStartWithDefaultModel"] = json!(true);
     if let Some(effort) = models.first().and_then(|model| {
         model.default_reasoning_level.as_deref().filter(|effort| {
             matches!(*effort, "low" | "medium" | "high" | "xhigh" | "max")

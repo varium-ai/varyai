@@ -79,6 +79,28 @@ beforeEach(() => {
 });
 
 describe("WorkBuddy daily check-in", () => {
+  it("shows a saved completion separately when the native account is unavailable", async () => {
+    vi.mocked(workbuddyCheckinApi.accounts).mockResolvedValue({
+      accounts: [],
+      nativeStatus: {
+        ...initial,
+        outcome: "credentials_unavailable",
+        savedOutcome: "claimed",
+        credit: 100,
+      },
+    });
+    mount();
+    await screen.findByText("workbuddy.checkin.outcomes.claimed");
+    expect(
+      screen.getByText(/workbuddy.checkin.outcomes.credentials_unavailable/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "agentRewards.checkedIn" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("switch")).toBeDisabled();
+    expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
+  });
+
   it("adds an independently authorized account without claiming or enabling automation", async () => {
     const native = {
       id: "native-account",
@@ -239,7 +261,7 @@ describe("WorkBuddy daily check-in", () => {
     expect(screen.getByText("workbuddy.checkin.reward")).toBeInTheDocument();
     expect(screen.getByText("workbuddy.checkin.delayed")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "workbuddy.checkin.checkNow" }),
+      screen.getByRole("button", { name: "agentRewards.checkedIn" }),
     ).toBeDisabled();
   });
 
@@ -364,3 +386,33 @@ describe("WorkBuddy daily check-in", () => {
     ).toBeEnabled();
   });
 });
+
+it.each(["claimed", "already_checked"] as const)(
+  "disables WorkBuddy claims for %s and enables the next day after refresh",
+  async (outcome) => {
+    vi.mocked(workbuddyCheckinApi.status).mockResolvedValue({
+      ...initial,
+      outcome,
+    });
+    mount();
+    const completed = await screen.findByRole("button", {
+      name: "agentRewards.checkedIn",
+    });
+    expect(completed).toBeDisabled();
+    fireEvent.click(completed);
+    expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
+    vi.mocked(workbuddyCheckinApi.status).mockResolvedValue({
+      ...initial,
+      day: "2026-11-03",
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "workbuddy.checkin.reload" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "workbuddy.checkin.checkNow" }),
+      ).toBeEnabled(),
+    );
+    expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
+  },
+);

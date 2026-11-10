@@ -30,6 +30,10 @@ pub(super) fn seed_tool_search(files: &mut [FileEdit], previous: Option<&Receipt
         .iter_mut()
         .filter(|file| matches!(file.desktop, Some(Kind::Profile)))
     {
+        let default = vec!["alwaysStartWithDefaultModel".to_owned()];
+        if !file.fields.contains(&default) {
+            file.fields.push(default);
+        }
         let marker = vec!["toolSearchEnabled".to_owned()];
         let seen = previous.is_some_and(|receipt| {
             receipt.files.iter().any(|prior| {

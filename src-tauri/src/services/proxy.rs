@@ -1393,6 +1393,7 @@ impl ProxyService {
             zcode: self.native_agent_active("zcode").await,
             deepseek_harness: self.native_agent_active("deepseek-harness").await,
             trae,
+            trae_intl: self.intent_runtime.connections.active("trae-intl"),
             pi: self.pi_routing.enabled()?,
             qoder: self.qoder.is_active()
                 && self
@@ -1681,6 +1682,7 @@ impl ProxyService {
     }
 
     pub(crate) async fn refresh_trae_takeover(&self) {
+        self.sync_shared_trae_intl(false).await;
         if self.agent_connections.bridge_owned() {
             self.sync_shared_trae(false).await;
         }
@@ -1829,6 +1831,55 @@ impl ProxyService {
         .await;
         if !matches!(result, Ok(Ok(()))) {
             self.intent_runtime.connections.revoke("trae");
+        }
+    }
+
+    pub(crate) async fn sync_shared_trae_intl(&self, suspend: bool) {
+        use super::trae_bridge::shared::{Client, Edition};
+        let edition = Edition::International;
+        let _guard = self.lock_switch_for_app(edition.app()).await;
+        if !self.agent_connections.bridge_for(edition).bridge_owned() {
+            return;
+        }
+        if !self
+            .db
+            .get_bool_flag(edition.consent_key())
+            .unwrap_or(false)
+        {
+            self.intent_runtime.connections.revoke(edition.app());
+            return;
+        }
+        let running = self.is_running().await && !suspend;
+        let menu = running
+            .then(|| self.intent_runtime.global_snapshot().ok().flatten())
+            .flatten();
+        let port = self
+            .get_status()
+            .await
+            .map(|status| status.port)
+            .unwrap_or(0);
+        let manager = self.agent_connections.clone();
+        let runtime = self.intent_runtime.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            if running {
+                Client(edition)
+                    .prepare()
+                    .map_err(|_| super::agent_connections::FAILED)?;
+            }
+            if let Some(receipt) = manager.bridge_for(edition).bridge_sync(
+                menu.as_deref(),
+                &format!("http://127.0.0.1:{port}"),
+                !running,
+            )? {
+                runtime.connections.install(&receipt)?;
+            } else {
+                runtime.connections.revoke(edition.app());
+            }
+            Ok(())
+        })
+        .await;
+        if !matches!(result, Ok(Ok(()))) {
+            self.intent_runtime.connections.revoke(edition.app());
         }
     }
 
@@ -2728,6 +2779,16 @@ impl ProxyService {
     }
 
     async fn restore_shared_connections(&self, preserve_intent: bool) -> Result<(), String> {
+        let edition = super::trae_bridge::shared::Edition::International;
+        if self.agent_connections.bridge_for(edition).bridge_owned() {
+            self.intent_runtime.connections.revoke(edition.app());
+            if !preserve_intent {
+                self.agent_connections
+                    .bridge_for(edition)
+                    .bridge_select(false)?;
+            }
+            self.sync_shared_trae_intl(true).await;
+        }
         if self.agent_connections.bridge_owned() {
             self.intent_runtime.connections.revoke("trae");
             if !preserve_intent {
@@ -2923,6 +2984,7 @@ impl ProxyService {
         }
         self.sync_codex_configuration().await;
         self.sync_shared_trae(false).await;
+        self.sync_shared_trae_intl(false).await;
         for app in super::agent_connections::APPS
             .iter()
             .copied()

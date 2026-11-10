@@ -59,6 +59,28 @@ beforeEach(() => {
     autoEnabled: true,
   });
 });
+it("keeps the saved completion visible alongside a disconnected client warning", async () => {
+  vi.mocked(agentRewardsApi.status).mockResolvedValue({
+    ...initial,
+    app: "trae",
+    accountId: null,
+    label: null,
+    outcome: "connection_required",
+    savedOutcome: "claimed",
+    checkedAt: Date.UTC(2026, 10, 10),
+  });
+  mount("trae");
+  await screen.findByText("agentRewards.outcomes.claimed");
+  expect(
+    screen.getByText(/agentRewards.outcomes.connection_required/),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "agentRewards.checkedIn" }),
+  ).toBeDisabled();
+  expect(screen.getByRole("switch")).toBeDisabled();
+  expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+});
+
 it("refreshes without claiming and passes the current account identity to an explicit claim", async () => {
   mount();
   await screen.findByText("Synthetic account");
@@ -73,22 +95,39 @@ it("refreshes without claiming and passes the current account identity to an exp
     initial.accountId,
   );
   expect(
-    screen.getByRole("button", { name: "agentRewards.claim" }),
+    screen.getByRole("button", { name: "agentRewards.checkedIn" }),
   ).toBeDisabled();
 });
-it.each([
-  "inactive",
-  "own_app_required",
-  "ineligible",
-  "connection_required",
-] as const)("does not offer a claim for %s", async (outcome) => {
-  vi.mocked(agentRewardsApi.status).mockResolvedValue({ ...initial, outcome });
+it.each(["inactive", "ineligible", "connection_required"] as const)(
+  "does not offer a claim for %s",
+  async (outcome) => {
+    vi.mocked(agentRewardsApi.status).mockResolvedValue({
+      ...initial,
+      outcome,
+    });
+    mount("zcode");
+    await screen.findByText(`agentRewards.outcomes.${outcome}`);
+    expect(
+      screen.getByRole("button", { name: "agentRewards.claim" }),
+    ).toBeDisabled();
+    expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+  },
+);
+it("requires verification in ZCode's official client before claiming", async () => {
+  vi.mocked(agentRewardsApi.status).mockResolvedValue({
+    ...initial,
+    app: "zcode",
+    outcome: "own_app_required",
+  });
   mount("zcode");
-  await screen.findByText(`agentRewards.outcomes.${outcome}`);
-  expect(
-    screen.getByRole("button", { name: "agentRewards.claim" }),
-  ).toBeDisabled();
+  await screen.findByText("agentRewards.zcodeVerificationHint");
+  const claim = screen.getByRole("button", {
+    name: "agentRewards.verificationRequired",
+  });
+  expect(claim).toBeDisabled();
+  fireEvent.click(claim);
   expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+  expect(agentRewardsApi.setAuto).not.toHaveBeenCalled();
 });
 it("enables automation only for the currently displayed account", async () => {
   mount("trae");
@@ -217,3 +256,38 @@ it("offers native access permission when the detected client has no readable acc
   expect(agentRewardsApi.startLogin).not.toHaveBeenCalled();
   expect(agentRewardsApi.claim).not.toHaveBeenCalled();
 });
+
+it.each(
+  (["qoder", "trae", "zcode"] as const).flatMap((app) =>
+    (["claimed", "already_checked"] as const).map((outcome) => ({
+      app,
+      outcome,
+    })),
+  ),
+)(
+  "disables completed $app claims for $outcome until the next reward window",
+  async ({ app, outcome }) => {
+    vi.mocked(agentRewardsApi.status).mockResolvedValue({
+      ...initial,
+      app,
+      outcome,
+    });
+    mount(app);
+    const completed = await screen.findByRole("button", {
+      name: "agentRewards.checkedIn",
+    });
+    expect(completed).toBeDisabled();
+    fireEvent.click(completed);
+    expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+    vi.mocked(agentRewardsApi.status).mockResolvedValue({ ...initial, app });
+    fireEvent.click(
+      screen.getByRole("button", { name: "agentRewards.refresh" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "agentRewards.claim" }),
+      ).toBeEnabled(),
+    );
+    expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+  },
+);
