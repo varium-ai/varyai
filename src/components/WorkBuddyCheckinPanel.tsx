@@ -105,9 +105,12 @@ export function WorkBuddyCheckinPanel({
   const canClaim =
     selected &&
     data &&
-    !["claimed", "credentials_protected", "credentials_unavailable"].includes(
-      data.outcome,
-    );
+    ![
+      "claimed",
+      "already_checked",
+      "credentials_protected",
+      "credentials_unavailable",
+    ].includes(data.outcome);
   const hasReward =
     data && ["claimed", "already_checked"].includes(data.outcome);
 
@@ -155,7 +158,9 @@ export function WorkBuddyCheckinPanel({
               {t(
                 claim.isPending
                   ? "workbuddy.checkin.checking"
-                  : "workbuddy.checkin.checkNow",
+                  : hasReward
+                    ? "agentRewards.checkedIn"
+                    : "workbuddy.checkin.checkNow",
               )}
             </Button>
           </div>

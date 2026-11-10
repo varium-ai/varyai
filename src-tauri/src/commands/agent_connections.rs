@@ -361,6 +361,30 @@ fn validate_restart_request(app: &str, confirmed: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub(crate) async fn get_agent_model_control(
+    state: State<'_, AppState>,
+    app: String,
+) -> Result<agent_connections::model_control::Status, String> {
+    let manager = state.proxy_service.agent_connections.clone();
+    tokio::task::spawn_blocking(move || manager.model_control_status(&app))
+        .await
+        .map_err(|_| FAILED)?
+}
+
+#[tauri::command]
+pub(crate) async fn authorize_agent_model_control(
+    state: State<'_, AppState>,
+    app: String,
+    confirmed: bool,
+) -> Result<(), String> {
+    let _guard = state.proxy_service.lock_switch_for_app(&app).await;
+    let manager = state.proxy_service.agent_connections.clone();
+    tokio::task::spawn_blocking(move || manager.authorize_model_control(&app, confirmed))
+        .await
+        .map_err(|_| FAILED)?
+}
+
+#[tauri::command]
 pub(crate) async fn restart_agent_connection(
     state: State<'_, AppState>,
     app: String,
@@ -1342,7 +1366,7 @@ mod tests {
                     .connections
                     .install(&sorted)?;
                 let profile: Value = crate::config::read_json_file(&profile_path)?;
-                let wire = crate::claude_desktop_config::shared_plain_model_name(&ordered[0]);
+                let wire = crate::claude_desktop_config::shared_plain_model_name(&sorted.model);
                 assert_eq!(profile["inferenceModels"][0]["name"], wire);
                 let published: Value = client
                     .get(&endpoint)
@@ -1353,7 +1377,7 @@ mod tests {
                     .await?;
                 assert_eq!(
                     published["data"][0]["id"], wire,
-                    "the authenticated model list must use the saved Desktop order too"
+                    "the authenticated model list must publish the selected default first too"
                 );
             }
             set_native_connection(&state, "claude-desktop".into(), false, None).await?;

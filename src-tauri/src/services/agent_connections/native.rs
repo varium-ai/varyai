@@ -2,6 +2,7 @@ use super::*;
 
 const STARTING_MODEL_APPS: &[&str] = &[
     "claude",
+    "claude-desktop",
     "codex",
     "pi",
     "gemini",
@@ -55,6 +56,11 @@ fn observe(app: &'static str) -> NativeModel {
 }
 
 fn selection(app: &str) -> Result<Option<String>, String> {
+    if app == "claude-desktop" {
+        return desktop_selection(
+            &crate::claude_desktop_config::get_config_library_path().map_err(|_| FAILED)?,
+        );
+    }
     let path = match app {
         "claude" => crate::config::get_claude_settings_path(),
         "codex" => crate::codex_config::get_codex_config_path(),
@@ -77,6 +83,23 @@ fn selection(app: &str) -> Result<Option<String>, String> {
         _ => return Err(FAILED.into()),
     };
     read_selection(app, &path)
+}
+
+fn desktop_selection(library: &Path) -> Result<Option<String>, String> {
+    let meta = Format::Json.parse(read(&library.join("_meta.json"))?.as_deref())?;
+    let Some(id) = meta.get("appliedId").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let id = id.as_str().ok_or(FAILED)?;
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        return Err(FAILED.into());
+    }
+    read_selection("claude-desktop", &library.join(format!("{id}.json")))
 }
 
 pub(crate) fn starting_model(app: &str) -> Result<Option<String>, String> {
@@ -134,6 +157,7 @@ fn read_selection(app: &str, path: &Path) -> Result<Option<String>, String> {
         return Err(FAILED.into());
     }
     match app {
+        "claude-desktop" => model_string(value.pointer("/inferenceModels/0/name")),
         "deepseek-harness" => {
             model_string(crate::services::deepseek_harness::selection(&value).get("model"))
         }
@@ -190,9 +214,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn desktop_observation_uses_only_the_active_profile_and_rejects_path_escape(
+    ) -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        fs::write(
+            dir.path().join("_meta.json"),
+            r#"{"appliedId":"native-profile"}"#,
+        )
+        .map_err(|_| FAILED)?;
+        fs::write(
+            dir.path().join("native-profile.json"),
+            r#"{"inferenceModels":[{"name":"native-default"}]}"#,
+        )
+        .map_err(|_| FAILED)?;
+        assert_eq!(
+            desktop_selection(dir.path())?,
+            Some("native-default".into())
+        );
+        fs::write(
+            dir.path().join("_meta.json"),
+            r#"{"appliedId":"../outside"}"#,
+        )
+        .map_err(|_| FAILED)?;
+        assert!(desktop_selection(dir.path()).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn native_starting_models_are_read_without_importing_or_writing() -> Result<(), String> {
         for (app, text, expected) in [
             ("claude", r#"{"model":"sonnet","env":{"ANTHROPIC_AUTH_TOKEN":"synthetic-only"}}"#, "sonnet"),
+            ("claude-desktop", r#"{"inferenceModels":[{"name":"native-desktop"},{"name":"other"}],"alwaysStartWithDefaultModel":true}"#, "native-desktop"),
             ("codex", "model = 'native-sol'\n", "native-sol"),
             ("gemini", r#"{"model":{"name":"native-gemini"}}"#, "native-gemini"),
             ("grokbuild", "[models]\ndefault = 'profile'\n[model.profile]\nmodel = 'native-grok'\napi_key = 'synthetic-only'\n", "native-grok"),

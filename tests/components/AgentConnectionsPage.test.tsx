@@ -49,6 +49,12 @@ vi.mock("@/lib/api/agentConnections", () => ({
     get: vi.fn(),
     diagnoseCodexProxy: vi.fn(),
     nativeModel: vi.fn(),
+    modelControl: vi.fn(async () => ({
+      authorized: false,
+      ready: false,
+      pending: false,
+    })),
+    authorizeModelControl: vi.fn(),
     models: vi.fn(),
     nativeModels: vi.fn(),
     set: vi.fn(),
@@ -468,6 +474,12 @@ beforeEach(() => {
     { app: "pi", model: null, available: true },
   ]);
   vi.mocked(agentConnectionsApi.set).mockResolvedValue();
+  vi.mocked(agentConnectionsApi.modelControl).mockResolvedValue({
+    authorized: false,
+    ready: false,
+    pending: false,
+  });
+  vi.mocked(agentConnectionsApi.authorizeModelControl).mockResolvedValue();
   vi.mocked(agentConnectionsApi.reapply).mockResolvedValue();
   vi.mocked(agentConnectionsApi.restart).mockResolvedValue();
   vi.mocked(agentConnectionsApi.modelVisibility).mockResolvedValue({
@@ -540,6 +552,91 @@ describe("tool discovery empty state", () => {
 });
 
 describe("Agent connections", () => {
+  it.each(["workbuddy", "workbuddy-ai", "qoder"] as const)(
+    "requires model-control consent before saving %s's new-chat default",
+    async (app) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      });
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app,
+          enabled: true,
+          configured: true,
+          recoveryPending: false,
+          restartRequired: false,
+          model: "vary-auto/shared",
+        },
+      ]);
+      mount();
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      const trigger = within(row).getByRole("button", {
+        name: `agentConnections.model apps.${app}`,
+      });
+      await waitFor(() => expect(trigger).toBeEnabled());
+      fireEvent.click(trigger);
+      fireEvent.click(
+        await screen.findByRole("radio", { name: /Shared group/ }),
+      );
+      const dialog = await screen.findByRole("dialog", {
+        name: "agentConnections.modelControlTitle",
+      });
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+      expect(agentConnectionsApi.authorizeModelControl).not.toHaveBeenCalled();
+      expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+      fireEvent.click(
+        within(dialog).getByRole("button", {
+          name: "agentConnections.modelControlAllow",
+        }),
+      );
+      await waitFor(() =>
+        expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+          app,
+          true,
+          "vary-auto/shared",
+        ),
+      );
+      expect(agentConnectionsApi.authorizeModelControl).toHaveBeenCalledWith(
+        app,
+        true,
+      );
+      expect(
+        await screen.findByRole("dialog", {
+          name: "agentConnections.restartTitle",
+        }),
+      ).toBeInTheDocument();
+      expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps a pending model-control restart available after a manual client reopen", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      qoder: true,
+    });
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "qoder",
+        enabled: true,
+        configured: true,
+        recoveryPending: false,
+        restartRequired: false,
+        desktopState: "current",
+        model: "vary-auto/shared",
+      },
+    ]);
+    vi.mocked(agentConnectionsApi.modelControl).mockResolvedValue({
+      authorized: true,
+      ready: false,
+      pending: true,
+    });
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.qoder" });
+    await waitFor(() =>
+      expect(
+        within(row).getByRole("button", { name: "agentConnections.restart" }),
+      ).toBeEnabled(),
+    );
+  });
   it.each([false, true])(
     "does not label Pi as requiring individual configuration (compact: %s)",
     async (compact) => {
@@ -641,6 +738,186 @@ describe("Agent connections", () => {
       expect(api.checkIn).not.toHaveBeenCalled();
       expect(api.setAutoEnabled).not.toHaveBeenCalled();
       expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(
+    (["workbuddy", "doubaowork"] as const).flatMap((app) =>
+      [false, true].map((allComplete) => ({ app, allComplete })),
+    ),
+  )(
+    "keeps $app account selection available until every account is checked in ($allComplete)",
+    async ({ app, allComplete }) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      } as Awaited<ReturnType<typeof proxyApi.getAgentInstallations>>);
+      const status = {
+        autoEnabled: true,
+        day: "2026-11-10",
+        outcome: "claimed" as const,
+        checkedAt: null,
+        credit: null,
+        streak: null,
+        creditDelayed: false,
+      };
+      const secondStatus = {
+        ...status,
+        outcome: allComplete
+          ? ("already_checked" as const)
+          : ("not_checked" as const),
+      };
+      if (app === "workbuddy") {
+        vi.mocked(workbuddyCheckinApi.accounts).mockResolvedValue({
+          nativeStatus: status,
+          accounts: [
+            { id: "first", label: "First account", source: "native", status },
+            {
+              id: "second",
+              label: "Second account",
+              source: "browser",
+              status: secondStatus,
+            },
+          ],
+        });
+      } else {
+        vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue({
+          connected: true,
+          day: status.day,
+          outcome: status.outcome,
+          accounts: [
+            {
+              ...status,
+              id: "first",
+              label: "First account",
+              current: true,
+              totalDays: null,
+            },
+            {
+              ...secondStatus,
+              id: "second",
+              label: "Second account",
+              current: false,
+              totalDays: null,
+            },
+          ],
+        });
+      }
+      mount();
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      const trigger = await within(row).findByRole("button", {
+        name: `agentRewards.${allComplete ? "checkedIn" : "autoLabel"} apps.${app}`,
+      });
+      if (allComplete) expect(trigger).toBeDisabled();
+      else expect(trigger).toBeEnabled();
+      fireEvent.click(trigger);
+      expect(trigger).toHaveAttribute("aria-expanded", String(!allComplete));
+      expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
+      expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(
+    (["workbuddy", "doubaowork", "qoder", "trae", "zcode"] as const).flatMap(
+      (app) =>
+        (["claimed", "already_checked"] as const).flatMap((outcome) =>
+          [false, true].map((compact) => ({ app, outcome, compact })),
+        ),
+    ),
+  )(
+    "disables the completed $app entry for $outcome (compact=$compact) until status refresh",
+    async ({ app, outcome: initialOutcome, compact }) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      } as Awaited<ReturnType<typeof proxyApi.getAgentInstallations>>);
+      let outcome: "claimed" | "already_checked" | "not_checked" =
+        initialOutcome;
+      const status = () => ({
+        autoEnabled: true,
+        day: outcome === "not_checked" ? "2026-11-11" : "2026-11-10",
+        outcome,
+        checkedAt: null,
+        credit: null,
+        streak: null,
+        creditDelayed: false,
+      });
+      if (app === "workbuddy") {
+        vi.mocked(workbuddyCheckinApi.accounts).mockImplementation(
+          async () => ({
+            nativeStatus: status(),
+            accounts: [
+              {
+                id: "synthetic",
+                label: "Synthetic account",
+                source: "native",
+                status: status(),
+              },
+            ],
+          }),
+        );
+      } else if (app === "doubaowork") {
+        vi.mocked(doubaoCheckinApi.accounts).mockImplementation(async () => ({
+          connected: true,
+          day: status().day,
+          outcome,
+          accounts: [
+            {
+              ...status(),
+              id: "synthetic",
+              label: "Synthetic account",
+              current: true,
+              totalDays: null,
+            },
+          ],
+        }));
+      } else {
+        vi.mocked(agentRewardsApi.status).mockImplementation(async (app) => ({
+          ...status(),
+          app,
+          accountId: "synthetic",
+          label: "Synthetic account",
+          nextCheckAt: null,
+        }));
+      }
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      mount(compact, client);
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      if (compact)
+        fireEvent.click(
+          within(row).getByRole("button", {
+            name: `agentConnections.details apps.${app}`,
+          }),
+        );
+      const completed = await within(row).findByRole("button", {
+        name: `agentRewards.checkedIn apps.${app}`,
+      });
+      expect(completed).toBeDisabled();
+      fireEvent.click(completed);
+      expect(
+        within(row).queryByRole("region", { name: /checkin/ }),
+      ).not.toBeInTheDocument();
+      outcome = "not_checked";
+      await act(async () => {
+        await client.invalidateQueries({
+          queryKey:
+            app === "workbuddy"
+              ? ["workbuddyCheckin", "accounts"]
+              : app === "doubaowork"
+                ? ["doubaoCheckin"]
+                : ["agentRewards", app],
+        });
+      });
+      await waitFor(() =>
+        expect(
+          within(row).getByRole("button", {
+            name: `agentRewards.autoLabel apps.${app}`,
+          }),
+        ).toBeEnabled(),
+      );
+      expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
+      expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
+      expect(agentRewardsApi.claim).not.toHaveBeenCalled();
     },
   );
 
@@ -894,7 +1171,7 @@ describe("Agent connections", () => {
         name: `agentRewards.manualLabel apps.${app}`,
       });
       const picker = within(row).getByLabelText(
-        `agentConnections.${app === "qoder" ? "modelList" : "model"} apps.${app}`,
+        `agentConnections.model apps.${app}`,
       );
       expect(
         trigger.compareDocumentPosition(picker) &
@@ -916,6 +1193,61 @@ describe("Agent connections", () => {
       expect(agentConnectionsApi.set).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    ["macOS", "Macintosh", "Mac"],
+    ["Windows", "Windows NT 10.0", "Windows"],
+    ["Linux", "X11; Linux x86_64", ""],
+  ])("shows only %s restart guidance", async (_platform, userAgent, suffix) => {
+    const ua = vi
+      .spyOn(navigator, "userAgent", "get")
+      .mockReturnValue(userAgent);
+    const platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("");
+    try {
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app: "qoder",
+          enabled: true,
+          configured: true,
+          recoveryPending: false,
+          model: "vary-auto/shared",
+          restartRequired: true,
+          desktopState: "restart_required",
+        },
+        {
+          app: "codex",
+          enabled: true,
+          configured: true,
+          recoveryPending: false,
+          model: "vary-auto/shared",
+          restartRequired: false,
+          reloadState: "stale_catalog",
+        },
+      ]);
+      mount();
+      for (const app of ["qoder", "codex"]) {
+        const row = await screen.findByRole("article", { name: `apps.${app}` });
+        fireEvent.click(
+          within(row).getByRole("button", { name: "agentConnections.restart" }),
+        );
+        const dialog = await screen.findByRole("dialog");
+        const key =
+          app === "codex" ? "codexRestartConfirmHint" : "restartConfirmHint";
+        const platformSuffix =
+          app === "codex" && suffix !== "Windows" ? "" : suffix;
+        expect(dialog).toHaveAccessibleDescription(
+          `agentConnections.${key}${platformSuffix}`,
+        );
+        expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+        fireEvent.click(
+          within(dialog).getByRole("button", { name: "common.cancel" }),
+        );
+      }
+    } finally {
+      ua.mockRestore();
+      platform.mockRestore();
+    }
+  });
 
   it.each(["claude-desktop", "workbuddy"])(
     "confirms a stale %s restart and never restarts from rendering or cancel",
@@ -1615,12 +1947,57 @@ describe("Agent connections", () => {
 
   async function openDesktopList(row: HTMLElement) {
     const trigger = within(row).getByRole("button", {
-      name: "agentConnections.modelList apps.claude-desktop",
+      name: "agentConnections.model apps.claude-desktop",
     });
     await waitFor(() => expect(trigger).toBeEnabled());
     fireEvent.click(trigger);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "agentConnections.manageVisibleModels",
+      }),
+    );
     return screen.findByRole("dialog");
   }
+
+  it("keeps Desktop visibility management inside its single model dropdown", async () => {
+    const row = await desktop();
+    expect(
+      within(row).queryByRole("button", {
+        name: "agentConnections.modelList apps.claude-desktop",
+      }),
+    ).not.toBeInTheDocument();
+    const dialog = await openDesktopList(row);
+    expect(
+      within(dialog).getByRole("menuitemcheckbox", { name: /Direct model/ }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(dialog).getByRole("button", {
+        name: "agentConnections.backToModels",
+      }),
+    );
+    expect(
+      within(dialog).getByRole("radio", { name: /Direct model/ }),
+    ).toBeInTheDocument();
+    expect(agentConnectionsApi.setModelVisibility).not.toHaveBeenCalled();
+  });
+
+  it("selects Desktop's new-session default independently of model visibility", async () => {
+    const row = await desktop();
+    const trigger = within(row).getByRole("button", {
+      name: "agentConnections.model apps.claude-desktop",
+    });
+    await waitFor(() => expect(trigger).toBeEnabled());
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("radio", { name: /Direct model/ }));
+    await waitFor(() =>
+      expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+        "claude-desktop",
+        true,
+        "direct-model",
+      ),
+    );
+    expect(agentConnectionsApi.setModelVisibility).not.toHaveBeenCalled();
+  });
 
   it("applies Desktop visibility immediately without setting a starting model", async () => {
     const row = await desktop();
@@ -1779,7 +2156,7 @@ describe("Agent connections", () => {
     });
     expect(
       within(row).getByRole("button", {
-        name: "agentConnections.modelList apps.claude-desktop",
+        name: "agentConnections.model apps.claude-desktop",
       }),
     ).toBeDisabled();
   });
@@ -2019,7 +2396,7 @@ describe("Agent connections", () => {
       screen.getByRole("article", { name: "apps.claude" }),
     );
   });
-  describe.each(["workbuddy", "qoder", "trae"] as const)(
+  describe.each(["workbuddy", "workbuddy-ai", "qoder", "trae"] as const)(
     "%s shared catalog",
     (app) => {
       it.each([false, true])(
@@ -2060,34 +2437,50 @@ describe("Agent connections", () => {
             );
           }
           const trigger = within(row).getByRole("button", {
-            name: `agentConnections.modelList apps.${app}`,
+            name: `agentConnections.${app === "trae" ? "modelList" : "model"} apps.${app}`,
           });
+          if (app !== "trae") {
+            expect(
+              within(row).queryByRole("button", {
+                name: `agentConnections.modelList apps.${app}`,
+              }),
+            ).not.toBeInTheDocument();
+          }
           await waitFor(() => expect(trigger).toBeEnabled());
           fireEvent.click(trigger);
           const dialog = await screen.findByRole("dialog");
-          expect(dialog).toHaveTextContent(
-            pending
-              ? "agentConnections.nativeCatalogPendingHint"
-              : enabled
-                ? "agentConnections.nativeCatalogHint"
-                : "agentConnections.nativeCatalogDisconnectedHint",
-          );
-          fireEvent.click(
-            within(dialog).getByRole("listitem", { name: "Shared group" }),
-          );
+          if (app === "trae")
+            expect(dialog).toHaveTextContent(
+              pending
+                ? "agentConnections.nativeCatalogPendingHint"
+                : enabled
+                  ? "agentConnections.nativeCatalogHint"
+                  : "agentConnections.nativeCatalogDisconnectedHint",
+            );
+          if (app === "trae")
+            fireEvent.click(
+              within(dialog).getByRole("listitem", { name: "Shared group" }),
+            );
           fireEvent.change(within(dialog).getByRole("searchbox"), {
             target: { value: "Direct" },
           });
           expect(
-            within(dialog).getByRole("listitem", { name: "Direct model" }),
+            within(dialog).getByRole(app === "trae" ? "listitem" : "radio", {
+              name: /Direct model/,
+            }),
           ).toBeVisible();
           expect(
-            within(dialog).queryByRole("listitem", { name: "Shared group" }),
+            within(dialog).queryByRole(app === "trae" ? "listitem" : "radio", {
+              name: /Shared group/,
+            }),
           ).not.toBeInTheDocument();
-          expect(within(dialog).queryByRole("radio")).not.toBeInTheDocument();
+          if (app === "trae")
+            expect(within(dialog).queryByRole("radio")).not.toBeInTheDocument();
           expect(agentConnectionsApi.set).not.toHaveBeenCalled();
           expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
-          expect(agentConnectionsApi.modelVisibility).not.toHaveBeenCalled();
+          expect(agentConnectionsApi.modelVisibility).not.toHaveBeenCalledWith(
+            app,
+          );
           expect(agentConnectionsApi.setModelVisibility).not.toHaveBeenCalled();
           expect(
             within(row).getByRole("switch", {
@@ -2200,15 +2593,20 @@ describe("Agent connections", () => {
 
   it("shows a safe catalog error instead of a false model count", async () => {
     vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
-      qoder: true,
+      trae: true,
     } as Awaited<ReturnType<typeof proxyApi.getAgentInstallations>>);
     vi.mocked(agentConnectionsApi.models).mockRejectedValue(
       new Error("synthetic-private-catalog-error"),
     );
-    mount();
-    const row = await screen.findByRole("article", { name: "apps.qoder" });
+    mount(true);
+    const row = await screen.findByRole("article", { name: "apps.trae" });
+    fireEvent.click(
+      within(row).getByRole("button", {
+        name: "agentConnections.details apps.trae",
+      }),
+    );
     const trigger = within(row).getByRole("button", {
-      name: "agentConnections.modelList apps.qoder",
+      name: "agentConnections.modelList apps.trae",
     });
     await waitFor(() =>
       expect(trigger).toHaveTextContent("agentConnections.failed"),
@@ -2443,7 +2841,7 @@ describe("Agent connections", () => {
       expect(
         within(row).getByRole("switch", { name: `apps.${app}` }),
       ).toBeEnabled();
-      if (["qoder", "doubaowork"].includes(app)) {
+      if (app === "doubaowork") {
         expect(
           within(row).queryByRole("button", {
             name: `agentConnections.model apps.${app}`,

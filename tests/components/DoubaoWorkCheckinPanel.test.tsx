@@ -174,3 +174,33 @@ it("refreshes a previously completed reward without claiming or switching accoun
   ).not.toBeInTheDocument();
   expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
 });
+
+it.each(["claimed", "already_checked"] as const)(
+  "disables Doubao claims for %s and enables the next day after refresh",
+  async (outcome) => {
+    vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue({
+      ...initial,
+      accounts: initial.accounts.map((account) => ({ ...account, outcome })),
+    });
+    mount();
+    const completed = await screen.findByRole("button", {
+      name: "agentRewards.checkedIn",
+    });
+    expect(completed).toBeDisabled();
+    fireEvent.click(completed);
+    expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
+    vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue({
+      ...initial,
+      day: "2026-11-04",
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "doubaowork.checkin.reload" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "doubaowork.checkin.checkNow" }),
+      ).toBeEnabled(),
+    );
+    expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
+  },
+);

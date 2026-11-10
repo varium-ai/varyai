@@ -98,9 +98,11 @@ export function DoubaoWorkCheckinPanel({
               {t(
                 claim.isPending
                   ? "doubaowork.checkin.checking"
-                  : selected && !selected.current
-                    ? "doubaowork.checkin.switchAndCheckin"
-                    : "doubaowork.checkin.checkNow",
+                  : hasReward
+                    ? "agentRewards.checkedIn"
+                    : selected && !selected.current
+                      ? "doubaowork.checkin.switchAndCheckin"
+                      : "doubaowork.checkin.checkNow",
               )}
             </Button>
           </div>

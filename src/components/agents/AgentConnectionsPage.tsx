@@ -42,6 +42,7 @@ import { workbuddyCheckinApi } from "@/lib/api/workbuddy-checkin";
 import { doubaoCheckinApi } from "@/lib/api/doubao-checkin";
 import { proxyApi } from "@/lib/api/proxy";
 import { settingsApi } from "@/lib/api/settings";
+import { isMac, isWindows } from "@/lib/platform";
 import { useAgentUpdates } from "@/hooks/useAgentUpdates";
 import { useAgentInstallations } from "@/hooks/useAgentInstallations";
 import {
@@ -86,15 +87,10 @@ type ConnectionOperation =
   | "reapplying"
   | "restarting"
   | "visibility";
-const nativePicker = (app: AppId | null) =>
-  app !== null &&
-  [
-    "claude-desktop",
-    "workbuddy",
-    "workbuddy-ai",
-    "qoder",
-    "doubaowork",
-  ].includes(app);
+const nativePicker = (app: AppId | null) => app === "doubaowork";
+const modelControlApps = ["workbuddy", "workbuddy-ai", "qoder"] as const;
+const needsModelControl = (app: AppId | null) =>
+  modelControlApps.some((known) => known === app);
 const websites: Record<AppId, string> = {
   "claude-desktop": "https://claude.ai/download",
   claude: "https://code.claude.com/docs/en/overview",
@@ -166,7 +162,34 @@ export function AgentConnectionsPage({
       refetchInterval: 60_000,
     })),
   });
+  const checkinComplete = (app: AppId) => {
+    if (app === "workbuddy") {
+      const accounts = workbuddyCheckin.data?.accounts;
+      return (
+        !!accounts?.length &&
+        accounts.every((account) =>
+          ["claimed", "already_checked"].includes(account.status.outcome),
+        )
+      );
+    }
+    if (app === "doubaowork") {
+      const accounts = doubaoCheckin.data?.accounts;
+      return (
+        !!accounts?.length &&
+        accounts.every((account) =>
+          ["claimed", "already_checked"].includes(account.outcome),
+        )
+      );
+    }
+    return (
+      hasAgentRewards(app) &&
+      ["claimed", "already_checked"].includes(
+        rewards[rewardApps.indexOf(app)]?.data?.outcome ?? "",
+      )
+    );
+  };
   const checkinLabel = (app: AppId) => {
+    if (checkinComplete(app)) return t("agentRewards.checkedIn");
     const autoEnabled =
       app === "workbuddy"
         ? (workbuddyCheckin.data?.nativeStatus?.autoConfigured ??
@@ -192,11 +215,24 @@ export function AgentConnectionsPage({
     queryKey: ["agent-model-catalog"],
     queryFn: agentConnectionsApi.models,
   });
+  const desktopVisibility = useQuery({
+    queryKey: ["agent-model-visibility", "claude-desktop"],
+    queryFn: () => agentConnectionsApi.modelVisibility("claude-desktop"),
+    enabled:
+      states.data?.some((state) => state.app === "claude-desktop") === true,
+  });
+  const modelControls = useQueries({
+    queries: modelControlApps.map((app) => ({
+      queryKey: ["agent-model-control", app],
+      queryFn: () => agentConnectionsApi.modelControl(app),
+      refetchInterval: 3000,
+    })),
+  });
   const nativeModels = useQueries({
     queries: APP_IDS.map((app) => ({
       queryKey: ["agent-native-models", app],
       queryFn: () =>
-        nativePicker(app) || app === "trae"
+        nativePicker(app) || needsModelControl(app) || app === "trae"
           ? Promise.resolve({ app, model: null, available: false })
           : agentConnectionsApi.nativeModel(app),
       refetchInterval: 5000,
@@ -241,15 +277,21 @@ export function AgentConnectionsPage({
     }),
   );
   const [picking, setPicking] = useState<AppId | null>(null);
+  const [managingDesktopModels, setManagingDesktopModels] = useState(false);
   const [browsing, setBrowsing] = useState<AppId | null>(null);
   const [disconnecting, setDisconnecting] = useState<AppId | null>(null);
   const [restarting, setRestarting] = useState<AppId | null>(null);
+  const [modelControlRequest, setModelControlRequest] = useState<{
+    app: AppId;
+    model: string;
+  } | null>(null);
+  const [authorizingModel, setAuthorizingModel] = useState(false);
   const updates = useAgentUpdates(
     APP_IDS.filter((app) => installations.data?.[app]),
   );
   const rowBusy = (app: AppId | null) =>
     app !== null && (!!operations[app] || updates.isBusy(app));
-  useWorkspaceEditing(false, !!busy, onEditingChange);
+  useWorkspaceEditing(false, !!busy || authorizingModel, onEditingChange);
   function beginOperation(app: AppId, operation: ConnectionOperation) {
     if (updates.isBusy(app) || operationLocks.current.has(app)) return false;
     operationLocks.current.add(app);
@@ -286,6 +328,7 @@ export function AgentConnectionsPage({
       [
         "agent-connections",
         "agent-native-models",
+        "agent-model-control",
         "proxyStatus",
         "intent-routing-client",
         ...(reapply ? ["agent-model-catalog"] : []),
@@ -320,11 +363,53 @@ export function AgentConnectionsPage({
       setSetup((current) => (current === app ? null : current));
       setPicking((current) => (current === app ? null : current));
       setDisconnecting((current) => (current === app ? null : current));
-    } catch {
-      setError("agentConnections.failed");
+      return true;
+    } catch (cause) {
+      setError(
+        typeof cause === "string" && cause === "agentConnections.conflict"
+          ? "agentConnections.conflict"
+          : "agentConnections.failed",
+      );
+      return false;
     } finally {
       refreshConnectionViews();
       endOperation(app);
+    }
+  }
+  async function pickModel(app: AppId, model: string) {
+    if (needsModelControl(app)) {
+      const control =
+        modelControls[modelControlApps.findIndex((known) => known === app)];
+      if (control.isPending || control.isError) {
+        setError("agentConnections.modelControlUnavailable");
+        return;
+      }
+      if (!control.data?.authorized) {
+        setPicking(null);
+        setModelControlRequest({ app, model });
+        return;
+      }
+      if (await apply(app, true, model)) setRestarting(app);
+      return;
+    }
+    await apply(app, true, model);
+  }
+  async function authorizeModel() {
+    if (!modelControlRequest || authorizingModel) return;
+    const { app, model } = modelControlRequest;
+    setAuthorizingModel(true);
+    setError(null);
+    try {
+      await agentConnectionsApi.authorizeModelControl(app, true);
+      if (await apply(app, true, model)) {
+        setModelControlRequest(null);
+        setRestarting(app);
+      }
+    } catch {
+      setError("agentConnections.modelControlUnavailable");
+    } finally {
+      setAuthorizingModel(false);
+      refreshConnectionViews();
     }
   }
   async function restart(app: AppId) {
@@ -476,6 +561,10 @@ export function AgentConnectionsPage({
                 : null
         : null;
     const desktopRestart = state?.desktopState === "restart_required";
+    const modelControl = needsModelControl(app)
+      ? modelControls[modelControlApps.findIndex((known) => known === app)]
+          ?.data
+      : undefined;
     const codexReloadRestart =
       app === "codex" &&
       !state?.recoveryPending &&
@@ -483,7 +572,7 @@ export function AgentConnectionsPage({
         state?.reloadState === "failed");
     const canRestart =
       !!state &&
-      (desktopRestart || codexReloadRestart) &&
+      (desktopRestart || codexReloadRestart || !!modelControl?.pending) &&
       // A pending TRAE bridge can require a running client to reload launch settings.
       // Configuration drift must be repaired before restarting other clients.
       (!state.recoveryPending ||
@@ -501,11 +590,14 @@ export function AgentConnectionsPage({
             ? "common.loading"
             : "agentConnections.nativeUnavailable",
         );
-    const currentModel = enabled
-      ? (catalog.data?.find((model) => model.id === state?.model)?.name ??
-        state?.model ??
-        t("agentConnections.pickModel"))
-      : nativeLabel;
+    const currentModel =
+      needsModelControl(app) && (!enabled || !modelControl?.authorized)
+        ? t("agentConnections.nativeDefault")
+        : enabled
+          ? (catalog.data?.find((model) => model.id === state?.model)?.name ??
+            state?.model ??
+            t("agentConnections.pickModel"))
+          : nativeLabel;
     const detailsId = `${pageId}-${app}-details`;
     const doubaoLauncher = app === "doubaowork" && !state?.configured && (
       <Button
@@ -583,60 +675,56 @@ export function AgentConnectionsPage({
           <span>{t("agentConnections.reapply")}</span>
         </button>
       );
-    const modelCatalog = [
-      "workbuddy",
-      "workbuddy-ai",
-      "qoder",
-      "trae",
-    ].includes(app) ? (
-      <Popover
-        open={browsing === app}
-        onOpenChange={(open) => setBrowsing(open ? app : null)}
-      >
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            className="mp-agent-start"
-            disabled={rowBusy(app) || catalog.isPending}
-            aria-label={`${t("agentConnections.modelList")} ${name(app)}`}
-          >
-            <span>
-              {catalog.isError
-                ? t("agentConnections.failed")
-                : catalog.isPending
-                  ? t("common.loading")
-                  : t("agentConnections.allModels", {
-                      count: catalog.data?.length ?? 0,
-                    })}
-            </span>
-            <ChevronDown size={11} />
-          </button>
-        </PopoverTrigger>
-        <ModelPickerPopoverContent
-          onDismiss={() => setBrowsing(null)}
-          aria-label={t("agentConnections.modelListTitle", {
-            agent: name(app),
-          })}
+    const modelCatalog =
+      app === "trae" ? (
+        <Popover
+          open={browsing === app}
+          onOpenChange={(open) => setBrowsing(open ? app : null)}
         >
-          <SharedModelPicker
-            models={catalog.isError ? [] : (catalog.data ?? [])}
-            selected={catalog.data?.map((model) => model.id) ?? []}
-            readOnly
-            title={t("agentConnections.modelListTitle", {
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="mp-agent-start"
+              disabled={rowBusy(app) || catalog.isPending}
+              aria-label={`${t("agentConnections.modelList")} ${name(app)}`}
+            >
+              <span>
+                {catalog.isError
+                  ? t("agentConnections.failed")
+                  : catalog.isPending
+                    ? t("common.loading")
+                    : t("agentConnections.allModels", {
+                        count: catalog.data?.length ?? 0,
+                      })}
+              </span>
+              <ChevronDown size={11} />
+            </button>
+          </PopoverTrigger>
+          <ModelPickerPopoverContent
+            onDismiss={() => setBrowsing(null)}
+            aria-label={t("agentConnections.modelListTitle", {
               agent: name(app),
             })}
-            description={t(
-              !enabled
-                ? "agentConnections.nativeCatalogDisconnectedHint"
-                : app === "trae" && state?.recoveryReason === "bridge_pending"
-                  ? "agentConnections.nativeCatalogPendingHint"
-                  : "agentConnections.nativeCatalogHint",
-            )}
-            error={catalog.isError ? t("agentConnections.failed") : undefined}
-          />
-        </ModelPickerPopoverContent>
-      </Popover>
-    ) : null;
+          >
+            <SharedModelPicker
+              models={catalog.isError ? [] : (catalog.data ?? [])}
+              selected={catalog.data?.map((model) => model.id) ?? []}
+              readOnly
+              title={t("agentConnections.modelListTitle", {
+                agent: name(app),
+              })}
+              description={t(
+                !enabled
+                  ? "agentConnections.nativeCatalogDisconnectedHint"
+                  : app === "trae" && state?.recoveryReason === "bridge_pending"
+                    ? "agentConnections.nativeCatalogPendingHint"
+                    : "agentConnections.nativeCatalogHint",
+              )}
+              error={catalog.isError ? t("agentConnections.failed") : undefined}
+            />
+          </ModelPickerPopoverContent>
+        </Popover>
+      ) : null;
     return (
       <SortableAgentRow
         key={app}
@@ -704,6 +792,7 @@ export function AgentConnectionsPage({
                   !!picking ||
                   !!browsing ||
                   !!restarting ||
+                  !!modelControlRequest ||
                   !!updates.pending ||
                   !!updates.installTarget
                 }
@@ -755,11 +844,7 @@ export function AgentConnectionsPage({
         </div>
         {compact && (
           <span className="mp-agent-summary-model" title={currentModel}>
-            {app === "claude-desktop" && enabled
-              ? t("agentConnections.allModels", {
-                  count: catalog.data?.length ?? 0,
-                })
-              : currentModel}
+            {currentModel}
           </span>
         )}
         {compact && (
@@ -786,34 +871,13 @@ export function AgentConnectionsPage({
           className={compact ? "mp-agent-panel-controls" : "contents"}
           hidden={compact && expanded !== app}
         >
-          {app === "claude-desktop" && (
-            <>
-              <AgentModelVisibility
-                app={app}
-                name={name(app)}
-                connected={enabled}
-                models={catalog.data ?? []}
-                disabled={
-                  (!!operations[app] && operations[app] !== "visibility") ||
-                  updates.isBusy(app) ||
-                  !!state?.recoveryPending ||
-                  connection.isPending ||
-                  connection.isError ||
-                  catalog.isPending ||
-                  catalog.isError
-                }
-                onBusyChange={(value) =>
-                  value ? beginOperation(app, "visibility") : endOperation(app)
-                }
-              />
-            </>
-          )}
           {(app === "workbuddy" ||
             app === "doubaowork" ||
             hasAgentRewards(app)) && (
             <button
               type="button"
               className="mp-agent-start mp-agent-checkin-trigger"
+              disabled={checkinComplete(app)}
               aria-label={`${checkinLabel(app)} ${name(app)}`}
               aria-expanded={checkinApp === app}
               aria-controls={`${detailsId}-checkin`}
@@ -828,7 +892,6 @@ export function AgentConnectionsPage({
               <ChevronDown size={11} aria-hidden="true" />
             </button>
           )}
-          {app !== "trae" && modelCatalog}
           {app === "doubaowork" && (
             <span
               className="mp-agent-start"
@@ -842,7 +905,10 @@ export function AgentConnectionsPage({
           {!nativePicker(app) && (
             <Popover
               open={picking === app}
-              onOpenChange={(open) => setPicking(open ? app : null)}
+              onOpenChange={(open) => {
+                setPicking(open ? app : null);
+                setManagingDesktopModels(false);
+              }}
             >
               <PopoverTrigger asChild>
                 <button
@@ -852,6 +918,9 @@ export function AgentConnectionsPage({
                     rowBusy(app) ||
                     connection.isPending ||
                     connection.isError ||
+                    (app === "claude-desktop" &&
+                      (desktopVisibility.isPending ||
+                        desktopVisibility.isError)) ||
                     (!!state?.recoveryPending &&
                       !orphaned &&
                       !inactiveCodexIntent &&
@@ -866,15 +935,17 @@ export function AgentConnectionsPage({
                   }
                   aria-label={`${t("agentConnections.model")} ${name(app)}`}
                   title={
-                    !enabled
-                      ? `${nativeLabel}\n${t(
-                          nativeAvailable
-                            ? native.model
-                              ? "agentConnections.nativeModelHint"
-                              : "agentConnections.nativeDefaultHint"
-                            : "agentConnections.nativeUnavailable",
-                        )}`
-                      : currentModel
+                    needsModelControl(app)
+                      ? t("agentConnections.modelControlHint")
+                      : !enabled
+                        ? `${nativeLabel}\n${t(
+                            nativeAvailable
+                              ? native.model
+                                ? "agentConnections.nativeModelHint"
+                                : "agentConnections.nativeDefaultHint"
+                              : "agentConnections.nativeUnavailable",
+                          )}`
+                        : currentModel
                   }
                 >
                   {!enabled && nativeAvailable && (
@@ -895,54 +966,113 @@ export function AgentConnectionsPage({
                 onDismiss={() => setPicking(null)}
                 aria-label={`${t("agentConnections.model")} ${name(app)}`}
               >
-                <SharedModelPicker
-                  variant="agent"
-                  description={
-                    orphaned
-                      ? t("agentConnections.orphanReconnectHint")
-                      : app === "trae"
-                        ? t("agentConnections.traeStartingModelHint")
-                        : app === "deepseek-harness"
-                          ? t("agentConnections.deepseekStartingModelHint")
+                {app === "claude-desktop" && managingDesktopModels ? (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setManagingDesktopModels(false)}
+                    >
+                      {t("agentConnections.backToModels")}
+                    </Button>
+                    <AgentModelVisibility
+                      inline
+                      app={app}
+                      name={name(app)}
+                      connected={enabled}
+                      models={catalog.data ?? []}
+                      disabled={
+                        (!!operations[app] &&
+                          operations[app] !== "visibility") ||
+                        updates.isBusy(app) ||
+                        !!state?.recoveryPending ||
+                        connection.isPending ||
+                        connection.isError ||
+                        catalog.isPending ||
+                        catalog.isError
+                      }
+                      onBusyChange={(value) =>
+                        value
+                          ? beginOperation(app, "visibility")
+                          : endOperation(app)
+                      }
+                    />
+                  </>
+                ) : (
+                  <>
+                    <SharedModelPicker
+                      variant="agent"
+                      description={
+                        orphaned
+                          ? t("agentConnections.orphanReconnectHint")
+                          : app === "trae"
+                            ? t("agentConnections.traeStartingModelHint")
+                            : app === "deepseek-harness"
+                              ? t("agentConnections.deepseekStartingModelHint")
+                              : needsModelControl(app)
+                                ? t("agentConnections.modelControlHint")
+                                : app === "claude-desktop"
+                                  ? t(
+                                      "agentConnections.desktopStartingModelHint",
+                                    )
+                                  : undefined
+                      }
+                      disabled={rowBusy(app)}
+                      models={[
+                        ...(!enabled && nativeAvailable
+                          ? [
+                              {
+                                id: `native-current/${app}`,
+                                name: nativeLabel,
+                                source: "native" as const,
+                                logo: APP_ICON_NAME[app],
+                                disabled: true,
+                              },
+                            ]
+                          : []),
+                        ...(catalog.isError ? [] : (catalog.data ?? [])).filter(
+                          (model) =>
+                            app !== "claude-desktop" ||
+                            (!!desktopVisibility.data &&
+                              desktopVisibility.data.ids.includes(model.id) ===
+                                desktopVisibility.data.only),
+                        ),
+                      ]}
+                      selected={
+                        enabled &&
+                        state?.model &&
+                        (!needsModelControl(app) || modelControl?.authorized)
+                          ? [state.model]
+                          : nativeAvailable
+                            ? [`native-current/${app}`]
+                            : []
+                      }
+                      onPick={(model) => void pickModel(app, model)}
+                      onDisconnect={
+                        enabled || orphaned || inactiveCodexIntent
+                          ? () => {
+                              setPicking(null);
+                              setDisconnecting(app);
+                            }
                           : undefined
-                  }
-                  disabled={rowBusy(app)}
-                  models={[
-                    ...(!enabled && nativeAvailable
-                      ? [
-                          {
-                            id: `native-current/${app}`,
-                            name: nativeLabel,
-                            source: "native" as const,
-                            logo: APP_ICON_NAME[app],
-                            disabled: true,
-                          },
-                        ]
-                      : []),
-                    ...(catalog.isError ? [] : (catalog.data ?? [])),
-                  ]}
-                  selected={
-                    enabled && state?.model
-                      ? [state.model]
-                      : nativeAvailable
-                        ? [`native-current/${app}`]
-                        : []
-                  }
-                  onPick={(model) => void apply(app, true, model)}
-                  onDisconnect={
-                    enabled || orphaned || inactiveCodexIntent
-                      ? () => {
-                          setPicking(null);
-                          setDisconnecting(app);
-                        }
-                      : undefined
-                  }
-                  disconnectLabel={
-                    orphaned || inactiveCodexIntent
-                      ? t("agentConnections.disconnectOnly")
-                      : undefined
-                  }
-                />
+                      }
+                      disconnectLabel={
+                        orphaned || inactiveCodexIntent
+                          ? t("agentConnections.disconnectOnly")
+                          : undefined
+                      }
+                    />
+                    {app === "claude-desktop" && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setManagingDesktopModels(true)}
+                      >
+                        {t("agentConnections.manageVisibleModels")}
+                      </Button>
+                    )}
+                  </>
+                )}
                 {(!catalog.data?.length || catalog.isError) && (
                   <p className="mt-3 text-xs text-muted-foreground">
                     {t("agentConnections.noModels")}
@@ -1288,6 +1418,41 @@ export function AgentConnectionsPage({
         </div>
       </details>
       <AppDialog
+        open={!!modelControlRequest}
+        pending={authorizingModel}
+        onOpenChange={(open) => {
+          if (!open && !authorizingModel) setModelControlRequest(null);
+        }}
+        title={t("agentConnections.modelControlTitle", {
+          app: modelControlRequest ? name(modelControlRequest.app) : "",
+        })}
+        description={t("agentConnections.modelControlConsent")}
+        footer={
+          <>
+            <Button
+              variant="outline"
+              disabled={authorizingModel}
+              onClick={() => setModelControlRequest(null)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              className="mp-primary"
+              disabled={authorizingModel}
+              onClick={() => void authorizeModel()}
+            >
+              {t("agentConnections.modelControlAllow")}
+            </Button>
+          </>
+        }
+      >
+        {error && (
+          <p role="alert" className="vary-dialog-error">
+            {t(error)}
+          </p>
+        )}
+      </AppDialog>
+      <AppDialog
         open={!!restarting}
         pending={rowBusy(restarting)}
         onOpenChange={(open) => {
@@ -1304,8 +1469,14 @@ export function AgentConnectionsPage({
               "stale_catalog" ||
               connections[APP_IDS.indexOf("codex")].data?.reloadState ===
                 "failed")
-            ? "agentConnections.codexRestartConfirmHint"
-            : "agentConnections.restartConfirmHint",
+            ? isWindows()
+              ? "agentConnections.codexRestartConfirmHintWindows"
+              : "agentConnections.codexRestartConfirmHint"
+            : isMac()
+              ? "agentConnections.restartConfirmHintMac"
+              : isWindows()
+                ? "agentConnections.restartConfirmHintWindows"
+                : "agentConnections.restartConfirmHint",
         )}
         footer={
           <>
@@ -1415,7 +1586,7 @@ export function AgentConnectionsPage({
         }
       >
         <div className="space-y-4">
-          {!nativePicker(setup) ? (
+          {!nativePicker(setup) && !needsModelControl(setup) ? (
             <fieldset disabled={rowBusy(setup)} className="space-y-3">
               <legend className="mb-2 text-sm">
                 {t("agentConnections.model")}

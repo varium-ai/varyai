@@ -154,7 +154,9 @@ export function AgentRewardsPanel({
               {t(
                 claim.isPending
                   ? "agentRewards.claiming"
-                  : "agentRewards.claim",
+                  : complete
+                    ? "agentRewards.checkedIn"
+                    : "agentRewards.claim",
               )}
             </Button>
           </div>

@@ -73,7 +73,7 @@ it("refreshes without claiming and passes the current account identity to an exp
     initial.accountId,
   );
   expect(
-    screen.getByRole("button", { name: "agentRewards.claim" }),
+    screen.getByRole("button", { name: "agentRewards.checkedIn" }),
   ).toBeDisabled();
 });
 it.each([
@@ -217,3 +217,38 @@ it("offers native access permission when the detected client has no readable acc
   expect(agentRewardsApi.startLogin).not.toHaveBeenCalled();
   expect(agentRewardsApi.claim).not.toHaveBeenCalled();
 });
+
+it.each(
+  (["qoder", "trae", "zcode"] as const).flatMap((app) =>
+    (["claimed", "already_checked"] as const).map((outcome) => ({
+      app,
+      outcome,
+    })),
+  ),
+)(
+  "disables completed $app claims for $outcome until the next reward window",
+  async ({ app, outcome }) => {
+    vi.mocked(agentRewardsApi.status).mockResolvedValue({
+      ...initial,
+      app,
+      outcome,
+    });
+    mount(app);
+    const completed = await screen.findByRole("button", {
+      name: "agentRewards.checkedIn",
+    });
+    expect(completed).toBeDisabled();
+    fireEvent.click(completed);
+    expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+    vi.mocked(agentRewardsApi.status).mockResolvedValue({ ...initial, app });
+    fireEvent.click(
+      screen.getByRole("button", { name: "agentRewards.refresh" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "agentRewards.claim" }),
+      ).toBeEnabled(),
+    );
+    expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+  },
+);

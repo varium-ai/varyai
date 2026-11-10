@@ -21,6 +21,7 @@
     "test:dev": "node --test scripts/tests/dev.node.mjs",
     "test:macos-dmg": "node --test scripts/tests/macos-dmg.node.mjs",
     "test:trae-bridge": "node --test src-tauri/resources/trae-bridge/*.node.cjs",
+    "test:model-default": "node --test src-tauri/resources/model-default/*.node.cjs",
     "test:workbuddy-checkin-auth": "node --test src-tauri/resources/workbuddy-checkin-auth.node.cjs",
     "test:doubao-checkin": "node --test src-tauri/resources/doubao-checkin.node.cjs",
     "test:agent-rewards": "node --test src-tauri/resources/agent-rewards.node.cjs",

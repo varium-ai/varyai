@@ -34,6 +34,7 @@ pnpm test:unit
 pnpm test:dev
 pnpm test:macos-dmg
 pnpm test:trae-bridge
+pnpm test:model-default
 pnpm test:workbuddy-checkin-auth
 pnpm test:doubao-checkin
 pnpm test:agent-rewards
@@ -61,7 +62,7 @@ After pushing, inspect the workflow for the exact pushed revision and follow it 
 
 Use `pnpm exec vitest run <test-files>` to select frontend tests during development; focused tests do not replace the required checks before committing. There is no `pnpm lint` command. `pnpm format:check` checks `src/`; apply formatting tools to other changed files as appropriate.
 
-Claude Desktop and WorkBuddy process inspection and confirmed restart support macOS and verified Windows installations. Keep native helpers behind their platform guards; pure freshness, selection and lifecycle orchestration compile under `cfg(test)` so synthetic fixtures run on every CI platform. WorkBuddy AI on Windows and desktop integrations on Linux report `unsupported`. macOS requests a normal quit; Windows asks windows to close before ending verified remaining processes when necessary. Tests must use fake runtimes and never inspect, quit, signal or launch installed applications. Codex has a separate idle-aware app-server worker: route changes reload automatically, while model-catalog changes require confirmation. Its gateway activity guard covers the response body lifetime and a ten-second quiet period without modifying frames or trailers. Run Clippy on all three CI platforms because a macOS-only check cannot detect unused native helpers in other platform builds.
+Claude Desktop, WorkBuddy, WorkBuddy AI and Qoder CN process inspection and confirmed restart support macOS and verified Windows installations. Keep native helpers behind their platform guards; pure freshness, selection and lifecycle orchestration compile under `cfg(test)` so synthetic fixtures run on every CI platform. Desktop integrations on Linux report `unsupported`. macOS requests a normal quit; Windows asks windows to close before ending verified remaining processes when necessary. Restart confirmation text shows only the current operating system's guidance, including the Windows-only Codex recovery warning. Tests must use fake runtimes and never inspect, quit, signal or launch installed applications. Codex has a separate idle-aware app-server worker: route changes reload automatically, while model-catalog changes require confirmation. Its gateway activity guard covers the response body lifetime and a ten-second quiet period without modifying frames or trailers. Run Clippy on all three CI platforms because a macOS-only check cannot detect unused native helpers in other platform builds.
 
 For Rust compatibility changes, run the backend checks with the exact CI toolchain as well as the previously supported local toolchain; passing on one version does not establish compatibility with another. DLP accounting uses the private `src-tauri/src/proxy/security/atomic_update.rs` compare-and-exchange helper to avoid both the deprecated `fetch_update` API and a replacement newer than the declared minimum Rust version. Its tests cover retry observations, refusal without mutation, budget bounds and saturated owners. API compatibility alone is not evidence that the entire dependency graph has been tested on the minimum version.
 

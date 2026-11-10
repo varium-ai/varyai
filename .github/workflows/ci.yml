@@ -40,6 +40,7 @@ jobs:
             frontend:
               - "src/**"
               - "src-tauri/resources/trae-bridge/**"
+              - "src-tauri/resources/model-default/**"
               - "scripts/**"
               - "package-macos.sh"
               - ".node-version"
@@ -143,6 +144,9 @@ jobs:
 
       - name: Client bridge tests
         run: pnpm test:trae-bridge
+
+      - name: Desktop model default tests
+        run: pnpm test:model-default
 
       - name: WorkBuddy credential helper tests
         run: pnpm test:workbuddy-checkin-auth
