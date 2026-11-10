@@ -98,19 +98,36 @@ it("refreshes without claiming and passes the current account identity to an exp
     screen.getByRole("button", { name: "agentRewards.checkedIn" }),
   ).toBeDisabled();
 });
-it.each([
-  "inactive",
-  "own_app_required",
-  "ineligible",
-  "connection_required",
-] as const)("does not offer a claim for %s", async (outcome) => {
-  vi.mocked(agentRewardsApi.status).mockResolvedValue({ ...initial, outcome });
+it.each(["inactive", "ineligible", "connection_required"] as const)(
+  "does not offer a claim for %s",
+  async (outcome) => {
+    vi.mocked(agentRewardsApi.status).mockResolvedValue({
+      ...initial,
+      outcome,
+    });
+    mount("zcode");
+    await screen.findByText(`agentRewards.outcomes.${outcome}`);
+    expect(
+      screen.getByRole("button", { name: "agentRewards.claim" }),
+    ).toBeDisabled();
+    expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+  },
+);
+it("requires verification in ZCode's official client before claiming", async () => {
+  vi.mocked(agentRewardsApi.status).mockResolvedValue({
+    ...initial,
+    app: "zcode",
+    outcome: "own_app_required",
+  });
   mount("zcode");
-  await screen.findByText(`agentRewards.outcomes.${outcome}`);
-  expect(
-    screen.getByRole("button", { name: "agentRewards.claim" }),
-  ).toBeDisabled();
+  await screen.findByText("agentRewards.zcodeVerificationHint");
+  const claim = screen.getByRole("button", {
+    name: "agentRewards.verificationRequired",
+  });
+  expect(claim).toBeDisabled();
+  fireEvent.click(claim);
   expect(agentRewardsApi.claim).not.toHaveBeenCalled();
+  expect(agentRewardsApi.setAuto).not.toHaveBeenCalled();
 });
 it("enables automation only for the currently displayed account", async () => {
   mount("trae");

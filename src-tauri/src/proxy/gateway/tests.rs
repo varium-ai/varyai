@@ -428,6 +428,10 @@ fn catalog_covers_every_agent_without_returning_credentials(
         .agents
         .iter()
         .any(|a| a.id == "workbuddy-ai" && a.local_routing));
+    assert!(value
+        .agents
+        .iter()
+        .any(|a| a.id == "trae-intl" && a.local_routing));
     assert_eq!(value.agents.iter().filter(|a| !a.local_routing).count(), 1);
     Ok(())
 }

@@ -341,7 +341,7 @@ export function AgentConnectionsPage({
       return true;
     } catch (cause) {
       setError(
-        typeof cause === "string" && cause === "agentConnections.conflict"
+        enabled && cause === "agentConnections.conflict"
           ? "agentConnections.conflict"
           : "agentConnections.failed",
       );

@@ -1395,7 +1395,7 @@ fn supported_file_based_agents_apply_as_one_bundle_and_undo_together() {
         .filter(|app| {
             !matches!(
                 app,
-                AppType::DoubaoWork | AppType::Trae | AppType::WorkBuddyAi
+                AppType::DoubaoWork | AppType::Trae | AppType::TraeIntl | AppType::WorkBuddyAi
             )
         })
         .filter(|app| *app != AppType::ClaudeDesktop || cfg!(any(target_os = "macos", windows)))
@@ -1403,7 +1403,7 @@ fn supported_file_based_agents_apply_as_one_bundle_and_undo_together() {
     assert!(apps.contains(&AppType::DeepSeekHarness));
     assert_eq!(
         apps.len(),
-        AppType::all().count() - 3 - usize::from(!cfg!(any(target_os = "macos", windows)))
+        AppType::all().count() - 4 - usize::from(!cfg!(any(target_os = "macos", windows)))
     );
     if apps.contains(&AppType::ClaudeDesktop) {
         let mut official = Provider::with_id(
