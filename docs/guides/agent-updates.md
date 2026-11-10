@@ -11,6 +11,10 @@ active tools and counts completed tasks, including failures. Each task checks th
 installed version after its update command exits; a successful exit without a
 verified version increase is reported as unverified. One tool's failure does not
 stop the other tasks, and raw command output is not shown in the update notice.
+If a successful CLI update's first version probe returns no version or fails,
+the page retries that observation twice at one-second intervals. It does not
+rerun the update command, retry an unchanged readable version, or turn a failed
+update command into a success. Persistent probe failures remain unverified.
 
 For a single tool, the notice names the outcome directly, such as
 `Pi updated: 1.4.0 → 1.5.0`, without a batch count. Multiple verified updates show

@@ -27,3 +27,9 @@ Certificate failures report a fixed operation stage and exit status, without exp
 Explicit supplier switches replace VaryAI-owned custom provider groups, including reserved provider IDs left after deletion of the shared database. Official account credentials, plugins and user-created provider groups remain intact. The file change is staged and rolls back if committing the corresponding database update fails.
 
 See [takeover service](../../src-tauri/src/services/qoder_proxy.rs), [certificate handling](../../src-tauri/src/services/qoder_certificate.rs), and [native codec](../../src-tauri/src/proxy/qoder_codec.rs). Synthetic codec tests are not a claim that every vendor version, account, model, installed package or system trust configuration has been accepted.
+
+The codec includes a hash-pinned binding for the official macOS Qoder CN 0.5.7
+worker, alongside the previously supported workers. Unknown worker contents
+remain unsupported. The installed-runtime regression verifies large synthetic
+payload round trips, preserved account context, and redaction followed by signing;
+it does not use live account credentials or send an upstream request.

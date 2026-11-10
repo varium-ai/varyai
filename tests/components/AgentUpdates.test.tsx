@@ -827,14 +827,58 @@ describe("Agent versions and updates", () => {
     finishes.forEach((finish) => finish());
     await screen.findByText(/agentUpdates.summary/);
   });
+  it.each(["missing", "rejected"])(
+    "rechecks a temporarily %s CLI version after updating without rerunning the installer",
+    async (state) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        hermes: true,
+      });
+      let updating = false;
+      let checks = 0;
+      vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
+        async () => {
+          updating = true;
+        },
+      );
+      vi.mocked(settingsApi.getToolVersions).mockImplementation(async () => {
+        if (!updating) return versions("hermes", "0.22.7");
+        if (++checks === 1) {
+          if (state === "rejected") throw new Error("synthetic-private-probe");
+          return [{ ...versions("hermes")[0], version: null }];
+        }
+        return versions("hermes", "0.23.1");
+      });
+      mount();
+      const row = await screen.findByRole("article", { name: "apps.hermes" });
+      fireEvent.click(
+        await within(row).findByRole("button", { name: "agentUpdates.update" }),
+      );
+      expect(
+        await screen.findByText(/agentUpdates.changed/, {}, { timeout: 4000 }),
+      ).toBeInTheDocument();
+      expect(within(row).getByText("0.23.1")).toBeInTheDocument();
+      expect(checks).toBe(2);
+      expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledOnce();
+      expect(
+        screen.queryByText(/agentUpdates.unverified/),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/synthetic-private-probe/),
+      ).not.toBeInTheDocument();
+    },
+  );
   it.each(["unchanged", "unreadable"])(
     "does not report an %s version as a successful upgrade",
     async (state) => {
+      let checks = 0;
       if (state === "unreadable")
         vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
           async () => {
-            vi.mocked(settingsApi.getToolVersions).mockRejectedValue(
-              "synthetic-private-version-output",
+            vi.mocked(settingsApi.getToolVersions).mockImplementation(
+              async () => {
+                checks++;
+                throw new Error("synthetic-private-version-output");
+              },
             );
           },
         );
@@ -844,7 +888,11 @@ describe("Agent versions and updates", () => {
         await within(row).findByRole("button", { name: "agentUpdates.update" }),
       );
       expect(
-        await screen.findByText(/agentUpdates.unverified/),
+        await screen.findByText(
+          /agentUpdates.unverified/,
+          {},
+          { timeout: 4000 },
+        ),
       ).toBeInTheDocument();
       expect(
         screen.queryByText(/agentUpdates.changed/),
@@ -853,6 +901,7 @@ describe("Agent versions and updates", () => {
         screen.queryByText(/synthetic-private-version-output/),
       ).not.toBeInTheDocument();
       expect(within(row).getByRole("switch")).toBeEnabled();
+      if (state === "unreadable") expect(checks).toBe(3);
     },
   );
   it("does not offer updates when the installed version is already ahead", async () => {

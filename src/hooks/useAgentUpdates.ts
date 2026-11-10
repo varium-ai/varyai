@@ -220,15 +220,21 @@ export function useAgentUpdates(installed: AppId[]) {
           }
           let to: string | null | undefined;
           if (tool) {
-            try {
-              const fresh = (await settingsApi.getToolVersions([tool])).find(
-                (v) => v.name === tool,
-              );
-              client.setQueryData(cliKey(tool), fresh ?? null);
-              to = fresh?.version;
-            } catch {
-              // Never retain a stale version as evidence that the upgrade succeeded.
-              client.setQueryData(cliKey(tool), null);
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                const fresh = (await settingsApi.getToolVersions([tool])).find(
+                  (v) => v.name === tool,
+                );
+                client.setQueryData(cliKey(tool), fresh ?? null);
+                to = fresh?.version;
+              } catch {
+                // Never retain a stale version as evidence that the upgrade succeeded.
+                client.setQueryData(cliKey(tool), null);
+              }
+              if (to || failed || attempt === 2) break;
+              // A just-updated CLI can temporarily fail its first startup probe.
+              // Retry only observation, never the update command itself.
+              await new Promise((resolve) => setTimeout(resolve, 1000));
             }
           } else {
             let fresh: AgentVersion | undefined;
