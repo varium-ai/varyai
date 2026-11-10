@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { Info } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { RoutingGroup } from "@/lib/api/intentRouting";
+import { RoutingSegments } from "./RoutingSegments";
 
 const firstPresets = [0, 30, 60, 120];
 export function RoutingExecutionSettings({
@@ -45,61 +45,40 @@ export function RoutingExecutionSettings({
       focusCustom.current = false;
     }
   }, [custom]);
-  const info = (text: string) => (
-    <span
-      className="rt-info"
-      role="img"
-      tabIndex={0}
-      aria-label={text}
-      title={text}
-    >
-      <Info size={14} />
-    </span>
-  );
   return (
     <div className="rt-execution-picks">
       <div className="rt-setting-row">
         <span>{t("routingPage.slowToStart")}</span>
         <div className="rt-setting-content">
-          <div
-            className="rt-reference-seg"
-            role="radiogroup"
-            aria-label={t("routingPage.slowToStart")}
-          >
-            {[...firstPresets, "custom"].map((value) => (
-              <button
-                key={value}
-                type="button"
-                role="radio"
-                disabled={disabled}
-                aria-checked={
-                  custom
-                    ? value === "custom"
-                    : value === (group.firstToken ?? 0)
-                }
-                onClick={() => {
-                  setCustom(value === "custom");
-                  if (value === "custom") {
-                    focusCustom.current = !custom;
-                    const seconds =
-                      (group.firstToken ?? 0) > 0 ? group.firstToken! : 300;
-                    setMinutes(String(+(seconds / 60).toFixed(2)));
-                    onChange({ ...group, firstToken: seconds });
-                  } else onChange({ ...group, firstToken: Number(value) });
-                }}
-              >
-                {value === "custom"
-                  ? t("routingPage.customTimeout")
-                  : value === 0
+          <RoutingSegments
+            label={t("routingPage.slowToStart")}
+            value={custom ? "custom" : String(group.firstToken ?? 0)}
+            disabled={disabled}
+            options={[
+              ...firstPresets.map((value) => ({
+                value: String(value),
+                label:
+                  value === 0
                     ? t("routingPage.waitForStart")
                     : value === 30
                       ? "30 s"
                       : value === 60
                         ? "1 min"
-                        : "2 min"}
-              </button>
-            ))}
-          </div>
+                        : "2 min",
+              })),
+              { value: "custom", label: t("routingPage.customTimeout") },
+            ]}
+            onChange={(value) => {
+              setCustom(value === "custom");
+              if (value === "custom") {
+                focusCustom.current = !custom;
+                const seconds =
+                  (group.firstToken ?? 0) > 0 ? group.firstToken! : 300;
+                setMinutes(String(+(seconds / 60).toFixed(2)));
+                onChange({ ...group, firstToken: seconds });
+              } else onChange({ ...group, firstToken: Number(value) });
+            }}
+          />
           {custom && (
             <label className="rt-timeout-custom">
               <input
@@ -127,90 +106,92 @@ export function RoutingExecutionSettings({
               <span>min</span>
             </label>
           )}
-          {info(t("intentRouting.firstTokenHelp"))}
+          <p className="rt-field-hint">
+            {t(
+              (group.firstToken ?? 0) > 0
+                ? "intentRouting.firstDeadlineHelp"
+                : "intentRouting.firstWaitHelp",
+              { seconds: group.firstToken },
+            )}
+          </p>
         </div>
       </div>
       <div className="rt-setting-row">
         <span>{t("routingPage.everyMemberBusy")}</span>
         <div className="rt-setting-content">
-          <div
-            className="rt-reference-seg"
-            role="radiogroup"
-            aria-label={t("routingPage.everyMemberBusy")}
-          >
-            {[
+          <RoutingSegments
+            label={t("routingPage.everyMemberBusy")}
+            value={String(group.patience ?? -1)}
+            disabled={disabled}
+            options={[
               [-1, "patienceOff"],
               [0, "patienceOneMinute"],
               [120, "patienceTwoMinutes"],
               [240, "patienceFourMinutes"],
-            ].map(([value, key]) => (
-              <button
-                key={value}
-                type="button"
-                role="radio"
-                disabled={disabled}
-                aria-checked={(group.patience ?? -1) === value}
-                onClick={() => onChange({ ...group, patience: Number(value) })}
-              >
-                {t(`routingPage.${key}`)}
-              </button>
-            ))}
-          </div>
+            ].map(([value, key]) => ({
+              value: String(value),
+              label: t(`routingPage.${key}`),
+            }))}
+            onChange={(value) =>
+              onChange({ ...group, patience: Number(value) })
+            }
+          />
           {![undefined, -1, 0, 120, 240].includes(group.patience) && (
             <span className="rt-setting-inherited">{group.patience} s</span>
           )}
-          {info(t("intentRouting.patienceHelp"))}
+          <p className="rt-field-hint">
+            {t(
+              (group.patience ?? -1) < 0
+                ? "intentRouting.patienceOffHelp"
+                : "intentRouting.patienceWaitHelp",
+              { seconds: group.patience || 60 },
+            )}
+          </p>
         </div>
       </div>
       <div className="rt-setting-row">
         <span>{t("intentRouting.contextPolicy")}</span>
         <div className="rt-setting-content">
-          <div
-            className="rt-reference-seg"
-            role="radiogroup"
-            aria-label={t("intentRouting.contextPolicy")}
-          >
-            {(["largest", "smallest", "custom"] as const).map((mode) => (
-              <button
-                type="button"
-                role="radio"
-                key={mode}
-                disabled={disabled}
-                aria-checked={
-                  contextCustom
-                    ? mode === "custom"
-                    : group.contextWindow === -1
-                      ? mode === "smallest"
-                      : mode === "largest"
-                }
-                onClick={() => {
-                  setContextCustom(mode === "custom");
-                  if (mode === "custom") {
-                    const known = memberWindows.filter(
-                      (n) => Number.isSafeInteger(n) && n >= 2048,
-                    );
-                    const window =
-                      (group.contextWindow ?? 0) > 0
-                        ? group.contextWindow!
-                        : known.length
-                          ? Math.min(...known)
-                          : 200000;
-                    setTokens(String(window));
-                    focusContext.current = !contextCustom;
-                    onChange({ ...group, contextWindow: window });
-                  } else
-                    onChange({
-                      ...group,
-                      contextWindow: mode === "smallest" ? -1 : undefined,
-                    });
-                }}
-              >
-                {t(
-                  `intentRouting.context${mode[0].toUpperCase()}${mode.slice(1)}`,
-                )}
-              </button>
-            ))}
-          </div>
+          <RoutingSegments
+            label={t("intentRouting.contextPolicy")}
+            value={
+              contextCustom
+                ? "custom"
+                : group.contextWindow === -1
+                  ? "smallest"
+                  : "largest"
+            }
+            disabled={disabled}
+            options={(["largest", "smallest", "custom"] as const).map(
+              (value) => ({
+                value,
+                label: t(
+                  `intentRouting.context${value[0].toUpperCase()}${value.slice(1)}`,
+                ),
+              }),
+            )}
+            onChange={(mode) => {
+              setContextCustom(mode === "custom");
+              if (mode === "custom") {
+                const known = memberWindows.filter(
+                  (n) => Number.isSafeInteger(n) && n >= 2048,
+                );
+                const window =
+                  (group.contextWindow ?? 0) > 0
+                    ? group.contextWindow!
+                    : known.length
+                      ? Math.min(...known)
+                      : 200000;
+                setTokens(String(window));
+                focusContext.current = !contextCustom;
+                onChange({ ...group, contextWindow: window });
+              } else
+                onChange({
+                  ...group,
+                  contextWindow: mode === "smallest" ? -1 : undefined,
+                });
+            }}
+          />
           {contextCustom && (
             <input
               ref={contextInput}
@@ -247,31 +228,38 @@ export function RoutingExecutionSettings({
               }}
             />
           )}
-          {info(t("intentRouting.contextHelp"))}
+          <p className="rt-field-hint">
+            {t(
+              contextCustom
+                ? "intentRouting.contextCustomHelp"
+                : group.contextWindow === -1
+                  ? "intentRouting.contextSmallestHelp"
+                  : "intentRouting.contextHelp",
+              {
+                tokens: Number.isFinite(group.contextWindow)
+                  ? group.contextWindow?.toLocaleString()
+                  : "—",
+              },
+            )}
+          </p>
         </div>
       </div>
       <div className="rt-setting-row">
         <span>{t("routingPage.stays")}</span>
         <div className="rt-setting-content">
-          <div
-            className="rt-reference-seg"
-            role="radiogroup"
-            aria-label={t("intentRouting.affinity")}
-          >
-            {(["session", "turn", "off", "strict"] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                role="radio"
-                disabled={disabled}
-                aria-checked={(group.affinity || "session") === value}
-                onClick={() => onChange({ ...group, affinity: value })}
-              >
-                {t(`intentRouting.affinityOptions.${value}`)}
-              </button>
-            ))}
-          </div>
-          {info(t("intentRouting.affinityHelp"))}
+          <RoutingSegments
+            label={t("intentRouting.affinity")}
+            value={group.affinity || "session"}
+            disabled={disabled}
+            options={(["session", "turn", "off", "strict"] as const).map(
+              (value) => ({
+                value,
+                label: t(`intentRouting.affinityOptions.${value}`),
+              }),
+            )}
+            onChange={(affinity) => onChange({ ...group, affinity })}
+          />
+          <p className="rt-field-hint">{t("intentRouting.affinityHelp")}</p>
         </div>
       </div>
       <details

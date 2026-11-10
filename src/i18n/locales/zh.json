@@ -4974,7 +4974,21 @@
       "notSignedIn": "此账号没有可用的登录状态，暂时无法加载模型目录。",
       "requestFailed": "模型目录加载失败，可点击“重新加载”重试。",
       "empty": "此账号或供应商返回的模型目录为空。"
-    }
+    },
+    "advancedSettings": "高级设置",
+    "memberSelectionLimit": "一个路由组最多支持 {{count}} 个模型成员。取消勾选后可选择其他模型。",
+    "namePlaceholder": "例如：日常开发",
+    "modelLists": "模型列表",
+    "listModelsToo": "也显示组内模型",
+    "listGroupOnly": "仅显示路由组",
+    "listModelsHelp": "Agent 和网关的模型列表会同时显示此路由组与组内各个模型。",
+    "sinkKeepHelp": "仍有额度的账户遇到限流时，按供应商要求等待，冷却结束后回到原来的顺序位置。",
+    "firstWaitHelp": "等待每个模型开始回复，不设开始回复的时限。",
+    "firstDeadlineHelp": "模型在 {{seconds}} 秒内尚未开始回复时，在任何回复到达 Agent 前尝试下一个；始终等待最后一个可用模型。",
+    "patienceOffHelp": "所有模型均失败后，立即将最后一个错误返回给 Agent。",
+    "patienceWaitHelp": "在任何回复到达 Agent 前，对临时故障继续重试最多 {{seconds}} 秒，并遵守供应商要求的等待时间。",
+    "contextSmallestHelp": "向 Agent 提供已知成员中最小的上下文窗口，让它在任何成员空间不足前压缩对话。",
+    "contextCustomHelp": "向 Agent 提供 {{tokens}} Token 的窗口；更长的对话仍可交给空间足够的成员。"
   },
   "workspaceNav": {
     "label": "工作区导航",
@@ -5387,7 +5401,7 @@
     "importLabel": "路由组 JSON",
     "reviewImport": "导入",
     "invalidImport": "无法导入此路由组。请检查成员的供应商和模型；不支持的路由选项需要明确移除。",
-    "templateHint": "从模板开始：使用你自己的模型，一键添加。",
+    "templateHint": "从模板开始：自动填充模型和规则，确认后保存。",
     "metric": {
       "duration": "耗时",
       "ttft": "首 Token",
@@ -5502,7 +5516,8 @@
     "patienceTwoMinutes": "2 分钟",
     "patienceFourMinutes": "4 分钟",
     "stays": "保持路由",
-    "executionAdvanced": "高级执行设置"
+    "executionAdvanced": "高级执行设置",
+    "manage": "管理"
   },
   "providerEditor": {
     "holdsTokens": "上下文 {{n}} tokens",

@@ -13,22 +13,21 @@ upstream 56px connection-row height, unframed 22px tool logos and 32 by 19px
 graphite switches. The remaining tools unfold from the list's final row.
 Content stays centered within 1200px, plus 16px side gutters.
 
-Routing uses the same palette for the stage, selected requests, account
-observations and inline group editors. Request rows adapt to their own column
-width; accounts move beside requests only when the content has at least 1150px.
+Routing uses the same palette for the live stage and group editors. The group
+section follows the stage directly, without request or account observation lists.
 The stage retains a compact horizontal flow below 560px of its own width. Narrow windows retain icon
 navigation, and reduced-motion settings suppress control and stage movement.
 
 ## Page structure
 
-- Requested models use readable catalog names in the stage, selected-request
-  header, and request list. Internal `vary-auto/` and `vary-provider/` execution
-  aliases remain unchanged and are available as label tooltips. Historical
-  direct requests can fall back to their recorded upstream model after a provider
+- Requested models use readable catalog names in the live stage and its header.
+  Internal `vary-auto/` and `vary-provider/` execution aliases remain unchanged
+  and are available as label tooltips. Recorded direct requests can fall back
+  to their upstream model after a provider
   is removed. Routing groups retain their group identity rather than adopting
   the name of a fallback member. Missing metadata is labeled unavailable.
-- The header links to groups, opens a new inline group, and masks provider names
-  in the stage, request list, account observations, and group editor.
+- The header links to groups, opens a new group dialog, and masks account
+  identities in the stage and group editor.
 - The workspace stage uses a centered compact flow, with Agent icons above names,
   a circular Vary gateway and bounded candidate labels joined by curved paths.
   The gateway exposes its actual listener and strategy in its tooltip. The compact
@@ -36,7 +35,11 @@ navigation, and reduced-motion settings suppress control and stage movement.
   retain independent packet players, including a response already returning when
   a newer request arrives. Up to four recorded Agents share the stage; identical
   candidate seats share one branch, matched by provider, account, model and effort.
-  Selected requests, historical days and replay show only that request's nodes.
+  The overview follows the newest live trace automatically. Its footer retains
+  request, fallback and Agent error counts as read-only summaries. Decision
+  details, replay, request history, purpose/metric filters, session grouping and
+  the accounts-and-keys panel are absent from this workspace. Legacy request-list
+  preferences do not affect the live overview, and the page does not fetch history.
   A supplier with one distinct enabled API key displays its provider name.
   With multiple distinct enabled keys, candidates display their configured key
   name or a backend-masked credential label (four leading and four trailing
@@ -51,11 +54,10 @@ navigation, and reduced-motion settings suppress control and stage movement.
   reset countdowns match Magpie's `dur` precision: seconds below a minute,
   minutes below an hour, hours and minutes below ten hours, rounded hours below
   48 hours, then rounded days. Thus 88 hours 46 minutes displays as four days.
-  Live views use current time; historical requests retain their observation time.
-  Account headers show a recorded subscription plan when known. Only recognized plan
+  The live stage uses current time for quota countdowns.
+  Recorded accounts include a subscription plan when known. Only recognized plan
   types from the bound account's Codex usage response or rate-limit event are
   recorded; keys and unknown plan values never acquire an inferred subscription.
-  The account list also retains recorded safe names and plan subtitles.
   Connected clients and enabled providers from configuration never supply extra
   nodes or branches. Before any request, the stage shows a generic robot icon, Agent label and
   empty placeholder. A single instruction sits beneath the waiting heading;
@@ -78,8 +80,8 @@ navigation, and reduced-motion settings suppress control and stage movement.
   the hub if another candidate follows; a final failure returns to the Agent.
   Cancellation returns in muted gray, including HTTP 499, and never implies an
   upstream error. The workspace and tray omit the synthetic HTTP 499 status code
-  from candidate labels, decision steps and request rows; cancellation steps keep
-  neutral styling. Recorded traces retain the original status for diagnostics.
+  from candidate labels. Recorded traces retain the original status and neutral
+  cancellation events for diagnostics.
   Finished players are removed once the return ends and never
   restart on polling. Newly completed long requests use their finish time for
   admission; initial history does not introduce unrelated completed branches.
@@ -88,43 +90,73 @@ navigation, and reduced-motion settings suppress control and stage movement.
   Client and provider lists have bounded scrolling, and paths are recalculated
   when either list scrolls or a node resizes. Recorded masked key labels identify
   static credentials; candidates without them retain the safe ordinal fallback.
-- Selecting a request shows the decisions recorded while forwarding it:
-  strategy order, continuation pinning, conversation affinity, intent preference,
-  attempts, context/image exclusions, rejection status, acceptance, and completion
-  or cancellation. Replay uses those events' relative timestamps.
-- Request controls select dates, group recorded sessions, filter call purposes,
-  and choose visible metrics. The purpose menu follows the reference implementation: it appears only
-  for multiple distinct purposes or an active filter, supports several checked
-  purposes without closing, and offers All purposes and a clear button. Agent
-  names, final errors and fallback attempts are not purpose-menu options.
-  Equivalent call-kind spellings share a purpose; an absent kind is Unmarked,
-  not an inferred conversation turn. Session grouping and metric
-  preferences are stored locally. History dates come only from persisted gateway
-  traces; the last 2,000 requests per day remain replayable, with a truncation notice.
-- Accounts and keys are folded from the candidates of the listed requests,
-  including untried standby routes. The full model catalog never supplies rows.
-  A provider heads its observed accounts/keys; models answered by one credential
-  appear below it. Completed attempts, answers, bounded failure categories and
-  the last answer time are counted over those requests. Cancelled attempts are
-  excluded. Imported session usage and provider/model summaries never supply
-  routing requests or account observations; they remain in Statistics. With no
-  gateway requests, the account column is hidden rather than filled from a catalog.
-- Three or more keys start folded. Three to five subscription accounts start
-  expanded; six or more start folded, matching the reference implementation. Explicit folding choices
-  persist locally. Model cooldowns name the affected models and do not mark an
-  entire account unavailable. A green verification dot is not inferred from
-  absence of a cooldown. API keys do not display subscription-quota placeholders.
-  The list has a bounded scroll area at every window width.
 - Live quota readings and cooldowns match an exact observed credential and model,
-  using nonblocking scheduler snapshots. Historical views do not use today's
-  quotas. Unknown or expired quota data is not shown as zero usage. Refresh is
-  offered only for live subscription observations and rereads telemetry; it does
-  not issue a vendor quota request or health probe.
+  using nonblocking scheduler snapshots. Unknown or expired quota data is not
+  shown as zero usage. The stage continues to consume these observations without
+  displaying a separate account panel. Imported session usage and provider/model
+  summaries remain in Statistics and never supply stage requests.
 - Groups retain inline expansion, persistent model selection, order changes,
   strategy selection and publication switches. Templates use available catalog
   models. Import immediately saves a new group and reports missing/substituted
   models and omitted rules. Bulk deletion requires confirmation,
   uses revision checks, and retains unsuccessful selections on partial failure.
+
+### Group form
+
+The group form uses Magpie's framed sheet dimensions: a 48px header and footer,
+14px/18px body padding, and a dialog width up to 1040px, bounded by 24px side
+gutters. Height is capped at the smaller of 760px and the viewport minus
+144px, leaving 72px above and below a full-height dialog. Short windows use
+40px vertical gutters. The body scrolls independently. Narrow forms stack labels
+above controls. A shared label grid uses a stable 132px label column and the
+reference's 10px/14px spacing.
+Advanced content and nested fieldsets define their own two-column grids, rather
+than inheriting tracks through native disclosure/fieldset rendering boxes. The routing
+workspace's page margins must not override dialog centering.
+
+The form has a dedicated stylesheet, separate from the workspace's list styles.
+It uses the reference's system font stack, neutral light/dark surfaces, 27px text
+inputs with 7px corners, and 22px segmented options on a gray track. Pattern
+inputs have no second surrounding frame. Vary's blue remains the form's accent,
+including Save, focus rings and interactive highlights. Picker and action menus
+inherit the form's typography and palette.
+
+The form places routing directly below the name, followed by models, patterns,
+model lists, rate-limit placement, execution settings, rules/classifier and
+reasoning levels. Only name, routing and model members are visible initially.
+Every other group field is inside the closed Advanced settings section. Its
+controls remain mounted, so closing it preserves edited values and template-provided
+rules, classifier and execution settings. The duplicate per-member settings list
+has been removed; existing effort variants, weights, ordering and disabled seats
+still round-trip when membership is unchanged. The name has a localized example
+placeholder. Draft strategies use segmented choices; compact group rows retain
+their strategy menus. Changes update only the draft until Save succeeds.
+
+Model members appear as wrapping Vary-blue checkbox chips, grouped by provider.
+Every provider starts expanded and has an independent disclosure button, a
+tri-state selection checkbox and selected/total count. Folding only changes
+visibility: selection and bulk actions still work while folded. Provider chevrons
+follow the provider name and rotate over 220ms. Provider content animates its grid
+height and opacity. A form ResizeObserver drives a separate 220ms dialog-height
+transition, including changes from Advanced settings. Fractional heights round
+up, and the scrollbar gutter stays stable to prevent sizing feedback. Reduced
+motion disables these transitions. New blank groups start with all task-eligible
+catalog models selected, up to the existing 256-seat
+limit; reaching the limit shows an inline explanation and disables additional
+choices. Existing groups and templates keep their own initial membership.
+Catalog IDs are paired with provider IDs, so identical model IDs in different
+providers remain independent. Unavailable or custom saved seats remain visible;
+unavailable providers cannot supply new selections. Chips show model names only,
+without context-capacity badges. Global Select all and Select none controls apply
+across provider groups.
+
+Routing, model-list visibility and rate-limit help describe the selected option.
+Timeout, retry and context help also follow their active settings. Segmented
+controls support arrow keys, Home/End and one tab stop per group. A non-preset
+inherited value remains unchanged until explicitly edited. Saving trims the name
+and clears `sink` for rotation, weighted and manual strategies, where the setting
+does not apply. Duplicate submission and dismissal remain blocked while saving;
+failed persistence keeps the draft and reports a sanitized error.
 
 ## Recording and retention
 
@@ -189,9 +221,9 @@ No native session files are read by this recorder or by the routing page.
 Files contain the same safe metadata as the live trace, including candidate
 observations, purpose, scoped session digest and relative decision timestamps.
 Scheduler weak references and all credentials are excluded from serialization.
-History never borrows current credential identities or current quota readings.
-Unknown timing, throughput and prices are omitted; missing values are not shown
-as zero latency or zero cost. The existing usage queue and native session imports
+Stored history never borrows current credential identities or current quota readings.
+Unknown timing, throughput and prices are omitted from the recorded metadata.
+The existing usage queue and native session imports
 continue to feed Statistics independently. Trace history begins with this version;
 older usage summaries are not converted into invented gateway traces.
 
@@ -240,7 +272,7 @@ revoking direct-alias execution. Switching the group off restores those entries.
 `sink` moves a rate-limited account behind accounts not rate limited since; this
 order survives success and cooldown but is memory-only. A current, exhausted
 quota window does not sink. Round-robin, weighted and manual routing ignore sink.
-The account panel distinguishes an expired rest from a retained sink position.
+Recorded account metadata distinguishes an expired rest from a retained sink position.
 Vendor-specific failure classification and manual rest lifting are not yet the
 reference's complete implementation.
 
@@ -294,11 +326,12 @@ custom minutes converted to integer seconds. Existing non-preset values remain
 unchanged until edited; raw seconds are available in Advanced execution settings.
 Context uses the reference largest/smallest/custom segments beside those
 execution settings. Custom sizes accept decimal `k`/`m` suffixes and underscores,
-focus the input on selection and block saving invalid sizes. Model rows expose
-their fixed reasoning menu without opening legacy member settings; identical
-provider/model/effort seats cannot be selected twice.
-Removing a member promotes each rule's next surviving target and drops only
-rules with no targets, instead of blocking removal or leaving dangling seats.
+focus the input on selection and block saving invalid sizes. Saved fixed-effort
+variants remain distinct seats behind one provider/model chip. Deselecting a chip
+removes all of its effort variants. Bulk deselection promotes each rule's next
+surviving target and drops only rules with no targets. Adding catalog members
+preserves existing seat identities, settings and rule references. Dynamic pattern
+targets remain intact when explicit membership changes.
 
 The group handle menu moves, duplicates and copies a group. Local duplication
 retains folder rules and unavailable seats, turns the copy on and inserts it
@@ -315,9 +348,12 @@ release dates and output prices, excluding non-chat and excessively expensive
 models. Smart generates compaction, image and hard/easy intent rules; thrifty
 adds the high-reasoning rule and cross-provider cheap fallback; steady takes
 the strongest model from each of up to three providers. An unavailable template
-explains its missing resource rather than inventing a model. Add persists it
-directly; Edit first opens an unsaved draft. No template action sends a model
-request. Public facts are projected through an explicit safe-field API and
+explains its missing resource rather than inventing a model. Each available
+card has one Add action, which opens a dialog populated with the template's
+name, models, strategy, rules and classifier. The user reviews or changes these
+fields and saves to create the group; canceling creates nothing. Template menu
+entries use the same flow, with a fresh group identity and a unique suggested
+name. Opening a template never persists it or sends a model request. Public facts are projected through an explicit safe-field API and
 never include arbitrary catalog fields or credentials.
 Publication-only model facts are stripped from frozen transport snapshots, so
 a public price or release-date refresh does not revoke an unchanged destination
@@ -332,8 +368,9 @@ does not establish full engine parity.
 
 ## Verification
 
-Synthetic component tests cover request/stage selection, masking, grouping,
-metric filters, trace failure, immediate import, safe sharing, local duplication,
+Synthetic component tests cover the simplified page structure, automatic live
+updates, summary counts, masking, trace failure, immediate import, safe sharing,
+local duplication,
 pointer cancellation, direct Agent model selection and confirmed bulk removal.
 Rust tests cover bounded metadata, scoped session digests, lock contention,
 response-drop cancellation, first content detection for all four wire protocols,

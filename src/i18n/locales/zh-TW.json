@@ -4901,7 +4901,21 @@
       "notSignedIn": "此帳號沒有可用的登入狀態，暫時無法載入模型目錄。",
       "requestFailed": "模型目錄載入失敗，可按「重新載入」重試。",
       "empty": "此帳號或供應商回傳的模型目錄為空。"
-    }
+    },
+    "advancedSettings": "進階設定",
+    "memberSelectionLimit": "一個路由組最多支援 {{count}} 個模型成員。取消勾選後可選擇其他模型。",
+    "namePlaceholder": "例如：日常開發",
+    "modelLists": "模型清單",
+    "listModelsToo": "也顯示組內模型",
+    "listGroupOnly": "僅顯示路由組",
+    "listModelsHelp": "Agent 和閘道的模型清單會同時顯示此路由組與組內各個模型。",
+    "sinkKeepHelp": "仍有額度的帳戶遇到限流時，依供應商要求等待，冷卻結束後回到原來的順序位置。",
+    "firstWaitHelp": "等待每個模型開始回覆，不設開始回覆的時限。",
+    "firstDeadlineHelp": "模型在 {{seconds}} 秒內尚未開始回覆時，在任何回覆到達 Agent 前嘗試下一個；始終等待最後一個可用模型。",
+    "patienceOffHelp": "所有模型均失敗後，立即將最後一個錯誤傳回 Agent。",
+    "patienceWaitHelp": "在任何回覆到達 Agent 前，對暫時性故障繼續重試最多 {{seconds}} 秒，並遵守供應商要求的等待時間。",
+    "contextSmallestHelp": "向 Agent 提供已知成員中最小的上下文視窗，讓它在任何成員空間不足前壓縮對話。",
+    "contextCustomHelp": "向 Agent 提供 {{tokens}} Token 的視窗；更長的對話仍可交給空間足夠的成員。"
   },
   "workspaceNav": {
     "label": "工作區導覽",
@@ -5314,7 +5328,7 @@
     "importLabel": "路由群組 JSON",
     "reviewImport": "匯入",
     "invalidImport": "無法匯入此群組。請檢查成員的供應商和模型；不支援的選項需要明確移除。",
-    "templateHint": "從範本開始：使用你自己的模型，一鍵新增。",
+    "templateHint": "從範本開始：自動填入模型與規則，確認後儲存。",
     "metric": {
       "duration": "耗時",
       "ttft": "首 Token",
@@ -5429,7 +5443,8 @@
     "patienceTwoMinutes": "2 分鐘",
     "patienceFourMinutes": "4 分鐘",
     "stays": "維持路由",
-    "executionAdvanced": "進階執行設定"
+    "executionAdvanced": "進階執行設定",
+    "manage": "管理"
   },
   "providerEditor": {
     "holdsTokens": "上下文 {{n}} tokens",

@@ -33,6 +33,24 @@ function Fixture({
 }
 const saved = () => JSON.parse(screen.getByTestId("value").textContent ?? "{}");
 describe("the reference implementation execution settings", () => {
+  it("changes segmented settings with arrow keys and keeps a single tab stop", () => {
+    render(<Fixture />);
+    const wait = screen.getByRole("radio", {
+      name: "routingPage.waitForStart",
+    });
+    wait.focus();
+    fireEvent.keyDown(wait, { key: "ArrowRight" });
+    const thirty = screen.getByRole("radio", { name: "30 s" });
+    expect(thirty).toHaveFocus();
+    expect(thirty).toHaveAttribute("aria-checked", "true");
+    expect(thirty).toHaveAttribute("tabindex", "0");
+    expect(wait).toHaveAttribute("tabindex", "-1");
+    expect(saved().firstToken).toBe(30);
+    fireEvent.keyDown(thirty, { key: "End" });
+    expect(screen.getByLabelText("routingPage.timeoutMinutes")).toHaveFocus();
+    expect(saved().firstToken).toBe(30);
+  });
+
   it("offers reference context choices and accepts k/m token sizes with focused custom input", () => {
     render(<Fixture />);
     fireEvent.click(

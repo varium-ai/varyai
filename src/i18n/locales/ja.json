@@ -4900,7 +4900,21 @@
       "notSignedIn": "利用可能なログインがないため、アカウントのモデル一覧を読み込めません。",
       "requestFailed": "モデル一覧を読み込めませんでした。再読み込みで再試行してください。",
       "empty": "アカウントまたはプロバイダーが空のモデル一覧を返しました。"
-    }
+    },
+    "advancedSettings": "詳細設定",
+    "memberSelectionLimit": "ルーティンググループのモデルメンバーは最大 {{count}} 件です。別のモデルを選ぶには選択を解除してください。",
+    "namePlaceholder": "例：日常の開発",
+    "modelLists": "モデル一覧",
+    "listModelsToo": "グループ内のモデルも表示",
+    "listGroupOnly": "グループのみ",
+    "listModelsHelp": "Agent とゲートウェイのモデル一覧に、このグループと各モデルを表示します。",
+    "sinkKeepHelp": "残り枠のあるアカウントがレート制限を受けた場合、提供元が指定する時間待機し、元の順番に戻ります。",
+    "firstWaitHelp": "各モデルの応答開始を、時間制限なく待ちます。",
+    "firstDeadlineHelp": "{{seconds}} 秒以内に応答が始まらない場合、返信が Agent に届く前に次のモデルを試します。最後の利用可能なモデルは必ず待ちます。",
+    "patienceOffHelp": "すべてのモデルが失敗した場合、最後のエラーを直ちに Agent に返します。",
+    "patienceWaitHelp": "返信が Agent に届く前に、提供元の待機時間を守りながら一時的な障害を最大 {{seconds}} 秒間再試行します。",
+    "contextSmallestHelp": "既知の最小モデルのウィンドウを Agent に提示し、どのモデルも容量不足になる前に会話を圧縮させます。",
+    "contextCustomHelp": "Agent に {{tokens}} トークンのウィンドウを提示します。より長い会話も、十分な容量のあるモデルを利用できます。"
   },
   "workspaceNav": {
     "label": "ワークスペースのナビゲーション",
@@ -5313,7 +5327,7 @@
     "importLabel": "ルーティンググループ JSON",
     "reviewImport": "インポート",
     "invalidImport": "インポートできません。プロバイダーとモデルを確認し、未対応の設定を明示的に取り除いてください。",
-    "templateHint": "自分のモデルから作るテンプレートをワンクリックで追加。",
+    "templateHint": "テンプレートから開始：モデルとルールを確認して保存します。",
     "metric": {
       "duration": "所要時間",
       "ttft": "最初のトークン",
@@ -5428,7 +5442,8 @@
     "patienceTwoMinutes": "2 分",
     "patienceFourMinutes": "4 分",
     "stays": "接続の維持",
-    "executionAdvanced": "実行の詳細設定"
+    "executionAdvanced": "実行の詳細設定",
+    "manage": "管理"
   },
   "providerEditor": {
     "holdsTokens": "{{n}} トークンまで",

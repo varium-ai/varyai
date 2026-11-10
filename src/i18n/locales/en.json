@@ -4974,7 +4974,21 @@
       "notSignedIn": "No usable login for this account; its model catalog is unavailable.",
       "requestFailed": "Model catalog could not be loaded. Reload to retry.",
       "empty": "The account or provider returned an empty model catalog."
-    }
+    },
+    "advancedSettings": "Advanced settings",
+    "memberSelectionLimit": "A routing group supports up to {{count}} model members. Deselect a model to choose another.",
+    "namePlaceholder": "e.g. Daily development",
+    "modelLists": "Model lists",
+    "listModelsToo": "Its models too",
+    "listGroupOnly": "The group alone",
+    "listModelsHelp": "Agent and gateway model lists show this group and its individual models.",
+    "sinkKeepHelp": "A rate-limited account with quota left rests for the time requested by the provider, then returns to its place in the order.",
+    "firstWaitHelp": "Wait for each model to begin answering, however long it takes.",
+    "firstDeadlineHelp": "If a model has not begun answering within {{seconds}} seconds, try the next before any reply reaches the Agent. Always wait for the last available model.",
+    "patienceOffHelp": "When every model has failed, return the last error to the Agent immediately.",
+    "patienceWaitHelp": "Before any reply reaches the Agent, retry temporary failures within a further {{seconds}} seconds, respecting the provider’s retry delay.",
+    "contextSmallestHelp": "Offer the smallest known model window so the Agent compacts before any member runs out of room.",
+    "contextCustomHelp": "Offer {{tokens}} tokens to the Agent. Longer conversations can still use a member with enough room."
   },
   "workspaceNav": {
     "label": "Workspace navigation",
@@ -5389,7 +5403,7 @@
     "importLabel": "Routing group JSON",
     "reviewImport": "Import",
     "invalidImport": "This group cannot be imported. Check the member providers and models. Unsupported routing options must be removed explicitly.",
-    "templateHint": "Start from a template: made of your own models, added in a click.",
+    "templateHint": "Start from a template: review the suggested models and rules, then save.",
     "metric": {
       "duration": "Duration",
       "ttft": "First token",
@@ -5504,7 +5518,8 @@
     "patienceTwoMinutes": "2 min",
     "patienceFourMinutes": "4 min",
     "stays": "Stays",
-    "executionAdvanced": "Advanced execution settings"
+    "executionAdvanced": "Advanced execution settings",
+    "manage": "Manage"
   },
   "providerEditor": {
     "holdsTokens": "holds {{n}} tokens",
