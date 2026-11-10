@@ -746,7 +746,7 @@ describe("Agent connections", () => {
       [false, true].map((allComplete) => ({ app, allComplete })),
     ),
   )(
-    "keeps $app account selection available until every account is checked in ($allComplete)",
+    "keeps $app account selection available even when every account is checked in ($allComplete)",
     async ({ app, allComplete }) => {
       vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
         [app]: true,
@@ -805,12 +805,11 @@ describe("Agent connections", () => {
       mount();
       const row = await screen.findByRole("article", { name: `apps.${app}` });
       const trigger = await within(row).findByRole("button", {
-        name: `agentRewards.${allComplete ? "checkedIn" : "autoLabel"} apps.${app}`,
+        name: `agentRewards.autoLabel apps.${app}`,
       });
-      if (allComplete) expect(trigger).toBeDisabled();
-      else expect(trigger).toBeEnabled();
+      expect(trigger).toBeEnabled();
       fireEvent.click(trigger);
-      expect(trigger).toHaveAttribute("aria-expanded", String(!allComplete));
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
       expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
       expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
     },
@@ -824,7 +823,7 @@ describe("Agent connections", () => {
         ),
     ),
   )(
-    "disables the completed $app entry for $outcome (compact=$compact) until status refresh",
+    "keeps the $app dropdown available while only the completed detail claim is disabled ($outcome, compact=$compact)",
     async ({ app, outcome: initialOutcome, compact }) => {
       vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
         [app]: true,
@@ -889,14 +888,19 @@ describe("Agent connections", () => {
             name: `agentConnections.details apps.${app}`,
           }),
         );
-      const completed = await within(row).findByRole("button", {
-        name: `agentRewards.checkedIn apps.${app}`,
+      const trigger = await within(row).findByRole("button", {
+        name: `agentRewards.autoLabel apps.${app}`,
       });
-      expect(completed).toBeDisabled();
-      fireEvent.click(completed);
-      expect(
-        within(row).queryByRole("region", { name: /checkin/ }),
-      ).not.toBeInTheDocument();
+      expect(trigger).toBeEnabled();
+      fireEvent.click(trigger);
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
+      const claim = await within(row).findByRole("button", {
+        name: "agentRewards.checkedIn",
+      });
+      expect(claim).toBeDisabled();
+      fireEvent.click(claim);
+      fireEvent.click(trigger);
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
       outcome = "not_checked";
       await act(async () => {
         await client.invalidateQueries({

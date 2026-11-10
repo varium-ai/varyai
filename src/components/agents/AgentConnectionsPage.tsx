@@ -162,34 +162,7 @@ export function AgentConnectionsPage({
       refetchInterval: 60_000,
     })),
   });
-  const checkinComplete = (app: AppId) => {
-    if (app === "workbuddy") {
-      const accounts = workbuddyCheckin.data?.accounts;
-      return (
-        !!accounts?.length &&
-        accounts.every((account) =>
-          ["claimed", "already_checked"].includes(account.status.outcome),
-        )
-      );
-    }
-    if (app === "doubaowork") {
-      const accounts = doubaoCheckin.data?.accounts;
-      return (
-        !!accounts?.length &&
-        accounts.every((account) =>
-          ["claimed", "already_checked"].includes(account.outcome),
-        )
-      );
-    }
-    return (
-      hasAgentRewards(app) &&
-      ["claimed", "already_checked"].includes(
-        rewards[rewardApps.indexOf(app)]?.data?.outcome ?? "",
-      )
-    );
-  };
   const checkinLabel = (app: AppId) => {
-    if (checkinComplete(app)) return t("agentRewards.checkedIn");
     const autoEnabled =
       app === "workbuddy"
         ? (workbuddyCheckin.data?.nativeStatus?.autoConfigured ??
@@ -877,7 +850,6 @@ export function AgentConnectionsPage({
             <button
               type="button"
               className="mp-agent-start mp-agent-checkin-trigger"
-              disabled={checkinComplete(app)}
               aria-label={`${checkinLabel(app)} ${name(app)}`}
               aria-expanded={checkinApp === app}
               aria-controls={`${detailsId}-checkin`}
