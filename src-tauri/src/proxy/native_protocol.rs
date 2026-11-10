@@ -23,6 +23,7 @@ pub(super) async fn handle(
     let app_type = match app.as_str() {
         "hermes" => AppType::Hermes,
         "trae" => AppType::Trae,
+        "trae-intl" => AppType::TraeIntl,
         _ => return Err(invalid()),
     };
     let supplied = request

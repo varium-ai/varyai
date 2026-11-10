@@ -8,6 +8,7 @@ fn ids(app: &str) -> &'static [&'static str] {
         "claude-desktop" => &["com.anthropic.claudefordesktop"],
         "codex" => &["com.openai.codex"],
         "trae" => &["cn.trae.app"],
+        "trae-intl" => &["com.trae.app"],
         "qoder" => &["com.qodercn.app"],
         "doubaowork" => &["com.work.pc.doubao"],
         "deepseek-harness" => &["com.deepseek.dsh"],

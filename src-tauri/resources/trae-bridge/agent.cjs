@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const net = require("node:net");
+const crypto = require("node:crypto");
 const { PassThrough } = require("node:stream");
 const { createBridge, workbenchServices } = require("./renderer.cjs");
 const { createStartingModelAdapter } = require("./starting-model.cjs");
@@ -26,8 +27,14 @@ function isChatTarget(target, appRoot) {
   if (target.type !== "page") return false;
   try {
     const url = new URL(target.url);
-    const normalize = (value) =>
-      process.platform === "darwin" ? value.toLowerCase() : value;
+    const normalize = (value) => {
+      const normalized = value.replace(/\\/g, "/");
+      if (process.platform === "win32")
+        return normalized.replace(/^\/?([a-z]):/i, "/$1:").toLowerCase();
+      return process.platform === "darwin"
+        ? normalized.toLowerCase()
+        : normalized;
+    };
     return (
       url.protocol === "vscode-file:" &&
       url.hostname === "vscode-app" &&
@@ -332,13 +339,23 @@ async function connectEndpoint(endpoint, onEvent, WebSocketClass = WebSocket) {
 async function run(endpoint, directory) {
   // The official bundle path, not the endpoint, defines which windows may be attached.
   const executable = process.execPath;
-  const appRoot = path.resolve(executable, "../../Resources/app");
+  const appRoot =
+    process.platform === "darwin"
+      ? path.resolve(executable, "../../Resources/app")
+      : path.join(path.dirname(executable), "resources/app");
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   fs.chmodSync(directory, 0o700);
   const socketPath = path.join(
     directory,
     `bridge-agent-v${REVISION}-selection-${process.pid}.sock`,
   );
+  const pipeAuth =
+    process.platform === "win32"
+      ? crypto.randomBytes(32).toString("hex")
+      : null;
+  const listenPath = pipeAuth
+    ? String.raw`\\.\pipe\varyai-trae-${crypto.createHash("sha256").update(directory).digest("hex")}-${process.pid}`
+    : socketPath;
   let config,
     pipe,
     scanning,
@@ -576,7 +593,20 @@ async function run(endpoint, directory) {
       if (end < 0) return;
       socket.removeAllListeners("data");
       Promise.resolve()
-        .then(() => control(JSON.parse(buffer.slice(0, end))))
+        .then(() => {
+          const command = JSON.parse(buffer.slice(0, end));
+          if (
+            pipeAuth &&
+            (typeof command.auth !== "string" ||
+              command.auth.length !== pipeAuth.length ||
+              !crypto.timingSafeEqual(
+                Buffer.from(command.auth),
+                Buffer.from(pipeAuth),
+              ))
+          )
+            throw Error("unauthorized");
+          return control(command);
+        })
         .then(
           (result) => socket.end(JSON.stringify({ result }) + "\n"),
           (error) =>
@@ -592,9 +622,15 @@ async function run(endpoint, directory) {
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(socketPath, resolve);
+    server.listen(listenPath, resolve);
   });
-  fs.chmodSync(socketPath, 0o600);
+  if (pipeAuth)
+    fs.writeFileSync(
+      socketPath,
+      JSON.stringify({ pipe: listenPath, auth: pipeAuth }),
+      { mode: 0o600, flag: "wx" },
+    );
+  else fs.chmodSync(socketPath, 0o600);
   const timer = setInterval(() => {
     scan().catch(() => {});
     if (config) inspect({ health: true }).catch(() => disable());

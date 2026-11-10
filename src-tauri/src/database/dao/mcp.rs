@@ -102,6 +102,7 @@ impl Database {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => None,
         };
 

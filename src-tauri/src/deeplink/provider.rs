@@ -160,6 +160,7 @@ pub(crate) fn build_provider_from_request(
         | AppType::ZCode
         | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
         | AppType::DoubaoWork => {
             return Err(AppError::InvalidInput(
                 "Native model configurations must be added from their application page".into(),

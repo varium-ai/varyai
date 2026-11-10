@@ -219,6 +219,7 @@ impl ProviderType {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => return None,
         };
         Some(provider_type)
@@ -284,6 +285,7 @@ pub fn get_adapter(app_type: &AppType) -> Option<Box<dyn ProviderAdapter>> {
         | AppType::ZCode
         | AppType::DeepSeekHarness
         | AppType::Trae
+        | AppType::TraeIntl
         | AppType::DoubaoWork => return None,
     })
 }

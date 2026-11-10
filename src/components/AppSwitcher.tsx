@@ -47,6 +47,7 @@ const APP_DISPLAY_NAME: Record<AppId, string> = {
   qoder: "Qoder CN",
   doubaowork: "豆包工作",
   trae: "TRAE CN",
+  "trae-intl": "TRAE International",
   kimi: "Kimi Code",
   qwen: "Qwen Code",
   zcode: "ZCode",

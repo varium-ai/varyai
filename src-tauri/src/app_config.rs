@@ -41,6 +41,7 @@ impl McpApps {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => false, // MCP is not managed for these apps.
             AppType::ClaudeDesktop => false,
         }
@@ -65,6 +66,7 @@ impl McpApps {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => {} // MCP is not managed for these apps.
             AppType::ClaudeDesktop => {} // Claude Desktop 3P provider config doesn't support MCP here
         }
@@ -143,6 +145,7 @@ impl SkillApps {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => false,
             AppType::OpenClaw => false, // OpenClaw doesn't support Skills
             AppType::ClaudeDesktop => false,
@@ -167,6 +170,7 @@ impl SkillApps {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => {}
             AppType::OpenClaw => {} // OpenClaw doesn't support Skills, ignore
             AppType::ClaudeDesktop => {} // Claude Desktop 3P profiles don't use Vary AI skill sync
@@ -438,6 +442,8 @@ pub enum AppType {
     #[serde(rename = "deepseek-harness")]
     DeepSeekHarness,
     Trae,
+    #[serde(rename = "trae-intl")]
+    TraeIntl,
     DoubaoWork,
 }
 
@@ -461,6 +467,7 @@ impl AppType {
             AppType::ZCode => "zcode",
             AppType::DeepSeekHarness => "deepseek-harness",
             AppType::Trae => "trae",
+            AppType::TraeIntl => "trae-intl",
             AppType::DoubaoWork => "doubaowork",
         }
     }
@@ -485,6 +492,7 @@ impl AppType {
                 | AppType::ZCode
                 | AppType::DeepSeekHarness
                 | AppType::Trae
+                | AppType::TraeIntl
         )
     }
 
@@ -515,6 +523,7 @@ impl AppType {
             AppType::ZCode,
             AppType::DeepSeekHarness,
             AppType::Trae,
+            AppType::TraeIntl,
             AppType::DoubaoWork,
         ]
         .into_iter()
@@ -544,6 +553,7 @@ impl FromStr for AppType {
             "zcode" => Ok(AppType::ZCode),
             "deepseek-harness" | "deepseek_harness" => Ok(AppType::DeepSeekHarness),
             "trae" => Ok(AppType::Trae),
+            "trae-intl" => Ok(AppType::TraeIntl),
             "doubaowork" => Ok(AppType::DoubaoWork),
             other => Err(AppError::localized(
                 "unsupported_app",
@@ -597,6 +607,7 @@ impl CommonConfigSnippets {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => None,
         }
     }
@@ -621,6 +632,7 @@ impl CommonConfigSnippets {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => {}
         }
     }
@@ -956,6 +968,7 @@ impl MultiAppConfig {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => return Ok(false),
         };
 
@@ -1009,6 +1022,7 @@ impl MultiAppConfig {
                 | AppType::ZCode
                 | AppType::DeepSeekHarness
                 | AppType::Trae
+                | AppType::TraeIntl
                 | AppType::DoubaoWork => continue, // Pi didn't exist in v3.6.x, skip
             };
 

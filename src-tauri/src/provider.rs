@@ -219,6 +219,7 @@ impl Provider {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => (
                 str_at(settings.get("baseUrl")),
                 str_at(settings.get("apiKey")),

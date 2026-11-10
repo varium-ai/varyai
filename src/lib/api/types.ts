@@ -14,6 +14,7 @@ export type AppId =
   | "qoder"
   | "doubaowork"
   | "trae"
+  | "trae-intl"
   | "kimi"
   | "qwen"
   | "zcode"

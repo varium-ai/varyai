@@ -334,6 +334,8 @@ impl Runtime for Native<'_> {
             "workbuddy" | "workbuddy-ai" => "WorkBuddy.exe",
             "codex" => "ChatGPT.exe",
             "qoder" => "Qoder CN.exe",
+            "trae" => "Trae CN.exe",
+            "trae-intl" => "Trae.exe",
             _ => "claude.exe",
         };
         let local = std::env::var("LOCALAPPDATA").unwrap_or_default();

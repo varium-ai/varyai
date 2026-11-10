@@ -232,6 +232,7 @@ fn initialize_providers(
                 | AppType::ZCode
                 | AppType::DeepSeekHarness
                 | AppType::Trae
+                | AppType::TraeIntl
         ) {
             // The UI lists seed official entries. Do that before the undo snapshot,
             // so its first read does not look like an external configuration edit.
@@ -252,6 +253,7 @@ fn captures_current_supplier(app: &AppType) -> bool {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
     )
 }
 

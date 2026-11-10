@@ -41,7 +41,7 @@ pub fn configuration_paths(app: &AppType) -> Result<Vec<PathBuf>, AppError> {
         }
         // TRAE has no file adapter. Profiles save local selection separately
         // from best-effort delivery to an already connected bridge.
-        AppType::Trae => vec![],
+        AppType::Trae | AppType::TraeIntl => vec![],
         AppType::DoubaoWork => return Err(error("nativeLoginOnly")),
     })
 }

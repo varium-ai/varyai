@@ -18,8 +18,66 @@ pub(super) struct Outbox {
     configuration_changed: bool,
 }
 impl Manager {
+    pub(crate) fn bridge_for(
+        &self,
+        edition: crate::services::trae_bridge::shared::Edition,
+    ) -> TraeBridge<'_> {
+        TraeBridge {
+            manager: self,
+            edition,
+        }
+    }
+    pub(crate) fn bridge_owned(&self) -> bool {
+        self.bridge_for(crate::services::trae_bridge::shared::Edition::China)
+            .bridge_owned()
+    }
+    pub(crate) fn bridge_enabled(&self) -> bool {
+        self.bridge_for(crate::services::trae_bridge::shared::Edition::China)
+            .bridge_enabled()
+    }
+    pub(crate) fn bridge_status(&self) -> Result<Status, String> {
+        self.bridge_for(crate::services::trae_bridge::shared::Edition::China)
+            .bridge_status()
+    }
+    pub(crate) fn bridge_select(&self, enabled: bool) -> Result<(), String> {
+        self.bridge_for(crate::services::trae_bridge::shared::Edition::China)
+            .bridge_select(enabled)
+    }
+    pub(crate) fn bridge_select_model(
+        &self,
+        enabled: bool,
+        model: Option<String>,
+    ) -> Result<(), String> {
+        self.bridge_for(crate::services::trae_bridge::shared::Edition::China)
+            .bridge_select_model(enabled, model)
+    }
+    pub(crate) fn bridge_retry(&self) -> Result<(), String> {
+        self.bridge_for(crate::services::trae_bridge::shared::Edition::China)
+            .bridge_retry()
+    }
+    pub(crate) fn bridge_sync(
+        &self,
+        menu: Option<&Menu>,
+        origin: &str,
+        suspend: bool,
+    ) -> Result<Option<Receipt>, String> {
+        self.bridge_for(crate::services::trae_bridge::shared::Edition::China)
+            .bridge_sync(menu, origin, suspend)
+    }
+}
+pub(crate) struct TraeBridge<'a> {
+    manager: &'a Manager,
+    edition: crate::services::trae_bridge::shared::Edition,
+}
+impl TraeBridge<'_> {
+    fn client(&self) -> crate::services::trae_bridge::shared::Client {
+        crate::services::trae_bridge::shared::Client(self.edition)
+    }
     fn bridge_path(&self) -> std::path::PathBuf {
-        self.root.join("trae-shared.json")
+        self.manager.root.join(match self.edition {
+            crate::services::trae_bridge::shared::Edition::China => "trae-shared.json",
+            crate::services::trae_bridge::shared::Edition::International => "trae-intl-shared.json",
+        })
     }
     fn bridge_load(&self) -> Result<Option<Outbox>, String> {
         read(&self.bridge_path())?
@@ -40,10 +98,7 @@ impl Manager {
         self.bridge_load().ok().flatten().is_some_and(|o| o.enabled)
     }
     pub(crate) fn bridge_status(&self) -> Result<Status, String> {
-        self.bridge_status_with_desktop(
-            crate::services::trae_bridge::launch_settings_applied_at_ms(),
-            super::desktop::state,
-        )
+        self.bridge_status_with_desktop(self.client().applied_at_ms(), super::desktop::state)
     }
     fn bridge_status_with_desktop(
         &self,
@@ -55,10 +110,12 @@ impl Manager {
         let delivered = outbox.as_ref().is_some_and(|o| o.delivered);
         let configuration_changed = outbox.as_ref().is_some_and(|o| o.configuration_changed);
         // Delivery retries update the outbox but do not change client launch settings.
-        let desktop_state = enabled.then(|| state("trae", applied_ms)).flatten();
+        let desktop_state = enabled
+            .then(|| state(self.edition.app(), applied_ms))
+            .flatten();
         let desktop_restart = desktop_state == Some(super::desktop::State::RestartRequired);
         Ok(Status {
-            app: "trae".into(),
+            app: self.edition.app().into(),
             enabled,
             configured: enabled
                 && delivered
@@ -90,7 +147,7 @@ impl Manager {
             return Err(CONFLICT.into());
         }
         let path = self.bridge_path();
-        let applied_ms = crate::services::trae_bridge::launch_settings_applied_at_ms();
+        let applied_ms = self.client().applied_at_ms();
         let expected = std::fs::metadata(&path)
             .ok()
             .and_then(|meta| meta.modified().ok())
@@ -100,13 +157,12 @@ impl Manager {
                     .map(|duration| duration.as_millis() as i64)
             });
         let expected_token = outbox.token.clone();
-        super::desktop::restart("trae", applied_ms, || {
+        super::desktop::restart(self.edition.app(), applied_ms, || {
             self.bridge_load().is_ok_and(|current| {
                 current.is_some_and(|current| {
                     current.enabled
                         && current.token == expected_token
-                        && crate::services::trae_bridge::launch_settings_applied_at_ms()
-                            == applied_ms
+                        && self.client().applied_at_ms() == applied_ms
                         && std::fs::metadata(&path)
                             .ok()
                             .and_then(|meta| meta.modified().ok())
@@ -169,18 +225,13 @@ impl Manager {
             menu,
             origin,
             suspend,
-            |provider| {
-                crate::services::trae_bridge::apply_connected(provider).map_err(|_| FAILED.into())
-            },
+            |provider| self.client().apply(provider).map_err(|_| FAILED.into()),
             || {
-                crate::services::trae_bridge::remove(ID).map_err(|_| FAILED)?;
-                crate::services::trae_bridge::restore_shared().map_err(|_| FAILED.into())
+                self.client().remove(ID).map_err(|_| FAILED)?;
+                self.client().restore().map_err(|_| FAILED.into())
             },
-            |model| {
-                crate::services::trae_bridge::select_starting_model(ID, model)
-                    .map_err(|_| FAILED.into())
-            },
-            crate::services::trae_bridge::shared_matches,
+            |model| self.client().select(ID, model).map_err(|_| FAILED.into()),
+            |provider| self.client().matches(provider),
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -210,7 +261,7 @@ impl Manager {
         }
         let config = super::projections::client_config(
             &catalog,
-            &format!("{origin}/connections/trae"),
+            &format!("{origin}/connections/{}", self.edition.app()),
             &outbox.token,
             &catalog[0].id,
         );
@@ -255,7 +306,7 @@ impl Manager {
                 self.bridge_save(&outbox)?;
             }
             return Ok(Some(Receipt {
-                app: "trae".into(),
+                app: self.edition.app().into(),
                 token: outbox.token,
                 model: outbox.model.unwrap_or_else(|| catalog[0].id.clone()),
                 model_map: Default::default(),
@@ -281,7 +332,7 @@ impl Manager {
         outbox.delivered = true;
         self.bridge_save(&outbox)?;
         Ok(Some(Receipt {
-            app: "trae".into(),
+            app: self.edition.app().into(),
             token: outbox.token,
             model: outbox.model.unwrap_or_else(|| catalog[0].id.clone()),
             model_map: Default::default(),
@@ -298,9 +349,10 @@ mod tests {
     #[test]
     fn pending_delivery_does_not_require_restart_after_a_manual_reopen() -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|_| FAILED)?;
-        let manager = Manager {
+        let owner = Manager {
             root: dir.path().into(),
         };
+        let manager = owner.bridge_for(crate::services::trae_bridge::shared::Edition::China);
         manager.bridge_select(true)?;
         let observe = |_: &str, applied: Option<i64>| {
             Some(if applied.is_some_and(|time| time >= 2000) {
@@ -332,9 +384,10 @@ mod tests {
         };
         use std::{collections::HashMap, sync::Arc, time::Instant};
         let dir = tempfile::tempdir().map_err(|_| FAILED)?;
-        let manager = Manager {
+        let owner = Manager {
             root: dir.path().into(),
         };
+        let manager = owner.bridge_for(crate::services::trae_bridge::shared::Edition::China);
         manager.bridge_select(true)?;
         let group: RoutingGroup = serde_json::from_value(serde_json::json!({"id":"fixture","name":"Fixture","revision":0,"enabled":true,"members":[],"defaultMemberId":"a","fallbackMemberIds":[],"intentRecognitionEnabled":false,"classifierTarget":null,"classificationBudgetMs":2000,"rules":[]})).map_err(|_| FAILED)?;
         let alias = group.alias();
@@ -518,9 +571,10 @@ mod tests {
     #[test]
     fn legacy_outbox_does_not_invent_a_starting_selection() -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|_| FAILED)?;
-        let manager = Manager {
+        let owner = Manager {
             root: dir.path().into(),
         };
+        let manager = owner.bridge_for(crate::services::trae_bridge::shared::Edition::China);
         std::fs::write(
             manager.bridge_path(),
             r#"{"enabled":true,"token":"fixture","provider":null,"delivered":true}"#,
@@ -534,9 +588,10 @@ mod tests {
     #[test]
     fn offline_bridge_cleanup_is_retained_until_acknowledged() -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|_| FAILED)?;
-        let manager = Manager {
+        let owner = Manager {
             root: dir.path().into(),
         };
+        let manager = owner.bridge_for(crate::services::trae_bridge::shared::Edition::China);
         manager.bridge_select(true)?;
         assert!(manager.bridge_status()?.recovery_pending);
         assert!(!manager.bridge_status()?.configured);
@@ -564,6 +619,33 @@ mod tests {
             |_| Some(true),
         )?;
         assert!(!manager.bridge_owned());
+        Ok(())
+    }
+    #[test]
+    fn editions_keep_shared_catalog_intentions_separate() -> Result<(), String> {
+        use crate::services::trae_bridge::shared::Edition;
+        let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+        let manager = Manager {
+            root: dir.path().into(),
+        };
+        let china = manager.bridge_for(Edition::China);
+        let international = manager.bridge_for(Edition::International);
+        china.bridge_select_model(true, Some("synthetic-cn-model".into()))?;
+        international.bridge_select_model(true, Some("synthetic-global-model".into()))?;
+        assert_ne!(china.bridge_path(), international.bridge_path());
+        assert_eq!(china.bridge_status()?.app, "trae");
+        assert_eq!(international.bridge_status()?.app, "trae-intl");
+        assert_eq!(
+            china.bridge_status()?.model.as_deref(),
+            Some("synthetic-cn-model")
+        );
+        assert_eq!(
+            international.bridge_status()?.model.as_deref(),
+            Some("synthetic-global-model")
+        );
+        international.bridge_select(false)?;
+        assert!(china.bridge_enabled());
+        assert!(!international.bridge_enabled());
         Ok(())
     }
 }

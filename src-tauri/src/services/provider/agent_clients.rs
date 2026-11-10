@@ -7,6 +7,59 @@ use crate::{
 use indexmap::IndexMap;
 use serde_json::json;
 
+fn switch_international(state: &AppState, provider: &Provider) -> Result<(), AppError> {
+    use crate::services::trae_bridge::shared::{Client, Edition};
+    let edition = Edition::International;
+    if !state.db.get_bool_flag(edition.consent_key())? {
+        return Err(AppError::Message(
+            "Authorize TRAE International local control from Tools / Agent first".into(),
+        ));
+    }
+    if state
+        .proxy_service
+        .agent_connections
+        .bridge_for(edition)
+        .bridge_owned()
+    {
+        return Err(AppError::Message(
+            "Disconnect the shared TRAE International catalog before switching a legacy provider"
+                .into(),
+        ));
+    }
+    let client = Client(edition);
+    client.prepare()?;
+    let previous = state
+        .db
+        .get_all_providers(edition.app())?
+        .into_values()
+        .filter(|p| {
+            p.id != provider.id
+                && ProviderService::provider_live_config_managed(p) == Some(true)
+                && p.category.as_deref() != Some("official")
+        })
+        .map(|p| {
+            crate::services::upstream_protocol::project(state.db.as_ref(), &AppType::TraeIntl, &p)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let target = crate::services::upstream_protocol::project(
+        state.db.as_ref(),
+        &AppType::TraeIntl,
+        provider,
+    )?;
+    if !client.switch(&target, &previous)? {
+        return Err(AppError::Message(
+            "Open TRAE International and retry the model configuration".into(),
+        ));
+    }
+    for mut other in state.db.get_all_providers(edition.app())?.into_values() {
+        let managed = other.id == provider.id && provider.category.as_deref() != Some("official");
+        ProviderService::set_provider_live_config_managed(&mut other, managed);
+        state.db.save_provider(edition.app(), &other)?;
+    }
+    state.db.set_current_provider(edition.app(), &provider.id)?;
+    Ok(())
+}
+
 pub(super) fn list(state: &AppState, app: &str) -> Result<IndexMap<String, Provider>, AppError> {
     let id = format!("{app}-official");
     if !state.db.get_bool_flag(&format!("{app}_official_seeded"))? {
@@ -16,6 +69,7 @@ pub(super) fn list(state: &AppState, app: &str) -> Result<IndexMap<String, Provi
             "zcode" => "ZCode",
             "deepseek-harness" => "DeepSeek Harness",
             "trae" => "TRAE CN",
+            "trae-intl" => "TRAE International",
             _ => app,
         };
         let mut p = Provider::with_id(id, format!("{label} Official"), json!({}), None);
@@ -61,6 +115,13 @@ pub(super) fn update(
     }
     let managed = ProviderService::provider_live_config_managed(&old) == Some(true);
     ProviderService::set_provider_live_config_managed(&mut provider, managed);
+    if app == "trae-intl" {
+        if managed {
+            switch_international(state, &provider)?;
+        }
+        state.db.save_provider(app, &provider)?;
+        return Ok(true);
+    }
     if app == "trae" {
         if managed && provider.category.as_deref() != Some("official") {
             let pending = state.db.get_bool_flag(trae_selection::PENDING_KEY)?;
@@ -111,6 +172,12 @@ pub(super) fn enable_with_lock(
         .db
         .get_provider_by_id(id, app)?
         .ok_or_else(|| AppError::InvalidInput("Provider not found".into()))?;
+    if app == "trae-intl" {
+        switch_international(state, &provider)?;
+        return Ok(SwitchResult {
+            warnings: Vec::new(),
+        });
+    }
     if app == "trae" {
         let official = provider.category.as_deref() == Some("official");
         let previous: Vec<_> = state
@@ -349,6 +416,23 @@ pub(super) fn remove_with_lock(
             "Keep the native official-account entry",
         ));
     }
+    if app == "trae-intl" {
+        if ProviderService::provider_live_config_managed(&provider) == Some(true) {
+            crate::services::trae_bridge::shared::Client(
+                crate::services::trae_bridge::shared::Edition::International,
+            )
+            .remove(id)?;
+            ProviderService::set_provider_live_config_managed(&mut provider, false);
+            state.db.save_provider(app, &provider)?;
+        }
+        if state.db.get_current_provider(app)?.as_deref() == Some(id) {
+            state.db.set_current_provider(app, "trae-intl-official")?;
+        }
+        if delete {
+            state.db.delete_provider(app, id)?;
+        }
+        return Ok(());
+    }
     if app == "trae" {
         if ProviderService::provider_live_config_managed(&provider) == Some(true) {
             crate::services::trae_bridge::remove(id)?;
@@ -426,7 +510,12 @@ pub(super) fn remove_with_lock(
 pub(super) fn is_agent(app: &AppType) -> bool {
     matches!(
         app,
-        AppType::Kimi | AppType::Qwen | AppType::ZCode | AppType::DeepSeekHarness | AppType::Trae
+        AppType::Kimi
+            | AppType::Qwen
+            | AppType::ZCode
+            | AppType::DeepSeekHarness
+            | AppType::Trae
+            | AppType::TraeIntl
     )
 }
 

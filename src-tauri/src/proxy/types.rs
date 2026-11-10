@@ -136,6 +136,8 @@ pub struct ProxyTakeoverStatus {
     pub deepseek_harness: bool,
     #[serde(default)]
     pub trae: bool,
+    #[serde(default, rename = "trae-intl")]
+    pub trae_intl: bool,
     #[serde(default)]
     pub doubaowork: bool,
     #[serde(default)]
@@ -176,6 +178,7 @@ impl ProxyTakeoverStatus {
             || self.deepseek_harness
             || self.pi
             || self.trae
+            || self.trae_intl
             || self.trae_waiting
             || self.doubaowork
             || self.doubaowork_waiting

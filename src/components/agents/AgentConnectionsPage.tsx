@@ -91,6 +91,7 @@ const nativePicker = (app: AppId | null) => app === "doubaowork";
 const modelControlApps = ["workbuddy", "workbuddy-ai", "qoder"] as const;
 const needsModelControl = (app: AppId | null) =>
   modelControlApps.some((known) => known === app);
+const isTrae = (app: AppId | null) => app === "trae" || app === "trae-intl";
 const websites: Record<AppId, string> = {
   "claude-desktop": "https://claude.ai/download",
   claude: "https://code.claude.com/docs/en/overview",
@@ -105,7 +106,8 @@ const websites: Record<AppId, string> = {
   hermes: "https://github.com/NousResearch/hermes-agent",
   qoder: "https://qoder.com/",
   doubaowork: "https://www.doubao.com/work",
-  trae: "https://www.trae.ai/",
+  trae: "https://www.trae.cn/",
+  "trae-intl": "https://www.trae.ai/",
   kimi: "https://www.kimi.com/code",
   qwen: "https://qwenlm.github.io/qwen-code-docs/",
   zcode: "https://zcode.ai/",
@@ -205,7 +207,7 @@ export function AgentConnectionsPage({
     queries: APP_IDS.map((app) => ({
       queryKey: ["agent-native-models", app],
       queryFn: () =>
-        nativePicker(app) || needsModelControl(app) || app === "trae"
+        nativePicker(app) || needsModelControl(app) || isTrae(app)
           ? Promise.resolve({ app, model: null, available: false })
           : agentConnectionsApi.nativeModel(app),
       refetchInterval: 5000,
@@ -549,7 +551,7 @@ export function AgentConnectionsPage({
       // A pending TRAE bridge can require a running client to reload launch settings.
       // Configuration drift must be repaired before restarting other clients.
       (!state.recoveryPending ||
-        (app === "trae" && state.recoveryReason === "bridge_pending"));
+        (isTrae(app) && state.recoveryReason === "bridge_pending"));
     const native = nativeQuery.data;
     const nativeAvailable = native?.available && !nativeQuery.isError;
     const nativeModel =
@@ -630,9 +632,10 @@ export function AgentConnectionsPage({
           className={`mp-agent-fix${bypassed ? " mp-agent-reconnect" : ""}`}
           aria-label={t("agentConnections.reapply")}
           title={t(
-            app === "trae"
+            isTrae(app)
               ? "agentConnections.bridgeHint"
               : "agentConnections.reapplyHint",
+            { app: name(app) },
           )}
           disabled={rowBusy(app) || catalog.isPending}
           onClick={() => void reapply(app)}
@@ -648,56 +651,55 @@ export function AgentConnectionsPage({
           <span>{t("agentConnections.reapply")}</span>
         </button>
       );
-    const modelCatalog =
-      app === "trae" ? (
-        <Popover
-          open={browsing === app}
-          onOpenChange={(open) => setBrowsing(open ? app : null)}
+    const modelCatalog = isTrae(app) ? (
+      <Popover
+        open={browsing === app}
+        onOpenChange={(open) => setBrowsing(open ? app : null)}
+      >
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="mp-agent-start"
+            disabled={rowBusy(app) || catalog.isPending}
+            aria-label={`${t("agentConnections.modelList")} ${name(app)}`}
+          >
+            <span>
+              {catalog.isError
+                ? t("agentConnections.failed")
+                : catalog.isPending
+                  ? t("common.loading")
+                  : t("agentConnections.allModels", {
+                      count: catalog.data?.length ?? 0,
+                    })}
+            </span>
+            <ChevronDown size={11} />
+          </button>
+        </PopoverTrigger>
+        <ModelPickerPopoverContent
+          onDismiss={() => setBrowsing(null)}
+          aria-label={t("agentConnections.modelListTitle", {
+            agent: name(app),
+          })}
         >
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              className="mp-agent-start"
-              disabled={rowBusy(app) || catalog.isPending}
-              aria-label={`${t("agentConnections.modelList")} ${name(app)}`}
-            >
-              <span>
-                {catalog.isError
-                  ? t("agentConnections.failed")
-                  : catalog.isPending
-                    ? t("common.loading")
-                    : t("agentConnections.allModels", {
-                        count: catalog.data?.length ?? 0,
-                      })}
-              </span>
-              <ChevronDown size={11} />
-            </button>
-          </PopoverTrigger>
-          <ModelPickerPopoverContent
-            onDismiss={() => setBrowsing(null)}
-            aria-label={t("agentConnections.modelListTitle", {
+          <SharedModelPicker
+            models={catalog.isError ? [] : (catalog.data ?? [])}
+            selected={catalog.data?.map((model) => model.id) ?? []}
+            readOnly
+            title={t("agentConnections.modelListTitle", {
               agent: name(app),
             })}
-          >
-            <SharedModelPicker
-              models={catalog.isError ? [] : (catalog.data ?? [])}
-              selected={catalog.data?.map((model) => model.id) ?? []}
-              readOnly
-              title={t("agentConnections.modelListTitle", {
-                agent: name(app),
-              })}
-              description={t(
-                !enabled
-                  ? "agentConnections.nativeCatalogDisconnectedHint"
-                  : app === "trae" && state?.recoveryReason === "bridge_pending"
-                    ? "agentConnections.nativeCatalogPendingHint"
-                    : "agentConnections.nativeCatalogHint",
-              )}
-              error={catalog.isError ? t("agentConnections.failed") : undefined}
-            />
-          </ModelPickerPopoverContent>
-        </Popover>
-      ) : null;
+            description={t(
+              !enabled
+                ? "agentConnections.nativeCatalogDisconnectedHint"
+                : isTrae(app) && state?.recoveryReason === "bridge_pending"
+                  ? "agentConnections.nativeCatalogPendingHint"
+                  : "agentConnections.nativeCatalogHint",
+            )}
+            error={catalog.isError ? t("agentConnections.failed") : undefined}
+          />
+        </ModelPickerPopoverContent>
+      </Popover>
+    ) : null;
     return (
       <SortableAgentRow
         key={app}
@@ -897,8 +899,7 @@ export function AgentConnectionsPage({
                       !orphaned &&
                       !inactiveCodexIntent &&
                       !(
-                        app === "trae" &&
-                        state.recoveryReason === "bridge_pending"
+                        isTrae(app) && state.recoveryReason === "bridge_pending"
                       )) ||
                     (enabled &&
                       (catalog.isPending ||
@@ -977,7 +978,7 @@ export function AgentConnectionsPage({
                       description={
                         orphaned
                           ? t("agentConnections.orphanReconnectHint")
-                          : app === "trae"
+                          : isTrae(app)
                             ? t("agentConnections.traeStartingModelHint")
                             : app === "deepseek-harness"
                               ? t("agentConnections.deepseekStartingModelHint")
@@ -1101,10 +1102,10 @@ export function AgentConnectionsPage({
                 )}
               </div>
             )}
-            {app === "trae" && (
+            {isTrae(app) && (
               <>
                 <p className="text-xs text-muted-foreground">
-                  {t("agentConnections.bridgeHint")}
+                  {t("agentConnections.bridgeHint", { app: name(app) })}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {t(`agentConnections.states.${status}`, { app: name(app) })}
@@ -1487,7 +1488,7 @@ export function AgentConnectionsPage({
         description={t(
           disconnecting === "doubaowork"
             ? "agentConnections.auditDisconnectHint"
-            : disconnecting === "trae"
+            : isTrae(disconnecting)
               ? "agentConnections.bridgeDisconnectHint"
               : "agentConnections.disconnectHint",
           { app: disconnecting ? name(disconnecting) : "" },
@@ -1565,7 +1566,7 @@ export function AgentConnectionsPage({
               </legend>
               <SharedModelPicker
                 description={
-                  setup === "trae"
+                  isTrae(setup)
                     ? t("agentConnections.traeStartingModelHint")
                     : undefined
                 }

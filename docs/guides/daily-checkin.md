@@ -17,6 +17,8 @@ Check-in panels start hidden. The same button expands or collapses the panel bel
 
 WorkBuddy's native account picker includes account contexts; its currently saved desktop session is not a reusable pool of independently authorized refresh tokens. Use **Refresh accounts** after changing the desktop login to immediately reload the account list and local check-in results. Refreshing does not claim a reward. Use **Add account** on the check-in card for each separate browser grant. After authorization, choose that account to claim manually or enable its automatic switch. Starting or completing authorization never claims a reward or enables automatic check-in.
 
+Doubao Work campaign discovery checks the exported SDK methods rather than assuming a campaign marker identifies exactly one webpack module. Newer clients may expose both a facade and the service itself. VaryAI accepts exactly one distinct service implementing the landing-page, daily check-in and campaign-detail methods; missing or ambiguous services remain unavailable instead of reporting a successful claim.
+
 Doubao Work keeps its saved accounts within the official client. Sign in there and refresh VaryAI's list. **Switch and check in** uses the official account switcher, waits for the selected login, and then requests its reward. The account stays selected afterward. Automatic check-in processes enabled accounts in sequence and leaves the last processed account active. Completed daily results are reused without switching. A refused switch never falls back to claiming for the previous account.
 
 Doubao Work's card shows the official quota reward, consecutive check-in days and total check-in days when the campaign provides them. Refresh queries the current account without claiming or switching; saved daily results remain specific to their account.
@@ -41,6 +43,8 @@ again for the first read. VaryAI does not change the Keychain item's access rule
 or retain the native decryption secret across restarts.
 
 **Add account** optionally authorizes an independent backup account. It opens the official account-selection page, creates VaryAI's own PKCE device login and stores the resulting device credential privately. This is a separate Qoder login credential used only by the rewards module, not a restriction on the permissions granted by Qoder's device authorization. Starting, completing or canceling authorization does not claim a reward or enable automatic claims. Cancel discards the pending verifier. **Remove backup authorization** deletes only VaryAI's local grant and disables that account's automatic claims; it does not clear the native login or revoke the grant at Qoder. The installed client's native machine identity helper is required.
+
+TRAE International is a separate model integration. An official daily check-in capability has not been established for that edition, so VaryAI does not expose a check-in action for it or reuse the CN reward API.
 
 TRAE CN uses the existing, explicitly connected local bridge. Open the native client and refresh VaryAI's panel after changing accounts. Its [official changelog](https://docs.trae.cn/ide_changelog) documents check-in promotions; amounts and availability vary. VaryAI invokes only the native daily-credit status and claim methods, never lottery or paid actions. The account identity is checked again before a claim and after the response. Ineligible accounts and service verification requests are shown separately from success.
 

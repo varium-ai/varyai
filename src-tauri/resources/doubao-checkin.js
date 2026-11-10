@@ -110,18 +110,28 @@ async function varyaiDoubaoCheckin(input) {
       launch.domains?.legacy?.data?.ug_campaign_info;
     const scene = campaign?.campaign_group_code;
     if (!scene) return { outcome: "inactive" };
-    const api = exported(
-      matchingModule(
-        (source) =>
-          source.includes("ugCampaignApiService:") ||
-          (source.includes("initApiService") &&
-            /["']ugCampaign["']/.test(source)),
-      ),
-      (value) =>
-        ["GetLandingPage", "DailyCheckIn", "GetCampaignV3Detail"].every(
-          (method) => typeof value?.[method] === "function",
-        ),
-    );
+    // SDK facades can repeat the service marker without exporting the campaign API.
+    const services = new Set();
+    for (const [id, factory] of Object.entries(require.m)) {
+      const source = factory.toString();
+      if (
+        !source.includes("ugCampaignApiService:") &&
+        !(
+          source.includes("initApiService") && /["']ugCampaign["']/.test(source)
+        )
+      )
+        continue;
+      for (const value of Object.values(require(id))) {
+        if (
+          ["GetLandingPage", "DailyCheckIn", "GetCampaignV3Detail"].every(
+            (method) => typeof value?.[method] === "function",
+          )
+        )
+          services.add(value);
+      }
+    }
+    if (services.size !== 1) return { outcome: "unsupported" };
+    const api = [...services][0];
     const successful = (result) =>
       result &&
       (result.code == null || ["0", "200"].includes(String(result.code)));

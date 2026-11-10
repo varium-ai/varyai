@@ -62,6 +62,7 @@ pub(crate) fn supports_restart(app: &str) -> bool {
             | "codex"
             | "qoder"
             | "trae"
+            | "trae-intl"
             | "doubaowork"
             | "kimi"
             | "zcode"
@@ -78,6 +79,7 @@ fn bundle_ids(app: &str) -> &'static [&'static str] {
         "codex" => &["com.openai.codex"],
         "qoder" => &["com.qodercn.app"],
         "trae" => &["cn.trae.app"],
+        "trae-intl" => &["com.trae.app"],
         "doubaowork" => &["com.work.pc.doubao"],
         "kimi" => &["com.kimi.code.desktop"],
         "zcode" => &["dev.zcode.app"],
@@ -195,7 +197,8 @@ pub(crate) fn restart(
     #[cfg(target_os = "macos")]
     {
         // First-time TRAE/Doubao setup may only need the desktop app opened.
-        if (matches!(app, "trae" | "doubaowork") || super::model_control::authorized(app))
+        if (matches!(app, "trae" | "trae-intl" | "doubaowork")
+            || super::model_control::authorized(app))
             && state(app, applied_ms) == Some(State::Stopped)
         {
             return open_installed(app, valid);

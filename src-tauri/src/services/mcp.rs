@@ -154,6 +154,7 @@ impl McpService {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => {}
         }
         Ok(())
@@ -200,6 +201,7 @@ impl McpService {
             | AppType::ZCode
             | AppType::DeepSeekHarness
             | AppType::Trae
+            | AppType::TraeIntl
             | AppType::DoubaoWork => {}
         }
         Ok(())
@@ -258,6 +260,7 @@ impl McpService {
                 | AppType::ZCode
                 | AppType::DeepSeekHarness
                 | AppType::Trae
+                | AppType::TraeIntl
                 | AppType::DoubaoWork
         ) {
             return Ok(());

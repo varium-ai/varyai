@@ -38,6 +38,7 @@ export interface ProxyTakeoverStatus {
   doubaowork?: boolean;
   doubaowork_waiting?: boolean;
   trae?: boolean;
+  "trae-intl"?: boolean;
   trae_waiting?: boolean;
   kimi?: boolean;
   qwen?: boolean;

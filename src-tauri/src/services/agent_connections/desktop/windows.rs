@@ -42,6 +42,16 @@ fn matches_image(app: &str, image: &str, local: &str, programs: &str) -> bool {
             && (image == format!("{programs}\\workbuddy ai\\workbuddy.exe")
                 || image == format!("{programs}\\workbuddy-ai\\workbuddy.exe"));
     }
+    if matches!(app, "trae" | "trae-intl") {
+        let local = normalize(local);
+        let (folder, exe) = if app == "trae" {
+            ("trae cn", "trae cn.exe")
+        } else {
+            ("trae", "trae.exe")
+        };
+        return (!programs.is_empty() && image == format!("{programs}\\{folder}\\{exe}"))
+            || (!local.is_empty() && image == format!("{local}\\programs\\{folder}\\{exe}"));
+    }
     if app == "qoder" {
         let local = normalize(local);
         return (!programs.is_empty() && image == format!("{programs}\\qoder cn\\qoder cn.exe"))
@@ -249,7 +259,7 @@ pub(super) fn supported(app: &str) -> bool {
     // Only apps with verified Windows process identity can restart here.
     // Other desktop agents keep macOS support via bundle identifiers.
     match app {
-        "claude-desktop" | "codex" | "workbuddy-ai" | "qoder" => true,
+        "claude-desktop" | "codex" | "workbuddy-ai" | "qoder" | "trae" | "trae-intl" => true,
         "workbuddy" => crate::workbuddy_config::get_workbuddy_dir()
             .file_name()
             .is_some_and(|name| name == ".workbuddy"),

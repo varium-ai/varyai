@@ -665,8 +665,8 @@ impl Manager {
         )
     }
     pub fn owns(&self, app: &str) -> bool {
-        if app == "trae" {
-            return self.bridge_owned();
+        if let Some(edition) = crate::services::trae_bridge::shared::Edition::parse(app) {
+            return self.bridge_for(edition).bridge_owned();
         }
         APPS.contains(&app) && app != "codex" && self.load(app).map_or(true, |r| r.is_some())
     }
