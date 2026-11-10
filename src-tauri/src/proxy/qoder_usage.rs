@@ -97,66 +97,7 @@ pub(crate) fn emit(job: Job) {
         return;
     };
     if slot.as_ref().is_none_or(|tx| tx.is_closed()) {
-        *slot = Some({
-            let (tx, mut rx) = tokio::sync::mpsc::channel::<Job>(1000);
-            tokio::spawn(async move {
-                let mut batch = Vec::with_capacity(50);
-                loop {
-                    if rx.recv_many(&mut batch, 50).await == 0 {
-                        break;
-                    }
-                    let jobs = std::mem::take(&mut batch);
-                    let result = tokio::task::spawn_blocking(move || {
-                        for job in jobs {
-                            let logger = UsageLogger::new(&job.db);
-                            let model = job
-                                .usage
-                                .model
-                                .clone()
-                                .unwrap_or_else(|| job.request_model.clone());
-                            let id = job
-                                .usage
-                                .dedup_request_id(Some((&job.app_type, &job.provider_id)));
-                            let (multiplier, source) = futures::executor::block_on(
-                                logger.resolve_pricing_config(&job.provider_id, &job.app_type),
-                            );
-                            let pricing_model = if source == crate::database::PRICING_SOURCE_REQUEST
-                            {
-                                job.request_model.clone()
-                            } else {
-                                model.clone()
-                            };
-                            if logger
-                                .log_with_calculation(
-                                    id,
-                                    job.provider_id,
-                                    job.app_type.clone(),
-                                    model.clone(),
-                                    job.request_model,
-                                    pricing_model,
-                                    job.usage,
-                                    multiplier,
-                                    job.latency_ms,
-                                    None,
-                                    job.status,
-                                    job.session_id,
-                                    Some(job.app_type),
-                                    job.streaming,
-                                )
-                                .is_err()
-                            {
-                                log::warn!("[Qoder] stage=usage_write category=failed");
-                            }
-                        }
-                    })
-                    .await;
-                    if result.is_err() {
-                        log::warn!("[Qoder] stage=usage_worker category=failed");
-                    }
-                }
-            });
-            tx
-        });
+        *slot = start_worker();
     }
     if slot
         .as_ref()
@@ -166,9 +107,102 @@ pub(crate) fn emit(job: Job) {
     }
 }
 
+fn start_worker() -> Option<tokio::sync::mpsc::Sender<Job>> {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Job>(1000);
+    std::thread::Builder::new()
+        .name("native-usage".into())
+        .spawn(move || {
+            while let Some(job) = rx.blocking_recv() {
+                let logger = UsageLogger::new(&job.db);
+                let model = job
+                    .usage
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| job.request_model.clone());
+                let id = job
+                    .usage
+                    .dedup_request_id(Some((&job.app_type, &job.provider_id)));
+                let (multiplier, source) = futures::executor::block_on(
+                    logger.resolve_pricing_config(&job.provider_id, &job.app_type),
+                );
+                let pricing_model = if source == crate::database::PRICING_SOURCE_REQUEST {
+                    job.request_model.clone()
+                } else {
+                    model.clone()
+                };
+                if logger
+                    .log_with_calculation(
+                        id,
+                        job.provider_id,
+                        job.app_type.clone(),
+                        model.clone(),
+                        job.request_model,
+                        pricing_model,
+                        job.usage,
+                        multiplier,
+                        job.latency_ms,
+                        None,
+                        job.status,
+                        job.session_id,
+                        Some(job.app_type),
+                        job.streaming,
+                    )
+                    .is_err()
+                {
+                    log::warn!("[Qoder] stage=usage_write category=failed");
+                }
+            }
+        })
+        .ok()?;
+    Some(tx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn usage_worker_survives_the_runtime_that_created_it() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let db = Arc::new(Database::memory()?);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let sender = runtime
+            .block_on(async { start_worker() })
+            .ok_or("usage worker did not start")?;
+        drop(runtime);
+        sender
+            .try_send(Job {
+                app_type: "kimi".into(),
+                db: db.clone(),
+                provider_id: "synthetic-provider".into(),
+                request_model: "synthetic-model".into(),
+                session_id: None,
+                usage: TokenUsage {
+                    input_tokens: 11,
+                    output_tokens: 4,
+                    ..Default::default()
+                },
+                latency_ms: 1,
+                status: 200,
+                streaming: false,
+            })
+            .map_err(|_| "usage worker stopped with its creator runtime")?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let summary = db.get_usage_summary(None, None, Some("kimi"), None, None)?;
+            if summary.total_requests == 1 {
+                assert_eq!(summary.total_input_tokens, 11);
+                assert_eq!(summary.total_output_tokens, 4);
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("usage was not persisted after creator runtime shutdown".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        Ok(())
+    }
     #[test]
     fn qoder_usage_unwraps_official_sse_and_preserves_split_frames() {
         let mut c = Collector::default();

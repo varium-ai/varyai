@@ -310,6 +310,7 @@ Set-Acl -LiteralPath $env:VARYAI_TRAE_PRIVATE_DIR -AclObject $acl
 "#;
     let status = std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env_remove("PSModulePath")
         .env("VARYAI_TRAE_PRIVATE_DIR", path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -976,12 +977,29 @@ mod tests {
     #[test]
     fn private_bridge_directory_preserves_owner_and_restricts_inherited_access() {
         use std::os::windows::process::CommandExt;
+        if std::env::var_os("VARYAI_TRAE_ACL_TEST_CHILD").is_none() {
+            let modules = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "services::trae_bridge::tests::private_bridge_directory_preserves_owner_and_restricts_inherited_access",
+                    "--nocapture",
+                ])
+                .env("VARYAI_TRAE_ACL_TEST_CHILD", "1")
+                .env("PSModulePath", modules.path())
+                .creation_flags(0x08000000)
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated bridge ACL regression failed");
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("private [bridge] fixture");
         std::fs::create_dir(&path).unwrap();
         let inspect = |script: &str| {
             let output = std::process::Command::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command", script])
+                .env_remove("PSModulePath")
                 .env("VARYAI_TRAE_PRIVATE_DIR", &path)
                 .stdin(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
