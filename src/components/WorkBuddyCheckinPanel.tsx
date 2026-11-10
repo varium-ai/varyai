@@ -30,6 +30,7 @@ export function WorkBuddyCheckinPanel({
   const status = useQuery({
     queryKey,
     queryFn: workbuddyCheckinApi.accounts,
+    staleTime: 60_000,
     refetchInterval: 60_000,
   });
   const selected = status.data?.accounts.find(

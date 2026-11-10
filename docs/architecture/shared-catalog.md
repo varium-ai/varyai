@@ -443,6 +443,15 @@ model namespace is removed. Authorization is revoked on failed refresh or stop.
 An unchanged catalog is checked against native model ownership, endpoint and
 credential inside the bridge; only a boolean returns. External native edits
 revoke authorization and require explicit reapplication instead of silent writes.
+An unavailable bridge is kept distinct from a verified configuration mismatch:
+normal delivery waiting does not offer an Apply again action. Only a confirmed
+mismatch exposes configuration repair. The page does not add a client-launch
+button; users open Agents normally. Restart is offered only for a verified
+running client whose launch predates its launch-settings change. TRAE uses
+`argv.json` freshness for this check, so retrying delivery does not make a newly
+opened client look stale. Connection queries refresh every five seconds and
+remove the restart action after observing a manual reopen. The existing
+background bridge refresh continues to deliver the saved connection automatically.
 These adapters are tested with synthetic documents and bridge callbacks, not by
 changing a real installation or account.
 

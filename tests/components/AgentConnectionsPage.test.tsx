@@ -17,6 +17,7 @@ import { intentRoutingApi } from "@/lib/api/intentRouting";
 import { APP_IDS } from "@/config/appConfig";
 import { workbuddyCheckinApi } from "@/lib/api/workbuddy-checkin";
 import { doubaoCheckinApi } from "@/lib/api/doubao-checkin";
+import { agentRewardsApi } from "@/lib/api/agent-rewards";
 vi.mock("@/lib/api/workbuddy-checkin", () => ({
   workbuddyCheckinApi: {
     accounts: vi.fn(async () => ({ accounts: [] })),
@@ -30,6 +31,10 @@ vi.mock("@/lib/api/doubao-checkin", () => ({
     checkIn: vi.fn(),
     setAutoEnabled: vi.fn(),
   },
+}));
+vi.mock("@/lib/api/agent-rewards", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api/agent-rewards")>()),
+  agentRewardsApi: { status: vi.fn(), claim: vi.fn(), setAuto: vi.fn() },
 }));
 vi.mock("@/lib/api/intentRouting", () => ({
   intentRoutingApi: {
@@ -382,6 +387,23 @@ it("keeps version updates inside tray details instead of the quick summary", asy
 });
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(workbuddyCheckinApi.accounts).mockResolvedValue({
+    accounts: [],
+  } as unknown as Awaited<ReturnType<typeof workbuddyCheckinApi.accounts>>);
+  vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue({
+    connected: false,
+    accounts: [],
+  } as unknown as Awaited<ReturnType<typeof doubaoCheckinApi.accounts>>);
+  vi.mocked(agentRewardsApi.status).mockImplementation(async (app) => ({
+    app,
+    accountId: null,
+    label: null,
+    autoEnabled: false,
+    outcome: "sign_in_required",
+    credit: null,
+    checkedAt: null,
+    nextCheckAt: null,
+  }));
   localStorage.removeItem("vary-agent-order");
   vi.mocked(agentConnectionsApi.diagnoseCodexProxy).mockResolvedValue(null);
   vi.mocked(proxyApi.getProxyStatus).mockResolvedValue({
@@ -444,6 +466,17 @@ beforeEach(() => {
   vi.mocked(agentConnectionsApi.setModelVisibility).mockResolvedValue();
 });
 describe("Agent connections", () => {
+  it.each([false, true])(
+    "does not label Pi as requiring individual configuration (compact: %s)",
+    async (compact) => {
+      mount(compact);
+      const row = await screen.findByRole("article", { name: "apps.pi" });
+      expect(
+        within(row).queryByText("agentConnections.individual"),
+      ).not.toBeInTheDocument();
+    },
+  );
+
   it("keeps a compact page title above the tool list without the introductory subtitle", async () => {
     mount();
     const heading = screen.getByRole("heading", {
@@ -498,7 +531,6 @@ describe("Agent connections", () => {
       mount(compact);
       const row = await screen.findByRole("article", { name: `apps.${app}` });
       if (compact) {
-        expect(api.accounts).not.toHaveBeenCalled();
         fireEvent.click(
           within(row).getByRole("button", {
             name: `agentConnections.details apps.${app}`,
@@ -511,10 +543,10 @@ describe("Agent connections", () => {
           }),
         ).not.toBeInTheDocument();
       }
-      expect(api.accounts).not.toHaveBeenCalled();
+      await waitFor(() => expect(api.accounts).toHaveBeenCalledTimes(1));
       fireEvent.click(
         within(row).getByRole("button", {
-          name: `agentRewards.title apps.${app}`,
+          name: `agentRewards.manualLabel apps.${app}`,
         }),
       );
       const panel = await screen.findByRole("region", {
@@ -525,7 +557,7 @@ describe("Agent connections", () => {
       ).toBeVisible();
       await waitFor(() => expect(api.accounts).toHaveBeenCalledTimes(1));
       const trigger = within(row).getByRole("button", {
-        name: `agentRewards.title apps.${app}`,
+        name: `agentRewards.manualLabel apps.${app}`,
       });
       fireEvent.click(trigger);
       expect(panel).not.toBeVisible();
@@ -535,6 +567,144 @@ describe("Agent connections", () => {
       expect(api.checkIn).not.toHaveBeenCalled();
       expect(api.setAutoEnabled).not.toHaveBeenCalled();
       expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(
+    (["workbuddy", "doubaowork", "qoder", "trae", "zcode"] as const).flatMap(
+      (app) => [false, true].map((compact) => ({ app, compact })),
+    ),
+  )(
+    "reflects saved and changed check-in modes for $app (compact=$compact)",
+    async ({ app, compact }) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      } as Awaited<ReturnType<typeof proxyApi.getAgentInstallations>>);
+      const status = {
+        autoEnabled: true,
+        day: "2026-11-10",
+        outcome: "not_checked" as const,
+        checkedAt: null,
+        credit: null,
+        streak: null,
+        creditDelayed: false,
+      };
+      if (app === "workbuddy") {
+        const accounts = [
+          {
+            id: "manual",
+            label: "Manual account",
+            source: "browser" as const,
+            status: { ...status, autoEnabled: false },
+          },
+          {
+            id: "auto",
+            label: "Auto account",
+            source: "browser" as const,
+            status,
+          },
+        ];
+        vi.mocked(workbuddyCheckinApi.accounts).mockResolvedValue({
+          accounts,
+          nativeStatus: status,
+        });
+        vi.mocked(workbuddyCheckinApi.setAutoEnabled).mockImplementation(
+          async (enabled) => ({ ...status, autoEnabled: enabled }),
+        );
+      } else if (app === "doubaowork") {
+        const snapshot = {
+          connected: true,
+          day: status.day,
+          outcome: status.outcome,
+          accounts: [
+            {
+              id: "manual",
+              label: "Manual account",
+              current: false,
+              ...status,
+              autoEnabled: false,
+              totalDays: null,
+            },
+            {
+              id: "auto",
+              label: "Auto account",
+              current: true,
+              ...status,
+              totalDays: null,
+            },
+          ],
+        };
+        vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue(snapshot);
+        vi.mocked(doubaoCheckinApi.setAutoEnabled).mockImplementation(
+          async (_, enabled) => ({
+            ...snapshot,
+            accounts: snapshot.accounts.map((account) => ({
+              ...account,
+              autoEnabled: account.id === "auto" && enabled,
+            })),
+          }),
+        );
+      } else {
+        const reward = {
+          app,
+          accountId: "auto",
+          label: "Auto account",
+          autoEnabled: true,
+          outcome: status.outcome,
+          credit: null,
+          checkedAt: null,
+          nextCheckAt: null,
+        };
+        vi.mocked(agentRewardsApi.status).mockResolvedValue(reward);
+        vi.mocked(agentRewardsApi.setAuto).mockImplementation(
+          async (_, __, enabled) => ({ ...reward, autoEnabled: enabled }),
+        );
+      }
+      mount(compact);
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      if (compact)
+        fireEvent.click(
+          within(row).getByRole("button", {
+            name: `agentConnections.details apps.${app}`,
+          }),
+        );
+      const trigger = await within(row).findByRole("button", {
+        name: `agentRewards.autoLabel apps.${app}`,
+      });
+      expect(trigger).toHaveTextContent("agentRewards.autoLabel");
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(trigger);
+      const panel = within(row).getByRole("region", {
+        name:
+          app === "workbuddy"
+            ? "workbuddy.checkin.title"
+            : app === "doubaowork"
+              ? "doubaowork.checkin.title"
+              : "agentRewards.title",
+      });
+      if (app === "workbuddy")
+        fireEvent.change(within(panel).getByRole("combobox"), {
+          target: { value: "auto" },
+        });
+      fireEvent.click(within(panel).getByRole("switch"));
+      await waitFor(() =>
+        expect(trigger).toHaveAccessibleName(
+          `agentRewards.manualLabel apps.${app}`,
+        ),
+      );
+      expect(trigger).toHaveTextContent("agentRewards.manualLabel");
+      await waitFor(() =>
+        expect(within(panel).getByRole("switch")).toBeEnabled(),
+      );
+      fireEvent.click(within(panel).getByRole("switch"));
+      await waitFor(() =>
+        expect(trigger).toHaveAccessibleName(
+          `agentRewards.autoLabel apps.${app}`,
+        ),
+      );
+      expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
+      expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
+      expect(agentRewardsApi.claim).not.toHaveBeenCalled();
     },
   );
 
@@ -548,7 +718,7 @@ describe("Agent connections", () => {
       mount();
       const row = await screen.findByRole("article", { name: `apps.${app}` });
       const trigger = within(row).getByRole("button", {
-        name: `agentRewards.title apps.${app}`,
+        name: `agentRewards.manualLabel apps.${app}`,
       });
       const picker = within(row).getByLabelText(
         `agentConnections.${app === "qoder" ? "modelList" : "model"} apps.${app}`,
@@ -808,6 +978,172 @@ describe("Agent connections", () => {
       "agentConnections.states.recovery",
     );
   });
+
+  it.each([false, true])(
+    "keeps normal TRAE bridge waiting free of repair actions (compact: %s)",
+    async (compact) => {
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const connection = {
+        app: "trae",
+        enabled: true,
+        configured: false,
+        recoveryPending: true,
+        recoveryReason: "bridge_pending" as const,
+        restartRequired: true,
+        desktopState: "stopped" as const,
+        model: "vary-auto/shared",
+      };
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        trae: true,
+      });
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([connection]);
+      mount(compact, client);
+      const row = await screen.findByRole("article", { name: "apps.trae" });
+      for (const desktopState of [
+        "stopped",
+        "current",
+        "unknown",
+        "unsupported",
+      ] as const) {
+        await act(async () => {
+          client.setQueryData(["agent-connections", "trae"], {
+            ...connection,
+            desktopState,
+          });
+        });
+        expect(within(row).getByRole("status")).toHaveTextContent(
+          "agentConnections.states.bridgePending",
+        );
+        expect(
+          within(row).queryByRole("button", {
+            name: "agentConnections.reapply",
+          }),
+        ).not.toBeInTheDocument();
+        expect(
+          within(row).queryByRole("button", {
+            name: "agentConnections.restart",
+          }),
+        ).not.toBeInTheDocument();
+      }
+      expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
+      expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+    },
+  );
+
+  it("offers only restart when a running TRAE predates its configured bridge", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({ trae: true });
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "trae",
+        enabled: true,
+        configured: false,
+        recoveryPending: true,
+        recoveryReason: "bridge_pending",
+        restartRequired: true,
+        desktopState: "restart_required",
+        model: "vary-auto/shared",
+      },
+    ]);
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.trae" });
+    expect(
+      within(row).queryByRole("button", { name: "agentConnections.reapply" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      within(row).getByRole("button", { name: "agentConnections.restart" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "agentConnections.restart" }),
+    );
+    await waitFor(() =>
+      expect(agentConnectionsApi.restart).toHaveBeenCalledWith("trae", true),
+    );
+    expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
+  });
+
+  it("keeps TRAE repair available for confirmed native configuration drift", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({ trae: true });
+    vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+      {
+        app: "trae",
+        enabled: true,
+        configured: false,
+        recoveryPending: true,
+        recoveryReason: "configuration_changed",
+        restartRequired: true,
+        desktopState: "restart_required",
+        model: "vary-auto/shared",
+      },
+    ]);
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.trae" });
+    expect(
+      within(row).getByRole("button", { name: "agentConnections.reapply" }),
+    ).toBeEnabled();
+    expect(
+      within(row).queryByRole("button", { name: "agentConnections.restart" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it.each(["trae", "claude-desktop", "workbuddy", "codex"] as const)(
+    "clears the %s restart action after observing a manual reopen",
+    async (app) => {
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const connection = {
+        app,
+        enabled: true,
+        configured: app !== "trae",
+        recoveryPending: app === "trae",
+        recoveryReason: app === "trae" ? ("bridge_pending" as const) : null,
+        restartRequired: true,
+        desktopState: "restart_required" as const,
+        model: "vary-auto/shared",
+      };
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      });
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([connection]);
+      mount(false, client);
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      expect(
+        within(row).getByRole("button", { name: "agentConnections.restart" }),
+      ).toBeEnabled();
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          ...connection,
+          configured: true,
+          recoveryPending: false,
+          recoveryReason: null,
+          restartRequired: false,
+          desktopState: "current",
+        },
+      ]);
+      await act(async () => {
+        await client.invalidateQueries({
+          queryKey: ["agent-connections", app],
+        });
+      });
+      await waitFor(() => {
+        expect(
+          within(row).queryByRole("button", {
+            name: "agentConnections.restart",
+          }),
+        ).not.toBeInTheDocument();
+        expect(
+          within(row).queryByRole("button", {
+            name: "agentConnections.reapply",
+          }),
+        ).not.toBeInTheDocument();
+      });
+      expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+      expect(agentConnectionsApi.reapply).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps other Agent switches and model pickers independent while connections overlap", async () => {
     let finishClaude!: () => void;

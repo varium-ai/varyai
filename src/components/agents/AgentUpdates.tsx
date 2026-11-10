@@ -120,10 +120,13 @@ export function AgentUpdatesBar({
   const { results, progress, active } = updates;
   const changes = results
     .map((r) =>
-      t(`agentUpdates.${r.outcome}`, {
+      t(`agentUpdates.${r.failureReason ? "failedReason" : r.outcome}`, {
         app: name(r.app),
         from: r.from,
         to: r.to,
+        reason: r.failureReason
+          ? t(`agentUpdates.failureReasons.${r.failureReason}`)
+          : undefined,
       }),
     )
     .join(" · ");

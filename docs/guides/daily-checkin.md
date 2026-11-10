@@ -1,8 +1,10 @@
 # Daily rewards and account selection
 
-On **Tools / Agent**, select **Check in** immediately before the Agent's model picker. In the compact Agent list, open its details to reveal the same controls. The panels use the workspace's compact controls and theme colors; account controls and reward details wrap to fit narrower windows.
+On **Tools / Agent**, select **Manual check-in** or **Automatic check-in** immediately before the Agent's model picker. In the compact Agent list, open its details to reveal the same controls. The panels use the workspace's compact controls and theme colors; account controls and reward details wrap to fit narrower windows.
 
-Check-in panels start hidden. The same **Check in** button expands or collapses the panel below its Agent row. Only one panel is shown at a time, without a second heading toggle or a separate home-page card. Collapsing a panel preserves the selected account and pending authorization; automatic check-in continues independently.
+The button shows **Automatic check-in** when any account for that Agent has automatic check-in enabled; otherwise it shows **Manual check-in**. Its label updates when the setting changes.
+
+Check-in panels start hidden. The same button expands or collapses the panel below its Agent row. Only one panel is shown at a time, without a second heading toggle or a separate home-page card. Collapsing a panel preserves the selected account and pending authorization; automatic check-in continues independently.
 
 | Client          | Daily reward                                                | Account selection                                                                                                          |
 | --------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |

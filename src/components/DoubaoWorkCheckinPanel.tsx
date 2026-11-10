@@ -27,6 +27,7 @@ export function DoubaoWorkCheckinPanel({
   const query = useQuery({
     queryKey,
     queryFn: doubaoCheckinApi.accounts,
+    staleTime: 60_000,
     refetchInterval: 60_000,
   });
   const selected = query.data?.accounts.find(

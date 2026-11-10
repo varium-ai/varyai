@@ -342,6 +342,15 @@ fn argv_path() -> Result<PathBuf, AppError> {
         .ok_or_else(unavailable)?
         .join(".trae-cn/argv.json"))
 }
+pub(crate) fn launch_settings_applied_at_ms() -> Option<i64> {
+    std::fs::metadata(argv_path().ok()?)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis() as i64)
+}
 fn ensure_ready() -> Result<(), AppError> {
     if let Ok(health) = request(&json!({"op":"health"}), false) {
         if health["revision"] == HELPER_REVISION
@@ -490,13 +499,13 @@ pub(crate) fn select_starting_model(id: &str, model: &str) -> Result<(), AppErro
     }
     Ok(())
 }
-pub(crate) fn shared_matches(provider: &Provider) -> bool {
+pub(crate) fn shared_matches(provider: &Provider) -> Option<bool> {
     request(
         &json!({"op":"matches","id":provider.id,"config":provider.settings_config}),
         false,
     )
     .ok()
-    .is_some_and(|value| value == true)
+    .and_then(|value| value.as_bool())
 }
 pub(crate) fn replace_connected(provider: &Provider) -> Result<(), AppError> {
     model_replacement_ready()?;

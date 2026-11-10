@@ -15,6 +15,8 @@ use tauri_plugin_opener::OpenerExt;
 mod agent_updates;
 mod agent_versions;
 mod desktop_apps;
+#[cfg(not(target_os = "windows"))]
+mod homebrew;
 mod tool_lifecycle;
 #[tauri::command]
 pub async fn update_desktop_agent(app: String) -> Result<(), String> {
@@ -573,7 +575,7 @@ fn npm_install_command_for(tool: &str) -> Option<&'static str> {
 
 fn official_update_args(tool: &str) -> Option<&'static str> {
     match tool {
-        "claude" | "codex" | "grok" | "hermes" => Some("update"),
+        "claude" | "codex" | "grok" | "hermes" | "pi" => Some("update"),
         "openclaw" => Some("update --yes"),
         "opencode" => Some("upgrade"),
         _ => None,
@@ -605,6 +607,11 @@ fn tool_action_shell_command_for_shell(
     action: ToolLifecycleAction,
     shell: LifecycleCommandShell,
 ) -> Option<String> {
+    // Pi's updater preserves managed installations and their bundled Node runtime.
+    // A failed self-update must not install a second copy through an unrelated npm.
+    if tool == "pi" && matches!(action, ToolLifecycleAction::Update) {
+        return bare_official_update_command(tool);
+    }
     // xAI's primary Windows distribution is the native PowerShell installer.
     // Keep npm as the network/policy fallback, matching the POSIX installer chain.
     #[cfg(target_os = "windows")]
@@ -871,29 +878,42 @@ async fn get_single_tool_version_impl(
     // 2. 获取远程最新版本（npm 工具在本地领先 latest 时会按预发布通道补查，见
     //    fetch_npm_latest_for_tool / npm_prerelease_tags）
     let local = local_version.as_deref();
-    let latest_version = match tool {
-        "claude" => {
-            fetch_npm_latest_for_tool(&client, "@anthropic-ai/claude-code", tool, local).await
-        }
-        "codex" => fetch_npm_latest_for_tool(&client, "@openai/codex", tool, local).await,
-        "gemini" => fetch_npm_latest_for_tool(&client, "@google/gemini-cli", tool, local).await,
-        "qwen" => fetch_npm_latest_for_tool(&client, "@qwen-code/qwen-code", tool, local).await,
-        "grok" => fetch_npm_latest_for_tool(&client, "@xai-official/grok", tool, local).await,
-        "opencode" => {
-            if let Some(version) =
-                fetch_npm_latest_for_tool(&client, "opencode-ai", tool, local).await
-            {
-                Some(version)
-            } else {
-                fetch_github_latest_version(&client, "anomalyco/opencode").await
+    #[cfg(not(target_os = "windows"))]
+    let distribution_latest = if local.is_some() && wsl_distro.is_none() {
+        homebrew::latest(&client, tool).await
+    } else {
+        None
+    };
+    #[cfg(target_os = "windows")]
+    let distribution_latest: Option<Option<String>> = None;
+    let latest_version = if let Some(version) = distribution_latest {
+        version
+    } else {
+        match tool {
+            "claude" => {
+                fetch_npm_latest_for_tool(&client, "@anthropic-ai/claude-code", tool, local).await
             }
+            "codex" => fetch_npm_latest_for_tool(&client, "@openai/codex", tool, local).await,
+            "gemini" => fetch_npm_latest_for_tool(&client, "@google/gemini-cli", tool, local).await,
+            "qwen" => fetch_npm_latest_for_tool(&client, "@qwen-code/qwen-code", tool, local).await,
+            "grok" => fetch_npm_latest_for_tool(&client, "@xai-official/grok", tool, local).await,
+            "opencode" => {
+                if let Some(version) =
+                    fetch_npm_latest_for_tool(&client, "opencode-ai", tool, local).await
+                {
+                    Some(version)
+                } else {
+                    fetch_github_latest_version(&client, "anomalyco/opencode").await
+                }
+            }
+            "openclaw" => fetch_npm_latest_for_tool(&client, "openclaw", tool, local).await,
+            "hermes" => fetch_hermes_latest_version(&client, local).await,
+            "pi" => {
+                fetch_npm_latest_for_tool(&client, "@earendil-works/pi-coding-agent", tool, local)
+                    .await
+            }
+            _ => None,
         }
-        "openclaw" => fetch_npm_latest_for_tool(&client, "openclaw", tool, local).await,
-        "hermes" => fetch_hermes_latest_version(&client, local).await,
-        "pi" => {
-            fetch_npm_latest_for_tool(&client, "@earendil-works/pi-coding-agent", tool, local).await
-        }
-        _ => None,
     };
 
     ToolVersion {
@@ -2836,15 +2856,20 @@ fn sibling_bin(bin_path: &str, exe: &str) -> Option<String> {
 /// transitive Node interpreter resolve to the installation we selected.
 #[cfg(not(target_os = "windows"))]
 fn anchored_npm_command(bin_path: &str, args: &str) -> Option<String> {
+    anchored_node_package_command(bin_path, "npm", args)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn anchored_node_package_command(bin_path: &str, manager: &str, args: &str) -> Option<String> {
     let dir = parent_dir(bin_path);
     if dir.is_empty() {
         return None;
     }
-    let npm = sibling_bin(bin_path, "npm")?;
+    let executable = sibling_bin(bin_path, manager)?;
     Some(format!(
         "PATH={}:\"$PATH\" {} {args}",
         shell_single_quote(&dir),
-        quote_path_if_spaced(&npm)
+        quote_path_if_spaced(&executable)
     ))
 }
 
@@ -3026,6 +3051,13 @@ fn package_manager_anchored_command_from_paths(
                 quote_path_if_spaced(&bun)
             ));
         }
+        "pnpm" => {
+            return anchored_node_package_command(
+                bin_path,
+                "pnpm",
+                &format!("add -g {pkg}@latest"),
+            );
+        }
         // 自带同级 npm 的 node 管理器：落到下面锚定到那处的 npm。
         "nvm" | "fnm" | "mise" | "homebrew" => {}
         // system / 未知来源通常没有同级 npm，不能拼 `<dir>/npm`。若工具有官方
@@ -3084,6 +3116,9 @@ fn anchored_command_from_paths(tool: &str, bin_path: &str, real_target: &str) ->
     let package_command = package_manager_anchored_command_from_paths(tool, bin_path, real_target);
     if is_brew_managed_path(real_target) {
         return package_command;
+    }
+    if tool == "pi" && package_command.is_none() {
+        return anchored_official_update_command(tool, bin_path);
     }
     if prefers_official_update(tool, LifecycleCommandShell::Posix) {
         let update = anchored_official_update_command(tool, bin_path)?;
@@ -3163,6 +3198,9 @@ fn anchored_command_from_paths(tool: &str, bin_path: &str, real_target: &str) ->
         ));
     }
     let package_command = package_manager_anchored_command_from_paths(tool, bin_path);
+    if tool == "pi" && package_command.is_none() {
+        return anchored_official_update_command(tool, bin_path);
+    }
     if prefers_official_update(tool, LifecycleCommandShell::WindowsBatch) {
         let update = anchored_official_update_command(tool, bin_path)?;
         return Some(match package_command {
@@ -5520,9 +5558,61 @@ mod tests {
             npm_install_command_for("pi"),
             Some("npm i -g @earendil-works/pi-coding-agent@latest")
         );
-        // The verified distribution exposes `pi --version`, but no updater
-        // contract is assumed; upgrades stay on the package-manager path.
-        assert_eq!(official_update_args("pi"), None);
+        assert_eq!(official_update_args("pi"), Some("update"));
+    }
+
+    #[test]
+    fn pi_update_fallback_keeps_the_active_installation_on_both_shells() {
+        for shell in [
+            LifecycleCommandShell::Posix,
+            LifecycleCommandShell::WindowsBatch,
+        ] {
+            assert_eq!(
+                tool_action_shell_command_for_shell("pi", ToolLifecycleAction::Update, shell)
+                    .as_deref(),
+                Some("pi update")
+            );
+        }
+    }
+
+    #[test]
+    fn managed_pi_update_anchors_to_the_launcher_instead_of_global_npm() {
+        let root = tempfile::tempdir().unwrap();
+        let launcher = root.path().join(".pi/agent/bin/pi");
+        let path = launcher.to_string_lossy();
+        let installation = ToolInstallation {
+            path: path.to_string(),
+            version: Some("1.5.0".into()),
+            runnable: true,
+            error: None,
+            source: "system".into(),
+            is_path_default: true,
+            real: launcher.clone(),
+        };
+        let (command, confirmation, anchored) = plan_command_for("pi", &[installation]);
+        assert!(anchored);
+        assert!(!confirmation);
+        assert!(command.ends_with(" update"));
+        assert!(command.contains(path.as_ref()));
+        assert!(!command.contains("npm"));
+        assert!(!command.contains("||"));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn pnpm_updates_keep_each_agents_original_package_manager() {
+        for tool in [
+            "claude", "codex", "gemini", "grok", "opencode", "openclaw", "pi", "qwen",
+        ] {
+            let command = anchored_command_from_paths(
+                tool,
+                &format!("/Users/synthetic/.local/share/pnpm/{tool}"),
+                &format!("/Users/synthetic/.local/share/pnpm/global/5/node_modules/{tool}/cli.js"),
+            )
+            .expect("pnpm installation must stay anchored");
+            assert!(command.contains("/pnpm/pnpm add -g "), "{tool}");
+            assert!(!command.contains("npm i -g"), "{tool}");
+        }
     }
 
     #[test]
@@ -7041,11 +7131,8 @@ mod tests {
                 static_fallback_command("openclaw"),
                 "openclaw update --yes || npm i -g openclaw@latest"
             );
-            assert_eq!(
-                static_fallback_command("pi"),
-                "npm i -g @earendil-works/pi-coding-agent@latest"
-            );
-            assert!(!static_fallback_command("pi").contains("pi update"));
+            assert_eq!(static_fallback_command("pi"), "pi update");
+            assert!(!static_fallback_command("pi").contains("npm"));
         }
 
         #[test]

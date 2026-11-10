@@ -66,6 +66,22 @@ const pi: AgentUpdateResult = {
 };
 
 describe("Agent update result wording", () => {
+  it.each(["en", "zh", "ja", "zh-TW"] as const)(
+    "explains update failures in %s without exposing command output",
+    async (language) => {
+      const status = await show(
+        [{ app: "pi", outcome: "failed", failureReason: "download" }],
+        language,
+      );
+      const messages = locales[language].agentUpdates;
+      expect(status.textContent).toBe(
+        messages.failedReason
+          .replace("{{app}}", "Pi")
+          .replace("{{reason}}", messages.failureReasons.download),
+      );
+      expect(status).toHaveClass("failed");
+    },
+  );
   it.each([
     ["zh", "Pi 已更新：1.4.0 → 1.5.0"],
     ["zh-TW", "Pi 已更新：1.4.0 → 1.5.0"],

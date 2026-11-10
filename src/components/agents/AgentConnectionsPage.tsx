@@ -36,7 +36,9 @@ import { restrictWorkspaceSort } from "@/lib/workspaceSorting";
 import { WorkBuddyCheckinPanel } from "@/components/WorkBuddyCheckinPanel";
 import { DoubaoWorkCheckinPanel } from "@/components/DoubaoWorkCheckinPanel";
 import { AgentRewardsPanel } from "@/components/AgentRewardsPanel";
-import { hasAgentRewards } from "@/lib/api/agent-rewards";
+import { agentRewardsApi, hasAgentRewards } from "@/lib/api/agent-rewards";
+import { workbuddyCheckinApi } from "@/lib/api/workbuddy-checkin";
+import { doubaoCheckinApi } from "@/lib/api/doubao-checkin";
 import { proxyApi } from "@/lib/api/proxy";
 import { settingsApi } from "@/lib/api/settings";
 import { useAgentUpdates } from "@/hooks/useAgentUpdates";
@@ -139,6 +141,44 @@ export function AgentConnectionsPage({
     isPending: connections.some((query) => query.isPending),
   };
   const installations = useAgentInstallations();
+  const workbuddyCheckin = useQuery({
+    queryKey: ["workbuddyCheckin", "accounts"],
+    queryFn: workbuddyCheckinApi.accounts,
+    enabled: !!installations.data?.workbuddy,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+  const doubaoCheckin = useQuery({
+    queryKey: ["doubaoCheckin"],
+    queryFn: doubaoCheckinApi.accounts,
+    enabled: !!installations.data?.doubaowork,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+  const rewardApps = APP_IDS.filter(hasAgentRewards);
+  const rewards = useQueries({
+    queries: rewardApps.map((app) => ({
+      queryKey: ["agentRewards", app],
+      queryFn: () => agentRewardsApi.status(app),
+      enabled: !!installations.data?.[app],
+      staleTime: 60_000,
+      refetchInterval: 60_000,
+    })),
+  });
+  const checkinLabel = (app: AppId) => {
+    const autoEnabled =
+      app === "workbuddy"
+        ? workbuddyCheckin.data?.accounts.some(
+            (account) => account.status.autoEnabled,
+          )
+        : app === "doubaowork"
+          ? doubaoCheckin.data?.accounts.some((account) => account.autoEnabled)
+          : hasAgentRewards(app) &&
+            rewards[rewardApps.indexOf(app)]?.data?.autoEnabled;
+    return t(
+      autoEnabled ? "agentRewards.autoLabel" : "agentRewards.manualLabel",
+    );
+  };
   const catalog = useQuery({
     queryKey: ["agent-model-catalog"],
     queryFn: agentConnectionsApi.models,
@@ -433,16 +473,11 @@ export function AgentConnectionsPage({
       !state?.recoveryPending &&
       (state?.reloadState === "stale_catalog" ||
         state?.reloadState === "failed");
-    const traeBridgeRestart =
-      app === "trae" &&
-      !!state?.enabled &&
-      !!state?.restartRequired &&
-      (state.recoveryReason === "bridge_pending" || !state.recoveryPending);
     const canRestart =
       !!state &&
-      (desktopRestart || codexReloadRestart || traeBridgeRestart) &&
-      // Configuration recovery needs repair first, except TRAE's pending bridge
-      // restart which is the intended way to finish first-time delivery.
+      (desktopRestart || codexReloadRestart) &&
+      // A pending TRAE bridge can require a running client to reload launch settings.
+      // Configuration drift must be repaired before restarting other clients.
       (!state.recoveryPending ||
         (app === "trae" && state.recoveryReason === "bridge_pending"));
     const nativeUnavailable =
@@ -635,12 +670,9 @@ export function AgentConnectionsPage({
                 onSelect={() => updates.requestInstall(app, websites[app])}
               />
             )}
-            {app === "pi" && (
-              <span className="mp-agent-note">
-                {t("agentConnections.individual")}
-              </span>
-            )}
-            {(state?.recoveryPending || nativeUnavailable) &&
+            {((state?.recoveryPending &&
+              state.recoveryReason !== "bridge_pending") ||
+              nativeUnavailable) &&
               !connection.isError && (
                 <button
                   type="button"
@@ -777,7 +809,7 @@ export function AgentConnectionsPage({
             <button
               type="button"
               className="mp-agent-start mp-agent-checkin-trigger"
-              aria-label={`${t("agentRewards.title")} ${name(app)}`}
+              aria-label={`${checkinLabel(app)} ${name(app)}`}
               aria-expanded={checkinApp === app}
               aria-controls={`${detailsId}-checkin`}
               onClick={() => {
@@ -787,7 +819,7 @@ export function AgentConnectionsPage({
                 setCheckinApp((previous) => (previous === app ? null : app));
               }}
             >
-              {t("agentRewards.title")}
+              {checkinLabel(app)}
               <ChevronDown size={11} aria-hidden="true" />
             </button>
           )}

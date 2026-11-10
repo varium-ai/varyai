@@ -30,6 +30,7 @@ export function AgentRewardsPanel({
   const query = useQuery({
     queryKey,
     queryFn: () => agentRewardsApi.status(app),
+    staleTime: 60_000,
     refetchInterval: 60_000,
   });
   const update = (value: AgentRewardStatus) =>
