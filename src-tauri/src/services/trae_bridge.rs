@@ -301,7 +301,13 @@ fn protect_directory(path: &std::path::Path) -> Result<(), AppError> {
         return Err(unavailable());
     }
     // The path is passed as data. Only this user may read bridge credentials or replace helpers.
-    let script = r#"$ErrorActionPreference = 'Stop'; $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $acl = New-Object System.Security.AccessControl.DirectorySecurity; $acl.SetSecurityDescriptorSddlForm('D:P(A;OICI;FA;;;' + $sid + ')'); Set-Acl -LiteralPath $env:VARYAI_TRAE_PRIVATE_DIR -AclObject $acl"#;
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$acl = Get-Acl -LiteralPath $env:VARYAI_TRAE_PRIVATE_DIR
+$acl.SetSecurityDescriptorSddlForm('D:P(A;OICI;FA;;;' + $sid + ')', [System.Security.AccessControl.AccessControlSections]::Access)
+Set-Acl -LiteralPath $env:VARYAI_TRAE_PRIVATE_DIR -AclObject $acl
+"#;
     let status = std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .env("VARYAI_TRAE_PRIVATE_DIR", path)
@@ -965,6 +971,49 @@ mod tests {
                 0o700
             );
         }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn private_bridge_directory_preserves_owner_and_restricts_inherited_access() {
+        use std::os::windows::process::CommandExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("private [bridge] fixture");
+        std::fs::create_dir(&path).unwrap();
+        let inspect = |script: &str| {
+            let output = std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", script])
+                .env("VARYAI_TRAE_PRIVATE_DIR", &path)
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .creation_flags(0x08000000)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "bridge ACL inspection failed");
+            output.stdout
+        };
+        let owner = inspect(
+            "$ErrorActionPreference = 'Stop'; $acl = Get-Acl -LiteralPath $env:VARYAI_TRAE_PRIVATE_DIR; Write-Output $acl.Owner; Write-Output $acl.Group",
+        );
+        protect_directory(&path).unwrap();
+        std::fs::write(path.join("credential-fixture"), b"synthetic").unwrap();
+        let protected_owner = inspect(
+            r#"
+$ErrorActionPreference = 'Stop'
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$acl = Get-Acl -LiteralPath $env:VARYAI_TRAE_PRIVATE_DIR
+$rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].FileSystemRights -ne 'FullControl' -or $rules[0].InheritanceFlags -ne 'ContainerInherit, ObjectInherit') { exit 1 }
+$child = Get-Acl -LiteralPath (Join-Path $env:VARYAI_TRAE_PRIVATE_DIR 'credential-fixture')
+$childRules = @($child.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+if ($childRules.Count -ne 1 -or $childRules[0].IdentityReference.Value -ne $sid -or $childRules[0].FileSystemRights -ne 'FullControl' -or -not $childRules[0].IsInherited) { exit 1 }
+Write-Output $acl.Owner
+Write-Output $acl.Group
+"#,
+        );
+        assert!(
+            owner == protected_owner,
+            "bridge directory ownership changed"
+        );
     }
     #[cfg(unix)]
     #[test]
