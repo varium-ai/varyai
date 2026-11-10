@@ -1933,8 +1933,18 @@ impl ProxyService {
                     self.start().await?;
                 }
                 self.doubaowork.enable().await;
+                let manager = self.agent_connections.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    manager.record_doubaowork_desktop_application()
+                })
+                .await;
             } else {
                 self.doubaowork.disable().await;
+                let manager = self.agent_connections.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    manager.record_doubaowork_desktop_application()
+                })
+                .await;
             }
             self.db
                 .set_setting(
@@ -3354,7 +3364,13 @@ impl ProxyService {
                 .map_err(|_| "intentRouting.modeRecoveryRequired")?;
         }
         self.schedule_codex_thread_sync();
-        activation.map(|_| ())
+        let result = activation.map(|_| ());
+        if result.is_ok() {
+            let manager = self.agent_connections.clone();
+            let _ = tokio::task::spawn_blocking(move || manager.record_codex_desktop_application())
+                .await;
+        }
+        result
     }
 
     fn native_codex_url(base: &str) -> Option<String> {
@@ -7552,9 +7568,9 @@ mod tests {
             assert_eq!(&std::fs::read(path).expect("unchanged fixture"), bytes);
         }
         service.disable_intent_client().await.expect("restore");
-        assert_eq!(
-            std::fs::read_to_string(config).expect("restored"),
-            "# synthetic config\n"
+        crate::services::intent_routing::client::tests::assert_restored_config(
+            &service.intent_client,
+            "# synthetic config\n",
         );
         for (path, bytes) in paths.iter().zip(&before) {
             assert_eq!(&std::fs::read(path).expect("unchanged fixture"), bytes);
@@ -7619,7 +7635,10 @@ mod tests {
             .authenticate(&native_lifecycle_headers("synthetic-token"))
             .is_ok());
         service.disable_intent_client().await.expect("restore");
-        assert_eq!(std::fs::read_to_string(config).expect("original"), original);
+        crate::services::intent_routing::client::tests::assert_restored_config(
+            &service.intent_client,
+            &original,
+        );
     }
 
     #[tokio::test]
@@ -8394,10 +8413,9 @@ mod tests {
             .await
             .expect("unified disable");
         assert!(!service.get_takeover_status().await.expect("state").codex);
-        assert_eq!(
-            std::fs::read_to_string(crate::codex_config::get_codex_config_path())
-                .expect("restored"),
-            original
+        crate::services::intent_routing::client::tests::assert_restored_config(
+            &service.intent_client,
+            &original,
         );
         assert_eq!(
             crate::config::read_json_file::<Value>(&crate::codex_config::get_codex_auth_path())

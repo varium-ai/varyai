@@ -438,7 +438,8 @@ pub(super) fn request_wire(
     body["store"] = json!(false);
     body["stream"] = json!(true);
     if let Some(fields) = body.as_object_mut() {
-        for field in ["max_output_tokens", "temperature", "top_p"] {
+        // Anthropic metadata is not accepted by the official Codex endpoint.
+        for field in ["max_output_tokens", "temperature", "top_p", "metadata"] {
             fields.remove(field);
         }
         fields.entry("tools").or_insert_with(|| json!([]));

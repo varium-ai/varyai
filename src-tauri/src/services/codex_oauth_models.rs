@@ -12,23 +12,23 @@ const CODEX_OAUTH_MODELS_URL: &str = "https://chatgpt.com/backend-api/codex/mode
 const CODEX_OAUTH_FETCH_TIMEOUT_SECS: u64 = 15;
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
-pub async fn fetch_models_with_token(
+pub(crate) async fn fetch_models_with_client(
+    client: &reqwest::Client,
     token: &str,
     account_id: &str,
 ) -> Result<Vec<FetchedModel>, String> {
     Ok(parse_models(
-        fetch_catalog_with_token(token, account_id).await?,
+        fetch_catalog_with_client(client, token, account_id).await?,
     ))
 }
 
-pub(crate) async fn fetch_catalog_with_token(
+pub(crate) async fn fetch_catalog_with_client(
+    client: &reqwest::Client,
     token: &str,
     account_id: &str,
 ) -> Result<Value, String> {
     crate::codex_client::resolve_version().await;
-    let client = crate::proxy::http_client::get_without_redirects()
-        .map_err(|_| "Model discovery client unavailable".to_string())?;
-    let response = build_models_request(&client, token, account_id)
+    let response = build_models_request(client, token, account_id)
         .send()
         .await
         .map_err(|_| "Model discovery request failed".to_string())?;
@@ -69,15 +69,19 @@ fn build_models_request(
     account_id: &str,
 ) -> reqwest::RequestBuilder {
     let version = crate::codex_client::current_version();
-    client
+    let request = client
         .get(CODEX_OAUTH_MODELS_URL)
         .query(&[("client_version", &version)])
         .header("Authorization", format!("Bearer {token}"))
         .header("originator", CODEX_OAUTH_ORIGINATOR)
         .header("version", &version)
-        .header("User-Agent", format!("codex_cli_rs/{version}"))
-        .header("chatgpt-account-id", account_id)
-        .timeout(Duration::from_secs(CODEX_OAUTH_FETCH_TIMEOUT_SECS))
+        .header("User-Agent", crate::codex_client::user_agent(&version))
+        .timeout(Duration::from_secs(CODEX_OAUTH_FETCH_TIMEOUT_SECS));
+    if account_id.is_empty() {
+        request
+    } else {
+        request.header("chatgpt-account-id", account_id)
+    }
 }
 
 pub(crate) fn parse_models(value: Value) -> Vec<FetchedModel> {
@@ -247,10 +251,10 @@ mod tests {
         // Older discovery identities omit 6.1 even when the account can use it.
         assert!(parts.as_slice() >= [0, 164, 0].as_slice());
         assert_eq!(request.headers()["version"], version);
-        assert_eq!(
-            request.headers()["user-agent"],
-            format!("codex_cli_rs/{version}")
-        );
+        assert!(request.headers()["user-agent"]
+            .to_str()
+            .unwrap()
+            .starts_with(&format!("codex_cli_rs/{version} (")));
         let models = parse_models(json!({"models": [
             {"slug": "gpt-6.1-sol", "minimal_client_version": "0.164.0"},
             {"slug": "gpt-6.1-terra", "minimal_client_version": "0.164.0"}

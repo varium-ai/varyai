@@ -60,8 +60,13 @@ fn sessions(root: &Path, since_us: u64, now_us: u128) -> Result<bool, ()> {
     };
     for entry in entries {
         let entry = entry.map_err(|_| ())?;
-        let meta = entry.metadata().map_err(|_| ())?;
-        if entry.file_type().map_err(|_| ())?.is_symlink() {
+        // Inspect the path without following symlinks before opening rollouts.
+        let meta = match fs::symlink_metadata(entry.path()) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err(()),
+        };
+        if meta.file_type().is_symlink() {
             return Err(());
         }
         if meta.is_dir() {
@@ -69,18 +74,23 @@ fn sessions(root: &Path, since_us: u64, now_us: u128) -> Result<bool, ()> {
                 return Ok(true);
             }
         } else if entry.path().extension().is_some_and(|ext| ext == "jsonl") {
-            let modified = meta
+            // Use one handle for metadata and content. Windows can retain an
+            // old write time even here until the writer closes its handle;
+            // recorded event timestamps also contribute to freshness below.
+            let mut file = match fs::File::open(entry.path()) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return Err(()),
+            };
+            let modified = file
+                .metadata()
+                .map_err(|_| ())?
                 .modified()
                 .map_err(|_| ())?
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map_err(|_| ())?
                 .as_micros();
-            if modified + 2_000_000 < u128::from(since_us)
-                || now_us.saturating_sub(modified) > TURN_WINDOW_US
-            {
-                continue;
-            }
-            if turn_open(&entry.path(), since_us)? {
+            if turn_open(&mut file, since_us, modified, now_us)? {
                 return Ok(true);
             }
         }
@@ -104,8 +114,12 @@ struct Event<'a> {
     kind: Option<&'a str>,
 }
 
-fn turn_open(path: &Path, since_us: u64) -> Result<bool, ()> {
-    let mut file = fs::File::open(path).map_err(|_| ())?;
+fn turn_open(
+    file: &mut fs::File,
+    since_us: u64,
+    modified_us: u128,
+    now_us: u128,
+) -> Result<bool, ()> {
     let len = file.metadata().map_err(|_| ())?.len();
     let skip = len.saturating_sub(512 * 1024);
     file.seek(SeekFrom::Start(skip)).map_err(|_| ())?;
@@ -114,25 +128,50 @@ fn turn_open(path: &Path, since_us: u64) -> Result<bool, ()> {
         .read_to_end(&mut bytes)
         .map_err(|_| ())?;
     let mut open = None;
+    let mut last_activity_us = modified_us;
+    let mut invalid = false;
     for (index, bytes) in bytes.split(|b| *b == b'\n').enumerate() {
         if bytes.is_empty() || (skip > 0 && index == 0) {
             continue;
         }
-        let line: Line<'_> = serde_json::from_slice(bytes).map_err(|_| ())?;
+        let line: Line<'_> = match serde_json::from_slice(bytes) {
+            Ok(line) => line,
+            Err(_) => {
+                invalid = true;
+                continue;
+            }
+        };
+        let timestamp = line
+            .timestamp
+            .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
+            .map(|time| time.timestamp_micros());
+        if let Some(at) = timestamp.and_then(|time| u128::try_from(time).ok()) {
+            last_activity_us = last_activity_us.max(at);
+        }
         if line.kind != "event_msg" {
             continue;
         }
         match line.payload.and_then(|payload| payload.kind) {
             Some("task_started") => {
-                let at = line
-                    .timestamp
-                    .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
-                    .ok_or(())?;
-                open = Some(at.timestamp_micros() >= since_us.saturating_sub(2_000_000) as i64);
+                if let Some(at) = timestamp {
+                    open = Some(at >= since_us.saturating_sub(2_000_000) as i64);
+                } else {
+                    invalid = true;
+                }
             }
             Some("task_complete" | "turn_aborted") => open = Some(false),
             _ => {}
         }
+    }
+    if last_activity_us.saturating_add(2_000_000) < u128::from(since_us)
+        || now_us.saturating_sub(last_activity_us) > TURN_WINDOW_US
+    {
+        return Ok(false);
+    }
+    // Defer parse failures until freshness is known: recent partial writes
+    // block restart, while malformed expired archives remain expired.
+    if invalid {
+        return Err(());
     }
     // A bounded suffix may omit the start of a long tool execution.
     open.or((skip == 0).then_some(false)).ok_or(())

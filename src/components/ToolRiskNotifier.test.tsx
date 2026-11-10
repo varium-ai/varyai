@@ -788,6 +788,27 @@ describe("P2-11 asynchronous boundaries", () => {
     queryClient.clear();
   });
 
+  it("does not replay unread events from before a same-version disable", async () => {
+    const { queryClient } = await mount();
+    await signal();
+    records = [record()];
+    await advance(10);
+    act(() => {
+      queryClient.setQueryData(["toolRisk", "settings"], {
+        enabled: false,
+        policyVersion: 1,
+      });
+      queryClient.setQueryData(["toolRisk", "settings"], {
+        enabled: true,
+        policyVersion: 1,
+      });
+    });
+    records.push(record({ id: 2, timestamp: Date.now() }));
+    await signal();
+    expect(toastIds()).toEqual(["tool-risk-2"]);
+    queryClient.clear();
+  });
+
   it("completes the old window snapshot before delivering the next window", async () => {
     await mount();
     records = [record(), record({ id: 2 })];

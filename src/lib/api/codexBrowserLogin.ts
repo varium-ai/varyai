@@ -6,12 +6,13 @@ export interface CodexBrowserLogin {
   callbackBlocked: boolean;
   account?: { id: string; login: string } | null;
   error?: string | null;
+  diagnostic?: { stage: string; httpStatus?: number; code?: string } | null;
 }
 export const codexBrowserLoginApi = {
   start: (targetAccountId?: string, proxy?: string) =>
     invoke<CodexBrowserLogin>("codex_browser_login_start", {
       targetAccountId: targetAccountId ?? null,
-      proxy: proxy || null,
+      proxy: proxy ?? null,
     }),
   poll: (id: string) =>
     invoke<CodexBrowserLogin>("codex_browser_login_poll", { id }),

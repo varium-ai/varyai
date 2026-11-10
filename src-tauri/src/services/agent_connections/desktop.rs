@@ -52,14 +52,36 @@ fn assess(instances: &[Instance], applied_ms: Option<i64>) -> State {
 }
 
 pub(crate) fn supports_restart(app: &str) -> bool {
-    matches!(app, "claude-desktop" | "workbuddy")
+    // Desktop apps with a stable install identity can offer a verified quit/reopen.
+    // CLI-only agents still require a new session instead of process restart.
+    matches!(
+        app,
+        "claude-desktop"
+            | "workbuddy"
+            | "workbuddy-ai"
+            | "codex"
+            | "qoder"
+            | "trae"
+            | "doubaowork"
+            | "kimi"
+            | "zcode"
+            | "deepseek-harness"
+    )
 }
 
 #[cfg(any(target_os = "macos", test))]
 fn bundle_ids(app: &str) -> &'static [&'static str] {
     match app {
         "claude-desktop" => &["com.anthropic.claudefordesktop"],
-        "workbuddy" => &["com.tencent.workbuddy.mac", "com.workbuddy.workbuddy-ai"],
+        "workbuddy" => &["com.tencent.workbuddy.mac"],
+        "workbuddy-ai" => &["com.workbuddy.workbuddy-ai"],
+        "codex" => &["com.openai.codex"],
+        "qoder" => &["com.qodercn.app"],
+        "trae" => &["cn.trae.app"],
+        "doubaowork" => &["com.work.pc.doubao"],
+        "kimi" => &["com.kimi.code.desktop"],
+        "zcode" => &["dev.zcode.app"],
+        "deepseek-harness" => &["com.deepseek.dsh"],
         _ => &[],
     }
 }
@@ -75,8 +97,11 @@ fn workbuddy_bundle_ids(dir: &std::path::Path) -> Option<&'static [&'static str]
 
 #[cfg(target_os = "macos")]
 fn selected_bundle_ids(app: &str) -> Result<&'static [&'static str], String> {
-    if app == "workbuddy" {
+    if matches!(app, "workbuddy" | "workbuddy-ai") {
+        let expected = bundle_ids(app);
         workbuddy_bundle_ids(&crate::workbuddy_config::get_workbuddy_dir())
+            .filter(|ids| *ids == expected)
+            .or_else(|| (app == "workbuddy-ai").then_some(expected))
             .ok_or_else(|| FAILED.into())
     } else {
         Ok(bundle_ids(app))
@@ -169,6 +194,10 @@ pub(crate) fn restart(
     }
     #[cfg(target_os = "macos")]
     {
+        // First-time TRAE/Doubao setup may only need the desktop app opened.
+        if matches!(app, "trae" | "doubaowork") && state(app, applied_ms) == Some(State::Stopped) {
+            return open_installed(app, valid);
+        }
         restart_with(&macos::Native { app }, applied_ms, valid)
     }
     #[cfg(target_os = "windows")]
@@ -180,6 +209,39 @@ pub(crate) fn restart(
         let _ = (applied_ms, valid);
         Err("agentConnections.restartUnsupported".into())
     }
+}
+
+#[cfg(target_os = "macos")]
+fn open_installed(app: &str, valid: impl Fn() -> bool) -> Result<(), String> {
+    if !valid() {
+        return Err(super::CONFLICT.into());
+    }
+    let ids = selected_bundle_ids(app)?;
+    let roots = [
+        PathBuf::from("/Applications"),
+        crate::config::get_home_dir().join("Applications"),
+    ];
+    let mut candidates = Vec::new();
+    for root in &roots {
+        if let Ok(entries) = std::fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if macos::bundle_matches(&path, ids, &roots) {
+                    candidates.push(path);
+                }
+            }
+        }
+    }
+    candidates.sort();
+    let target = candidates.into_iter().next().ok_or(FAILED)?;
+    if !valid() || !macos::bundle_matches(&target, ids, &roots) {
+        return Err(if valid() { CHANGED } else { super::CONFLICT }.into());
+    }
+    let status = std::process::Command::new("/usr/bin/open")
+        .arg(&target)
+        .status()
+        .map_err(|_| FAILED)?;
+    status.success().then_some(()).ok_or_else(|| FAILED.into())
 }
 
 // Internal app-server fallback; public desktop selection remains unchanged.
@@ -387,18 +449,31 @@ mod tests {
     }
 
     #[test]
-    fn supported_desktop_selection_includes_both_verified_workbuddy_builds() {
+    fn supported_desktop_selection_includes_verified_desktop_agents() {
         assert!(supports_restart("claude-desktop"));
         assert!(supports_restart("workbuddy"));
-        assert_eq!(
-            bundle_ids("workbuddy"),
-            &["com.tencent.workbuddy.mac", "com.workbuddy.workbuddy-ai"]
-        );
+        assert!(supports_restart("workbuddy-ai"));
+        assert!(supports_restart("codex"));
+        assert!(supports_restart("qoder"));
+        assert!(supports_restart("trae"));
+        assert!(supports_restart("doubaowork"));
+        assert!(supports_restart("kimi"));
+        assert!(supports_restart("zcode"));
+        assert!(supports_restart("deepseek-harness"));
+        assert_eq!(bundle_ids("workbuddy"), &["com.tencent.workbuddy.mac"]);
+        assert_eq!(bundle_ids("workbuddy-ai"), &["com.workbuddy.workbuddy-ai"]);
         assert_eq!(
             bundle_ids("claude-desktop"),
             &["com.anthropic.claudefordesktop"]
         );
-        for app in ["claude", "codex", "trae", "unknown"] {
+        assert_eq!(bundle_ids("codex"), &["com.openai.codex"]);
+        assert_eq!(bundle_ids("qoder"), &["com.qodercn.app"]);
+        assert_eq!(bundle_ids("trae"), &["cn.trae.app"]);
+        assert_eq!(bundle_ids("doubaowork"), &["com.work.pc.doubao"]);
+        assert_eq!(bundle_ids("kimi"), &["com.kimi.code.desktop"]);
+        assert_eq!(bundle_ids("zcode"), &["dev.zcode.app"]);
+        assert_eq!(bundle_ids("deepseek-harness"), &["com.deepseek.dsh"]);
+        for app in ["claude", "gemini", "opencode", "pi", "unknown"] {
             assert!(!supports_restart(app), "{app}");
             assert!(bundle_ids(app).is_empty(), "{app}");
         }

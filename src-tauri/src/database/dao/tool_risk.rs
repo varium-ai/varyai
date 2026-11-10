@@ -313,7 +313,9 @@ fn finish_policy_write<T>(
     target: Option<&str>,
     fields: &[&str],
 ) -> Result<ToolRiskWriteReceipt<T>, AppError> {
-    bump_policy_version(&tx)?;
+    if !fields.is_empty() {
+        bump_policy_version(&tx)?;
+    }
     let persisted_policy_version = read_settings(&tx)?.policy_version;
     let audit_status =
         append_policy_change(&tx, persisted_policy_version, actor, kind, target, fields)?;
@@ -695,6 +697,14 @@ impl Database {
         let conn = lock_conn!(self.extension_connection());
         let tx = conn.unchecked_transaction().map_err(db_error)?;
         let before = read_settings(&tx)?;
+        if before.enabled == settings.enabled {
+            tx.commit().map_err(db_error)?;
+            return Ok(ToolRiskWriteReceipt {
+                value: (),
+                persisted_policy_version: before.policy_version,
+                audit_status: ToolRiskAuditStatus::NotNeeded,
+            });
+        }
         let affected = tx
             .execute(
                 "INSERT OR REPLACE INTO tool_risk_settings (key, value) VALUES ('enabled', ?1)",
@@ -702,19 +712,20 @@ impl Database {
             )
             .map_err(db_error)?;
         require_config_rows(affected, 1)?;
-        let fields: &[&str] = if before.enabled != settings.enabled {
-            &["enabled"]
-        } else {
-            &[]
-        };
-        finish_policy_write(
-            tx,
-            (),
+        let audit_status = append_policy_change(
+            &tx,
+            before.policy_version,
             actor,
             ToolRiskChangeKind::SettingsUpdate,
             None,
-            fields,
-        )
+            &["enabled"],
+        )?;
+        tx.commit().map_err(db_error)?;
+        Ok(ToolRiskWriteReceipt {
+            value: (),
+            persisted_policy_version: before.policy_version,
+            audit_status,
+        })
     }
 
     pub fn get_tool_risk_configuration(
@@ -1309,7 +1320,7 @@ mod tests {
             risk_category: Some("sensitive_read".into()),
             severity: Some("high".into()),
             reason_code: Some("sensitive_target".into()),
-            policy_version: 1,
+            policy_version: 0,
             rule_ids: vec!["builtin.sensitive_read".into()],
         }
     }
@@ -1464,7 +1475,7 @@ mod tests {
             .unwrap()
             .contains("FICTIONAL_P2_10_SECRET"));
         assert_eq!(rows[0].rule_ids, event().rule_ids);
-        assert_eq!(rows[0].policy_version, 1);
+        assert_eq!(rows[0].policy_version, 0);
         let stored: String = db
             .conn
             .lock()
@@ -1531,13 +1542,13 @@ mod tests {
             let mut input = event();
             input.timestamp = timestamp;
             input.verdict = verdict.map(str::to_owned);
-            input.policy_version = 2;
+            input.policy_version = 1;
             inputs.push(input);
         }
         db.insert_current_tool_risk_events_batch(&inputs).unwrap();
         db.get_tool_risk_events_filtered(1, 0, Some(Verdict::Risky))
             .unwrap();
-        let backfill = db.get_tool_risk_events_after(0, 10, 2).unwrap();
+        let backfill = db.get_tool_risk_events_after(0, 10, 1).unwrap();
         assert_eq!(event_ids(&backfill), vec![2, 3, 4, 5, 6]);
         assert_eq!(
             backfill
@@ -1553,16 +1564,16 @@ mod tests {
             ]
         );
         assert_eq!(
-            event_ids(&db.get_tool_risk_events_after(3, 2, 2).unwrap()),
+            event_ids(&db.get_tool_risk_events_after(3, 2, 1).unwrap()),
             vec![4, 5]
         );
-        assert!(db.get_tool_risk_events_after(0, 10, 1).unwrap().is_empty());
+        assert!(db.get_tool_risk_events_after(0, 10, 0).unwrap().is_empty());
         db.save_tool_risk_settings(&ToolRiskSettings {
             enabled: false,
             policy_version: 0,
         })
         .unwrap();
-        assert!(db.get_tool_risk_events_after(0, 10, 3).unwrap().is_empty());
+        assert!(db.get_tool_risk_events_after(0, 10, 1).unwrap().is_empty());
     }
 
     #[test]
@@ -1653,30 +1664,30 @@ mod tests {
     }
 
     #[test]
-    fn policy_versions_are_generated_for_every_configuration_change() {
+    fn rule_changes_advance_versions_but_observation_toggles_do_not() {
         let db = Database::memory().unwrap();
         db.save_tool_risk_settings(&ToolRiskSettings {
             enabled: true,
             policy_version: u64::MAX,
         })
         .unwrap();
-        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 1);
+        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 0);
         db.save_custom_tool_risk_rule(&custom_rule("c1"), None)
             .unwrap();
-        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 2);
+        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 1);
         let mut rule = custom_rule("c1");
         rule.revision = 2;
         rule.enabled = false;
         db.save_custom_tool_risk_rule(&rule, Some(1)).unwrap();
-        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 3);
+        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 2);
         db.set_builtin_tool_risk_override("builtin.sensitive_read", false)
             .unwrap();
-        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 4);
+        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 3);
         db.clear_builtin_tool_risk_override("builtin.sensitive_read")
             .unwrap();
-        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 5);
+        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 4);
         db.delete_custom_tool_risk_rule("c1").unwrap();
-        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 6);
+        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 5);
     }
 
     #[test]
@@ -1690,8 +1701,8 @@ mod tests {
                 enabled: true,
                 policy_version: 9
             })
-            .is_err());
-        assert!(!db.get_tool_risk_settings().unwrap().enabled);
+            .is_ok());
+        assert!(db.get_tool_risk_settings().unwrap().enabled);
         assert!(db
             .save_custom_tool_risk_rule(&custom_rule("c1"), None)
             .is_err());
@@ -1753,7 +1764,7 @@ mod tests {
         .unwrap();
         let s = db.get_tool_risk_settings().unwrap();
         assert!(s.enabled);
-        assert_eq!(s.policy_version, 1);
+        assert_eq!(s.policy_version, 0);
     }
 
     #[test]
@@ -1887,7 +1898,7 @@ mod tests {
             Some(expected)
         );
         assert_eq!(
-            db.get_tool_risk_events_after(0, 10, 1).unwrap()[0]
+            db.get_tool_risk_events_after(0, 10, 0).unwrap()[0]
                 .command_summary
                 .as_deref(),
             Some(expected)
@@ -1923,7 +1934,7 @@ mod tests {
         let page = db.get_tool_risk_events(1, 1).unwrap();
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].command_summary, input.command_summary);
-        let rows = db.get_tool_risk_events_after(0, 10, 1).unwrap();
+        let rows = db.get_tool_risk_events_after(0, 10, 0).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].command_summary, input.command_summary);
     }
@@ -1990,7 +2001,7 @@ mod tests {
         db.set_builtin_tool_risk_override("builtin.sensitive_read", false)
             .unwrap();
         let mut current = event();
-        current.policy_version = 2;
+        current.policy_version = 1;
         assert_eq!(
             db.insert_current_tool_risk_events_batch(&[event(), current])
                 .unwrap(),
@@ -2002,7 +2013,7 @@ mod tests {
         })
         .unwrap();
         let mut disabled = event();
-        disabled.policy_version = 3;
+        disabled.policy_version = 1;
         assert_eq!(
             db.insert_current_tool_risk_events_batch(&[disabled])
                 .unwrap(),
@@ -2043,29 +2054,29 @@ mod tests {
         db.set_builtin_tool_risk_override("builtin.sensitive_read", false)
             .unwrap();
         let mut first = event();
-        first.policy_version = 2;
+        first.policy_version = 1;
         first.timestamp = 9000;
         let mut second = first.clone();
         second.timestamp = 1;
         db.insert_current_tool_risk_events_batch(&[first, second])
             .unwrap();
-        let rows = db.get_tool_risk_events_after(0, 10, 2).unwrap();
+        let rows = db.get_tool_risk_events_after(0, 10, 1).unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows[0].id < rows[1].id);
         assert_eq!(rows[0].command_summary.as_deref(), Some("cat <path>"));
         assert_eq!(
-            db.get_tool_risk_events_after(rows[0].id, 10, 2)
+            db.get_tool_risk_events_after(rows[0].id, 10, 1)
                 .unwrap()
                 .len(),
             1
         );
-        assert!(db.get_tool_risk_events_after(0, 10, 1).unwrap().is_empty());
+        assert!(db.get_tool_risk_events_after(0, 10, 0).unwrap().is_empty());
         db.save_tool_risk_settings(&ToolRiskSettings {
             enabled: false,
             policy_version: 0,
         })
         .unwrap();
-        assert!(db.get_tool_risk_events_after(0, 10, 3).unwrap().is_empty());
+        assert!(db.get_tool_risk_events_after(0, 10, 1).unwrap().is_empty());
     }
 }
 
@@ -2332,7 +2343,7 @@ mod policy_audit_tests {
     }
 
     #[test]
-    fn settings_audit_only_real_enabled_change_and_preserves_version_behavior() {
+    fn settings_changes_are_audited_without_advancing_rule_version() {
         let db = db();
         db.save_tool_risk_settings(&ToolRiskSettings {
             enabled: false,
@@ -2348,7 +2359,7 @@ mod policy_audit_tests {
         let events = rows(&db);
         assert_eq!(
             events,
-            vec![(2, "settings_update".into(), None, "[\"enabled\"]".into())]
+            vec![(0, "settings_update".into(), None, "[\"enabled\"]".into())]
         );
     }
     #[test]
@@ -2369,7 +2380,7 @@ mod policy_audit_tests {
         assert_eq!(events[1].1, "rule_update");
         assert_eq!(events[2].1, "rule_delete");
         assert_eq!(events[1].3, "[\"name\"]");
-        assert_eq!(events[2].0, 4);
+        assert_eq!(events[2].0, 3);
         assert!(!format!("{events:?}").contains("SECRET"));
     }
     #[test]
@@ -2404,7 +2415,7 @@ mod policy_audit_tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].1, "builtin_toggle");
         assert_eq!(events[1].1, "builtin_reset");
-        assert_eq!(events[1].0, 3);
+        assert_eq!(events[1].0, 2);
     }
     #[test]
     fn legacy_arbitrary_ids_are_projected_to_unknown_target() {
@@ -2428,8 +2439,8 @@ mod policy_audit_tests {
         }
         let events = rows(&db);
         assert_eq!(events.len(), 1000);
-        assert_eq!(events[0].0, 4);
-        assert_eq!(events.last().unwrap().0, 1003);
+        assert_eq!(events[0].0, 0);
+        assert_eq!(events.last().unwrap().0, 0);
     }
     #[test]
     fn configuration_failure_and_conflict_create_no_success_history() {
@@ -2439,10 +2450,7 @@ mod policy_audit_tests {
         assert!(db.save_custom_tool_risk_rule(&rule, None).is_err());
         db.conn.lock().unwrap().execute_batch("CREATE TRIGGER reject_policy BEFORE INSERT ON tool_risk_settings WHEN NEW.key='policy_version' BEGIN SELECT RAISE(ABORT,'SECRET-FAIL'); END;").unwrap();
         assert!(db
-            .save_tool_risk_settings(&ToolRiskSettings {
-                enabled: true,
-                policy_version: 0
-            })
+            .set_builtin_tool_risk_override("builtin.sensitive_read", false)
             .is_err());
         assert_eq!(rows(&db).len(), 1);
         assert!(!db.get_tool_risk_settings().unwrap().enabled);
@@ -2460,7 +2468,7 @@ mod policy_audit_tests {
         let records = db.get_tool_risk_policy_changes(2, 0).unwrap();
         assert_eq!(
             records.iter().map(|r| r.policy_version).collect::<Vec<_>>(),
-            vec![3, 2]
+            vec![0, 0]
         );
         assert_eq!(db.get_tool_risk_policy_changes(2, 2).unwrap().len(), 1);
         assert!(db.get_tool_risk_policy_changes(0, 0).unwrap().is_empty());
@@ -2503,7 +2511,7 @@ mod policy_audit_tests {
             )
             .unwrap();
         assert_eq!(receipt.audit_status, ToolRiskAuditStatus::AuditUnavailable);
-        assert_eq!(receipt.persisted_policy_version, 1);
+        assert_eq!(receipt.persisted_policy_version, 0);
         assert!(db.get_tool_risk_settings().unwrap().enabled);
         assert!(rows(&db).is_empty());
         db.conn
@@ -2547,7 +2555,7 @@ mod policy_audit_tests {
             )
             .unwrap();
         assert_eq!(receipt.audit_status, ToolRiskAuditStatus::AuditUnavailable);
-        assert_eq!(receipt.persisted_policy_version, 1001);
+        assert_eq!(receipt.persisted_policy_version, 0);
         assert_eq!(rows(&db).len(), 1000);
         assert!(db.get_tool_risk_settings().unwrap().enabled);
     }
@@ -2618,7 +2626,7 @@ mod policy_audit_tests {
                 ToolRiskActor::LocalUi,
             )
             .unwrap();
-        assert_eq!(first.persisted_policy_version, 1);
+        assert_eq!(first.persisted_policy_version, 0);
         assert_eq!(first.audit_status, ToolRiskAuditStatus::NotNeeded);
         db.save_tool_risk_settings_with_actor(
             &ToolRiskSettings {
@@ -2665,7 +2673,7 @@ mod policy_audit_tests {
             )
             .unwrap();
         assert_eq!(receipt.audit_status, ToolRiskAuditStatus::AuditUnavailable);
-        assert_eq!(receipt.persisted_policy_version, 1);
+        assert_eq!(receipt.persisted_policy_version, 0);
         assert!(db.get_tool_risk_settings().unwrap().enabled);
         assert!(rows(&db).is_empty());
     }
@@ -2685,7 +2693,7 @@ mod policy_audit_tests {
             let db = db();
             db.conn.lock().unwrap().execute_batch(&format!("CREATE TRIGGER skip_config BEFORE INSERT ON {table} {predicate} BEGIN SELECT RAISE(IGNORE); END;")).unwrap();
             let failed = match operation {
-                "rule" => db.save_custom_tool_risk_rule(&rule(), None).is_err(),
+                "rule" | "version" => db.save_custom_tool_risk_rule(&rule(), None).is_err(),
                 "list" => db.save_tool_risk_command_list(&entry(), None).is_err(),
                 "builtin" => db
                     .set_builtin_tool_risk_override_at_revision("builtin.sensitive_read", false, 1)
@@ -2763,7 +2771,7 @@ mod policy_audit_tests {
         db.conn.lock().unwrap().execute_batch("CREATE TRIGGER skip_clear BEFORE DELETE ON tool_risk_policy_changes BEGIN SELECT RAISE(IGNORE); END;").unwrap();
         assert!(db.clear_tool_risk_policy_changes().is_err());
         assert_eq!(rows(&db).len(), 1);
-        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 1);
+        assert_eq!(db.get_tool_risk_settings().unwrap().policy_version, 0);
     }
     #[test]
     fn silently_ignored_retention_rolls_back_only_audit_append() {
@@ -2786,7 +2794,7 @@ mod policy_audit_tests {
             )
             .unwrap();
         assert_eq!(receipt.audit_status, ToolRiskAuditStatus::AuditUnavailable);
-        assert_eq!(receipt.persisted_policy_version, 1001);
+        assert_eq!(receipt.persisted_policy_version, 0);
         assert_eq!(rows(&db).len(), 1000);
         assert!(db.get_tool_risk_settings().unwrap().enabled);
     }

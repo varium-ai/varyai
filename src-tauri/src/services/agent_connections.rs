@@ -4,6 +4,7 @@ mod claude_policy;
 pub(crate) mod desktop;
 pub(crate) mod desktop_config;
 mod document;
+mod jsonc;
 pub(crate) mod native;
 #[cfg(test)]
 mod parity_tests;
@@ -181,11 +182,12 @@ pub(crate) fn opencode_model(model: &Model) -> Value {
     row["modalities"] = json!({"input":if model.images {vec!["text", "image"]} else {vec!["text"]},"output":["text"]});
     row["reasoning"] =
         json!(model.reasoning || model.reasoning_levels.iter().any(|level| level != "none"));
-    if let Some(context) = model.context_window {
-        row["limit"] = json!({"context":context});
-    }
-    if let Some(tokens) = output_limit(model) {
-        row["limit"]["output"] = json!(tokens);
+    let output = output_limit(model);
+    if model.context_window.is_some() || output.is_some() {
+        row["limit"] = json!({
+            "context":model.context_window.unwrap_or(0),
+            "output":output.unwrap_or(0)
+        });
     }
     if let Some(cost) = &model.cost {
         row["cost"] = json!({"input":cost["input"],"output":cost["output"],"cache_read":cost["cacheRead"],"cache_write":cost["cacheWrite"]});
@@ -476,8 +478,17 @@ impl FileEdit {
                     .is_some_and(|previous| at(&live, field) == at(previous, field))
         }))
     }
+    fn needs_jsonc_repair(&self) -> bool {
+        matches!(self.format, Format::Jsonc)
+            && self
+                .original
+                .as_deref()
+                .is_some_and(|text| jsonc::parse(text).is_err())
+    }
     fn write(&self) -> Result<(), String> {
-        if self.format.parse(self.original.as_deref())? == self.installed {
+        if self.format.parse(self.original.as_deref())? == self.installed
+            && !self.needs_jsonc_repair()
+        {
             return replace_checked(
                 &self.path,
                 self.original.as_deref(),
@@ -554,7 +565,7 @@ impl FileEdit {
                 live["selection"] = original["selection"].clone();
             }
         }
-        let restored = if live == original {
+        let restored = if live == original && !self.needs_jsonc_repair() {
             self.original.clone()
         } else {
             Some(self.format.encode(text.as_deref(), &live)?)
@@ -672,6 +683,13 @@ impl Manager {
         if receipt.app != app || receipt.files.is_empty() {
             return Err(FAILED.into());
         }
+        if app == "opencode" {
+            for file in &mut receipt.files {
+                if matches!(file.format, Format::Json5) {
+                    file.format = Format::Jsonc;
+                }
+            }
+        }
         desktop_config::adopt(&mut receipt);
         let mut adopted = receipt.clone();
         if selection::adopt(&mut adopted).is_ok() {
@@ -736,15 +754,21 @@ impl Manager {
         .map_err(|_| FAILED.into())
     }
     fn desktop_selection_matches(&self, app: &str) -> bool {
-        if app != "workbuddy" {
+        let Some(path) = workbuddy_connection_path(app).ok().flatten() else {
             return true;
-        }
-        let path = crate::workbuddy_config::get_workbuddy_config_path();
+        };
         match self.load(app) {
-            Ok(Some(receipt)) => receipt.files.iter().any(|file| file.path == path),
+            Ok(Some(receipt)) => receipt
+                .files
+                .iter()
+                .any(|file| same_native_path(&file.path, &path)),
             Ok(None) => self.desktop_freshness(app).is_ok_and(|freshness| {
-                freshness
-                    .is_some_and(|freshness| freshness.files.iter().any(|file| file.path == path))
+                freshness.is_some_and(|freshness| {
+                    freshness
+                        .files
+                        .iter()
+                        .any(|file| same_native_path(&file.path, &path))
+                })
             }),
             Err(_) => false,
         }
@@ -953,6 +977,7 @@ impl Manager {
             file.format
                 .parse(file.original.as_deref())
                 .is_ok_and(|original| original == file.installed)
+                && !file.needs_jsonc_repair()
         });
         if unchanged {
             next.applied_at_ms = old.applied_at_ms;
@@ -1086,14 +1111,119 @@ impl Manager {
         let path = self.root.join("codex-intent.json");
         if enabled {
             atomic_write_private(&path, &serde_json::to_vec(&selected).map_err(|_| FAILED)?)
-                .map_err(|_| FAILED.into())
+                .map_err(|_| FAILED.to_owned())?;
+            self.record_codex_desktop_application()?;
+            Ok(())
         } else {
+            // Capture the restored configuration so a disconnected app can still
+            // offer a restart to load the recovered settings.
+            let _ = self.record_codex_desktop_application();
             match fs::remove_file(path) {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(_) => Err(FAILED.into()),
             }
         }
+    }
+
+    fn codex_desktop_freshness_path(&self) -> PathBuf {
+        self.root.join("codex-desktop-freshness.json")
+    }
+
+    pub fn record_codex_desktop_application(&self) -> Result<(), String> {
+        let config = crate::codex_config::get_codex_config_path();
+        let files = vec![DesktopFingerprint::capture(config)?];
+        let freshness = DesktopFreshness {
+            app: "codex".into(),
+            applied_at_ms: chrono::Utc::now().timestamp_millis(),
+            files,
+        };
+        atomic_write_private(
+            &self.codex_desktop_freshness_path(),
+            &serde_json::to_vec(&freshness).map_err(|_| FAILED)?,
+        )
+        .map_err(|_| FAILED.to_owned())
+    }
+
+    fn codex_applied_at_ms(&self) -> Result<Option<i64>, String> {
+        let Some(text) = read(&self.codex_desktop_freshness_path())? else {
+            return Ok(None);
+        };
+        let freshness: DesktopFreshness = serde_json::from_str(&text).map_err(|_| FAILED)?;
+        if freshness.app != "codex" || freshness.applied_at_ms <= 0 {
+            return Err(FAILED.into());
+        }
+        Ok(Some(freshness.applied_at_ms))
+    }
+
+    pub fn codex_desktop_state(&self, status: &Status) -> Result<Option<desktop::State>, String> {
+        if status.recovery_pending {
+            return Ok(None);
+        }
+        let applied = self.codex_applied_at_ms()?;
+        if applied.is_none() {
+            return Ok(None);
+        }
+        // Connected, pending-intent, and restored fingerprints all need the same
+        // desktop freshness check so the restart action stays consistent.
+        Ok(desktop::state("codex", applied))
+    }
+
+    pub fn restart_codex_desktop(&self) -> Result<(), String> {
+        let applied = self.codex_applied_at_ms()?;
+        let expected = applied;
+        desktop::restart("codex", applied, || {
+            self.codex_applied_at_ms()
+                .is_ok_and(|current| current == expected)
+        })
+    }
+
+    fn doubaowork_freshness_path(&self) -> PathBuf {
+        self.root.join("doubaowork-desktop-freshness.json")
+    }
+
+    pub fn record_doubaowork_desktop_application(&self) -> Result<(), String> {
+        let freshness = DesktopFreshness {
+            app: "doubaowork".into(),
+            applied_at_ms: chrono::Utc::now().timestamp_millis(),
+            files: vec![],
+        };
+        atomic_write_private(
+            &self.doubaowork_freshness_path(),
+            &serde_json::to_vec(&freshness).map_err(|_| FAILED)?,
+        )
+        .map_err(|_| FAILED.to_owned())
+    }
+
+    pub fn doubaowork_desktop_state(
+        &self,
+        enabled: bool,
+    ) -> Result<Option<desktop::State>, String> {
+        if !enabled {
+            return Ok(None);
+        }
+        let applied = read(&self.doubaowork_freshness_path())?
+            .and_then(|text| serde_json::from_str::<DesktopFreshness>(&text).ok())
+            .filter(|freshness| freshness.app == "doubaowork" && freshness.applied_at_ms > 0)
+            .map(|freshness| freshness.applied_at_ms);
+        Ok(desktop::state("doubaowork", applied))
+    }
+
+    pub fn restart_doubaowork_desktop(&self) -> Result<(), String> {
+        let applied = read(&self.doubaowork_freshness_path())?
+            .and_then(|text| serde_json::from_str::<DesktopFreshness>(&text).ok())
+            .filter(|freshness| freshness.app == "doubaowork" && freshness.applied_at_ms > 0)
+            .map(|freshness| freshness.applied_at_ms);
+        let expected = applied;
+        desktop::restart("doubaowork", applied, || {
+            read(&self.doubaowork_freshness_path())
+                .ok()
+                .flatten()
+                .and_then(|text| serde_json::from_str::<DesktopFreshness>(&text).ok())
+                .filter(|freshness| freshness.app == "doubaowork")
+                .map(|freshness| Some(freshness.applied_at_ms))
+                == Some(expected)
+        })
     }
 }
 #[cfg(test)]
@@ -1150,10 +1280,15 @@ fn build_with_token(
         applied_at_ms: Some(chrono::Utc::now().timestamp_millis()),
     };
     match app {
-        "claude" => receipt.files.push(FileEdit::prepare(crate::config::get_claude_settings_path(), |value| {
+        "claude" => {
+            let (catalog, selected) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
+            receipt.files.push(FileEdit::prepare(crate::config::get_claude_settings_path(), |value| {
             for key in ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"] {
-                let next = if key == "ANTHROPIC_BASE_URL" { base.as_str() } else if key == "ANTHROPIC_AUTH_TOKEN" { &token } else { selected };
+                let next = if key == "ANTHROPIC_BASE_URL" { base.as_str() } else if key == "ANTHROPIC_AUTH_TOKEN" { &token } else { &selected };
                 put(value, &["env".into(), key.into()], Some(json!(next)))?;
+            }
+            for role in ["SONNET", "OPUS", "HAIKU"] {
+                put(value, &["env".into(), format!("ANTHROPIC_DEFAULT_{role}_MODEL_NAME")], Some(json!(selected)))?;
             }
             for &key in claude_policy::CLOUD_SWITCHES {
                 put(value, &["env".into(), key.into()], Some(json!("0")))?;
@@ -1161,7 +1296,7 @@ fn build_with_token(
             put(value, &["env".into(), "ANTHROPIC_MODEL".into()], None)?;
             put(value, &["model".into()], Some(json!(selected)))?;
             let mut options = value.pointer("/modelPicker/options").and_then(Value::as_array).cloned().unwrap_or_default();
-            options.retain(|row| !row["model"].as_str().is_some_and(|id| id.starts_with("vary-provider/") || id.starts_with("vary-auto/")));
+            options.retain(|row| !row["model"].as_str().is_some_and(|id| id.starts_with("vary-provider/") || id.starts_with("vary-auto/") || previous.is_some_and(|old| old.model_map.contains_key(id))));
             options.extend(catalog.iter().map(|model| json!({"model":model.id,"label":model.name,"description":"via VaryAI"})));
             put(value, &["modelPicker".into(), "options".into()], Some(json!(options)))?;
             let context = catalog.iter().find(|m| m.id == selected).and_then(working_window);
@@ -1169,7 +1304,8 @@ fn build_with_token(
             let capabilities = reasoning::claude_capabilities(&catalog);
             put(value, &["env".into(), "CLAUDE_CODE_MODEL_CAPABILITIES".into()], (!capabilities.is_empty()).then(|| json!(capabilities)))?;
             put(value, &["env".into(), "ANTHROPIC_API_KEY".into()], None)
-        })?),
+        })?);
+        }
         "pi" => {
             let (catalog, selected) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
             receipt.files.push(FileEdit::prepare(crate::pi_config::get_pi_models_path().map_err(|_| FAILED)?, |value| {
@@ -1220,7 +1356,7 @@ fn build_with_token(
             Ok(())
         })?);
         },
-        "opencode" => receipt.files.push(FileEdit::prepare_format(crate::opencode_config::get_opencode_projection_path(), Format::Json5, |value| {
+        "opencode" => receipt.files.push(FileEdit::prepare_format(crate::opencode_config::get_opencode_projection_path(), Format::Jsonc, |value| {
             let models = catalog.iter().map(|m| (m.id.clone(), opencode_model(m))).collect::<serde_json::Map<_,_>>();
             put(value, &["provider".into(), "varyai".into()], Some(json!({"npm":"@ai-sdk/openai-compatible","name":"Vary AI","options":{"baseURL":format!("{base}/v1"),"apiKey":token},"models":models})))?;
             put(value, &["model".into()], Some(json!(format!("varyai/{selected}"))))

@@ -43,7 +43,7 @@ fn provider(home: &Path, id: &str) -> Result<String, rusqlite::Error> {
 }
 
 #[test]
-fn alias_integration_history_accepts_current_destinations_and_rejects_retired_owners(
+fn provider_migration_preserves_current_retired_and_unknown_model_identities(
 ) -> Result<(), Box<dyn std::error::Error>> {
     for runtime in [false, true] {
         for paginated in [false, true] {
@@ -84,13 +84,13 @@ fn alias_integration_history_accepts_current_destinations_and_rejects_retired_ow
                 .clone();
             assert_ne!(original, current);
             assert!(!receipt.model_aliases.contains(&retired_name));
-            for (id, model, accepted) in [
-                ("canonical", canonical.as_str(), true),
-                ("current", current.as_str(), true),
-                ("renamed", original.as_str(), true),
-                ("retired", retired_name.as_str(), false),
-                ("removed-id", retired.alias().as_str(), false),
-                ("unknown", "unpublished-fixture", false),
+            for (id, model) in [
+                ("canonical", canonical.as_str()),
+                ("current", current.as_str()),
+                ("renamed", original.as_str()),
+                ("retired", retired_name.as_str()),
+                ("removed-id", retired.alias().as_str()),
+                ("unknown", "unpublished-fixture"),
             ] {
                 let path = mode_tests::thread_model_fixture(
                     dir.path(),
@@ -104,10 +104,10 @@ fn alias_integration_history_accepts_current_destinations_and_rejects_retired_ow
                 manager.sync_threads()?;
                 assert_eq!(
                     provider(dir.path(), id)?,
-                    if accepted { PROVIDER } else { "fixture-source" },
+                    PROVIDER,
                     "runtime={runtime}, paginated={paginated}, id={id}"
                 );
-                if paginated || !accepted {
+                if paginated {
                     assert_eq!(fs::read(&path)?, before);
                 }
                 let stored: String = rusqlite::Connection::open(dir.path().join("state_5.sqlite"))?
@@ -143,7 +143,7 @@ fn alias_integration_history_accepts_current_destinations_and_rejects_retired_ow
 }
 
 #[test]
-fn alias_integration_offline_catalog_tampering_blocks_history(
+fn provider_migration_does_not_rewrite_or_depend_on_model_catalog_contents(
 ) -> Result<(), Box<dyn std::error::Error>> {
     for tamper in [
         "extra",
@@ -192,7 +192,7 @@ fn alias_integration_offline_catalog_tampering_blocks_history(
             _ => unreachable!(),
         }
         if matches!(tamper, "extra" | "missing-hidden" | "visible") {
-            fs::write(path, serde_json::to_vec(&catalog)?)?;
+            fs::write(&path, serde_json::to_vec(&catalog)?)?;
         }
         mode_tests::thread_model_fixture(
             dir.path(),
@@ -202,12 +202,12 @@ fn alias_integration_offline_catalog_tampering_blocks_history(
             Some(&model),
             None,
         )?;
+        let config_before = fs::read(&manager.config)?;
+        let catalog_before = fs::read(&path)?;
         manager.sync_threads()?;
-        assert_eq!(
-            provider(dir.path(), "untrusted")?,
-            "fixture-source",
-            "{tamper}"
-        );
+        assert_eq!(provider(dir.path(), "untrusted")?, PROVIDER, "{tamper}");
+        assert_eq!(fs::read(&manager.config)?, config_before);
+        assert_eq!(fs::read(&path)?, catalog_before);
     }
     Ok(())
 }
@@ -248,7 +248,7 @@ fn alias_integration_legacy_receipts_keep_exact_canonical_history_support(
 }
 
 #[test]
-fn alias_integration_runtime_token_mismatch_blocks_all_history_names(
+fn provider_migration_preserves_history_when_runtime_credentials_rotate(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (dir, manager) = tests::setup();
     fs::write(&manager.config, "model_provider='fixture-source'\n")?;
@@ -271,7 +271,7 @@ fn alias_integration_runtime_token_mismatch_blocks_all_history_names(
             None,
         )?;
         manager.sync_threads()?;
-        assert_eq!(provider(dir.path(), id)?, "fixture-source");
+        assert_eq!(provider(dir.path(), id)?, PROVIDER);
     }
     Ok(())
 }
@@ -386,6 +386,6 @@ fn readable_selection_survives_rename_restart_and_legacy_selection() -> Result<(
         assert_eq!(configured(), renamed);
     }
     restarted.restore()?;
-    assert!(!manager.config.exists());
+    tests::assert_restored_config(&manager, "");
     Ok(())
 }

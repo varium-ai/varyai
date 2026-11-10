@@ -119,9 +119,14 @@ fn renamed_model(
     file: &super::FileEdit,
     wire: &str,
 ) -> Option<String> {
+    let base = if old.app == "claude" {
+        crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(wire)
+    } else {
+        wire
+    };
     let alias = old
         .model_map
-        .get(wire)
+        .get(base)
         .map(String::as_str)
         .or_else(|| {
             (old.app == "grokbuild")
@@ -134,11 +139,11 @@ fn renamed_model(
                 })
                 .flatten()
         })
-        .unwrap_or(wire);
+        .unwrap_or(base);
     names
         .iter()
         .find(|(_, alias_id)| alias_id.as_str() == alias)
-        .map(|(name, _)| name.clone())
+        .map(|(name, _)| format!("{name}{}", &wire[base.len()..]))
 }
 
 pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> {
@@ -191,7 +196,7 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
             {
                 continue;
             }
-            let renamed = ["pi", "hermes", "grokbuild"]
+            let renamed = ["claude", "pi", "hermes", "grokbuild"]
                 .contains(&old.app.as_str())
                 .then(|| {
                     choice
@@ -206,7 +211,14 @@ pub(super) fn preserve(old: &Receipt, next: &mut Receipt) -> Result<(), String> 
             let model = choice
                 .as_str()
                 .or_else(|| choice.get("modelId").and_then(Value::as_str))
-                .or_else(|| choice.pointer("/0/config/model").and_then(Value::as_str));
+                .or_else(|| choice.pointer("/0/config/model").and_then(Value::as_str))
+                .map(|model| {
+                    if old.app == "claude" {
+                        crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(model)
+                    } else {
+                        model
+                    }
+                });
             if !managed(choice, old)
                 || model.is_some_and(|model| {
                     catalogs.iter().any(|catalog| {
@@ -228,6 +240,40 @@ mod tests {
     use crate::services::agent_connections::{FileEdit, Manager, CONFLICT};
     use serde_json::json;
     use std::{collections::BTreeMap, fs};
+
+    #[test]
+    fn claude_readable_upgrade_preserves_selected_model_and_context_suffix() -> Result<(), String> {
+        let alias = "vary-provider/model-b";
+        let name = "Model B · Supplier · VaryAI";
+        for (wire, expected) in [
+            (alias.to_owned(), name.to_owned()),
+            (format!("{alias}[1m]"), format!("{name}[1m]")),
+            ("native-choice".into(), "native-choice".into()),
+        ] {
+            let dir = tempfile::tempdir().map_err(|_| FAILED)?;
+            let file = FileEdit::prepare(dir.path().join("settings.json"), |value| {
+                value["model"] = json!(wire);
+                Ok(())
+            })?;
+            let old = Receipt {
+                app: "claude".into(),
+                token: "synthetic-token".into(),
+                model: "vary-provider/model-a".into(),
+                model_map: BTreeMap::new(),
+                visible_models: None,
+                files: vec![file],
+                suspended: false,
+                applied_at_ms: None,
+            };
+            let mut next = old.clone();
+            next.model_map.insert(name.into(), alias.into());
+            next.files[0].installed =
+                json!({"model":"Model A", "modelPicker":{"options":[{"model":name}]}});
+            preserve(&old, &mut next)?;
+            assert_eq!(next.files[0].installed["model"], expected);
+        }
+        Ok(())
+    }
 
     #[test]
     fn readable_catalog_upgrade_preserves_native_selection_and_pi_scope() -> Result<(), String> {

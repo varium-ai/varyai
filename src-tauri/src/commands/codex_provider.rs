@@ -138,19 +138,27 @@ pub(crate) async fn test_codex_provider_model(
     )
     .await
     .ok_or("routingUpstreams.sourceUnavailable")?;
-    let client = crate::proxy::http_client::get_without_redirects()
-        .map_err(|_| "routingUpstreams.failed")?;
+    let client = if account == "native" {
+        crate::proxy::http_client::get_without_redirects()
+    } else {
+        state.codex_oauth_manager.account_client(&account).await
+    }
+    .map_err(|_| "routingUpstreams.failed")?;
     let version = crate::codex_client::resolve_version().await;
     let request = client
         .post("https://chatgpt.com/backend-api/codex/responses")
         .bearer_auth(token)
-        .header("chatgpt-account-id", workspace)
         .header(
             "originator",
             crate::proxy::providers::codex_oauth_auth::CODEX_OAUTH_ORIGINATOR,
         )
         .header("version", &version)
-        .header("User-Agent", format!("codex_cli_rs/{version}"));
+        .header("User-Agent", crate::codex_client::user_agent(&version));
+    let request = if workspace.is_empty() {
+        request
+    } else {
+        request.header("chatgpt-account-id", workspace)
+    };
     let start = std::time::Instant::now();
     let ok = crate::services::codex_provider::probe_model(request, &model).await;
     Ok(ModelTest {
@@ -413,7 +421,7 @@ pub(crate) async fn codex_provider_quota(
     state: State<'_, AppState>,
     account: String,
 ) -> Result<crate::services::subscription::SubscriptionQuota, String> {
-    use crate::services::subscription::{query_codex_quota, SubscriptionQuota};
+    use crate::services::subscription::{query_codex_quota_with_client, SubscriptionQuota};
     let result = if account == "native" {
         crate::services::subscription::get_subscription_quota("codex").await
     } else {
@@ -426,7 +434,9 @@ pub(crate) async fn codex_provider_quota(
             Ok(workspace) => workspace,
             Err(error) => return quota_auth_error(error),
         };
-        let result = query_codex_quota(
+        let client = manager.account_client(&account).await?;
+        let result = query_codex_quota_with_client(
+            &client,
             &token,
             Some(&workspace),
             "codex_oauth",

@@ -331,7 +331,7 @@ impl Runtime for Native<'_> {
             return Err(FAILED.into());
         }
         let exe = match self.app {
-            "workbuddy" => "WorkBuddy.exe",
+            "workbuddy" | "workbuddy-ai" => "WorkBuddy.exe",
             "codex" => "ChatGPT.exe",
             _ => "claude.exe",
         };

@@ -41,6 +41,18 @@ impl Manager {
         let outbox = self.bridge_load()?;
         let enabled = outbox.as_ref().is_some_and(|o| o.enabled);
         let delivered = outbox.as_ref().is_some_and(|o| o.delivered);
+        let applied_ms = std::fs::metadata(self.bridge_path())
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| {
+                time.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|duration| duration.as_millis() as i64)
+            });
+        let desktop_state = enabled
+            .then(|| super::desktop::state("trae", applied_ms))
+            .flatten();
+        let desktop_restart = desktop_state == Some(super::desktop::State::RestartRequired);
         Ok(Status {
             app: "trae".into(),
             enabled,
@@ -55,11 +67,46 @@ impl Manager {
                 .is_some_and(|o| !delivered || o.selection_pending)
                 .then_some(RecoveryReason::BridgePending),
             model: outbox.and_then(|o| o.model),
-            restart_required: enabled && !delivered,
+            restart_required: (enabled && !delivered) || desktop_restart,
             reload_state: None,
-            desktop_state: None,
+            desktop_state,
             native_compatibility: None,
             configuration_issue: None,
+        })
+    }
+
+    pub(crate) fn restart_bridge_desktop(&self) -> Result<(), String> {
+        let outbox = self.bridge_load()?.ok_or(CONFLICT)?;
+        if !outbox.enabled {
+            return Err(CONFLICT.into());
+        }
+        let path = self.bridge_path();
+        let applied_ms = std::fs::metadata(&path)
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| {
+                time.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|duration| duration.as_millis() as i64)
+            });
+        let expected = applied_ms;
+        let expected_token = outbox.token.clone();
+        super::desktop::restart("trae", applied_ms, || {
+            self.bridge_load().is_ok_and(|current| {
+                current.is_some_and(|current| {
+                    current.enabled
+                        && current.token == expected_token
+                        && std::fs::metadata(&path)
+                            .ok()
+                            .and_then(|meta| meta.modified().ok())
+                            .and_then(|time| {
+                                time.duration_since(std::time::UNIX_EPOCH)
+                                    .ok()
+                                    .map(|duration| duration.as_millis() as i64)
+                            })
+                            == expected
+                })
+            })
         })
     }
     pub(crate) fn bridge_select(&self, enabled: bool) -> Result<(), String> {

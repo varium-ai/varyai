@@ -167,7 +167,7 @@ pub(super) fn thread_model_fixture(
 }
 
 #[test]
-fn standalone_connection_keeps_unpublished_legacy_thread_models_on_their_source_provider(
+fn standalone_connection_migrates_legacy_providers_without_changing_saved_models(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let alias = tests::group().alias();
     let unpublished = "codex/fixture-native-model";
@@ -197,8 +197,11 @@ fn standalone_connection_keeps_unpublished_legacy_thread_models_on_their_source_
             Some(&alias),
             Some(&alias),
         )?;
-        let before = fs::read(&path)?;
-        let modified = fs::metadata(&path)?.modified()?;
+        let before = fs::read_to_string(&path)?;
+        let expected = before.replace(
+            "\"model_provider\":\"magpie\"",
+            "\"model_provider\":\"varyai\"",
+        );
         for _ in 0..2 {
             manager.write_projection(&[tests::group()], "fixture-local-token", BASE)?;
             manager.sync_threads()?;
@@ -211,12 +214,11 @@ fn standalone_connection_keeps_unpublished_legacy_thread_models_on_their_source_
             assert_eq!(manager.selected_model()?.as_deref(), Some(alias.as_str()));
             assert_eq!(
                 thread_provider(dir.path(), "unpublished-thread")?,
-                "magpie",
-                "a provider transition cannot make an unpublished saved model executable"
+                PROVIDER,
+                "provider migration is independent of saved-model availability"
             );
             assert_eq!(thread_provider(dir.path(), "compatible-thread")?, PROVIDER);
-            assert_eq!(fs::read(&path)?, before);
-            assert_eq!(fs::metadata(&path)?.modified()?, modified);
+            assert_eq!(fs::read_to_string(&path)?, expected);
             let model: String = rusqlite::Connection::open(dir.path().join("state_5.sqlite"))?
                 .query_row(
                     "SELECT model FROM threads WHERE id='unpublished-thread'",
@@ -231,7 +233,7 @@ fn standalone_connection_keeps_unpublished_legacy_thread_models_on_their_source_
 }
 
 #[test]
-fn standalone_connection_keeps_unpublished_paginated_thread_models_on_their_source_provider(
+fn standalone_connection_migrates_paginated_providers_without_changing_saved_models(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let alias = tests::group().alias();
     for database_model in [Some("codex/fixture-native-model"), Some(""), None] {
@@ -263,8 +265,8 @@ fn standalone_connection_keeps_unpublished_paginated_thread_models_on_their_sour
             manager.sync_threads()?;
             assert_eq!(
                 thread_provider(dir.path(), "unpublished-paged")?,
-                "magpie",
-                "paginated history must validate its saved model before changing providers"
+                PROVIDER,
+                "paginated provider migration preserves even an unavailable saved model"
             );
             assert_eq!(thread_provider(dir.path(), "compatible-paged")?, PROVIDER);
             assert_eq!(fs::read(&path)?, before);
@@ -455,10 +457,7 @@ fn explicit_reapply_replaces_an_existing_native_url_and_restores_it_on_disconnec
         assert_eq!(manager.native_owned_url()?.as_deref(), Some(NATIVE));
         assert_eq!(fs::read(dir.path().join("auth.json"))?, auth_before);
         manager.restore()?;
-        assert_eq!(
-            fs::read_to_string(&manager.config)?.parse::<toml::Value>()?,
-            original.parse::<toml::Value>()?
-        );
+        tests::assert_restored_config(&manager, &original);
     }
     Ok(())
 }
@@ -505,7 +504,7 @@ fn explicit_reapply_recovers_a_pending_restore_and_preserves_external_choices(
     assert!(manager.status()?.configuration_owned);
     assert!(!manager.load()?.ok_or("new receipt")?.thread_restore_pending);
     assert_eq!(fs::read(&active)?, history);
-    assert_eq!(thread_provider(dir.path(), "old-quiet-chat")?, "openai");
+    assert_eq!(thread_provider(dir.path(), "old-quiet-chat")?, PROVIDER);
     let archive = fs::read_dir(dir.path())?
         .filter_map(Result::ok)
         .find(|entry| {
@@ -538,11 +537,21 @@ fn explicit_reapply_recovers_a_pending_restore_and_preserves_external_choices(
         thread_provider(dir.path(), "active-reapply-chat")?,
         "external"
     );
-    assert_eq!(thread_provider(dir.path(), "old-quiet-chat")?, "openai");
+    assert_eq!(thread_provider(dir.path(), "old-quiet-chat")?, "external");
     let restored: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
     assert_eq!(restored["model"].as_str(), Some("external-choice"));
     assert_eq!(restored["model_provider"].as_str(), Some("external"));
     assert_eq!(restored["theme"].as_str(), Some("keep-external"));
+    assert!(manager.thread_sync_pending());
+    let mut openai: DocumentMut = fs::read_to_string(&manager.config)?.parse()?;
+    openai["model_provider"] = toml_edit::value("openai");
+    fs::write(&manager.config, openai.to_string())?;
+    manager.sync_threads()?;
+    assert_eq!(thread_provider(dir.path(), "old-quiet-chat")?, "openai");
+    assert_eq!(
+        thread_provider(dir.path(), "active-reapply-chat")?,
+        "external"
+    );
     Ok(())
 }
 
@@ -570,7 +579,7 @@ fn disconnect_keeps_recovery_and_provider_until_active_chat_can_move(
     assert!(!manager.receipt.exists());
     let restored: toml::Value = fs::read_to_string(&manager.config)?.parse()?;
     assert_eq!(restored["model"].as_str(), Some("original"));
-    assert!(restored.get("model_providers").is_none());
+    assert!(restored["model_providers"].get(PROVIDER).is_some());
     Ok(())
 }
 
@@ -618,10 +627,7 @@ fn chatgpt_connection_preserves_openai_provider_and_remote_catalog(
             assert!(manager.status()?.configuration_owned);
         }
         manager.restore()?;
-        assert_eq!(
-            fs::read_to_string(&manager.config)?.parse::<toml::Value>()?,
-            original.parse::<toml::Value>()?
-        );
+        tests::assert_restored_config(&manager, &original);
     }
     Ok(())
 }
@@ -715,5 +721,183 @@ fn native_mode_detects_url_edits_and_legacy_takeover_can_join_openai(
         doc["openai_base_url"].as_str(),
         Some("https://synthetic.example/changed")
     );
+    Ok(())
+}
+
+fn historical_varyai_provider(id: &str, base: &str) -> String {
+    format!(
+        "[model_providers.{id}]\nname='VaryAI models and routing groups'\nbase_url='{base}'\nwire_api='responses'\nrequires_openai_auth=false\nexperimental_bearer_token='synthetic-historical-token'\nsupports_websockets=false\nsupports_standalone_web_search=false\n"
+    )
+}
+
+#[test]
+fn historical_varyai_ids_join_the_current_provider_and_restore_each_origin(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (dir, manager) = tests::setup();
+    let original = format!(
+        "model='original'\n{}{}",
+        historical_varyai_provider("historical_a", "http://127.0.0.1:4321/v1"),
+        historical_varyai_provider("historical_b", "http://127.0.0.1:4322/intent/v1"),
+    );
+    fs::write(&manager.config, &original)?;
+    let first = thread_fixture(dir.path(), "historical-first", "historical_a", true)?;
+    let second = thread_fixture(dir.path(), "historical-second", "historical_b", true)?;
+    let before = [fs::read(&first)?, fs::read(&second)?];
+    thread_fixture(dir.path(), "ordinary-openai", "openai", true)?;
+    for _ in 0..2 {
+        manager.write_projection(&[tests::group()], "synthetic-local", BASE)?;
+        assert_eq!(thread_provider(dir.path(), "historical-first")?, PROVIDER);
+        assert_eq!(thread_provider(dir.path(), "historical-second")?, PROVIDER);
+        manager.sync_threads()?;
+    }
+    manager.restore()?;
+    assert_eq!(
+        thread_provider(dir.path(), "historical-first")?,
+        "historical_a"
+    );
+    assert_eq!(
+        thread_provider(dir.path(), "historical-second")?,
+        "historical_b"
+    );
+    assert_eq!(thread_provider(dir.path(), "ordinary-openai")?, "openai");
+    assert_eq!(fs::read(first)?, before[0]);
+    assert_eq!(fs::read(second)?, before[1]);
+    tests::assert_restored_config(&manager, &original);
+    Ok(())
+}
+
+#[test]
+fn historical_varyai_migration_checks_signatures_and_profiles_without_model_gates(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (dir, manager) = tests::setup();
+    fs::write(
+        &manager.config,
+        format!(
+            "model='original'\n[profiles.retained]\nmodel_provider='profile_provider'\n{}{}{}{}",
+            historical_varyai_provider("eligible", "http://127.0.0.1:4321/v1"),
+            historical_varyai_provider("unsupported", "http://127.0.0.1:4321/v1"),
+            historical_varyai_provider("profile_provider", "http://127.0.0.1:4321/v1"),
+            historical_varyai_provider("same_name", "https://synthetic.example/v1"),
+        ),
+    )?;
+    for (id, provider) in [
+        ("eligible-chat", "eligible"),
+        ("unsupported-chat", "unsupported"),
+        ("profile-chat", "profile_provider"),
+        ("same-name-chat", "same_name"),
+        ("unconfigured-chat", "unconfigured"),
+    ] {
+        let path = thread_fixture(dir.path(), id, provider, true)?;
+        if provider == "unsupported" {
+            let text =
+                fs::read_to_string(&path)?.replace(&tests::group().alias(), "unpublished-model");
+            fs::write(&path, text)?;
+            fs::File::options().write(true).open(&path)?.set_times(
+                fs::FileTimes::new().set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(120),
+                ),
+            )?;
+            rusqlite::Connection::open(dir.path().join("state_5.sqlite"))?.execute(
+                "UPDATE threads SET model='unpublished-model' WHERE id=?1",
+                [id],
+            )?;
+        }
+    }
+    manager.write_projection(&[tests::group()], "synthetic-local", BASE)?;
+    assert_eq!(thread_provider(dir.path(), "eligible-chat")?, PROVIDER);
+    assert_eq!(thread_provider(dir.path(), "unsupported-chat")?, PROVIDER);
+    let saved_model: String = rusqlite::Connection::open(dir.path().join("state_5.sqlite"))?
+        .query_row(
+            "SELECT model FROM threads WHERE id='unsupported-chat'",
+            [],
+            |row| row.get(0),
+        )?;
+    assert_eq!(saved_model, "unpublished-model");
+    for (id, provider) in [
+        ("profile-chat", "profile_provider"),
+        ("same-name-chat", "same_name"),
+        ("unconfigured-chat", "unconfigured"),
+    ] {
+        assert_eq!(thread_provider(dir.path(), id)?, provider);
+    }
+    assert!(!manager.thread_sync_pending());
+    manager.restore()?;
+    assert_eq!(thread_provider(dir.path(), "eligible-chat")?, "eligible");
+    assert_eq!(
+        thread_provider(dir.path(), "unsupported-chat")?,
+        "unsupported"
+    );
+    Ok(())
+}
+
+#[test]
+fn historical_varyai_busy_restore_retains_each_source_until_recovery(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (dir, manager) = tests::setup();
+    fs::write(
+        &manager.config,
+        historical_varyai_provider("historical", "http://127.0.0.1:4321/v1"),
+    )?;
+    let path = thread_fixture(dir.path(), "busy-history", "historical", false)?;
+    manager.write_projection(&[tests::group()], "synthetic-local", BASE)?;
+    assert_eq!(thread_provider(dir.path(), "busy-history")?, "historical");
+    assert!(manager.thread_sync_pending());
+    let quiet = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+    fs::File::options()
+        .write(true)
+        .open(&path)?
+        .set_times(fs::FileTimes::new().set_modified(quiet))?;
+    manager.sync_threads()?;
+    assert_eq!(thread_provider(dir.path(), "busy-history")?, PROVIDER);
+    fs::File::options()
+        .write(true)
+        .open(&path)?
+        .set_times(fs::FileTimes::new().set_modified(std::time::SystemTime::now()))?;
+    thread_fixture(dir.path(), "new-during-takeover", PROVIDER, true)?;
+    manager.restore()?;
+    assert!(manager.thread_sync_pending());
+    assert!(manager.receipt.exists());
+    assert_eq!(thread_provider(dir.path(), "busy-history")?, PROVIDER);
+    fs::File::options()
+        .write(true)
+        .open(&path)?
+        .set_times(fs::FileTimes::new().set_modified(quiet))?;
+    manager.sync_threads()?;
+    assert_eq!(thread_provider(dir.path(), "busy-history")?, "historical");
+    assert_eq!(
+        thread_provider(dir.path(), "new-during-takeover")?,
+        "openai"
+    );
+    assert!(!manager.receipt.exists());
+    Ok(())
+}
+
+#[test]
+fn historical_varyai_paginated_identity_changes_preserve_suffix_bytes(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (dir, manager) = tests::setup();
+    fs::write(
+        &manager.config,
+        historical_varyai_provider("historical", "http://127.0.0.1:4321/v1"),
+    )?;
+    let path = thread_fixture(dir.path(), "paged-history", "historical", true)?;
+    let db = rusqlite::Connection::open(dir.path().join("state_5.sqlite"))?;
+    db.execute(
+        "ALTER TABLE threads ADD COLUMN history_mode TEXT NOT NULL DEFAULT 'legacy'",
+        [],
+    )?;
+    db.execute("UPDATE threads SET history_mode='paginated'", [])?;
+    let suffix = b"{\"type\":\"event_msg\",\"payload\":{\"message\":\"synthetic suffix\"}}\n";
+    fs::write(&path, suffix)?;
+    fs::File::options().write(true).open(&path)?.set_times(
+        fs::FileTimes::new()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(120)),
+    )?;
+    manager.write_projection(&[tests::group()], "synthetic-local", BASE)?;
+    assert_eq!(thread_provider(dir.path(), "paged-history")?, PROVIDER);
+    assert_eq!(fs::read(&path)?, suffix);
+    manager.restore()?;
+    assert_eq!(thread_provider(dir.path(), "paged-history")?, "historical");
+    assert_eq!(fs::read(path)?, suffix);
     Ok(())
 }

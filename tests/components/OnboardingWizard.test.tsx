@@ -4,14 +4,22 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
 import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard";
+import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
 import { routingUpstreamsApi as routing } from "@/lib/api/routingUpstreams";
-import { fetchModelsForConfig } from "@/lib/api/model-fetch";
+import {
+  fetchModelsForConfig,
+  fetchXaiOauthModels,
+} from "@/lib/api/model-fetch";
+import { copilotGetModelsForAccount } from "@/lib/api/copilot";
+import { nativeSubscriptionApi } from "@/lib/api/nativeSubscription";
 import { providerImportApi } from "@/lib/api/providerImport";
 import { copyText } from "@/lib/clipboard";
+import { getSettings, setSettings } from "../msw/state";
 
 vi.mock("@/lib/api/routingUpstreams", () => ({
   routingUpstreamsApi: {
@@ -20,9 +28,19 @@ vi.mock("@/lib/api/routingUpstreams", () => ({
     createCodex: vi.fn(),
     saveCodex: vi.fn(),
     editor: vi.fn(),
+    codexModels: vi.fn(),
   },
 }));
-vi.mock("@/lib/api/model-fetch", () => ({ fetchModelsForConfig: vi.fn() }));
+vi.mock("@/lib/api/model-fetch", () => ({
+  fetchModelsForConfig: vi.fn(),
+  fetchXaiOauthModels: vi.fn(),
+}));
+vi.mock("@/lib/api/copilot", () => ({
+  copilotGetModelsForAccount: vi.fn(),
+}));
+vi.mock("@/lib/api/nativeSubscription", () => ({
+  nativeSubscriptionApi: { models: vi.fn() },
+}));
 vi.mock("@/lib/api/providerImport", () => ({
   providerImportApi: { preview: vi.fn(), import: vi.fn() },
 }));
@@ -47,6 +65,26 @@ beforeEach(() => {
   } as never);
   vi.mocked(fetchModelsForConfig).mockResolvedValue([
     { id: "fixture-model", ownedBy: null },
+  ]);
+  vi.mocked(nativeSubscriptionApi.models).mockResolvedValue([
+    { model: "fixture-model", inputModalities: ["text", "image"] },
+    { model: "fixture-other" },
+  ]);
+  vi.mocked(copilotGetModelsForAccount).mockResolvedValue([
+    {
+      id: "fixture-model",
+      name: "Fixture model",
+      vendor: "fixture",
+      model_picker_enabled: true,
+      supported_endpoints: ["/responses"],
+    },
+  ]);
+  vi.mocked(fetchXaiOauthModels).mockResolvedValue([
+    { id: "fixture-model", ownedBy: null, reasoning: true },
+  ]);
+  vi.mocked(routing.codexModels).mockResolvedValue([
+    { model: "fixture-model", reasoningLevels: ["low", "high"] },
+    { model: "fixture-other" },
   ]);
   vi.mocked(copyText).mockResolvedValue(undefined);
   vi.mocked(providerImportApi.preview).mockResolvedValue([
@@ -122,6 +160,50 @@ it("starts with three paths, copies setup help and allows skipping", async () =>
   fireEvent.click(screen.getByRole("button", { name: "onboarding.skip" }));
   await waitFor(() => expect(finish).toHaveBeenCalledWith(false));
 });
+it("previews account and import sources as named brand icons", () => {
+  mount();
+  const accounts = screen.getByRole("list", {
+    name: "onboarding.subscriptionTitle",
+  });
+  const imports = screen.getByRole("list", {
+    name: "onboarding.importTitle",
+  });
+  const accountNames = [
+    "Claude",
+    "ChatGPT / Codex",
+    "GitHub Copilot",
+    "Gemini CLI",
+    "Antigravity",
+    "Grok",
+  ];
+  const importNames = [
+    "Magpie",
+    "CC Switch",
+    "Claude Code",
+    "Codex",
+    "OpenCode",
+  ];
+  for (const [list, names] of [
+    [accounts, accountNames],
+    [imports, importNames],
+  ] as const) {
+    const icons = within(list).getAllByRole("img");
+    expect(icons.map((icon) => icon.getAttribute("aria-label"))).toEqual(names);
+    for (const [index, icon] of icons.entries()) {
+      expect(icon).toHaveAttribute("title", names[index]);
+      expect(icon.querySelector("svg, img")).not.toBeNull();
+    }
+  }
+  expect(providerImportApi.preview).not.toHaveBeenCalled();
+});
+it("keeps both OpenAI login methods available behind the shared brand preview", () => {
+  mount();
+  fireEvent.click(
+    screen.getByRole("button", { name: "onboarding.subscriptionAction" }),
+  );
+  expect(screen.getByRole("button", { name: "ChatGPT / Codex" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "ChatGPT API" })).toBeVisible();
+});
 it("checks credentials before saving and keeps the key masked", async () => {
   const finish = mount();
   enterKey();
@@ -130,7 +212,7 @@ it("checks credentials before saving and keeps the key masked", async () => {
     "password",
   );
   fireEvent.click(screen.getByRole("button", { name: "onboarding.connect" }));
-  await screen.findByRole("button", { name: "onboarding.enterTools" });
+  await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
   expect(fetchModelsForConfig).toHaveBeenCalledWith(
     "https://relay.example.test/v1",
     "",
@@ -152,11 +234,10 @@ it("checks credentials before saving and keeps the key masked", async () => {
       }),
     }),
   );
-  expect(finish).not.toHaveBeenCalled();
-  fireEvent.click(
-    screen.getByRole("button", { name: "onboarding.enterTools" }),
-  );
-  await waitFor(() => expect(finish).toHaveBeenCalledWith(true));
+  expect(
+    screen.queryByRole("button", { name: "onboarding.enterTools" }),
+  ).toBeNull();
+  expect(screen.queryByText("onboarding.nextHint")).toBeNull();
 });
 it("keeps failed connections editable, sanitizes errors and never saves an empty catalog", async () => {
   mount();
@@ -199,19 +280,29 @@ it("locks navigation and prevents duplicate saves while connecting", async () =>
   expect(fetchModelsForConfig).toHaveBeenCalledTimes(1);
 });
 it("saves the account selected by a completed subscription login", async () => {
-  mount();
+  const finish = mount();
   fireEvent.click(
     screen.getByRole("button", { name: "onboarding.subscriptionAction" }),
   );
   fireEvent.click(screen.getByRole("button", { name: "Gemini CLI" }));
   fireEvent.click(screen.getByRole("button", { name: "Finish fixture login" }));
-  await screen.findByRole("button", { name: "onboarding.enterTools" });
+  await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
   expect(routing.save).toHaveBeenCalledWith(
     expect.objectContaining({
       source: expect.objectContaining({
         kind: "subscription",
         provider: "gemini_cli",
         accountId: "fixture-account",
+        mode: "picked",
+        models: [
+          { model: "fixture-model", inputModalities: ["text", "image"] },
+          { model: "fixture-other" },
+        ],
+        catalog: [
+          { model: "fixture-model", inputModalities: ["text", "image"] },
+          { model: "fixture-other" },
+        ],
+        groupsOnly: false,
       }),
     }),
   );
@@ -219,21 +310,35 @@ it("saves the account selected by a completed subscription login", async () => {
 it("adds the completed ChatGPT account to the Codex provider before saving", async () => {
   vi.mocked(routing.createCodex).mockResolvedValue({
     id: "fixture-codex",
+    revision: 0,
     source: { kind: "codex" },
     codex: {
       settings: { accounts: [], models: [], mode: "vendor", groupsOnly: false },
     },
   } as never);
-  mount();
+  const finish = mount();
   fireEvent.click(
     screen.getByRole("button", { name: "onboarding.subscriptionAction" }),
   );
   fireEvent.click(screen.getByRole("button", { name: "ChatGPT / Codex" }));
   fireEvent.click(screen.getByRole("button", { name: "Finish fixture login" }));
-  await screen.findByRole("button", { name: "onboarding.enterTools" });
+  await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
   expect(routing.saveCodex).toHaveBeenCalledWith(
     expect.objectContaining({ id: "fixture-codex" }),
-    expect.objectContaining({ accounts: ["fixture-account"] }),
+    expect.objectContaining({
+      accounts: ["fixture-account"],
+      mode: "picked",
+      models: [
+        { model: "fixture-model", reasoningLevels: ["low", "high"] },
+        { model: "fixture-other" },
+      ],
+      groupsOnly: false,
+    }),
+  );
+  expect(routing.codexModels).toHaveBeenCalledExactlyOnceWith(
+    "fixture-codex",
+    0,
+    "fixture-account",
   );
 });
 it("preserves an existing subscription's model policy when reconnecting the same account", async () => {
@@ -256,28 +361,230 @@ it("preserves an existing subscription's model policy when reconnecting the same
       source,
     },
   ]);
-  mount();
+  const finish = mount();
   fireEvent.click(
     screen.getByRole("button", { name: "onboarding.subscriptionAction" }),
   );
   fireEvent.click(screen.getByRole("button", { name: "Gemini CLI" }));
   fireEvent.click(screen.getByRole("button", { name: "Finish fixture login" }));
-  await screen.findByRole("button", { name: "onboarding.enterTools" });
+  await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
   expect(routing.save).toHaveBeenCalledWith(
-    expect.objectContaining({ id: "existing", revision: 4, source }),
+    expect.objectContaining({
+      id: "existing",
+      revision: 4,
+      source: {
+        ...source,
+        catalog: [
+          { model: "fixture-model", inputModalities: ["text", "image"] },
+          { model: "fixture-other" },
+        ],
+      },
+    }),
   );
 });
+it.each(["same", "different"] as const)(
+  "initializes all models when reconnecting an unconfigured subscription to the %s account",
+  async (binding) => {
+    vi.mocked(routing.list).mockResolvedValue([
+      {
+        id: "existing",
+        revision: 4,
+        source: {
+          kind: "subscription",
+          provider: "gemini_cli",
+          accountId: binding === "same" ? "fixture-account" : "other-account",
+          mode: "vendor",
+          models: [],
+          catalog: [],
+          groupsOnly: true,
+        },
+      },
+    ] as never);
+    const finish = mount();
+    await submitConnection("subscription");
+    await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
+    expect(routing.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "existing",
+        revision: 4,
+        source: expect.objectContaining({
+          accountId: "fixture-account",
+          mode: "picked",
+          groupsOnly: false,
+          models: [
+            { model: "fixture-model", inputModalities: ["text", "image"] },
+            { model: "fixture-other" },
+          ],
+        }),
+      }),
+    );
+  },
+);
+it.each(["failed", "empty"] as const)(
+  "does not save or finish Codex onboarding when its model catalog is %s",
+  async (state) => {
+    vi.mocked(routing.createCodex).mockResolvedValue({
+      id: "fixture-codex",
+      revision: 0,
+      source: { kind: "codex" },
+      codex: {
+        settings: {
+          accounts: [],
+          models: [],
+          mode: "vendor",
+          groupsOnly: false,
+        },
+      },
+    } as never);
+    if (state === "failed")
+      vi.mocked(routing.codexModels).mockRejectedValueOnce(
+        new Error("synthetic-private-detail"),
+      );
+    else vi.mocked(routing.codexModels).mockResolvedValueOnce([]);
+    const finish = mount();
+    fireEvent.click(
+      screen.getByRole("button", { name: "onboarding.subscriptionAction" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "ChatGPT / Codex" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Finish fixture login" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "onboarding.accountModelsFailed",
+    );
+    expect(routing.saveCodex).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
+    expect(document.body).not.toHaveTextContent("synthetic-private-detail");
+    fireEvent.click(screen.getByRole("button", { name: "common.retry" }));
+    await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
+    expect(routing.saveCodex).toHaveBeenCalledTimes(1);
+  },
+);
+it("waits for account model discovery before saving or entering the application", async () => {
+  let resolveModels!: (models: Array<Record<string, unknown>>) => void;
+  vi.mocked(nativeSubscriptionApi.models).mockReturnValueOnce(
+    new Promise((resolve) => {
+      resolveModels = resolve;
+    }),
+  );
+  const finish = mount();
+  await submitConnection("subscription");
+  await waitFor(() =>
+    expect(nativeSubscriptionApi.models).toHaveBeenCalledExactlyOnceWith(
+      "gemini_cli",
+      "fixture-account",
+    ),
+  );
+  expect(routing.save).not.toHaveBeenCalled();
+  expect(finish).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "common.back" })).toBeDisabled();
+  await act(async () => resolveModels([{ model: "fixture-model" }]));
+  await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
+});
+it.each([
+  ["Claude", "claude"],
+  ["ChatGPT API", "chatgpt_api"],
+  ["Gemini CLI", "gemini_cli"],
+  ["Antigravity", "antigravity"],
+] as const)(
+  "selects all discovered %s account models before saving",
+  async (name, provider) => {
+    const finish = mount();
+    fireEvent.click(
+      screen.getByRole("button", { name: "onboarding.subscriptionAction" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Finish fixture login" }),
+    );
+    await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
+    expect(nativeSubscriptionApi.models).toHaveBeenCalledExactlyOnceWith(
+      provider,
+      "fixture-account",
+    );
+    const source = vi.mocked(routing.save).mock.calls[0][0].source;
+    expect(source).toMatchObject({
+      provider,
+      accountId: "fixture-account",
+      mode: "picked",
+      models: [
+        { model: "fixture-model", inputModalities: ["text", "image"] },
+        { model: "fixture-other" },
+      ],
+      groupsOnly: false,
+    });
+    expect(source.kind === "subscription" && source.catalog).toEqual(
+      source.kind === "subscription" && source.models,
+    );
+  },
+);
+it.each(["GitHub Copilot", "Grok"] as const)(
+  "selects all %s models with their metadata",
+  async (name) => {
+    const finish = mount();
+    fireEvent.click(
+      screen.getByRole("button", { name: "onboarding.subscriptionAction" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Finish fixture login" }),
+    );
+    await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
+    expect(
+      name === "Grok" ? fetchXaiOauthModels : copilotGetModelsForAccount,
+    ).toHaveBeenCalledExactlyOnceWith("fixture-account");
+    expect(routing.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: expect.objectContaining({
+          mode: "picked",
+          models: [
+            expect.objectContaining(
+              name === "Grok"
+                ? { model: "fixture-model", reasoning: true }
+                : {
+                    model: "fixture-model",
+                    displayName: "Fixture model",
+                    supported_endpoints: ["/responses"],
+                  },
+            ),
+          ],
+        }),
+      }),
+    );
+  },
+);
+it.each(["failed", "empty"] as const)(
+  "keeps login retryable when the account model catalog is %s",
+  async (state) => {
+    const finish = mount();
+    if (state === "failed")
+      vi.mocked(nativeSubscriptionApi.models).mockRejectedValueOnce(
+        new Error("synthetic-private-detail"),
+      );
+    else vi.mocked(nativeSubscriptionApi.models).mockResolvedValueOnce([]);
+    await submitConnection("subscription");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "onboarding.accountModelsFailed",
+    );
+    expect(document.body).not.toHaveTextContent("synthetic-private-detail");
+    expect(routing.save).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "common.retry" }));
+    await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
+    expect(routing.save).toHaveBeenCalledTimes(1);
+  },
+);
 it.each([
   ["anthropic", "x-api-key"],
   ["gemini_native", "x-goog-api-key"],
 ])("uses the correct credential header for %s", async (format, header) => {
-  mount();
+  const finish = mount();
   enterKey();
   fireEvent.change(screen.getByLabelText("onboarding.protocol"), {
     target: { value: format },
   });
   fireEvent.click(screen.getByRole("button", { name: "onboarding.connect" }));
-  await screen.findByRole("button", { name: "onboarding.enterTools" });
+  await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
   expect(fetchModelsForConfig).toHaveBeenCalledWith(
     expect.anything(),
     "",
@@ -288,7 +595,7 @@ it.each([
   );
 });
 it("embeds import selection, prevents duplicate imports and only imports selected references", async () => {
-  mount();
+  const finish = mount();
   fireEvent.click(
     screen.getByRole("button", { name: "onboarding.importAction" }),
   );
@@ -300,7 +607,7 @@ it("embeds import selection, prevents duplicate imports and only imports selecte
   ).toBeDisabled();
   expect(screen.getAllByRole("dialog")).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "providerFlow.import" }));
-  await screen.findByRole("button", { name: "onboarding.enterTools" });
+  await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
   expect(providerImportApi.import).toHaveBeenCalledWith([
     {
       source: "cc-switch",
@@ -310,20 +617,123 @@ it("embeds import selection, prevents duplicate imports and only imports selecte
     },
   ]);
 });
-it("retries finishing without saving the provider twice", async () => {
+async function submitConnection(method: "key" | "subscription" | "import") {
+  if (method === "key") {
+    enterKey();
+    fireEvent.click(screen.getByRole("button", { name: "onboarding.connect" }));
+  } else if (method === "subscription") {
+    fireEvent.click(
+      screen.getByRole("button", { name: "onboarding.subscriptionAction" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Gemini CLI" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Finish fixture login" }),
+    );
+  } else {
+    fireEvent.click(
+      screen.getByRole("button", { name: "onboarding.importAction" }),
+    );
+    await screen.findByRole("checkbox", { name: "Fixture relay" });
+    const submit = screen.getByRole("button", { name: "providerFlow.import" });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+  }
+}
+it.each(["key", "subscription", "import"] as const)(
+  "retries completion after %s without repeating the saved connection",
+  async (method) => {
+    const finish = mount();
+    finish.mockRejectedValueOnce(new Error("synthetic-settings-failure"));
+    await submitConnection(method);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "onboarding.finishFailed",
+    );
+    expect(document.body).not.toHaveTextContent("synthetic-settings-failure");
+    expect(
+      screen.queryByRole("button", { name: "onboarding.enterTools" }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "common.retry" }));
+    await waitFor(() => expect(finish).toHaveBeenCalledTimes(2));
+    expect(finish).toHaveBeenLastCalledWith(true);
+    expect(routing.save).toHaveBeenCalledTimes(method === "import" ? 0 : 1);
+    expect(providerImportApi.import).toHaveBeenCalledTimes(
+      method === "import" ? 1 : 0,
+    );
+  },
+);
+it.each(["subscription", "import"] as const)(
+  "stays in onboarding if the %s connection cannot be saved",
+  async (method) => {
+    const finish = mount();
+    const cause = new Error("synthetic-connection-failure");
+    if (method === "subscription")
+      vi.mocked(routing.save).mockRejectedValueOnce(cause);
+    else vi.mocked(providerImportApi.import).mockRejectedValueOnce(cause);
+    await submitConnection(method);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      method === "subscription"
+        ? "onboarding.accountFailed"
+        : "providerImport.failed",
+    );
+    expect(finish).not.toHaveBeenCalled();
+    expect(document.body).not.toHaveTextContent("synthetic-connection-failure");
+  },
+);
+it("waits for provider persistence before automatically finishing", async () => {
+  let resolveSave!: (value: never) => void;
+  vi.mocked(routing.save).mockReturnValueOnce(
+    new Promise((resolve) => {
+      resolveSave = resolve;
+    }),
+  );
   const finish = mount();
-  finish.mockRejectedValueOnce(new Error("synthetic-settings-failure"));
-  enterKey();
-  fireEvent.click(screen.getByRole("button", { name: "onboarding.connect" }));
-  fireEvent.click(
-    await screen.findByRole("button", { name: "onboarding.enterTools" }),
-  );
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    "onboarding.finishFailed",
-  );
-  fireEvent.click(
-    screen.getByRole("button", { name: "onboarding.enterTools" }),
-  );
-  await waitFor(() => expect(finish).toHaveBeenCalledTimes(2));
-  expect(routing.save).toHaveBeenCalledTimes(1);
+  await submitConnection("key");
+  await waitFor(() => expect(routing.save).toHaveBeenCalledTimes(1));
+  expect(finish).not.toHaveBeenCalled();
+  await act(async () => resolveSave({ id: "saved", revision: 1 } as never));
+  await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
 });
+it.each(["key", "subscription", "import"] as const)(
+  "locks navigation while %s completion is persisted",
+  async (method) => {
+    let resolveFinish!: () => void;
+    const finish = mount();
+    finish.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveFinish = resolve;
+      }),
+    );
+    await submitConnection(method);
+    await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(true));
+    expect(
+      screen.getByRole("button", { name: "onboarding.skip" }),
+    ).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "onboarding.enterTools" }),
+    ).toBeNull();
+    await act(async () => resolveFinish());
+  },
+);
+it.each(["key", "subscription", "import"] as const)(
+  "closes the real first-run guide and enters the application after %s succeeds",
+  async (method) => {
+    setSettings({ firstRunNoticeConfirmed: false });
+    const onConnected = vi.fn();
+    render(
+      <QueryClientProvider
+        client={
+          new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        }
+      >
+        <FirstRunNoticeDialog onConnected={onConnected} />
+      </QueryClientProvider>,
+    );
+    await screen.findByRole("button", { name: "onboarding.keyAction" });
+    await submitConnection(method);
+    await waitFor(() => {
+      expect(getSettings().firstRunNoticeConfirmed).toBe(true);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(onConnected).toHaveBeenCalledExactlyOnceWith();
+    });
+  },
+);

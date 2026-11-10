@@ -427,13 +427,24 @@ export function AgentConnectionsPage({
                 ? "catalogStale"
                 : null
         : null;
-    const canRestart =
+    const desktopRestart = state?.desktopState === "restart_required";
+    const codexReloadRestart =
+      app === "codex" &&
       !state?.recoveryPending &&
-      (state?.configured || !state?.enabled) &&
-      (state?.desktopState === "restart_required" ||
-        (app === "codex" &&
-          (state?.reloadState === "stale_catalog" ||
-            state?.reloadState === "failed")));
+      (state?.reloadState === "stale_catalog" ||
+        state?.reloadState === "failed");
+    const traeBridgeRestart =
+      app === "trae" &&
+      !!state?.enabled &&
+      !!state?.restartRequired &&
+      (state.recoveryReason === "bridge_pending" || !state.recoveryPending);
+    const canRestart =
+      !!state &&
+      (desktopRestart || codexReloadRestart || traeBridgeRestart) &&
+      // Configuration recovery needs repair first, except TRAE's pending bridge
+      // restart which is the intended way to finish first-time delivery.
+      (!state.recoveryPending ||
+        (app === "trae" && state.recoveryReason === "bridge_pending"));
     const nativeUnavailable =
       app === "codex" &&
       state?.configured &&
@@ -1215,7 +1226,13 @@ export function AgentConnectionsPage({
           app: restarting ? name(restarting) : "",
         })}
         description={t(
-          restarting === "codex"
+          restarting === "codex" &&
+            connections[APP_IDS.indexOf("codex")].data?.desktopState !==
+              "restart_required" &&
+            (connections[APP_IDS.indexOf("codex")].data?.reloadState ===
+              "stale_catalog" ||
+              connections[APP_IDS.indexOf("codex")].data?.reloadState ===
+                "failed")
             ? "agentConnections.codexRestartConfirmHint"
             : "agentConnections.restartConfirmHint",
         )}

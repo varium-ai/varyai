@@ -20,6 +20,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { ProviderImportDialog } from "@/components/providers/ProviderImportDialog";
+import { ProviderImportSourceIcon } from "@/components/providers/ProviderImportSourceIcon";
+import { providerImportSources } from "@/config/providerImportSources";
 import { SubscriptionSignIn } from "@/components/providers/SubscriptionSignIn";
 import {
   subscriptionProviders,
@@ -29,7 +31,12 @@ import {
   routingUpstreamsApi,
   type RoutingUpstream,
 } from "@/lib/api/routingUpstreams";
-import { fetchModelsForConfig } from "@/lib/api/model-fetch";
+import {
+  fetchModelsForConfig,
+  fetchXaiOauthModels,
+} from "@/lib/api/model-fetch";
+import { copilotGetModelsForAccount } from "@/lib/api/copilot";
+import { nativeSubscriptionApi } from "@/lib/api/nativeSubscription";
 import { copyText } from "@/lib/clipboard";
 import { DRAG_REGION_ATTR, isMac } from "@/lib/platform";
 import appIcon from "@/assets/icons/app-icon.png";
@@ -40,6 +47,11 @@ type ApiFormat = Extract<
   RoutingUpstream["source"],
   { kind: "api" }
 >["apiFormat"];
+
+const subscriptionPreviews = subscriptionProviders.filter(
+  (provider, index, all) =>
+    all.findIndex((entry) => entry.icon === provider.icon) === index,
+);
 
 export function OnboardingWizard({
   onFinish,
@@ -57,7 +69,7 @@ export function OnboardingWizard({
   const [busy, setBusy] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
+  const [connected, setConnected] = useState(false);
   const [copied, setCopied] = useState(false);
   const saving = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -76,7 +88,7 @@ export function OnboardingWizard({
   }, [locked]);
 
   async function refresh() {
-    await Promise.all(
+    await Promise.allSettled(
       ["routing-upstreams", "agent-model-catalog", "intent-routing-groups"].map(
         (key) => client.invalidateQueries({ queryKey: [key] }),
       ),
@@ -84,6 +96,9 @@ export function OnboardingWizard({
   }
   async function finish(connected: boolean) {
     if (saving.current || importBusy) return;
+    await complete(connected);
+  }
+  async function complete(connected: boolean) {
     saving.current = true;
     setBusy(true);
     setError("");
@@ -95,6 +110,11 @@ export function OnboardingWizard({
       saving.current = false;
       setBusy(false);
     }
+  }
+  async function completeConnection() {
+    setConnected(true);
+    void refresh();
+    await complete(true);
   }
   async function connect(event: React.FormEvent) {
     event.preventDefault();
@@ -168,8 +188,7 @@ export function OnboardingWizard({
         },
       });
       setApiKey("");
-      setSuccess(t("onboarding.connected", { count: found.length }));
-      void refresh();
+      await completeConnection();
     } catch {
       setError("onboarding.connectionFailed");
     } finally {
@@ -186,6 +205,7 @@ export function OnboardingWizard({
     setBusy(true);
     setError("");
     setAccount(accountId);
+    let loadingModels = false;
     try {
       const records = await routingUpstreamsApi.list();
       const existing = records.find((row) =>
@@ -199,8 +219,28 @@ export function OnboardingWizard({
           ? await routingUpstreamsApi.editor(existing.id, existing.revision)
           : await routingUpstreamsApi.createCodex();
         if (!draft.codex) throw new Error("unavailable");
+        loadingModels = true;
+        const models = await routingUpstreamsApi.codexModels(
+          draft.id,
+          draft.revision,
+          accountId,
+        );
+        if (!models.length) throw new Error("unavailable");
+        loadingModels = false;
+        const keepSelection =
+          !!existing &&
+          draft.codex.settings.accounts.includes(accountId) &&
+          (draft.codex.settings.mode !== "vendor" ||
+            draft.codex.settings.models.length > 0);
         await routingUpstreamsApi.saveCodex(draft, {
           ...draft.codex.settings,
+          ...(!keepSelection
+            ? {
+                mode: "picked" as const,
+                models: models.slice(0, 256),
+                groupsOnly: false,
+              }
+            : {}),
           accounts: [
             ...new Set([
               ...(existing ? draft.codex.settings.accounts : []),
@@ -211,19 +251,41 @@ export function OnboardingWizard({
       } else {
         const preset = subscriptionProviders.find((row) => row.id === provider);
         if (!preset) throw new Error("unavailable");
+        loadingModels = true;
+        const catalog =
+          provider === "github_copilot"
+            ? (await copilotGetModelsForAccount(accountId)).map((model) => ({
+                ...model,
+                model: model.id,
+                displayName: model.name,
+              }))
+            : provider === "xai_oauth"
+              ? (await fetchXaiOauthModels(accountId)).map((model) => ({
+                  ...model,
+                  model: model.id,
+                }))
+              : await nativeSubscriptionApi.models(provider, accountId);
+        if (!catalog.length) throw new Error("unavailable");
+        loadingModels = false;
+        const selection = {
+          models: catalog.slice(0, 256),
+          catalog,
+          mode: "picked" as const,
+          groupsOnly: false,
+        };
         await routingUpstreamsApi.save(
           existing?.source.kind === "subscription"
             ? {
                 ...existing,
                 source:
-                  existing.source.accountId === accountId
-                    ? existing.source
+                  existing.source.accountId === accountId &&
+                  (existing.source.mode !== "vendor" ||
+                    existing.source.models.length > 0)
+                    ? { ...existing.source, catalog }
                     : {
                         ...existing.source,
                         accountId,
-                        models: [],
-                        catalog: [],
-                        mode: "vendor",
+                        ...selection,
                       },
               }
             : {
@@ -237,19 +299,19 @@ export function OnboardingWizard({
                   kind: "subscription",
                   provider,
                   accountId,
-                  models: [],
-                  catalog: [],
-                  mode: "vendor",
-                  groupsOnly: false,
+                  ...selection,
                 },
               },
         );
       }
       setSigning(undefined);
-      setSuccess(t("onboarding.accountConnected"));
-      void refresh();
+      await completeConnection();
     } catch {
-      setError("onboarding.accountFailed");
+      setError(
+        loadingModels
+          ? "onboarding.accountModelsFailed"
+          : "onboarding.accountFailed",
+      );
     } finally {
       saving.current = false;
       setBusy(false);
@@ -313,7 +375,7 @@ export function OnboardingWizard({
           <Button
             variant="ghost"
             disabled={locked}
-            onClick={() => void finish(!!success)}
+            onClick={() => void finish(connected)}
           >
             {t("onboarding.skip")}
           </Button>
@@ -346,22 +408,58 @@ export function OnboardingWizard({
                       <h2>{t(`onboarding.${item.title}`)}</h2>
                       <p>{t(`onboarding.${item.description}`)}</p>
                       {item.id === "subscription" && (
-                        <ul className="ob-method-list">
-                          {subscriptionProviders.map((p) => (
-                            <li key={p.id}>{p.name}</li>
+                        <ul
+                          className="ob-source-icons"
+                          aria-label={t("onboarding.subscriptionTitle")}
+                        >
+                          {subscriptionPreviews.map((p) => (
+                            <li key={p.icon}>
+                              <span
+                                className="ob-source-icon"
+                                role="img"
+                                aria-label={p.name}
+                                title={p.name}
+                              >
+                                <span aria-hidden="true">
+                                  <ProviderIcon
+                                    icon={p.icon}
+                                    name={p.name}
+                                    size={24}
+                                    color={
+                                      p.icon === "github"
+                                        ? "var(--mp-fg)"
+                                        : undefined
+                                    }
+                                  />
+                                </span>
+                              </span>
+                            </li>
                           ))}
                         </ul>
                       )}
                       {item.id === "import" && (
-                        <ul className="ob-method-list">
-                          {[
-                            "CC Switch",
-                            "Claude Code",
-                            "Codex",
-                            "OpenCode",
-                            "Magpie",
-                          ].map((name) => (
-                            <li key={name}>{name}</li>
+                        <ul
+                          className="ob-source-icons"
+                          aria-label={t("onboarding.importTitle")}
+                        >
+                          {providerImportSources.map((source) => (
+                            <li key={source.id}>
+                              <span
+                                className="ob-source-icon"
+                                role="img"
+                                aria-label={source.name}
+                                title={source.name}
+                                data-source={source.id}
+                              >
+                                <span aria-hidden="true">
+                                  <ProviderImportSourceIcon
+                                    sourceId={source.id}
+                                    name={source.name}
+                                    size={24}
+                                  />
+                                </span>
+                              </span>
+                            </li>
                           ))}
                         </ul>
                       )}
@@ -393,7 +491,7 @@ export function OnboardingWizard({
                 </div>
               </>
             )}
-            {method === "key" && !success && (
+            {method === "key" && !connected && (
               <form
                 className="ob-key-form"
                 onSubmit={(event) => void connect(event)}
@@ -453,7 +551,7 @@ export function OnboardingWizard({
                 </Button>
               </form>
             )}
-            {method === "subscription" && !success && (
+            {method === "subscription" && !connected && (
               <>
                 <div className="ob-subscriptions">
                   {subscriptionProviders.map((provider) => (
@@ -499,7 +597,7 @@ export function OnboardingWizard({
                 )}
               </>
             )}
-            {method === "import" && !success && (
+            {method === "import" && !connected && (
               <ProviderImportDialog
                 open
                 embedded
@@ -508,21 +606,10 @@ export function OnboardingWizard({
                   setMethod(undefined);
                   setError("");
                 }}
-                onImported={async () => {
-                  setSuccess(t("onboarding.imported"));
-                  void refresh();
-                }}
+                onImported={completeConnection}
               />
             )}
-            {success && (
-              <div className="ob-success" role="status">
-                <Check size={19} aria-hidden />
-                <div>
-                  <strong>{success}</strong>
-                  <p>{t("onboarding.nextHint")}</p>
-                </div>
-              </div>
-            )}
+            {connected && busy && <p role="status">{t("common.loading")}</p>}
             {error && (
               <p className="ob-error" role="alert">
                 {t(error)}
@@ -532,7 +619,7 @@ export function OnboardingWizard({
         </div>
         {method && (
           <footer className="ob-footer">
-            {method && !success ? (
+            {method && !connected ? (
               <Button
                 variant="outline"
                 disabled={locked}
@@ -549,10 +636,10 @@ export function OnboardingWizard({
             ) : (
               <span />
             )}
-            {success && (
+            {connected && error === "onboarding.finishFailed" && (
               <Button disabled={locked} onClick={() => void finish(true)}>
                 {busy && <Loader2 size={15} className="animate-spin" />}
-                {t("onboarding.enterTools")}
+                {t("common.retry")}
               </Button>
             )}
           </footer>

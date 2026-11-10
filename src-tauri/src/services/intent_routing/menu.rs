@@ -1625,10 +1625,7 @@ mod tests {
         assert_eq!(saved["display_name"], "Saved single member · routing group");
         assert_eq!(saved["description"], "VaryAI routing group");
         manager.restore().expect("restore");
-        assert_eq!(
-            std::fs::read_to_string(config).expect("restored config"),
-            original
-        );
+        crate::services::intent_routing::client::tests::assert_restored_config(&manager, original);
     }
 
     #[tokio::test]

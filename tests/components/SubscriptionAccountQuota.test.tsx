@@ -140,6 +140,16 @@ it("does not fetch unavailable accounts", async () => {
   ).toBeDisabled();
 });
 
+it("refreshes subscription plan labels after a Google quota observation", async () => {
+  const client = mount("antigravity");
+  const invalidate = vi.spyOn(client, "invalidateQueries");
+  await screen.findByText("codexProvider.remaining");
+  expect(invalidate).toHaveBeenCalledWith({
+    queryKey: ["native-subscription-accounts", "antigravity"],
+  });
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ["routing-upstreams"] });
+});
+
 it("keeps an exhausted enterprise shared pool visible without inventing unknown meters", async () => {
   vi.mocked(copilotGetUsageForAccount).mockResolvedValue({
     quota_reset_date: "2026-12-01T00:00:00Z",

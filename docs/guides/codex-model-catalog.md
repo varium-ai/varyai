@@ -95,11 +95,17 @@ shows this compatibility state separately from menu configuration. Restore the
 previous gateway's connection settings before reconnecting native compatibility;
 do not substitute its upstream API key for VaryAI's generated local credential.
 
-Conversation provider migration runs in the background, as in Magpie. A busy
-conversation is deferred and retried without adding a connection warning or
-disabling the model picker. If Codex itself reports a provider mismatch, close
-that conversation and allow the background retry to finish. Reopen Codex to
-reload its provider table. Do not delete history databases, rollout files, or
+Conversation provider migration runs in the background, as in Magpie. Provider
+IDs determine the transition even when displayed names match, and a saved model
+being absent from the menu does not prevent the provider change. Migration
+preserves saved model identities; select an available model afterward if needed.
+A busy conversation is deferred and retried without adding a connection warning
+or disabling the model picker. Route changes automatically reload the desktop
+background service when idle. Disconnect retains its provider definition for
+historical conversations without reporting an inactive table as a connection.
+If Codex itself still reports a provider mismatch, close that conversation and
+allow the background retry to finish. Fully quit and reopen Codex only if its
+background reload fails. Do not delete history databases, rollout files, or
 VaryAI recovery records.
 
 See the [frontend helper](../../src/components/providers/forms/helpers/codexCatalogAutoImport.ts), its [tests](../../src/components/providers/forms/helpers/codexCatalogAutoImport.test.ts), and [backend configuration](../../src-tauri/src/codex_config.rs). Test with synthetic provider data rather than internal gateway names or credentials.

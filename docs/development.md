@@ -64,6 +64,14 @@ Claude Desktop and WorkBuddy process inspection and confirmed restart support ma
 
 For Rust compatibility changes, run the backend checks with the exact CI toolchain as well as the previously supported local toolchain; passing on one version does not establish compatibility with another. DLP accounting uses the private `src-tauri/src/proxy/security/atomic_update.rs` compare-and-exchange helper to avoid both the deprecated `fetch_update` API and a replacement newer than the declared minimum Rust version. Its tests cover retry observations, refusal without mutation, budget bounds and saturated owners. API compatibility alone is not evidence that the entire dependency graph has been tested on the minimum version.
 
+Codex rollout activity reads the modification time and bounded event suffix from
+the same open file handle. Windows can retain an old modification time even on
+that handle while a writer keeps the rollout open, so freshness also considers
+timestamps recorded in the bounded suffix. Recent events keep active turns
+protected; completed turns and expired archives remain idle. Malformed recent
+suffixes block restart, while malformed expired archives remain expired. Keep
+the held-open writer and stale-metadata regressions in the cross-platform suite.
+
 Provider tests that read Hermes configuration must isolate `HERMES_HOME` and
 `LOCALAPPDATA` alongside the temporary home directory, and restore their previous
 values afterward. Hermes uses `LOCALAPPDATA` on Windows, so changing `HOME` alone
@@ -101,6 +109,7 @@ Ordinary source builds have no statistics destination and do not report installa
 - Keep tests isolated from real client configuration, credentials, running apps and the default proxy port.
 - Use synthetic provider endpoints, keys and sample content. Sanitize logs and screenshots before sharing.
 - Keep the four runtime locale files aligned; the application remains multilingual.
+- Single-choice native selects share `src/components/ui/native-select.css` for a flat surface, theme-aware chevron, keyboard focus and disabled states. Keep page-specific heights, and avoid resetting the chevron or its reserved end padding with equally specific background/padding shorthands. The compact login proxy retains its own SVG indicator; multiple and sized list boxes retain native rendering. Forced-color mode restores the system select indicator.
 - Read the [storage design](architecture/storage.md) before changing migrations or backup formats.
 - Use the [platform build guides](README.md) for local packaging. Production release infrastructure is separate.
 

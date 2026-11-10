@@ -205,15 +205,35 @@ fn local_client(request: &Request) -> bool {
     {
         return true;
     }
-    // Native TRAE sends Fetch Metadata with or without Origin. Credentials are checked below.
+    // Native clients also send Fetch Metadata. Connection credentials are checked below.
+    if !peer.is_some_and(|peer| peer.ip().is_loopback()) {
+        return false;
+    }
     let mut origins = request.headers().get_all(http::header::ORIGIN).iter();
-    peer.is_some_and(|peer| peer.ip().is_loopback())
-        && request.method() == http::Method::POST
-        && request.uri().path() == "/connections/trae/v1/chat/completions"
-        && origins
-            .next()
-            .is_none_or(|origin| origin.as_bytes() == b"vscode-file://vscode-app")
-        && origins.next().is_none()
+    let origin = origins.next();
+    if origins.next().is_some() {
+        return false;
+    }
+    match (request.method(), request.uri().path()) {
+        (&http::Method::POST, "/connections/trae/v1/chat/completions") => {
+            origin.is_none_or(|origin| origin.as_bytes() == b"vscode-file://vscode-app")
+        }
+        (&http::Method::GET, "/connections/claude-desktop/v1/models")
+        | (&http::Method::POST, "/connections/claude-desktop/v1/messages") => {
+            origin.is_none_or(|origin| matches!(origin.as_bytes(), b"null" | b"app://localhost"))
+                && ![
+                    "forwarded",
+                    "x-forwarded-for",
+                    "x-real-ip",
+                    "cf-connecting-ip",
+                    "true-client-ip",
+                    "tailscale-user-login",
+                ]
+                .iter()
+                .any(|name| request.headers().contains_key(*name))
+        }
+        _ => false,
+    }
 }
 pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) -> Response {
     if !local_client(&request) {
@@ -337,7 +357,17 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
                         entry["supports_1m"] = json!(window >= 1_000_000);
                     }
                 }
-                if ["pi", "hermes", "grokbuild", "kimi", "qwen", "zcode"].contains(&app) {
+                if [
+                    "claude",
+                    "pi",
+                    "hermes",
+                    "grokbuild",
+                    "kimi",
+                    "qwen",
+                    "zcode",
+                ]
+                .contains(&app)
+                {
                     if let Some((wire, _)) = connection
                         .model_map
                         .iter()
@@ -383,7 +413,7 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
         .model_map
         .get(model)
         .or_else(|| {
-            (app == "claude-desktop")
+            matches!(app, "claude" | "claude-desktop")
                 .then(|| crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(model))
                 .and_then(|plain| connection.model_map.get(plain))
         })

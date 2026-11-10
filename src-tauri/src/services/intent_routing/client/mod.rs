@@ -20,6 +20,8 @@ pub(crate) use health::ConfigurationIssue;
 mod alias_tests;
 #[cfg(test)]
 mod mode_tests;
+#[cfg(test)]
+mod parity_tests;
 
 const PROVIDER: &str = "varyai";
 const FIELDS: &[&str] = &[
@@ -229,7 +231,7 @@ fn beside_sign_in(config: &Path, doc: &DocumentMut, old: Option<&Receipt>, nativ
     if !native {
         return false;
     }
-    // A user's named provider remains a standalone takeover until disconnected.
+    // A user's named provider remains standalone; an OpenAI mirror can join sign-in.
     let baseline = old
         .map(|r| r.original.as_deref().unwrap_or(""))
         .map(str::to_owned)
@@ -237,9 +239,27 @@ fn beside_sign_in(config: &Path, doc: &DocumentMut, old: Option<&Receipt>, nativ
     let Ok(baseline) = baseline.parse::<toml::Value>() else {
         return false;
     };
-    if !openai_mode(&baseline)
-        && baseline.get("model_provider").and_then(toml::Value::as_str) != Some(PROVIDER)
-    {
+    let source = baseline
+        .get("model_provider")
+        .and_then(toml::Value::as_str)
+        .unwrap_or("openai");
+    let mirror = baseline
+        .get("model_providers")
+        .and_then(|providers| providers.get(source))
+        .is_some_and(|provider| {
+            provider.get("name").and_then(toml::Value::as_str) == Some("OpenAI")
+                && provider
+                    .get("requires_openai_auth")
+                    .and_then(toml::Value::as_bool)
+                    == Some(true)
+                && provider.get("base_url").is_none_or(|url| {
+                    url.as_str().is_some_and(|url| {
+                        valid_native_url(url)
+                            && Some(url) == doc.get("openai_base_url").and_then(|v| v.as_str())
+                    })
+                })
+        });
+    if !matches!(source, "openai" | PROVIDER) && !mirror {
         return false;
     }
     match chatgpt_sign_in(config, doc) {
@@ -272,7 +292,13 @@ fn provider_table(
             return Err(CONFLICT.into());
         }
         provider["http_headers"] = headers.clone();
+    } else {
+        provider["http_headers"] = toml_edit::value(toml_edit::InlineTable::new());
     }
+    provider["http_headers"]
+        .as_table_like_mut()
+        .ok_or(CONFLICT)?
+        .insert("x-openai-actor-authorization", toml_edit::value(PROVIDER));
     Ok(provider)
 }
 /// Install through a no-clobber hard link. A concurrent editor's replacement wins.
@@ -1003,24 +1029,32 @@ impl Manager {
         let current = read(&self.config)?;
         let restored = restore_text(current.as_deref(), &receipt)?;
         self.reconcile_thread_receipt(&mut receipt, true)?;
-        let restored = if receipt.thread_sync_pending {
-            // An active rollout still names this provider until its deferred recovery.
+        let current_provider = current
+            .as_deref()
+            .and_then(|text| text.parse::<DocumentMut>().ok())
+            .and_then(|doc| doc.get("model_providers")?.get(PROVIDER).cloned());
+        let restored = if receipt.thread_sync_pending || current_provider.is_some() {
+            // Keep the definition for historical chats, including deferred migrations.
+            // A preexisting definition restored above remains the user's baseline.
             let mut doc: DocumentMut = restored
                 .as_deref()
                 .unwrap_or("")
                 .parse()
                 .map_err(|_| FAILED)?;
             let installed: DocumentMut = receipt.installed.parse().map_err(|_| FAILED)?;
-            if let Some(provider) = installed
-                .get("model_providers")
-                .and_then(|v| v.get(PROVIDER))
-            {
+            let provider = current_provider.or_else(|| {
+                installed
+                    .get("model_providers")
+                    .and_then(|v| v.get(PROVIDER))
+                    .cloned()
+            });
+            if let Some(provider) = provider {
                 if doc.get("model_providers").is_none() {
                     doc["model_providers"] = toml_edit::table();
                 }
                 let table = doc["model_providers"].as_table_like_mut().ok_or(CONFLICT)?;
                 if table.get(PROVIDER).is_none() {
-                    table.insert(PROVIDER, provider.clone());
+                    table.insert(PROVIDER, provider);
                 }
             }
             Some(doc.to_string())
@@ -1305,10 +1339,21 @@ fn orphan_state(current: Option<&str>) -> Result<(bool, bool), String> {
     let Some(provider) = doc.get("model_providers").and_then(|p| p.get(PROVIDER)) else {
         return Ok((referenced, false));
     };
-    let known = provider
-        .as_table()
-        .is_some_and(|table| matches!(table.len(), 7 | 8) && recognized_orphan_provider(table));
-    Ok((true, known && !referenced))
+    let known = provider.as_table().is_some_and(recognized_orphan_provider);
+    let native_routed = doc
+        .get("openai_base_url")
+        .and_then(toml::Value::as_str)
+        .filter(|url| valid_native_url(url))
+        .and_then(|url| url::Url::parse(url).ok())
+        .zip(
+            provider
+                .get("base_url")
+                .and_then(toml::Value::as_str)
+                .and_then(|url| url::Url::parse(url).ok()),
+        )
+        .is_some_and(|(native, menu)| native.origin() == menu.origin());
+    // An inactive definition is retained for history and does not imply takeover.
+    Ok((referenced || native_routed, known && !referenced))
 }
 fn references_projection(value: &toml::Value) -> bool {
     match value {
@@ -1483,4 +1528,4 @@ fn restore_text(current: Option<&str>, receipt: &Receipt) -> Result<Option<Strin
     }
 }
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

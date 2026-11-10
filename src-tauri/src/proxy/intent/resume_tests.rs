@@ -377,6 +377,47 @@ async fn persistence_failure_does_not_break_live_bindings() -> Result<(), Box<dy
 }
 
 #[tokio::test]
+async fn memory_only_responses_replay_does_not_import_durable_owners(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let store =
+        continuation::Store::load(dir.path().join("state.json"), dir.path().join("state.key"))
+            .await?;
+    saved(&two_targets()?, store.clone(), Some("thread")).await?;
+    let fresh = two_targets()?;
+    let body = json!({"previous_response_id":"response-b", "input":[
+        {"type":"function_call_output","call_id":"call-b","output":"synthetic"},
+        {"type":"reasoning","id":"item-b","encrypted_content":"opaque-b"}
+    ]});
+    let memory_only = scopes::Conversations::default().acquire_durable_with_policy(
+        "local-codex",
+        &fresh,
+        Some("thread"),
+        &body,
+        None,
+        scopes::HistoryPolicy::ResponsesReplay,
+    )?;
+    {
+        let bindings = memory_only.bindings.lock().await;
+        assert!(bindings.resolve(&body, Some("thread")).is_err());
+        assert_eq!(bindings.resolve_replay(&body, Some("thread")), Ok(None));
+        assert!(!bindings.known_opaque(&body));
+    }
+    let durable = scopes::Conversations::default().acquire_durable_with_policy(
+        "local-codex",
+        &fresh,
+        Some("thread"),
+        &body,
+        Some(store),
+        scopes::HistoryPolicy::ResponsesReplay,
+    )?;
+    let bindings = durable.bindings.lock().await;
+    assert_eq!(bindings.resolve_replay(&body, Some("thread")), Ok(Some(1)));
+    assert!(bindings.known_opaque(&body));
+    Ok(())
+}
+
+#[tokio::test]
 #[serial_test::serial]
 async fn http_reconnect_restores_json_and_observed_sse_before_eof(
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -503,15 +544,16 @@ async fn http_reconnect_restores_json_and_observed_sse_before_eof(
     .with_intent_runtime(runtime.clone());
     let info = server.start().await?;
     let url = format!("http://127.0.0.1:{}/intent/v1/responses", info.port);
-    let temporary = runtime.install(make_session()?, None)?;
-    let rejected = client
+    let temporary_token = runtime.install(make_session()?, None)?;
+    let unobserved_reference = client
         .post(&url)
-        .bearer_auth(&temporary)
+        .bearer_auth(&temporary_token)
         .header("session_id", "json-thread")
         .json(&json!({"model":alias,"previous_response_id":"json-response","input":"synthetic"}))
         .send()
         .await?;
-    assert_eq!(rejected.status(), StatusCode::CONFLICT);
+    assert_eq!(unobserved_reference.status(), StatusCode::OK);
+    let _: Value = unobserved_reference.json().await?;
     assert_eq!(
         client
             .post(&url)
@@ -537,7 +579,7 @@ async fn http_reconnect_restores_json_and_observed_sse_before_eof(
         assert_eq!(response.status(), StatusCode::OK);
         let _: Value = response.json().await?;
     }
-    assert_eq!(calls.load(Ordering::SeqCst), 4);
+    assert_eq!(calls.load(Ordering::SeqCst), 5);
     server.stop().await?;
     task.abort();
     Ok(())

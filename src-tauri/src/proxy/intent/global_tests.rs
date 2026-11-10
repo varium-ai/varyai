@@ -2245,7 +2245,15 @@ async fn readable_native_catalog_ids_and_legacy_routes_remain_compatible(
         },
     );
     runtime.set_global(published, 0)?;
-    for app in ["pi", "hermes", "grokbuild", "kimi", "qwen", "zcode"] {
+    for app in [
+        "claude",
+        "pi",
+        "hermes",
+        "grokbuild",
+        "kimi",
+        "qwen",
+        "zcode",
+    ] {
         runtime
             .connections
             .install(&crate::services::agent_connections::Receipt {
@@ -2270,7 +2278,15 @@ async fn readable_native_catalog_ids_and_legacy_routes_remain_compatible(
     .with_intent_runtime(runtime);
     let info = proxy.start().await?;
     let client = reqwest::Client::builder().no_proxy().build()?;
-    for app in ["pi", "hermes", "grokbuild", "kimi", "qwen", "zcode"] {
+    for app in [
+        "claude",
+        "pi",
+        "hermes",
+        "grokbuild",
+        "kimi",
+        "qwen",
+        "zcode",
+    ] {
         let url = format!("http://127.0.0.1:{}/connections/{app}/v1", info.port);
         let catalog: Value = client
             .get(format!("{url}/models"))
@@ -2280,7 +2296,11 @@ async fn readable_native_catalog_ids_and_legacy_routes_remain_compatible(
             .json()
             .await?;
         assert_eq!(catalog["data"][0]["id"], label, "{app}");
-        for model in [label.to_owned(), group().alias()] {
+        let mut models = vec![label.to_owned(), group().alias()];
+        if app == "claude" {
+            models.push(format!("{label}[1m]"));
+        }
+        for model in models {
             let response = client
                 .post(format!("{url}/responses"))
                 .bearer_auth("synthetic-readable-token")

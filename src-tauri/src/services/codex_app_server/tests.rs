@@ -20,7 +20,10 @@ fn route_change_waits_for_settling_and_running_turns() {
         m.observe([2; 32], old.clone(), false, 9),
         Action::Restart(old.clone())
     );
-    assert_eq!(m.observe([2; 32], old, false, 10), Action::None);
+    assert_eq!(
+        m.observe([2; 32], old.clone(), false, 10),
+        Action::Restart(old)
+    );
     assert_eq!(
         m.observe([2; 32], vec![server(11)], false, 11),
         Action::Recovered
@@ -59,8 +62,105 @@ fn rapid_switches_restart_only_the_final_route_and_timeout_is_bounded() {
         Action::Restart(old.clone())
     );
     assert_eq!(m.observe([3; 32], vec![], false, 7), Action::None);
-    assert_eq!(m.observe([3; 32], vec![], false, 27), Action::TimedOut);
+    assert_eq!(m.observe([3; 32], vec![], false, 36), Action::None);
+    assert_eq!(m.observe([3; 32], vec![], false, 37), Action::TimedOut);
     assert_eq!(m.observe([3; 32], old, false, 40), Action::None);
+}
+
+#[test]
+fn accepted_signals_retry_still_running_servers_three_times_and_preserve_replacements() {
+    let mut m = Monitor::default();
+    let old = vec![server(10), server(11)];
+    m.observe([1; 32], old.clone(), false, 0);
+    m.observe([2; 32], old.clone(), false, 1);
+    assert_eq!(
+        m.observe([2; 32], old.clone(), false, 5),
+        Action::Restart(old)
+    );
+    let running = vec![server(11), server(12)];
+    for now in [7, 9] {
+        assert_eq!(
+            m.observe([2; 32], running.clone(), false, now),
+            Action::Restart(vec![server(11)])
+        );
+    }
+    assert_eq!(m.observe([2; 32], running, false, 11), Action::None);
+    assert_eq!(m.snapshot(), ReloadState::Restarting);
+    assert_eq!(
+        m.observe([2; 32], vec![server(12)], false, 12),
+        Action::Recovered
+    );
+}
+
+#[test]
+fn final_recheck_deferral_refunds_retry_budget_without_forgetting_prior_signals() {
+    let mut m = Monitor::default();
+    let old = vec![server(10)];
+    m.observe([1; 32], old.clone(), false, 0);
+    m.observe([2; 32], old.clone(), false, 1);
+    for now in [5, 7, 9, 11] {
+        assert_eq!(
+            m.observe([2; 32], old.clone(), false, now),
+            Action::Restart(old.clone())
+        );
+        m.defer();
+    }
+    assert_eq!(
+        m.observe([2; 32], old.clone(), false, 15),
+        Action::Restart(old.clone())
+    );
+    assert_eq!(m.observe([2; 32], old.clone(), true, 17), Action::None);
+    assert_eq!(
+        m.observe([2; 32], old.clone(), false, 19),
+        Action::Restart(old.clone())
+    );
+    m.defer();
+    assert!(m.running[0].attempted);
+    for now in [21, 23] {
+        assert_eq!(
+            m.observe([2; 32], old.clone(), false, now),
+            Action::Restart(old.clone())
+        );
+    }
+    assert_eq!(m.observe([2; 32], old, false, 24), Action::None);
+}
+
+#[test]
+fn failed_termination_does_not_skip_other_desktop_servers() {
+    let targets = vec![server(10), server(11), server(12)];
+    let mut attempted = Vec::new();
+    let failed = terminate_targets(&targets, |target| {
+        attempted.push(target.pid);
+        if target.pid == 11 {
+            Err(())
+        } else {
+            Ok(())
+        }
+    });
+    assert_eq!(attempted, vec![10, 11, 12]);
+    assert_eq!(failed, vec![server(11)]);
+}
+
+#[test]
+fn replacement_gets_thirty_seconds_after_a_slow_old_server_exits() {
+    let mut m = Monitor::default();
+    let old = vec![server(10)];
+    m.observe([1; 32], old.clone(), false, 0);
+    m.observe([2; 32], old.clone(), false, 1);
+    assert_eq!(
+        m.observe([2; 32], old.clone(), false, 5),
+        Action::Restart(old.clone())
+    );
+    assert_eq!(
+        m.observe([2; 32], old.clone(), false, 24),
+        Action::Restart(old)
+    );
+    assert_eq!(m.observe([2; 32], vec![], false, 25), Action::None);
+    assert_eq!(m.observe([2; 32], vec![], false, 54), Action::None);
+    assert_eq!(
+        m.observe([2; 32], vec![server(11)], false, 55),
+        Action::Recovered
+    );
 }
 
 #[test]
@@ -286,6 +386,31 @@ fn catalog_pointer_and_provider_label_are_not_routing_changes(
 }
 
 #[test]
+fn identical_provider_labels_and_endpoints_do_not_hide_an_identity_switch(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let config = dir.path().join("config.toml");
+    let text = "model_provider='previous'\n[model_providers.previous]\nname='Synthetic gateway'\nbase_url='http://127.0.0.1:1234/v1'\n[model_providers.varyai]\nname='Synthetic gateway'\nbase_url='http://127.0.0.1:1234/v1'\n";
+    fs::write(&config, text)?;
+    let before = fingerprint(&config).map_err(|_| "fingerprint")?;
+    fs::write(
+        &config,
+        text.replacen("model_provider='previous'", "model_provider='varyai'", 1),
+    )?;
+    let after = fingerprint(&config).map_err(|_| "fingerprint")?;
+    assert_ne!(before, after);
+    let mut monitor = Monitor::default();
+    let old = vec![server(10)];
+    monitor.observe(before, old.clone(), false, 0);
+    monitor.observe(after, old.clone(), false, 1);
+    assert_eq!(
+        monitor.observe(after, old.clone(), false, 5),
+        Action::Restart(old)
+    );
+    Ok(())
+}
+
+#[test]
 fn providers_without_openai_auth_ignore_account_switches() -> Result<(), Box<dyn std::error::Error>>
 {
     let dir = tempfile::tempdir()?;
@@ -332,7 +457,7 @@ fn returning_to_loaded_route_cancels_an_unsignalled_restart() {
 }
 
 #[test]
-fn later_route_changes_never_signal_the_same_instance_twice() {
+fn later_route_changes_do_not_reset_a_still_running_instances_retry_limit() {
     let mut m = Monitor::default();
     let old = vec![server(10)];
     m.observe([1; 32], old.clone(), false, 0);
@@ -341,8 +466,16 @@ fn later_route_changes_never_signal_the_same_instance_twice() {
         m.observe([2; 32], old.clone(), false, 5),
         Action::Restart(old.clone())
     );
-    m.observe([3; 32], old.clone(), false, 6);
-    assert_eq!(m.observe([3; 32], old.clone(), false, 10), Action::None);
+    assert_eq!(m.observe([3; 32], old.clone(), false, 6), Action::None);
+    assert_eq!(
+        m.observe([3; 32], old.clone(), false, 10),
+        Action::Restart(old.clone())
+    );
+    assert_eq!(
+        m.observe([3; 32], old.clone(), false, 12),
+        Action::Restart(old.clone())
+    );
+    assert_eq!(m.observe([3; 32], old.clone(), false, 14), Action::None);
     assert_eq!(m.observe([3; 32], old.clone(), false, 25), Action::TimedOut);
     assert_eq!(m.observe([3; 32], old, false, 40), Action::None);
 }
@@ -358,7 +491,8 @@ fn missing_replacement_failure_remains_visible_until_a_new_server_appears() {
         Action::Restart(old)
     );
     m.observe([2; 32], vec![], false, 6);
-    assert_eq!(m.observe([2; 32], vec![], false, 25), Action::TimedOut);
+    assert_eq!(m.observe([2; 32], vec![], false, 35), Action::None);
+    assert_eq!(m.observe([2; 32], vec![], false, 36), Action::TimedOut);
     assert_eq!(m.snapshot(), ReloadState::Failed);
     m.observe([2; 32], vec![], false, 40);
     assert_eq!(m.snapshot(), ReloadState::Failed);
@@ -367,7 +501,7 @@ fn missing_replacement_failure_remains_visible_until_a_new_server_appears() {
 }
 
 #[test]
-fn partial_replacements_receive_a_later_route_without_repeating_old_signals() {
+fn partial_replacements_receive_a_later_route_with_bounded_retries() {
     let mut m = Monitor::default();
     let old = vec![server(10), server(11)];
     m.observe([1; 32], old.clone(), false, 0);
@@ -380,7 +514,11 @@ fn partial_replacements_receive_a_later_route_without_repeating_old_signals() {
     m.observe([2; 32], running.clone(), false, 6);
     m.observe([3; 32], running.clone(), false, 7);
     assert_eq!(
-        m.observe([3; 32], running, false, 10),
+        m.observe([3; 32], running.clone(), false, 10),
+        Action::Restart(vec![server(11), server(12)])
+    );
+    assert_eq!(
+        m.observe([3; 32], running, false, 12),
         Action::Restart(vec![server(12)])
     );
 }
@@ -455,6 +593,87 @@ fn abandoned_rollouts_expire_only_after_their_last_file_activity(
     fs::File::options().write(true).open(&rollout)?.set_times(
         fs::FileTimes::new().set_modified(now - std::time::Duration::from_secs(40 * 60)),
     )?;
+    assert!(!activity::busy(dir.path(), since).map_err(|_| "activity")?);
+    Ok(())
+}
+
+#[test]
+fn held_open_session_uses_its_current_write_time() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    let dir = tempfile::tempdir()?;
+    fs::create_dir_all(dir.path().join("sessions"))?;
+    let rollout = dir.path().join("sessions/held.jsonl");
+    let mut file = fs::File::create(&rollout)?;
+    writeln!(
+        file,
+        "{}",
+        json!({"type":"event_msg", "payload":{"type":"task_complete"}})
+    )?;
+    file.set_times(
+        fs::FileTimes::new()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 60)),
+    )?;
+    let started = chrono::Utc::now();
+    writeln!(
+        file,
+        "{}",
+        json!({"timestamp":started.to_rfc3339(), "type":"event_msg", "payload":{"type":"task_started"}})
+    )?;
+    // Keep the writer open, as Codex does. Windows directory-entry metadata
+    // can still describe the old timestamp until another handle closes.
+    assert!(activity::busy(dir.path(), started.timestamp_micros() as u64).map_err(|_| "activity")?);
+    Ok(())
+}
+
+#[test]
+fn recent_rollout_events_override_a_stale_file_timestamp() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    fs::create_dir_all(dir.path().join("sessions"))?;
+    let rollout = dir.path().join("sessions/stale-metadata.jsonl");
+    let started = chrono::Utc::now();
+    let since = started.timestamp_micros() as u64;
+    let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 60);
+    for (kind, expected) in [("task_started", true), ("task_complete", false)] {
+        let mut events = format!(
+            "{}\n",
+            json!({"timestamp":started.to_rfc3339(), "type":"event_msg", "payload":{"type":"task_started"}})
+        );
+        if kind == "task_complete" {
+            events.push_str(&format!(
+                "{}\n",
+                json!({"timestamp":started.to_rfc3339(), "type":"event_msg", "payload":{"type":kind}})
+            ));
+        }
+        fs::write(&rollout, events)?;
+        fs::File::options()
+            .write(true)
+            .open(&rollout)?
+            .set_times(fs::FileTimes::new().set_modified(stale))?;
+        assert_eq!(
+            activity::busy(dir.path(), since).map_err(|_| "activity")?,
+            expected,
+        );
+    }
+    // A partial write after a recent event must still block restart.
+    fs::write(
+        &rollout,
+        format!(
+            "{}\n{{",
+            json!({"timestamp":started.to_rfc3339(), "type":"event_msg", "payload":{"type":"task_started"}})
+        ),
+    )?;
+    fs::File::options()
+        .write(true)
+        .open(&rollout)?
+        .set_times(fs::FileTimes::new().set_modified(stale))?;
+    assert!(activity::busy(dir.path(), since).is_err());
+    // Expired malformed archives retain their existing non-blocking behavior.
+    fs::write(&rollout, "incomplete archive\n")?;
+    fs::File::options()
+        .write(true)
+        .open(&rollout)?
+        .set_times(fs::FileTimes::new().set_modified(stale))?;
     assert!(!activity::busy(dir.path(), since).map_err(|_| "activity")?);
     Ok(())
 }

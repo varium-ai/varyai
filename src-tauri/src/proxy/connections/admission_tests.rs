@@ -206,3 +206,109 @@ fn ingress_diagnostics_never_include_request_values() -> Result<(), Box<dyn std:
     assert!(!summary.contains("synthetic-private"));
     Ok(())
 }
+
+#[test]
+fn desktop_native_network_metadata_requires_exact_routes_and_loopback(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for peer in ["127.0.0.1:12345", "[::1]:12345"] {
+        for origins in [vec![], vec!["null"], vec!["app://localhost"]] {
+            for fetch_site in [false, true] {
+                for (method, path) in [
+                    (http::Method::GET, "/connections/claude-desktop/v1/models"),
+                    (
+                        http::Method::POST,
+                        "/connections/claude-desktop/v1/messages",
+                    ),
+                ] {
+                    assert!(local_client(&request(
+                        method,
+                        path,
+                        Some(peer),
+                        &origins,
+                        fetch_site,
+                    )?));
+                }
+            }
+        }
+    }
+    for peer in [None, Some("192.0.2.1:12345"), Some("[2001:db8::1]:12345")] {
+        assert!(!local_client(&request(
+            http::Method::POST,
+            "/connections/claude-desktop/v1/messages",
+            peer,
+            &["null"],
+            true,
+        )?));
+    }
+    for (method, path) in [
+        (
+            http::Method::OPTIONS,
+            "/connections/claude-desktop/v1/messages",
+        ),
+        (http::Method::GET, "/connections/claude-desktop/v1/messages"),
+        (http::Method::POST, "/connections/claude-desktop/v1/models"),
+        (
+            http::Method::POST,
+            "/connections/claude-desktop/v1/messages/",
+        ),
+        (
+            http::Method::POST,
+            "/connections/claude-desktop/v1/responses",
+        ),
+        (http::Method::POST, "/connections/claude/v1/messages"),
+        (http::Method::POST, "/intent/v1/responses"),
+    ] {
+        assert!(!local_client(&request(
+            method,
+            path,
+            Some("127.0.0.1:12345"),
+            &["null"],
+            true,
+        )?));
+    }
+    Ok(())
+}
+
+#[test]
+fn desktop_native_metadata_rejects_web_origins_and_forwarded_peers(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for origins in [
+        vec!["https://fixture.invalid"],
+        vec!["http://localhost"],
+        vec!["app://localhost/"],
+        vec!["app://localhost.fixture.invalid"],
+        vec!["app://localhost@fixture.invalid"],
+        vec!["null", "null"],
+        vec!["app://localhost", "https://fixture.invalid"],
+        vec!["null, app://localhost"],
+    ] {
+        assert!(!local_client(&request(
+            http::Method::POST,
+            "/connections/claude-desktop/v1/messages",
+            Some("127.0.0.1:12345"),
+            &origins,
+            true,
+        )?));
+    }
+    for name in [
+        "forwarded",
+        "x-forwarded-for",
+        "x-real-ip",
+        "cf-connecting-ip",
+        "true-client-ip",
+        "tailscale-user-login",
+    ] {
+        let mut request = request(
+            http::Method::POST,
+            "/connections/claude-desktop/v1/messages",
+            Some("127.0.0.1:12345"),
+            &[],
+            true,
+        )?;
+        request
+            .headers_mut()
+            .insert(name, http::HeaderValue::from_static("synthetic"));
+        assert!(!local_client(&request));
+    }
+    Ok(())
+}

@@ -846,16 +846,15 @@ async fn claude_converted_tool_calls_reach_history_from_native_responses() {
                     continue;
                 }
                 assert_eq!(events[0].client_category.as_deref(), Some(app));
-                assert!(events[0].command_summary.is_none());
+                assert_eq!(events[0].command_summary.as_deref(), Some("pwd"));
                 assert_eq!(events[0].stage, "proposed");
                 db.insert_current_tool_risk_events_batch(&events).unwrap();
             }
         }
     }
-    assert!(db
-        .get_tool_risk_command_summary_preview()
-        .unwrap()
-        .is_empty());
+    let previews = db.get_tool_risk_command_summary_preview().unwrap();
+    assert_eq!(previews.len(), 12);
+    assert!(previews.iter().all(|(_, summary)| summary == "pwd"));
     assert_eq!(db.get_tool_risk_events(20, 0).unwrap().len(), 12);
     proxy.stop().await.unwrap();
     server.abort();

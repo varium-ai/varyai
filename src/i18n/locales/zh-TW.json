@@ -308,6 +308,7 @@
     "sensitiveTypesSample": "最近 {{sampleSize}} 條安全事件涉及 {{types}} 類敏感資訊"
   },
   "common": {
+    "retry": "重試",
     "add": "新增",
     "edit": "編輯",
     "delete": "刪除",
@@ -5538,6 +5539,7 @@
     "reopen": "重新開啟",
     "proxy": "代理",
     "globalProxy": "全域代理",
+    "accountProxy": "沿用帳號代理",
     "direct": "直接連線",
     "customProxy": "自訂…",
     "proxyUrl": "代理網址",
@@ -5551,6 +5553,12 @@
     "finish": "完成登入",
     "finishing": "正在完成登入…",
     "failed": "登入未完成，請重試或切換登入方式。",
+    "tokenRejected": "ChatGPT 拒絕了登入請求（HTTP {{status}}）。請重新發起登入；若持續失敗，請檢查所選代理。",
+    "networkFailed": "無法連線 ChatGPT 完成登入，請檢查所選代理後重試。",
+    "exchangeTimeout": "ChatGPT 未在 30 秒內完成登入，請檢查所選代理並重新發起登入。",
+    "invalidTokenResponse": "ChatGPT 傳回的登入憑證不完整或無法解析，請重新發起登入。",
+    "saveFailed": "無法儲存已登入帳號，請檢查磁碟可用空間後重試。",
+    "identityMismatch": "此次登入與原帳號不一致，請登入對應帳號或另外新增此帳號。",
     "callbackInvalid": "回呼網址與目前登入不符，請複製瀏覽器最終頁面的完整網址。",
     "proxyInvalid": "請輸入 HTTP、HTTPS 或 SOCKS 代理網址。",
     "expired": "登入已過期，請重新開始。",
@@ -5857,14 +5865,10 @@
     "invalidConnection": "請輸入 HTTP(S) API 網址和 Key；網址不能包含登入憑證、查詢參數或片段。",
     "connectionFailed": "連線或儲存失敗，請檢查網址、Key 和 API 協定後重試。",
     "noModels": "沒有取得可用模型。請檢查網址和協定，或在「模型」中手動新增供應商。",
-    "connected": "連線成功，找到 {{count}} 個模型。",
-    "accountConnected": "帳號連線成功。",
     "savingAccount": "正在儲存已登入的帳號…",
+    "accountModelsFailed": "登入已完成，但無法取得可用模型，請重試。",
     "accountFailed": "登入已完成，但連線儲存失敗，請重試。",
     "codexHint": "瀏覽器可能會顯示 Codex，這是正常的。",
-    "imported": "已匯入選取的連線。",
-    "nextHint": "進入工具頁，連線 Claude Code、Codex 或其他支援的工具。",
-    "enterTools": "進入工具頁",
     "finishFailed": "無法儲存引導完成狀態，請重試；已儲存的連線會保留。"
   }
 }

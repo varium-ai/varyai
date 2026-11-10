@@ -71,7 +71,7 @@ function waitForTail(pending: Promise<void> | undefined, signal: AbortSignal) {
 
 function createSession() {
   return {
-    mountedAt: Date.now(),
+    acceptSince: Date.now(),
     lastSeenId: 0,
     running: false,
     dirty: false,
@@ -114,6 +114,7 @@ async function readSettings(state: NotificationSession) {
   try {
     const settings = await toolRiskApi.getSettings();
     if (state.disposed || state.generation !== generation) return null;
+    if (!settings.enabled) state.acceptSince = Date.now();
     if (
       state.policy &&
       (state.policy.enabled !== settings.enabled ||
@@ -345,6 +346,7 @@ export function ToolRiskNotifier() {
       )
         return;
       const settings = event.query.state.data as ToolRiskSettings | undefined;
+      if (settings?.enabled === false) state.acceptSince = Date.now();
       if (
         state.policy &&
         settings &&
@@ -394,7 +396,7 @@ export function ToolRiskNotifier() {
             if (record.id <= state.lastSeenId) continue;
             state.lastSeenId = record.id;
             if (
-              record.timestamp < state.mountedAt ||
+              record.timestamp < state.acceptSince ||
               record.policyVersion !== settings.policyVersion ||
               !shouldNotify(record)
             )

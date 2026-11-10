@@ -21,6 +21,10 @@
 .vary-dialog-surface:focus {
   outline: none;
 }
+/* Preserve intrinsic body height in fit-content dialogs before allowing scroll. */
+.vary-dialog-surface > .flex-1 {
+  flex-basis: auto;
+}
 .vary-dialog-header,
 .vary-dialog-footer {
   background: transparent;

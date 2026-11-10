@@ -13,7 +13,7 @@ use super::types::RuleOrigin;
 use super::types::ToolRiskRule;
 
 /// Runtime policy snapshot.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolRiskRuntime {
     /// Feature enablement.
     pub enabled: bool,
@@ -77,6 +77,7 @@ struct RuntimeState {
     snapshot: RwLock<Arc<ToolRiskRuntime>>,
     enabled: AtomicBool,
     policy_version: AtomicU64,
+    generation: AtomicU64,
 }
 
 impl RuntimeState {
@@ -90,7 +91,17 @@ impl RuntimeState {
                 return false;
             }
         };
+        if **snapshot == runtime
+            && self.enabled.load(Ordering::Acquire) == runtime.enabled
+            && self.policy_version.load(Ordering::Acquire) == runtime.policy_version
+        {
+            return true;
+        }
         self.enabled.store(false, Ordering::Release);
+        let Some(generation) = self.generation.load(Ordering::Acquire).checked_add(1) else {
+            return false;
+        };
+        self.generation.store(generation, Ordering::Release);
         if runtime.rules.iter().any(|rule| rule.validate().is_err())
             || runtime.command_lists.len() > super::classifier::MAX_COMMAND_LISTS
             || runtime
@@ -131,6 +142,11 @@ pub fn collection_policy_version() -> u64 {
     runtime_state().policy_version.load(Ordering::Acquire)
 }
 
+/// Invalidate in-flight observations across toggles without changing rule versions.
+pub(crate) fn collection_generation() -> u64 {
+    runtime_state().generation.load(Ordering::Acquire)
+}
+
 /// Get the worker snapshot; return a disabled snapshot if locking fails.
 pub fn get_tool_risk_runtime() -> Arc<ToolRiskRuntime> {
     runtime_cell()
@@ -153,6 +169,25 @@ pub fn set_tool_risk_runtime_for_test(runtime: ToolRiskRuntime) {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn toggles_invalidate_collection_without_changing_rule_version() {
+        let state = RuntimeState::default();
+        let runtime = ToolRiskRuntime::build(true, 7, Vec::new(), &HashMap::new());
+        assert!(state.publish(runtime.clone()));
+        let first = state.generation.load(Ordering::Acquire);
+        assert!(state.publish(runtime.clone()));
+        assert_eq!(state.generation.load(Ordering::Acquire), first);
+        assert!(state.publish(ToolRiskRuntime {
+            enabled: false,
+            ..runtime.clone()
+        }));
+        assert!(state.generation.load(Ordering::Acquire) > first);
+        assert!(state.publish(runtime));
+        assert!(state.generation.load(Ordering::Acquire) > first + 1);
+        assert_eq!(state.policy_version.load(Ordering::Acquire), 7);
+        assert!(state.enabled.load(Ordering::Acquire));
+    }
 
     #[test]
     fn build_applies_builtin_overrides() {
