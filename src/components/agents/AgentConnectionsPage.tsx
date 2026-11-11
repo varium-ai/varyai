@@ -364,7 +364,7 @@ export function AgentConnectionsPage({
         setModelControlRequest({ app, model });
         return;
       }
-      if (await apply(app, true, model)) setRestarting(app);
+      await apply(app, true, model);
       return;
     }
     await apply(app, true, model);
@@ -378,7 +378,6 @@ export function AgentConnectionsPage({
       await agentConnectionsApi.authorizeModelControl(app, true);
       if (await apply(app, true, model)) {
         setModelControlRequest(null);
-        setRestarting(app);
       }
     } catch {
       setError("agentConnections.modelControlUnavailable");
@@ -591,15 +590,19 @@ export function AgentConnectionsPage({
           : state?.recoveryPending
             ? state.configurationIssue
               ? state.configurationIssue
-              : state.recoveryReason === "bridge_pending"
-                ? "bridgePending"
-                : state.recoveryReason === "connection_inactive"
-                  ? gateway.data?.running
-                    ? "inactive"
-                    : "gatewayStopped"
-                  : state.recoveryReason === "orphaned"
-                    ? "orphaned"
-                    : "recovery"
+              : state.recoveryReason === "bridge_selection_pending"
+                ? "bridgeSelectionPending"
+                : state.recoveryReason === "bridge_model_rejected"
+                  ? "bridgeModelRejected"
+                  : state.recoveryReason === "bridge_pending"
+                    ? "bridgePending"
+                    : state.recoveryReason === "connection_inactive"
+                      ? gateway.data?.running
+                        ? "inactive"
+                        : "gatewayStopped"
+                      : state.recoveryReason === "orphaned"
+                        ? "orphaned"
+                        : "recovery"
             : app === "codex" && codexProxyDiagnosticEnabled && codexProxyIssue
               ? "codexProxyBlocked"
               : reloadStatus
@@ -625,7 +628,9 @@ export function AgentConnectionsPage({
                     : "off";
     const bypassed = status === "recovery";
     const reapplyButton = state?.recoveryPending &&
-      state.recoveryReason !== "bridge_pending" &&
+      !["bridge_pending", "bridge_selection_pending"].includes(
+        state.recoveryReason ?? "",
+      ) &&
       !connection.isError && (
         <button
           type="button"
@@ -899,7 +904,10 @@ export function AgentConnectionsPage({
                       !orphaned &&
                       !inactiveCodexIntent &&
                       !(
-                        isTrae(app) && state.recoveryReason === "bridge_pending"
+                        isTrae(app) &&
+                        ["bridge_pending", "bridge_selection_pending"].includes(
+                          state.recoveryReason ?? "",
+                        )
                       )) ||
                     (enabled &&
                       (catalog.isPending ||

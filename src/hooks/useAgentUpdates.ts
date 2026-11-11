@@ -178,19 +178,33 @@ export function useAgentUpdates(installed: AppId[]) {
           isUpdateAvailable(info.version, info.latest_version);
   });
 
+  function release(selected: AppId[]) {
+    store.set(
+      "reserved",
+      store.snapshot().reserved.filter((app) => !selected.includes(app)),
+    );
+    setActive(store.snapshot().active.filter((app) => !selected.includes(app)));
+    const current = store.snapshot();
+    setBusy(
+      current.reserved.length > 0 ||
+        !!current.installTarget ||
+        !!current.installing,
+    );
+  }
   function unlock() {
     locked.current = false;
-    setBusy(false);
-    store.set("reserved", []);
-    setActive([]);
+    release([]);
+  }
+  function record(completed: AgentUpdateResult[]) {
+    setResults([...store.snapshot().results, ...completed]);
+    setProgress({
+      ...store.snapshot().progress,
+      index: store.snapshot().results.length,
+    });
   }
   async function execute(selected: AppId[]) {
-    if (executing.current) return;
-    executing.current = true;
-    setPending(null);
-    const completed: AgentUpdateResult[] = [];
     try {
-      setActive(selected);
+      setActive([...store.snapshot().active, ...selected]);
       await Promise.allSettled(
         selected.map(async (app) => {
           const tool = cliTools[app];
@@ -261,46 +275,41 @@ export function useAgentUpdates(installed: AppId[]) {
             );
           }
           const verified = !!to && !!from && compareVersions(to, from) > 0;
-          completed.push({
-            app,
-            from,
-            to,
-            outcome: failed ? "failed" : verified ? "changed" : "unverified",
-            failureReason,
-          });
-          setResults(
-            selected.flatMap((id) =>
-              completed.filter((result) => result.app === id),
-            ),
-          );
-          setActive(store.snapshot().active.filter((id) => id !== app));
-          store.set(
-            "reserved",
-            store.snapshot().reserved.filter((id) => id !== app),
-          );
-          setProgress({ index: completed.length, total: selected.length });
+          record([
+            {
+              app,
+              from,
+              to,
+              outcome: failed ? "failed" : verified ? "changed" : "unverified",
+              failureReason,
+            },
+          ]);
+          release([app]);
         }),
       );
     } finally {
-      executing.current = false;
-      unlock();
       void client.invalidateQueries({ queryKey: ["agent-installations"] });
     }
   }
   async function start(requested: AppId[]) {
     if (locked.current) return;
-    const selected = [...new Set(requested)].filter((app) =>
-      updatable.includes(app),
+    const selected = [...new Set(requested)].filter(
+      (app) =>
+        updatable.includes(app) && !store.snapshot().reserved.includes(app),
     );
     if (!selected.length) return;
-    // The ref also guards the preflight and confirmation windows before React commits.
-    locked.current = true;
-    // Reserve the selected tools before preflight so connection writes cannot race it.
-    store.set("reserved", selected);
+    // Reserve synchronously so duplicate clicks cannot race preflight or execution.
+    const previous = store.snapshot();
+    store.set("reserved", [...previous.reserved, ...selected]);
     setBusy(true);
     setBarShown(true);
-    setResults([]);
-    setProgress({ index: 0, total: selected.length });
+    if (!previous.reserved.length) setResults([]);
+    setProgress({
+      index: previous.reserved.length ? previous.progress.index : 0,
+      total:
+        (previous.reserved.length ? previous.progress.total : 0) +
+        selected.length,
+    });
     try {
       const selectedCli = selected.filter((app) => !!cliTools[app]);
       const plans = selectedCli.length
@@ -313,18 +322,22 @@ export function useAgentUpdates(installed: AppId[]) {
         return !plan || plan.needs_confirmation || !plan.anchored;
       });
       if (ambiguous.length) {
-        setPending({ apps: selected, ambiguous });
+        const waiting = store.snapshot().pending;
+        setPending({
+          apps: [...(waiting?.apps ?? []), ...selected],
+          ambiguous: [...(waiting?.ambiguous ?? []), ...ambiguous],
+        });
         return;
       }
     } catch {
-      setResults(selected.map((app) => ({ app, outcome: "preflightFailed" })));
-      unlock();
+      record(selected.map((app) => ({ app, outcome: "preflightFailed" })));
+      release(selected);
       return;
     }
     await execute(selected);
   }
   function requestInstall(app: AppId, website: string) {
-    if (locked.current) return;
+    if (store.snapshot().busy) return;
     locked.current = true;
     setBusy(true);
     setInstallResult(null);
@@ -426,12 +439,20 @@ export function useAgentUpdates(installed: AppId[]) {
       unlock();
     },
     confirm: () => {
-      if (pending) void execute(pending.apps);
+      const waiting = store.snapshot().pending;
+      setPending(null);
+      if (waiting) void execute(waiting.apps);
     },
     cancel: () => {
-      if (executing.current) return;
+      const waiting = store.snapshot().pending;
       setPending(null);
-      unlock();
+      if (waiting) {
+        setProgress({
+          ...store.snapshot().progress,
+          total: store.snapshot().progress.total - waiting.apps.length,
+        });
+        release(waiting.apps);
+      }
     },
   };
 }

@@ -481,6 +481,169 @@ describe("Agent versions and updates", () => {
       await screen.findByText(/agentUpdates.unverified/);
     },
   );
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    "allows separate update clicks (compact: %s, first executing: %s)",
+    async (compact, executing) => {
+      const translate = vi.spyOn(i18n, "t");
+      let finishProbe!: () => void;
+      const finishes = new Map<string, () => void>();
+      vi.mocked(settingsApi.probeToolInstallations).mockImplementation(
+        async (tools) => {
+          if (tools[0] === "claude")
+            await new Promise<void>((resolve) => {
+              finishProbe = resolve;
+            });
+          return tools.map((tool) => ({
+            tool,
+            installs: [],
+            is_conflict: false,
+            needs_confirmation: false,
+            command: "synthetic updater",
+            anchored: true,
+          }));
+        },
+      );
+      vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
+        (tools) =>
+          new Promise<void>((resolve) => {
+            finishes.set(tools[0], resolve);
+          }),
+      );
+      mount(undefined, undefined, compact);
+      const claude = await screen.findByRole("article", {
+        name: "apps.claude",
+      });
+      const codex = await screen.findByRole("article", { name: "apps.codex" });
+      if (compact) fireEvent.click(claude);
+      fireEvent.click(
+        await within(claude).findByRole("button", {
+          name: "agentUpdates.update",
+        }),
+      );
+      if (executing) {
+        await act(async () => finishProbe());
+        await waitFor(() => expect(finishes.has("claude")).toBe(true));
+      }
+      if (compact) fireEvent.click(codex);
+      const second = await within(codex).findByRole("button", {
+        name: "agentUpdates.update",
+      });
+      expect(second).toBeEnabled();
+      fireEvent.click(second);
+      fireEvent.click(second);
+      await waitFor(() => expect(finishes.has("codex")).toBe(true));
+      if (!executing) await act(async () => finishProbe());
+      await waitFor(() => expect(finishes.has("claude")).toBe(true));
+      expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledTimes(2);
+      await act(async () => finishes.get("codex")!());
+      expect(within(codex).getByRole("switch")).toBeEnabled();
+      expect(
+        within(claude).getByRole("switch", { hidden: true }),
+      ).toBeDisabled();
+      expect(
+        screen.getByText("agentUpdates.parallelProgress"),
+      ).toBeInTheDocument();
+      expect(translate).toHaveBeenCalledWith(
+        "agentUpdates.parallelProgress",
+        expect.objectContaining({ completed: 1, count: 2 }),
+      );
+      await act(async () => finishes.get("claude")!());
+      await screen.findByText(/agentUpdates.summary/);
+      expect(
+        within(claude).getByRole("switch", { hidden: true }),
+      ).toBeEnabled();
+      expect(translate).toHaveBeenCalledWith(
+        "agentUpdates.summaryCounts.unverified",
+        expect.objectContaining({ count: 2 }),
+      );
+      translate.mockRestore();
+    },
+  );
+  it.each(["cancel", "confirm", "fail"])(
+    "keeps another update running when a concurrent preflight ends with %s",
+    async (action) => {
+      let finish!: () => void;
+      vi.mocked(settingsApi.runToolLifecycleAction).mockImplementation(
+        async (tools) => {
+          if (tools[0] === "claude")
+            await new Promise<void>((resolve) => {
+              finish = resolve;
+            });
+        },
+      );
+      vi.mocked(settingsApi.probeToolInstallations).mockImplementation(
+        async (tools) => {
+          if (tools[0] === "codex" && action === "fail")
+            throw new Error("synthetic-private-preflight");
+          return tools.map((tool) => ({
+            tool,
+            installs: [],
+            is_conflict: false,
+            needs_confirmation: tool === "codex",
+            command: "synthetic updater",
+            anchored: tool !== "codex",
+          }));
+        },
+      );
+      mount();
+      const claude = await screen.findByRole("article", {
+        name: "apps.claude",
+      });
+      const codex = await screen.findByRole("article", { name: "apps.codex" });
+      fireEvent.click(
+        await within(claude).findByRole("button", {
+          name: "agentUpdates.update",
+        }),
+      );
+      await waitFor(() =>
+        expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledOnce(),
+      );
+      fireEvent.click(
+        await within(codex).findByRole("button", {
+          name: "agentUpdates.update",
+        }),
+      );
+      if (action === "fail") {
+        await waitFor(() =>
+          expect(within(codex).getByRole("switch")).toBeEnabled(),
+        );
+      } else {
+        const dialog = await screen.findByRole("dialog");
+        fireEvent.click(
+          within(dialog).getByRole("button", {
+            name:
+              action === "cancel" ? "common.cancel" : "agentUpdates.confirm",
+          }),
+        );
+        await waitFor(() =>
+          expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+        );
+      }
+      expect(within(claude).getByRole("switch")).toBeDisabled();
+      await waitFor(() =>
+        expect(within(codex).getByRole("switch")).toBeEnabled(),
+      );
+      expect(settingsApi.runToolLifecycleAction).toHaveBeenCalledTimes(
+        action === "confirm" ? 2 : 1,
+      );
+      await act(async () => finish());
+      await screen.findByText(
+        action === "cancel"
+          ? /agentUpdates.unverified/
+          : /agentUpdates.summary/,
+      );
+      if (action === "fail")
+        expect(
+          screen.getByText(/agentUpdates.preflightFailed/),
+        ).toBeInTheDocument();
+      expect(within(claude).getByRole("switch")).toBeEnabled();
+    },
+  );
   it("reserves only the selected tool during preflight and releases it if the check fails", async () => {
     let reject!: (error: Error) => void;
     vi.mocked(settingsApi.probeToolInstallations).mockImplementation(

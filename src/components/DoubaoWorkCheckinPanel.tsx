@@ -179,7 +179,9 @@ export function DoubaoWorkCheckinPanel({
               </div>
             )}
             <p className="mp-checkin-muted">
-              {t("doubaowork.checkin.day", { day: query.data.day })}
+              {t("doubaowork.checkin.day", {
+                day: new Date().toLocaleDateString(),
+              })}
             </p>
           </div>
         ) : (

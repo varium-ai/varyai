@@ -12,6 +12,14 @@ function createBridge(
   const sessions = new Map(),
     reported = new Set(),
     controllers = new Set();
+  // Native edit requests keep provider and request-model identity immutable.
+  const editFields = (fields) => ({
+    display_name: fields.display_name,
+    ak: fields.ak,
+    base_url: fields.base_url,
+    auth_type: fields.auth_type,
+    custom_model_type: fields.custom_model_type,
+  });
   const modelFailure = (operation, code) =>
     Error(
       `model_${operation}_failed${Number.isSafeInteger(code) ? `:${code}` : ""}`,
@@ -297,7 +305,10 @@ function createBridge(
           if (
             url.protocol === "http:" &&
             url.hostname === "127.0.0.1" &&
-            url.pathname === "/connections/trae/v1/chat/completions" &&
+            [
+              "/connections/trae/v1/chat/completions",
+              "/connections/trae-intl/v1/chat/completions",
+            ].includes(url.pathname) &&
             !url.username &&
             !url.password &&
             !url.search &&
@@ -353,12 +364,19 @@ function createBridge(
         owned.push({ id: match.id, model: model.model });
         // Persist before replacing a legacy label, including during partial migrations.
         saveOwned(id, owned);
-        const result = await service.updateCustomModel({
-          action: "update",
-          id: match.id,
-          ...fields,
-        });
-        if (result.code !== 0) throw modelFailure("update", result.code);
+        if (
+          match.provider !== fields.provider ||
+          !modelNameMatches(match.name, model.model)
+        )
+          throw Error("model_identity_changed");
+        if (!(id === "shared_catalog_connection" && addedIds.has(match.id))) {
+          const result = await service.updateCustomModel({
+            action: "update",
+            id: match.id,
+            ...editFields(fields),
+          });
+          if (result.code !== 0) throw modelFailure("update", result.code);
+        }
         wanted.add(match.id);
       }
       const all = await list();
@@ -531,7 +549,7 @@ function createBridge(
           const updated = await service.updateCustomModel({
             action: "update",
             id: found.id,
-            ...model.fields,
+            ...editFields(model.fields),
           });
           if (updated.code !== 0) throw modelFailure("restore", updated.code);
         } catch {
@@ -543,13 +561,22 @@ function createBridge(
       throw error;
     }
   }
+  // A timed-out IPC caller must not race a still-running native model transaction.
+  let changes = Promise.resolve();
+  const serial =
+    (operation) =>
+    (...args) => {
+      const result = changes.then(() => operation(...args));
+      changes = result.catch(() => {});
+      return result;
+    };
   const bridge = {
     list,
-    matches,
-    apply,
-    replace,
-    remove,
-    async select(id, model) {
+    matches: serial(matches),
+    apply: serial(apply),
+    replace: serial(replace),
+    remove: serial(remove),
+    select: serial(async (id, model) => {
       const owned = loadOwned(id).filter((row) => row.model === model);
       if (owned.length !== 1 || !startingModel)
         throw Error("starting_model_unavailable");
@@ -559,6 +586,9 @@ function createBridge(
       );
       if (rows.length !== 1) throw Error("starting_model_unavailable");
       return startingModel.select(owned[0].id);
+    }),
+    idle() {
+      return changes;
     },
     get enabled() {
       return Boolean(undo);

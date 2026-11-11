@@ -110,6 +110,33 @@ fn selected_bundle_ids(app: &str) -> Result<&'static [&'static str], String> {
     }
 }
 
+/// Resolve the verified running copy, rather than another installation with the same name.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn running_executable(app: &str) -> Result<Option<std::path::PathBuf>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let instances = macos::Native { app }.instances()?;
+        let Some(first) = instances.first() else {
+            return Ok(None);
+        };
+        if instances
+            .iter()
+            .any(|instance| instance.bundle != first.bundle)
+        {
+            return Err(CHANGED.into());
+        }
+        let executable = first.bundle.join("Contents/MacOS/Electron");
+        if !executable.is_file() || executable.is_symlink() {
+            return Err(CHANGED.into());
+        }
+        Ok(Some(executable))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        windows::running_executable(app)
+    }
+}
+
 pub(crate) fn state(app: &str, applied_ms: Option<i64>) -> Option<State> {
     if !supports_restart(app) {
         return None;

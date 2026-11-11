@@ -66,7 +66,20 @@ function encryptedFixture() {
   f.service.updateCustomModel = async (row) => {
     const index = f.models.findIndex((m) => m.custom_model_id === row.id);
     if (row.action === "delete") f.models.splice(index, 1);
-    else Object.assign(f.models[index], nativeRow(row));
+    else {
+      assert.ok(
+        !("provider" in row) && !("model_name" in row) && !("is_custom" in row),
+      );
+      const existing = f.models[index];
+      Object.assign(
+        existing,
+        nativeRow({
+          ...existing,
+          model_name: existing.name.slice(existing.provider.length + 2),
+          ...row,
+        }),
+      );
+    }
     return { code: 0 };
   };
   return f;
@@ -220,38 +233,44 @@ test("starting selection resolves only an exact owned native model and propagate
   );
 });
 test("shared delivery recovers missing ownership only for its exact native route and readable label", async () => {
-  const f = encryptedFixture();
-  const id = "shared_catalog_connection";
-  const config = {
-    protocol: "openai",
-    baseUrl: "http://127.0.0.1:1/connections/trae/v1",
-    apiKey: "synthetic-local-credential",
-    models: [{ model: "supplier/model-a" }, { model: "supplier/model-b" }],
-  };
-  const bridge = createBridge(f.service, async () => ({}));
-  await bridge.apply(id, "Vary AI", config);
-  const nativeIds = f.models.map((m) => m.custom_model_id);
-  stores.get(f.service).setItem(`varyai.trae.models.${id}`, "[]");
-  f.models.push({
-    custom_model_id: "manual",
-    name: "custom_openai_compatible//manual",
-    display_name: "Manual",
-    provider: "custom_openai_compatible",
-    base_url: `${config.baseUrl}/chat/completions`,
-    ak: "manual-sealed-value",
-  });
-  await createBridge(f.service, async () => ({})).apply(id, "Vary AI", config);
-  assert.deepEqual(
-    f.models.slice(0, 2).map((m) => m.custom_model_id),
-    nativeIds,
-  );
-  assert.equal(f.models.length, 3);
-  assert.equal(await bridge.matches(id, config), true);
-  await bridge.remove(id);
-  assert.deepEqual(
-    f.models.map((m) => m.custom_model_id),
-    ["manual"],
-  );
+  for (const app of ["trae", "trae-intl"]) {
+    const f = encryptedFixture();
+    const id = "shared_catalog_connection";
+    const config = {
+      protocol: "openai",
+      baseUrl: `http://127.0.0.1:1/connections/${app}/v1`,
+      apiKey: "synthetic-local-credential",
+      models: [{ model: "supplier/model-a" }, { model: "supplier/model-b" }],
+    };
+    const bridge = createBridge(f.service, async () => ({}));
+    await bridge.apply(id, "Vary AI", config);
+    const nativeIds = f.models.map((m) => m.custom_model_id);
+    stores.get(f.service).setItem(`varyai.trae.models.${id}`, "[]");
+    f.models.push({
+      custom_model_id: "manual",
+      name: "custom_openai_compatible//manual",
+      display_name: "Manual",
+      provider: "custom_openai_compatible",
+      base_url: `${config.baseUrl}/chat/completions`,
+      ak: "manual-sealed-value",
+    });
+    await createBridge(f.service, async () => ({})).apply(
+      id,
+      "Vary AI",
+      config,
+    );
+    assert.deepEqual(
+      f.models.slice(0, 2).map((m) => m.custom_model_id),
+      nativeIds,
+    );
+    assert.equal(f.models.length, 3);
+    assert.equal(await bridge.matches(id, config), true);
+    await bridge.remove(id);
+    assert.deepEqual(
+      f.models.map((m) => m.custom_model_id),
+      ["manual"],
+    );
+  }
 });
 test("shared ownership recovery refuses unrelated or ambiguous native models", async () => {
   for (const change of [

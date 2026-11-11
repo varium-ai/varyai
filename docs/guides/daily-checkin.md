@@ -2,6 +2,12 @@
 
 On **Tools / Agent**, select **Manual check-in** or **Automatic check-in** immediately before the Agent's model picker. In the compact Agent list, open its details to reveal the same controls. The panels use the workspace's compact controls and theme colors; account controls and reward details wrap to fit narrower windows.
 
+WorkBuddy and Doubao Work display the current date in the computer's local time
+zone and date format on macOS and Windows. The displayed date is separate from
+reward eligibility: daily record expiry and campaign windows retain each
+service's rules, including UTC+8 daily boundaries where applicable. Changing the
+computer's time zone does not reset a confirmed claim or allow an extra reward.
+
 The button shows **Automatic check-in** when any saved account for that Agent has automatic check-in enabled; otherwise it shows **Manual check-in**. Its label updates when the setting changes. Saved mode is independent of current client connectivity and credential availability: restarting VaryAI, closing a native client, or temporarily losing account access does not clear automatic check-in. Before preferences are available, the button shows **Check-in** without guessing a mode. When no account is available, the panel shows the saved automatic mode with its switch disabled; connection and sign-in outcomes remain separate. A newly selected account still needs its own opt-in.
 
 Check-in panels start hidden. The same button expands or collapses the panel below its Agent row. Only one panel is shown at a time, without a second heading toggle or a separate home-page card. Collapsing a panel preserves the selected account and pending authorization; automatic check-in continues independently. Confirmed claims and existing check-ins disable the claim button and show **Checked in** for the current day or campaign window. The Agent row dropdown always remains available so users can inspect details, select accounts and change automatic mode, including after all accounts have completed check-in. It retains its **Manual check-in** or **Automatic check-in** label. Status refresh re-enables the claim button when the vendor reports the next eligible day or campaign window; it does not change the saved automatic mode.

@@ -1796,26 +1796,12 @@ impl ProxyService {
         let port = self.get_status().await.map(|s| s.port).unwrap_or(0);
         let manager = self.agent_connections.clone();
         let runtime = self.intent_runtime.clone();
-        let db = self.db.clone();
         let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
             if running {
                 super::trae_bridge::prepare_shared()
                     .map_err(|_| super::agent_connections::FAILED)?;
-                // Restore pending legacy models before the shared catalog captures its baseline.
-                if db
-                    .get_bool_flag(super::trae_bridge::selection::PENDING_KEY)
-                    .map_err(|_| super::agent_connections::FAILED)?
-                    && !super::trae_bridge::selection::sync(&db)
-                {
-                    return Err(super::agent_connections::CONFLICT.into());
-                }
-                if db
-                    .get_bool_flag(super::trae_bridge::selection::ROUTE_PENDING_KEY)
-                    .map_err(|_| super::agent_connections::FAILED)?
-                    && !super::trae_bridge::selection::sync_response_route(&db)
-                {
-                    return Err(super::agent_connections::CONFLICT.into());
-                }
+                // Shared delivery owns only its additive namespace. Legacy replacement
+                // must not block or rewrite the active shared connection's catalog.
             }
             if let Some(receipt) = manager.bridge_sync(
                 menu.as_deref(),

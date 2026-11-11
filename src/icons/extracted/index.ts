@@ -34,6 +34,7 @@ import _workbuddy from "./workbuddy.png";
 import _qoder from "./qoder.png";
 import _doubaowork from "./doubaowork.png";
 import _trae from "./trae.png";
+import _traeIntl from "./trae-intl.png";
 import _kimi_code from "./kimi-code.png";
 import _qwen_code from "./qwen-code.png";
 import _zcode from "./zcode.png";
@@ -166,6 +167,7 @@ export const iconUrls: Record<string, string> = {
   qoder: _qoder,
   doubaowork: _doubaowork,
   trae: _trae,
+  "trae-intl": _traeIntl,
   "kimi-code": _kimi_code,
   "qwen-code": _qwen_code,
   zcode: _zcode,
