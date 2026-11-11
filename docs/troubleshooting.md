@@ -97,6 +97,22 @@ Check the upstream error and the models available to the account. Fetch the prov
 
 The upstream reverse proxy or provider can reject a request even when it is below the local proxy's limit. Reduce oversized attachments and pasted logs, or compact the conversation using the client's supported command. Operators of an upstream gateway should check its documented body limits before changing them. A local setting does not override the provider's limit.
 
+## Native routing returns the generic processing error
+
+With reversible DLP enabled, a supported native route can return HTTP 500 with `proxy_processing_failed` and `The local proxy could not process the request. Please retry.` The client message is intentionally fixed; the cause is recorded only in safe internal diagnostics.
+
+Common causes on the enabled routes:
+
+- **A signed unit needs editing.** Anthropic `thinking` signatures, `redacted_thinking` blocks and Gemini Parts carrying `thoughtSignature` are immutable. If a rule or an authorized reference would have to change text inside one, the request is refused with HTTP 400 and `dlp_restore_unsupported` instead of being rewritten. Remove the signed content, or disable reversible DLP for that provider.
+- **Unsupported Gemini framing.** Only `:generateContent` (without `alt` or with `alt=json`) and `:streamGenerateContent?alt=sse` are restored. On a direct native route, any other framing is refused with HTTP 400, `dlp_restore_unsupported` and a message listing the supported routes. `countTokens`, model listing, duplicated or bare `alt` keys and other methods are refused the same way when a rule matches.
+- **An answer that cannot be restored.** An answer containing no local placeholder is passed through unchanged, including `MAX_TOKENS`, media Parts and upstream safety blocks: such an answer needs no restoration, so it is not an error. If it does contain placeholders that cannot be restored safely, the client receives HTTP 502 with `dlp_restore_failed` and a message naming the cause; a streaming Gemini client gets one fixed `data: {"error":...}` frame with the same code. An upstream HTTP rejection keeps its own status instead and is described in the next section.
+
+  This is deliberately different from a request that was never sent: request-side refusals report HTTP 400 with `dlp_restore_unsupported` (see the signed-content cause above), so a 400 means "fix the request" and a 502 means "the answer could not be restored".
+
+- **Vendor history normalization.** Native Anthropic requests to MiMo/DeepSeek endpoints that contain signed tool history are refused rather than having their signatures stripped. Unsigned histories keep the previous normalization.
+
+If the same request succeeds with DLP disabled, the failure is related to DLP processing: check the causes above first, then capacity, payload budget or internal processing failures. Do not disable the rule globally to work around it.
+
 ## Upstream HTTP errors during reversible DLP forwarding
 
 For an initial non-success upstream HTTP response, the proxy preserves the status. A prepared DLP request, including one with no restoration references, uses a separate safety check before returning the body. Safe JSON fields are retained; safe text is wrapped in a JSON error. Sensitive values are redacted and unsafe object keys are removed. This is a JSON error even when the client requested streaming, not a successful SSE response. Ordinary Codex upstream errors no longer receive a local-failure prefix or added provider, model or endpoint details.
@@ -155,7 +171,7 @@ Internal token-restoration diagnostics also include a fixed reason. The warning 
 
 | Reason                                      | Failed checkpoint or grouped error                                                                                                                                                       |
 | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `token_format`                              | A strict internal restoration operation rejected malformed input. Ordinary request and response placeholder literals do not require strict resolution.                                |
+| `token_format`                              | A strict internal restoration operation rejected malformed input. Ordinary request and response placeholder literals do not require strict resolution.                                   |
 | `token_context`                             | Request-lease authorization, exact stored category, namespace/generation or storage-context lookup. The diagnostic does not distinguish these checks.                                    |
 | `restore_capacity`                          | A restoration scan/reference/count/length limit, payload budget, allocation or copy-capacity failure. Ordinary text without tokens can also reach this checkpoint.                       |
 | `arguments_empty` / `arguments_size`        | Empty/whitespace-only tool arguments or arguments over the existing byte limit.                                                                                                          |

@@ -1,6 +1,6 @@
 # Unified DLP implementation evidence
 
-> Status: M0/C1/C2/P2 and the [P3/P4 scoped closure](#22-p3p4-integrated-verification-and-publication-proof-closure) are preserved. **C3/C4/C5 and CORE-1 technical acceptance are complete** at the [post-F1 freeze, Full Gate and independent PASS](#50-whole-task-reviews-and-approved-f1-evidence-amendment). Earlier sections retain historical identities, failures and scoped verdicts; they are not the current acceptance record. Native registrations remain Disabled. Lane implementation remains operationally paused: the approved Git base and isolated worktrees required by plan Section 6 are not authorized or available. No native enablement or live/release acceptance is granted.
+> Status: M0/C1/C2/P2 and the [P3/P4 scoped closure](#22-p3p4-integrated-verification-and-publication-proof-closure) are preserved. **C3/C4/C5 and CORE-1 technical acceptance are complete** at the [post-F1 freeze, Full Gate and independent PASS](#50-whole-task-reviews-and-approved-f1-evidence-amendment). [Section 51](#51-approved-baseline-commit-isolated-workspaces-and-request-lane-red) records the authorized baseline commit and initial request RED; [Section 52](#52-request-lane-green-characterizations-and-scoped-review-findings) preserves the earlier checkpoint and GE1 FAIL. [Section 53](#53-ge1-signature-alias-correction-and-request-review-closure) records **GE1 F1 resolved**, isolated request checks **CH1 19/19, AN1 15/15, GE1 33/33** and security checks **1935/1931/1949**. [Section 54](#54-authorized-chat-only-shared-amendment-execution-checkpoint) records the authorized **unfrozen Chat-only amendment**, parent checks **24/24 CH2 / 1941/1941 security**, C5 coordination, snapshot F1 repair and bounded independent closure. Earlier failures and verdicts remain historical; typed policy and whole-amendment gates remain open. Native registrations remain **Disabled**; no lane handoff, M2–M5, new Full Gate, native enablement or live/release acceptance is granted.
 >
 > Audience: maintainers and implementing/reviewing agents. This is a sanitized verification record, not a replacement for the [approved execution plan](security-dlp-unified-core-parallel-implementation-plan.md) or the [authoritative architecture](security-dlp-unified-core-protocol-adapters.md).
 
@@ -1873,3 +1873,1107 @@ Section 44's frozen contract and lane paths, Section 46's JSON proof/final-wire/
 **Closure:** the plan's C3/C4/C5 rows and CORE-1 items 1–10 are checked only after current verification and the corresponding independent PASS. Earlier amendment-only reviews are not substituted for whole-task reviews. Historical failures, Orion's NEEDS_CHANGE and all old freezes/logs remain preserved. Final document/source checks are recorded separately in `core1-post-f1-doc-closure.json`; documentation is outside the 518-input Rust identity.
 
 **Still not accepted or authorized:** native executable proof/staging remains Chat/Chat only; full Chat indexing/terminal semantics, Anthropic blocks/signatures, Gemini candidates/Parts/verifiers and production native integration are later-lane work. Legacy JSON/SSE compatibility entries/callers remain, so this is not universal lifecycle enforcement. Native registrations stay **Disabled**. Kai explicitly classified operational lane-start prerequisites **NEEDS_CHANGE — implementation remains paused**: plan Section 6 still requires a user-approved Git base and isolated worktrees, while the current user prohibits staging/commits/worktrees. A content identity cannot stand in for that base; no lane is started. No installer, signing, notarization, live provider, remote receipt or release acceptance is implied. All dirty/untracked work and P3/P4 remain preserved; no dependency, schema, UI, persistent setting or credential source was added.
+
+## 51. Approved baseline commit, isolated workspaces and request-lane RED
+
+### Authorization and immutable starting point
+
+The user's later explicit instruction to commit completed work first and then follow the plan superseded the earlier staging/commit/worktree hold for this baseline and the planned isolated workspaces. Section 50's technical PASS and historical operational NEEDS_CHANGE remain unchanged; the operational prerequisite was satisfied afterward, not waived.
+
+- Accepted CORE-1 commit: `ca7f883c742df07abe9bcaa9b0eade02aae5e119`; parent `2b00c4573098f4da31345c788aacf321ef685060`.
+- English message: `refactor(security): freeze verified unified DLP core contracts`.
+- Exactly 65 intended files (62 Rust, three design documents); every committed blob matched its accepted snapshot. Main was clean immediately afterward. Local verification artifacts were excluded; no push occurred.
+- The accepted 518-input identity remains `ce68663772ada37be5a34db78c54bcdbc7e99062a657d21621a6bfac4582c9aa`. Its Full Gate is baseline evidence, not evidence for later lane modifications.
+- Local records under `.voidx/verification/core1-20261106/`: `core1-approved-baseline-commit-manifest.json`, `core1-approved-baseline-commit.json`, `core1-native-lane-workspaces.json` and `core1-native-lane-cache-clones.json`. Workspace/cache records are creation-time snapshots, not test results.
+
+Each initially clean worktree starts at the exact accepted commit:
+
+- `.voidx/native-lanes/chat`: `feat/dlp-native-chat`, exclusive target `.voidx/cargo-targets/chat`.
+- `.voidx/native-lanes/anthropic`: `feat/dlp-native-anthropic`, exclusive target `.voidx/cargo-targets/anthropic`.
+- `.voidx/native-lanes/gemini`: `feat/dlp-native-gemini`, exclusive target `.voidx/cargo-targets/gemini`.
+
+The targets are independent APFS copy-on-write cache clones, not symlinks or shared hardlink caches. Cache reuse establishes no execution PASS. Unrelated existing worktrees remain untouched. Lane owners modify only their own `src-tauri/src/proxy/security/protocol_adapters/<lane>/` files; shared amendments remain integrator-only.
+
+### First request-task executions
+
+The parent runs heavy Cargo checks globally serial with `CARGO_BUILD_JOBS=2`, one target per lane, and a global `fcntl.flock`. The local `run-native-lane-focused.py` runner records complete repository input maps before/after each attempt. It executes `cargo test --lib --manifest-path src-tauri/Cargo.toml <filter> -- --list`, requires successful nonzero discovery and unchanged inputs, then runs the same filter with `-- --test-threads=1`. All attempts below had stable inputs. They used synthetic fixtures and in-memory stores, no live provider, ignored tests, application launch/install or production port.
+
+- **AN1 prerequisite failures, not complete behavioral RED:** `an1-request-red-01` listed 11; one probe passed, ten tests failed. Four reached `an1_native_observation_missing`; six failed earlier with `Unavailable` because runtime admission was not initialized. `an1-request-red-02-fixture` did not compile due to a test-helper delimiter error; runtime execution was not attempted. Both records remain preserved and are not misreported as full RED.
+- **AN1 genuine runtime RED:** `an1-request-red-03-fixture` listed 11, then one probe passed and all ten new tests failed exactly at `an1_native_observation_missing` (exit 101). A tests-only RAII guard publishes a synthetic runtime, uses the actual admitted restoration-policy revision, and restores the previous runtime on drop. The production observation seam still returned a fixed error during RED.
+- **GE1 genuine runtime RED:** `ge1-request-red-01` listed 16; three passed and thirteen failed (exit 101). Two failures reached generation/framing assertions and eleven reached `ge1_request_observation_missing`. The passes are the unchanged Disabled probe and two unsupported-route/framing characterizations, not new RED. The tests-only admission guard uses the actual published revision before execution; both production seams remained fixed-error.
+- **CH1 genuine runtime RED:** `ch1-request-red-01` listed 14; one probe passed and all thirteen new tests failed (exit 101). Eleven reached `chat_ch1_observation_missing`; two reached precise metadata-byte/site-count capacity assertions instead of accepting the seam's generic error. The fixture reuses the existing synthetic runtime owner, actual admitted revision and real scoped native lease.
+
+Each stem has separate `-source.json`, `-list.log` and, when executed, `-test.log` artifacts in the local evidence directory. The linker still reports `__eh_frame section too large (max 16MB)`; no warning-free claim is made.
+
+### Current scope and next gates
+
+These RED results authorize only the matching minimal request task, not an independent claim that deeper preparation assertions have already run. CH1 and AN1 minimum implementations are being prepared for parent-controlled GREEN execution. GE1 adds resource-boundary tests before implementing the corresponding new behavior; no new RED is claimed until parent execution. Depth/work exhaustion coverage and other reported omissions must be resolved or explicitly bounded before handoff.
+
+All three protocol-state tables and original compile probes remain in lane `tests.rs` files. `HistoryClaim`, source classes and call/result pairing remain inspection metadata, never authority. Native registry entries remain **Disabled**. No shared API workaround, new dependency, schema, UI, persistent setting or credential source is authorized. The earlier 29-file/690-block formatter approval applies only to the committed baseline, not these lane diffs; only bounded newly changed lane files may be formatted.
+
+Next evidence must record current GREEN results, resource negatives, security regressions and independent protocol review before lane handoff. Use `proxy::security::protocol_adapters::chat::tests::`, `proxy::security::protocol_adapters::anthropic::tests::` or `proxy::security::protocol_adapters::gemini::tests::` for the matching task, then `proxy::security::` at handoff, always through nonzero listing and single-thread execution in that lane's worktree/target. Complete CH2/CH3, AN2/AN3 and GE2/GE3 without enabling routes; follow M2 Chat, M3 Anthropic, M4 Gemini sequential integration and acceptance, then M5. Current native proof/staging remains Chat/Chat only; any required shared extension needs an integrator amendment, TDD, current-state verification and independent review. No native lane, integration, release or overall-plan completion verdict is recorded here.
+
+## 52. Request-lane GREEN, characterizations and scoped review findings
+
+This mixed human/execution checkpoint supersedes only Section 51's then-current pending-execution status. It preserves the accepted baseline, historical failures and all later gates. The three isolated worktrees still start at `ca7f883c742df07abe9bcaa9b0eade02aae5e119`; request changes have not been integrated. Native registrations remain **Disabled**.
+
+### Parent execution evidence
+
+The parent used Section 51's globally serialized runner with `CARGO_BUILD_JOBS=2`, independent lane targets, successful nonzero listing, and only then single-thread runtime execution. Every record below reports `unchanged_during_check: true`. At this checkpoint the parent compared each lane's current inputs with its latest security-regression post-run map: zero mismatches in all three worktrees. Artifacts are under `.voidx/verification/core1-20261106/`; each stem retains separate source, listing and runtime records.
+
+| Lane / scope                                    | Evidence stem                         | Listed / runtime result          | Interpretation                                                                            |
+| ----------------------------------------------- | ------------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------- |
+| CH1 added boundaries                            | `ch1-boundary-characterization-01`    | 5 / 5 passed                     | Initial-pass characterization, **not RED**                                                |
+| CH1 current request suite                       | `ch1-request-green-02-boundary`       | 19 / 19 passed                   | Original request RED plus five later characterizations                                    |
+| Chat shared security                            | `ch1-security-regression-02-boundary` | 1935 / 1935 passed               | Isolated Chat worktree only                                                               |
+| AN1 added resources                             | `an1-resource-characterization-01`    | 4 / 4 passed                     | Initial-pass characterization, **not RED**                                                |
+| AN1 current request suite                       | `an1-request-green-02-resource`       | 15 / 15 passed                   | Original request RED plus four later characterizations                                    |
+| Anthropic shared security                       | `an1-security-regression-01`          | 1931 / 1931 passed               | Isolated Anthropic worktree only                                                          |
+| GE1 resources before implementation             | `ge1-resource-red-01`                 | 4 / 0 passed, 4 failed; exit 101 | Genuine runtime RED: one excessive-depth assertion and three missing-observation failures |
+| GE1 request suite before review correction      | `ge1-request-green-01`                | 20 / 20 passed                   | Does not establish signed-field alias completeness                                        |
+| Gemini shared security before review correction | `ge1-security-regression-01`          | 1936 / 1936 passed               | Predates the mandatory review correction below                                            |
+
+All GREEN/characterization rows have exit 0 and zero failed/ignored tests. Counts overlap; do not add request and security scopes or treat them as integrated-source acceptance. CH1's earlier GREEN was 14/14 and security 1930/1930; AN1's earlier GREEN was 11/11. Those historical records remain intact. The baseline Full Gate does not cover these lane diffs. The linker still reports `__eh_frame section too large (max 16MB)`.
+
+Request production scope is limited to each lane's `request.rs` and `mod.rs`, with tests in that lane's `tests.rs`. Chat borrows supported text and modern function-argument strings, preserves role/position source classes and untrusted results, and delegates atomic preparation to the existing shared owner. Anthropic borrows system/message text and recursive tool-input string values; readable thinking is immutable from the outset. Gemini classifies only the approved generation URI/query framings and observes native text and Struct string values without serialization. None of these observations, history claims or successful preparations grants completion, release or publication authority.
+
+### Independent read-only decisions
+
+Reviewers were restricted to read/search/find: no commands, modifications, LSP, hashing or further delegation. Execution and source-stability evidence came from the parent. Local parent-transcription records preserve the visible verdicts and runner boundaries; no omitted output is inferred.
+
+- **Orion `ca22eea9bd0e42788c56532d7263456e`: PASS FOR CH1 REQUEST-ONLY CURRENT REVIEWED SCOPE.** No mandatory finding. Runner: `completed; finish_reason=contract_unsatisfied`; the complete visible scoped verdict was returned. The reviewed source had the initial 14-test suite, not the later five boundary characterizations. Production code is unchanged since that review; the old PASS is not extended to the new test increment. Record: `ch1-orion-ca22eea9-request-review.json`.
+- **Sol `7db277b482e84689b5d9212c719589de`: PASS FOR AN1 REQUEST-ONLY CURRENT REVIEWED SCOPE.** No mandatory finding; current 15-test request suite and 1931-test security records were inspected. Runner: `completed`. Record: `an1-sol-7db277b4-request-review.json`.
+- **Nexus `c966302ce6db42cca96dbecb2d11a882`: FAIL FOR GE1 REQUEST-ONLY CURRENT REVIEWED SCOPE.** Mandatory F1: `gemini/request.rs` determines whole-Part immutability from `thoughtSignature` alone. The recognized original protobuf spelling `thought_signature` is missed, so supported readable text/call/result leaves can be classified editable while their signature remains. The parent confirmed the single-spelling predicate before any correction. Runner: `completed; finish_reason=contract_unsatisfied`; the visible result contains this finding and explicit incomplete boundaries. Record: `ge1-nexus-c966302c-request-review.json`. No additional mandatory flaw was identified by this review; that is not a GE1 PASS.
+
+F1 follow-up is test-first: add original-spelling signed text, call-argument and result coverage, including mandatory-patch and authorized-reference atomic failures; obtain parent-controlled genuine runtime RED before touching production; then recognize both spellings without inspecting, renaming or discarding the signature. Rerun Gemini request and shared-security selections and obtain focused independent re-review. Historical GREEN does not close F1.
+
+### Remaining coverage and handoff boundaries
+
+CH1's five characterizations cover malformed/unknown carriers, exact metadata capacity, 4096/4097 sites, and observation success followed by shared deep-tree preparation failure. AN1's four cover exact metadata capacity, 4096/4097 observation sites, generous interior/excessive recursive depth, refunds and unchanged store/lease state. These initial passes are not retroactive behavioral RED.
+
+The 4 Mi visited-node exhaustion boundary for AN1/GE1 and shared aggregate work for CH1 remain untested; exact native depths 64/65, AN1 end-to-end preparation at 4096 sites, and exhaustive malformed/source-class combinations are also not established. No million-object fixture or test-only substitute is claimed as production-path evidence. Observation is not schema validation, and synthetic signatures do not prove live-provider acceptance. These limitations need explicit disposition before full lane handoff.
+
+CH2/CH3, AN2/AN3 and GE2/GE3 remain unimplemented. Executable shared native proof/staging is still **Chat/Chat only**; any Anthropic/Gemini extension is an integrator-owned bounded amendment requiring TDD, affected verification and independent review. There is no full native-lane protocol PASS, HTTP enablement, M2–M4 integration, M5, new Full Gate, live-provider or release acceptance. Integrate only in order **M2 Chat → M3 Anthropic → M4 Gemini**, after each lane's own handoff and integration gates. Do not enable registry entries or weaken exact binding/attempt, strict completion, continuation, budgets or failure-closed policy on the strength of this checkpoint.
+
+## 53. GE1 signature-alias correction and request-review closure
+
+**Current request checkpoint: CH1 19/19, AN1 15/15 and GE1 33/33 pass; isolated shared-security selections pass 1935/1931/1949.** These are separate worktree results, not integrated-source or full-lane acceptance. Section 52's open F1 is now resolved by the following TDD increment and independent re-review; its historical FAIL remains preserved.
+
+### GE1 F1: runtime RED before the predicate correction
+
+The [ProtoJSON field-name rule](https://protobuf.dev/programming-guides/json/#format-description) accepts both lowerCamelCase and original proto names. `thought_signature` therefore cannot be treated as arbitrary unknown metadata when determining whether a Gemini Part is signed. Only signature presence is used; contents remain opaque.
+
+Echo `4a81b8397cb241bdac2e7d962d95c856` appended 13 tests in Gemini `tests.rs`, preserving the original 1030-line prefix. The parent ran the existing serialized runner against `proxy::security::protocol_adapters::gemini::tests::ge1_signature_alias_` before changing production:
+
+- `ge1-signature-alias-red-01`: successful listing of **13**; **3 controls passed / 10 genuine runtime failures**, exit 101. One failed initial immutable classification, six reached actual shared preparation for mandatory Redact/Tokenize in text/call/result carriers, and three reached actual preparation for exact current-authorized references. No compile or fixture failure is counted as RED.
+- The parent then changed only `gemini/request.rs` relative to that RED snapshot: whole-Part immutability now checks `thoughtSignature` **or** `thought_signature` before observing any leaf. No signature decoding, renaming, fallback or shared API change was introduced. Only this owned file was formatted.
+- `ge1-signature-alias-green-01`: **13 listed / 13 passed**, exit 0.
+- `ge1-request-green-02-signature-alias`: **33 listed / 33 passed**, exit 0.
+- `ge1-security-regression-02-signature-alias`: **1949 listed / 1949 passed**, exit 0.
+
+All four manifests report stable inputs, successful nonzero discovery before single-thread runtime, `CARGO_BUILD_JOBS=2` and the independent Gemini target. The parent confirmed that the RED-to-GREEN source-map difference is only `request.rs`, the old test prefix is identical, and current inputs match the latest 1949-test post-run map. `ge1-signature-alias-parent-check.json` records these checks plus bounded Rust formatting and diff checks. Every stem's source/list/test artifacts remains separate and immutable.
+
+Tests exercise synthetic real scoped admission, current exact mapping ownership, original input/store preservation, an earlier editable sibling, validator-not-called failures, existing typed `PlanError::Unsupported`, and complete budget refunds. Unsigned carriers continue redaction/tokenization; unchanged signed units preserve both original signature spellings. These request failures neither publish completion nor grant release authority.
+
+### Independent decisions on the current increments
+
+- **Cipher `9a131a8d30f74fd5a3ae6d78b267e3b7`: PASS FOR GE1 REQUEST-ONLY CURRENT REVIEWED SCOPE — F1 RESOLVED.** No remaining mandatory finding in this bounded review. The reviewer inspected the current predicate, appended tests and parent RED/GREEN/security evidence. Record: `ge1-cipher-9a131a8d-request-rereview.json`; runner `completed`.
+- **Athena `5b33bf100b5d4381a64dce0c0c088a20`: PASS FOR CH1 FIVE-TEST CHARACTERIZATION INCREMENT ONLY.** No mandatory finding. This closes the test-increment review gap without expanding Orion's old 14-test review. Record: `ch1-athena-5b33bf10-characterization-review.json`; runner `completed`.
+
+Both reviewers used only read/search/find, without execution, edits, LSP, hashing or delegation. Source-map equivalence and execution results are parent evidence, not independently reproduced. Sol's Section 52 AN1 request-only PASS remains unchanged. No full native protocol, HTTP, M2–M5, Full Gate or live-provider verdict follows from these scoped PASS decisions.
+
+Remaining limits are explicit: local 4 Mi work exhaustion and exact depths 64/65 remain untested; 4096-site observation is not end-to-end preparation acceptance; deep membership rejection is before transaction preparation, not rollback after provisional mapping creation. Synthetic signatures establish preservation only. The linker warning persists. No new commit or push was made after the baseline.
+
+### CH2 readiness: integrator amendment required, not lane workarounds
+
+Helix `f837c8b4fb974c7d94b8f554df97e666` returned **NEEDS_CHANGE for CH2 shared-contract readiness**, not a failed CH2 implementation or protocol verdict. Record: `ch2-helix-f837c8b4-readiness.json`; runner `completed; finish_reason=contract_unsatisfied`, with the visible bounded findings retained. Read/search/find only; no execution or modifications. The parent inspected the cited predicates and staging loops:
+
+1. Strict shared Chat JSON/SSE verification currently accepts a single choice (`completion_json.rs:569–575`, `completion_evidence.rs:410–430`), whereas CH2 requires independent choice indexing. Native support must not silently relax the conversion-era Responses checks.
+2. Native staging selects `TextPolicy::Output` for sites/streams and does not compose decoded argument-JSON restoration (`restoration_core/native_response.rs:346–353,1015–1037`); lifecycle `arguments` exists separately. Tool-argument semantics cannot be replaced with ordinary output text.
+3. SSE snapshot selections project frame nodes rather than complete accumulated delivered assistant/call snapshots (`native_response.rs:793–807,1387–1426`). Arbitrary lane-attested snapshots would not be a safe substitute.
+4. Current frame staging rejects no-data/comment-only frames, and conversion-era carrier restrictions reject native extensions/streaming refusal (`native_response.rs:510–540`, `completion_json.rs:504–550`, `completion_tools.rs:12–33`). Preserve native bytes/unknown fields without weakening strict completion.
+
+The next integrator scope is a bounded, test-first native capability amendment: protocol-specific strict verification, typed argument/policy staging, deterministic delivered-snapshot composition, and no-data/native-carrier handling. It must retain exact binding/attempt, charged encoding, original/final strict validation, real HTTP EOF and sealed publication/continuation ownership. Original proof constructors remain HTTP-private; lifecycle finish remains inspection only. The amendment needs affected Responses/security regressions, an updated contract identity and independent review before a lane consumes it. No implementation of that amendment, expanded lane ownership or registry enablement is recorded here. CH2/CH3, AN2/AN3, GE2/GE3, sequential M2–M4 and M5 remain outstanding.
+
+## 54. Authorized Chat-only shared amendment: execution checkpoint
+
+**The amendment is not frozen or accepted.** The latest parent executions pass **24/24 CH2-focused tests** and **1941/1941 shared-security tests**. These are shared Chat/Chat capability checks, not a Chat lane, HTTP route, integration, Full Gate or live-provider acceptance. Independent re-review closes snapshot F1 only. Explicit typed refusal/reasoning policy selection and evolving opaque-field snapshot semantics remain open.
+
+### Authorization, ownership and invariants
+
+The user explicitly approved the integrator-only, Chat-only bounded amendment after Section 53's readiness review, then explicitly approved one additional C5 test-file change. A checkpoint timeout was not approval or a user rejection; the later explicit user assent is the authorization. The three isolated request lanes remain unmodified by this amendment and are not integrated. Native registrations remain **Disabled**. There is no post-baseline commit or push.
+
+Paths below are relative to `src-tauri/src/proxy/security/`. Current changed Rust files are `completion_json.rs`, `completion_evidence.rs`, `completion_tools.rs`, `http_restoration/completion_verifier.rs`, `restoration_core.rs`, `restoration_core/native_response.rs`, `response_restoration/finalization.rs`, `tests/unified_core_tests.rs`, and the newly authorized `tests/c5_native_sse_tests.rs`. The original owned scope also permits `tests/native_test_support.rs`; it is unchanged. The C5 extension permits only its single no-data/DONE test, not other tests or production files. The two design documents record execution; the authoritative architecture is unchanged.
+
+No conversion-matrix, ingress, identity-source, existing route or provider enablement change is authorized. No new dependency, database schema, setting, credential source or token store is introduced. Exact binding/attempt, one dependency ledger, existing payload owners, charged final encoding, independent final strict validation, sealed publication and SSE last-yield continuation remain mandatory. Original completion constructors stay HTTP-private; observation, staging, inspection finish and snapshot composition confer no completion/release/publication authority.
+
+### Implemented mechanics, not a distributed frozen contract
+
+- `JsonCompletion::native_chat()` selects explicit native choice handling: 1..=128 choices with distinct integer indices below 128. Default conversion mode remains single-choice. Native JSON proof and final restored-wire checks select this constructor.
+- `SseCompletion::native_chat()` retains independently terminal choice states in the existing charged `PayloadVec`; native `ChatTools::native` supports sparse, choice-local indices. Duplicate delta indices, conflicting identity, invalid arguments, incomplete tools and invalid terminal reasons still fail. Conversion mode retains its original single-choice/contiguous-tool restrictions.
+- Lifecycle JSON/SSE staging dispatches `SourceClass::ToolArguments` through existing strict object decoding in `ResponseLifecycle::arguments`, not ordinary text matching. SSE mixed-source streams fail before matching; tool output remains fully held. Changed fragmented arguments are retained to the final fragment, using the same ledger. Ordinary sites still select `TextPolicy::Output`: explicit Refusal/Reasoning selection is **not implemented** here.
+- `NativeSseSnapshotSelection::chat_choice(frame_index, native)` selects exact borrowed choice nodes in full original frame/choice order. Mixed modes, missing/reordered/duplicate/nonchoice selections fail. Legacy `new` frame-node projection remains separate. The internal `compose_chat_snapshots` deterministically groups choices/tools in first-seen order, produces complete assistant messages followed by their call snapshots, and uses existing charged JSON/buffer/vector owners. This mechanics function is visible only within security, not a proof issuer.
+- `VerifiedNativeSse::validate_restored_chat_snapshots` reparses actual final candidate bytes, reruns strict native completion, independently recollects choices and rebuilds charged snapshots before byte comparison. The finalizer consumes the real HTTP proof and does not publish before all yields resume. Legacy snapshot validation is retained separately.
+- Explicit native carrier checking preserves unknown message/tool/function members, unknown typed JSON content parts and opaque reasoning details. Known content/refusal/reasoning-content types remain checked. Conversion's closed-world carrier checks remain unchanged. No-data frames preserve borrowed wire bytes only when source is absent and sites are empty; empty `data:` remains data, not a keepalive/completion fact.
+
+### Parent execution method and immutable artifacts
+
+Repository root: `/Users/chikham/workspace/varyai`; base/HEAD: `ca7f883c742df07abe9bcaa9b0eade02aae5e119`; main target: `src-tauri/target`, separate from lane targets. The parent-only runner `.voidx/verification/core1-20261106/run-native-core-focused.py` has SHA-256 `2183fe4d952857891e713e66bd694679422a661f4e0e4ab5234d0149e2015bd8`. It acquires the common `native-lane-cargo.lock`, sets `CARGO_BUILD_JOBS=2`, records full tracked/untracked input maps, requires successful nonzero listing, then executes the same filter with `--test-threads=1`. Each attempt has a unique source/list/test stem; a compile failure has no runtime log. No artifact is overwritten.
+
+Reproduce a focused check from the repository root with a **new** stem:
+
+```bash
+CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR="$PWD/src-tauri/target" \
+  python3 .voidx/verification/core1-20261106/run-native-core-focused.py \
+  UNIQUE-STEM 'proxy::security::unified_core_tests::ch2_core_'
+```
+
+Equivalent Cargo commands are `cargo test --lib --manifest-path src-tauri/Cargo.toml FILTER -- --list`, then, only after nonzero successful listing, the same command with `-- --test-threads=1`. The lock, main target and jobs bound apply to both. All executed fixtures are synthetic, use in-memory stores and genuine test transport EOF; no ignored/live tests, app launch/install, real credentials or production proxy port were used. The linker `__eh_frame section too large (max 16MB)` warning persists.
+
+Artifact stems below are under `.voidx/verification/core1-20261106/`. Each completed execution reports source stability. Results belong to their exact recorded input maps; earlier regression counts do not cover later production changes.
+
+| Increment                  | Runtime RED / excluded attempts                                                                                      | GREEN / bounded result                                                                                        |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Native JSON choices        | `ch2-core-json-red-01`: 4 listed, 2 passed / 2 genuine failures                                                      | `ch2-core-json-green-01`: 4/4; `ch2-core-json-security-01`: 1921/1921                                         |
+| Native SSE choices/tools   | `ch2-core-sse-red-01`: 4 listed, 2 passed / 2 genuine failures                                                       | `ch2-core-sse-green-01`: all then-current CH2 8/8                                                             |
+| Decoded argument staging   | `ch2-core-typed-red-01`: 4 listed / 4 genuine failures                                                               | `ch2-core-typed-green-02-delivery-owner`: all then-current CH2 12/12; `ch2-core-typed-security-01`: 1929/1929 |
+| Complete ordered snapshots | `ch2-core-snapshot-red-01`: 3 listed / 3 failed; cancellation test stopped at the earlier missing-snapshot assertion | `ch2-core-snapshot-green-02-visibility`: all then-current CH2 15/15                                           |
+| Native carriers / no-data  | `ch2-core-carrier-red-01`: 4 listed, 1 control passed / 3 genuine failures                                           | `ch2-core-carrier-green-01`: 4/4; `ch2-core-carrier-all-green-01`: all then-current CH2 19/19                 |
+
+`ch2-core-typed-green-01` passed 3 and failed 1 because the test asserted a budget refund while still retaining charged delivery bytes. Only the test dropped that owner before checking refund; production lifetime semantics were not changed. `ch2-core-snapshot-green-01` failed compilation with private re-export errors, listed zero tests and is **not** behavioral RED. Visibility was narrowed to security-internal before the next successful run.
+
+### Authorized C5 single-test coordination and interrupted check
+
+`ch2-core-carrier-security-01` ran 1936 tests: 1935 passed, one failed in the old `c5_native_sse_frame_only_done_can_be_opaque_and_never_has_sites`. `ch2-core-carrier-c5-isolated-01` independently reproduced the failure. That old test rejected comment/empty frames, conflicting with the approved no-data behavior. The parent stopped before editing its unowned file and obtained explicit user approval to update only this test.
+
+The renamed `c5_native_sse_frame_no_data_and_done_have_no_source_or_sites` preserves rejection of source-less JSON/invalid data and DONE-with-source/sites. It adds empty `data:` rejection and checks original borrowed bytes, absent source/empty sites, forged source/sites rejection and full budget refunds for empty/comment/CRLF/event-id-retry no-data frames and DONE. This is a contract characterization update, **not a new behavioral RED**.
+
+- `ch2-core-carrier-c5-coordinated-01`: 1 listed / 1 passed.
+- `ch2-core-carrier-c5-all-ch2-01`: 19 listed / 19 passed.
+- `ch2-core-carrier-c5-security-01`: nonzero listing succeeded, but a combined tool command hit its 120-second timeout during runtime. No full runtime conclusion or stability footer exists; this is an **interrupted attempt, not PASS or FAIL**. The parent checked no Cargo/test process remained and all recorded input maps still matched before resuming.
+- `ch2-core-carrier-c5-security-resume-01`: 1936 listed / 1936 passed, stable inputs.
+- `ch2-core-carrier-refusal-characterization-01`: 1 listed / 1 passed on first execution. This is **characterization, not RED**. Mapped/zero-map sealed JSON delivery restores selected refusal/text carriers, retains opaque siblings and source JSON, rejects edited opaque history, and refunds after delivery owner drop. It does not prove explicit reasoning policy selection.
+- `ch2-core-carrier-protocol-matrix-01`: 3 listed, **2 passed / 1 ignored**; ignored tests were not run.
+- `ch2-core-carrier-session-01`: 34 listed / 34 passed.
+
+The protocol/session checks precede the subsequent F1 production correction and must be rerun before claiming current complete-amendment verification.
+
+### Independent snapshot FAIL, verified feedback and F1 runtime repair
+
+Flux `42035b28f1fe441f8f29018785897e74` returned **FAIL FOR CURRENT SNAPSHOT COMPOSITION REVIEWED SCOPE ONLY**. The parent verified F1 against `completion_tools.rs`: strict SSE ignores later null `id`, `type` and function `name`, whereas the snapshot composer selected the last value including null. This could publish invalid reconstructed identities even when the original strict wire passed. Reusing the same incorrect composer during final comparison did not establish strict assembled-call validity. The historical FAIL remains open until independent re-review.
+
+The parent appended four tests before changing production:
+
+- Three separate null ID/type/name cases obtain a real HTTP proof, use exact choice selections and decoded argument staging, perform sealed SSE delivery and resume the final continuation, then require exact published history with the established identity.
+- One six-mode malformed assembled-call test requires failure for null/missing identity, non-object/invalid argument JSON and duplicate call IDs, without retained charges or publication. It exercises structural mechanics, not a completion issuer.
+
+`ch2-core-snapshot-f1-red-01` successfully listed 7 tests: the three prior controls passed and all four new tests genuinely failed at runtime. Each null case reached fully delivered publication and failed `ch2_core_snapshot_null_identity_erased_in_published_history`; malformed calls failed `ch2_core_snapshot_malformed_assembled_call_accepted`. No compiler/fixture failure is counted.
+
+The production correction affects only `completion_json.rs` and `restoration_core/native_response.rs` relative to this RED snapshot. Non-null tool identity selection now ignores nulls and rejects conflicting values. The existing strict JSON message/tool structure logic is extracted into security-private `validate_chat_message`; the original JSON choice still checks terminal reason before calling it. After charged composition/parsing, every complete assistant message is checked by this shared strict validator, and each following standalone call must match its validated message call. This adds structural validation, not completion authority. Final actual-wire strict validation and independent reconstruction remain required.
+
+- `ch2-core-snapshot-f1-green-01`: **24 listed / 24 passed**, all current CH2-focused tests.
+- `ch2-core-snapshot-f1-security-01`: **1941 listed / 1941 passed**, current shared-security selection.
+
+Both report stable inputs, the common lock, jobs bound and single-thread runtime. Lyra `b91a1cfddf624fae8197e3f5c5861609` returned **PASS FOR SNAPSHOT F1 CURRENT REVIEWED SCOPE ONLY — F1 RESOLVED**, with no blocking finding in that scope. The reviewer confirmed null-ignore/conflict rejection, strict assembled-call checks, retained JSON completion checks, actual-wire validation and delayed activation. Flux's earlier FAIL remains historical. This does not grant whole-amendment, full-protocol, typed-policy, evolving opaque-composition, M2–M5, Full Gate or live acceptance. Review used only read/search/find, without commands, LSP, modifications, hashing or delegation. Parent test results were not independently executed or raw-log-verified; JSON preservation was assessed from current source without a historical diff, and final reconstruction shares the composer rather than an implementation-diverse oracle.
+
+### Remaining stop conditions
+
+Do not distribute or consume this shared contract yet. Required work includes explicit typed policy selection and its genuine runtime RED/GREEN, evolving opaque/structured-field snapshot semantics, current protocol/session regressions, bounded owned-file Rust formatting (`--config skip_children=true`), Cargo check and Clippy, source identity/freeze, document audience gates and independent whole-amendment review. New capabilities must not be backdated into the baseline Full Gate. Preserve all historical formatter blocks outside newly approved changes.
+
+The lane resource handoff gaps in Section 53 remain open. Shared executable proof/staging remains Chat/Chat only; no Anthropic/Gemini proof expansion is authorized here. CH2/CH3, AN2/AN3, GE2/GE3, full-protocol lane reviews, sequential M2–M4 integration, M5 and release/live acceptance remain incomplete. No workflow completion or post-baseline commit/push is recorded.
+
+## 55. Approved typed-policy increment: parent verification, not amendment acceptance
+
+**The Chat-only shared amendment remains unfrozen and unaccepted.** This checkpoint supersedes Section 54's open typed-policy item only for the increment below. Current parent checks pass **38/38 CH2-focused tests, 1955/1955 shared-security tests, 34/34 session tests, and protocol matrix 2 passed / 1 ignored**. Cargo check, Clippy with warnings denied, bounded formatting and diff checks pass. Independent review returns **PASS for the typed-policy increment only**, with no mandatory finding. Evolving opaque/structured snapshot semantics, whole-amendment review and all lane/integration acceptance remain open.
+
+### Authorized files, APIs and invariants
+
+The user explicitly approved the four-file typed-policy plan after the approval prompt timed out. The timeout itself was not approval or a rejection. Relative to the pre-increment input map `ch2-core-policy-start-01.json`, implementation changes are limited to `src-tauri/src/proxy/security/restoration_core/native_response.rs` and `src-tauri/src/proxy/security/tests/unified_core_tests.rs`; documentation appends are limited to this evidence record and `docs/design/security-dlp-unified-core-parallel-implementation-plan.md`. Local source/list/test manifests and starting snapshots live under `.voidx/verification/core1-20261106/`; they are not release artifacts. The authoritative architecture, previous shared changes, C5 characterization and three isolated request lanes are preserved.
+
+- `NativeJsonObservation::new_with_policies(source, client, sites, delivered_nodes, policies, budget)` requires one existing `TextPolicy` per site, in exact site order. Policies are retained in a budget-charged `PayloadVec`; the constructor rejects missing/extra policies and disagreement between `SourceClass::ToolArguments` and `TextPolicy::ToolArguments` before staging. Its old `new` constructor retains default Output/ToolArguments behavior without adding a policy vector.
+- `NativeSseTextStream::with_policy(fragments, policy)` selects one policy for the entire decoded stream. Source/policy compatibility is checked for every fragment before matcher work. Existing exact, unique, ordered site coverage and homogeneous source requirements remain. The old `new` retains its default behavior. Stream metadata remains borrowed; no new retained owner or token store is introduced.
+- JSON/SSE lifecycle staging passes Output/Refusal/Reasoning to the existing lifecycle. Reasoning preserves readable text and adds no restoration occurrence or token dependency. Output/Refusal restore under existing scope. ToolArguments still takes the dedicated complete-object decoding/holding path, never ordinary text matching. One lifecycle and dependency ledger serve mixed policies.
+- Non-lifecycle JSON staging rejects explicitly policy-bearing observations rather than silently falling back to Output. SSE explicit policy exists on stream claims accepted only by the lifecycle entry; the old entry has no stream/policy parameter to ignore. This is an API-shape constraint, not a new tested rejection on the old SSE entry.
+
+No conversion-mode weakening, protocol/site-kind inference, proof issuer, completed-context owner, release permission, early publication or snapshot-composition change is introduced. Exact attempt binding, original node identity, immutable restrictions, charged encoding, independent final strict validation and last-yield continuation remain mandatory. Opaque content is not a readable reasoning policy merely because it contains a reference. Native registrations remain **Disabled**. No commit, push, app launch/install, ignored/live test or release acceptance is recorded.
+
+### Actual RED/GREEN and characterization history
+
+All stems below are under `.voidx/verification/core1-20261106/` and are immutable. The Section 54 parent runner, common Cargo lock, `CARGO_BUILD_JOBS=2`, main target, nonzero discovery and single-thread runtime apply. Fixtures are synthetic and use in-memory stores and genuine test transport EOF.
+
+| Artifact stem                         | Observed result and boundary                                                                                                                                                                                                                                           |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ch2-core-policy-red-01`              | Test compilation failed because the new SSE helper omitted the `MAX_ENTITY` import; zero listed, no runtime. Not behavioral RED. Only the import was corrected.                                                                                                        |
+| `ch2-core-policy-red-02-import`       | 4 listed; 2 controls passed, JSON/SSE reasoning genuinely failed at runtime on `policy_json_reasoning_restored_or_dependencies_granted` / `policy_sse_reasoning_restored_or_dependencies_granted`. Original API selected Output; production was unchanged.             |
+| `ch2-core-policy-green-01`            | 4/4 passed after explicit policy carriers/dispatch. Tests switched construction to `new_with_policies` / `with_policy`; safety assertions and fixtures were not weakened. This is not an unchanged-callsite regression or proof that old constructors infer Reasoning. |
+| `ch2-core-policy-guards-red-01`       | 13 listed; 5 passed / 8 genuine runtime failures: JSON missing/extra/source-policy mismatch and legacy fallback; SSE three source-policy mismatches. Existing mixed-source/immutable rejection passed as a control.                                                    |
+| `ch2-core-policy-guards-green-01`     | 13/13 passed after compatibility/cardinality validation and rejection of explicit JSON policies in non-lifecycle staging. Guard assertions were unchanged.                                                                                                             |
+| `ch2-core-policy-characterization-01` | 14/14 passed on first run of the added mixed-policy/metadata-allocation test. That last test is characterization, not RED.                                                                                                                                             |
+
+Tests cover mapped/zero-map JSON and split-reference SSE, original-source preservation, no dependency grant for reasoning, restored Output/Refusal, exact sealed delivered history, unchanged borrowed wire bytes, cancellation without last continuation activation and full budget refunds. The mixed-policy test covers Output/Refusal/Reasoning/decoded ToolArguments sharing one dependency token, unchanged immutable reasoning, and failure before/after policy-vector allocation with complete refunds. Negative fixtures cannot publish. SSE immutable/mixed-source tests are existing-behavior controls, not new RED.
+
+### Final-source checks and reproducibility
+
+The first Cargo check (`ch2-core-policy-cargo-check-01`) returned zero but reported one unused `TextPolicy` import. Removing that import was the only subsequent Rust edit; it is not a behavioral fix. All checks below were executed after the removal, and each source manifest reports unchanged pre/post inputs. Earlier formatting-only checks and pre-removal executions remain historical.
+
+| Final artifact stem                        | Command selection/result                                                                                |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `ch2-core-policy-final-all-green-01`       | `proxy::security::unified_core_tests::ch2_core_`: 38 listed / 38 passed, including the 14 policy tests. |
+| `ch2-core-policy-final-security-01`        | `proxy::security::`: 1955 listed / 1955 passed.                                                         |
+| `ch2-core-policy-final-protocol-matrix-01` | `proxy::protocol_matrix_tests::`: 3 listed, 2 passed / 1 ignored; ignored not executed.                 |
+| `ch2-core-policy-final-session-01`         | `proxy::session::tests::`: 34 listed / 34 passed.                                                       |
+| `ch2-core-policy-cargo-check-02-import`    | `cargo check --manifest-path src-tauri/Cargo.toml`: exit 0, no Rust warning.                            |
+| `ch2-core-policy-clippy-01`                | `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`: exit 0.                             |
+
+From the repository root, reproduce any test selection with a new stem:
+
+```bash
+CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR="$PWD/src-tauri/target" \
+  python3 .voidx/verification/core1-20261106/run-native-core-focused.py \
+  UNIQUE-STEM 'proxy::security::unified_core_tests::ch2_core_policy_'
+```
+
+Use the four final filters in the table for regression runs. The underlying commands are `cargo test --lib --manifest-path src-tauri/Cargo.toml FILTER -- --list`, followed only after successful nonzero listing by the same command with `-- --test-threads=1`. Cargo check/Clippy used the same jobs bound, target and global `native-lane-cargo.lock`, saving new logs and full pre/post maps. No lane Cargo overlapped. Final bounded formatting command was `rustfmt --edition 2021 --config skip_children=true --check src-tauri/src/proxy/security/restoration_core/native_response.rs src-tauri/src/proxy/security/tests/unified_core_tests.rs`; `git diff --check` also returned zero. Formatting touched only these approved Rust files. The linker `__eh_frame section too large (max 16MB)` warning persists; it is not a Rust/Clippy warning.
+
+Documentation appends do not alter executable inputs; source-map revalidation must explicitly distinguish the two appended documents from all other inputs. This is not a newly frozen contract identity or Full Gate. Whole-project renderer/unit/integration/format commands were not rerun for this bounded increment and no broader current-tree claim is made. Next: establish approved evolving opaque/structured snapshot semantics and contradiction/conflict/resource/cancellation tests before source freeze and independent whole-amendment review. Stop for design/scope approval rather than infer those semantics or touch unowned files. CH2/CH3, AN2/AN3, GE2/GE3, lane resource handoffs, sequential M2–M4 and M5 remain incomplete.
+
+### Bounded independent decision and audience gates
+
+Rune `9178bf23c6444ba481b6b7405a680f6b` returned **PASS FOR CH2 CHAT-ONLY TYPED-POLICY INCREMENT ONLY**, with no blocking finding; runner status `completed`. Parent transcription: `ch2-core-policy-rune-9178bf23-review-01.json`. The reviewer compared the pre-increment snapshots and incremental diff with current policy carriers/dispatch, existing lifecycle and tests, not the whole HEAD diff. Read/search/find only; no commands, LSP, edits or delegation. Parent execution results and raw logs were not independently reproduced or verified. Parallel documentation, whole amendment, full lane, dirty-tree-wide correctness, M2–M5 and release acceptance were not reviewed. A nonblocking coverage gap remains: no separate positive test selects explicit SSE ToolArguments; the unchanged dedicated argument branch and old-constructor regression tests support that path. The first API-construction switch and characterization boundaries remain explicit.
+
+Lyra `050b28a1b95d41da8e2da4255e887bc2` returned **PASS for human fresh-reader clarity and PASS for LLM checkpoint execution readiness**, with no mandatory fixes, on this appended Section 55 and plan Section 11. Read/search/find only; no execution, LSP, edits, hashing or delegation. API descriptions and inspected parent counts matched; formatting/hash checks remain parent evidence. Parent transcription: `ch2-core-policy-lyra-050b28a1-doc-review-01.json`. The checkpoint puts the newest result/hold first and records exact paths, explicit policy versus defaults, invariants/forbidden edits, commands/filters/artifacts, RED/compile/control distinctions and next approval stop. Historical sections and headers are untouched. Parent final document-boundary/source-equivalence record: `ch2-core-policy-doc-boundary-01.json`; post-review result/checkbox bookkeeping does not change reviewed executable inputs. These local audience gates do not freeze or accept the shared contract.
+
+## 56. Conservative Chat snapshot contract: approved design, implementation pending
+
+**The design direction is approved; this section is not implementation evidence or a frozen shared contract.** The next execution plan is [plan Section 12](security-dlp-unified-core-parallel-implementation-plan.md#12-conservative-chat-snapshot-increment-execution-plan). Its implementation approval, runtime RED/GREEN, current-source regressions and independent **whole-amendment** PASS are still required. Section 55's typed-policy results remain historical evidence for that increment, not acceptance of these new rules. Native registrations remain **Disabled**; no lane may consume this candidate.
+
+### Purpose, authority and current defect
+
+This mixed human/LLM contract specifies a bounded, conservative projection of Chat SSE choices into reusable assistant/call history. It does not define new provider wire semantics. The authoritative [protocol-adapter architecture](security-dlp-unified-core-protocol-adapters.md) remains unchanged. The user approved concatenating known text deltas but rejecting unsupported evolution of opaque values rather than guessing how to combine them.
+
+At this checkpoint, `compose_chat_snapshots` in `src-tauri/src/proxy/security/restoration_core/native_response.rs` uses `last(values, field)` for unknown message/tool/function members. Its `text_field` also falls back to the last value for non-string reasoning. Consequently two different opaque values can silently become a seemingly reusable history value. This is a source-inspected defect hypothesis awaiting behavioral RED, not a new runtime finding. The prior F1 fix for null identities and strict assembled messages/calls must be preserved.
+
+Original wire preservation and reusable history are different contracts. Retaining every original field/frame on the wire does **not** prove a unique full assistant history exists. Conversely, a history snapshot is not a replacement response envelope. IDs, usage, finish reasons, no-data frames and other envelope metadata retain their existing wire/proof handling; they are not invented as assistant fields. Choice/tool `index` values are existing grouping keys, not opaque merge instructions.
+
+### Supported projection and missing/null rules
+
+Apply the following rules independently within each exact choice and choice-local tool. Preserve first-seen choice order, first-seen tool order and field order, with each complete assistant followed immediately by its standalone calls. Never merge across choices/calls. Final assembled structures must still pass existing strict validation.
+
+| Field class                                              | Supported composition                                                                                                           | Missing, null and conflict behavior                                                                                                                                                                                                               |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `content`, `refusal`, `reasoning_content` string deltas  | Concatenate decoded strings in observed order; preserve empty strings and escaping.                                             | Missing contributes nothing. Existing text nulls contribute no string and cannot erase established text; if observed values are only null, retain null. Existing original validators reject invalid types; SSE content arrays remain unsupported. |
+| Readable string `reasoning`                              | The same ordered string/null behavior, only when every non-null occurrence is a string.                                         | No automatic Reasoning policy inference: explicit `TextPolicy::Reasoning` still controls readable-site restoration.                                                                                                                               |
+| Non-text/structured `reasoning`                          | Treat the entire value as opaque, including any null occurrences in that field's sequence.                                      | A single value or structurally equal repeats only. String/object/array/scalar type switches and null/non-null conflicts reject. This does not extend what original protocol validators accept.                                                    |
+| Tool `id`, tool `type`, function `name`                  | Retain the established non-null identity; identical repeats are allowed.                                                        | Preserve F1: missing/null cannot erase identity, conflicting non-null identities reject, and final required identity/type checks remain strict. No name/ID concatenation.                                                                         |
+| Function `arguments` string deltas                       | Concatenate in order, then retain the existing dedicated complete-object decoding, restoration and tool hold.                   | Missing/null contribute nothing; null cannot erase established arguments. Required final arguments remain a nonempty string decoding to an object. Wrong types, invalid/incomplete JSON and mixed-source/policy claims reject.                    |
+| Unknown assistant-message, tool-call or function members | Preserve the first encountered value verbatim as a JSON value; accept later occurrences only after bounded structural equality. | Missing does not overwrite. Explicit null is a value: null/null is equal, but null/non-null in either order rejects. Different strings, booleans, numbers, object/array values or types reject.                                                   |
+| Known containers and envelope facts                      | Keep existing `role`, `tool_calls`, `function`, index, terminal and completion handling.                                        | Do not reinterpret these as opaque values or relax their existing type/null/structural checks. Native complete-JSON content arrays retain existing support; no SSE array support is added.                                                        |
+
+For example, an opaque object seen once and then omitted is preserved; the same object repeated is accepted; objects with different members reject rather than deep-merge. Unknown strings are never delta-concatenated. Arrays retain element order and must match element by element; no append, set union, sorting or reasoning-index inference is allowed. Opaque nested reference-shaped text is neither scanned nor restored and grants no new occurrence/dependency. Supported readable sites still use their explicit typed policy and the existing single dependency ledger.
+
+### Equality, resource ownership and failure boundary
+
+Use the existing bounded comparison pattern (`NativeSseFrameObservation::same_value`) inside the owned production file, not unbounded `Value` equality, cloning, canonicalization or serialized temporary comparisons. Define equality over JSON structure: identical scalar variants/values using existing `serde_json::Number` equality, exact decoded strings, equal ordered arrays, and equal object key/value membership irrespective of object insertion order. Preserve the **first value's** object field order and array order in history. This is not lexical equality of wire escapes or a numeric-normalization feature.
+
+Each `compose_chat_snapshots` invocation has **one 4 _ 1024 _ 1024 work allowance** shared across all new opaque selections/comparisons, including assistant and repeated standalone-call emission; never reset per field, choice, tool or comparison. Charge one unit before each field-occurrence lookup and each visited value node, plus the inspected UTF-8 key/string byte lengths with checked subtraction. Apply depth **64**, root at depth zero; depth greater than 64 or exhausted work returns the existing capacity failure. Validate the first selected opaque value with the same bounded traversal even if there is no repeat, so a single oversized/deep opaque value cannot bypass the bound. Existing frame inspection retains its own allowance; stage and final-wire reconstruction each have a separate bounded composer invocation, not shared mutable authority.
+
+The work allowance bounds CPU inspection; `PayloadBudget` still accounts for memory. Borrow selected values from already owned native inputs, keep existing `PayloadVec`, `PayloadBuffer`, charged serialization and `PayloadJson` owners, and introduce no retained opaque copy, cache, second ledger or new dependency. Comparison uses depth-bounded stack state only. Existing count/index limits (128) and 1 MiB composed-output limit remain. All allocations/copies must retain existing precharge/RAII refund behavior; work exhaustion, allocation denial, semantic conflicts and cancellation must release temporary owners and create no completed record.
+
+Unsupported evolution is a reversible-processing boundary, not permission to discard metadata, emit last-value history, switch to ordinary forwarding or fail open. Fail through the existing sanitized restoration path **before client delivery, tool release or completed-record publication**. Do not echo field values, reference strings or tool inputs in errors/assertion reports. If this guarantee requires modifying HTTP proof/finalization or any unowned file, stop and seek separate approval.
+
+### Verification oracle and closure boundary
+
+`VerifiedNativeSse::validate_restored_chat_snapshots` in `src-tauri/src/proxy/security/http_restoration/completion_verifier.rs` consumes genuine transport proof, reparses final wire, invokes the same composer and compares charged encodings. `src-tauri/src/proxy/security/response_restoration/finalization.rs` performs that check before sealed release/publication. Both files are read-only here. The final verifier is separate from staging but **not an implementation-diverse composition oracle**.
+
+Tests must therefore hand-author expected complete history without calling the composer, assert first-value field/array ordering via charged serialization where JSON structural assertions would hide it, and add final-wire/candidate contradictions. These negatives must show that valid original HTTP completion alone cannot authorize inconsistent final history, release tools or publish. Include immutable restoration conflicts, real HTTP EOF versus truncation, exact attempt mismatch, first-run passing controls, opaque-token noninspection, resource bounds/refunds, and dropping delivery after the last yielded frame but before its continuation. Add the disclosed explicit SSE `TextPolicy::ToolArguments` positive case using the dedicated object-decoding path. The detailed matrix and commands are in plan Section 12; passing controls or compilation failures are not RED.
+
+Before closing the **whole Chat-only shared amendment**, record a new candidate contract identifier and exact source-input manifest covering all cumulative shared changes since CORE-1 `ca7f883c742df07abe9bcaa9b0eade02aae5e119`, not merely this four-file increment. Reconcile callable signatures/visibility with actual code; bind current regression manifests, parent command results and independent review scope to that candidate. A scoped increment PASS cannot close the amendment. Freeze/distribution requires independent whole-amendment PASS plus both documentation audience gates; any subsequent executable change invalidates affected checks and review. Do not label the candidate frozen before those gates pass.
+
+The pre-increment boundary is `.voidx/verification/core1-20261106/ch2-core-opaque-start-01.json` and its four same-stem basename snapshots. Preserve all historical prefixes/status headings and all earlier evidence stems. Only the four files listed in plan Section 12 may change relative to that boundary; the existing 11-file dirty HEAD diff is not the increment. Verification artifacts are parent-local evidence, not extra production ownership. No implementation, runtime RED/GREEN, new freeze identity or whole-amendment review is recorded by this section. Lane resource handoff, CH2/CH3, AN2/AN3, GE2/GE3, sequential M2–M4, M5, Full Gate and live/release acceptance remain separate and incomplete.
+
+### Document-gate result and implementation approval stop
+
+Initial document review by Juno `2abae8cb5b2248a0860945433fc00af9` returned **NEEDS_CHANGE / human FAIL / LLM FAIL** on TDD order and resource RED/control classification. Both findings were checked against `same_value`, the composer and existing charged parser/output limits. Only the new plan section was corrected: conflict and missing aggregate-work runtime RED, plus supported first-value/order baselines, now precede any production edit; bounded selection and accounting are implemented together afterward. Already-correct depth/size/low-budget/refund cases remain controls. The original review is retained in parent transcription `ch2-core-opaque-juno-2abae8cb-doc-review-01.json`.
+
+Independent re-review by Flux `f028ebe63de146acaec978cf15b0bf9a` returned **human fresh-reader PASS and LLM execution-readiness PASS**, explicitly resolving both findings with no mandatory additions. Scope: new plan Section 12 and this Section 56, not implementation or the cumulative amendment. The reviewer used read/search/find only; no command, test, hash, edit, LSP or delegation execution. Parent formatting, prefix/source checks and earlier runtime results are not reviewer execution evidence. Parent transcription: `ch2-core-opaque-flux-f028ebe6-doc-review-01.json`.
+
+Parent checks from the repository root confirmed both historical document byte prefixes unchanged, both new Markdown suffixes Prettier-idempotent, only these two documents changed against `ch2-core-opaque-start-01.json`, and both owned Rust files/all other source inputs unchanged. The embedded serialized check/Clippy wrapper was parsed as Python, not executed. `git diff --check` passed. Initial suffix-format record: `ch2-core-opaque-doc-draft-01.json`; final boundary/source/hash record including this bookkeeping: `ch2-core-opaque-doc-boundary-01.json`. No Cargo/runtime test or production change was performed for this documentation increment. The parent also fresh-read the final result/approval bookkeeping; it does not change the reviewed semantics or execution order. Await explicit implementation-plan approval before TDD; this document PASS is not amendment acceptance, freeze, lane consumption or M2–M5 authorization.
+## 57. Conservative snapshot implementation and whole-review F1 checkpoint
+
+**Current checkpoint: candidate 02 is runtime-verified but remains unfrozen and unaccepted.** Whole-amendment independent re-review and the final mixed-audience documentation gates are pending. Native registrations remain **Disabled**. No lane may consume this candidate. This append supersedes only the current-state interpretation of Sections 55–56; their historical text, pending labels and verification records are unchanged.
+
+### Approval, audience and ownership
+
+This section serves human checkpoint readers and LLM executors. The user explicitly approved plan Section 12 with permission to continue before production implementation. The earlier checkpoint timeout was not a rejection. The authoritative [protocol-adapter architecture](security-dlp-unified-core-protocol-adapters.md) is unchanged.
+
+The snapshot increment is measured against `ch2-core-opaque-start-01.json`; the entire amendment is measured against CORE-1 `ca7f883c742df07abe9bcaa9b0eade02aae5e119`. Only `restoration_core/native_response.rs`, `tests/unified_core_tests.rs` (under `src-tauri/src/proxy/security/`) and these two plan/evidence documents may change in this increment. The cumulative nine-Rust-file/eleven-file dirty HEAD diff includes earlier authorized work; it is not this increment's ownership list. No other shared production file, C5 fixture, lane, HTTP proof/finalizer, route, registration, conversion matrix or identity source was changed in this increment. No dependency, storage, schema, UI, setting or token store was added.
+
+### Conservative projection implemented
+
+`compose_chat_snapshots` no longer selects the last opaque value. It preserves the first value and accepts only bounded structural-equal repeats. Missing values do not overwrite; opaque null is a real value, so null/non-null in either direction rejects. Unknown strings are not concatenated. Object equality ignores insertion order but output retains the first object's field order; arrays are order-sensitive. There is no numeric normalization, deep merge, opaque cloning or opaque reference scanning. Structured/non-text `reasoning` follows the opaque rule. Known text/null deltas and complete structured-argument restoration retain their prior ordered semantics, and F1's earlier identity-null protection and strict assembled assistant/call validation remain intact.
+
+Each first value is bounded by self-comparison using `NativeSseFrameObservation::same_value`; subsequent repeats use the same comparison. Depth is limited to 64. One composer invocation shares `4 * 1024 * 1024` work across fields, choices, tools and standalone-call emission, including `1 + field.len()` lookup charges. Existing `PayloadBudget`, `PayloadVec`, `PayloadBuffer`, `PayloadText` and `PayloadJson` retain allocation ownership and refund behavior. No new dependency authority is granted by opaque data.
+
+The original wire and reusable assistant/call history remain distinct. The final verifier consumes real HTTP proof, revalidates final wire and compares charged serialized ordered history before release/publication. It and staging **share the composer**; this is not an implementation-diverse oracle. Handwritten full histories, charged serialized-order assertions and real-proof final-wire/candidate contradictions provide counterevidence instead.
+
+### Snapshot TDD and controls
+
+All artifacts below are under `.voidx/verification/core1-20261106/`; earlier artifacts are retained without overwrite.
+
+| Artifact stem                                                                | Observation and classification                                                                                                                                                                                                                                                                                                                                          |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ch2-core-opaque-red-01`                                                     | Listing compilation failed with four `E0277` helper error conversions. Zero listing/runtime; **not RED**. Only helper `map_err` handling was corrected.                                                                                                                                                                                                                 |
+| `ch2-core-opaque-red-02-mapping`                                             | 23 listed; 2 controls passed and **21 genuine runtime failures** before production changes. Tags: `opaque_conflicting_snapshot_accepted`, `opaque_aggregate_work_limit_missing`, `opaque_first_value_or_history_order_changed`. These cover 19 conflicts, missing aggregate work and first-value/order preservation.                                                    |
+| `ch2-core-opaque-green-01`                                                   | 23/23 passed after the minimal composer change; safety assertions unchanged.                                                                                                                                                                                                                                                                                            |
+| `ch2-core-opaque-controls-02`                                                | CH2 73/73, including 35 added snapshot/policy tests. First-passing parser/output/depth/low-budget/refund, final-wire/candidate contradictions, immutable, cancellation, equal-repeat/single-value, multi-choice and sparse-tool coverage are controls/characterization, **not additional RED**. Explicit SSE `TextPolicy::ToolArguments` positive coverage is included. |
+| `ch2-core-opaque-final-security-01` / `final-session-01` / `final-matrix-01` | Historical candidate 01: 1990/1990; 34/34; 2 passed / 1 ignored respectively. Ignored not executed.                                                                                                                                                                                                                                                                     |
+| `ch2-core-opaque-check-clippy-01`                                            | Historical candidate 01 Cargo check and Clippy `-D warnings`: both exit 0.                                                                                                                                                                                                                                                                                              |
+
+### Whole-amendment review FAIL and verified stream-isolation feedback
+
+Onyx `b10a987a8fa443f0a6dd31357c40decc` returned **whole-amendment FAIL** for `chat-native-shared-conservative-20261107-candidate-01`, not merely a scoped opaque/policy result. Its mandatory F1 finding was that `NativeSseTextStream` checked source class, exact site coverage and order but did not bind fragments to one native choice. Same-class fragments from parallel choices could form a complete reference and be restored into different choices; snapshot-selection coverage and final wire reconstruction could not detect that earlier grouping error. The parent verified the source path and reproduced it, including the analogous same-choice call/carrier isolation gaps, before changing production code. The review used **read/search/find only**, with no commands, tests, LSP, hashes, edits or delegation. Test results cited by Onyx were parent evidence, not independent execution. Onyx reported no other confirmed blocker but did not exhaustively audit all manifests/RED logs; its report is retained as `ch2-core-isolation-onyx-b10a987a-review-01.json`.
+
+The correction stays private to `native_response.rs`: `chat_sse_stream_key` derives a key from exact original frame-node pointers, native choice index and either the exact supported text field or choice-local tool index. `ChatSseStreamCarrier` and the helper are private; no staging signature/API is extended. Charged key metadata and one bounded lookup allowance precede lifecycle/matcher work. Same-class/same-policy claims cannot cross choices, calls or content/refusal/reasoning carriers, even with legacy snapshot selections. Classification must agree with a real argument versus text carrier. Reordered choices and sparse reordered calls remain supported. Unsupported sites fail through the existing safe path, not ordinary forwarding or fail-open.
+
+| Artifact stem                    | Observation and classification                                                                                                                                                                                                                               |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ch2-core-isolation-red-01`      | 7 listed, then **6 runtime failures / 1 positive control**. All six hit `isolation_cross_choice_call_or_carrier_stream_accepted`; zero-publication and complete-refund assertions passed before the intended failure. Production was unchanged for this run. |
+| `ch2-core-isolation-green-01`    | Timed out after 120 seconds waiting for Cargo package-cache/build-directory locks during listing. No successful listing or runtime; **neither RED nor GREEN**. The incomplete record/log remain intact. No unknown process was terminated.                   |
+| `ch2-core-isolation-green-02`    | After explicit permission for read-only process/lock inspection found no holder, new-stem listing and single-thread runtime passed 7/7. No earlier artifact was overwritten.                                                                                 |
+| `ch2-core-isolation-controls-01` | Final CH2 **81/81** after adding a sparse-call positive control. Eight isolation tests total: the six RED-derived negatives and two first-passing controls, not eight REDs.                                                                                  |
+
+The first attempt to format the new tests reported a mismatched delimiter before Cargo ran; it was repaired in test code only and is **not runtime RED**. The prior unused-import/typed-policy compile history remains in Section 55. The write-tool stale-read rejection was resolved by rereading, not by overwriting external work.
+
+### Current candidate 02 evidence and identity
+
+Candidate `chat-native-shared-conservative-20261108-candidate-02` is recorded in `ch2-core-isolation-candidate-02.json`, with the full input SHA-256 map, baseline, cumulative nine-file Rust list and evidence mapping. Its `-whole.diff` covers the amendment against CORE-1; its `-increment.diff` covers only the F1 change against `ch2-core-isolation-start-01`. Candidate 01's manifest/diffs and all earlier logs remain unchanged.
+
+| Current parent artifact stem           | Listing/runtime or command result                                                                                                           |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ch2-core-isolation-controls-01`       | `proxy::security::unified_core_tests::ch2_core_`: 81 listed / **81 passed**.                                                                |
+| `ch2-core-isolation-final-security-01` | `proxy::security::`: 1998 listed / **1998 passed**.                                                                                         |
+| `ch2-core-isolation-final-session-01`  | `proxy::session::tests::`: 34 listed / **34 passed**.                                                                                       |
+| `ch2-core-isolation-final-matrix-01`   | `proxy::protocol_matrix_tests::`: 3 listed / **2 passed, 1 ignored**; ignored not executed.                                                 |
+| `ch2-core-isolation-check-clippy-01`   | `cargo check --manifest-path src-tauri/Cargo.toml` and `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`: both **exit 0**. |
+
+All current command manifests have identical pre/post maps, matched by the parent to candidate 02. All Cargo runs used the common `native-lane-cargo.lock`, `CARGO_BUILD_JOBS=2` and main `src-tauri/target`; runtime followed successful nonzero listing and used one test thread. Two-file rustfmt and `git diff --check` passed. The linker warning persists: `__eh_frame section too large (max 16MB) ... compact unwind table`; it is not suppressed or treated as acceptance of release tooling.
+
+Parent-recorded executable SHA-256 values:
+
+- `native_response.rs`: `e494a9eb1bb3ff330c7e082bfcef6b89a89dfe6c91eb1f8b7558567bf9f554f3`.
+- `unified_core_tests.rs`: `ec23c98c7082504b5b95530b40ef847f2d7345c921ba260b5bd5f5cf97cd7306`.
+- Unchanged focused runner: `2183fe4d952857891e713e66bd694679422a661f4e0e4ab5234d0149e2015bd8`.
+
+The parent API/visibility audit found the earlier amendment's security-scoped policy constructors, Chat choice selection/composer, native completion constructors/carrier validator and final snapshot validator; no pre-existing public staging signature was removed or changed. `validate_chat_message` was extracted as a security-internal helper. Native-only constructors are selected by the native verifier; conversion constructors/defaults retain strict behavior. F1 adds only private mechanics. Exact binding/attempt checks, one lifecycle ledger, immutable restrictions, original/final strict validation, real EOF, tool hold, sealed release/publication and activation only after the last SSE yield remain required and were inspected. Direct Chat/Anthropic/Gemini registrations remain `Registration::Disabled`.
+
+### Reproduction and remaining gates
+
+From the repository root, use a **new** evidence stem for each command; never overwrite stems:
+
+```bash
+CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR="$PWD/src-tauri/target" \
+  python3 .voidx/verification/core1-20261106/run-native-core-focused.py \
+  UNIQUE-STEM 'proxy::security::unified_core_tests::ch2_core_'
+
+rustfmt --edition 2021 --config skip_children=true --check \
+  src-tauri/src/proxy/security/restoration_core/native_response.rs \
+  src-tauri/src/proxy/security/tests/unified_core_tests.rs
+git diff --check
+```
+
+Use the other current-table filters for security/session/matrix. Cargo check/Clippy require the same global lock/jobs/target and saved pre/post inputs. Renderer/unit/all-library/integration/full-format checks were **not** rerun for this bounded amendment, so no current Full Gate claim is made. Ignored/live tests, credentials, app startup/install, commit/push, lane rebase/distribution/integration and registration changes remain forbidden in this scope.
+
+Next: obtain independent **whole-amendment PASS** for candidate 02, final human fresh-reader and LLM execution-readiness PASS, then confirm source/contract identity and append the actual freeze decision. A documentation-only append may reuse executable evidence only after all executable/config/test inputs are confirmed unchanged; it does not retroactively change any historical result. A mandatory finding must be verified and fixed test-first within the four files, or execution must stop if it requires another file, API expansion or protocol-semantic change. Even a later shared-amendment freeze is not CH2/CH3, AN2/AN3, GE2/GE3, lane handoff, M2–M5, Full Gate or live/release acceptance.
+
+## 58. Candidate 02 whole-review FAIL and candidate 03 continuity checkpoint
+
+**Current state: candidate 03 is runtime-verified, unfrozen and unaccepted.** Kai `c49bac7c31c94a099aa2030b6fa39374` is independently reviewing the whole cumulative amendment; no result is assumed. Candidate 02 did not pass whole review. This mixed human/LLM checkpoint supersedes only the current-state interpretation of Section 57, preserving all earlier text, statuses, failures and evidence. Native registrations remain **Disabled**, and no candidate is available to lanes.
+
+### Independent reports and parent verification boundary
+
+Lumen `c5d465a1f869425e970aa64364cf8da6` returned **human fresh-reader PASS** and **LLM execution-readiness PASS** for plan Section 13/evidence Section 57, with no mandatory document finding. Its complete report is retained in `ch2-core-isolation-lumen-c5d465a1-review-01.json`. That PASS concerns the then-unfrozen checkpoint, not code acceptance or the new sections here.
+
+Vesper `0cc25edd17e04a64b83e3f59fa71c167` returned **whole-amendment FAIL** for `chat-native-shared-conservative-20261108-candidate-02`, covering the cumulative nine-file scope rather than only the previous isolation fix. The agent completed with `finish_reason=time_limit`; its full returned report and coverage limits are preserved in `ch2-core-isolation-vesper-0cc25edd-review-01.json`. It is neither a PASS nor an exhaustive audit. Both reviewers used read/search/find only, without commands, tests, hashes, LSP, edits or delegation. Runtime reproduction, source identity, formatting and retained-artifact checks below were executed by the parent, not independently by these reviewers.
+
+Vesper F1 identified a remaining partition-authority defect: same-choice/same-carrier fragments `[0,2]` could form one stream while fragment `[1]` formed another. The groups were internally ordered, disjoint and collectively complete, but could synthesize a valid reference absent from the original continuous carrier. Staging and final verification sharing the composer cannot prove that original matching provenance. The parent verified this path and also reproduced contiguous carrier partitioning and omission of an unobserved middle fragment before production changes.
+
+Vesper F2 identified guard masking: several SSE policy/immutable negatives used `{"text":...}` rather than valid Chat choices/delta. The new carrier check rejected them before the intended guard. These historical green results remain true executions, but no longer establish the intended guard-specific coverage. The parent verified the masking and replaced only those fixtures in the owned test file with valid Chat sources/exact carrier nodes, paired with successful controls differing only at the intended policy, source-classification or immutable guard. Mixed-source coverage now uses HistoricalText/CurrentInput on the same content carrier, rather than an argument/text carrier mismatch.
+
+### Test-first continuity correction and honest controls
+
+All artifacts in this section are under `.voidx/verification/core1-20261106/`; unique stems preserve earlier records. `ch2-core-continuity-start-01.json` and its two Rust snapshots capture the correction start. No other production file or API was changed.
+
+| Artifact stem                            | Result and classification                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ch2-core-continuity-red-01`             | 8 successfully listed, then **6 genuine runtime failures / 2 first-passing controls**, with unchanged pre/post inputs and unchanged production. Four default/explicit-policy × composed/legacy-selection hopping cases, contiguous partitioning and omitted middle-site acceptance fail at `continuity_partition_or_omission_accepted`. Hopping/omission cases first confirm one restoration and one dependency; all negatives first pass zero-publication, exact refund and original-input assertions. |
+| `ch2-core-continuity-red-01` controls    | Complete original text remains unchanged with no restoration/dependency. Sparse argument hopping is already rejected elsewhere by strict processing; it is a control, not a seventh RED or proof that the new continuity guard alone rejected it.                                                                                                                                                                                                                                                       |
+| `ch2-core-continuity-policy-controls-01` | 7 listed, 5 passed / 2 runtime test-expectation failures at `policy_sse_valid_carrier_control_not_restored`: the reused escaped argument fixture contains two reference occurrences but the new control expected one. This is **not production RED**. The mistaken count was corrected in tests only; this record remains intact.                                                                                                                                                                       |
+| `ch2-core-continuity-policy-controls-02` | Corrected valid-carrier controls and negatives **7/7 before production modification**. First-passing coverage repair/control, not new RED.                                                                                                                                                                                                                                                                                                                                                              |
+| `ch2-core-continuity-green-01`           | Continuity **8/8** after the private production correction. The intended six rejection assertions and original/refund checks are unchanged.                                                                                                                                                                                                                                                                                                                                                             |
+
+`native_response.rs` now uses private `visit_chat_sse_carriers` traversal for both exact-node key lookup and validation of each selected carrier's complete original sequence. Before lifecycle creation or matcher work, every original frame with a source is examined; every string node of that carrier must match the next exact stream pointer, with no omission, jumping, partitioning, duplication or reordering. Other choices and sparse calls may still interleave. Missing/null fields do not invent fragments; source-less no-data/DONE frames do not invent carriers. One existing 4 Mi lookup-work allowance charges frames, choices, field lookups and tools across the inspection; charged site/key/selection ownership remains in the existing `PayloadVec` objects. No public staging signature, dependency authority, finalizer, proof or protocol semantics were extended.
+
+### Current candidate 03 execution and identity
+
+`chat-native-shared-conservative-20261108-candidate-03` is recorded in `ch2-core-continuity-candidate-03.json`, including all 1,536 tracked/untracked non-artifact inputs, the cumulative nine Rust paths, current evidence stems and failure classifications. `ch2-core-continuity-candidate-03-whole.diff` is the entire Rust amendment against CORE-1 `ca7f883c742df07abe9bcaa9b0eade02aae5e119`; `-increment.diff` is the two-file Vesper correction against `ch2-core-continuity-start-01`. All prior candidates, diffs, reviewer FAILs and execution records remain retained.
+
+| Current parent artifact stem            | Result                                                                            |
+| --------------------------------------- | --------------------------------------------------------------------------------- |
+| `ch2-core-continuity-controls-01`       | CH2: **89 listed / 89 passed**. Eight added continuity tests, not eight new REDs. |
+| `ch2-core-continuity-final-security-01` | Security: **2006 listed / 2006 passed**.                                          |
+| `ch2-core-continuity-final-session-01`  | Session: **34 listed / 34 passed**.                                               |
+| `ch2-core-continuity-final-matrix-01`   | Matrix: **3 listed / 2 passed, 1 ignored**; ignored was not executed.             |
+| `ch2-core-continuity-check-clippy-01`   | Cargo check and Clippy `-D warnings`: both **exit 0**.                            |
+
+Each current command manifest's complete pre/post input map equals candidate 03's map. Cargo remained globally serialized with `native-lane-cargo.lock`, `CARGO_BUILD_JOBS=2` and main `src-tauri/target`; focused runtime followed successful nonzero listing and used `--test-threads=1`. Two-file rustfmt and `git diff --check` exited 0. The known compact-unwind linker warning remains recorded. Exact reproduction uses Section 57's unchanged runner/commands with fresh stems and the current table's security/session/matrix filters; the continuity filter is `proxy::security::unified_core_tests::ch2_core_continuity_`. Cargo check/Clippy require the same global lock/jobs/target and saved pre/post maps.
+
+Parent-recorded SHA-256 values:
+
+- `restoration_core/native_response.rs`: `775627c4cd1b1efe006df6a648e941cff84a844362e5aa9a3cb26b33f45aa339`.
+- `tests/unified_core_tests.rs`: `c06a79da144521377c8be070a0073f79d92e3f2ceae93332fece77f4d9a55de1`.
+- Unchanged focused runner: `2183fe4d952857891e713e66bd694679422a661f4e0e4ab5234d0149e2015bd8`.
+
+The parent previously saved `ch2-core-isolation-boundary-preclosure-01.json`: candidate 02's then-current 1,536 inputs differed only in appended documents; all five executable evidence maps and the whole diff matched candidate 02; original document prefixes were intact. It also established a baseline inventory of 1,836 retained artifacts. That inventory begins at its own checkpoint, not an invented earlier directory-wide hash history. Code changed afterward for the verified Vesper findings, so candidate 02 execution is historical, not evidence for candidate 03. `ch2-core-continuity-doc-prefix-01.json` captures exact document prefixes including Sections 13/57 before this append; those prefixes must remain byte-for-byte unchanged.
+
+### Remaining holds and next execution
+
+1. Retain Kai's full **whole-amendment PASS/FAIL** for candidate 03; a scoped continuity/F1/policy PASS is insufficient. Verify any mandatory finding against source and runtime before fixing, or stop if another file, API extension or protocol-semantic change is necessary.
+2. Obtain human fresh-reader and LLM execution-readiness PASS for the latest plan/evidence append. Format only new suffixes via stdin Prettier, preserving all historical prefixes/statuses and failure records.
+3. Recheck all tracked/untracked non-artifact inputs against `ch2-core-opaque-start-01.json` (only four owned paths changed), candidate 03 (only appended documents differ), unchanged runner, retained-artifact inventory, strict conversion/Disabled registration boundary and exact evidence mapping. Save a new parent manifest; changed/uncertain executable/config/test inputs require affected reruns and re-review.
+4. Only after all gates pass, append the actual frozen source/contract identity and acceptance checkpoint. No freeze has occurred in this section.
+
+Maintain exact binding/attempt, one dependency ledger, budgets/refunds, immutable restrictions, strict original/final validation, real HTTP EOF, complete tool hold, sealed publication and last-yield SSE continuation. The architecture, other shared files, C5, lanes, route/registration/conversion matrix and identity sources remain unchanged in this increment. No dependency, storage, schema, UI, setting or token store is authorized. No commit/push, app launch/install, ignored/live tests or credentials were used. Renderer/unit/all-library/integration/full-format checks were not rerun: there is no current Full Gate claim. Shared-amendment closure, if later achieved, does not accept CH2/CH3, AN2/AN3, GE2/GE3, lane resource handoffs, sequential M2 → M3 → M4, M5 or live/release; it never implicitly distributes, rebases, integrates or enables lanes.
+
+## 59. Chat-only shared amendment frozen identity and acceptance
+
+**Decision: freeze and accept only the bounded Chat-only shared amendment as `chat-native-shared-conservative-20261108-frozen-01`.** Candidate 03 has passed its required whole-amendment static review, latest pending-checkpoint document dual gate and parent source/contract/evidence checks. This is not lane, Full Gate, M2–M5 or live/release acceptance. Native registrations remain **Disabled**; no distribution, rebase, lane consumption, integration or activation follows. Plan Section15 records the same bounded decision without rewriting historical pending checkpoints.
+
+### Frozen identity and evidence ownership
+
+The source/contract identity SHA-256 is **`0a2db1a78fdffae9952a09758ec110bfefd76fd8a30e9991ce4b957ad65c7c6c`**. The authoritative machine-readable mapping is `.voidx/verification/core1-20261106/ch2-core-continuity-closure-ready-01.json`. Its `identity_payload` binds CORE-1, all nine cumulative Rust file hashes, the unchanged architecture, reviewed Plan11–14/Evidence54–58 checkpoint hashes, runner and bounded scope. The digest uses UTF-8 `json.dumps(identity_payload, sort_keys=True, separators=(',', ':'))`. This acceptance suffix is excluded from that digest to avoid self-reference; the final boundary manifest records current document hashes separately.
+
+Candidate 03's manifest SHA-256 is `263d408172fb247dd966dcac78066745638f987afe3269a005ca96893c9af520`; cumulative `-whole.diff` SHA-256 is `930d5a7aed3954a2b9a97987f820a4fa1840d935603c5fd184d2dc071c031eb1`. The two owned executable hashes remain Section58's `775627c4...aa339` and `c06a79da...5de1`, with complete values in the manifest. The runner remains `2183fe4d952857891e713e66bd694679422a661f4e0e4ab5234d0149e2015bd8`. All artifacts below are in the same verification directory.
+
+| Gate or boundary                       | Retained record and result                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Whole candidate 03 code                | `ch2-core-continuity-kai-c49bac7c-review-01.json`: Kai `c49bac7c31c94a099aa2030b6fa39374`, completed **WHOLE-AMENDMENT PASS**, all nine cumulative Rust files and critical callchains/tests; no mandatory findings.                                                                                                                                                                          |
+| Plan14/Evidence58 document gate        | `ch2-core-continuity-onyx-b2d29187-doc-review-01.json`: Onyx `b2d291875b97491fa3183d84915b2fd9`, completed **human fresh-reader PASS / LLM execution-readiness PASS**, no mandatory findings.                                                                                                                                                                                                |
+| Preserved abnormal document run        | `ch2-core-continuity-nexus-6e20fa8d-review-01.json`: returned dual PASS but completed with `finish_reason=contract_unsatisfied`. Not treated as clean completion or sole document gate; the completed Onyx replacement does not depend on it. Earlier Nexus wait timeout is not a verdict. Kai/Onyx returned results did not supply a finish reason; none is invented.                       |
+| Parent input/evidence/retention checks | `ch2-core-continuity-boundary-preclosure-01.json` and `ch2-core-continuity-closure-ready-01.json`: all 1,536 tracked/untracked non-artifact inputs accounted for; only four owned files differ from snapshot-start, only append-only docs from candidate 03; cumulative diff, runner, all five current complete pre/post maps and historical prefixes agree.                                 |
+| Parent contract and format audit       | `ch2-core-continuity-contract-audit-01.json`: existing public declarations retained; additions security-internal; native constructors/conversion defaults and proof/release/last-yield ordering preserved. Current two-file rustfmt and `git diff --check` exit 0. `ch2-core-continuity-doc-draft-01.json`: Plan14/Evidence58 suffix-only Prettier/idempotence and exact-prefix checks pass. |
+| Preserved parent tooling failure       | `ch2-core-continuity-boundary-attempt-01.json`: first inventory assertion failed because top-level enumeration omitted historical subdirectories. All 1,836 old entries already matched. Recursive enumeration passed with 1,877 retained files; closure-ready checks preserve that set and later artifacts. No production change or runtime RED arose from this verification-script error.  |
+
+Both independent reviewers used only read/search/find, not commands, tests, hashes, edits, LSP or delegation. Their complete reports distinguish static inspection from parent execution and disclose coverage limits. Neither exhausted every historical log or input entry; Kai's PASS is whole-amendment static review, not an exhaustive proof. Parent runtime/hash/format/retention work must not be attributed to them. Staging and final verification still share the composer, not an implementation-diverse oracle. Onyx candidate01 and Vesper candidate02 whole FAILs, their step/time limits, all prior candidates and failed/control runs remain retained as history.
+
+### Current executable evidence and the stopping boundary
+
+Section58's five current command manifests still have complete equal pre/post maps matching candidate 03. Parent rechecked executable/config/test identity before reuse: **CH2 89/89; security 2006/2006; session 34/34; matrix 2 passed / 1 ignored; Cargo check and Clippy `-D warnings` exit 0**. Runtime followed successful nonzero listing, `--test-threads=1`, global `native-lane-cargo.lock`, `CARGO_BUILD_JOBS=2` and main `src-tauri/target`; ignored was not run. No new Cargo execution was necessary for append-only documentation. The retained 1,836-file baseline is a checkpoint inventory, not invented earlier full-directory history. Final acceptance-suffix format, prefix, current hash and report mapping checks are recorded in `ch2-core-continuity-final-boundary-01.json`; source/config/test drift invalidates reuse and requires affected reruns and whole re-review.
+
+Keep exact binding/attempt, one dependency ledger, charged budgets/work/refunds, immutable restrictions, strict original/final validation, true HTTP EOF, complete tool hold, sealed publication and last-yield continuation. The four-file ownership remains `restoration_core/native_response.rs`, `tests/unified_core_tests.rs` under `src-tauri/src/proxy/security/`, this evidence file and the parallel plan. Architecture and all other shared/C5/lane/HTTP proof/finalizer/route/registry/conversion-matrix/identity-source inputs remain unchanged in this snapshot increment. No new API/protocol semantics, dependency, storage, schema, UI, setting or token store is authorized.
+
+**Stop after this shared checkpoint.** CH2/CH3, AN2/AN3, GE2/GE3, resource handoffs, sequential M2 → M3 → M4, M5, current Full Gate and live/release remain unfinished independent gates. Section57 supplies exact reproduction commands for a later authorized consumer, using fresh stems and the existing lock/listing/runtime discipline. Renderer/unit/all-library/integration/full-format checks were not rerun; no full-project, installer, signing, notarization or release claim is made. No commit/push, app launch/install, ignored/live test, credential use, lane distribution/rebase/integration/enablement occurred. CORE-1 remains the committed baseline; this accepted shared amendment remains uncommitted and unpushed.
+
+## 60. Approved Chat-only consumer delivery and execution boundary
+
+**The user explicitly approved the prior seven-step Chat-only plan with "agree, continue" after the earlier approval request timed out.** The timeout was not approval and was not treated as a rejection. This new authorization permits only Chat consumption of the frozen shared amendment and independent CH2/CH3 closure, with the Chat-exclusive target exception. It does not authorize M2, consumption by Anthropic/Gemini, further shared edits, registration enablement, Git rebase, commit or push. [Plan Section16](security-dlp-unified-core-parallel-implementation-plan.md#16-approved-chat-only-consumer-delivery-and-independent-ch2ch3-closure) defines ownership, exact commands, TDD ordering, review and stopping gates. The documents are mixed human/LLM appendices; the pre-behavior dual document gate is not yet claimed.
+
+### Parent-only snapshot and delivery facts
+
+- The previous bounded shared acceptance is complete: `ch2-core-continuity-final-acceptance-01.json`, SHA-256 `c44631b9e66b9e1fbe37e608c0d9bdd2427baedbf5e01469c2aa39b9bd6424fe`, maps Kai whole-amendment PASS, Onyx Plan14/Evidence58 dual PASS and Pixel `e0a553daef3847bb818e2e0725755a7c` Plan15/Evidence59 dual PASS. Pixel returned `completed`, no mandatory findings; its result supplied no finish reason, which was not inferred. The parent rechecked 1,536 current inputs and 1,888 retained artifacts against that receipt, then two-file rustfmt and `git diff --check` exited 0. That was Chat-only shared acceptance, not lane acceptance. The final-boundary artifact's earlier pending-document text was preserved, not rewritten.
+- Before consumer delivery, the parent reconfirmed the receipt hash, canonical source/contract digest `0a2db1a78fdffae9952a09758ec110bfefd76fd8a30e9991ce4b957ad65c7c6c`, all 1,536 main inputs and all receipt-listed artifacts. `chat-lane-consume-20261108-start-01.json` records a new recursive inventory of **1,889** old artifacts (the prior 1,888 plus the final acceptance receipt), full main/three-lane input maps, document byte-prefix snapshots, frozen source hashes, and Chat CH1 snapshots/dirty diff. It does not invent older directory history.
+- All three worktree HEADs were CORE-1 `ca7f883c742df07abe9bcaa9b0eade02aae5e119`, each with only its existing lane `mod.rs`, `request.rs`, `tests.rs` dirty. Every Chat shared destination to be copied exactly matched its CORE-1 version, so no extra target work was overwritten. The parent copied the nine Rust entries of closure-ready `identity_payload.source_sha256` from main to Chat, then checked each against its frozen hash. Exactly those nine Chat inputs changed; all five original Chat lane files, main inputs and other two lanes remained unchanged.
+- `chat-lane-consume-20261108-delivery-01.json` records **9 exact copies / CH1 preserved / main and other lanes unchanged / no Cargo executed**. Consumer has 1,536 non-artifact inputs at delivery. No lane behavior, protocol review PASS, runtime GREEN, lane handoff, M2 or Full Gate is claimed by copying. Lane historical documents are not replaced with main-tree documents. The copied C5/finalizer/shared files are immutable consumer inputs, not newly editable ownership.
+- The unchanged focused lane runner is `run-native-lane-focused.py`, SHA-256 `f0df435c652265d0084aead8627e136ddab5c730b9a70fff504124ecf2f17085`. Under the same `native-lane-cargo.lock`, jobs2 and successful nonzero listing before serial runtime, it uses `.voidx/cargo-targets/chat`. This exception was explicitly approved to keep distinct worktree builds isolated; main-tree verification still uses `src-tauri/target`. Full source/environment evidence must be recorded for new checks; pre-delivery baseline counts are historical, not consumer acceptance.
+
+All artifacts named here reside under `.voidx/verification/core1-20261106/`. Parent snapshot/hash/copy/format/runtime checks are not independent reviewer executions. Reviewers may only read/search/find and must explicitly distinguish static review from these parent facts. The transient workflow `no_active_nodes` response on resumption is retained in tool history; the parent entered the document workflow rather than treating it as an approval or production RED.
+
+### Remaining gates and unchanged boundaries
+
+First obtain Plan16/Evidence60 human fresh-reader and LLM execution-readiness PASS, then run consumed Chat/security baseline, and only then start test-first CH2 followed by CH3. Preserve all earlier failures, controls, candidates, reports and artifacts. Every new behavior needs genuine production runtime RED before its implementation; compile/format/lock errors, wrong fixture expectations, parent verification errors and first-passing controls are not RED. Extend the English protocol-state table, use real core/finalizer/HTTP EOF fixtures, require whole-Chat protocol review and all four focused filters/static checks on the actual handoff state. Append actual results and final document dual gate later rather than predicting counts now.
+
+Keep exact binding/attempt, one dependency ledger, budgets/work/refunds, immutable limits, strict original/final validation, genuine HTTP EOF, complete tool hold, sealed publication and SSE last-yield continuation. Staging and final validation share the composer; no implementation-diverse oracle is claimed. Stop for separate approval if the frozen API cannot support correct behavior. Native registration stays **Disabled**; no other lane change/distribution, main-tree integration, route/identity/conversion change, new dependency/store/schema/UI/setting, ordinary-forwarding fallback, commit/push, app launch/install, ignored/live test or credential use is permitted. CH2/CH3 and lane handoff remain unfinished; AN2/AN3, GE2/GE3, sequential M2 → M3 → M4, M5, current Full Gate and live/release acceptance remain independent and unauthorized here.
+
+## 61. Chat CH2/CH3 consumer results and handoff evidence
+
+**The Chat-only consumer candidate has passing bounded parent checks and independent whole-protocol review, with no mandatory source finding.** This is private Disabled adapter readiness, not M2, HTTP/router integration, shipped behavior, Full Gate or release acceptance. [Plan Section17](security-dlp-unified-core-parallel-implementation-plan.md#17-chat-ch2ch3-closeout-and-disabled-handoff-boundary) defines the final document/continuity gates and stop. These mixed human/LLM appendices deliberately retain Sections16/60 and older headers as historical pre-execution states. The final document verdict and handoff are not predicted here: after the actual dual PASS and exact-state verification, `chat-lane-ch23-final-handoff-01.json` is the authoritative closeout of this checkpoint without changing reviewed text again.
+
+All artifact names below are relative to `.voidx/verification/core1-20261106/`. Hash/copy/build/test/format/retention checks were executed by the parent. Independent reviewers only read/search/find; none executed the parent commands or recomputed hashes.
+
+### Authorization, source identity and consumed baseline
+
+The user-approved Section16 scope was followed: exact delivery of the nine frozen Rust files to `.voidx/native-lanes/chat/`, then behavior edits only inside owned Chat files. The frozen amendment remains `chat-native-shared-conservative-20261108-frozen-01`, source/contract identity `0a2db1a78fdffae9952a09758ec110bfefd76fd8a30e9991ce4b957ad65c7c6c`. `chat-lane-consume-20261108-{start,delivery,doc-draft}-01.json` preserve original inputs, CH1 snapshots, byte prefixes, old artifacts and nine exact copied hashes. Echo `427dda0eddf34dc7af147501dbed07b1` completed the pre-behavior Plan16/Evidence60 human fresh-reader and LLM execution-readiness reviews with dual PASS, no mandatory findings; the complete report is `chat-lane-consume-20261108-echo-427dda0e-doc-review-01.json`. That gate preceded baseline and implementation.
+
+The consumed baseline used fresh stems `chat-lane-consume-20261108-baseline-chat-01` and `chat-lane-consume-20261108-baseline-security-01`: successful nonzero listings of **19** and **2024**, then **19/19** and **2024/2024** runtime passes, with identical complete pre/post inputs. These are first-passing baseline controls, not production RED.
+
+### Test-first implementation record
+
+Every stem in this table retains `-source.json`, `-list.log` and, after successful nonzero listing, `-test.log`. Only intended runtime failures of absent production behavior count as RED. Later control additions may pass on their first run.
+
+| Work and evidence stem          | Listing and runtime             | Meaning                                                                                                              |
+| ------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `chat-lane-ch2-json-red-01`     | 27 listed; 20 passed / 7 failed | Valid runtime RED for absent JSON native observation/staging.                                                        |
+| `chat-lane-ch2-json-green-03`   | 27 listed; 27/27                | JSON implementation GREEN after correcting test-only delivery timing/refund expectations in retained GREEN01/02.     |
+| `chat-lane-ch2-sse-red-01`      | 31 listed; 27 passed / 4 failed | Valid runtime RED for absent SSE native consumer.                                                                    |
+| `chat-lane-ch2-sse-green-01`    | 31 listed; 31/31                | SSE implementation GREEN.                                                                                            |
+| `chat-lane-ch2-sse-controls-02` | 37 listed; 37/37                | Expanded controls GREEN after the synthetic response-id fixture correction; not a new feature RED.                   |
+| `chat-lane-ch3-red-02`          | 43 listed; 40 passed / 3 failed | Valid runtime RED for missing strict delivered import and structural pairing.                                        |
+| `chat-lane-ch3-green-01`        | 43 listed; 43/43                | CH3 implementation GREEN.                                                                                            |
+| `chat-lane-ch3-controls-01`     | 45 listed; 45/45                | Current candidate: actual SSE output replay plus ambiguous-ID/budget controls; first-passing additions are controls. |
+
+**CH2 JSON:** `src-tauri/src/proxy/security/protocol_adapters/chat/response.rs` inside the consumer selects exact native message nodes in original choice-array order. The eight added JSON tests cover supported content/refusal, non-restoring readable reasoning, complete content arrays, strict object-decoded function argument strings, sparse multi-choice delivery, original-wire checks and invalid/budget atomic rejection. Text/output_text/refusal parts are supported; opaque media and unknown siblings are preserved. `JsonCompletion::native_chat()` validates the budgeted serialization for staging; it does not issue HTTP completion or release authority. Frozen lifecycle staging uses a single dependency ledger. Strict original wire and exact attempt/binding proof still come from the shared verifier.
+
+**CH2 SSE:** `response.rs::finalize_sse` uses `PayloadJson`, `PayloadBuffer` and `PayloadVec` for retained parsing/metadata. It parses complete exact original frames and groups supported fragments by choice plus text field or choice-local tool index. Typed Output/Refusal/Reasoning/ToolArguments streams go to the frozen lifecycle; reasoning remains non-restoring. Every source frame's choices are selected in original order through `NativeSseSnapshotSelection::chat_choice`. Controls cover every split of the tested reference, sparse/interleaved choices/calls, cross-carrier isolation, opaque values, CRLF/no-data/usage frames, strict terminal/DONE handling, actual EOF/error/Pending cancellation, capacity refunds, entity/attempt/binding substitution and last-yield continuation. This does not claim every UTF-8/network byte boundary or add SSE content-array semantics. The frozen entity/frame/site/selection limits remain 1 MiB / 1024 / 128 / 128; exact slices must cover the ordered entity, and no-data/DONE observations have no source/sites. Unsupported evolution fails through the existing safe failure contract.
+
+**CH3:** `history.rs::import_delivered` calls frozen `verify_native_delivered_extracted` before `import_native_completed_context_extracted`, without lane-local authority or optional degradation. Complete ordered assistant/call evidence is mandatory; JSON choices retain source order, and SSE evidence includes composed assistant plus separate call snapshots. `history.rs::observe_request` wraps preserved CH1 observation with borrowed `HistoryClaim::CallResultPair` metadata only for unique, unconsumed function IDs in the immediately adjacent assistant/tool group. First, replayed and edited tool-result bodies remain untrusted current DLP input, not historical permission or execution proof. Tests cover exact replay, repeated import, edited/reordered/truncated/unknown evidence, no-session, cross-session/provider/protocol/store, retry, eviction, first/edited result DLP and actual SSE output replay. SSE replay is rejected before the last-yield continuation and accepted only afterward with complete call evidence. Ambiguous IDs and budget controls pass.
+
+### Preserved failures and non-RED classification
+
+- JSON GREEN01's `chat_ch2_json_published_before_delivery` assertion incorrectly assumed SSE-like publication timing for JSON. Frozen JSON intentionally activates after strict proof/final encoding and before returning the body stream. GREEN02's `chat_ch2_json_delivery_charge_retained` assertion checked refunds while returned `Bytes` chunks still owned the charge; dropping `chunks` before checking refunds fixed only the fixture. Both failed runs remain; neither is production RED or a finalizer change.
+- `chat-lane-ch2-sse-controls-01` listed 37, with 35 passed / 2 failed (`chat_ch2_sse_http_proof_rejected`). The helper omitted the response `id` required by strict completion at frozen `completion_evidence.rs:404–411`. Adding a synthetic id to the fixture produced controls02 37/37; no production relaxation was made.
+- `chat-lane-ch3-red-01` failed compilation during listing with E0277 because `PlanError` is not `StdError`. The test mapped it to a static synthetic error; only red02 then obtained intended runtime RED. A pairing site-count expectation was corrected from seven to six (one argument, four tool bodies, one user body), without changing CH1 scanning.
+- A parent candidate script used nonexistent `input_sha256`/`inputs_sha256` keys and raised `AssertionError: ['head', 'status', 'inputs']`. The real snapshot map is `start_manifest['lanes'][lane]['inputs']`; correcting the parent check produced candidate01 without an earlier candidate write. This is not a production failure. Formatter-triggered file-read guards were handled by rereading, not overwriting external work.
+- Historical compile/format/lock/timeouts, incorrect fixture expectations, parent-script errors and first-passing controls are retained rather than relabeled RED. Earlier checkpoint timeout was not approval or user rejection. Read-offset/nonexistent-path failures and dot-worktree search misses were investigation/tool results, not proof that an API was absent. The prior shared FAIL/RED/candidates and final-boundary pending text were not rewritten.
+- Nova's earlier 1024-second wait timeout meant running, not PASS/FAIL. Its eventual tool finish was `step_limit`; Cipher's later confirmation ended `contract_unsatisfied`. Their complete PASS reports and literal finish details are retained below. Neither tool finish is a production runtime RED, and neither is presented as normal completion.
+
+### Current candidate and reproducible parent verification
+
+`chat-lane-ch23-candidate-01.json`, SHA-256 `7d1768d0628bfec24125bba95a09089cc89181e46d1463f5679d7977ca0e2f72`, binds **1,536** Chat inputs and `chat-lane-ch23-candidate-01-whole.diff`, SHA-256 `b858dc992920653eeeced997784f940999339d82e8c1572ec15c3b227d6daa15`. Relative to frozen delivery, only `history.rs`, `response.rs`, `tests.rs` changed. `request.rs` and `mod.rs` remain unchanged; preserved CH1 tests remain included. The owned hashes under `src-tauri/src/proxy/security/protocol_adapters/chat/` are:
+
+| File          | SHA-256                                                            |
+| ------------- | ------------------------------------------------------------------ |
+| `history.rs`  | `911b2c14f8dd8b9f85e320927810e4d84df67a6788d4959b34997825f8e4efe9` |
+| `mod.rs`      | `17c4296d4534dbf9be0f6a8dcfb9289f3c78b70cfb7b272760f2cd236ff01528` |
+| `response.rs` | `8eb09d3aacf9e07e26e32c068086bad528887b25839f42b2e7bf3a3e8b8158b0` |
+| `tests.rs`    | `656a9c8176c55594ee3730291843cdeacff6dca0d20ae6265598bd84f96bd008` |
+
+Environment: Darwin arm64; rustc `1.98.1 (48a229cea 2026-09-01)`; cargo `1.98.1 (797e8a9bc 2026-08-05)`; Node `v25.2.1`; pnpm `10.12.3`. The parent reconfirmed these versions before document closeout. The unchanged runner SHA-256 is `f0df435c652265d0084aead8627e136ddab5c730b9a70fff504124ecf2f17085`. Invocations ran from the main repository root, with actual Cargo cwd `.voidx/native-lanes/chat`, absolute `CARGO_TARGET_DIR=<main>/.voidx/cargo-targets/chat`, `CARGO_BUILD_JOBS=2`, and the exclusive global `native-lane-cargo.lock`. Main-tree target remains `src-tauri/target`.
+
+```bash
+python3 .voidx/verification/core1-20261106/run-native-lane-focused.py chat chat-lane-ch3-controls-01 proxy::security::protocol_adapters::chat::tests::
+python3 .voidx/verification/core1-20261106/run-native-lane-focused.py chat chat-lane-ch23-security-01 proxy::security::
+python3 .voidx/verification/core1-20261106/run-native-lane-focused.py chat chat-lane-ch23-session-01 proxy::session::tests::
+python3 .voidx/verification/core1-20261106/run-native-lane-focused.py chat chat-lane-ch23-matrix-01 proxy::protocol_matrix_tests::
+```
+
+These are recorded invocations, **not reusable stems**. A future run must replace each stem. The runner executes `cargo test --lib --manifest-path src-tauri/Cargo.toml FILTER -- --list`, requires exit 0/nonzero count and unchanged inputs, then executes the same filter with `--test-threads=1`. No ignored/live run was requested. Full commands, logs, exits, durations and complete pre/post input maps remain in the per-stem artifacts.
+
+| Candidate-bound evidence                  | Listed | Current runtime/result                                  |
+| ----------------------------------------- | -----: | ------------------------------------------------------- |
+| `chat-lane-ch3-controls-01`               |     45 | 45 passed, zero failed/ignored                          |
+| `chat-lane-ch23-security-01`              |   2050 | 2050 passed, zero failed/ignored                        |
+| `chat-lane-ch23-session-01`               |     34 | 34 passed, zero failed/ignored                          |
+| `chat-lane-ch23-matrix-01`                |      3 | 2 passed / 1 ignored; ignored not executed              |
+| `chat-lane-ch23-check-clippy-01.json`     |    n/a | Cargo check and Clippy `-D warnings`, both exit 0       |
+| `chat-lane-ch23-runtime-boundary-01.json` |    n/a | Four-file rustfmt and Chat/main diff checks, all exit 0 |
+
+Check/Clippy ran sequentially with the same global Python `fcntl.flock(LOCK_EX | LOCK_NB)`, jobs2 and absolute Chat target, never unlocked. Commands were `cargo check --manifest-path src-tauri/Cargo.toml` and `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings` with cwd Chat. Non-Cargo commands were the exact four-file `rustfmt --edition 2021 --config skip_children=true --check` and Chat/main `git diff --check` in Plan16. Complete pre/post maps for all four focused records and check/Clippy match candidate01. The runtime-boundary receipt SHA-256 is `f6973e18dfe5deac30794a1a6dc838b4bb87f1970caa820b96e69e31f9591165`; its original review-pending state is retained, not overwritten. Linker output retains the existing `__eh_frame` compact-unwind size warning; no warning-free linker claim is made.
+
+### Independent protocol review and completion details
+
+- **Nova `1cdb215839de44688daf6afaf40a7217`: whole-Chat protocol PASS, mandatory_findings=[]** for preserved CH1, CH2 JSON/SSE, CH3 and frozen consumption. Tool status was `completed; finish_reason=step_limit`. `chat-lane-ch23-nova-1cdb2158-review-01.json` retains the full report, literal finish reason, candidate binding and caveat. The report checks exact nodes/choice/tool isolation, single lifecycle, strict proof/EOF/final wire, sealed last-yield publication and verified ordered history; it read parent current checks but did not execute them or independently rehash inputs. Historical TDD logs were parent-provided history, not all individually re-audited by Nova.
+- **Cipher `543bbab752ef48898cfa4a6f9c2fec1b`: bounded confirmation PASS, mandatory_findings=[]**, after actual lane source and frozen finalizer/history/budget checks. Tool status was `completed; finish_reason=contract_unsatisfied`. `chat-lane-ch23-cipher-543bbab7-review-01.json` preserves the full returned JSON and caveat. It is neither normal-completion evidence nor a replacement whole review.
+- **Nexus `e581f04f0dca49c7a9719fb008d72f87`: terminal review-package/source confirmation PASS, mandatory_findings=[]**. Tool returned `completed` without a finish reason; none is inferred. `chat-lane-ch23-nexus-e581f04f-review-01.json` retains the full report. Nexus read both reports and actual lane `history.rs:14–115`, `response.rs:208–404`, frozen `finalization.rs:493–638`; it found no conflicting mandatory issue and explicitly accepted the bounded Disabled handoff package while preserving the earlier anomalies. Its scope is narrower than Nova's whole review.
+
+All reviewers stayed within read/search/find. Independent static review is not independent runtime execution. No mandatory finding required code changes after candidate01. No claim is made that the anomalous finishes became normal retroactively.
+
+### Final retention/document gate and limits
+
+Before these appends, parent `chat-lane-ch23-prehandoff-boundary-01.json`, SHA-256 `fbcee367a66937c48cb3b086048388c14bfc71cbce01002c233264612aa522d4`, reconfirmed current candidate/runtime map equality, all three lane HEADs at CORE-1, nine shared hashes matching main/freeze, unchanged other-lane maps and exact reviewed whole diff. Main inputs differed from authorization start only in the two authorized documents; existing main shared dirty work was preserved, not reverted. All **1,889** start artifacts were unchanged; a recursive **1,961** then-current artifact map was saved before the subsequent confirmation records. It preserves the immediate plan/evidence prefix sizes **131,042 / 429,316** bytes with SHA-256 `314fe3a8c3b24ff50b42890018ff822e1814d16da608e68eaae8a8bd1bc0b99f` / `a8f7316466d8f966d1031ce7d31d9e94c8be9018a5f34854a1878f0c89dce98d`. Original pre-Section16/60 prefixes remain **121,857 / 423,409** bytes, with original hashes in the start manifest. Only the new suffix is formatted and checked for idempotence; historical prefixes are checked byte-for-byte, not reformatted.
+
+The next and final action is the independent human fresh-reader plus LLM execution-readiness document gate, followed by current continuity/static checks and a non-circular final receipt binding source, contract, runtime, reviews, exact reviewed documents and retained artifacts. That receipt, not an anticipated PASS in this appendix, records the actual verdict, report/status details and final counts. Relevant runtime evidence is reused only with identical lane executable/config/test/environment inputs; source drift requires affected reruns/new candidate/whole re-review, and any required shared change requires a preserved reproducer and scoped decision.
+
+Native registration remains **Disabled**. No other lane consumed this amendment; no main-tree source integration, rebase, commit/push, route/identity/conversion change, dependency/storage/schema/UI/settings/token-store addition, ignored/live test, credential use or app launch/install occurred in this Chat stage. CORE-1, Responses, P3/P4, the frozen shared amendment and the authority architecture remain intact. Handoff stops this authorization: AN2/AN3, GE2/GE3, sequential M2 → M3 → M4, M5, Full Gate and live/release acceptance stay separate and unauthorized.
+
+Coverage is deliberately bounded. Synthetic transport exercises the real async EOF driver but not real-network tee/backpressure or latency. Placeholder splits do not establish all UTF-8/network-byte boundaries; first/edited tool-result tests are not full live client two-round integration. HTTP client-error projection, optional historical fallback and genuine upstream-error preservation remain HTTP-orchestration acceptance, not lane-local authority. Frozen conservative composer and finite budgets are unchanged, and staging/final validation share the composer. Renderer checks, complete all-library/integration gates, installer/signing/notarization and release are not established by this focused Chat evidence.
+
+## 62. Approved direct-native shared amendment start and protocol evidence
+
+**The user authorized full developer closure, then explicitly approved the minimum shared amendment.** The literal approval is retained in `native-direct-shared-approved-start-01.json`; in English, it means “Agreed, continue.” This supersedes the historical Chat-only stop, not any security invariant. Newly authorized work is integrator-only, versioned support for direct Anthropic/Anthropic and Gemini/Gemini lifecycle, strict HTTP-owned proof and complete delivered-history composition, followed by TDD, whole independent review, re-freeze and exact delivery to all three lanes. [Plan Section 18](security-dlp-unified-core-parallel-implementation-plan.md#18-approved-direct-native-shared-amendment-and-full-developer-closure) specifies ownership, tasks, commands and stop conditions. Remaining lanes and M2 Chat → M3 Anthropic → M4 Gemini → M5 are authorized but not yet accepted.
+
+### Starting identity and approval
+
+All records below are under `.voidx/verification/core1-20261106/`, use new stems and preserve previous receipts, failures and pending statements.
+
+| Record                                              | SHA-256                                                            | Scope                                                                                                                                                                                 |
+| --------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `chat-lane-ch23-final-handoff-01.json`              | `d3e05f55419b9396fc658f63396a1e74e56a858ef21b2206f087ba32d6ba24b5` | Completed Chat-only Disabled handoff; historical STOP was correct at that time.                                                                                                       |
+| `full-closure-authorized-start-01.json`             | `61b0ab6c11451e1d947a7ea5f96b454e5f530f446a03930a86e0a755f8dc85bf` | Parent verified four CORE-1 HEADs and 1,536 inputs per tree unchanged from handoff, preserved 1,973 old artifact hashes, and inventoried 1,975 current artifacts before new receipts. |
+| `full-closure-frozen-api-reproducer-01.json`        | `1aa407b5c5ea49ed1cbb52995d88eb457c380655e4b865ea3207bdeccd4e38be` | Exact guards and reused passing rejection control, not new feature RED.                                                                                                               |
+| `full-closure-frozen-api-readiness-reviews-01.json` | `d19df212bc8d6092e104218fca9390cebd0e712d49f3419627c470f54c463d60` | Complete static readiness reports and literal anomalous tool finishes.                                                                                                                |
+| `native-direct-shared-approved-start-01.json`       | `c9014fdcb81a7158a9f13ee6946b0576dc54c4997287f12bd2fde32fd3613c11` | Literal explicit approval, exact scope, pre-append prefix sizes/hashes and reconfirmed unchanged source/HEADs/artifacts.                                                              |
+| `native-direct-shared-protocol-evidence-01.json`    | `64242ea318f95c0671f57ccd3a8d1a74fccf7aeb8cc4a9639c528196afa814a4` | Retained official fetched references, exact excerpts, conservative interpretation and unresolved Gemini association gate.                                                             |
+
+All four HEADs remain `ca7f883c742df07abe9bcaa9b0eade02aae5e119`. Main/Chat still match the nine frozen sources and identity `0a2db1a78fdffae9952a09758ec110bfefd76fd8a30e9991ce4b957ad65c7c6c`. Anthropic/Gemini retain CORE-1 plus their existing AN1/GE1 owned dirty files, not the Chat amendment. No implementation/delivery occurred during this checkpoint. No new compilation/runtime was executed. Parent version commands reconfirmed Darwin arm64, rustc `1.98.1 (48a229cea 2026-09-01)`, cargo `1.98.1 (797e8a9bc 2026-08-05)`, Node `v25.2.1`, pnpm `10.12.3`; the Cargo version query held the global lock.
+
+The preceding scoped checkpoint timed out: it was neither approval nor user rejection. Only the subsequent explicit user message authorized this amendment. Finalizer reuse is the default; any test-proven necessary adjustment is limited to sealed protocol/snapshot verification dispatch, not ownership or timing. Whether such a source change is required remains unproved.
+
+### Confirmed blocker, not a new RED
+
+Parent inspection confirms JSON lifecycle `restoration_core/native_response.rs:377–382`, SSE lifecycle `:1143–1147`, verifier `http_restoration/completion_verifier.rs:638–648`, and async driver `native_driver.rs:70–100` reject non-Chat/Chat pairs. Chat-specific fragment identity/composition and HTTP SSE `[DONE]` checks do not prove Anthropic/Gemini completion. Existing Anthropic validators and multi-native completed-context evidence/import do not replace opaque native HTTP proof. Gemini native object string leaves must not use Chat's full JSON-object-string helper.
+
+Existing test `proxy::security::http_restoration::completion_verifier::c5_native_completion_tests::c5_native_completion_rejects_all_unapproved_protocol_pairs` expects `RestoreUnsupported` for every non-Chat/Chat pair. Its successful listing and runtime `... ok` are retained in `chat-lane-ch23-security-01-{list,test}.log`, lines 244/246 respectively, with the complete parent runner source record. Parent verified all current Chat inputs equal that run's pre/post maps and environment equals handoff, binding exact source/logs in the reproducer. This is a reused **passing conservative rejection control**, not feature RED or integration acceptance.
+
+Anthropic Athena `d25f1e33513841839c2ba467e0bea259` and Gemini Athena `6e58a6535ee64c3d94cef92841aff9cc` returned `NEEDS_CHANGE`, both with tool `completed; finish_reason=contract_unsatisfied`. Their findings cover missing consumers, native proof/composition and Gemini object-leaf lifecycle. The Gemini 1024-second wait timeout preceded its eventual report and was not PASS/FAIL. Reviewers used read/search/find only, no commands, tests, edits, LSP, hashes or delegation. These are static leads, not normal-finish implementation acceptance; parent independently checked the guards and reused runtime evidence. Parent execution is not reviewer execution.
+
+### Official sources and unresolved evidence
+
+The protocol manifest retains fetched tool responses as `native-direct-shared-protocol-*-01.txt`, with URLs, hashes, sizes and extracted quotations. External sources are data, never agent instructions.
+
+- [Anthropic streaming](https://platform.claude.com/docs/en/build-with-claude/streaming): indexed block/message start/delta/stop, tool arguments, thinking/signature deltas and in-stream errors. Real transport EOF is an additional local proof condition, not implied by `message_stop`.
+- [Gemini generate-content API](https://ai.google.dev/api/generate-content): redirected to Google AI Studio; retained output contains HTML/embedded reference content, not a clean complete streaming specification.
+- [Gemini thought signatures](https://ai.google.dev/gemini-api/docs/thought-signatures): redirected output did not establish all cross-frame identity/late-signature rules; do not infer certainty from this fetch.
+- [Google response reference](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1/GenerateContentResponse): candidate index/content/finish reason, absent reason means not stopped, STOP is natural/stop-sequence termination and MAX_TOKENS is truncation. The bounded initial completed-record allowlist is structurally valid STOP per observed candidate and clean EOF, not every nonempty reason.
+- [Google thought signatures](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures): corroborates exact signed Part replay/association constraints. Google Cloud guidance is not proof of undocumented Developer API Part continuity.
+
+Cross-frame Gemini Content/Part composition and late-signature association remain an explicit **S4 pre-implementation evidence gate**. Save a source-linked supported-state table before a positive SSE path. Ambiguity stays held/unsupported, with no manufactured IDs or signed/unsigned merge. A narrower passing subset does not complete GE2/GE3. This uncertainty need not block separately evidenced Anthropic JSON work after the documentation gates.
+
+### Preservation and next gates
+
+Before these appends, plan/evidence sizes were **138,471 / 448,702 bytes**, SHA-256 `20c4c14acf9fc79ef03bb4c7e85e4a06626f27d80410414ade87a10d12fbf84f` / `87e8ca1aa396ae5f8663014b603757d9a27239025da9634ae1b9c91991c3800e`. Preserve entire historical prefixes, format only English suffixes and require idempotence plus human fresh-reader/LLM execution-readiness PASS. A later exact-state document receipt records actual outcomes; this draft does not anticipate acceptance.
+
+An initial parent append script failed before Python parsing completed because outer and embedded heredoc delimiters collided. `native-direct-shared-doc-parent-error-01.json` preserves exit 2, Python unterminated-string and shell syntax errors. It is a parent-script failure, not production RED. Reconfirm unchanged input maps/prefixes before the corrected independent-suffix append; never overwrite the failed result.
+
+Then S1 → S2 → S3 → S4 → S5 uses main target, global lock, jobs2, nonzero listing and serial runtime for intended RED/GREEN. S6 requires current shared regressions, Full Gate and whole independent PASS before a new freeze. S7 delivers exact shared sources and revalidates all lane targets, preserving CH1–CH3/AN1/GE1. Only then resume reviewed lane handoffs and independently accepted M2/M3/M4 stages. M5 covers the architecture matrix, actual shipped documentation, current Full Gate and final review.
+
+Native remains Disabled. No main lane integration, enabling, architecture change, dependency/schema/UI/settings/token-store addition, commit/push/rebase, ignored/live/credential use, app launch/install or release occurred at this checkpoint. Preserve every old artifact and status header; any later frozen-contract expansion beyond this approved scope still requires a separate decision.
+## 63. S1–S4 direct-native shared amendment execution evidence
+
+**Status:** S1–S4 are complete and sealed at stage level with the S4 malformed-candidates defect closed by fix and independent limited review. S5–S9 remain pending. This appendix records actual outcomes; it does not anticipate later acceptance.
+
+### Stage evidence index
+
+| Stage      | Aggregate artifact                                    | SHA-256                                                            |
+| ---------- | ----------------------------------------------------- | ------------------------------------------------------------------ |
+| S1 AN JSON | `native-direct-shared-an-json-stage-evidence-01.json` | `7000f4841a7cdb3b3693f77eea99e8e521e8e8532fb6c9cc84a7327adee9200b` |
+| S2 AN SSE  | `native-direct-shared-an-sse-stage-evidence-01.json`  | `494a0b02d1a1255ecd515d9f8ebaceb3623d5d071921a221cf95a0ab17f87bb8` |
+| S3 GE JSON | `native-direct-shared-ge-json-stage-evidence-01.json` | `80a75ac6a93f4c3738fb8c61675aa2c1bd08823d5810db93ffe38c345ecddb8f` |
+| S4 GE SSE  | `native-direct-shared-ge-sse-stage-evidence-01.json`  | `f18513f11bf9a208a4b88efe8fddfc36e5dfa5f547ff17eed827fd55aa918fa6` |
+
+### S4 evidence gate and implementation
+
+`native-direct-shared-ge-sse-protocol-evidence-01.json` (`176606f67aa09016d76b04f180a43f397b470e31175d6c4900642cf4351a0498`) retains the official schema, thought-signature guidance and the fixed `googleapis/js-genai` commit `5e703b35c79c845c8e4d6564022d7da4e9277d1e` supporting only the append-only whole-Content narrow subset. Vesper `5017ff4aeb7b439289f1155f258197c6` completed the evidence-gate review with body PASS, actual completed; its artifact is `native-direct-shared-ge-sse-protocol-vesper-review-pass-01.json` (`f9cfaa4cffe0090c951a4bb02b4a8db4a40eda41d44d69d083acfef0e05d93e6`). TDD proof/snapshot artifacts (`proof-red-01` fixture compile error, `proof-red-02` valid production-support gap 0/3, `proof-green-01` 3/3, `snapshot-red-01` 3/1, `snapshot-green-01` 4/4) and lifecycle RED (`lifecycle-red-02` 4/1 with `NATIVE_SHARED_GE_SSE_NATIVE_OBJECT_LIFECYCLE_REQUIRED`; `lifecycle-red-01` was a fixture `E0308`) are preserved.
+
+### S4 malformed-candidates defect closure
+
+Juno `e6a10077b5be4acdb5c71af44bff1f5d` returned a static FAIL with tool status `completed; finish_reason=time_limit`, preserved in `native-direct-shared-ge-sse-juno-review-fail-01.json`: `gemini_chunk` conflated "candidates field absent" with "candidates present but non-array", so `data: {"candidates":null,"usageMetadata":{}}` appended to an otherwise valid all-STOP stream was accepted as usage-only by the completion proof and by `validate_restored`. Full snapshot staging in `restoration_core/native_response.rs` still rejected it, so no end-to-end sealed publication bypass was claimed.
+
+Protocol evidence state G3 accepts only frames without a candidates field; present-but-empty or non-array candidates are malformed, and the prior empty-array acceptance was implementation-convenience drift, narrowed in the same fix.
+
+TDD closure with parent-owned runs: RED `native-direct-shared-ge-sse-malformed-candidates-red-01` (12 listed, 11 passed/1 failed; mode 13 accepted the malformed frame and polled the client stream, polls=2!=0), minimal fix in `completion_evidence.rs` `gemini_chunk` (explicit `None`/`Some` match; empty array rejected), GREEN `...-green-01` 12/12, then `...-green-02` 12/12 after a rustfmt-only mode-15 line-wrap. Modes 13–17 cover candidates null/object/string/number/empty-array with valid usageMetadata against original stream, client stream and final-wire `validate_restored`.
+
+Mira `6fc35d17c9f54a998c15acb7af597df6` completed a read/search/find-only five-file static review with body PASS and normal tool completion, preserved in `native-direct-shared-ge-sse-mira-review-pass-01.json`, confirming the fix covers final-wire validation and that the JSON path and snapshot staging were already strict. Reviewer runtime/hashes remain parent-owned.
+
+### Current-source regression and compile controls
+
+All runs are parent-owned, use new stems, the global serial Cargo lock, `CARGO_BUILD_JOBS=2`, `CARGO_INCREMENTAL=0`, main target `src-tauri/target`, successful nonzero listing before serial runtime, and preserve superseded attempts:
+
+- GE JSON 8/8, AN JSON 13/13, AN SSE 18/18, c5 native 176/176, CH2 89/89, unified 305/305, security 2057/2057, session 34/34, matrix 2 passed/1 ignored; all exit 0.
+- rustfmt check, `git diff --check`, `cargo check` (0 warnings/errors) and `cargo clippy -- -D warnings` all exit 0; rustfmt changed only the mode-15 line-wrap in `native_driver.rs`.
+- Superseded first-attempt runs (`*-rerun-01` for unified/security/session/matrix) used an expanded `proxy` filter due to a parent shell-parsing error; their only failure was the out-of-scope Chat-protocol port-binding test `agent_clients.rs:738` (503!=200) with no uncommitted `agent_clients.rs` changes. Failure evidence is preserved; correct-filter `rerun-02` runs supersede them.
+- Aggregate: `native-direct-shared-ge-sse-stage-evidence-01.json` indexes 50 round artifacts and records both review verdicts with literal tool finishes.
+
+### Explicit non-claims
+
+Not a shared Full Gate, whole-amendment review, new freeze, exact three-lane delivery, or M2/M3/M4 integration or enablement. No commit/push/rebase, application launch/install, ignored/live/provider tests, real credentials, release, or `127.0.0.1:15722` binding occurred. The authoritative architecture document is unchanged. Native remains Disabled.
+
+## 64. S5 native shared sealed-delivery evidence
+
+### Scope and source identity
+
+S5 adds three focused tests in `src-tauri/src/proxy/security/http_restoration/native_driver.rs`. The post-S4 native-driver identity `77b2857ce9a4bbf02c91972acd1768a06dee50b465a3b2bfc01c711f3dbb1d15` changed to `33c5263f4184399ae7ac4c01f74ff0468d0742a14cd80bf01587061331ed29d2` only for these tests and their rustfmt formatting. `response_restoration/finalization.rs` is unchanged at `949e393966820535f144cdb5c6ee427be6250319c50e32b5c1ab001a1b93c1fb`. The S4 identities of `completion_evidence.rs`, `completion_json.rs`, `completion_verifier.rs` and `native_response.rs` remain unchanged. No finalizer modification was test-proven necessary.
+
+The tests use only synthetic fixtures, existing actual attempt/binding provenance, the existing sole finalizer and the internal strict verifier. They introduce no dependency, schema, UI, persistent setting, credential source, token store, route cell, cross-protocol conversion or additional activation path.
+
+### Focused controls and TDD classification
+
+- `native_shared_finalization_json_activation_drop_and_charged_owner_refunds`: Anthropic and Gemini, mapped and zero-mapping, proof/final-encoding activation before body return, drop before body poll, unavailable-store activation denial, persistent visible delivery after successful activation, and charged retained-body refund after the last owner drop.
+- `native_shared_finalization_sse_pending_cancel_resume_and_charged_owner_refunds`: Anthropic and Gemini pending state through every yield, cancellation before the first yield and after the last yield without continuation, publication only on the continuation poll, fixed `Response stream failed.` activation failure without publication, and retained-frame charge/refund.
+- `native_shared_finalization_sse_snapshot_source_and_final_mismatch_refunds`: exact snapshot, source and final-wire mismatch rejection for both protocols, with zero publication and baseline budget restoration.
+
+Both `native-direct-shared-finalization-control-01` and the post-format `native-direct-shared-finalization-control-02` listed 3 tests successfully and passed 3/3 with unchanged pre/post input maps. Because Plan 18 requires separate RED/GREEN only for changed behavior and the first valid control passed, there is no valid S5 production RED and no production implementation change. The initial passing controls are not described as RED.
+
+### Parent-run regression evidence
+
+Every run used the approved main runner, a fresh stem, the global Cargo lock, `CARGO_BUILD_JOBS=2`, `CARGO_INCREMENTAL=0`, the main `src-tauri/target`, successful nonzero listing and then `--test-threads=1`.
+
+| Filter | Listed | Runtime result |
+| ------ | ------ | -------------- |
+| `native_shared_an_json_` | 13 | 13 passed, 0 failed |
+| `native_shared_an_sse_` | 18 | 18 passed, 0 failed |
+| `native_shared_ge_json_` | 8 | 8 passed, 0 failed |
+| `native_shared_ge_sse_` | 12 | 12 passed, 0 failed |
+| `c5_native_` | 176 | 176 passed, 0 failed |
+| `ch2_` | 89 | 89 passed, 0 failed |
+| `proxy::security::unified_core_tests::` | 305 | 305 passed, 0 failed |
+| `proxy::security::` | 2060 | 2060 passed, 0 failed |
+| `proxy::session::` | 34 | 34 passed, 0 failed |
+| `proxy::protocol_matrix_tests::` | 3 | 2 passed, 1 ignored |
+
+All source manifests report `unchanged_during_check=true`. The security count increased by exactly the three new focused tests. The ignored matrix test was not executed.
+
+### Compile controls and preserved failures
+
+`native-direct-shared-finalization-compile-controls-02` passed scoped rustfmt over the approved shared files, `git diff --check`, Cargo check and Clippy `-D warnings`; every command exited 0. Cargo check and Clippy logs contain no warning or error output.
+
+The earlier `native-direct-shared-finalization-compile-controls-01` full-format control is retained with `all_passed=false`. Its `cargo fmt --check` exited 1 only for pre-existing `completion_tools.rs` formatting outside the S5 edit; `git diff --check`, Cargo check and Clippy exited 0. This is a formatting control failure, not a production RED. S6 must make the formatting-only change within that already-approved shared source and close the required full `cargo fmt --check` before whole-amendment freeze.
+
+`native-direct-shared-finalization-stage-evidence-builder-01-error.json` preserves a parent artifact-builder filename assumption error. The builder expected `<stem>.json`, while the approved runner emits `<stem>-source.json` plus list/test logs. It wrote no aggregate and executed no test or source command. Builder-02 parses the actual artifacts and succeeded. This parent script error is not a production RED.
+
+### Aggregate and limits
+
+The aggregate is `.voidx/verification/core1-20261106/native-direct-shared-finalization-stage-evidence-01.json`, SHA-256 `7fd62d702906e96d5c2f01972e3208d737dc72739938b9ffab9ff8b916bb51ed`. It indexes 51 artifacts, including both focused controls, ten regression selections, both compile-control rounds and the preserved builder error. The aggregate excludes its own bytes/hash.
+
+All runtime commands and hashes are parent-generated. No review-agent command execution is claimed. S5 is stage-complete only: no current Full Gate, independent whole-amendment PASS, versioned freeze, exact lane delivery, direct-native enablement, installed/live/provider test, installer, signing, notarization or release acceptance is claimed.
+
+## 65. S6 whole shared gate, independent review and freeze evidence
+
+### Current source and formatting closure
+
+The S6 source-state artifact is `native-direct-shared-s6-source-state-01.json`, SHA-256 `9adcf3ac655bb962443fef7be6fe7ed9e97bb7816fa563c3b5e1b8f1e4946404`. It records ten shared source/test identities and the reviewed Plan/Evidence/authority document identities. The authoritative architecture remains unchanged at `13a1ea25967d570679cc94a0f61cc6257ddd0bd06243cef4ffeda8728e3a6166`.
+
+The preserved S5 full-format failure was closed by applying rustfmt only to the already-approved shared `completion_tools.rs`. Its identity changed from `dfb0474007ef1ebbc2ab66a9ebab572b25a0337a80499909677ac1c7f75c3e00` to `a38d6258cfb608ea1032d7b350752f7e5d88b8b1b98ef53ce8edfa7af604cf47`. No semantic edit was made in this formatting closure. Nova statically reviewed the resulting implementation but, under the read/search/find restriction, did not independently prove the formatting-only delta.
+
+### Whole shared selections
+
+Each selection used the approved main runner, a fresh `native-direct-shared-s6-` stem, successful nonzero listing, serial runtime and unchanged pre/post input maps.
+
+| Exact filter | Listed | Result |
+| ------------ | ------ | ------ |
+| `proxy::security::http_restoration::` | 233 | 233 passed, 0 failed |
+| `proxy::security::c5_native_` | 63 | 63 passed, 0 failed |
+| `proxy::security::unified_core_tests::` | 305 | 305 passed, 0 failed |
+| `proxy::security::protocol_adapters::chat::tests::` | 1 | 1 passed, 0 failed |
+| `proxy::security::protocol_adapters::anthropic::tests::` | 1 | 1 passed, 0 failed |
+| `proxy::security::protocol_adapters::gemini::tests::` | 1 | 1 passed, 0 failed |
+| `proxy::security::` | 2060 | 2060 passed, 0 failed |
+| `proxy::session::tests::` | 34 | 34 passed, 0 failed |
+| `proxy::protocol_matrix_tests::` | 3 | 2 passed, 1 ignored |
+
+### Current Full Gate
+
+A new artifact-only wrapper, `native-direct-shared-s6-full-gate-01.py`, was syntax/control-flow validated before execution. It acquired the global lock with `fcntl.flock(LOCK_EX | LOCK_NB)`, used jobs2, `CARGO_INCREMENTAL=0` and the absolute main target, exclusively created logs/receipt, checked input drift after every command and gated each runtime on its matching successful nonzero listing.
+
+Every Plan 18 command exited 0: `pnpm typecheck`, `pnpm build:renderer`, `pnpm test:unit`, `pnpm format:check`, Cargo check, full `cargo fmt --check`, Clippy `-D warnings`, both listing/runtime pairs and `git diff --check`.
+
+- Library listing: 6562 tests; runtime: 6547 passed, 15 ignored, 0 failed.
+- Full Cargo listing: 6725 tests; every runtime summary reported 0 failed. Default ignored-test behavior was not overridden.
+- `unchanged_during_check=true`; no runtime executed without its own successful nonzero listing and unchanged inputs.
+
+The receipt is `native-direct-shared-s6-full-gate-01.json`, SHA-256 `76361da7bf674fb06c8085db319653f1cf1cbde5fdeb7a46018ebf6030404294`. This is a current main-worktree Full Gate, not lane, installer, live, provider or release acceptance.
+
+### Independent static review
+
+Nova, agent `75ff307c64f441e29c127770131c2937`, returned literal body verdict PASS with `mandatory=[]` and completed normally. The review covered strict EOF/proof binding, Gemini malformed-candidates and STOP behavior, signed immutability and append-only Content composition, native decoded string leaves, charged owners, sole finalizer timing, the three S5 tests and document scope. The complete findings and residual limitations are preserved in `native-direct-shared-s6-nova-review-pass-01.json`, SHA-256 `ea5cdbf0f24293533921c919854d13c28fb2929b783e89a73a137f3443e4956c`.
+
+Nova used only read/search/find static inspection. It did not execute commands, modify files, use LSP, calculate hashes or delegate. Parent runtime and hashes are not represented as reviewer execution. The PASS does not cover provider compatibility, real network tee/backpressure, lane delivery, integration or M2–M5.
+
+### Versioned freeze
+
+Immediately before freezing, the parent rechecked every reviewed source/test/document identity and found zero drift. The freeze builder also asserted the Nova normal PASS, current Full Gate success, all nine selection manifests/logs and equal main/Chat/Anthropic/Gemini HEAD `ca7f883c742df07abe9bcaa9b0eade02aae5e119`.
+
+- Contract name: `native-direct-shared-conservative-20261109-frozen-01`.
+- Canonical source contract identity: `c5bc94249a2252dc0b77b64543e98dc9f92f086dfdd7d4dac45e37e6f2e1ed27`.
+- Receipt: `.voidx/verification/core1-20261106/native-direct-shared-s6-freeze-01.json`.
+- Receipt SHA-256: `ae0d005936195b28126185075b374c153361e1d358dbd9cdfa611a0f84159065`.
+- Frozen delivery set: exactly ten shared source/test files, including `native_driver.rs`; no documents or lane-owned files.
+- Status: `frozen_for_S7_exact_three_lane_delivery_only`.
+
+The canonical identity binds the reviewed pre-suffix Plan/Evidence checkpoint, source files, unchanged authority, runner identities, Nova PASS and Full Gate. This Section 65 and Plan Section 21 are post-freeze evidence suffixes and are deliberately excluded from the canonical identity to avoid circularity. No commit, push, rebase, application launch/install, ignored/live/provider test or release action occurred.
+
+## 66. S7 exact three-lane delivery and runtime evidence
+
+### Frozen delivery and preserved lane state
+
+The S7 source contract remained `native-direct-shared-conservative-20261109-frozen-01`, identity `c5bc94249a2252dc0b77b64543e98dc9f92f086dfdd7d4dac45e37e6f2e1ed27`. The delivery set contained exactly the ten frozen shared source/test files and no documents or lane-owned paths.
+
+- Pre-delivery manifest: `.voidx/verification/core1-20261106/native-direct-shared-s7-pre-delivery-01/manifest.json`, SHA-256 `94480a7039ac6ebe684f9428e38c5bb86c3bf6e398e193d51de871977ebf0922`.
+- Delivery receipt: `.voidx/verification/core1-20261106/native-direct-shared-s7-delivery-01.json`, SHA-256 `e561c6eb4931ea2cdfe187aa3871067f4145b5a755f803614503c09a63133bb2`.
+- Chat: eight shared files changed, two were already byte-identical; CH1/CH2/CH3 counts remained 18/23/10.
+- Anthropic: all ten shared files matched the freeze after delivery; AN1 retained 14 tests.
+- Gemini: all ten shared files matched the freeze after delivery; GE1 retained 32 tests.
+- Every snapshotted lane-owned file retained its exact bytes and every ordered test-name list matched the pre-delivery snapshot.
+
+### Twelve focused lane selections
+
+Each row used the approved lane runner, its exclusive lane target, jobs2 and the global serial Cargo lock. Listing succeeded with a nonzero count before serial runtime execution. Every source manifest has equal pre/post maps and `unchanged_during_check=true`; every runtime summary reports zero failed tests.
+
+| Lane | Exact filter | Listed | Runtime result |
+| ---- | ------------ | ------ | -------------- |
+| Chat | `proxy::security::protocol_adapters::chat::tests::` | 45 | 45 passed, 0 failed |
+| Chat | `proxy::security::` | 2104 | 2104 passed, 0 failed |
+| Chat | `proxy::session::tests::` | 34 | 34 passed, 0 failed |
+| Chat | `proxy::protocol_matrix_tests::` | 3 | 2 passed, 1 ignored |
+| Anthropic | `proxy::security::protocol_adapters::anthropic::tests::` | 15 | 15 passed, 0 failed |
+| Anthropic | `proxy::security::` | 2074 | 2074 passed, 0 failed |
+| Anthropic | `proxy::session::tests::` | 34 | 34 passed, 0 failed |
+| Anthropic | `proxy::protocol_matrix_tests::` | 3 | 2 passed, 1 ignored |
+| Gemini | `proxy::security::protocol_adapters::gemini::tests::` | 33 | 33 passed, 0 failed |
+| Gemini | `proxy::security::` | 2092 | 2092 passed, 0 failed |
+| Gemini | `proxy::session::tests::` | 34 | 34 passed, 0 failed |
+| Gemini | `proxy::protocol_matrix_tests::` | 3 | 2 passed, 1 ignored |
+
+The ignored matrix tests were not executed. No native HTTP integration filter existed or ran in S7.
+
+### Final identity and aggregate closure
+
+After all twelve runs, the parent recomputed the ten shared identities in the main worktree and every lane. All four maps equal the freeze. The parent also rechecked every lane-owned hash, ordered test names and prefix counts, and ran `git diff --check` in each lane with exit 0 and empty output. No source or test input drifted during any lane run.
+
+`native-direct-shared-s7-stage-evidence-builder-01.py` stopped at its first lane record with `KeyError: 'filter'`. Lane manifests store the filter in `commands[*].command`, not in a top-level field. The failed builder, its preserved error receipt and successful builder-02 are all indexed. Builder-02 additionally asserted exact list/test commands, listed counts, runtime summaries, pre/post maps and current source identities before exclusively creating the aggregate. The builder error executed no test and is not a production RED.
+
+The final aggregate is `.voidx/verification/core1-20261106/native-direct-shared-s7-stage-evidence-01.json`, SHA-256 `d36a67c4ad60e33e9e5b37e13cda02e07c52f624a7e9521d8aaa055cb0a0185e`. It records twelve passing runs and indexes 88 artifacts, excluding its own bytes. All commands and hashes are parent-generated; no review-agent execution is claimed.
+
+S7 is exact shared delivery and lane verification only. It is not an AN2/AN3 or GE2/GE3 handoff, native HTTP integration, current main Full Gate, route enablement, direct-native cell, provider/live acceptance or release. No commit, push, rebase, application launch/install, real credential, ignored/live/provider test or `127.0.0.1:15722` binding occurred.
+
+## 67. M2 Chat integration evidence and retained failures
+
+The current stage boundary is Chat-only; historical CORE-1, Responses, P3/P4, lane handoffs, pending entries and failed attempts remain unchanged. All filenames below are relative to `.voidx/verification/core1-20261106/`. The final stage record is `native-direct-m2-acceptance-01.json`, issued only after this appended suffix passes prefix, formatting and accuracy checks.
+
+### Current behavior and test provenance
+
+`http_restoration/native_chat.rs`, `http_restoration.rs`, `forwarder.rs`, `handlers.rs` and `response_processor.rs` now connect trusted direct Chat admission to actual-attempt preparation, original transport capture and the single final client exit. Registration alone grants no authority. `protocol_adapters/chat/` retains its delivered contract. JSON proof/encoding precedes activation and body return; SSE last yield is not activation. Only real upstream `None` creates original-ready evidence. Gzip/layered decoding follows real EOF under existing entity and parser peak budgets.
+
+Cumulative assistant replay is matched as complete, ordered delivered batches using both frozen JSON and composed SSE shapes. Strictly increasing existing publication serials reject reordering/repetition, and imports are staged on a fork and committed atomically only after all batches match. The four-round transitive test is not described as an appended-transcript test; the later appended-transcript tests provide that separate coverage. First tool results do not manufacture delivered-history authority.
+
+Genuine native SSE errors use the existing budgeted safe sanitizer, preserve safe native type/code/message, release one atomic error envelope, and never restore error references, release privileged tools, emit `[DONE]` or publish success. A choice-level `finish_reason` is not a whole-stream terminal; errors after `[DONE]` remain rejected.
+
+| Current selection | Listed | Runtime result |
+| --- | ---: | --- |
+| `proxy::security::native_chat_http_tests::` | 48 | 48 passed |
+| `proxy::security::protocol_adapters::chat::` | 45 | 45 passed |
+| `proxy::security::native_route_scope_tests::` | 22 | 22 passed |
+| `proxy::security::` | 2,153 | 2,153 passed |
+| `proxy::session::tests::` | 34 | 34 passed |
+| `proxy::protocol_matrix_tests::` | 3 | 2 passed, 1 ignored |
+
+These are the parent-run `native-direct-m2-sol-green-01-54d4b97d05-{http,chat,route,security,session,matrix}-{source.json,list.log,test.log}` records. Compilation and listing succeeded before execution; every source receipt reports unchanged inputs and was compared with the current tree. Two Cargo formatting passes were identical. HTTP fixtures use synthetic data, in-memory storage, dynamic loopback ports, deadlines and test-only proxy isolation.
+
+### Independent review and minimal feedback closure
+
+Sol `f4aae0d1a5194e5e9153d667b37f3443` completed normally, original `verdict=NEEDS_CHANGE`, with literal `terminal` in the raw report. Only read/search/find were permitted; parent tests are not reviewer execution. The report covers cumulative M2 and found one P2: any choice finish prematurely prevented delivery of a later genuine upstream error while another choice was active.
+
+`native-direct-m2-sol-red-01-9d3f32f352-behavior-*` compiled successfully, listed 1 test, and failed that runtime test at `m2_multichoice_native_error_was_transport_failure`; inputs were unchanged. The minimal fix removes only the per-choice terminal assignment, retaining `[DONE]` rejection. `m2_chat_sol_multichoice_upstream_error_preserves_semantics_without_completion` is now included in the green HTTP48/security2153 runs. It checks safe upstream semantics, no tool/plaintext/reference leakage, no successful terminal/publication and complete budget refund. `native-direct-m2-sol-feedback-closure-01.json` binds the original report and all current regressions. The approved small-feedback rule closes the finding by parent verification without another independent review; the original NEEDS_CHANGE is not rewritten as reviewer PASS.
+
+Earlier Nexus history/error feedback remains separately reproducible: `native-direct-m2-nexus-red-01-58df7b1a30` listed 5, passed 3 and failed 2. Green01 failed compilation due to a test constructor field; Green02 passed the new cases but exposed two capacity-injection regressions from swallowed sanitizer setup errors. Green03 passed 45/45 after explicit propagation. These attempts, prior Flux/Juno feedback, retry proxy diagnosis and original failure logs remain retained, not overwritten.
+
+### Actual Full Gate and invocation diagnosis
+
+`native-direct-m2-actual-full-gate-04-003f63fffd.jsonl` ended with `all_passed=true`, `runner_exit=0`, `unchanged_inputs=true`; `native-direct-m2-invocation-05-003f63fffd-parent.json` records real exit 0. All twelve commands in the approved Full Gate completed: typecheck, renderer build, renderer unit tests, format check, Cargo check, Cargo fmt check, Clippy with denied warnings, library listing/runtime, all-test listing/runtime and diff check.
+
+- Renderer: 254 files / 3,064 tests passed.
+- Library: 6,655 listed; 6,640 passed / 15 ignored.
+- Full Cargo run: 6,818 binary-qualified names listed; 6,803 executed / 15 ignored. Ordered binary/name and numeric runtime totals match the listings.
+- Shared nonblocking exclusive `fcntl.flock`, `CARGO_BUILD_JOBS=2`, `CARGO_INCREMENTAL=0` and absolute main-tree target were enforced. No concurrent Cargo ran; the source was frozen through the terminal receipt.
+
+The environment uses independent HOME, a short isolated workspace TMPDIR, copied cached pnpm 10.12.3 and a synthetic Codex catalog stub that rejects other arguments. The runner itself remains the reviewed fix2 revision. No production credential or real Codex CLI is required by this invocation. This is not proof of exhaustive network/filesystem isolation: MSW warnings are not a hard network barrier, and macOS system proxy behavior is distinct from environment variables.
+
+Retained actual attempts are not promoted retroactively:
+
+- Gate01 `47621c6946`: no terminal receipt after the metadata pnpm version event; original logs remain. A later system restart and recursive global/project pnpm version-management staging were diagnosed. No exit or PASS is invented.
+- Gate02 `562f22c6fd`: real parent exit 1, Clippy exit 101 for inline `OriginalReady` enum size. Only the existing justified local lint configuration pattern was applied: the entire `CaptureState` is already charged, while boxing adds uncharged allocation. This is not behavioral RED. Snapshot: `native-direct-m2-clippy-inline-01-12c52e2e47-*`.
+- Gate03 `444766a85a`: Clippy passed; library runtime was 6,636 passed / 3 failed / 15 ignored, parent exit 1. The failures were Unix socket fixture path length under the long isolated TMPDIR. Same newly compiled binary, only TMPDIR changed: long 11/14, short 14/14 in `native-direct-m2-sol-red-01-9d3f32f352-socket-{long,short}.log`. The executable path came from Gate03 listing but was rebuilt before this diagnostic; its hash is not claimed to be the original Gate03 binary. See `native-direct-m2-socket-tmpdir-diagnostic-01-3f664fc28c.json`. No production fix was made for this environment issue.
+
+Vega step-limit FAIL, Prism limited PASS lacking literal terminal, and Nexus time-limit NEEDS_CHANGE never granted the cumulative gate. Retrieval now returns Unknown run for them and historical Helix; `native-direct-m2-review-retrieval-02-d61ae70846.json` records the limitation. Their unavailable original bodies are not reconstructed. Prior valid terminal outcomes are not overwritten by later retrieval anomalies.
+
+### Limits and ordered handoff
+
+This stage enables only direct-native Chat/openai_chat JSON/SSE. Anthropic/Gemini owned candidates and all original lanes stay untouched until their respective M3/M4 stage. No new gateway/agent/intent/global, cross-protocol or Gemini non-generation/framing permission is implied. The authoritative architecture and frozen adapter-facing contract are not revised.
+
+The one-MiB entity limit does not promise every one-MiB JSON fits the frozen retained-plus-scratch parser peak. Capacity sweeps prove covered failure atomicity/refunds, not physical OOM, allocator workspaces or exact RSS. Truncated trailer tests do not establish exhaustive CRC/ISIZE coverage. No live/provider, installer, signing, notarization or release acceptance is claimed. M3 must PASS before M4; M4 must PASS before M5 final shipped-documentation and development acceptance.
+
+### Append-only document verification
+
+The historical prefix is retained byte-for-byte from the M2 start snapshots. A whole-document Prettier attempt changed historical formatting and failed the prefix assertion; its output and diagnostic are preserved in `native-direct-m2-documents-prefix-diagnostic-01.json` and the referenced failure snapshots. Only this new English suffix is formatted twice and checked for idempotence. The repository `pnpm format:check` checks `src/`, not these complete Markdown files; no whole-document Prettier PASS is claimed.
+
+Gate04 predates this documentation-only suffix. The final acceptance compares its input inventory with the current tree, permits only these two appended documents, and reuses unchanged production/test evidence rather than claiming the Gate tested a later document snapshot. Current prefix, suffix, repository format, diff, source identity and preservation checks are recorded in `native-direct-m2-documents-closure-01.json`.
+
+## M3 Anthropic delivery and verification
+
+### Delivered behavior
+
+Native Anthropic `/v1/messages` requests now pass a guarded DLP path: request admission, bounded inspection, history observation, tokenized forwarding, response restoration, and final outbound-history binding. Claude Desktop keeps the strict resolver: exact model/route matching, alias and legacy lookup order, role handling and fallback order are unchanged, unknown routes fail before transport, and the resolver copies the request model only after a shared-budget reservation. Native resolver failures use the fixed client message instead of echoing the request model.
+
+The registry matrix expectations for the same-protocol Anthropic cell were corrected in two M2-only tests; production registration was not changed. All Responses, Gemini, cross-protocol and compact-SSE negative assertions are retained.
+
+### Immutable vendor-normalization boundary
+
+An independent cumulative review found a P1 gap: the generic vendor normalizer ran before native history import and could remove `thinking.signature`, insert placeholder thinking, or replace `redacted_thinking` for Claude MiMo, Claude DeepSeek and Desktop DeepSeek histories. The fix refuses such requests before the mapped body is touched, but only when the DLP request is native Anthropic and the same vendor predicate that would trigger normalization matches. Unsigned normalization, legacy/disabled paths, resolver matching order and all other mapping paths are unchanged. The boundary therefore applies only while DLP admission is active; without DLP admission the historical behavior of those vendor paths is untouched.
+
+Real HTTP RED: `native-direct-m3-vendor-immutable-red-01-e4c04a9d74` listed six tests, runtime exit 101, all six failed with `m3_vendor_normalizer_rewrote_immutable_history`. A same-file RED on the final test bytes with only the guard removed (`native-direct-m3-vendor-same-file-red-01-597292e52d`) reproduced the same six failures at exit 101; restoring the guard byte-for-byte reproduced the Full Gate input hash. The guard GREEN (`native-direct-m3-vendor-immutable-green-02-c6e0e2192c`) ran six passed with parent exit 0 and unchanged inputs. Refusals reach no transport, write no capture record or publication row, leak no payload or signature text, return the fixed `proxy_processing_failed` client error, and fully refund the payload budget.
+
+A direct predicate unit matrix (`native-direct-m3-vendor-predicate-green-01-84e6940ef2`, with `test_vendor_immutable_predicate_matrix` plus the six HTTP tests, seven passed) pins signed and redacted carriers as refused, unsigned and empty-text thinking as not refused, signed carriers without a tool-bearing turn as not refused, and non-native formats or non-vendor providers as outside the boundary.
+
+Targeted regressions stayed green: `native-direct-m3-vendor-boundary-regression-01-b305ba5082` (51 passed, including unsigned Desktop MiMo normalization and resolver tests) and `native-direct-m3-vendor-provider-regression-01-678fb41374` (67 passed). Clippy on the intermediate tree passed (`native-direct-m3-clippy-check-01-2c0e5a37f8`, exit 0); the unused Anthropic re-export is now test-only instead of being handled by a lint suppression.
+
+### Cumulative evidence
+
+- `native-direct-m3-registry-integration-03-e5abd6b8a5`: pre-boundary cumulative Integration, all eight groups green.
+- `native-direct-m3-resolver-integration-02-755a03d4ac`: preserved terminal failure; the two failing tests were stale M2-only expectations, fixed narrowly in the tests.
+- `native-direct-m3-vendor-integration-04-3d49a11eda`: post-boundary Integration before the unit matrix, all eight groups green.
+- `native-direct-m3-vendor-integration-05-eb7b886cc3`: final Integration, all eight groups green, format idempotent with no changed path.
+- `native-direct-m3-actual-full-gate-01-b79f827191`: preserved Full Gate failure (Clippy `unused import: request::observe_request`).
+- `native-direct-m3-vendor-actual-full-gate-02-30d5756594`: Full Gate PASS before the unit matrix, twelve commands exit 0.
+- `native-direct-m3-vendor-actual-full-gate-04-eac8336f71`: final Full Gate PASS on the accepted map; twelve commands exit 0, `all_passed` and `unchanged_inputs` true.
+- `native-direct-m3-preservation-current-04.json`: three original lanes each 1,536 files equal to their M2 start maps with unchanged HEADs and clean `git diff --check`; M2 acceptance, S6 receipt and authoritative architecture hash retained; the five main-tree Gemini adapters still equal the M2 main start; both documents still carry their M3 start prefixes before the suffixes; the current input map equals the final Full Gate baseline.
+
+### Limits
+
+M3 covers direct-native Anthropic JSON/SSE development integration only. It does not integrate Gemini, enable installed clients, use live providers or real credentials, install or replace the application, sign, notarize or release. M4 must wait for the M3 acceptance receipt. Historical artifacts other than those rechecked here are not revalidated as complete maps. Only these appended English suffixes are formatted; no whole-document Prettier PASS is claimed for the historical Markdown prefix.
+
+## M4 Gemini delivery and verification
+
+### Delivered behavior
+
+Direct native Gemini `generateContent` JSON and `streamGenerateContent?alt=sse` requests now pass the guarded DLP path: handler-owned admission, bounded request observation, tokenized forwarding, strict response completion verification, and final restoration. Text carriers cover `systemInstruction`/`system_instruction` Parts, `contents[*].parts[*].text`, and the string leaves of Struct-valued `functionCall.args` / `functionResponse.response`. Media (`inlineData`, `fileData`), signatures, call names/IDs and unknown members stay opaque. Any Part carrying `thoughtSignature` or `thought_signature` is immutable, so a sensitive value inside it refuses the request instead of being rewritten.
+
+Route and framing come from the URI and query only: `:generateContent` with absent/`alt=json`, and `:streamGenerateContent` with exactly one `alt=sse`. GET/model listing, `countTokens`, unknown aliases, duplicated or bare `alt` keys and every other method stay non-reversible. Query parameters are preserved to the upstream unchanged.
+
+### Failure behavior
+
+An admitted request that later fails verification never forwards partial or unsanitized content. JSON failures return the fixed Gemini application error. SSE failures return a single fixed `data: {"error":{...}}` frame with the same client message, including the earlier client/capture failure path, so the client never sees a silently truncated 200 stream. Strict terminal reasons are unchanged: only `STOP` completes; `MAX_TOKENS`, blocked prompts and unsupported carriers fail closed.
+
+### Evidence
+
+- Same-file RED/GREEN on identical bytes: `m4-gemini-same-file-red-01-9e1558b5db` (8 listed, 4 failed, exit 101 — JSON, SSE, query and function-response cases) and `m4-gemini-same-file-green-01-0f669758a5` (8 passed, exit 0, inputs unchanged). The removed admission block is preserved in `m4-gemini-same-file-red-01-removed-block.txt`.
+- Earlier pre-integration RED: `m4-gemini-native-http-red-01-591dbc565a`.
+- SSE fixed-frame RED/GREEN pair: `m4-gemini-sse-frame-red-01-fb401156ac` (exit 101, broken stream) and `m4-gemini-sse-frame-green-01-30fdbfe43c` (exit 0).
+- `native-direct-m4-integration-01-24b187accc`: first cumulative integration; its format step reformatted five files, so RED/GREEN above ran on the pre-format bytes and every later gate ran on the formatted bytes.
+- `native-direct-m4-integration-02-d766637c01`: final integration, ten groups all green, format idempotent with no changed path.
+- `native-direct-m4-actual-full-gate-01-92de8c5dd8`: Full Gate PASS before the review fixes.
+- `native-direct-m4-actual-full-gate-02-f2a8d63207`: final Full Gate PASS; twelve commands exit 0, `all_passed` and `unchanged_inputs` true; library runtime 6,816 passed / 15 ignored.
+- `native-direct-m4-preservation-current-02.json`: three original lanes each 1,536 files equal to their M2 start maps with unchanged HEADs and clean `git diff --check`; M2 and M3 acceptance receipts, the S6 freeze and the authoritative architecture hash retained; lane-owned Gemini bytes unchanged, while `mod.rs`, `request.rs` and `history.rs` intentionally diverge in the main tree by adding the admitted-route entry points and module visibility.
+- `native-direct-m4-lumen-findings-closure-01.json`: review findings, decisions and their RED/GREEN evidence.
+
+### Limits
+
+M4 covers direct native Gemini JSON/`alt=sse` development integration only. It does not support Gemini tool-call streaming across frames, media restoration, error-frame sanitation for arbitrary upstream shapes, installed clients, live providers or real credentials, and it performs no install, signing, notarization or release acceptance. M5 must wait for the M4 acceptance receipt. Historical artifacts other than those rechecked here are not revalidated as complete maps. Only these appended English suffixes are formatted; no whole-document Prettier PASS is claimed for the historical Markdown prefix.
+
+### M4 final gate correction
+
+After the M4 suffixes above were appended, the tests for the review findings gained two additions: the fixed Gemini SSE error frame is now compared byte-for-byte, and a Gemini upstream error envelope case was added. The test-only rename of the second route-scope test was also completed. Because those test bytes changed, the final M4 evidence is `native-direct-m4-actual-full-gate-04-989751878c` (twelve commands exit 0, `all_passed` and `unchanged_inputs` true) with `native-direct-m4-integration-03-72cab97748` (ten groups green, format idempotent, no changed path). Gate `-02` remains valid for the production code but predates these test additions.
+
+One gate attempt, `native-direct-m4-actual-full-gate-03-d14572c18b`, failed `all-test` on `reversible_closure_resp4_reasoning_part_added` (a Responses-path test outside M4: the continuation send count was zero). The same test passed in isolation and in two subsequent full library runs, and the failure was not reproducible; it is retained as a real failure with the order-sensitivity noted, not as a pass.
+
+The narrow re-review that verified the findings is preserved unchanged at `native-direct-m4-gemini-athena-recheck-6e8ac91fa0b94e97a66168363254fdce.txt` with verdict `NEEDS_CHANGE`; only its naming item was still open at review time and is fixed afterwards. The closure record for both reviews is `native-direct-m4-lumen-findings-closure-02.json`.
+
+## M5 acceptance matrix
+
+Every row below maps an architecture Section 9 case to named tests that ran in one frozen integration (`native-direct-m4-integration-03-72cab97748`, all ten groups green). Each listed test name was present in that run and reported `ok`; the per-test outcome map is `native-direct-m5-matrix-outcomes-01.json`.
+
+| Section 9 case | Chat | Anthropic | Gemini |
+| --- | --- | --- | --- |
+| Signed/thinking unit plus a tool call, then the first result | `ch1_first_tool_results_need_no_delivered_result_snapshot_but_receive_current_dlp` | `an3_lane_exact_ordered_block_call_and_signed_two_turn_replay`, `m3_anthropic_json_exact_history_imports_unrepeated_dependency`, `m3_anthropic_sse_exact_history_imports_unrepeated_dependency` | `ge3_lane_exact_ordered_contents_and_signed_two_turn_replay` |
+| Late signature association / signed Parts stay intact | `ch3_lane_eviction_removes_history_privilege_without_authorizing_unknown_refs` | `m3_anthropic_signed_sse_never_releases_partial_privileged_output` | `ge2_lane_sse_signed_text_and_argument_units_are_immutable`, `ge2_lane_json_candidate_part_leaf_isolation_and_signed_units` |
+| Mandatory redaction inside an immutable readable site | `ch1_first_tool_results_need_no_delivered_result_snapshot_but_receive_current_dlp` (current-input DLP) | `m3_anthropic_immutable_sensitive_request_rejected_before_send`, `m3_anthropic_vendor_immutable_claude_mimo_signed`, `m3_anthropic_vendor_immutable_desktop_deepseek_redacted` | `m4_gemini_signed_part_is_never_rewritten`, `ge3_lane_authorized_reference_in_signed_text_or_args_fails_atomically` |
+| Signed replay without stable identity or after eviction | `m2_chat_missing_identity_restores_current_request_without_history_privilege` | `m3_anthropic_missing_identity_restores_current_without_history_privilege` | `ge3_lane_eviction_removes_history_privilege_not_current_dlp` |
+| First tool result / function response bodies | `m2_chat_tool_result_alone_and_duplicate_identity_cannot_import_hidden_history` | `m3_history_first_and_edited_tool_results_never_grant_hidden_dependency` | `m4_gemini_current_function_response_text_is_tokenized`, `ge3_lane_first_and_edited_function_response_remain_current_dlp` |
+| Replayed, edited or ambiguous pairing; wrong session/provider | `m2_chat_edited_reordered_or_truncated_native_replay_cannot_import_dependencies`, `m2_chat_hidden_history_isolated_by_session_provider_target_and_principal` | `m3_anthropic_hidden_history_isolated_by_actual_session_provider_target_and_principal` | `ge3_lane_inexact_delivered_contents_never_import_dependencies`, `ge3_lane_absent_cross_session_provider_protocol_store_retry_isolation` |
+
+Shared-contract obligations map to the existing suites: byte/delta splits and final snapshots to `request_literal_tests` and `reversible_completion_tests`; lease/namespace/generation/attempt isolation and sealed publication to `reversible_integration_tests` and the lane replay tests above; zero publication on interruption to `m2_chat_sse_drop_before_upstream_eof_discards_pending_history_and_budget`, `m3_anthropic_sse_drop_after_last_yield_discards_history_and_budget` and `ge2_lane_sse_drop_at_every_yield_including_last_never_publishes`; generic client errors and fixed server-side frames to `m4_gemini_sse_incomplete_terminal_returns_fixed_error_frame`, `m4_gemini_inline_media_response_is_refused`, `m4_gemini_blocked_prompt_is_refused_without_partial_output` and `m4_gemini_upstream_error_propagates_without_sensitive_plaintext`.
+
+Closed Gemini cells and framing are covered by `m4_gemini_unsupported_framing_with_restore_rule_is_refused`, `m4_gemini_unsupported_framing_without_match_forwards_untouched`, `m4_gemini_model_listing_is_not_admitted`, `m4_gemini_query_is_preserved_and_framing_comes_from_uri`, `c4_dispatch_gemini_registered_generation_is_admitted_natively`, `m4_registry_describes_only_same_protocol_gemini_generate_content_json_and_sse` and `c5_native_evidence_fixture_does_not_expand_integrated_registration`.
+
+Limits: this matrix proves the named local contracts on one frozen input. It does not prove provider compatibility, live-service behavior, installer, signing, notarization or release readiness, and it does not extend restoration to unlisted Gemini framings or media.
+
+Matrix errata: the Chat SSE drop test cited above is named `m2_chat_sse_body_drop_before_upstream_eof_discards_pending_history_and_budget`; the truncated spelling in the previous paragraph is not a test name. No other row changes.
+
+## M5 acceptance matrix (corrected)
+
+This section supersedes the earlier matrix paragraph. It corrects the Chat column, cites the exact architecture cases in `docs/design/security-dlp-unified-core-protocol-adapters.md` Section 9 ("Verification and acceptance", per-protocol table), and names the preserved run for every row: `native-direct-m4-integration-03-72cab97748`. Chat has no signed reasoning unit, so the three signed-unit cases are explicitly not applicable there instead of borrowing Anthropic-shaped tests.
+
+| Architecture case | Chat | Anthropic | Gemini |
+| --- | --- | --- | --- |
+| Signed reasoning unit plus a tool call, then the first result | Not applicable: Chat has no signed reasoning unit. Its first-result behavior is covered by the row below. | `an3_lane_exact_ordered_block_call_and_signed_two_turn_replay`, `m3_anthropic_json_exact_history_imports_unrepeated_dependency`, `m3_anthropic_sse_exact_history_imports_unrepeated_dependency` | `ge3_lane_exact_ordered_contents_and_signed_two_turn_replay` |
+| Late signature association; signed Parts stay intact | Not applicable: no signed reasoning unit exists in Chat. | `m3_anthropic_signed_sse_never_releases_partial_privileged_output` | `ge2_lane_sse_signed_text_and_argument_units_are_immutable`, `ge2_lane_json_candidate_part_leaf_isolation_and_signed_units` |
+| Mandatory redaction inside an immutable readable site | Not applicable: Chat has no immutable readable site. Current-input redaction is covered by the first-result row. | `m3_anthropic_immutable_sensitive_request_rejected_before_send`, `m3_anthropic_vendor_immutable_claude_mimo_signed`, `m3_anthropic_vendor_immutable_desktop_deepseek_redacted` | `m4_gemini_signed_part_is_never_rewritten`, `ge3_lane_authorized_reference_in_signed_text_or_args_fails_atomically` |
+| Signed replay without stable identity, or after eviction | `ch3_lane_eviction_removes_history_privilege_without_authorizing_unknown_refs`, `m2_chat_missing_identity_restores_current_request_without_history_privilege` | `m3_anthropic_missing_identity_restores_current_without_history_privilege` | `ge3_lane_eviction_removes_history_privilege_not_current_dlp` |
+| First tool result or function-response body | `ch1_first_tool_results_need_no_delivered_result_snapshot_but_receive_current_dlp`, `m2_chat_tool_result_alone_and_duplicate_identity_cannot_import_hidden_history` | `m3_history_first_and_edited_tool_results_never_grant_hidden_dependency` | `m4_gemini_current_function_response_text_is_tokenized`, `ge3_lane_first_and_edited_function_response_remain_current_dlp` |
+| Replayed, edited or ambiguous pairing; wrong session or provider | `m2_chat_edited_reordered_or_truncated_native_replay_cannot_import_dependencies`, `m2_chat_hidden_history_isolated_by_session_provider_target_and_principal` | `m3_anthropic_hidden_history_isolated_by_actual_session_provider_target_and_principal` | `ge3_lane_inexact_delivered_contents_never_import_dependencies`, `ge3_lane_absent_cross_session_provider_protocol_store_retry_isolation` |
+
+Shared-contract obligations map to the existing suites: byte and delta splits to `request_literal_tests` and `reversible_completion_tests`; lease, namespace, generation and attempt isolation to `reversible_integration_tests` plus the replay rows above; zero publication on interruption to `m2_chat_sse_body_drop_before_upstream_eof_discards_pending_history_and_budget`, `m3_anthropic_sse_drop_after_last_yield_discards_history_and_budget` and `ge2_lane_sse_drop_at_every_yield_including_last_never_publishes`; generic client errors and fixed server-side projections to `m4_gemini_sse_incomplete_terminal_returns_fixed_error_frame`, `m4_gemini_inline_media_response_is_refused`, `m4_gemini_blocked_prompt_is_refused_without_partial_output` and `m4_gemini_upstream_error_propagates_without_sensitive_plaintext`.
+
+Enabled-cell and framing coverage: `m4_gemini_unsupported_framing_with_restore_rule_is_refused`, `m4_gemini_unsupported_framing_without_match_forwards_untouched`, `m4_gemini_model_listing_is_not_admitted`, `m4_gemini_query_is_preserved_and_framing_comes_from_uri`, `c4_dispatch_gemini_registered_generation_is_admitted_natively`, `m4_registry_describes_only_same_protocol_gemini_generate_content_json_and_sse` and `c5_native_evidence_fixture_does_not_expand_integrated_registration`. The preserved gateway Responses recovery that the earlier "only" wording contradicted is `c4_dispatch_gateway_responses_preserves_json_and_sse_restoration`.
+
+Limits, stated explicitly:
+
+- Gemini does not restore media Parts, tool-call streaming that spans frames, or upstream error frames beyond the single fixed local envelope. An upstream Gemini non-2xx response keeps its HTTP status and is returned as a JSON error, never as a successful SSE stream.
+- Chat and Anthropic capture-failure paths still terminate the stream instead of emitting a fixed frame. Only the Gemini path gained that fixed frame in M4; the three protocols are not symmetrical here.
+- The acceptance-state preservation record for the current map is `native-direct-m4-preservation-current-04.json` (the `-02` record predates the documentation suffixes).
+
+Errata: the earlier matrix paragraph cited `m2_chat_sse_drop_before_upstream_eof_discards_pending_history_and_budget`, which does not exist; the real test is `m2_chat_sse_body_drop_before_upstream_eof_discards_pending_history_and_budget` and it is cited correctly above.
+
+This matrix proves the named local contracts on one frozen input. It does not prove provider compatibility, live-service behavior, installer, signing, notarization or release readiness.
+
+## Post-M5 amendment: degrade instead of failing, and say what to change
+
+Approval: the user authorized scoped behaviour beyond the accepted M2–M5 scope for a single purpose — unsupported native cases must either degrade without disrupting use, or fail with a clear, actionable message instead of a generic 500.
+
+### What changed
+
+1. **Token-free Gemini answers are no longer errors.** `native_chat.rs` now records a verbatim ready state when the captured Gemini entity contains no local placeholder marker, so strict completion-shape checks do not reject an answer that has nothing to restore. `MAX_TOKENS`, `promptFeedback.blockReason`, media Parts and unknown Part keys are returned to the caller unchanged. No completion record and no restoration authority is created, and the payload budget is refunded.
+2. **Refusals name a cause.** `DlpForwardError::RestoreUnsupportedFor(RestoreUnsupportedCause)` adds three structural, user-actionable categories — unsupported endpoint/framing, immutable signed content, and unrestorable placeholders. `ContractError::ImmutableSite` and `TokenError::ImmutableSite` preserve that cause instead of collapsing into an anonymous preparation failure. The generic `RestoreUnsupported` family also gained actionable wording. None of the messages contains a rule name, matched value, credential, checkpoint or stage label.
+3. **Chat and Anthropic failure delivery is unchanged.** Adding fixed frames there broke five accepted M2/M3 tests that assert the transport-error contract; since those clients already observe a stream failure rather than a silent success, the change was reverted. Only Gemini's local terminal failure uses a fixed frame.
+
+### Evidence
+
+- Same-file RED/GREEN on identical bytes: `m6-degrade-red-01-a264a9a3ea` (13 listed, 3 failed, exit 101 — the three degradation cases) and `m6-degrade-green-01-e7533ce8a9` (13 passed, exit 0). The RED was produced by disabling only the token-free decision in a snapshot of `native_chat.rs`.
+- Cumulative integration: `native-direct-m6-integration-01-7ff192014c`, ten groups green (13 / 59 / 64 / 39 / 48 / 45 / 23 / 2330 / 34 / 2+1 ignored), format idempotent with no changed path.
+- Full Gate: `native-direct-m6-actual-full-gate-02-6b7d2e9e35`, twelve commands exit 0, `all_passed` and `unchanged_inputs` true.
+- Preserved failure: `native-direct-m6-actual-full-gate-01-9d07ddae93` failed `all-test` with 31 environment-shaped errors (`Os { code: 2 }`, `Unavailable`). Re-running the identical command under the identical isolated environment exited 0, and the direct run also passed, so the failure is retained as an unreproducible environment event and is not presented as a pass.
+
+### Limits
+
+- Deferral applies only when the answer carries no placeholder. A placeholder-bearing answer that cannot be restored still refuses, because leaving the placeholder visible would break the restoration contract.
+- Chat and Anthropic keep transport-error failure delivery; the three protocols are intentionally not symmetrical there.
+- Gemini media is passed through, never decoded or inspected for sensitive content.
+- This remains local development evidence: no commit, no install, no live provider, no signing or release acceptance.
+
+## M6 amendment correction after independent review
+
+An independent read-only review returned `FAIL` on the first M6 amendment and its original verdict is preserved in `native-direct-m6-final-review-1dbb693768b249a981bf85e05ee0844f.txt`. Every finding was addressed; `native-direct-m6-review-findings-closure-01.json` records the mapping.
+
+What changed relative to the first amendment:
+
+- **Projection consistency.** Attributable refusals now return HTTP 400 with `invalid_request_error` and `dlp_restore_unsupported`, and the tests assert the exact status/code/message triple for each cause instead of "any message with the generic code". The generic `RestoreUnsupported` family keeps its historical message, status and code so legacy and gateway paths are unaffected; the endpoint cause is limited to direct native scopes.
+- **Fail-safe degradation.** The token-free decision no longer scans raw bytes only. `entity_contains_token_marker` first checks raw bytes, then decodes text leaves (JSON object, or each SSE `data:` payload) and feeds them in order with a carried tail, so a marker split across Parts or frames is still found. Any parse, depth or work failure returns "may contain a marker", which forces the strict path.
+- **Smaller blast radius.** `TokenError::ImmutableSite`, `PlanError::ImmutableSite` and the placeholder cause were removed after they forced two incompatible internal error shapes and changed the accepted JSON finalizer projection. Two causes remain, both attributable at a single site: unsupported endpoint (direct native admission) and immutable signed content (the vendor-normalization guard).
+- **Collateral repair.** A mechanical edit used while threading the admission flag damaged an unrelated canonical-JSON fixture and a `["inert",false,7]` expectation. Both were reverted; gate `-03` (fixture damage) and `-04` (formatting drift) are preserved as real failures.
+
+Final evidence: same-file RED `m6b-degrade-red-01-d8f62583e5` (13 listed, 3 failed, exit 101) with the GREEN source snapshot in `m6b-degrade-red-01-native-chat-green-source.rs`, GREEN `m6b-degrade-green-01-dd5762f989` (13 passed, exit 0), integration `native-direct-m6-integration-02-f3c8e2bae9` (ten groups green, format idempotent, no changed path), and Full Gate `native-direct-m6-actual-full-gate-05-03615edda5` (twelve commands exit 0, `all_passed` and `unchanged_inputs` true). This documentation suffix postdates that gate; only these two files differ from the gated map.
+
+Remaining limits: degradation applies only when the answer carries no marker; a marker-bearing answer that cannot be restored still fails as before. Gemini media is passed through and never inspected. Chat and Anthropic failure delivery is unchanged. No commit, install, live provider, signing or release acceptance is claimed.
+
+## M6 second amendment: attributable refusals replace the generic failure
+
+Approval: the user required that unsupported native cases must not surface as a generic HTTP 500, because a generic failure is hard to diagnose.
+
+### What changed
+
+1. **Request-side cause preserved.** `PlanError::ImmutableContent` is now set where the cause is provable and nowhere else: an authorized reference on an unwritable carrier, a mandatory edit that the atomic plan rejects as an immutable site, and the same conflict surfaced by the Gemini observation adapters. `prepare_observed_request` records the immutable-site conflict out of band because the validator callback can only return `TokenError`; the cause is re-raised with its exact value afterwards.
+2. **Attribution is native-only.** `DlpForwardError::from_plan_error_native` converts that cause into `RestoreUnsupportedFor(ImmutableSignedUnit)`, and only the four native call sites use it. Legacy Responses and the conversion facades keep the previous generic projection, so their accepted contract is unchanged.
+3. **Response-side cause.** `RestoreFailureCause::UnrestorablePlaceholders` plus `DlpForwardError::RestoreFailedFor` give an already-received answer that cannot be restored a specific client projection: HTTP 502, `dlp_restore_failed`, and a fixed message naming the cause. The cause is claimed only when the collected body actually contained a placeholder marker, and never for Chat, whose failure delivery stays a transport error.
+4. **Marker scan repaired.** The carried tail was destroyed by feeding JSON object keys between sibling values, so a placeholder split across two Parts or two SSE frames was missed and could have been passed through verbatim. Keys no longer participate, the marker stem is now `rredact` without the separator so a doubly escaped dash still matches, and eight unit tests pin single-leaf, cross-Part, cross-sibling, cross-frame, escaped, legacy-prefix, top-level-array, clean-body and fail-closed behaviour.
+
+### Evidence
+
+- Marker scan RED before the repair, then 8/8 green (`marker_scan_tests`).
+- Same-file RED on the final code: `m6c-attributable-red-01-d685835153` disables only the new plan cause (snapshots `m6c-red-01-{plan,prep}-green-source.rs`), listed 2358, 20 failed, exit 101, with `m4_gemini_signed_part_is_never_rewritten` failing on `500 ... proxy_processing_failed`.
+- GREEN on the restored bytes: `m6c-attributable-green-01-9e2ec1e1cf`, 2338 passed, exit 0.
+- Integration `native-direct-m6-integration-03-bb00c995b9`: ten groups green (13 / 59 / 64 / 39 / 48 / 45 / 23 / 2338 / 34 / 2+1 ignored), format idempotent with no changed path.
+- Full Gate `native-direct-m6-actual-full-gate-06-96bc601c32`: twelve commands exit 0, `all_passed` and `unchanged_inputs` true.
+- Library suite 6826 passed / 15 ignored on the same tree.
+
+### Client-visible contract now
+
+| Situation | Status | Code | Meaning |
+| --- | --- | --- | --- |
+| Unsupported direct native route or framing | 400 | `dlp_restore_unsupported` | Fix the route/framing |
+| Signed/immutable content a mandatory edit would touch | 400 | `dlp_restore_unsupported` | Remove the signed content or disable DLP |
+| Upstream answered but its body cannot be restored | 502 | `dlp_restore_failed` | Retry; if it persists, disable DLP |
+| Cause not established | 500 | `proxy_processing_failed` | Unchanged generic projection |
+
+### Limits
+
+- The generic projection still exists for failures whose cause cannot be proven; it is no longer used for the three cases above.
+- Chat keeps transport-error failure delivery; its response-side failures are not re-projected.
+- Gemini media is passed through and never inspected.
+- The docs suffix postdates the final gate; only documentation differs from the gated map.
