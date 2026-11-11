@@ -1,4 +1,4 @@
-//! Trusted route admission controls; native adapters remain disabled.
+//! Trusted route admission controls; only integrated direct-native cells are admitted.
 use std::sync::{Arc, Mutex};
 
 use axum::{
@@ -16,7 +16,8 @@ use tokio::sync::RwLock;
 use super::{
     http_restoration::{
         admit_http_request, admit_http_request_with_scope, route_scope_test_support,
-        RestorationAdmission, CLIENT_PROCESSING_ERROR_CODE, CLIENT_PROCESSING_ERROR_MESSAGE,
+        RestorationAdmission, RestoreUnsupportedCause, CLIENT_PROCESSING_ERROR_CODE,
+        CLIENT_PROCESSING_ERROR_MESSAGE, CLIENT_UNSUPPORTED_ENDPOINT_CODE,
     },
     unified_test_support::{
         decode_json, prepare_attempt, ResponsesFixture, TestResult, CONTACT, TARGET,
@@ -55,33 +56,58 @@ async fn assert_fixed_scope_error(admission: RestorationAdmission, app: &AppType
         return Err("c4_disabled_scope_was_not_intercepted".into());
     };
     let (status, body) = decode_json(response).await?;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    let expected = match app {
-        AppType::Claude | AppType::ClaudeDesktop => json!({
-            "type":"error",
-            "error":{
-                "type":"api_error",
-                "message":CLIENT_PROCESSING_ERROR_MESSAGE,
-                "code":CLIENT_PROCESSING_ERROR_CODE
+    // Only two sanctioned projections exist, and each must pair its own status, code and
+    // message. An actionable route/framing refusal must never be reported as a generic
+    // processing failure, and vice versa.
+    let message = body
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .ok_or("c4_scope_error_message_missing")?;
+    assert!(
+        !message.contains(CONTACT) && !message.contains("rredact-"),
+        "c4_scope_error_leaked_content"
+    );
+    match app {
+        AppType::Gemini => {
+            let code = body.pointer("/error/code").and_then(Value::as_u64);
+            let state = body.pointer("/error/status").and_then(Value::as_str);
+            if message == RestoreUnsupportedCause::UnsupportedEndpoint.client_message() {
+                assert_eq!(status, StatusCode::BAD_REQUEST, "c4_gemini_cause_status");
+                assert_eq!(code, Some(400), "c4_gemini_cause_code");
+                assert_eq!(state, Some("INVALID_ARGUMENT"), "c4_gemini_cause_state");
+            } else {
+                assert_eq!(message, CLIENT_PROCESSING_ERROR_MESSAGE);
+                assert_eq!(
+                    status,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "c4_gemini_generic_status"
+                );
+                assert_eq!(code, Some(500), "c4_gemini_generic_code");
+                assert_eq!(state, Some("UNAVAILABLE"), "c4_gemini_generic_state");
             }
-        }),
-        AppType::Gemini => json!({
-            "error":{
-                "code":500,
-                "message":CLIENT_PROCESSING_ERROR_MESSAGE,
-                "status":"UNAVAILABLE"
+        }
+        _ => {
+            let code = body.pointer("/error/code").and_then(Value::as_str);
+            let kind = body.pointer("/error/type").and_then(Value::as_str);
+            if message == RestoreUnsupportedCause::UnsupportedEndpoint.client_message() {
+                assert_eq!(status, StatusCode::BAD_REQUEST, "c4_cause_status");
+                assert_eq!(
+                    code,
+                    Some(CLIENT_UNSUPPORTED_ENDPOINT_CODE),
+                    "c4_cause_code"
+                );
+                assert_eq!(kind, Some("invalid_request_error"), "c4_cause_type");
+            } else {
+                assert_eq!(message, CLIENT_PROCESSING_ERROR_MESSAGE);
+                assert_eq!(
+                    status,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "c4_generic_status"
+                );
+                assert_eq!(code, Some(CLIENT_PROCESSING_ERROR_CODE), "c4_generic_code");
             }
-        }),
-        _ => json!({
-            "error":{
-                "message":CLIENT_PROCESSING_ERROR_MESSAGE,
-                "type":"server_error",
-                "code":CLIENT_PROCESSING_ERROR_CODE,
-                "param":null
-            }
-        }),
-    };
-    assert!(body == expected, "c4_scope_error_not_fixed_or_sanitized");
+        }
+    }
     Ok(())
 }
 
@@ -97,6 +123,7 @@ fn legacy_responses_and_compact_facade_preserve_zero_mapping_attempts() -> TestR
             &AppType::Codex,
             true,
             compact,
+            false,
             &mut body,
             &HeaderMap::new(),
         )?;
@@ -174,7 +201,7 @@ fn explicit_responses_and_compact_preserve_direct_and_gateway_admission() -> Tes
 
 #[tokio::test]
 #[serial_test::serial]
-async fn native_direct_and_gateway_scopes_stay_disabled_without_namespace_grant() -> TestResult {
+async fn native_scopes_admit_only_integrated_direct_protocols() -> TestResult {
     let fixture = ResponsesFixture::new();
     for ingress in [RequestIngress::Direct, RequestIngress::Gateway] {
         for framing in [RestorationFraming::Json, RestorationFraming::Sse] {
@@ -216,8 +243,24 @@ async fn native_direct_and_gateway_scopes_stay_disabled_without_namespace_grant(
                     &mut body,
                     &HeaderMap::new(),
                 )?;
-                assert_fixed_scope_error(admission, &app).await?;
-                assert!(body == original, "c4_disabled_native_request_mutated");
+                if matches!(
+                    client,
+                    Protocol::Chat | Protocol::Anthropic | Protocol::Gemini
+                ) && ingress == RequestIngress::Direct
+                {
+                    let RestorationAdmission::Admitted(request) = admission else {
+                        return Err("m2_direct_chat_scope_not_admitted".into());
+                    };
+                    assert!(
+                        (client == Protocol::Chat && request.is_native_chat())
+                            || (client == Protocol::Anthropic && request.is_native_anthropic())
+                            || (client == Protocol::Gemini && request.is_native_gemini()),
+                        "m3_native_protocol_borrowed_other_authority"
+                    );
+                } else {
+                    assert_fixed_scope_error(admission, &app).await?;
+                }
+                assert!(body == original, "c4_native_admission_request_mutated");
                 assert_eq!(fixture.store.stats()?.entries, 0);
             }
         }
@@ -227,7 +270,7 @@ async fn native_direct_and_gateway_scopes_stay_disabled_without_namespace_grant(
 
 #[test]
 #[serial_test::serial]
-fn ordinary_native_input_keeps_passthrough_without_admitted_authority() -> TestResult {
+fn ordinary_native_input_admits_only_integrated_direct_protocols() -> TestResult {
     let fixture = ResponsesFixture::new();
     for ingress in [RequestIngress::Direct, RequestIngress::Gateway] {
         for (app, client, operation, mut body) in [
@@ -239,6 +282,12 @@ fn ordinary_native_input_keeps_passthrough_without_admitted_authority() -> TestR
             ),
             (
                 AppType::Claude,
+                Protocol::Anthropic,
+                RestorationOperation::Messages,
+                json!({"messages":[{"role":"user","content":"Synthetic ordinary input"}]}),
+            ),
+            (
+                AppType::ClaudeDesktop,
                 Protocol::Anthropic,
                 RestorationOperation::Messages,
                 json!({"messages":[{"role":"user","content":"Synthetic ordinary input"}]}),
@@ -258,10 +307,26 @@ fn ordinary_native_input_keeps_passthrough_without_admitted_authority() -> TestR
                 &mut body,
                 &HeaderMap::new(),
             )?;
-            assert!(
-                matches!(admission, RestorationAdmission::Passthrough),
-                "c4_ordinary_native_input_gained_authority_or_failed"
-            );
+            if matches!(
+                client,
+                Protocol::Chat | Protocol::Anthropic | Protocol::Gemini
+            ) && ingress == RequestIngress::Direct
+            {
+                let RestorationAdmission::Admitted(request) = admission else {
+                    return Err("m2_ordinary_direct_chat_not_admitted".into());
+                };
+                assert!(
+                    (client == Protocol::Chat && request.is_native_chat())
+                        || (client == Protocol::Anthropic && request.is_native_anthropic())
+                        || (client == Protocol::Gemini && request.is_native_gemini()),
+                    "m3_ordinary_native_borrowed_other_authority"
+                );
+            } else {
+                assert!(
+                    matches!(admission, RestorationAdmission::Passthrough),
+                    "c4_ordinary_unsupported_native_gained_authority_or_failed"
+                );
+            }
             assert!(body == original, "c4_ordinary_native_input_changed");
             assert_eq!(fixture.store.stats()?.entries, 0);
         }
@@ -683,9 +748,8 @@ fn c4_classifier_gemini_streaming_allows_unrelated_query_options() -> TestResult
 async fn c4_dispatch_direct_native_wrappers_keep_direct_scope() -> TestResult {
     let fixture = ResponsesFixture::new();
     let state = dispatch_state(Arc::new(Database::memory()?), &fixture);
-    let baseline = fixture.store.stats()?;
     for stream in [false, true] {
-        for (app, client, operation, uri) in [
+        for (_app, client, operation, uri) in [
             (
                 AppType::Codex,
                 Protocol::Chat,
@@ -699,6 +763,9 @@ async fn c4_dispatch_direct_native_wrappers_keep_direct_scope() -> TestResult {
                 "/v1/messages",
             ),
         ] {
+            let baseline = fixture.store.stats()?;
+            let before_publication =
+                super::tokenization::publication_test_support::counts(&fixture.store)?;
             let body = json!({"model":"synthetic-scope-model", "stream":stream,
                 "messages":[{"role":"user","content":CONTACT}]});
             let mut request = dispatch_request("POST", uri, &body)?;
@@ -711,9 +778,14 @@ async fn c4_dispatch_direct_native_wrappers_keep_direct_scope() -> TestResult {
                     handlers::handle_chat_completions(State(state.clone()), request).await
                 }
                 _ => handlers::handle_messages(State(state.clone()), request).await,
-            }
-            .map_err(|_| "c4_direct_native_reached_provider_selection")?;
-            assert_fixed_scope_error(RestorationAdmission::Intercepted(response), &app).await?;
+            };
+            assert!(
+                matches!(
+                    response,
+                    Err(crate::proxy::error::ProxyError::NoProvidersConfigured)
+                ),
+                "m3_integrated_direct_native_did_not_reach_empty_provider_selection"
+            );
             assert_recorded_scope(
                 &observation,
                 scope(
@@ -727,11 +799,21 @@ async fn c4_dispatch_direct_native_wrappers_keep_direct_scope() -> TestResult {
                     },
                 ),
             );
-            assert_eq!(
-                fixture.store.stats()?,
-                baseline,
-                "c4_direct_native_gained_namespace"
-            );
+            let after = fixture.store.stats()?;
+            if matches!(client, Protocol::Chat | Protocol::Anthropic) {
+                assert!(
+                    after.entries == baseline.entries
+                        && after.plaintext_bytes == baseline.plaintext_bytes,
+                    "m2_admission_without_provider_created_mapping"
+                );
+                assert!(
+                    super::tokenization::publication_test_support::counts(&fixture.store)?
+                        == before_publication,
+                    "m2_admission_without_provider_published_history"
+                );
+            } else {
+                assert_eq!(after, baseline, "c4_later_native_gained_namespace");
+            }
         }
     }
     Ok(())
@@ -837,8 +919,7 @@ async fn c4_dispatch_gateway_gemini_generation_uses_gateway_scope() -> TestResul
 
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
-async fn c4_dispatch_gemini_registered_generation_classifies_method_operation_and_framing(
-) -> TestResult {
+async fn c4_dispatch_gemini_registered_generation_is_admitted_natively() -> TestResult {
     let fixture = ResponsesFixture::new();
     let state = dispatch_state(Arc::new(Database::memory()?), &fixture);
     let baseline = fixture.store.stats()?;
@@ -866,22 +947,25 @@ async fn c4_dispatch_gemini_registered_generation_classifies_method_operation_an
             let body = json!({"stream":body_stream,"contents":[{"role":"user","parts":[{"text":CONTACT}]}]});
             let request = dispatch_request("POST", &uri, &body)?;
             let observation = route_scope_test_support::observe();
-            let response = handlers::handle_gemini(State(state.clone()), uri.parse()?, request)
-                .await
-                .map_err(|_| "c4_disabled_gemini_reached_provider_selection")?;
-            assert_fixed_scope_error(
-                RestorationAdmission::Intercepted(response),
-                &AppType::Gemini,
-            )
-            .await?;
+            // M4 admits these canonical generation pairs natively; only DLP refusal
+            // would keep the request out of provider selection.
+            // The fixture configures no provider, so native admission is proven by the
+            // handler reaching that later provider-selection refusal instead of DLP's.
+            match handlers::handle_gemini(State(state.clone()), uri.parse()?, request).await {
+                Err(crate::proxy::error::ProxyError::NoProvidersConfigured) => {}
+                Err(crate::proxy::error::ProxyError::DlpForward(_)) => {
+                    return Err("c4_direct_gemini_refused_by_dlp".into())
+                }
+                _ => return Err("c4_direct_gemini_unexpected_outcome".into()),
+            }
             assert_recorded_scope(
                 &observation,
                 scope(Protocol::Gemini, RequestIngress::Direct, operation, framing),
             );
             assert_eq!(
-                fixture.store.stats()?,
-                baseline,
-                "c4_direct_gemini_gained_namespace"
+                fixture.store.stats()?.entries,
+                baseline.entries,
+                "c4_direct_gemini_published_without_tokens"
             );
         }
     }
@@ -1666,4 +1750,69 @@ mod c4_actual_cell_characterization {
         }
         Ok(())
     }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn m3_anthropic_trusted_scope_cannot_be_selected_by_headers_or_wrong_cells() -> TestResult {
+    let fixture = ResponsesFixture::new();
+    for app in [AppType::Claude, AppType::ClaudeDesktop] {
+        for (ingress, operation, framing) in [
+            (
+                RequestIngress::Gateway,
+                RestorationOperation::Messages,
+                RestorationFraming::Json,
+            ),
+            (
+                RequestIngress::Gateway,
+                RestorationOperation::Messages,
+                RestorationFraming::Sse,
+            ),
+            (
+                RequestIngress::Direct,
+                RestorationOperation::Responses,
+                RestorationFraming::Json,
+            ),
+            (
+                RequestIngress::Direct,
+                RestorationOperation::ChatCompletions,
+                RestorationFraming::Sse,
+            ),
+            (
+                RequestIngress::Direct,
+                RestorationOperation::Unsupported,
+                RestorationFraming::Json,
+            ),
+            (
+                RequestIngress::Direct,
+                RestorationOperation::Messages,
+                RestorationFraming::Unsupported,
+            ),
+        ] {
+            for claimed_ingress in ["direct", "gateway", "responses"] {
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    "x-varyai-ingress",
+                    HeaderValue::from_static(claimed_ingress),
+                );
+                headers.insert(
+                    "x-varyai-client-protocol",
+                    HeaderValue::from_static("anthropic"),
+                );
+                let mut body = json!({"messages":[{"role":"user","content":CONTACT}]});
+                let original = body.clone();
+                let admission = admit_http_request_with_scope(
+                    &fixture.gateway,
+                    &app,
+                    scope(Protocol::Anthropic, ingress, operation, framing),
+                    &mut body,
+                    &headers,
+                )?;
+                assert_fixed_scope_error(admission, &app).await?;
+                assert!(body == original, "m3_wrong_anthropic_scope_mutated_request");
+                assert_eq!(fixture.store.stats()?.entries, 0);
+            }
+        }
+    }
+    Ok(())
 }

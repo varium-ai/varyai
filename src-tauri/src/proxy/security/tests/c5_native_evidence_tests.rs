@@ -842,7 +842,7 @@ fn c5_native_evidence_controlled_import_never_grants_responses_authority() -> Te
 }
 
 #[test]
-fn c5_native_evidence_test_fixture_keeps_native_registry_disabled() {
+fn c5_native_evidence_fixture_does_not_expand_integrated_registration() {
     for (client, operation) in [
         (Protocol::Chat, Operation::ChatCompletions),
         (Protocol::Anthropic, Operation::Messages),
@@ -855,19 +855,25 @@ fn c5_native_evidence_test_fixture_keeps_native_registry_disabled() {
             Protocol::Gemini,
         ] {
             for framing in [Framing::Json, Framing::Sse] {
+                let expected = if client == Protocol::Chat && upstream == Protocol::Chat {
+                    Registration::NativeChat
+                } else if client == Protocol::Anthropic && upstream == Protocol::Anthropic {
+                    Registration::NativeAnthropic
+                } else if client == Protocol::Gemini && upstream == Protocol::Gemini {
+                    Registration::NativeGemini
+                } else {
+                    Registration::Disabled
+                };
                 assert!(
-                    matches!(
-                        registration(
-                            ProtocolPair::new(
-                                ClientProtocol::new(client),
-                                UpstreamProtocol::new(upstream)
-                            ),
-                            operation,
-                            framing,
+                    registration(
+                        ProtocolPair::new(
+                            ClientProtocol::new(client),
+                            UpstreamProtocol::new(upstream)
                         ),
-                        Registration::Disabled
-                    ),
-                    "c5_native_evidence_fixture_enabled_native_registration"
+                        operation,
+                        framing,
+                    ) == expected,
+                    "c5_native_evidence_fixture_expanded_native_registration"
                 );
             }
         }

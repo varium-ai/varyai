@@ -181,7 +181,7 @@ fn preparation_rejects_sensitive_read_only_values_before_mapping_commit() -> Res
         &[],
         |_, _, _| Ok(()),
     );
-    assert_eq!(result.err(), Some(PlanError::Unsupported));
+    assert_eq!(result.err(), Some(PlanError::ImmutableContent));
     assert_eq!(store.stats()?.entries, 0);
     Ok(())
 }

@@ -84,11 +84,18 @@ async fn forwarded_error_with_auth(
     if empty {
         body["input"] = json!("synthetic-safe-input");
     }
-    let request =
-        match admit_http_request(&gateway, &AppType::Codex, true, false, &mut body, &headers)? {
-            RestorationAdmission::Admitted(request) => request,
-            _ => return Err("synthetic_admission_failed".into()),
-        };
+    let request = match admit_http_request(
+        &gateway,
+        &AppType::Codex,
+        true,
+        false,
+        false,
+        &mut body,
+        &headers,
+    )? {
+        RestorationAdmission::Admitted(request) => request,
+        _ => return Err("synthetic_admission_failed".into()),
+    };
     let status = Arc::new(RwLock::new(ProxyStatus::default()));
     let forwarder = RequestForwarder::new(
         Arc::new(ProviderRouter::new(db.clone())),
@@ -900,6 +907,7 @@ fn upstream_error_passthrough_empty_lease_suppresses_payload_diagnostics() -> Te
         &AppType::Codex,
         true,
         false,
+        false,
         &mut body,
         &http::HeaderMap::new(),
     )? {
@@ -1198,6 +1206,7 @@ async fn upstream_error_passthrough_reference_error_has_no_completion_authority(
             &AppType::Codex,
             true,
             false,
+            false,
             &mut body,
             &headers,
         )? {
@@ -1293,6 +1302,7 @@ async fn upstream_error_passthrough_reference_error_has_no_completion_authority(
                 &gateway,
                 &AppType::Codex,
                 true,
+                false,
                 false,
                 &mut continuation,
                 &continuation_headers,
@@ -1455,6 +1465,7 @@ async fn upstream_error_passthrough_skipped_circuit_keeps_actual_provider() -> T
         &gateway,
         &AppType::Codex,
         true,
+        false,
         false,
         &mut body,
         &Default::default(),

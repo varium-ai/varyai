@@ -303,7 +303,7 @@ fn c5_request_immutable_required_patch_rejects_entire_transaction() -> TestResul
         },
     );
     assert!(
-        matches!(result, Err(PlanError::Unsupported)),
+        matches!(result, Err(PlanError::ImmutableContent)),
         "immutable_mandatory_patch_not_rejected"
     );
     assert!(!called.get(), "immutable_failure_reached_validator");
@@ -962,7 +962,7 @@ fn c5_request_immutable_authorized_reference_requires_rejection_after_block() ->
         assert!(
             matches!(
                 (&result, blocked),
-                (Err(PlanError::Blocked), true) | (Err(PlanError::Unsupported), false)
+                (Err(PlanError::Blocked), true) | (Err(PlanError::ImmutableContent), false)
             ),
             "immutable_authorized_reference_not_rejected_after_block"
         );

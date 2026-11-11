@@ -341,42 +341,57 @@ fn c5_native_sse_frame_rejects_missing_or_multiple_exact_boundaries() -> TestRes
 }
 
 #[test]
-fn c5_native_sse_frame_only_done_can_be_opaque_and_never_has_sites() -> TestResult {
+fn c5_native_sse_frame_no_data_and_done_have_no_source_or_sites() -> TestResult {
     let source = parsed(r#""[DONE]""#)?;
     let budget = PayloadBudget::with_limit(BUDGET_BYTES);
-    for raw in [
-        "data: {}\n\n",
-        "data: synthetic\n\n",
-        ": synthetic\n\n",
-        "\n\n",
-    ] {
+    for raw in ["data: {}\n\n", "data: synthetic\n\n", "data:\n\n"] {
         assert!(
             NativeSseFrameObservation::new(raw, None, sites(&[], &budget)?, budget.clone())
                 .is_err(),
-            "arbitrary_opaque_frame_accepted"
+            "arbitrary_opaque_data_accepted"
         );
+        assert!(budget.used() == 0, "opaque_data_failure_retained_charge");
     }
-    assert!(
-        NativeSseFrameObservation::new(
-            DONE,
-            None,
-            sites(&[source.as_value()], &budget)?,
-            budget.clone(),
-        )
-        .is_err(),
-        "opaque_done_sites_accepted"
-    );
-    assert!(
-        NativeSseFrameObservation::new(
-            DONE,
-            Some(source.as_value()),
-            sites(&[], &budget)?,
-            budget.clone(),
-        )
-        .is_err(),
-        "done_claimed_json_source"
-    );
-    assert!(budget.used() == 0, "opaque_failure_retained_charge");
+    for raw in [
+        ": synthetic\n\n",
+        "\n\n",
+        ": synthetic\r\n\r\n",
+        "event: ping\nid: synthetic\nretry: 1000\n\n",
+        DONE,
+    ] {
+        let observed = frame(raw, None, &[], &budget)?;
+        assert!(
+            observed.raw() == raw && std::ptr::eq(observed.raw(), raw),
+            "no_data_or_done_wire_replaced"
+        );
+        assert!(
+            observed.source().is_none() && observed.sites().len() == 0,
+            "no_data_or_done_claimed_source_or_sites"
+        );
+        drop(observed);
+        assert!(budget.used() == 0, "no_data_or_done_retained_charge");
+        assert!(
+            NativeSseFrameObservation::new(
+                raw,
+                None,
+                sites(&[source.as_value()], &budget)?,
+                budget.clone(),
+            )
+            .is_err(),
+            "no_data_or_done_sites_accepted"
+        );
+        assert!(
+            NativeSseFrameObservation::new(
+                raw,
+                Some(source.as_value()),
+                sites(&[], &budget)?,
+                budget.clone(),
+            )
+            .is_err(),
+            "no_data_or_done_claimed_json_source"
+        );
+        assert!(budget.used() == 0, "opaque_failure_retained_charge");
+    }
     Ok(())
 }
 

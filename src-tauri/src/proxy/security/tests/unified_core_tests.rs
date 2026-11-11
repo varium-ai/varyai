@@ -121,6 +121,7 @@ async fn explicit_block_is_not_context_degradation_or_partial_redaction() -> Tes
         &AppType::Codex,
         true,
         false,
+        false,
         &mut body,
         &Default::default(),
     )?;
@@ -543,7 +544,7 @@ fn c1_protocol_pair_keeps_client_and_actual_upstream_independent() -> TestResult
 }
 
 #[test]
-fn c1_registry_defers_responses_and_never_enables_native_cells() {
+fn c1_registry_defers_responses_and_limits_native_cells_to_integrated_protocols() {
     use super::{
         protocol_adapters::{registration, Registration},
         restoration_contract::{
@@ -574,6 +575,12 @@ fn c1_registry_defers_responses_and_never_enables_native_cells() {
             for framing in [Framing::Json, Framing::Sse] {
                 let expected = if client == Protocol::Responses {
                     Registration::DeferToResponsesFacade
+                } else if client == Protocol::Chat && upstream == Protocol::Chat {
+                    Registration::NativeChat
+                } else if client == Protocol::Anthropic && upstream == Protocol::Anthropic {
+                    Registration::NativeAnthropic
+                } else if client == Protocol::Gemini && upstream == Protocol::Gemini {
+                    Registration::NativeGemini
                 } else {
                     Registration::Disabled
                 };
@@ -1766,6 +1773,7 @@ async fn c2_first_result_explicit_block_cannot_degrade_or_partially_mutate() -> 
             &fixture.gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut body,
             &headers,
@@ -4976,4 +4984,3550 @@ fn c3_tool_barrier_adopt_rejects_foreign_budget_without_moving_owners() -> TestR
         "c3_barrier_adopt_foreign_budget_drop_retained_charge"
     );
     Ok(())
+}
+
+// CH2 integrator amendment: production HTTP proof and sealed native delivery.
+fn ch2_core_json_choices(reference: &str) -> Value {
+    json!({"id":"synthetic-ch2-response","object":"chat.completion","choices":[
+        {"index":7,"message":{"role":"assistant","content":reference},"finish_reason":"stop"},
+        {"index":2,"message":{"role":"assistant","content":reference},"finish_reason":"stop"}
+    ],"extension":{"types":[true,null,7]}})
+}
+
+fn ch2_core_json_proof(
+    fixture: &super::native_test_support::NativeFixture,
+    source: &Value,
+) -> Result<super::http_restoration::VerifiedNativeJson, super::response_restoration::RestoreError>
+{
+    use super::native_test_support::{ScriptedSource, Step};
+    use bytes::Bytes;
+    let raw = serde_json::to_vec(source)
+        .map_err(|_| super::response_restoration::RestoreError::RestoreFailed)?;
+    let (transport, stats) = ScriptedSource::new([
+        Step::Pending,
+        Step::Bytes(Bytes::from(raw)),
+        Step::Bytes(Bytes::new()),
+        Step::Pending,
+    ]);
+    let result = futures::executor::block_on(fixture.json_proof(source, transport));
+    assert!(stats.eof.get() == 1, "ch2_core_json_actual_eof_missing");
+    assert!(stats.pending.get() == 2, "ch2_core_json_pending_not_driven");
+    result
+}
+
+#[test]
+fn ch2_core_json_multiple_choices_reach_sealed_delivery() -> TestResult {
+    use super::{
+        native_test_support::{chat, record_delivery, NativeFixture, MAX_ENTITY, TEXT},
+        response_restoration::finalize_native_json,
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{stage_native_json_with_lifecycle, NativeJsonObservation},
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    use bytes::Bytes;
+    for mapped in [false, true] {
+        let fixture = NativeFixture::new(mapped)?;
+        let source = ch2_core_json_choices(&fixture.reference);
+        let wire = Bytes::from(serde_json::to_vec(&source)?);
+        let proof = ch2_core_json_proof(&fixture, &source);
+        assert!(
+            proof.is_ok(),
+            "ch2_core_native_json_multiple_choices_rejected"
+        );
+        let proof = proof.map_err(|_| "ch2_core_json_proof_rejected")?;
+        assert!(
+            fixture.counts()? == (0, 0, 0),
+            "ch2_core_inspection_published"
+        );
+        let mut sites = TextSites::new(fixture.budget.clone())?;
+        for choice in source["choices"]
+            .as_array()
+            .ok_or("ch2_core_choices_missing")?
+        {
+            sites.observe(
+                &choice["message"]["content"],
+                SourceClass::HistoricalText,
+                EditConstraint::Editable,
+            )?;
+        }
+        let delivered = [
+            &source["choices"][0]["message"],
+            &source["choices"][1]["message"],
+        ];
+        let observation =
+            NativeJsonObservation::new(&source, chat(), sites, &delivered, fixture.budget.clone())
+                .map_err(|_| "ch2_core_json_observation_rejected")?;
+        let staged = stage_native_json_with_lifecycle(
+            &observation,
+            &fixture.lease,
+            &fixture.binding,
+            ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+            &fixture.attempt,
+        )
+        .map_err(|_| "ch2_core_json_stage_rejected")?;
+        assert!(
+            staged.output_tokens().len() == usize::from(mapped),
+            "ch2_core_json_ledger_not_unique"
+        );
+        assert!(
+            staged.restored_occurrences() == 2 * usize::from(mapped),
+            "ch2_core_json_occurrences_lost"
+        );
+        let finalized = finalize_native_json(
+            staged,
+            &fixture.lease,
+            proof,
+            &fixture.attempt,
+            wire.clone(),
+            MAX_ENTITY,
+        )
+        .map_err(|_| "ch2_core_json_finalization_rejected")?;
+        let chunks =
+            futures::executor::block_on(record_delivery(finalized.into_delivery_stream()))?;
+        assert!(chunks.len() == 1, "ch2_core_json_delivery_count");
+        let actual: Value = serde_json::from_slice(&chunks[0])?;
+        assert!(
+            actual["extension"] == source["extension"],
+            "ch2_core_json_extension_changed"
+        );
+        for (index, choice) in actual["choices"]
+            .as_array()
+            .ok_or("ch2_core_delivered_choices_missing")?
+            .iter()
+            .enumerate()
+        {
+            assert!(
+                choice["index"] == source["choices"][index]["index"],
+                "ch2_core_json_choice_reindexed"
+            );
+            assert!(
+                choice["message"]["content"].as_str()
+                    == Some(if mapped { TEXT } else { &fixture.reference }),
+                "ch2_core_json_choice_not_restored"
+            );
+        }
+        if !mapped {
+            assert!(chunks[0] == wire, "ch2_core_json_zero_map_bytes_changed");
+        }
+        let snapshot = json!([
+            actual["choices"][0]["message"],
+            actual["choices"][1]["message"]
+        ]);
+        assert!(
+            fixture
+                .lease
+                .verify_native_delivered(&fixture.binding, chat(), &snapshot)
+                .is_ok(),
+            "ch2_core_json_ordered_history_missing"
+        );
+        drop(observation);
+        assert!(
+            fixture.budget.used() <= super::native_test_support::LIMIT,
+            "ch2_core_json_budget_exceeded"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_json_multiple_tool_choices_keep_independent_identity() -> TestResult {
+    use super::native_test_support::NativeFixture;
+    let fixture = NativeFixture::new(false)?;
+    let mut source = ch2_core_json_choices("Synthetic public text");
+    for choice in source["choices"]
+        .as_array_mut()
+        .ok_or("ch2_core_choices_missing")?
+    {
+        choice["finish_reason"] = json!("tool_calls");
+        choice["message"]["tool_calls"] = json!([{"id":"synthetic-shared-choice-local-id","type":"function","function":{"name":"synthetic-tool","arguments":"{\"value\":\"synthetic\"}"}}]);
+    }
+    let proof = ch2_core_json_proof(&fixture, &source);
+    assert!(
+        proof.is_ok(),
+        "ch2_core_native_json_choice_local_tools_rejected"
+    );
+    assert!(
+        fixture.counts()? == (0, 0, 0),
+        "ch2_core_json_proof_granted_publication"
+    );
+    Ok(())
+}
+
+#[test]
+fn ch2_core_json_invalid_index_or_choice_never_proves_completion() -> TestResult {
+    use super::native_test_support::NativeFixture;
+    for case in 0..9 {
+        let fixture = NativeFixture::new(false)?;
+        let mut source = ch2_core_json_choices("Synthetic public text");
+        match case {
+            0 => source["choices"][1]["index"] = json!(7),
+            1 => {
+                source["choices"][0]
+                    .as_object_mut()
+                    .ok_or("ch2_core_choice_missing")?
+                    .remove("index");
+            }
+            2 => source["choices"][1]["index"] = json!(-1),
+            3 => source["choices"][1]["index"] = json!(1.5),
+            4 => source["choices"][1]["index"] = json!(128),
+            5 => source["choices"][1]["finish_reason"] = json!("length"),
+            6 => source["choices"][1]["finish_reason"] = Value::Null,
+            7 => {
+                source["choices"][1]["message"]["function_call"] =
+                    json!({"name":"synthetic-tool","arguments":"{}"})
+            }
+            _ => source["choices"][1]["message"]["role"] = json!("user"),
+        }
+        assert!(
+            ch2_core_json_proof(&fixture, &source).is_err(),
+            "ch2_core_invalid_json_choice_accepted"
+        );
+        assert!(
+            fixture.counts()? == (0, 0, 0),
+            "ch2_core_invalid_json_choice_published"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_json_conversion_mode_remains_single_choice() -> TestResult {
+    use super::{
+        completion_json::{JsonCompletion, JsonCompletionProtocol},
+        payload_budget::PayloadBudget,
+    };
+    let source = ch2_core_json_choices("Synthetic public text");
+    let raw = serde_json::to_string(&source)?;
+    let mut converted = JsonCompletion::new(JsonCompletionProtocol::ChatCompletions);
+    converted.observe_raw_json(&raw, &PayloadBudget::with_limit(1024 * 1024));
+    assert!(
+        !converted.permits_completion(),
+        "ch2_core_conversion_multi_choice_relaxed"
+    );
+    Ok(())
+}
+
+fn ch2_core_sse_chunks(tools: bool) -> Vec<Value> {
+    let first = if tools {
+        json!({"index":9,"delta":{"role":"assistant","tool_calls":[{"index":5,"id":"synthetic-ch2-call","type":"function","function":{"name":"synthetic-tool","arguments":"{\"value\":"}}]},"finish_reason":null})
+    } else {
+        json!({"index":9,"delta":{"role":"assistant","content":"Synthetic first"},"finish_reason":null})
+    };
+    let second = json!({"index":2,"delta":{"role":"assistant","content":"Synthetic second"},"finish_reason":null});
+    let last = if tools {
+        json!({"index":9,"delta":{"tool_calls":[{"index":5,"function":{"arguments":"\"synthetic\"}"}}]},"finish_reason":"tool_calls"})
+    } else {
+        json!({"index":9,"delta":{"content":" complete"},"finish_reason":"stop"})
+    };
+    vec![
+        json!({"id":"synthetic-ch2-sse","choices":[first,second]}),
+        json!({"id":"synthetic-ch2-sse","choices":[{"index":2,"delta":{},"finish_reason":"stop"}]}),
+        json!({"id":"synthetic-ch2-sse","choices":[last]}),
+        json!({"id":"synthetic-ch2-sse","choices":[],"usage":{"completion_tokens":7}}),
+    ]
+}
+
+fn ch2_core_sse_wire(chunks: &[Value], done: bool) -> String {
+    let mut wire = chunks
+        .iter()
+        .map(|chunk| format!("data: {chunk}\n\n"))
+        .collect::<String>();
+    if done {
+        wire.push_str("data: [DONE]\n\n");
+    }
+    wire
+}
+
+fn ch2_core_sse_proof(
+    fixture: &super::native_test_support::NativeFixture,
+    wire: &str,
+) -> Result<super::http_restoration::VerifiedNativeSse, super::response_restoration::RestoreError> {
+    use super::{http_restoration::test_transport, native_test_support::ScriptedSource};
+    use bytes::Bytes;
+    let raw = Bytes::copy_from_slice(wire.as_bytes());
+    let (original, original_stats) = ScriptedSource::split(raw.clone(), &[1, raw.len() / 2])
+        .map_err(|_| super::response_restoration::RestoreError::RestoreFailed)?;
+    let (client, client_stats) = ScriptedSource::split(raw, &[2, wire.len() / 3])
+        .map_err(|_| super::response_restoration::RestoreError::RestoreFailed)?;
+    let proof = futures::executor::block_on(test_transport::native_sse_from_streams(
+        &fixture.attempt,
+        &fixture.binding,
+        &fixture.budget,
+        original,
+        client,
+    ));
+    assert!(
+        original_stats.eof.get() == 1,
+        "ch2_core_sse_original_eof_missing"
+    );
+    if proof.is_ok() {
+        assert!(
+            client_stats.eof.get() == 1,
+            "ch2_core_sse_client_eof_missing"
+        );
+        assert!(
+            original_stats.pending.get() > 0 && client_stats.pending.get() > 0,
+            "ch2_core_sse_pending_missing"
+        );
+    }
+    proof
+}
+
+#[test]
+fn ch2_core_sse_interleaved_choices_require_independent_terminals() -> TestResult {
+    use super::native_test_support::{chat, NativeFixture};
+    let fixture = NativeFixture::new(false)?;
+    let wire = ch2_core_sse_wire(&ch2_core_sse_chunks(false), true);
+    let proof = ch2_core_sse_proof(&fixture, &wire);
+    assert!(
+        proof.is_ok(),
+        "ch2_core_native_sse_multiple_choices_rejected"
+    );
+    let proof = proof.map_err(|_| "ch2_core_sse_proof_rejected")?;
+    assert!(
+        proof
+            .validate_restored(
+                wire.as_bytes(),
+                &fixture.binding,
+                &fixture.attempt,
+                chat(),
+                std::io::Cursor::new(wire.as_bytes()),
+                &fixture.budget
+            )
+            .is_ok(),
+        "ch2_core_sse_final_strict_check_rejected"
+    );
+    assert!(
+        fixture.counts()? == (0, 0, 0),
+        "ch2_core_sse_proof_published"
+    );
+    Ok(())
+}
+
+#[test]
+fn ch2_core_sse_sparse_tool_index_is_choice_local() -> TestResult {
+    use super::native_test_support::{chat, NativeFixture};
+    let fixture = NativeFixture::new(false)?;
+    let mut chunks = ch2_core_sse_chunks(true);
+    chunks[0]["choices"][1]["delta"] = chunks[0]["choices"][0]["delta"].clone();
+    chunks[1]["choices"][0] = chunks[2]["choices"][0].clone();
+    chunks[1]["choices"][0]["index"] = json!(2);
+    let wire = ch2_core_sse_wire(&chunks, true);
+    let proof = ch2_core_sse_proof(&fixture, &wire);
+    assert!(
+        proof.is_ok(),
+        "ch2_core_native_sse_sparse_choice_local_tools_rejected"
+    );
+    assert!(
+        proof
+            .map_err(|_| "ch2_core_sse_tools_proof_rejected")?
+            .validate_restored(
+                wire.as_bytes(),
+                &fixture.binding,
+                &fixture.attempt,
+                chat(),
+                std::io::Cursor::new(wire.as_bytes()),
+                &fixture.budget
+            )
+            .is_ok(),
+        "ch2_core_sse_tool_final_strict_check_rejected"
+    );
+    assert!(
+        fixture.counts()? == (0, 0, 0),
+        "ch2_core_sse_tool_proof_published"
+    );
+    Ok(())
+}
+
+#[test]
+fn ch2_core_sse_invalid_index_terminal_or_tool_never_proves_completion() -> TestResult {
+    use super::native_test_support::NativeFixture;
+    for case in 0..12 {
+        let fixture = NativeFixture::new(false)?;
+        let mut chunks = ch2_core_sse_chunks(true);
+        match case {
+            0 => chunks[0]["choices"][1]["index"] = json!(9),
+            1 => chunks[0]["choices"][0]["index"] = json!(-1),
+            2 => chunks[0]["choices"][0]["index"] = json!(128),
+            3 => chunks[1]["choices"][0]["finish_reason"] = Value::Null,
+            4 => chunks[1]["choices"][0]["finish_reason"] = json!("length"),
+            5 => chunks[2]["choices"][0]["index"] = json!(2),
+            6 => {
+                chunks[2]["choices"][0]["delta"]["tool_calls"][0]["id"] =
+                    json!("synthetic-conflicting-call")
+            }
+            7 => chunks[2]["choices"][0]["delta"]["tool_calls"][0]["index"] = json!(128),
+            8 => {
+                chunks[2]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] =
+                    json!("broken")
+            }
+            9 => chunks[2]["choices"][0]["finish_reason"] = json!("stop"),
+            10 => chunks[2]["id"] = json!("synthetic-other-response"),
+            _ => {
+                chunks.pop();
+            }
+        }
+        let wire = ch2_core_sse_wire(&chunks, case != 11);
+        assert!(
+            ch2_core_sse_proof(&fixture, &wire).is_err(),
+            "ch2_core_invalid_sse_completion_accepted"
+        );
+        assert!(
+            fixture.counts()? == (0, 0, 0),
+            "ch2_core_invalid_sse_published"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_sse_conversion_mode_remains_single_choice() -> TestResult {
+    use super::{
+        completion_evidence::{CompletionObservation, SseCompletion},
+        payload_budget::PayloadBudget,
+    };
+    let mut completion = SseCompletion::chat();
+    let budget = PayloadBudget::with_limit(1024 * 1024);
+    for chunk in ch2_core_sse_chunks(false) {
+        let raw = format!("data: {chunk}\n\n");
+        completion.observe(&CompletionObservation::RawFrame(&raw), &budget);
+        completion.observe(&CompletionObservation::ChatChunk(&chunk), &budget);
+    }
+    completion.observe(
+        &CompletionObservation::RawFrame("data: [DONE]\n\n"),
+        &budget,
+    );
+    completion.observe(&CompletionObservation::ChatDone, &budget);
+    assert!(
+        !completion.permits_completion(),
+        "ch2_core_sse_conversion_multi_choice_relaxed"
+    );
+    Ok(())
+}
+
+// Escaped argument references must be matched only after strict object decoding.
+fn ch2_core_escaped_arguments(reference: &str) -> String {
+    let escaped = reference
+        .encode_utf16()
+        .map(|unit| format!("\\u{unit:04x}"))
+        .collect::<String>();
+    format!("{{\"value\":\"{escaped}\",\"types\":[true,null,7],\"nested\":{{\"again\":\"{escaped}\"}}}}")
+}
+
+#[test]
+fn ch2_core_typed_json_decodes_arguments_before_restoration_and_delivery() -> TestResult {
+    use super::{
+        native_test_support::{chat, record_delivery, NativeFixture, MAX_ENTITY, TEXT},
+        response_restoration::finalize_native_json,
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{stage_native_json_with_lifecycle, NativeJsonObservation},
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    use bytes::Bytes;
+    for mapped in [true, false] {
+        let fixture = NativeFixture::new(mapped)?;
+        let baseline = fixture.budget.used();
+        let arguments = ch2_core_escaped_arguments(&fixture.reference);
+        let source = json!({"id":"synthetic-ch2-typed","choices":[{"index":7,"message":{"role":"assistant","content":fixture.reference,
+            "tool_calls":[{"id":"synthetic-call","type":"function","function":{"name":"synthetic-tool","arguments":arguments}}]},"finish_reason":"tool_calls"}],"opaque":{"value":fixture.reference}});
+        let wire = Bytes::from(serde_json::to_vec_pretty(&source)?);
+        let proof = ch2_core_json_proof(&fixture, &source)
+            .map_err(|_| "ch2_core_typed_json_proof_rejected")?;
+        let mut sites = TextSites::new(fixture.budget.clone())?;
+        sites.observe(
+            &source["choices"][0]["message"]["content"],
+            SourceClass::HistoricalText,
+            EditConstraint::Editable,
+        )?;
+        sites.observe(
+            &source["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+            SourceClass::ToolArguments,
+            EditConstraint::Editable,
+        )?;
+        let observation = NativeJsonObservation::new(
+            &source,
+            chat(),
+            sites,
+            &[&source["choices"][0]["message"]],
+            fixture.budget.clone(),
+        )
+        .map_err(|_| "ch2_core_typed_json_observation_rejected")?;
+        let staged = stage_native_json_with_lifecycle(
+            &observation,
+            &fixture.lease,
+            &fixture.binding,
+            ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+            &fixture.attempt,
+        )
+        .map_err(|_| "ch2_core_typed_json_stage_rejected")?;
+        assert!(
+            staged.restored_occurrences() == 3 * usize::from(mapped)
+                && staged.output_tokens().len() == usize::from(mapped),
+            "ch2_core_typed_json_decoded_ledger_missing"
+        );
+        assert!(
+            staged.as_value()["opaque"] == source["opaque"],
+            "ch2_core_typed_json_opaque_changed"
+        );
+        assert!(
+            fixture.counts()? == (0, 0, 0),
+            "ch2_core_typed_json_staging_published"
+        );
+        let finalized = finalize_native_json(
+            staged,
+            &fixture.lease,
+            proof,
+            &fixture.attempt,
+            wire.clone(),
+            MAX_ENTITY,
+        )
+        .map_err(|_| "ch2_core_typed_json_finalization_rejected")?;
+        let delivered =
+            futures::executor::block_on(record_delivery(finalized.into_delivery_stream()))?;
+        let actual: Value = serde_json::from_slice(&delivered[0])?;
+        let decoded: Value = serde_json::from_str(
+            actual["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+                .as_str()
+                .ok_or("ch2_core_typed_arguments_missing")?,
+        )?;
+        let expected = if mapped { TEXT } else { &fixture.reference };
+        assert!(
+            decoded["value"].as_str() == Some(expected)
+                && decoded["nested"]["again"].as_str() == Some(expected),
+            "ch2_core_typed_json_decoded_leaf_not_restored"
+        );
+        assert!(
+            decoded["types"] == json!([true, null, 7]),
+            "ch2_core_typed_json_types_changed"
+        );
+        assert!(
+            fixture
+                .lease
+                .verify_native_delivered(
+                    &fixture.binding,
+                    chat(),
+                    &json!([actual["choices"][0]["message"]])
+                )
+                .is_ok(),
+            "ch2_core_typed_json_history_missing"
+        );
+        if !mapped {
+            assert!(
+                delivered[0] == wire,
+                "ch2_core_typed_json_zero_map_bytes_changed"
+            );
+        }
+        // Delivery bytes retain their charged encoding until the last owner drops.
+        drop(delivered);
+        drop(observation);
+        assert!(
+            fixture.budget.used() == baseline,
+            "ch2_core_typed_json_charge_retained"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_typed_json_invalid_or_immutable_arguments_fail_without_publication() -> TestResult {
+    use super::{
+        native_test_support::{chat, NativeFixture},
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{stage_native_json_with_lifecycle, NativeJsonObservation},
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    for mode in 0..5 {
+        let fixture = NativeFixture::new(mode == 4)?;
+        let baseline = fixture.budget.used();
+        let arguments = match mode {
+            0 => "not-json".to_owned(),
+            1 => "[]".to_owned(),
+            2 => "".to_owned(),
+            3 => "{\"value\":".to_owned(),
+            _ => ch2_core_escaped_arguments(&fixture.reference),
+        };
+        let source = json!({"arguments":arguments});
+        let mut sites = TextSites::new(fixture.budget.clone())?;
+        sites.observe(
+            &source["arguments"],
+            SourceClass::ToolArguments,
+            if mode == 4 {
+                EditConstraint::Immutable
+            } else {
+                EditConstraint::Editable
+            },
+        )?;
+        let observation =
+            NativeJsonObservation::new(&source, chat(), sites, &[&source], fixture.budget.clone())
+                .map_err(|_| "ch2_core_typed_invalid_observation_rejected")?;
+        let occupied = fixture.budget.used();
+        let result = stage_native_json_with_lifecycle(
+            &observation,
+            &fixture.lease,
+            &fixture.binding,
+            ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+            &fixture.attempt,
+        );
+        assert!(
+            result.is_err(),
+            "ch2_core_typed_invalid_or_immutable_arguments_accepted"
+        );
+        drop(result);
+        assert!(
+            fixture.budget.used() == occupied && fixture.counts()? == (0, 0, 0),
+            "ch2_core_typed_failure_not_atomic"
+        );
+        drop(observation);
+        assert!(
+            fixture.budget.used() == baseline,
+            "ch2_core_typed_failure_charge_retained"
+        );
+    }
+    Ok(())
+}
+
+fn ch2_core_typed_sse_run(mixed_source: bool, explicit: bool) -> TestResult {
+    use super::{
+        native_test_support::{chat, NativeFixture, TEXT},
+        response_restoration::finalize_native_sse,
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{
+            stage_native_sse_with_lifecycle, NativeSseFrameObservation, NativeSseObservation,
+            NativeSseSnapshotSelection, NativeSseTextStream,
+        },
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    use futures::StreamExt;
+    let fixture = NativeFixture::new(!mixed_source)?;
+    let baseline = fixture.budget.used();
+    let arguments = ch2_core_escaped_arguments(&fixture.reference);
+    // Deliberately split inside the first JSON unicode escape, not at a token boundary.
+    let split = arguments
+        .find("\\u")
+        .ok_or("ch2_core_typed_escape_missing")?
+        + 3;
+    let sources = [
+        json!({"id":"synthetic-ch2-typed-sse","choices":[{"index":7,"delta":{"role":"assistant","tool_calls":[{"index":5,"id":"synthetic-call","type":"function","function":{"name":"synthetic-tool","arguments":&arguments[..split]}}]},"finish_reason":null}]}),
+        json!({"id":"synthetic-ch2-typed-sse","choices":[{"index":7,"delta":{"tool_calls":[{"index":5,"function":{"arguments":&arguments[split..]}}]},"finish_reason":"tool_calls"}]}),
+    ];
+    let wire = ch2_core_sse_wire(&sources, true);
+    let proof =
+        ch2_core_sse_proof(&fixture, &wire).map_err(|_| "ch2_core_typed_sse_proof_rejected")?;
+    let nodes = [
+        &sources[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"],
+        &sources[1]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"],
+    ];
+    let mut frames = Vec::new();
+    let mut offset = 0;
+    for (index, source) in sources.iter().enumerate() {
+        let end = offset + format!("data: {source}\n\n").len();
+        let mut sites = TextSites::new(fixture.budget.clone())?;
+        sites.observe(
+            nodes[index],
+            if mixed_source && index == 1 {
+                SourceClass::HistoricalText
+            } else {
+                SourceClass::ToolArguments
+            },
+            EditConstraint::Editable,
+        )?;
+        frames.push(
+            NativeSseFrameObservation::new(
+                &wire[offset..end],
+                Some(source),
+                sites,
+                fixture.budget.clone(),
+            )
+            .map_err(|_| "ch2_core_typed_sse_frame_rejected")?,
+        );
+        offset = end;
+    }
+    frames.push(
+        NativeSseFrameObservation::new(
+            &wire[offset..],
+            None,
+            TextSites::new(fixture.budget.clone())?,
+            fixture.budget.clone(),
+        )
+        .map_err(|_| "ch2_core_typed_sse_done_rejected")?,
+    );
+    let refs: Vec<_> = frames.iter().collect();
+    let observed = NativeSseObservation::new(
+        wire.as_bytes(),
+        &refs,
+        chat(),
+        &fixture.lease,
+        &fixture.binding,
+        fixture.budget.clone(),
+    )
+    .map_err(|_| "ch2_core_typed_sse_observation_rejected")?;
+    let selections = if explicit {
+        [
+            NativeSseSnapshotSelection::chat_choice(0, &sources[0]["choices"][0]),
+            NativeSseSnapshotSelection::chat_choice(1, &sources[1]["choices"][0]),
+        ]
+    } else {
+        [
+            NativeSseSnapshotSelection::new(0, &sources[0]["choices"][0]["delta"]),
+            NativeSseSnapshotSelection::new(1, &sources[1]["choices"][0]["delta"]),
+        ]
+    };
+    let streams = [if explicit {
+        NativeSseTextStream::with_policy(
+            &nodes,
+            super::restoration_contract::TextPolicy::ToolArguments,
+        )
+    } else {
+        NativeSseTextStream::new(&nodes)
+    }];
+    let occupied = fixture.budget.used();
+    let staged = stage_native_sse_with_lifecycle(
+        &observed,
+        &selections,
+        &streams,
+        &fixture.lease,
+        &fixture.binding,
+        fixture.budget.clone(),
+        ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+        &fixture.attempt,
+    );
+    if mixed_source {
+        assert!(
+            staged.is_err(),
+            "ch2_core_typed_sse_mixed_source_stream_accepted"
+        );
+        drop(staged);
+        assert!(
+            fixture.budget.used() == occupied && fixture.counts()? == (0, 0, 0),
+            "ch2_core_typed_sse_mixed_source_not_atomic"
+        );
+        drop(proof);
+    } else {
+        let staged = staged.map_err(|_| "ch2_core_typed_sse_stage_rejected")?;
+        assert!(
+            staged.restored_occurrences() == 2 && staged.output_tokens().len() == 1,
+            "ch2_core_typed_sse_decoded_ledger_missing"
+        );
+        assert!(
+            fixture.counts()? == (0, 0, 0),
+            "ch2_core_typed_sse_staging_published"
+        );
+        let finalized =
+            finalize_native_sse(staged, &fixture.lease, proof, &fixture.attempt, 1024 * 1024)
+                .map_err(|_| "ch2_core_typed_sse_finalization_rejected")?;
+        let mut delivery = finalized.into_delivery_stream();
+        let mut restored = String::new();
+        for index in 0..3 {
+            let chunk = futures::executor::block_on(delivery.next())
+                .ok_or("ch2_core_typed_sse_missing_frame")??;
+            assert!(
+                fixture.counts()? == (0, 1, 1),
+                "ch2_core_typed_sse_published_before_continuation"
+            );
+            if index < 2 {
+                let data = std::str::from_utf8(&chunk)?
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .ok_or("ch2_core_typed_sse_data_missing")?;
+                let value: Value = serde_json::from_str(data)?;
+                restored.push_str(
+                    value["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
+                        .as_str()
+                        .ok_or("ch2_core_typed_sse_arguments_missing")?,
+                );
+            }
+        }
+        let decoded: Value = serde_json::from_str(&restored)?;
+        assert!(
+            decoded["value"].as_str() == Some(TEXT)
+                && decoded["nested"]["again"].as_str() == Some(TEXT),
+            "ch2_core_typed_sse_decoded_leaf_not_restored"
+        );
+        assert!(
+            futures::executor::block_on(delivery.next()).is_none(),
+            "ch2_core_typed_sse_extra_frame"
+        );
+        assert!(
+            fixture.counts()? == (1, 0, 0),
+            "ch2_core_typed_sse_continuation_not_activated"
+        );
+        drop(delivery);
+    }
+    drop(observed);
+    drop(frames);
+    assert!(
+        fixture.budget.used() == baseline,
+        "ch2_core_typed_sse_charge_retained"
+    );
+    Ok(())
+}
+
+#[test]
+fn ch2_core_typed_sse_fragmented_escaped_arguments_use_one_ledger() -> TestResult {
+    ch2_core_typed_sse_run(false, false)
+}
+
+#[test]
+fn ch2_core_typed_sse_mixed_source_stream_is_rejected_before_restoration() -> TestResult {
+    ch2_core_typed_sse_run(true, false)
+}
+
+fn ch2_core_snapshot_run(selection_mode: usize, cancel: bool) -> TestResult {
+    use super::{
+        native_test_support::{chat, NativeFixture, TEXT},
+        response_restoration::finalize_native_sse,
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{
+            stage_native_sse_with_lifecycle, NativeSseFrameObservation, NativeSseObservation,
+            NativeSseSnapshotSelection, NativeSseTextStream,
+        },
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    use futures::StreamExt;
+    let fixture = NativeFixture::new(true)?;
+    let baseline = fixture.budget.used();
+    let args = ch2_core_escaped_arguments(&fixture.reference);
+    let split = args.find("\\u").ok_or("ch2_core_snapshot_escape_missing")? + 4;
+    let text_split = fixture.reference.len() / 2;
+    let sources = [
+        json!({"id":"synthetic-ch2-snapshot","choices":[
+            {"index":9,"delta":{"role":"assistant","tool_calls":[{"index":5,"id":"synthetic-call","type":"function","function":{"name":"synthetic-tool","arguments":&args[..split]}}]},"finish_reason":null},
+            {"index":2,"delta":{"role":"assistant","content":&fixture.reference[..text_split]},"finish_reason":null}]}),
+        json!({"id":"synthetic-ch2-snapshot","choices":[{"index":2,"delta":{"content":&fixture.reference[text_split..]},"finish_reason":"stop"}]}),
+        json!({"id":"synthetic-ch2-snapshot","choices":[{"index":9,"delta":{"tool_calls":[{"index":5,"function":{"arguments":&args[split..]}}]},"finish_reason":"tool_calls"}]}),
+    ];
+    let wire = ch2_core_sse_wire(&sources, true);
+    let proof =
+        ch2_core_sse_proof(&fixture, &wire).map_err(|_| "ch2_core_snapshot_http_proof_rejected")?;
+    let arg_nodes = [
+        &sources[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"],
+        &sources[2]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"],
+    ];
+    let text_nodes = [
+        &sources[0]["choices"][1]["delta"]["content"],
+        &sources[1]["choices"][0]["delta"]["content"],
+    ];
+    let mut frames = Vec::new();
+    let mut offset = 0;
+    for (index, source) in sources.iter().enumerate() {
+        let mut sites = TextSites::new(fixture.budget.clone())?;
+        if index == 0 {
+            sites.observe(
+                arg_nodes[0],
+                SourceClass::ToolArguments,
+                EditConstraint::Editable,
+            )?;
+        }
+        if index < 2 {
+            sites.observe(
+                text_nodes[index],
+                SourceClass::HistoricalText,
+                EditConstraint::Editable,
+            )?;
+        }
+        if index == 2 {
+            sites.observe(
+                arg_nodes[1],
+                SourceClass::ToolArguments,
+                EditConstraint::Editable,
+            )?;
+        }
+        let end = offset + format!("data: {source}\n\n").len();
+        frames.push(
+            NativeSseFrameObservation::new(
+                &wire[offset..end],
+                Some(source),
+                sites,
+                fixture.budget.clone(),
+            )
+            .map_err(|_| "ch2_core_snapshot_frame_rejected")?,
+        );
+        offset = end;
+    }
+    frames.push(
+        NativeSseFrameObservation::new(
+            &wire[offset..],
+            None,
+            TextSites::new(fixture.budget.clone())?,
+            fixture.budget.clone(),
+        )
+        .map_err(|_| "ch2_core_snapshot_done_rejected")?,
+    );
+    let refs: Vec<_> = frames.iter().collect();
+    let observation = NativeSseObservation::new(
+        wire.as_bytes(),
+        &refs,
+        chat(),
+        &fixture.lease,
+        &fixture.binding,
+        fixture.budget.clone(),
+    )
+    .map_err(|_| "ch2_core_snapshot_observation_rejected")?;
+    let mut selections = Vec::new();
+    for (index, source) in sources.iter().enumerate() {
+        for choice in source["choices"]
+            .as_array()
+            .ok_or("ch2_core_snapshot_choices_missing")?
+        {
+            selections.push(NativeSseSnapshotSelection::chat_choice(index, choice));
+        }
+    }
+    match selection_mode {
+        1 => {
+            selections.pop();
+        }
+        2 => selections.swap(0, 1),
+        3 => selections.push(NativeSseSnapshotSelection::chat_choice(
+            0,
+            &sources[0]["choices"][0],
+        )),
+        4 => {
+            selections[0] =
+                NativeSseSnapshotSelection::chat_choice(0, &sources[0]["choices"][0]["delta"])
+        }
+        _ => {}
+    }
+    let streams = [
+        NativeSseTextStream::new(&arg_nodes),
+        NativeSseTextStream::new(&text_nodes),
+    ];
+    let occupied = fixture.budget.used();
+    let staged = stage_native_sse_with_lifecycle(
+        &observation,
+        &selections,
+        &streams,
+        &fixture.lease,
+        &fixture.binding,
+        fixture.budget.clone(),
+        ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+        &fixture.attempt,
+    );
+    if selection_mode != 0 {
+        assert!(
+            staged.is_err(),
+            "ch2_core_snapshot_inexact_or_incomplete_composition_accepted"
+        );
+        drop(staged);
+        drop(proof);
+        assert!(
+            fixture.budget.used() == occupied && fixture.counts()? == (0, 0, 0),
+            "ch2_core_snapshot_invalid_selection_not_atomic"
+        );
+    } else {
+        let staged = staged.map_err(|_| "ch2_core_snapshot_stage_rejected")?;
+        let call = json!({"id":"synthetic-call","type":"function","function":{"name":"synthetic-tool","arguments":serde_json::to_string(&json!({"value":TEXT,"types":[true,null,7],"nested":{"again":TEXT}}))?}});
+        let expected = json!([{"role":"assistant","tool_calls":[call]},call,{"role":"assistant","content":TEXT}]);
+        assert!(
+            staged.delivered() == &expected,
+            "ch2_core_snapshot_full_ordered_messages_and_calls_missing"
+        );
+        assert!(
+            staged.restored_occurrences() == 3 && staged.output_tokens().len() == 1,
+            "ch2_core_snapshot_single_ledger_lost"
+        );
+        assert!(
+            fixture
+                .lease
+                .verify_native_delivered(&fixture.binding, chat(), &expected)
+                .is_err(),
+            "ch2_core_snapshot_stage_authorized_history"
+        );
+        let finalized =
+            finalize_native_sse(staged, &fixture.lease, proof, &fixture.attempt, 1024 * 1024)
+                .map_err(|_| "ch2_core_snapshot_finalization_rejected")?;
+        let mut delivery = finalized.into_delivery_stream();
+        for _ in 0..4 {
+            let chunk = futures::executor::block_on(delivery.next())
+                .ok_or("ch2_core_snapshot_frame_missing")??;
+            drop(chunk);
+            assert!(
+                fixture.counts()? == (0, 1, 1),
+                "ch2_core_snapshot_published_before_continuation"
+            );
+        }
+        if cancel {
+            drop(delivery);
+            assert!(
+                fixture.counts()? == (0, 0, 0)
+                    && fixture
+                        .lease
+                        .verify_native_delivered(&fixture.binding, chat(), &expected)
+                        .is_err(),
+                "ch2_core_snapshot_cancel_published"
+            );
+        } else {
+            assert!(
+                futures::executor::block_on(delivery.next()).is_none(),
+                "ch2_core_snapshot_extra_frame"
+            );
+            drop(delivery);
+            assert!(
+                fixture
+                    .lease
+                    .verify_native_delivered(&fixture.binding, chat(), &expected)
+                    .is_ok(),
+                "ch2_core_snapshot_full_history_missing"
+            );
+            let mut reordered = expected.clone();
+            reordered
+                .as_array_mut()
+                .ok_or("ch2_core_snapshot_expected_missing")?
+                .swap(0, 2);
+            assert!(
+                fixture
+                    .lease
+                    .verify_native_delivered(&fixture.binding, chat(), &reordered)
+                    .is_err(),
+                "ch2_core_snapshot_reordered_history_authorized"
+            );
+        }
+    }
+    drop(observation);
+    drop(frames);
+    assert!(
+        fixture.budget.used() == baseline,
+        "ch2_core_snapshot_charge_retained"
+    );
+    Ok(())
+}
+
+#[test]
+fn ch2_core_snapshot_composes_complete_ordered_assistants_and_calls() -> TestResult {
+    ch2_core_snapshot_run(0, false)
+}
+
+#[test]
+fn ch2_core_snapshot_rejects_missing_reordered_duplicate_or_nonchoice_nodes() -> TestResult {
+    for mode in 1..=4 {
+        ch2_core_snapshot_run(mode, false)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_snapshot_cancel_after_done_never_publishes_full_history() -> TestResult {
+    ch2_core_snapshot_run(0, true)
+}
+
+#[test]
+fn ch2_core_carrier_no_data_frames_preserve_bytes_through_sealed_delivery() -> TestResult {
+    use super::{
+        native_test_support::{chat, NativeFixture, TEXT},
+        response_restoration::finalize_native_sse,
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{
+            stage_native_sse_with_lifecycle, NativeSseFrameObservation, NativeSseObservation,
+            NativeSseSnapshotSelection, NativeSseTextStream,
+        },
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    use futures::StreamExt;
+    let fixture = NativeFixture::new(true)?;
+    let baseline = fixture.budget.used();
+    let source = json!({"id":"synthetic-ch2-keepalive","choices":[{"index":7,"delta":{"role":"assistant","content":fixture.reference},"finish_reason":"stop"}]});
+    let raw = [
+        "\n\n".to_owned(),
+        ": synthetic keepalive\r\n\r\n".to_owned(),
+        "event: ping\nid: synthetic-no-authority\nretry: 7\n\n".to_owned(),
+        format!("data: {source}\n\n"),
+        "data: [DONE]\n\n".to_owned(),
+        ": synthetic tail\n\n".to_owned(),
+    ];
+    let wire = raw.concat();
+    let proof = ch2_core_sse_proof(&fixture, &wire)
+        .map_err(|_| "ch2_core_keepalive_http_proof_rejected")?;
+    let mut frames = Vec::new();
+    let mut offset = 0;
+    for (index, raw) in raw.iter().enumerate() {
+        let mut sites = TextSites::new(fixture.budget.clone())?;
+        if index == 3 {
+            sites.observe(
+                &source["choices"][0]["delta"]["content"],
+                SourceClass::HistoricalText,
+                EditConstraint::Editable,
+            )?;
+        }
+        let frame = NativeSseFrameObservation::new(
+            &wire[offset..offset + raw.len()],
+            if index == 3 { Some(&source) } else { None },
+            sites,
+            fixture.budget.clone(),
+        );
+        assert!(
+            frame.is_ok(),
+            "ch2_core_native_no_data_observation_rejected"
+        );
+        frames.push(frame.map_err(|_| "ch2_core_keepalive_frame_rejected")?);
+        offset += raw.len();
+    }
+    let refs: Vec<_> = frames.iter().collect();
+    let observed = NativeSseObservation::new(
+        wire.as_bytes(),
+        &refs,
+        chat(),
+        &fixture.lease,
+        &fixture.binding,
+        fixture.budget.clone(),
+    )
+    .map_err(|_| "ch2_core_keepalive_observation_rejected")?;
+    let nodes = [&source["choices"][0]["delta"]["content"]];
+    let staged = stage_native_sse_with_lifecycle(
+        &observed,
+        &[NativeSseSnapshotSelection::chat_choice(
+            3,
+            &source["choices"][0],
+        )],
+        &[NativeSseTextStream::new(&nodes)],
+        &fixture.lease,
+        &fixture.binding,
+        fixture.budget.clone(),
+        ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+        &fixture.attempt,
+    )
+    .map_err(|_| "ch2_core_keepalive_stage_rejected")?;
+    let finalized =
+        finalize_native_sse(staged, &fixture.lease, proof, &fixture.attempt, 1024 * 1024)
+            .map_err(|_| "ch2_core_keepalive_finalization_rejected")?;
+    let mut delivery = finalized.into_delivery_stream();
+    for (index, original) in raw.iter().enumerate() {
+        let chunk = futures::executor::block_on(delivery.next())
+            .ok_or("ch2_core_keepalive_missing_frame")??;
+        if index != 3 {
+            assert!(
+                chunk.as_ref() == original.as_bytes(),
+                "ch2_core_keepalive_wire_changed"
+            );
+        } else {
+            let encoded = std::str::from_utf8(&chunk)?
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .ok_or("ch2_core_keepalive_data_missing")?;
+            let actual: Value = serde_json::from_str(encoded)?;
+            assert!(
+                actual["choices"][0]["delta"]["content"].as_str() == Some(TEXT),
+                "ch2_core_keepalive_text_not_restored"
+            );
+        }
+        assert!(
+            fixture.counts()? == (0, 1, 1),
+            "ch2_core_keepalive_early_publication"
+        );
+    }
+    assert!(
+        futures::executor::block_on(delivery.next()).is_none(),
+        "ch2_core_keepalive_extra_frame"
+    );
+    drop(delivery);
+    assert!(
+        fixture
+            .lease
+            .verify_native_delivered(
+                &fixture.binding,
+                chat(),
+                &json!([{"role":"assistant","content":TEXT}])
+            )
+            .is_ok(),
+        "ch2_core_keepalive_history_missing"
+    );
+    drop(observed);
+    drop(frames);
+    assert!(
+        fixture.budget.used() == baseline,
+        "ch2_core_keepalive_charge_retained"
+    );
+    Ok(())
+}
+
+#[test]
+fn ch2_core_carrier_keepalive_never_supplies_completion_or_source_authority() -> TestResult {
+    use super::{
+        native_test_support::NativeFixture, restoration_contract::TextSites,
+        restoration_core::NativeSseFrameObservation,
+    };
+    let fixture = NativeFixture::new(false)?;
+    for wire in [
+        ": synthetic\n\n",
+        "event: ping\nid: synthetic\n\ndata: [DONE]\n\n",
+        "data:\n\n",
+    ] {
+        assert!(
+            ch2_core_sse_proof(&fixture, wire).is_err(),
+            "ch2_core_keepalive_fabricated_completion"
+        );
+    }
+    let foreign = json!({"choices":[]});
+    assert!(
+        NativeSseFrameObservation::new(
+            ": synthetic\n\n",
+            Some(&foreign),
+            TextSites::new(fixture.budget.clone())?,
+            fixture.budget.clone()
+        )
+        .is_err(),
+        "ch2_core_no_data_foreign_source_accepted"
+    );
+    assert!(
+        fixture.counts()? == (0, 0, 0),
+        "ch2_core_keepalive_control_published"
+    );
+    Ok(())
+}
+
+#[test]
+fn ch2_core_carrier_native_json_extensions_remain_opaque_and_conversion_closed() -> TestResult {
+    use super::{
+        completion_json::{JsonCompletion, JsonCompletionProtocol},
+        native_test_support::NativeFixture,
+    };
+    let fixture = NativeFixture::new(false)?;
+    for case in 0..4 {
+        let mut source = fixture.json_source();
+        match case {
+            0 => {
+                source["choices"][0]["message"]["synthetic_extension"] =
+                    json!({"text":"opaque","types":[true,null,7]})
+            }
+            1 => {
+                source["choices"][0]["finish_reason"] = json!("tool_calls");
+                source["choices"][0]["message"]["tool_calls"] = json!([{"id":"synthetic-call","type":"function","synthetic_extension":{"opaque":true},"function":{"name":"synthetic-tool","arguments":"{}","synthetic_extension":[1,null]}}]);
+            }
+            2 => {
+                source["choices"][0]["message"]["content"] = json!([{"type":"text","text":"Synthetic text","synthetic_extension":{"opaque":true}},{"type":"synthetic_opaque","payload":{"text":"opaque"}}])
+            }
+            _ => {
+                source["choices"][0]["message"]["reasoning_details"] =
+                    json!({"synthetic_extension":{"opaque":true}})
+            }
+        }
+        assert!(
+            ch2_core_json_proof(&fixture, &source).is_ok(),
+            "ch2_core_native_json_extension_rejected"
+        );
+        let mut conversion = JsonCompletion::new(JsonCompletionProtocol::ChatCompletions);
+        conversion.observe_raw_json(&serde_json::to_string(&source)?, &fixture.budget);
+        assert!(
+            !conversion.permits_completion(),
+            "ch2_core_conversion_native_carrier_relaxed"
+        );
+    }
+    assert!(
+        fixture.counts()? == (0, 0, 0),
+        "ch2_core_native_extension_granted_publication"
+    );
+    Ok(())
+}
+
+#[test]
+fn ch2_core_carrier_native_sse_refusal_and_tool_extensions_keep_strict_types() -> TestResult {
+    use super::{
+        completion_evidence::{CompletionObservation, SseCompletion},
+        native_test_support::{chat, NativeFixture},
+    };
+    let fixture = NativeFixture::new(false)?;
+    for tools in [false, true] {
+        let mut chunks = ch2_core_sse_chunks(tools);
+        if tools {
+            chunks[0]["choices"][0]["delta"]["tool_calls"][0]["synthetic_extension"] =
+                json!({"opaque":true});
+            chunks[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["synthetic_extension"] =
+                json!([true, null]);
+        } else {
+            chunks[0]["choices"][0]["delta"]["refusal"] = json!("Synthetic refusal");
+            chunks[0]["choices"][0]["delta"]["synthetic_extension"] = json!({"opaque":true});
+        }
+        let wire = ch2_core_sse_wire(&chunks, true);
+        let proof = ch2_core_sse_proof(&fixture, &wire);
+        assert!(
+            proof.is_ok(),
+            "ch2_core_native_sse_refusal_or_extension_rejected"
+        );
+        assert!(
+            proof
+                .map_err(|_| "ch2_core_carrier_sse_proof_rejected")?
+                .validate_restored(
+                    wire.as_bytes(),
+                    &fixture.binding,
+                    &fixture.attempt,
+                    chat(),
+                    std::io::Cursor::new(wire.as_bytes()),
+                    &fixture.budget
+                )
+                .is_ok(),
+            "ch2_core_carrier_final_strict_check_rejected"
+        );
+        let mut invalid = chunks.clone();
+        if tools {
+            invalid[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] = json!(7);
+        } else {
+            invalid[0]["choices"][0]["delta"]["refusal"] = json!({"text":"not-a-string"});
+        }
+        assert!(
+            ch2_core_sse_proof(&fixture, &ch2_core_sse_wire(&invalid, true)).is_err(),
+            "ch2_core_native_carrier_type_weakened"
+        );
+        let mut conversion = SseCompletion::chat();
+        for chunk in &chunks {
+            conversion.observe(
+                &CompletionObservation::RawFrame(&format!("data: {chunk}\n\n")),
+                &fixture.budget,
+            );
+            conversion.observe(&CompletionObservation::ChatChunk(chunk), &fixture.budget);
+        }
+        conversion.observe(
+            &CompletionObservation::RawFrame("data: [DONE]\n\n"),
+            &fixture.budget,
+        );
+        conversion.observe(&CompletionObservation::ChatDone, &fixture.budget);
+        assert!(
+            !conversion.permits_completion(),
+            "ch2_core_conversion_sse_carrier_relaxed"
+        );
+    }
+    Ok(())
+}
+
+// Post-carrier characterization: an edited native envelope must retain opaque siblings.
+// This is not a behavioral RED and does not establish explicit reasoning-policy selection.
+#[test]
+fn ch2_core_carrier_json_refusal_edits_preserve_extensions_and_sealed_history() -> TestResult {
+    use super::{
+        native_test_support::{chat, record_delivery, NativeFixture, MAX_ENTITY, TEXT},
+        response_restoration::finalize_native_json,
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{stage_native_json_with_lifecycle, NativeJsonObservation},
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    use bytes::Bytes;
+    for mapped in [false, true] {
+        let fixture = NativeFixture::new(mapped)?;
+        let baseline = fixture.budget.used();
+        let source = json!({"id":"synthetic-carrier-edits","choices":[{"index":5,"message":{
+            "role":"assistant","refusal":fixture.reference,
+            "content":[{"type":"text","text":fixture.reference,"synthetic_extension":{"text":fixture.reference}},
+                {"type":"refusal","refusal":fixture.reference,"synthetic_extension":[true,null,7]},
+                {"type":"synthetic_opaque","payload":{"text":fixture.reference}}],
+            "reasoning_details":{"synthetic_opaque":fixture.reference},
+            "synthetic_extension":{"text":fixture.reference,"types":[true,null,7]}
+        },"finish_reason":"stop"}],"synthetic_extension":{"text":fixture.reference}});
+        let original = source.clone();
+        let wire = Bytes::from(serde_json::to_vec_pretty(&source)?);
+        let proof = ch2_core_json_proof(&fixture, &source)
+            .map_err(|_| "ch2_core_carrier_edits_proof_rejected")?;
+        let mut sites = TextSites::new(fixture.budget.clone())?;
+        for node in [
+            &source["choices"][0]["message"]["refusal"],
+            &source["choices"][0]["message"]["content"][0]["text"],
+            &source["choices"][0]["message"]["content"][1]["refusal"],
+        ] {
+            sites.observe(node, SourceClass::HistoricalText, EditConstraint::Editable)?;
+        }
+        let observed = NativeJsonObservation::new(
+            &source,
+            chat(),
+            sites,
+            &[&source["choices"][0]["message"]],
+            fixture.budget.clone(),
+        )
+        .map_err(|_| "ch2_core_carrier_edits_observation_rejected")?;
+        let staged = stage_native_json_with_lifecycle(
+            &observed,
+            &fixture.lease,
+            &fixture.binding,
+            ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+            &fixture.attempt,
+        )
+        .map_err(|_| "ch2_core_carrier_edits_staging_rejected")?;
+        assert!(
+            staged.restored_occurrences() == 3 * usize::from(mapped)
+                && staged.output_tokens().len() == usize::from(mapped),
+            "ch2_core_carrier_edits_ledger_invalid"
+        );
+        assert!(
+            fixture.counts()? == (0, 0, 0),
+            "ch2_core_carrier_edits_staging_published"
+        );
+        let finalized = finalize_native_json(
+            staged,
+            &fixture.lease,
+            proof,
+            &fixture.attempt,
+            wire.clone(),
+            MAX_ENTITY,
+        )
+        .map_err(|_| "ch2_core_carrier_edits_finalization_rejected")?;
+        let delivered =
+            futures::executor::block_on(record_delivery(finalized.into_delivery_stream()))?;
+        let actual: Value = serde_json::from_slice(&delivered[0])?;
+        let mut expected = source.clone();
+        if mapped {
+            expected["choices"][0]["message"]["refusal"] = json!(TEXT);
+            expected["choices"][0]["message"]["content"][0]["text"] = json!(TEXT);
+            expected["choices"][0]["message"]["content"][1]["refusal"] = json!(TEXT);
+        } else {
+            assert!(
+                delivered[0] == wire,
+                "ch2_core_carrier_zero_map_wire_changed"
+            );
+        }
+        assert!(
+            actual == expected,
+            "ch2_core_carrier_opaque_extension_or_semantics_changed"
+        );
+        assert!(source == original, "ch2_core_carrier_original_mutated");
+        assert!(
+            fixture
+                .lease
+                .verify_native_delivered(
+                    &fixture.binding,
+                    chat(),
+                    &json!([actual["choices"][0]["message"]])
+                )
+                .is_ok(),
+            "ch2_core_carrier_edits_history_missing"
+        );
+        let mut edited_history = json!([actual["choices"][0]["message"]]);
+        edited_history[0]["synthetic_extension"]["text"] = json!("synthetic-changed");
+        assert!(
+            fixture
+                .lease
+                .verify_native_delivered(&fixture.binding, chat(), &edited_history)
+                .is_err(),
+            "ch2_core_carrier_opaque_history_edit_accepted"
+        );
+        drop(delivered);
+        drop(observed);
+        assert!(
+            fixture.budget.used() == baseline,
+            "ch2_core_carrier_edits_charge_retained"
+        );
+    }
+    Ok(())
+}
+
+// Flux F1: strict SSE nulls do not erase an established function-call identity.
+fn ch2_core_snapshot_null_identity_run(field: usize) -> TestResult {
+    use super::{
+        native_test_support::{chat, NativeFixture, TEXT},
+        response_restoration::finalize_native_sse,
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{
+            stage_native_sse_with_lifecycle, NativeSseFrameObservation, NativeSseObservation,
+            NativeSseSnapshotSelection, NativeSseTextStream,
+        },
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    use futures::StreamExt;
+    let fixture = NativeFixture::new(true)?;
+    let baseline = fixture.budget.used();
+    let args = ch2_core_escaped_arguments(&fixture.reference);
+    let split = args.len() / 2;
+    let mut sources = [
+        json!({"id":"synthetic-null-identity","choices":[{"index":9,"delta":{"role":"assistant","tool_calls":[{"index":5,"id":"synthetic-call","type":"function","function":{"name":"synthetic-tool","arguments":&args[..split]}}]},"finish_reason":null}]}),
+        json!({"id":"synthetic-null-identity","choices":[{"index":9,"delta":{"tool_calls":[{"index":5,"function":{"arguments":&args[split..]}}]},"finish_reason":"tool_calls"}]}),
+    ];
+    match field {
+        0 => sources[1]["choices"][0]["delta"]["tool_calls"][0]["id"] = Value::Null,
+        1 => sources[1]["choices"][0]["delta"]["tool_calls"][0]["type"] = Value::Null,
+        _ => sources[1]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] = Value::Null,
+    }
+    let wire = ch2_core_sse_wire(&sources, true);
+    let proof = ch2_core_sse_proof(&fixture, &wire)
+        .map_err(|_| "ch2_core_snapshot_null_valid_wire_rejected")?;
+    let nodes = [
+        &sources[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"],
+        &sources[1]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"],
+    ];
+    let mut frames = Vec::new();
+    let mut offset = 0;
+    for (index, source) in sources.iter().enumerate() {
+        let mut sites = TextSites::new(fixture.budget.clone())?;
+        sites.observe(
+            nodes[index],
+            SourceClass::ToolArguments,
+            EditConstraint::Editable,
+        )?;
+        let end = offset + format!("data: {source}\n\n").len();
+        frames.push(
+            NativeSseFrameObservation::new(
+                &wire[offset..end],
+                Some(source),
+                sites,
+                fixture.budget.clone(),
+            )
+            .map_err(|_| "ch2_core_snapshot_null_frame_rejected")?,
+        );
+        offset = end;
+    }
+    frames.push(
+        NativeSseFrameObservation::new(
+            &wire[offset..],
+            None,
+            TextSites::new(fixture.budget.clone())?,
+            fixture.budget.clone(),
+        )
+        .map_err(|_| "ch2_core_snapshot_null_done_rejected")?,
+    );
+    let refs: Vec<_> = frames.iter().collect();
+    let observation = NativeSseObservation::new(
+        wire.as_bytes(),
+        &refs,
+        chat(),
+        &fixture.lease,
+        &fixture.binding,
+        fixture.budget.clone(),
+    )
+    .map_err(|_| "ch2_core_snapshot_null_observation_rejected")?;
+    let selections = [
+        NativeSseSnapshotSelection::chat_choice(0, &sources[0]["choices"][0]),
+        NativeSseSnapshotSelection::chat_choice(1, &sources[1]["choices"][0]),
+    ];
+    let streams = [NativeSseTextStream::new(&nodes)];
+    let staged = stage_native_sse_with_lifecycle(
+        &observation,
+        &selections,
+        &streams,
+        &fixture.lease,
+        &fixture.binding,
+        fixture.budget.clone(),
+        ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+        &fixture.attempt,
+    )
+    .map_err(|_| "ch2_core_snapshot_null_staging_rejected")?;
+    let call = json!({"id":"synthetic-call","type":"function","function":{"name":"synthetic-tool","arguments":serde_json::to_string(&json!({"value":TEXT,"types":[true,null,7],"nested":{"again":TEXT}}))?}});
+    let expected = json!([{"role":"assistant","tool_calls":[call]},call]);
+    assert!(
+        fixture
+            .lease
+            .verify_native_delivered(&fixture.binding, chat(), &expected)
+            .is_err(),
+        "ch2_core_snapshot_null_staging_authorized_history"
+    );
+    let finalized =
+        finalize_native_sse(staged, &fixture.lease, proof, &fixture.attempt, 1024 * 1024)
+            .map_err(|_| "ch2_core_snapshot_null_finalization_rejected")?;
+    let mut delivery = finalized.into_delivery_stream();
+    for _ in 0..3 {
+        let chunk = futures::executor::block_on(delivery.next())
+            .ok_or("ch2_core_snapshot_null_frame_missing")??;
+        drop(chunk);
+        assert!(
+            fixture.counts()? == (0, 1, 1),
+            "ch2_core_snapshot_null_early_publication"
+        );
+    }
+    assert!(
+        futures::executor::block_on(delivery.next()).is_none(),
+        "ch2_core_snapshot_null_extra_frame"
+    );
+    drop(delivery);
+    assert!(
+        fixture
+            .lease
+            .verify_native_delivered(&fixture.binding, chat(), &expected)
+            .is_ok(),
+        "ch2_core_snapshot_null_identity_erased_in_published_history"
+    );
+    drop(observation);
+    drop(frames);
+    assert!(
+        fixture.budget.used() == baseline,
+        "ch2_core_snapshot_null_charge_retained"
+    );
+    Ok(())
+}
+
+#[test]
+fn ch2_core_snapshot_null_tool_id_preserves_strict_identity() -> TestResult {
+    ch2_core_snapshot_null_identity_run(0)
+}
+#[test]
+fn ch2_core_snapshot_null_tool_type_preserves_strict_identity() -> TestResult {
+    ch2_core_snapshot_null_identity_run(1)
+}
+#[test]
+fn ch2_core_snapshot_null_function_name_preserves_strict_identity() -> TestResult {
+    ch2_core_snapshot_null_identity_run(2)
+}
+
+#[test]
+fn ch2_core_snapshot_assembled_calls_require_strict_complete_structure() -> TestResult {
+    use super::{native_test_support::NativeFixture, restoration_core::compose_chat_snapshots};
+    let fixture = NativeFixture::new(false)?;
+    let baseline = fixture.budget.used();
+    for mode in 0..6 {
+        let mut choices = [
+            json!({"index":9,"delta":{"role":"assistant","tool_calls":[{"index":5,"id":"synthetic-call","type":"function","function":{"name":"synthetic-tool","arguments":"{}"}}]},"finish_reason":"tool_calls"}),
+        ];
+        match mode {
+            0 => choices[0]["delta"]["tool_calls"][0]["id"] = Value::Null,
+            1 => choices[0]["delta"]["tool_calls"][0]["type"] = Value::Null,
+            2 => choices[0]["delta"]["tool_calls"][0]["function"]["name"] = Value::Null,
+            3 => choices[0]["delta"]["tool_calls"][0]["function"]["arguments"] = json!("[]"),
+            4 => choices[0]["delta"]["tool_calls"][0]["function"]["arguments"] = json!("broken"),
+            _ => {
+                choices[0]["delta"]["tool_calls"] = json!([
+                    {"index":5,"id":"synthetic-call","type":"function","function":{"name":"synthetic-tool","arguments":"{}"}},
+                    {"index":7,"id":"synthetic-call","type":"function","function":{"name":"synthetic-other","arguments":"{}"}}
+                ])
+            }
+        }
+        let assembled = compose_chat_snapshots(&[&choices[0]], &fixture.budget);
+        assert!(
+            assembled.is_err(),
+            "ch2_core_snapshot_malformed_assembled_call_accepted"
+        );
+        drop(assembled);
+        assert!(
+            fixture.budget.used() == baseline && fixture.counts()? == (0, 0, 0),
+            "ch2_core_snapshot_malformed_assembly_not_atomic"
+        );
+    }
+    Ok(())
+}
+
+// Typed policy safety: readable reasoning must not become ordinary output restoration.
+fn ch2_core_policy_json_run(reasoning: bool) -> TestResult {
+    use super::{
+        native_test_support::{chat, record_delivery, NativeFixture, MAX_ENTITY, TEXT},
+        response_restoration::finalize_native_json,
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextPolicy, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{stage_native_json_with_lifecycle, NativeJsonObservation},
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    for mapped in [true, false] {
+        let fixture = NativeFixture::new(mapped)?;
+        let baseline = fixture.budget.used();
+        let message = if reasoning {
+            json!({"role":"assistant","reasoning_content":fixture.reference,"opaque":{"value":fixture.reference}})
+        } else {
+            json!({"role":"assistant","content":fixture.reference,"refusal":fixture.reference})
+        };
+        let source = json!({"id":"synthetic-policy-json","choices":[{"index":0,"message":message,"finish_reason":"stop"}]});
+        let before = source.clone();
+        let proof =
+            ch2_core_json_proof(&fixture, &source).map_err(|_| "policy_json_proof_rejected")?;
+        let wire = bytes::Bytes::from(serde_json::to_vec_pretty(&source)?);
+        let mut sites = TextSites::new(fixture.budget.clone())?;
+        let fields: &[&str] = if reasoning {
+            &["reasoning_content"]
+        } else {
+            &["content", "refusal"]
+        };
+        for field in fields {
+            sites.observe(
+                &source["choices"][0]["message"][field],
+                SourceClass::HistoricalText,
+                EditConstraint::Editable,
+            )?;
+        }
+        let policies: &[TextPolicy] = if reasoning {
+            &[TextPolicy::Reasoning]
+        } else {
+            &[TextPolicy::Output, TextPolicy::Refusal]
+        };
+        let observed = NativeJsonObservation::new_with_policies(
+            &source,
+            chat(),
+            sites,
+            &[&source["choices"][0]["message"]],
+            policies,
+            fixture.budget.clone(),
+        )
+        .map_err(|_| "policy_json_observation_rejected")?;
+        let staged = stage_native_json_with_lifecycle(
+            &observed,
+            &fixture.lease,
+            &fixture.binding,
+            ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+            &fixture.attempt,
+        )
+        .map_err(|_| "policy_json_stage_rejected")?;
+        let expected_restores = if reasoning {
+            0
+        } else {
+            fields.len() * usize::from(mapped)
+        };
+        assert!(
+            staged.restored_occurrences() == expected_restores
+                && staged.output_tokens().len() == usize::from(!reasoning && mapped),
+            "policy_json_reasoning_restored_or_dependencies_granted"
+        );
+        assert!(
+            fixture.counts()? == (0, 0, 0),
+            "policy_json_stage_published"
+        );
+        let finalized = finalize_native_json(
+            staged,
+            &fixture.lease,
+            proof,
+            &fixture.attempt,
+            wire.clone(),
+            MAX_ENTITY,
+        )
+        .map_err(|_| "policy_json_finalization_rejected")?;
+        let delivered =
+            futures::executor::block_on(record_delivery(finalized.into_delivery_stream()))?;
+        let actual: Value = serde_json::from_slice(&delivered[0])?;
+        for field in fields {
+            let expected = if !reasoning && mapped {
+                TEXT
+            } else {
+                &fixture.reference
+            };
+            assert!(
+                actual["choices"][0]["message"][field].as_str() == Some(expected),
+                "policy_json_delivered_text_changed"
+            );
+        }
+        assert!(
+            source == before
+                && fixture
+                    .lease
+                    .verify_native_delivered(
+                        &fixture.binding,
+                        chat(),
+                        &json!([actual["choices"][0]["message"]])
+                    )
+                    .is_ok(),
+            "policy_json_source_or_history_changed"
+        );
+        if reasoning || !mapped {
+            assert!(
+                delivered[0] == wire,
+                "policy_json_unchanged_bytes_reencoded"
+            );
+        }
+        drop(delivered);
+        drop(observed);
+        assert!(
+            fixture.budget.used() == baseline,
+            "policy_json_retained_charge"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_policy_json_reasoning_preserves_reference_without_dependencies() -> TestResult {
+    ch2_core_policy_json_run(true)
+}
+
+#[test]
+fn ch2_core_policy_json_output_and_refusal_restore_control() -> TestResult {
+    ch2_core_policy_json_run(false)
+}
+
+fn ch2_core_policy_sse_run(reasoning: bool, cancel: bool) -> TestResult {
+    use super::{
+        native_test_support::{chat, NativeFixture, MAX_ENTITY, TEXT},
+        response_restoration::finalize_native_sse,
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextPolicy, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{
+            stage_native_sse_with_lifecycle, NativeSseFrameObservation, NativeSseObservation,
+            NativeSseSnapshotSelection, NativeSseTextStream,
+        },
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    use futures::StreamExt;
+    for mapped in [true, false] {
+        let fixture = NativeFixture::new(mapped)?;
+        let baseline = fixture.budget.used();
+        let split = fixture.reference.len() / 2;
+        let field = if reasoning {
+            "reasoning_content"
+        } else {
+            "refusal"
+        };
+        let mut sources = [
+            json!({"id":"synthetic-policy-sse","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}),
+            json!({"id":"synthetic-policy-sse","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+        ];
+        sources[0]["choices"][0]["delta"][field] = json!(&fixture.reference[..split]);
+        sources[1]["choices"][0]["delta"][field] = json!(&fixture.reference[split..]);
+        let before = sources.clone();
+        let wire = ch2_core_sse_wire(&sources, true);
+        let proof = ch2_core_sse_proof(&fixture, &wire).map_err(|_| "policy_sse_proof_rejected")?;
+        let nodes = [
+            &sources[0]["choices"][0]["delta"][field],
+            &sources[1]["choices"][0]["delta"][field],
+        ];
+        let mut frames = Vec::new();
+        let mut offset = 0;
+        for (index, source) in sources.iter().enumerate() {
+            let end = offset + format!("data: {source}\n\n").len();
+            let mut sites = TextSites::new(fixture.budget.clone())?;
+            sites.observe(
+                nodes[index],
+                SourceClass::HistoricalText,
+                EditConstraint::Editable,
+            )?;
+            frames.push(
+                NativeSseFrameObservation::new(
+                    &wire[offset..end],
+                    Some(source),
+                    sites,
+                    fixture.budget.clone(),
+                )
+                .map_err(|_| "policy_sse_frame_rejected")?,
+            );
+            offset = end;
+        }
+        frames.push(
+            NativeSseFrameObservation::new(
+                &wire[offset..],
+                None,
+                TextSites::new(fixture.budget.clone())?,
+                fixture.budget.clone(),
+            )
+            .map_err(|_| "policy_sse_done_rejected")?,
+        );
+        let refs: Vec<_> = frames.iter().collect();
+        let observed = NativeSseObservation::new(
+            wire.as_bytes(),
+            &refs,
+            chat(),
+            &fixture.lease,
+            &fixture.binding,
+            fixture.budget.clone(),
+        )
+        .map_err(|_| "policy_sse_observation_rejected")?;
+        let selections = [
+            NativeSseSnapshotSelection::chat_choice(0, &sources[0]["choices"][0]),
+            NativeSseSnapshotSelection::chat_choice(1, &sources[1]["choices"][0]),
+        ];
+        let streams = [NativeSseTextStream::with_policy(
+            &nodes,
+            if reasoning {
+                TextPolicy::Reasoning
+            } else {
+                TextPolicy::Refusal
+            },
+        )];
+        let staged = stage_native_sse_with_lifecycle(
+            &observed,
+            &selections,
+            &streams,
+            &fixture.lease,
+            &fixture.binding,
+            fixture.budget.clone(),
+            ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+            &fixture.attempt,
+        )
+        .map_err(|_| "policy_sse_stage_rejected")?;
+        assert!(
+            staged.restored_occurrences() == usize::from(!reasoning && mapped)
+                && staged.output_tokens().len() == usize::from(!reasoning && mapped),
+            "policy_sse_reasoning_restored_or_dependencies_granted"
+        );
+        assert!(fixture.counts()? == (0, 0, 0), "policy_sse_stage_published");
+        let finalized =
+            finalize_native_sse(staged, &fixture.lease, proof, &fixture.attempt, MAX_ENTITY)
+                .map_err(|_| "policy_sse_finalization_rejected")?;
+        let mut delivery = finalized.into_delivery_stream();
+        let mut received = String::new();
+        for _ in 0..3 {
+            let chunk = futures::executor::block_on(delivery.next())
+                .ok_or("policy_sse_frame_missing")??;
+            received.push_str(std::str::from_utf8(&chunk)?);
+            assert!(
+                fixture.counts()? == (0, 1, 1),
+                "policy_sse_published_before_last_resume"
+            );
+        }
+        if cancel {
+            drop(delivery);
+            assert!(
+                fixture.counts()? == (0, 0, 0),
+                "policy_sse_cancel_published"
+            );
+        } else {
+            assert!(
+                futures::executor::block_on(delivery.next()).is_none(),
+                "policy_sse_extra_frame"
+            );
+            drop(delivery);
+            let expected = if !reasoning && mapped {
+                TEXT
+            } else {
+                &fixture.reference
+            };
+            let history = json!([{"role":"assistant",field:expected}]);
+            assert!(
+                fixture
+                    .lease
+                    .verify_native_delivered(&fixture.binding, chat(), &history)
+                    .is_ok(),
+                "policy_sse_delivered_history_mismatch"
+            );
+            assert!(fixture.counts()? == (1, 0, 0), "policy_sse_not_published");
+        }
+        assert!(sources == before, "policy_sse_original_mutated");
+        if reasoning || !mapped {
+            assert!(received == wire, "policy_sse_unchanged_bytes_changed");
+        }
+        drop(observed);
+        drop(frames);
+        assert!(
+            fixture.budget.used() == baseline,
+            "policy_sse_retained_charge"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_policy_sse_split_reasoning_preserves_reference_without_dependencies() -> TestResult {
+    ch2_core_policy_sse_run(true, false)
+}
+
+#[test]
+fn ch2_core_policy_sse_split_refusal_restores_control_and_cancel_refunds() -> TestResult {
+    ch2_core_policy_sse_run(false, false)?;
+    ch2_core_policy_sse_run(false, true)
+}
+
+fn ch2_core_policy_json_rejection_run(mode: usize) -> TestResult {
+    use super::{
+        native_test_support::{chat, NativeFixture},
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextPolicy, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{
+            stage_native_json, stage_native_json_with_lifecycle, NativeJsonObservation,
+        },
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    let fixture = NativeFixture::new(true)?;
+    let baseline = fixture.budget.used();
+    let source = json!({"text":ch2_core_escaped_arguments(&fixture.reference)});
+    let mut sites = TextSites::new(fixture.budget.clone())?;
+    sites.observe(
+        &source["text"],
+        if mode == 3 {
+            SourceClass::ToolArguments
+        } else {
+            SourceClass::HistoricalText
+        },
+        EditConstraint::Editable,
+    )?;
+    let policies: &[TextPolicy] = match mode {
+        0 => &[],
+        1 => &[TextPolicy::Output, TextPolicy::Refusal],
+        2 => &[TextPolicy::ToolArguments],
+        3 => &[TextPolicy::Reasoning],
+        _ => &[TextPolicy::Refusal],
+    };
+    let observed = NativeJsonObservation::new_with_policies(
+        &source,
+        chat(),
+        sites,
+        &[&source],
+        policies,
+        fixture.budget.clone(),
+    );
+    if mode < 4 {
+        assert!(
+            observed.is_err(),
+            "policy_json_bad_cardinality_or_source_accepted"
+        );
+        drop(observed);
+    } else {
+        let observed = observed.map_err(|_| "policy_json_valid_explicit_policy_rejected")?;
+        let occupied = fixture.budget.used();
+        let staged = stage_native_json(&observed, &fixture.lease, &fixture.binding);
+        assert!(
+            staged.is_err(),
+            "policy_json_legacy_staging_ignored_explicit_policy"
+        );
+        drop(staged);
+        assert!(
+            fixture.budget.used() == occupied,
+            "policy_json_legacy_failure_retained_charge"
+        );
+        let staged = stage_native_json_with_lifecycle(
+            &observed,
+            &fixture.lease,
+            &fixture.binding,
+            ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+            &fixture.attempt,
+        );
+        assert!(
+            staged.is_ok(),
+            "policy_json_legacy_failure_poisoned_lifecycle_retry"
+        );
+        drop(staged);
+        drop(observed);
+    }
+    assert!(
+        fixture.counts()? == (0, 0, 0) && fixture.budget.used() == baseline,
+        "policy_json_rejection_published_or_retained_charge"
+    );
+    Ok(())
+}
+
+#[test]
+fn ch2_core_policy_json_missing_policy_is_rejected() -> TestResult {
+    ch2_core_policy_json_rejection_run(0)
+}
+#[test]
+fn ch2_core_policy_json_extra_policy_is_rejected() -> TestResult {
+    ch2_core_policy_json_rejection_run(1)
+}
+#[test]
+fn ch2_core_policy_json_text_cannot_claim_argument_policy() -> TestResult {
+    ch2_core_policy_json_rejection_run(2)
+}
+#[test]
+fn ch2_core_policy_json_arguments_cannot_claim_reasoning_policy() -> TestResult {
+    ch2_core_policy_json_rejection_run(3)
+}
+#[test]
+fn ch2_core_policy_json_legacy_staging_cannot_ignore_explicit_policy() -> TestResult {
+    ch2_core_policy_json_rejection_run(4)
+}
+
+fn ch2_core_policy_sse_rejection_run(mode: usize) -> TestResult {
+    use super::{
+        native_test_support::{chat, NativeFixture},
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextPolicy, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{
+            stage_native_sse_with_lifecycle, NativeSseFrameObservation, NativeSseObservation,
+            NativeSseSnapshotSelection, NativeSseTextStream,
+        },
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    // Each negative has a matching valid-carrier control differing only at its target guard.
+    for reject in [true, false] {
+        let fixture = NativeFixture::new(true)?;
+        let baseline = fixture.budget.used();
+        let arguments = mode < 2;
+        let text = if arguments {
+            ch2_core_escaped_arguments(&fixture.reference)
+        } else {
+            fixture.reference.clone()
+        };
+        let split = text.len() / 2;
+        let sources: Vec<_> = [&text[..split], &text[split..]].iter().enumerate().map(|(index, piece)| {
+            let mut delta = if arguments {
+                json!({"tool_calls":[{"index":97,"function":{"arguments":piece}}]})
+            } else { json!({"content":piece}) };
+            if index == 0 {
+                delta["role"] = json!("assistant");
+                if arguments {
+                    delta["tool_calls"][0]["id"] = json!("synthetic-policy-call");
+                    delta["tool_calls"][0]["type"] = json!("function");
+                    delta["tool_calls"][0]["function"]["name"] = json!("synthetic-tool");
+                }
+            }
+            json!({"id":"synthetic-policy","choices":[{"index":9,"delta":delta,
+                "finish_reason":if index == 1 {Some(if arguments {"tool_calls"} else {"stop"})} else {None}}]})
+        }).collect();
+        let wire = ch2_core_sse_wire(&sources, true);
+        let nodes: Vec<_> = sources
+            .iter()
+            .map(|source| {
+                if arguments {
+                    &source["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
+                } else {
+                    &source["choices"][0]["delta"]["content"]
+                }
+            })
+            .collect();
+        let mut frames = Vec::new();
+        let mut offset = 0;
+        for (index, source) in sources.iter().enumerate() {
+            let end = offset + format!("data: {source}\n\n").len();
+            let mut sites = TextSites::new(fixture.budget.clone())?;
+            let classification = if arguments {
+                SourceClass::ToolArguments
+            } else if reject && mode == 3 && index == 1 {
+                SourceClass::CurrentInput
+            } else {
+                SourceClass::HistoricalText
+            };
+            sites.observe(
+                nodes[index],
+                classification,
+                if reject && mode == 4 {
+                    EditConstraint::Immutable
+                } else {
+                    EditConstraint::Editable
+                },
+            )?;
+            frames.push(
+                NativeSseFrameObservation::new(
+                    &wire[offset..end],
+                    Some(source),
+                    sites,
+                    fixture.budget.clone(),
+                )
+                .map_err(|_| "policy_sse_rejection_frame_rejected")?,
+            );
+            offset = end;
+        }
+        frames.push(
+            NativeSseFrameObservation::new(
+                &wire[offset..],
+                None,
+                TextSites::new(fixture.budget.clone())?,
+                fixture.budget.clone(),
+            )
+            .map_err(|_| "policy_sse_rejection_done_rejected")?,
+        );
+        let refs: Vec<_> = frames.iter().collect();
+        let observed = NativeSseObservation::new(
+            wire.as_bytes(),
+            &refs,
+            chat(),
+            &fixture.lease,
+            &fixture.binding,
+            fixture.budget.clone(),
+        )
+        .map_err(|_| "policy_sse_rejection_observation_rejected")?;
+        let selections = [
+            NativeSseSnapshotSelection::chat_choice(0, &sources[0]["choices"][0]),
+            NativeSseSnapshotSelection::chat_choice(1, &sources[1]["choices"][0]),
+        ];
+        let policy = if reject {
+            match mode {
+                0 => TextPolicy::Refusal,
+                1 => TextPolicy::Reasoning,
+                2 => TextPolicy::ToolArguments,
+                _ => TextPolicy::Output,
+            }
+        } else if arguments {
+            TextPolicy::ToolArguments
+        } else {
+            TextPolicy::Output
+        };
+        let streams = [NativeSseTextStream::with_policy(&nodes, policy)];
+        let occupied = fixture.budget.used();
+        let staged = stage_native_sse_with_lifecycle(
+            &observed,
+            &selections,
+            &streams,
+            &fixture.lease,
+            &fixture.binding,
+            fixture.budget.clone(),
+            ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+            &fixture.attempt,
+        );
+        if reject {
+            assert!(
+                staged.is_err(),
+                "policy_sse_mismatched_or_immutable_stream_accepted"
+            );
+        } else {
+            let staged = staged
+                .as_ref()
+                .map_err(|_| "policy_sse_valid_carrier_control_rejected")?;
+            assert!(
+                staged.restored_occurrences() == if arguments { 2 } else { 1 }
+                    && staged.output_tokens().len() == 1,
+                "policy_sse_valid_carrier_control_not_restored"
+            );
+        }
+        drop(staged);
+        assert!(
+            fixture.budget.used() == occupied && fixture.counts()? == (0, 0, 0),
+            "policy_sse_failure_retained_charge_or_published"
+        );
+        drop(observed);
+        drop(frames);
+        assert!(
+            fixture.budget.used() == baseline,
+            "policy_sse_rejection_retained_charge"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_policy_sse_arguments_cannot_claim_refusal_policy() -> TestResult {
+    ch2_core_policy_sse_rejection_run(0)
+}
+#[test]
+fn ch2_core_policy_sse_arguments_cannot_claim_reasoning_policy() -> TestResult {
+    ch2_core_policy_sse_rejection_run(1)
+}
+#[test]
+fn ch2_core_policy_sse_text_cannot_claim_argument_policy() -> TestResult {
+    ch2_core_policy_sse_rejection_run(2)
+}
+#[test]
+fn ch2_core_policy_sse_mixed_source_and_immutable_streams_remain_rejected() -> TestResult {
+    ch2_core_policy_sse_rejection_run(3)?;
+    ch2_core_policy_sse_rejection_run(4)
+}
+
+#[test]
+fn ch2_core_policy_json_mixed_policies_share_ledger_and_metadata_refunds() -> TestResult {
+    use super::{
+        native_test_support::{chat, NativeFixture, TEXT},
+        payload_metadata::test_support::{self, Action, Kind, Phase},
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextPolicy, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{stage_native_json_with_lifecycle, NativeJsonObservation},
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    let fixture = NativeFixture::new(true)?;
+    let baseline = fixture.budget.used();
+    let source = json!({"content":fixture.reference,"refusal":fixture.reference,"reasoning":fixture.reference,"arguments":ch2_core_escaped_arguments(&fixture.reference)});
+    let policies = [
+        TextPolicy::Output,
+        TextPolicy::Refusal,
+        TextPolicy::Reasoning,
+        TextPolicy::ToolArguments,
+    ];
+    // The policy vector is a real charged owner; exercise both sides of allocation.
+    for phase in [
+        None,
+        Some(Phase::BeforeAllocation),
+        Some(Phase::AfterAllocation),
+    ] {
+        let mut sites = TextSites::new(fixture.budget.clone())?;
+        for field in ["content", "refusal", "reasoning", "arguments"] {
+            sites.observe(
+                &source[field],
+                if field == "arguments" {
+                    SourceClass::ToolArguments
+                } else {
+                    SourceClass::HistoricalText
+                },
+                if field == "reasoning" {
+                    EditConstraint::Immutable
+                } else {
+                    EditConstraint::Editable
+                },
+            )?;
+        }
+        let reached = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed_fault = reached.clone();
+        let hook = test_support::install(move |event| {
+            if phase == Some(event.phase)
+                && event.kind == Kind::Vector
+                && event.bytes == 4 * std::mem::size_of::<TextPolicy>()
+            {
+                observed_fault.set(true);
+                Action::Fail
+            } else {
+                Action::Continue
+            }
+        });
+        let observed = NativeJsonObservation::new_with_policies(
+            &source,
+            chat(),
+            sites,
+            &[&source],
+            &policies,
+            fixture.budget.clone(),
+        );
+        drop(hook);
+        if phase.is_some() {
+            assert!(
+                reached.get() && observed.is_err(),
+                "policy_json_metadata_fault_not_reached"
+            );
+            drop(observed);
+        } else {
+            let observed = observed.map_err(|_| "policy_json_mixed_observation_rejected")?;
+            let staged = stage_native_json_with_lifecycle(
+                &observed,
+                &fixture.lease,
+                &fixture.binding,
+                ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+                &fixture.attempt,
+            )
+            .map_err(|_| "policy_json_mixed_stage_rejected")?;
+            assert!(
+                staged.restored_occurrences() == 4 && staged.output_tokens().len() == 1,
+                "policy_json_mixed_ledger_not_shared"
+            );
+            assert!(
+                staged.as_value()["content"] == json!(TEXT)
+                    && staged.as_value()["refusal"] == json!(TEXT)
+                    && staged.as_value()["reasoning"] == source["reasoning"],
+                "policy_json_mixed_policy_erased"
+            );
+            let decoded: Value = serde_json::from_str(
+                staged.as_value()["arguments"]
+                    .as_str()
+                    .ok_or("policy_json_mixed_arguments_missing")?,
+            )?;
+            assert!(
+                decoded["value"] == json!(TEXT) && decoded["nested"]["again"] == json!(TEXT),
+                "policy_json_mixed_arguments_not_decoded"
+            );
+            drop(staged);
+            drop(observed);
+        }
+        assert!(
+            fixture.budget.used() == baseline && fixture.counts()? == (0, 0, 0),
+            "policy_json_mixed_or_fault_retained_authority"
+        );
+    }
+    Ok(())
+}
+
+// Opaque snapshot fixtures contain synthetic values only; diagnostics use fixed labels.
+fn ch2_core_opaque_sources(target: usize, values: &[Option<Value>]) -> Vec<Value> {
+    values
+        .iter()
+        .enumerate()
+        .map(|(position, value)| {
+            let mut delta = json!({"content":if position == 0 {"A"} else {"B"}});
+            if matches!(target, 1 | 2) {
+                delta["tool_calls"] = json!([{"index":5,"id":"synthetic-opaque-call","type":"function","function":{"name":"synthetic-tool","arguments":if position == 0 {"{}"} else {""}}}]);
+            }
+            if let Some(value) = value {
+                match target {
+                    1 => delta["tool_calls"][0]["extension"] = value.clone(),
+                    2 => delta["tool_calls"][0]["function"]["extension"] = value.clone(),
+                    3 => delta["reasoning"] = value.clone(),
+                    _ => delta["extension"] = value.clone(),
+                }
+            }
+            json!({"id":"synthetic-opaque-response","choices":[{"index":7,"delta":delta,"finish_reason":if position + 1 == values.len() {if matches!(target,1|2) {Some("tool_calls")} else {Some("stop")}} else {None}}]})
+        })
+        .collect()
+}
+
+fn ch2_core_opaque_expected(target: usize, value: &Value, content: &str) -> Value {
+    let mut message = json!({"role":"assistant","content":content});
+    if matches!(target, 1 | 2) {
+        let mut call = json!({"id":"synthetic-opaque-call","type":"function","function":{"name":"synthetic-tool","arguments":"{}"}});
+        if target == 1 {
+            call["extension"] = value.clone();
+        } else {
+            call["function"]["extension"] = value.clone();
+        }
+        message["tool_calls"] = json!([call]);
+        json!([message, call])
+    } else {
+        message[if target == 3 {
+            "reasoning"
+        } else {
+            "extension"
+        }] = value.clone();
+        json!([message])
+    }
+}
+
+fn ch2_core_opaque_stage_run(
+    fixture: &super::native_test_support::NativeFixture,
+    sources: &[Value],
+    expected: Option<&Value>,
+    cancellation: usize,
+) -> TestResult {
+    use super::{
+        native_test_support::chat,
+        response_restoration::{finalize_native_sse, serialize_json_with_budget},
+        restoration_contract::{ProtocolPair, TextSites, UpstreamProtocol},
+        restoration_core::{
+            stage_native_sse_with_lifecycle, NativeSseFrameObservation, NativeSseObservation,
+            NativeSseSnapshotSelection,
+        },
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    use futures::StreamExt;
+    let baseline = fixture.budget.used();
+    let wire = ch2_core_sse_wire(sources, true);
+    let proof =
+        ch2_core_sse_proof(fixture, &wire).map_err(|_| "opaque_original_http_proof_rejected")?;
+    let mut frames = Vec::new();
+    let mut offset = 0;
+    for source in sources {
+        let end = offset + format!("data: {source}\n\n").len();
+        frames.push(
+            NativeSseFrameObservation::new(
+                &wire[offset..end],
+                Some(source),
+                TextSites::new(fixture.budget.clone())?,
+                fixture.budget.clone(),
+            )
+            .map_err(|_| "opaque_frame_rejected")?,
+        );
+        offset = end;
+    }
+    frames.push(
+        NativeSseFrameObservation::new(
+            &wire[offset..],
+            None,
+            TextSites::new(fixture.budget.clone())?,
+            fixture.budget.clone(),
+        )
+        .map_err(|_| "opaque_done_frame_rejected")?,
+    );
+    let refs: Vec<_> = frames.iter().collect();
+    let observed = NativeSseObservation::new(
+        wire.as_bytes(),
+        &refs,
+        chat(),
+        &fixture.lease,
+        &fixture.binding,
+        fixture.budget.clone(),
+    )
+    .map_err(|_| "opaque_observation_rejected")?;
+    let mut selections = Vec::new();
+    for (frame, source) in sources.iter().enumerate() {
+        for choice in source["choices"]
+            .as_array()
+            .ok_or("opaque_choices_missing")?
+        {
+            selections.push(NativeSseSnapshotSelection::chat_choice(frame, choice));
+        }
+    }
+    let occupied = fixture.budget.used();
+    let staged = stage_native_sse_with_lifecycle(
+        &observed,
+        &selections,
+        &[],
+        &fixture.lease,
+        &fixture.binding,
+        fixture.budget.clone(),
+        ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+        &fixture.attempt,
+    );
+    if let Some(expected) = expected {
+        let staged = staged.map_err(|_| "opaque_supported_stage_rejected")?;
+        assert!(
+            staged.delivered() == expected,
+            "opaque_independent_history_mismatch"
+        );
+        let actual = serialize_json_with_budget(staged.delivered(), &fixture.budget, 1024 * 1024)
+            .map_err(|_| "opaque_actual_encoding_rejected")?;
+        let wanted = serialize_json_with_budget(expected, &fixture.budget, 1024 * 1024)
+            .map_err(|_| "opaque_expected_encoding_rejected")?;
+        assert!(
+            actual.as_slice() == wanted.as_slice(),
+            "opaque_first_value_or_history_order_changed"
+        );
+        drop((actual, wanted));
+        assert!(
+            staged.restored_occurrences() == 0 && staged.output_tokens().is_empty(),
+            "opaque_granted_token_dependency"
+        );
+        assert!(
+            fixture.counts()? == (0, 0, 0),
+            "opaque_stage_published_history"
+        );
+        let finalized =
+            finalize_native_sse(staged, &fixture.lease, proof, &fixture.attempt, 1024 * 1024)
+                .map_err(|_| "opaque_finalization_rejected")?;
+        let mut delivery = finalized.into_delivery_stream();
+        let mut received = Vec::new();
+        if cancellation != 1 {
+            for _ in 0..frames.len() {
+                let chunk = futures::executor::block_on(delivery.next())
+                    .ok_or("opaque_frame_missing")??;
+                received.extend_from_slice(chunk.as_ref());
+                assert!(
+                    fixture.counts()? == (0, 1, 1),
+                    "opaque_published_before_last_continuation"
+                );
+            }
+            assert!(received == wire.as_bytes(), "opaque_original_wire_changed");
+        }
+        if cancellation == 0 {
+            assert!(
+                futures::executor::block_on(delivery.next()).is_none(),
+                "opaque_extra_frame"
+            );
+            assert!(
+                fixture
+                    .lease
+                    .verify_native_delivered(&fixture.binding, chat(), expected)
+                    .is_ok(),
+                "opaque_delivered_history_not_authorized"
+            );
+        }
+        drop(delivery);
+        if cancellation != 0 {
+            assert!(
+                fixture.counts()? == (0, 0, 0)
+                    && fixture
+                        .lease
+                        .verify_native_delivered(&fixture.binding, chat(), expected)
+                        .is_err(),
+                "opaque_cancel_published_history"
+            );
+        }
+    } else {
+        assert!(staged.is_err(), "opaque_conflicting_snapshot_accepted");
+        drop(staged);
+        drop(proof);
+        assert!(
+            fixture.budget.used() == occupied && fixture.counts()? == (0, 0, 0),
+            "opaque_conflict_not_atomic"
+        );
+    }
+    drop(observed);
+    drop(frames);
+    assert!(
+        fixture.budget.used() == baseline,
+        "opaque_snapshot_charge_retained"
+    );
+    Ok(())
+}
+
+fn ch2_core_opaque_conflict_run(target: usize, case: usize) -> TestResult {
+    use super::native_test_support::NativeFixture;
+    let fixture = NativeFixture::new(true)?;
+    let (left, right) = match case {
+        0 => (json!({"nested":{"value":1}}), json!({"nested":{"value":2}})),
+        1 => (json!([1, 2]), json!([2, 1])),
+        2 => (Value::Null, json!({"value":1})),
+        3 => (json!({"value":1}), Value::Null),
+        4 => (json!([1]), json!({"value":1})),
+        _ => (json!("synthetic-first"), json!("synthetic-second")),
+    };
+    let sources = ch2_core_opaque_sources(target, &[Some(left), Some(right)]);
+    ch2_core_opaque_stage_run(&fixture, &sources, None, 0)
+}
+
+macro_rules! ch2_opaque_conflict_test {
+    ($name:ident, $target:expr, $case:expr) => {
+        #[test]
+        fn $name() -> TestResult {
+            ch2_core_opaque_conflict_run($target, $case)
+        }
+    };
+}
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_message_object, 0, 0);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_tool_object, 1, 0);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_function_object, 2, 0);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_reasoning_object, 3, 0);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_message_array_order, 0, 1);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_tool_array_order, 1, 1);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_function_type_switch, 2, 4);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_reasoning_type_switch, 3, 4);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_message_null_value, 0, 2);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_message_value_null, 0, 3);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_tool_null_value, 1, 2);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_tool_value_null, 1, 3);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_function_null_value, 2, 2);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_function_value_null, 2, 3);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_reasoning_null_value, 3, 2);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_reasoning_value_null, 3, 3);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_message_unknown_string, 0, 5);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_tool_unknown_string, 1, 5);
+ch2_opaque_conflict_test!(ch2_core_opaque_conflict_function_unknown_string, 2, 5);
+
+#[test]
+fn ch2_core_opaque_resource_aggregate_equal_repeats_exceed_shared_work() -> TestResult {
+    use super::{payload_budget::PayloadBudget, restoration_core::compose_chat_snapshots};
+    let budget = PayloadBudget::with_limit(16 * 1024 * 1024);
+    let sources = ch2_core_opaque_sources(0, &vec![Some(json!("x".repeat(64 * 1024))); 80]);
+    let choices: Vec<_> = sources.iter().map(|s| &s["choices"][0]).collect();
+    let result = compose_chat_snapshots(&choices, &budget);
+    assert!(result.is_err(), "opaque_aggregate_work_limit_missing");
+    drop(result);
+    assert!(budget.used() == 0, "opaque_work_rejection_charge_retained");
+    Ok(())
+}
+
+#[test]
+fn ch2_core_opaque_supported_single_omitted_and_equal_values() -> TestResult {
+    use super::native_test_support::NativeFixture;
+    for target in 0..4 {
+        for value in [
+            Value::Null,
+            json!(true),
+            json!(7),
+            json!({"z":[1,null,{"a":false}],"a":"synthetic"}),
+            json!([1, 2]),
+        ] {
+            let fixture = NativeFixture::new(true)?;
+            let expected = ch2_core_opaque_expected(target, &value, "ABB");
+            let sources =
+                ch2_core_opaque_sources(target, &[Some(value.clone()), None, Some(value)]);
+            ch2_core_opaque_stage_run(&fixture, &sources, Some(&expected), 0)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_opaque_supported_reordered_object_preserves_first_order() -> TestResult {
+    use super::native_test_support::NativeFixture;
+    for target in 0..4 {
+        let fixture = NativeFixture::new(false)?;
+        let first = json!({"z":1,"a":2});
+        let second = json!({"a":2,"z":1});
+        let expected = ch2_core_opaque_expected(target, &first, "AB");
+        let sources = ch2_core_opaque_sources(target, &[Some(first), Some(second)]);
+        ch2_core_opaque_stage_run(&fixture, &sources, Some(&expected), 0)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_opaque_supported_nested_reference_is_not_inspected() -> TestResult {
+    use super::native_test_support::NativeFixture;
+    for target in 0..4 {
+        let fixture = NativeFixture::new(true)?;
+        let value = json!({"opaque":[fixture.reference]});
+        let expected = ch2_core_opaque_expected(target, &value, "AB");
+        let sources = ch2_core_opaque_sources(target, &[Some(value.clone()), Some(value)]);
+        ch2_core_opaque_stage_run(&fixture, &sources, Some(&expected), 0)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_opaque_final_wire_and_candidate_contradictions_reject() -> TestResult {
+    use super::native_test_support::{chat, NativeFixture};
+    for target in 0..4 {
+        for mode in 0..5 {
+            let fixture = NativeFixture::new(true)?;
+            let baseline = fixture.budget.used();
+            let value = json!({"opaque":[1,2]});
+            let sources =
+                ch2_core_opaque_sources(target, &[Some(value.clone()), Some(value.clone())]);
+            let original = ch2_core_sse_wire(&sources, true);
+            let proof = ch2_core_sse_proof(&fixture, &original)
+                .map_err(|_| "opaque_final_original_proof_rejected")?;
+            let mut final_sources = sources.clone();
+            let mut expected = ch2_core_opaque_expected(target, &value, "AB");
+            if mode == 1 {
+                final_sources = ch2_core_opaque_sources(
+                    target,
+                    &[Some(json!({"opaque":[2,1]})), Some(json!({"opaque":[2,1]}))],
+                );
+            } else if mode == 2 {
+                // A shared last-value-wins composer would hide this earlier contradiction.
+                final_sources = ch2_core_opaque_sources(
+                    target,
+                    &[Some(json!({"opaque":[2,1]})), Some(value.clone())],
+                );
+            } else if mode == 3 {
+                expected[0]["content"] = json!("synthetic-contradiction");
+            } else if mode == 4 {
+                if matches!(target, 1 | 2) {
+                    expected
+                        .as_array_mut()
+                        .ok_or("opaque_expected_array_missing")?
+                        .swap(0, 1);
+                } else {
+                    expected[0][if target == 3 {
+                        "reasoning"
+                    } else {
+                        "extension"
+                    }] = json!({"opaque":[2,1]});
+                }
+            }
+            let final_wire = ch2_core_sse_wire(&final_sources, true);
+            let result = proof.validate_restored_chat_snapshots(
+                original.as_bytes(),
+                &fixture.binding,
+                &fixture.attempt,
+                chat(),
+                std::io::Cursor::new(final_wire.as_bytes()),
+                &fixture.budget,
+                &expected,
+            );
+            assert!(
+                result.is_ok() == (mode == 0),
+                "opaque_final_contradiction_or_control_wrong"
+            );
+            assert!(
+                fixture.counts()? == (0, 0, 0) && fixture.budget.used() == baseline,
+                "opaque_final_check_retained_or_published"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_opaque_delivery_unpolled_and_last_yield_cancel_refund() -> TestResult {
+    use super::native_test_support::NativeFixture;
+    for target in 0..4 {
+        for cancellation in 1..=2 {
+            let fixture = NativeFixture::new(true)?;
+            let value = json!({"opaque":[fixture.reference]});
+            let sources =
+                ch2_core_opaque_sources(target, &[Some(value.clone()), Some(value.clone())]);
+            let expected = ch2_core_opaque_expected(target, &value, "AB");
+            ch2_core_opaque_stage_run(&fixture, &sources, Some(&expected), cancellation)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_opaque_resource_work_shared_across_fields_choices_and_call_emission() -> TestResult {
+    use super::{payload_budget::PayloadBudget, restoration_core::compose_chat_snapshots};
+    for mode in 0..3 {
+        let budget = PayloadBudget::with_limit(16 * 1024 * 1024);
+        let value = json!("x".repeat(64 * 1024));
+        let mut sources = ch2_core_opaque_sources(
+            if mode == 2 { 1 } else { 0 },
+            &vec![Some(value.clone()); 40],
+        );
+        if mode == 0 {
+            for source in &mut sources {
+                source["choices"][0]["delta"]["second"] = value.clone();
+            }
+        } else if mode == 1 {
+            let others = ch2_core_opaque_sources(0, &vec![Some(value); 40]);
+            for (source, mut other) in sources.iter_mut().zip(others) {
+                other["choices"][0]["index"] = json!(2);
+                source["choices"]
+                    .as_array_mut()
+                    .ok_or("opaque_choices_missing")?
+                    .push(other["choices"][0].clone());
+            }
+        }
+        let choices: Vec<_> = sources
+            .iter()
+            .flat_map(|s| s["choices"].as_array().into_iter().flatten())
+            .collect();
+        let result = compose_chat_snapshots(&choices, &budget);
+        assert!(result.is_err(), "opaque_work_was_reset_between_owners");
+        drop(result);
+        assert!(budget.used() == 0, "opaque_shared_work_retained_charge");
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_opaque_resource_first_value_depth_size_and_low_budget_refund() -> TestResult {
+    use super::{payload_budget::PayloadBudget, restoration_core::compose_chat_snapshots};
+    for case in 0..4 {
+        let budget = PayloadBudget::with_limit(if case == 3 { 128 } else { 16 * 1024 * 1024 });
+        let mut value = json!("synthetic");
+        if case < 2 {
+            for _ in 0..70 {
+                value = json!([value]);
+            }
+        }
+        if case == 2 {
+            value = json!("x".repeat(1024 * 1024));
+        }
+        let values = if case == 1 {
+            vec![Some(value.clone()), Some(value)]
+        } else {
+            vec![Some(value)]
+        };
+        let sources = ch2_core_opaque_sources(0, &values);
+        let choices: Vec<_> = sources.iter().map(|s| &s["choices"][0]).collect();
+        let result = compose_chat_snapshots(&choices, &budget);
+        assert!(result.is_err(), "opaque_first_value_bound_bypassed");
+        drop(result);
+        assert!(
+            budget.used() == 0,
+            "opaque_first_value_failure_charge_retained"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_opaque_resource_metadata_and_buffer_faults_refund() -> TestResult {
+    use super::{
+        payload_budget::PayloadBudget,
+        payload_metadata::test_support::{self, Action, Phase},
+        restoration_core::compose_chat_snapshots,
+    };
+    for phase in [Phase::BeforeAllocation, Phase::AfterAllocation] {
+        let budget = PayloadBudget::with_limit(16 * 1024 * 1024);
+        let sources =
+            ch2_core_opaque_sources(2, &[Some(json!({"a":[1,2]})), Some(json!({"a":[1,2]}))]);
+        let choices: Vec<_> = sources.iter().map(|s| &s["choices"][0]).collect();
+        let reached = std::rc::Rc::new(std::cell::Cell::new(false));
+        let seen = reached.clone();
+        let hook = test_support::install(move |event| {
+            if event.phase == phase {
+                seen.set(true);
+                Action::Fail
+            } else {
+                Action::Continue
+            }
+        });
+        let result = compose_chat_snapshots(&choices, &budget);
+        drop(hook);
+        assert!(
+            reached.get() && result.is_err(),
+            "opaque_metadata_fault_not_exercised"
+        );
+        drop(result);
+        assert!(budget.used() == 0, "opaque_metadata_fault_charge_retained");
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_opaque_supported_known_text_nulls_preserve_joined_values() -> TestResult {
+    use super::native_test_support::NativeFixture;
+    let fixture = NativeFixture::new(true)?;
+    let values = [Some(json!({"stable":1})), None, Some(json!({"stable":1}))];
+    let mut sources = ch2_core_opaque_sources(0, &values);
+    sources[0]["choices"][0]["delta"]["refusal"] = json!("R");
+    sources[0]["choices"][0]["delta"]["reasoning"] = json!("Q");
+    sources[0]["choices"][0]["delta"]["reasoning_content"] = json!("T");
+    for field in ["content", "refusal", "reasoning", "reasoning_content"] {
+        sources[1]["choices"][0]["delta"][field] = Value::Null;
+        sources[2]["choices"][0]["delta"][field] = json!("");
+    }
+    // Build the expected field order independently from the fixture's explicit order.
+    let expected = json!([{"role":"assistant","content":"A","extension":{"stable":1},"refusal":"R","reasoning":"Q","reasoning_content":"T"}]);
+    ch2_core_opaque_stage_run(&fixture, &sources, Some(&expected), 0)
+}
+
+#[test]
+fn ch2_core_policy_sse_explicit_tool_arguments_restore_with_one_ledger() -> TestResult {
+    ch2_core_typed_sse_run(false, true)
+}
+
+#[test]
+fn ch2_core_opaque_resource_buffer_allocation_and_copy_faults_refund() -> TestResult {
+    use super::{
+        payload_budget::PayloadBudget,
+        payload_buffer::test_support::{self, Action, Phase},
+        restoration_core::compose_chat_snapshots,
+    };
+    for phase in [Phase::BeforeAllocation, Phase::BeforeCopy] {
+        let budget = PayloadBudget::with_limit(16 * 1024 * 1024);
+        let sources =
+            ch2_core_opaque_sources(1, &[Some(json!({"a":[1,2]})), Some(json!({"a":[1,2]}))]);
+        let choices: Vec<_> = sources.iter().map(|s| &s["choices"][0]).collect();
+        let reached = std::rc::Rc::new(std::cell::Cell::new(false));
+        let seen = reached.clone();
+        let hook = test_support::install(move |event| {
+            if event.phase == phase {
+                seen.set(true);
+                Action::FailAllocation
+            } else {
+                Action::Continue
+            }
+        });
+        let result = compose_chat_snapshots(&choices, &budget);
+        drop(hook);
+        assert!(
+            reached.get() && result.is_err(),
+            "opaque_buffer_fault_not_exercised"
+        );
+        drop(result);
+        assert!(budget.used() == 0, "opaque_buffer_fault_charge_retained");
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_opaque_final_immutable_restoration_conflict_never_releases() -> TestResult {
+    use super::{
+        native_test_support::{chat, NativeFixture},
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{
+            stage_native_sse_with_lifecycle, NativeSseFrameObservation, NativeSseObservation,
+            NativeSseSnapshotSelection, NativeSseTextStream,
+        },
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    for immutable in [false, true] {
+        let fixture = NativeFixture::new(true)?;
+        let baseline = fixture.budget.used();
+        let opaque = json!({"stable":[fixture.reference]});
+        let mut sources = ch2_core_opaque_sources(0, &[Some(opaque.clone()), Some(opaque)]);
+        sources[0]["choices"][0]["delta"]["content"] = json!(fixture.reference);
+        sources[1]["choices"][0]["delta"]["content"] = Value::Null;
+        let wire = ch2_core_sse_wire(&sources, true);
+        let proof = ch2_core_sse_proof(&fixture, &wire)
+            .map_err(|_| "opaque_immutable_original_proof_rejected")?;
+        let node = &sources[0]["choices"][0]["delta"]["content"];
+        let mut frames = Vec::new();
+        let mut offset = 0;
+        for (position, source) in sources.iter().enumerate() {
+            let end = offset + format!("data: {source}\n\n").len();
+            let mut sites = TextSites::new(fixture.budget.clone())?;
+            if position == 0 {
+                sites.observe(
+                    node,
+                    SourceClass::HistoricalText,
+                    if immutable {
+                        EditConstraint::Immutable
+                    } else {
+                        EditConstraint::Editable
+                    },
+                )?;
+            }
+            frames.push(
+                NativeSseFrameObservation::new(
+                    &wire[offset..end],
+                    Some(source),
+                    sites,
+                    fixture.budget.clone(),
+                )
+                .map_err(|_| "opaque_immutable_frame_rejected")?,
+            );
+            offset = end;
+        }
+        frames.push(
+            NativeSseFrameObservation::new(
+                &wire[offset..],
+                None,
+                TextSites::new(fixture.budget.clone())?,
+                fixture.budget.clone(),
+            )
+            .map_err(|_| "opaque_immutable_done_rejected")?,
+        );
+        let refs: Vec<_> = frames.iter().collect();
+        let observed = NativeSseObservation::new(
+            wire.as_bytes(),
+            &refs,
+            chat(),
+            &fixture.lease,
+            &fixture.binding,
+            fixture.budget.clone(),
+        )
+        .map_err(|_| "opaque_immutable_observation_rejected")?;
+        let selections = [
+            NativeSseSnapshotSelection::chat_choice(0, &sources[0]["choices"][0]),
+            NativeSseSnapshotSelection::chat_choice(1, &sources[1]["choices"][0]),
+        ];
+        let fragments = [node];
+        let streams = [NativeSseTextStream::new(&fragments)];
+        let occupied = fixture.budget.used();
+        let staged = stage_native_sse_with_lifecycle(
+            &observed,
+            &selections,
+            &streams,
+            &fixture.lease,
+            &fixture.binding,
+            fixture.budget.clone(),
+            ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+            &fixture.attempt,
+        );
+        assert!(
+            staged.is_ok() != immutable,
+            "opaque_immutable_restore_boundary_wrong"
+        );
+        drop(staged);
+        drop(proof);
+        assert!(
+            fixture.counts()? == (0, 0, 0) && fixture.budget.used() == occupied,
+            "opaque_immutable_released_or_retained"
+        );
+        drop(observed);
+        drop(frames);
+        assert!(
+            fixture.budget.used() == baseline,
+            "opaque_immutable_charge_retained"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_opaque_supported_single_values_and_unknown_equal_strings() -> TestResult {
+    use super::native_test_support::NativeFixture;
+    for target in 0..4 {
+        for value in [
+            Value::Null,
+            json!(false),
+            json!(0),
+            json!("synthetic-opaque"),
+            json!([]),
+            json!({"z":[],"a":null}),
+        ] {
+            let fixture = NativeFixture::new(false)?;
+            let sources = ch2_core_opaque_sources(target, &[Some(value.clone())]);
+            let expected = ch2_core_opaque_expected(target, &value, "A");
+            ch2_core_opaque_stage_run(&fixture, &sources, Some(&expected), 0)?;
+            if target != 3 {
+                let fixture = NativeFixture::new(false)?;
+                let sources =
+                    ch2_core_opaque_sources(target, &[Some(value.clone()), Some(value.clone())]);
+                let expected = ch2_core_opaque_expected(target, &value, "AB");
+                ch2_core_opaque_stage_run(&fixture, &sources, Some(&expected), 0)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_opaque_conflict_scalar_and_reasoning_text_structure_switches() -> TestResult {
+    use super::native_test_support::NativeFixture;
+    for target in 0..4 {
+        for (left, right) in [
+            (json!(true), json!(false)),
+            (json!(1), json!(2)),
+            (json!("synthetic"), json!({"a":1})),
+            (json!({"a":1}), json!("synthetic")),
+        ] {
+            let fixture = NativeFixture::new(false)?;
+            let sources = ch2_core_opaque_sources(target, &[Some(left), Some(right)]);
+            ch2_core_opaque_stage_run(&fixture, &sources, None, 0)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn ch2_core_opaque_supported_interleaved_choices_and_sparse_tools_keep_complete_order() -> TestResult
+{
+    use super::native_test_support::NativeFixture;
+    let fixture = NativeFixture::new(true)?;
+    let opaque = json!({"z":[fixture.reference],"a":true});
+    let mut sources = ch2_core_opaque_sources(1, &[Some(opaque.clone()), Some(opaque.clone())]);
+    let other = ch2_core_opaque_sources(0, &[Some(opaque.clone()), Some(opaque.clone())]);
+    for (position, source) in sources.iter_mut().enumerate() {
+        let mut choice = other[position]["choices"][0].clone();
+        choice["index"] = json!(2);
+        let mut tool = source["choices"][0]["delta"]["tool_calls"][0].clone();
+        tool["index"] = json!(97);
+        tool["id"] = json!("synthetic-second-call");
+        source["choices"][0]["delta"]["tool_calls"]
+            .as_array_mut()
+            .ok_or("opaque_tools_missing")?
+            .push(tool);
+        source["choices"]
+            .as_array_mut()
+            .ok_or("opaque_choices_missing")?
+            .push(choice);
+    }
+    // The second frame reverses choice interleaving, not first-observation history order.
+    sources[1]["choices"]
+        .as_array_mut()
+        .ok_or("opaque_choices_missing")?
+        .swap(0, 1);
+    let first = json!({"id":"synthetic-opaque-call","type":"function","function":{"name":"synthetic-tool","arguments":"{}"},"extension":opaque});
+    let second = json!({"id":"synthetic-second-call","type":"function","function":{"name":"synthetic-tool","arguments":"{}"},"extension":opaque});
+    let expected = json!([{"role":"assistant","content":"AB","tool_calls":[first,second]},first,second,{"role":"assistant","content":"AB","extension":opaque}]);
+    ch2_core_opaque_stage_run(&fixture, &sources, Some(&expected), 0)
+}
+
+// Same-class stream claims must not merge parallel choices or native carriers.
+fn ch2_core_isolation_run(mode: usize, explicit: bool, composed: bool) -> TestResult {
+    use super::{
+        native_test_support::{chat, NativeFixture, TEXT},
+        response_restoration::finalize_native_sse,
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextPolicy, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{
+            stage_native_sse_with_lifecycle, NativeSseFrameObservation, NativeSseObservation,
+            NativeSseSnapshotSelection, NativeSseTextStream,
+        },
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    use futures::StreamExt;
+    let fixture = NativeFixture::new(true)?;
+    let baseline = fixture.budget.used();
+    let split = fixture.reference.len() / 2;
+    let first = &fixture.reference[..split];
+    let last = &fixture.reference[split..];
+    // Mode 0 mixes choices; mode 1 mixes content/refusal in one choice;
+    // Mode 2 swaps choice-local calls; modes 3/4 keep choices/calls isolated.
+    let arguments = mode == 2 || mode == 4;
+    let sources = if arguments {
+        [
+            json!({"id":"synthetic-isolation","choices":[{"index":9,"delta":{"role":"assistant","tool_calls":[
+                {"index":5,"id":"synthetic-a","type":"function","function":{"name":"synthetic-tool","arguments":format!("{{\"value\":\"{first}")}},
+                {"index":11,"id":"synthetic-b","type":"function","function":{"name":"synthetic-tool","arguments":format!("{{\"value\":\"{first}")}}
+            ]},"finish_reason":null}]}),
+            json!({"id":"synthetic-isolation","choices":[{"index":9,"delta":{"tool_calls":[
+                {"index":11,"function":{"arguments":format!("{last}\"}}")}},
+                {"index":5,"function":{"arguments":format!("{last}\"}}")}}
+            ]},"finish_reason":"tool_calls"}]}),
+        ]
+    } else if mode == 1 {
+        [
+            json!({"id":"synthetic-isolation","choices":[{"index":9,"delta":{"role":"assistant","content":first},"finish_reason":null}]}),
+            json!({"id":"synthetic-isolation","choices":[{"index":9,"delta":{"refusal":last},"finish_reason":"stop"}]}),
+        ]
+    } else {
+        [
+            json!({"id":"synthetic-isolation","choices":[
+                {"index":9,"delta":{"role":"assistant","content":first},"finish_reason":null},
+                {"index":2,"delta":{"role":"assistant","content":first},"finish_reason":null}]}),
+            json!({"id":"synthetic-isolation","choices":[
+                {"index":2,"delta":{"content":last},"finish_reason":"stop"},
+                {"index":9,"delta":{"content":last},"finish_reason":"stop"}]}),
+        ]
+    };
+    // Keep the inputs owned and stable through all borrowed observations.
+    let original = sources.clone();
+    let wire = ch2_core_sse_wire(&sources, true);
+    let proof = ch2_core_sse_proof(&fixture, &wire)
+        .map_err(|_| "isolation_original_http_proof_rejected")?;
+    let nodes: Vec<&Value> = if arguments {
+        sources
+            .iter()
+            .flat_map(|source| {
+                source["choices"][0]["delta"]["tool_calls"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|tool| &tool["function"]["arguments"])
+            })
+            .collect()
+    } else if mode == 1 {
+        vec![
+            &sources[0]["choices"][0]["delta"]["content"],
+            &sources[1]["choices"][0]["delta"]["refusal"],
+        ]
+    } else {
+        sources
+            .iter()
+            .flat_map(|source| {
+                source["choices"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|choice| &choice["delta"]["content"])
+            })
+            .collect()
+    };
+    let mut frames = Vec::new();
+    let mut offset = 0;
+    let per_frame = nodes.len() / 2;
+    for (index, source) in sources.iter().enumerate() {
+        let end = offset + format!("data: {source}\n\n").len();
+        let mut sites = TextSites::new(fixture.budget.clone())?;
+        for node in &nodes[index * per_frame..(index + 1) * per_frame] {
+            sites.observe(
+                node,
+                if arguments {
+                    SourceClass::ToolArguments
+                } else {
+                    SourceClass::HistoricalText
+                },
+                EditConstraint::Editable,
+            )?;
+        }
+        frames.push(
+            NativeSseFrameObservation::new(
+                &wire[offset..end],
+                Some(source),
+                sites,
+                fixture.budget.clone(),
+            )
+            .map_err(|_| "isolation_frame_rejected")?,
+        );
+        offset = end;
+    }
+    frames.push(
+        NativeSseFrameObservation::new(
+            &wire[offset..],
+            None,
+            TextSites::new(fixture.budget.clone())?,
+            fixture.budget.clone(),
+        )
+        .map_err(|_| "isolation_done_rejected")?,
+    );
+    let refs: Vec<_> = frames.iter().collect();
+    let observed = NativeSseObservation::new(
+        wire.as_bytes(),
+        &refs,
+        chat(),
+        &fixture.lease,
+        &fixture.binding,
+        fixture.budget.clone(),
+    )
+    .map_err(|_| "isolation_observation_rejected")?;
+    let selections: Vec<_> = sources
+        .iter()
+        .enumerate()
+        .flat_map(|(index, source)| {
+            source["choices"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(move |choice| {
+                    if composed {
+                        NativeSseSnapshotSelection::chat_choice(index, choice)
+                    } else {
+                        NativeSseSnapshotSelection::new(index, &choice["delta"])
+                    }
+                })
+        })
+        .collect();
+    let groups: Vec<Vec<&Value>> = if per_frame == 1 {
+        vec![nodes.clone()]
+    } else if mode >= 3 {
+        vec![vec![nodes[0], nodes[3]], vec![nodes[1], nodes[2]]]
+    } else {
+        vec![vec![nodes[0], nodes[2]], vec![nodes[1], nodes[3]]]
+    };
+    let streams: Vec<_> = groups
+        .iter()
+        .map(|group| {
+            if explicit {
+                NativeSseTextStream::with_policy(
+                    group,
+                    if arguments {
+                        TextPolicy::ToolArguments
+                    } else {
+                        TextPolicy::Output
+                    },
+                )
+            } else {
+                NativeSseTextStream::new(group)
+            }
+        })
+        .collect();
+    let occupied = fixture.budget.used();
+    let staged = stage_native_sse_with_lifecycle(
+        &observed,
+        &selections,
+        &streams,
+        &fixture.lease,
+        &fixture.binding,
+        fixture.budget.clone(),
+        ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+        &fixture.attempt,
+    );
+    if mode < 3 {
+        let rejected = staged.is_err();
+        drop(staged);
+        assert!(
+            fixture.counts()? == (0, 0, 0) && fixture.budget.used() == occupied,
+            "isolation_rejection_not_atomic"
+        );
+        drop(proof);
+        drop(observed);
+        drop(frames);
+        assert!(
+            fixture.budget.used() == baseline,
+            "isolation_rejection_charge_retained"
+        );
+        assert!(
+            rejected,
+            "isolation_cross_choice_call_or_carrier_stream_accepted"
+        );
+    } else {
+        let staged = staged.map_err(|_| "isolation_control_stage_rejected")?;
+        assert!(
+            staged.restored_occurrences() == 2
+                && staged.output_tokens().len() == 1
+                && fixture.counts()? == (0, 0, 0),
+            "isolation_control_ledger_or_authority_changed"
+        );
+        let finalized =
+            finalize_native_sse(staged, &fixture.lease, proof, &fixture.attempt, 1024 * 1024)
+                .map_err(|_| "isolation_control_finalization_rejected")?;
+        let mut delivery = finalized.into_delivery_stream();
+        for _ in 0..3 {
+            let chunk = futures::executor::block_on(delivery.next())
+                .ok_or("isolation_control_frame_missing")??;
+            drop(chunk);
+            assert!(
+                fixture.counts()? == (0, 1, 1),
+                "isolation_control_early_publication"
+            );
+        }
+        assert!(
+            futures::executor::block_on(delivery.next()).is_none(),
+            "isolation_control_extra_frame"
+        );
+        drop(delivery);
+        let expected = if arguments {
+            let args = serde_json::to_string(&json!({"value":TEXT}))?;
+            let first = json!({"id":"synthetic-a","type":"function","function":{"name":"synthetic-tool","arguments":args}});
+            let second = json!({"id":"synthetic-b","type":"function","function":{"name":"synthetic-tool","arguments":args}});
+            json!([{"role":"assistant","tool_calls":[first,second]},first,second])
+        } else {
+            json!([{"role":"assistant","content":TEXT},{"role":"assistant","content":TEXT}])
+        };
+        assert!(
+            fixture
+                .lease
+                .verify_native_delivered(&fixture.binding, chat(), &expected)
+                .is_ok(),
+            "isolation_control_history_changed"
+        );
+        drop(observed);
+        drop(frames);
+        assert!(
+            fixture.budget.used() == baseline,
+            "isolation_control_charge_retained"
+        );
+    }
+    assert!(sources == original, "isolation_original_mutated");
+    Ok(())
+}
+
+#[test]
+fn ch2_core_isolation_cross_choice_default_stream_rejects() -> TestResult {
+    ch2_core_isolation_run(0, false, true)
+}
+#[test]
+fn ch2_core_isolation_cross_choice_explicit_stream_rejects() -> TestResult {
+    ch2_core_isolation_run(0, true, true)
+}
+#[test]
+fn ch2_core_isolation_cross_choice_legacy_selection_rejects() -> TestResult {
+    ch2_core_isolation_run(0, false, false)
+}
+#[test]
+fn ch2_core_isolation_cross_carrier_same_choice_rejects() -> TestResult {
+    ch2_core_isolation_run(1, false, true)
+}
+#[test]
+fn ch2_core_isolation_cross_call_default_stream_rejects() -> TestResult {
+    ch2_core_isolation_run(2, false, true)
+}
+#[test]
+fn ch2_core_isolation_cross_call_explicit_stream_rejects() -> TestResult {
+    ch2_core_isolation_run(2, true, true)
+}
+#[test]
+fn ch2_core_isolation_reordered_choices_positive_control() -> TestResult {
+    ch2_core_isolation_run(3, false, true)
+}
+
+#[test]
+fn ch2_core_isolation_reordered_sparse_calls_positive_control() -> TestResult {
+    ch2_core_isolation_run(4, true, true)
+}
+
+// A carrier's original sequence, not an adapter's partition, defines matching text.
+fn ch2_core_continuity_run(mode: usize, explicit: bool, composed: bool) -> TestResult {
+    use super::{
+        native_test_support::{chat, NativeFixture},
+        restoration_contract::{
+            EditConstraint, ProtocolPair, SourceClass, TextPolicy, TextSites, UpstreamProtocol,
+        },
+        restoration_core::{
+            stage_native_sse_with_lifecycle, NativeSseFrameObservation, NativeSseObservation,
+            NativeSseSnapshotSelection, NativeSseTextStream,
+        },
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    let fixture = NativeFixture::new(true)?;
+    let baseline = fixture.budget.used();
+    // Split inside the reference header, before it can become a valid token prefix.
+    let split = 2;
+    let pieces = [
+        &fixture.reference[..split],
+        "!",
+        &fixture.reference[split..],
+    ];
+    let arguments = mode == 4;
+    let sources: Vec<_> = pieces
+        .iter()
+        .enumerate()
+        .map(|(index, piece)| {
+            let mut delta = if arguments {
+                let text = match index {
+                    0 => format!("{{\"value\":\"{piece}"),
+                    2 => format!("{piece}\"}}"),
+                    _ => piece.to_string(),
+                };
+                json!({"tool_calls":[{"index":97,"function":{"arguments":text}}]})
+            } else {
+                json!({"content":piece})
+            };
+            if index == 0 {
+                delta["role"] = json!("assistant");
+                if arguments {
+                    delta["tool_calls"][0]["id"] = json!("synthetic-continuity-call");
+                    delta["tool_calls"][0]["type"] = json!("function");
+                    delta["tool_calls"][0]["function"]["name"] = json!("synthetic-tool");
+                }
+            }
+            json!({"id":"synthetic-continuity","choices":[{"index":9,"delta":delta,
+                "finish_reason":if index == 2 { Some(if arguments { "tool_calls" } else { "stop" }) } else { None }}]})
+        })
+        .collect();
+    let original = sources.clone();
+    let wire = ch2_core_sse_wire(&sources, true);
+    let proof =
+        ch2_core_sse_proof(&fixture, &wire).map_err(|_| "continuity_original_proof_rejected")?;
+    let nodes: Vec<_> = sources
+        .iter()
+        .map(|source| {
+            if arguments {
+                &source["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
+            } else {
+                &source["choices"][0]["delta"]["content"]
+            }
+        })
+        .collect();
+    let mut frames = Vec::new();
+    let mut offset = 0;
+    for (index, source) in sources.iter().enumerate() {
+        let end = offset + format!("data: {source}\n\n").len();
+        let mut sites = TextSites::new(fixture.budget.clone())?;
+        if mode != 2 || index != 1 {
+            sites.observe(
+                nodes[index],
+                if arguments {
+                    SourceClass::ToolArguments
+                } else {
+                    SourceClass::HistoricalText
+                },
+                EditConstraint::Editable,
+            )?;
+        }
+        frames.push(
+            NativeSseFrameObservation::new(
+                &wire[offset..end],
+                Some(source),
+                sites,
+                fixture.budget.clone(),
+            )
+            .map_err(|_| "continuity_frame_rejected")?,
+        );
+        offset = end;
+    }
+    frames.push(
+        NativeSseFrameObservation::new(
+            &wire[offset..],
+            None,
+            TextSites::new(fixture.budget.clone())?,
+            fixture.budget.clone(),
+        )
+        .map_err(|_| "continuity_done_rejected")?,
+    );
+    let refs: Vec<_> = frames.iter().collect();
+    let observed = NativeSseObservation::new(
+        wire.as_bytes(),
+        &refs,
+        chat(),
+        &fixture.lease,
+        &fixture.binding,
+        fixture.budget.clone(),
+    )
+    .map_err(|_| "continuity_observation_rejected")?;
+    let selections: Vec<_> = sources
+        .iter()
+        .enumerate()
+        .map(|(index, source)| {
+            if composed {
+                NativeSseSnapshotSelection::chat_choice(index, &source["choices"][0])
+            } else {
+                NativeSseSnapshotSelection::new(index, &source["choices"][0]["delta"])
+            }
+        })
+        .collect();
+    let groups = match mode {
+        1 => vec![vec![nodes[0]], vec![nodes[1], nodes[2]]],
+        2 => vec![vec![nodes[0], nodes[2]]],
+        3 => vec![nodes.clone()],
+        _ => vec![vec![nodes[0], nodes[2]], vec![nodes[1]]],
+    };
+    let streams: Vec<_> = groups
+        .iter()
+        .map(|group| {
+            if explicit {
+                NativeSseTextStream::with_policy(
+                    group,
+                    if arguments {
+                        TextPolicy::ToolArguments
+                    } else {
+                        TextPolicy::Output
+                    },
+                )
+            } else {
+                NativeSseTextStream::new(group)
+            }
+        })
+        .collect();
+    let occupied = fixture.budget.used();
+    let staged = stage_native_sse_with_lifecycle(
+        &observed,
+        &selections,
+        &streams,
+        &fixture.lease,
+        &fixture.binding,
+        fixture.budget.clone(),
+        ProtocolPair::new(chat(), UpstreamProtocol::new(Protocol::Chat)),
+        &fixture.attempt,
+    );
+    let rejected = staged.is_err();
+    if mode == 3 {
+        let staged = staged
+            .as_ref()
+            .map_err(|_| "continuity_complete_control_rejected")?;
+        assert!(
+            staged.restored_occurrences() == 0 && staged.output_tokens().is_empty(),
+            "continuity_original_sequence_invented_dependency"
+        );
+    } else if let Ok(staged) = &staged {
+        if mode != 1 {
+            assert!(
+                staged.restored_occurrences() == 1 && staged.output_tokens().len() == 1,
+                "continuity_counterexample_did_not_restore"
+            );
+        }
+    }
+    drop(staged);
+    assert!(
+        fixture.counts()? == (0, 0, 0) && fixture.budget.used() == occupied,
+        "continuity_rejection_not_atomic"
+    );
+    drop(proof);
+    drop(observed);
+    drop(frames);
+    assert!(
+        fixture.budget.used() == baseline && sources == original,
+        "continuity_original_or_refund_changed"
+    );
+    assert!(
+        mode == 3 || rejected,
+        "continuity_partition_or_omission_accepted"
+    );
+    Ok(())
+}
+
+#[test]
+fn ch2_core_continuity_hopping_default_composed_rejects() -> TestResult {
+    ch2_core_continuity_run(0, false, true)
+}
+#[test]
+fn ch2_core_continuity_hopping_explicit_composed_rejects() -> TestResult {
+    ch2_core_continuity_run(0, true, true)
+}
+#[test]
+fn ch2_core_continuity_hopping_default_legacy_rejects() -> TestResult {
+    ch2_core_continuity_run(0, false, false)
+}
+#[test]
+fn ch2_core_continuity_hopping_explicit_legacy_rejects() -> TestResult {
+    ch2_core_continuity_run(0, true, false)
+}
+#[test]
+fn ch2_core_continuity_contiguous_partition_rejects() -> TestResult {
+    ch2_core_continuity_run(1, false, true)
+}
+#[test]
+fn ch2_core_continuity_unobserved_middle_rejects() -> TestResult {
+    ch2_core_continuity_run(2, false, true)
+}
+#[test]
+fn ch2_core_continuity_sparse_arguments_hopping_rejects() -> TestResult {
+    ch2_core_continuity_run(4, true, true)
+}
+#[test]
+fn ch2_core_continuity_complete_original_sequence_control() -> TestResult {
+    ch2_core_continuity_run(3, false, true)
 }

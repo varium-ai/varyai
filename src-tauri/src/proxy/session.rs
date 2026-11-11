@@ -144,7 +144,6 @@ pub(crate) fn extract_anthropic_restoration_session_id<'a>(
 }
 
 /// Borrow an explicit local Gemini session header only; never infer a fallback identity.
-#[allow(dead_code)]
 pub(crate) fn extract_gemini_restoration_session_id(headers: &HeaderMap) -> Option<&str> {
     extract_native_restoration_header(headers, "x-session-id")
 }

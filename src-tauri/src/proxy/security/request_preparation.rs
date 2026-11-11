@@ -444,7 +444,8 @@ pub(super) fn prepare_observed_request<T>(
         return Err(PlanError::Blocked);
     }
     if immutable_reference {
-        return Err(PlanError::Unsupported);
+        // Restoring here would have to edit immutable signed content.
+        return Err(PlanError::ImmutableContent);
     }
     // Retain already pinned dependencies, but never authorize caller-supplied tokens.
     let mut dependencies = PayloadVec::new(budget.clone())?;
@@ -478,6 +479,9 @@ pub(super) fn prepare_observed_request<T>(
             matches: field.matches.as_slice(),
         })?;
     }
+    // The validator callback can only report TokenError, so an immutable-site conflict
+    // is recorded out of band and re-raised with its exact cause afterwards.
+    let immutable_conflict = std::cell::Cell::new(false);
     let prepared = prepare_fields_with_history(
         lease,
         fields.as_slice(),
@@ -495,12 +499,15 @@ pub(super) fn prepare_observed_request<T>(
                     patches.push(TextPatch::new(site, 0..site.text().len(), text.as_str()))?;
                 }
             }
-            let plan = sites
-                .plan(patches.as_slice())
-                .map_err(|error| match error {
-                    ContractError::Resource(error) => error,
-                    _ => TokenError::RedactionFailed,
-                })?;
+            let plan = match sites.plan(patches.as_slice()) {
+                Ok(plan) => plan,
+                Err(ContractError::ImmutableSite) => {
+                    immutable_conflict.set(true);
+                    return Err(TokenError::RedactionFailed);
+                }
+                Err(ContractError::Resource(error)) => return Err(error),
+                Err(_) => return Err(TokenError::RedactionFailed),
+            };
             let mut replacements = PayloadVec::new(budget.clone())?;
             for edit in plan.edits() {
                 replacements.push(JsonStringReplacement {
@@ -552,7 +559,13 @@ pub(super) fn prepare_observed_request<T>(
             let validated = validate(candidate.as_value(), encoded.as_slice(), proof)?;
             Ok((candidate, encoded, validated))
         },
-    )?;
+    );
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        // Preserve the exact cause when the conflict was an immutable signed site.
+        Err(_) if immutable_conflict.get() => return Err(PlanError::ImmutableContent),
+        Err(error) => return Err(error),
+    };
     let (body, encoded, validated) = prepared.validated;
     Ok(DlpPreparedRequest {
         body,

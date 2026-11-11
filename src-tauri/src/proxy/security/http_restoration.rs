@@ -46,6 +46,9 @@ use super::{
     tokenization::{DlpRequestLease, DlpTokenStore, TokenError},
 };
 mod completion_verifier;
+mod native_chat;
+#[cfg(test)]
+pub(in crate::proxy::security) use native_chat::capture_test_support;
 mod native_driver;
 #[cfg(test)]
 pub(in crate::proxy::security) mod test_transport;
@@ -148,6 +151,7 @@ pub(crate) struct DlpHttpRequest {
     restore_rules: StoreVec<StoreText>,
     source_body: PayloadJson,
     pretokenized: bool,
+    native_protocol: Option<crate::proxy::protocol_bridge::Protocol>,
     endpoint_is_compact: bool,
     audit_state: std::sync::Arc<RequestAuditState>,
     initial_audit: std::sync::Arc<PendingRequestAudit>,
@@ -219,6 +223,10 @@ pub(crate) struct DlpPreparedAttempt {
     pending_audit: PendingRequestAudit,
     upstream_payload_owner: Option<super::UpstreamPayloadOwner>,
     history_mapping: Option<DlpHistoryMapping>,
+    native_history_digest: Option<[u8; 32]>,
+    native_protocol: Option<crate::proxy::protocol_bridge::Protocol>,
+    native_original: Option<native_chat::OriginalCapture>,
+    native_error_safety: Option<super::upstream_error::NativeErrorSafety>,
     sse_evidence: std::sync::Mutex<Option<PreparedSseEvidence>>,
 }
 impl DlpPreparedAttempt {
@@ -226,9 +234,26 @@ impl DlpPreparedAttempt {
         &mut self,
         response: crate::proxy::hyper_client::ProxyResponse,
     ) -> Result<crate::proxy::hyper_client::ProxyResponse, DlpForwardError> {
-        if !self.has_restoration_lease() {
+        if !self.has_restoration_lease() && self.native_protocol.is_none() {
             return Ok(response);
         }
+        // Capture before eager JSON guarding so original evidence comes from the
+        // actual transport, not from a decoded/rebuilt response or terminal marker.
+        let response = if self.native_protocol.is_some() {
+            let (response, capture) = native_chat::capture_original(
+                response,
+                &self.budget,
+                &self.provenance,
+                &self.binding,
+                self.native_protocol
+                    .ok_or(DlpForwardError::RestoreUnsupported)?,
+                self.native_error_safety.take(),
+            )?;
+            self.native_original = Some(capture);
+            response
+        } else {
+            response
+        };
         let guarded =
             super::upstream_guard::guard_upstream_response(response, &self.budget).await?;
         self.upstream_payload_owner = Some(guarded.owner);
@@ -246,7 +271,7 @@ impl DlpPreparedAttempt {
         body: &Value,
     ) -> Result<Option<Bytes>, DlpForwardError> {
         self.validate_final_send_history(body)?;
-        if !self.has_restoration_lease() {
+        if !self.has_restoration_lease() && self.native_protocol.is_none() {
             return Ok(None);
         }
         encode_outbound_with_budget(body, self.budget.clone()).map(Some)
@@ -323,6 +348,7 @@ impl DlpPreparedAttempt {
     }
 
     pub(crate) fn validate_final_send_history(&self, body: &Value) -> Result<(), DlpForwardError> {
+        native_chat::validate_native_history_digest(self.native_history_digest, body)?;
         if self
             .history_mapping
             .as_ref()
@@ -360,13 +386,58 @@ pub(crate) enum RestorationAdmission {
 
 pub(super) const CLIENT_PROCESSING_ERROR_MESSAGE: &str =
     "The local proxy could not process the request. Please retry.";
-pub(super) const CLIENT_PROCESSING_ERROR_CODE: &str = "proxy_processing_failed";
 
+/// Proven reasons an already-received upstream answer cannot be turned into a valid
+/// client response. Only used where the code can actually establish the cause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RestoreFailureCause {
+    /// The answer carried local placeholders that strict restoration rejected.
+    UnrestorablePlaceholders,
+}
+
+impl RestoreFailureCause {
+    pub(crate) const fn client_message(self) -> &'static str {
+        match self {
+            Self::UnrestorablePlaceholders => {
+                "The upstream response contained local DLP placeholders that could not be restored safely. Retry the request; if it persists, disable reversible DLP for this provider."
+            }
+        }
+    }
+}
+
+/// Structural reasons a supported request cannot use reversible DLP. These are
+/// user-actionable categories only: never a rule name, matched value or internal label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RestoreUnsupportedCause {
+    /// Route, method or response framing outside the enabled native cells.
+    UnsupportedEndpoint,
+    /// Signed or otherwise immutable content that a mandatory patch would have to edit.
+    ImmutableSignedUnit,
+}
+
+impl RestoreUnsupportedCause {
+    pub(crate) const fn client_message(self) -> &'static str {
+        match self {
+            Self::UnsupportedEndpoint => {
+                "This route or response framing is not supported by reversible DLP. Supported direct routes are /chat/completions, /v1/messages, generateContent and streamGenerateContent with alt=sse. Use one of them, or disable reversible DLP for this provider."
+            }
+            Self::ImmutableSignedUnit => {
+                "This request contains signed or otherwise immutable content that reversible DLP cannot modify. Remove that content, or disable reversible DLP for this provider."
+            }
+        }
+    }
+}
+pub(super) const CLIENT_PROCESSING_ERROR_CODE: &str = "proxy_processing_failed";
+/// Client-visible code for a route or framing that reversible DLP does not support.
+pub(super) const CLIENT_UNSUPPORTED_ENDPOINT_CODE: &str = "dlp_restore_unsupported";
+/// Client-visible code when a received upstream answer could not be restored.
+pub(super) const CLIENT_RESTORE_FAILED_CODE: &str = "dlp_restore_failed";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DlpForwardError {
     ContextUnavailable,
     PolicyConflict,
     RestoreUnsupported,
+    RestoreUnsupportedFor(RestoreUnsupportedCause),
     RedactionFailed,
     Unavailable,
     CapacityExceeded,
@@ -374,6 +445,7 @@ pub(crate) enum DlpForwardError {
     Blocked,
     RestoreFailed,
     RestoreFailedAt(super::restore_diagnostics::RestoreStage),
+    RestoreFailedFor(RestoreFailureCause),
     /// Status-only upstream refusal; its untrusted body is never retained or decoded.
     UpstreamStatus(StatusCode),
 }
@@ -406,21 +478,37 @@ impl DlpForwardError {
         }
     }
 
+    /// Attributable form for the direct native path only. Legacy Responses and the
+    /// conversion facades keep the generic projection so their accepted contract holds.
+    pub(super) fn from_plan_error_native(err: PlanError) -> Self {
+        match err {
+            PlanError::ImmutableContent => {
+                Self::RestoreUnsupportedFor(RestoreUnsupportedCause::ImmutableSignedUnit)
+            }
+            other => Self::from_plan_error(other),
+        }
+    }
+
     pub(super) fn from_plan_error(err: PlanError) -> Self {
         match err {
             PlanError::Blocked => Self::Blocked,
             PlanError::PolicyConflict => Self::PolicyConflict,
             PlanError::Unsupported => Self::RestoreUnsupported,
             PlanError::Token(te) => Self::from_token_error(te),
+            // Non-native callers keep the generic projection for this cause.
+            PlanError::ImmutableContent => Self::RestoreUnsupported,
         }
     }
     pub(crate) fn status_code(self) -> StatusCode {
         match self {
             Self::UpstreamStatus(status) => status,
-            Self::RestoreFailed | Self::RestoreFailedAt(_) => StatusCode::BAD_GATEWAY,
+            Self::RestoreFailed | Self::RestoreFailedAt(_) | Self::RestoreFailedFor(_) => {
+                StatusCode::BAD_GATEWAY
+            }
             Self::ContextUnavailable
             | Self::PolicyConflict
             | Self::RestoreUnsupported
+            | Self::RestoreUnsupportedFor(_)
             | Self::RedactionFailed
             | Self::Blocked => StatusCode::BAD_REQUEST,
             Self::Unavailable | Self::CapacityExceeded | Self::TokenCollision => {
@@ -432,10 +520,13 @@ impl DlpForwardError {
     pub(crate) fn error_type(self) -> &'static str {
         match self {
             Self::UpstreamStatus(_) => "upstream_error",
-            Self::RestoreFailed | Self::RestoreFailedAt(_) => "server_error",
+            Self::RestoreFailed | Self::RestoreFailedAt(_) | Self::RestoreFailedFor(_) => {
+                "server_error"
+            }
             Self::ContextUnavailable
             | Self::PolicyConflict
             | Self::RestoreUnsupported
+            | Self::RestoreUnsupportedFor(_)
             | Self::RedactionFailed
             | Self::Blocked => "invalid_request_error",
             Self::Unavailable | Self::CapacityExceeded | Self::TokenCollision => "server_error",
@@ -445,10 +536,12 @@ impl DlpForwardError {
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::UpstreamStatus(_) => "upstream_error",
-            Self::RestoreFailed | Self::RestoreFailedAt(_) => "dlp_restore_failed",
+            Self::RestoreFailed | Self::RestoreFailedAt(_) | Self::RestoreFailedFor(_) => {
+                "dlp_restore_failed"
+            }
             Self::ContextUnavailable => "dlp_context_unavailable",
             Self::PolicyConflict => "dlp_policy_conflict",
-            Self::RestoreUnsupported => "dlp_restore_unsupported",
+            Self::RestoreUnsupported | Self::RestoreUnsupportedFor(_) => "dlp_restore_unsupported",
             Self::RedactionFailed => "dlp_redaction_failed",
             Self::Unavailable => "dlp_unavailable",
             Self::CapacityExceeded => "dlp_capacity_exceeded",
@@ -471,6 +564,8 @@ impl DlpForwardError {
             Self::RestoreUnsupported => {
                 "Reversible DLP tokenization is not supported for this endpoint or carrier."
             }
+            Self::RestoreUnsupportedFor(cause) => cause.client_message(),
+            Self::RestoreFailedFor(cause) => cause.client_message(),
             Self::RedactionFailed => "Reversible DLP request preparation failed.",
             Self::Unavailable => "Reversible DLP service is temporarily unavailable.",
             Self::CapacityExceeded => "Reversible DLP capacity limit exceeded.",
@@ -482,7 +577,10 @@ impl DlpForwardError {
     pub(crate) fn client_status_code(self) -> StatusCode {
         match self {
             Self::UpstreamStatus(status) => status,
-            Self::Blocked => StatusCode::BAD_REQUEST,
+            // A caused rejection is caller-actionable and nothing was sent upstream.
+            Self::Blocked | Self::RestoreUnsupportedFor(_) => StatusCode::BAD_REQUEST,
+            // The upstream answered; the failure is producing a valid client response.
+            Self::RestoreFailedFor(_) => StatusCode::BAD_GATEWAY,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -490,7 +588,7 @@ impl DlpForwardError {
     pub(crate) fn client_error_type(self) -> &'static str {
         match self {
             Self::UpstreamStatus(_) => "upstream_error",
-            Self::Blocked => "invalid_request_error",
+            Self::Blocked | Self::RestoreUnsupportedFor(_) => "invalid_request_error",
             _ => "server_error",
         }
     }
@@ -499,13 +597,21 @@ impl DlpForwardError {
         match self {
             Self::UpstreamStatus(_) => "upstream_error",
             Self::Blocked => "dlp_blocked",
+            Self::RestoreUnsupportedFor(_) => CLIENT_UNSUPPORTED_ENDPOINT_CODE,
+            Self::RestoreFailedFor(_) => CLIENT_RESTORE_FAILED_CODE,
             _ => CLIENT_PROCESSING_ERROR_CODE,
         }
     }
 
     pub(crate) fn client_message(self) -> &'static str {
         match self {
-            Self::UpstreamStatus(_) | Self::Blocked => self.message(),
+            Self::UpstreamStatus(_)
+            | Self::Blocked
+            | Self::RestoreUnsupportedFor(_)
+            | Self::RestoreFailedFor(_) => self.message(),
+            // The generic family keeps its historical projection so legacy paths are
+            // unaffected; only an explicit cause produces actionable text.
+            Self::RestoreUnsupported => CLIENT_PROCESSING_ERROR_MESSAGE,
             _ => CLIENT_PROCESSING_ERROR_MESSAGE,
         }
     }
@@ -1084,6 +1190,52 @@ pub(crate) fn admit_http_request_with_scope(
     };
     #[cfg(test)]
     route_scope_test_support::record(scope);
+    if matches!(app_type, AppType::Codex)
+        && matches!(
+            (scope.ingress, scope.client, scope.operation, scope.framing),
+            (
+                RequestIngress::Direct,
+                Protocol::Chat,
+                RestorationOperation::ChatCompletions,
+                RestorationFraming::Json | RestorationFraming::Sse
+            )
+        )
+    {
+        return native_chat::admit(gateway, app_type, body, headers, Protocol::Chat);
+    }
+    if matches!(app_type, AppType::Claude | AppType::ClaudeDesktop)
+        && matches!(
+            (scope.ingress, scope.client, scope.operation, scope.framing),
+            (
+                RequestIngress::Direct,
+                Protocol::Anthropic,
+                RestorationOperation::Messages,
+                RestorationFraming::Json | RestorationFraming::Sse
+            )
+        )
+    {
+        return native_chat::admit(gateway, app_type, body, headers, Protocol::Anthropic);
+    }
+    // Only the two canonical generation pairs may acquire native Gemini authority;
+    // a mismatched operation/framing combination stays on the legacy path.
+    if matches!(app_type, AppType::Gemini)
+        && matches!(
+            (scope.ingress, scope.client, scope.operation, scope.framing),
+            (
+                RequestIngress::Direct,
+                Protocol::Gemini,
+                RestorationOperation::GenerateContent,
+                RestorationFraming::Json
+            ) | (
+                RequestIngress::Direct,
+                Protocol::Gemini,
+                RestorationOperation::StreamGenerateContent,
+                RestorationFraming::Sse
+            )
+        )
+    {
+        return native_chat::admit(gateway, app_type, body, headers, Protocol::Gemini);
+    }
     // Registration is descriptive, not admission authority; no actual upstream is
     // known here. Gateway keeps only its legacy Responses behavior. Neither ingress
     // may acquire native authority from application attribution or request headers.
@@ -1101,11 +1253,22 @@ pub(crate) fn admit_http_request_with_scope(
             RestorationFraming::Json
         )
     );
+    let native_direct_scope = scope.ingress == RequestIngress::Direct
+        && matches!(
+            (scope.client, app_type),
+            (Protocol::Chat, AppType::Codex)
+                | (
+                    Protocol::Anthropic,
+                    AppType::Claude | AppType::ClaudeDesktop
+                )
+                | (Protocol::Gemini, AppType::Gemini)
+        );
     admit_http_request(
         gateway,
         app_type,
         responses_supported,
         scope.operation == RestorationOperation::ResponsesCompact,
+        native_direct_scope,
         body,
         headers,
     )
@@ -1116,6 +1279,7 @@ pub(crate) fn admit_http_request(
     app_type: &AppType,
     endpoint_supported_codex_responses: bool,
     endpoint_is_compact: bool,
+    native_direct_scope: bool,
     body: &mut Value,
     headers: &HeaderMap,
 ) -> Result<RestorationAdmission, crate::proxy::error::ProxyError> {
@@ -1305,8 +1469,17 @@ pub(crate) fn admit_http_request(
                 }
             };
             if matched_restore || has_tokens {
+                // Only a direct native scope is caller-actionable; gateway and other
+                // legacy shapes keep their existing fixed projection.
+                let error = if native_direct_scope {
+                    DlpForwardError::RestoreUnsupportedFor(
+                        RestoreUnsupportedCause::UnsupportedEndpoint,
+                    )
+                } else {
+                    DlpForwardError::RestoreUnsupported
+                };
                 return Ok(RestorationAdmission::Intercepted(
-                    DlpForwardError::RestoreUnsupported.into_app_response(app_type),
+                    error.into_app_response(app_type),
                 ));
             }
             return match inspect_and_intercept_mut_with_headers(app_type, body, headers)? {
@@ -1443,6 +1616,7 @@ pub(crate) fn admit_http_request(
                         restore_rules: rules_copy,
                         source_body: pretokenized_body,
                         pretokenized: true,
+                        native_protocol: None,
                         endpoint_is_compact,
                         audit_state: std::sync::Arc::clone(&audit_state),
                         initial_audit,
@@ -1464,6 +1638,7 @@ pub(crate) fn admit_http_request(
             restore_rules: rules_copy,
             source_body,
             pretokenized: false,
+            native_protocol: None,
             endpoint_is_compact,
             audit_state: std::sync::Arc::clone(&audit_state),
             initial_audit,
@@ -1580,6 +1755,18 @@ impl DlpResponseNamespaceTable {
 }
 
 impl DlpHttpRequest {
+    pub(crate) fn is_native_chat(&self) -> bool {
+        self.native_protocol == Some(crate::proxy::protocol_bridge::Protocol::Chat)
+    }
+
+    pub(crate) fn is_native_anthropic(&self) -> bool {
+        self.native_protocol == Some(crate::proxy::protocol_bridge::Protocol::Anthropic)
+    }
+
+    pub(crate) fn is_native_gemini(&self) -> bool {
+        self.native_protocol == Some(crate::proxy::protocol_bridge::Protocol::Gemini)
+    }
+
     pub(crate) fn build_response_namespace_table(
         &self,
         body: &Value,
@@ -1603,6 +1790,9 @@ impl DlpHttpRequest {
     pub(crate) fn chat_history_provenance(
         &self,
     ) -> Result<super::chat_enrichment::ChatHistoryProvenance, DlpForwardError> {
+        if self.native_protocol.is_some() {
+            return Ok(super::chat_enrichment::ChatHistoryProvenance::UnknownPassthrough);
+        }
         let candidate = self
             .authority
             .lease()
@@ -1664,6 +1854,35 @@ impl DlpHttpRequest {
                 _reservation: reservation,
             },
         ))
+    }
+
+    pub(crate) fn prepare_native_error_safety(
+        &self,
+        attempt: &mut DlpPreparedAttempt,
+        provider: &Value,
+        credentials: &[String],
+        sent_credentials: Option<&super::upstream_error::ErrorCredentials>,
+    ) -> Result<(), DlpForwardError> {
+        if attempt.native_protocol.is_none() {
+            return Ok(());
+        }
+        if sent_credentials.is_none() {
+            return Err(DlpForwardError::RedactionFailed);
+        }
+        attempt.native_error_safety = Some(
+            super::upstream_error::NativeErrorSafety::prepare(
+                super::upstream_error::ErrorSafetyContext {
+                    runtime: &self.runtime,
+                    request: self.source_body.as_value(),
+                    provider,
+                    credentials,
+                    sent_credentials,
+                    budget: self.authority.budget(),
+                },
+            )
+            .map_err(DlpForwardError::from_token_error)?,
+        );
+        Ok(())
     }
 
     pub(crate) fn capture_error_credentials(
@@ -1742,6 +1961,139 @@ impl DlpHttpRequest {
         ))
     }
 
+    /// Reserve resolver scratch before its first copy; release only after the
+    /// selected model is copied into the independently owned mapping tree.
+    pub(crate) fn build_desktop_provider_mapped_body(
+        &self,
+        body: &Value,
+        provider: &crate::provider::Provider,
+    ) -> Result<(Value, DlpMappingBodyOwner), crate::proxy::error::ProxyError> {
+        use crate::proxy::error::ProxyError;
+
+        let _resolver_scratch = if self.is_native_anthropic() {
+            let bytes =
+                crate::claude_desktop_config::proxy_request_model_scratch_bytes(body, provider)
+                    .ok_or(ProxyError::DlpForward(DlpForwardError::CapacityExceeded))?;
+            Some(
+                self.authority
+                    .budget()
+                    .reserve(bytes)
+                    .map_err(DlpForwardError::from_token_error)
+                    .map_err(ProxyError::DlpForward)?,
+            )
+        } else {
+            None
+        };
+        let model = crate::claude_desktop_config::proxy_request_upstream_model(body, provider)
+            .map_err(|error| {
+                // Do not move model-derived error text beyond the scratch owner
+                // or expose it to client responses and forwarding diagnostics.
+                let message = if self.is_native_anthropic() {
+                    "Claude Desktop model routing failed.".to_string()
+                } else {
+                    error.to_string()
+                };
+                ProxyError::InvalidRequest(message)
+            })?;
+        self.build_desktop_mapped_body(
+            body,
+            &model,
+            crate::claude_desktop_config::should_normalize_mimo_anthropic_thinking_history(
+                provider, &model,
+            ),
+        )
+        .map_err(ProxyError::DlpForward)
+    }
+
+    pub(crate) fn build_desktop_mapped_body(
+        &self,
+        body: &Value,
+        model: &str,
+        normalize_mimo: bool,
+    ) -> Result<(Value, DlpMappingBodyOwner), DlpForwardError> {
+        #[cfg(test)]
+        mapping_copy_test_support::attempt();
+        if normalize_mimo && self.is_native_anthropic() {
+            if let Some(messages) = body.get("messages").and_then(Value::as_array) {
+                for message in messages {
+                    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+                        continue;
+                    }
+                    if let Some(blocks) = message.get("content").and_then(Value::as_array) {
+                        let tool_bearing = blocks.iter().any(|block| {
+                            block.get("type").and_then(Value::as_str) == Some("tool_use")
+                        });
+                        let immutable = blocks.iter().any(|block| {
+                            matches!(
+                                block.get("type").and_then(Value::as_str),
+                                Some("thinking" | "redacted_thinking")
+                            )
+                        });
+                        // Native carriers are immutable before normalization or
+                        // inspection. Never remove signatures to make them editable.
+                        if tool_bearing && immutable {
+                            return Err(DlpForwardError::RestoreUnsupported);
+                        }
+                    }
+                }
+            }
+        }
+        let target = body
+            .get("model")
+            .filter(|value| value.is_string())
+            .ok_or(DlpForwardError::RedactionFailed)?;
+        let model = crate::proxy::model_mapper::strip_one_m_suffix_for_upstream(model);
+        let copy = PayloadJson::try_with_replacements(
+            body,
+            &[JsonStringReplacement {
+                target,
+                text: model,
+            }],
+            self.authority.budget(),
+            self.authority.budget().limit(),
+        )
+        .map_err(DlpForwardError::from_token_error)?;
+        let (mut value, mut reservation) = copy.into_parts();
+        let result = (|| {
+            if normalize_mimo {
+                // MiMo can grow each tool-bearing assistant array by one block,
+                // replace redacted blocks, or add a missing thinking field. The
+                // second full-tree charge covers container reallocation peaks;
+                // each block/message gets a conservative new-object allowance.
+                let mut units = 0usize;
+                if let Some(messages) = value.get("messages").and_then(Value::as_array) {
+                    units = messages.len();
+                    for message in messages {
+                        if let Some(blocks) = message.get("content").and_then(Value::as_array) {
+                            units = units
+                                .checked_add(blocks.len())
+                                .ok_or(DlpForwardError::CapacityExceeded)?;
+                        }
+                    }
+                }
+                let growth = units
+                    .checked_mul(4096)
+                    .and_then(|bytes| bytes.checked_add(reservation.bytes()))
+                    .ok_or(DlpForwardError::CapacityExceeded)?;
+                reservation
+                    .grow(growth)
+                    .map_err(DlpForwardError::from_token_error)?;
+                crate::claude_desktop_config::normalize_mimo_anthropic_thinking_history(&mut value);
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            drop(value);
+            return Err(error);
+        }
+        let owner = DlpMappingBodyOwner {
+            #[cfg(test)]
+            _probe: mapping_copy_test_support::OwnerProbe::new(reservation.bytes()),
+            _reservation: reservation,
+        };
+        Ok((value, owner))
+    }
+
     pub(crate) fn build_namespace_body(
         &self,
         body: &Value,
@@ -1792,12 +2144,13 @@ impl DlpHttpRequest {
         body: &Value,
         patch: Option<&Value>,
     ) -> Result<(Value, DlpOutboundTailOwner), DlpForwardError> {
-        let output = PayloadJson::try_outbound_tail(
-            body,
-            patch,
-            self.authority.budget(),
-            self.authority.budget().limit(),
-        )
+        let budget = self.authority.budget();
+        let limit = budget.limit();
+        let output = if self.is_native_anthropic() {
+            PayloadJson::try_anthropic_outbound_tail(body, patch, budget, limit)
+        } else {
+            PayloadJson::try_outbound_tail(body, patch, budget, limit)
+        }
         .map_err(DlpForwardError::from_token_error)?;
         let (body, reservation) = output.into_parts();
         Ok((
@@ -1829,6 +2182,17 @@ impl DlpHttpRequest {
             &DlpHistoryTransform<'_>,
         ) -> Result<(Value, Option<DlpHistoryMapping>), DlpForwardError>,
     {
+        if self.native_protocol.is_some() {
+            return self.prepare_native_chat_attempt(
+                provider_id,
+                protocol,
+                target_url,
+                auth_principal,
+                operation,
+                enriched_body,
+                transform_and_override,
+            );
+        }
         let mut refusal_audit = None;
         let result = (|| {
             let (mut attempt_lease, binding) = self
@@ -2136,6 +2500,10 @@ impl DlpHttpRequest {
                     pending_audit,
                     upstream_payload_owner: None,
                     history_mapping,
+                    native_history_digest: None,
+                    native_protocol: None,
+                    native_original: None,
+                    native_error_safety: None,
                     sse_evidence: std::sync::Mutex::new(None),
                 },
                 input_owner,
@@ -2492,6 +2860,23 @@ fn final_inspection_carriers(
             native: true,
         });
     }
+    if protocol == "gemini_native" {
+        let mut items =
+            PayloadVec::new(budget.clone()).map_err(DlpForwardError::from_token_error)?;
+        collect_final_gemini(body, &mut items).map_err(DlpForwardError::from_token_error)?;
+        let projection = final_inspection_json(
+            &FinalInspectionBody {
+                input: items.as_slice(),
+            },
+            budget,
+        )
+        .map_err(DlpForwardError::from_token_error)?;
+        return Ok(FinalInspectionCarriers {
+            carriers: collect(projection.as_value())?,
+            targets,
+            native: false,
+        });
+    }
     let anthropic = match protocol {
         "openai_chat" => false,
         "anthropic" => true,
@@ -2585,6 +2970,52 @@ fn final_inspection_carriers(
         targets,
         native: false,
     })
+}
+
+/// Native Gemini text carriers only: generated Parts, ProtoJSON system spellings and
+/// Struct-valued function arguments/results. Media, signatures and unknown members stay opaque.
+fn collect_final_gemini<'a>(
+    body: &'a Value,
+    items: &mut PayloadVec<FinalInspectionItem<'a>>,
+) -> Result<(), TokenError> {
+    for field in ["systemInstruction", "system_instruction"] {
+        if let Some(instruction) = body.get(field) {
+            collect_final_gemini_content(instruction, items)?;
+        }
+    }
+    if let Some(contents) = body.get("contents").and_then(Value::as_array) {
+        for content in contents {
+            collect_final_gemini_content(content, items)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_final_gemini_content<'a>(
+    content: &'a Value,
+    items: &mut PayloadVec<FinalInspectionItem<'a>>,
+) -> Result<(), TokenError> {
+    let Some(parts) = content.get("parts").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for part in parts {
+        if let Some(text) = part.get("text").and_then(Value::as_str) {
+            items.push(FinalInspectionItem::Text(text))?;
+        }
+        for (carrier, field) in [("functionCall", "args"), ("functionResponse", "response")] {
+            if let Some(value) = part
+                .get(carrier)
+                .and_then(|function| function.get(field))
+                .filter(|value| value.is_object())
+            {
+                items.push(FinalInspectionItem::Arguments {
+                    kind: "function_call",
+                    arguments: value,
+                })?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn final_inspection_json(
@@ -4178,6 +4609,7 @@ mod private_correctness_tests {
             source_body: PayloadJson::try_from_value(&request_body, budget.clone(), budget.limit())
                 .expect("synthetic source"),
             pretokenized: false,
+            native_protocol: None,
             endpoint_is_compact: false,
             audit_state: std::sync::Arc::new(
                 RequestAuditState::new(&AppType::Codex, None, budget.clone())
@@ -4705,6 +5137,94 @@ mod private_correctness_tests {
     }
 
     #[test]
+    fn m3_desktop_mapping_capacity_failure_and_drop_refund_every_charge(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::payload_json::test_support::{self, Action, Phase};
+        for normalize in [false, true] {
+            let budget = PayloadBudget::with_limit(1024 * 1024);
+            let request = source_copy_request(budget.clone());
+            let body = json!({"model":"claude-sonnet-fixture","messages":[
+                {"role":"assistant","content":[{"type":"tool_use","id":"synthetic-call","name":"synthetic_lookup","input":{}}]}]});
+            let original = body.to_string();
+            let before = budget.used();
+            let owner;
+            let mapped = {
+                let (mapped, reservation) = request
+                    .build_desktop_mapped_body(&body, "synthetic-mimo-model", normalize)
+                    .map_err(|_| "m3_desktop_mapping_fixture_failed")?;
+                owner = reservation;
+                mapped
+            };
+            let charge = budget.used() - before;
+            assert!(
+                charge > 0 && mapped["model"] == "synthetic-mimo-model",
+                "m3_desktop_mapping_not_charged"
+            );
+            drop(mapped);
+            assert!(
+                budget.used() == before + charge,
+                "m3_desktop_mapping_charge_released_before_owner"
+            );
+            drop(owner);
+            assert!(
+                budget.used() == before,
+                "m3_desktop_mapping_drop_not_refunded"
+            );
+            let fill = budget.reserve(budget.limit() - before - charge + 1)?;
+            assert!(
+                matches!(
+                    request.build_desktop_mapped_body(&body, "synthetic-mimo-model", normalize),
+                    Err(DlpForwardError::CapacityExceeded)
+                ),
+                "m3_desktop_mapping_short_capacity_not_rejected"
+            );
+            assert!(
+                budget.used() == before + fill.bytes(),
+                "m3_desktop_mapping_capacity_failure_leaked_charge"
+            );
+            drop(fill);
+            let fill = budget.reserve(budget.limit() - before - charge)?;
+            let owner;
+            let mapped = {
+                let (value, reservation) = request
+                    .build_desktop_mapped_body(&body, "synthetic-mimo-model", normalize)
+                    .map_err(|_| "m3_desktop_mapping_fixture_failed")?;
+                owner = reservation;
+                value
+            };
+            assert!(
+                budget.used() == budget.limit(),
+                "m3_desktop_mapping_exact_capacity_failed"
+            );
+            drop(mapped);
+            drop(owner);
+            drop(fill);
+            let hook = test_support::install(|event| {
+                if event.phase == Phase::AfterBuild {
+                    Action::Fail
+                } else {
+                    Action::Continue
+                }
+            });
+            assert!(
+                matches!(
+                    request.build_desktop_mapped_body(&body, "synthetic-mimo-model", normalize),
+                    Err(DlpForwardError::Unavailable)
+                ),
+                "m3_desktop_mapping_build_failure_not_propagated"
+            );
+            drop(hook);
+            assert!(
+                budget.used() == before && body.to_string() == original,
+                "m3_desktop_mapping_failure_mutated_source_or_leaked"
+            );
+            drop(request);
+            assert!(budget.used() == 0, "m3_desktop_mapping_request_drop_leaked");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn guarded_model_mapping_precharges_final_tree_and_preserves_source() {
         use super::super::payload_json::test_support::{self, Action, Phase};
         let budget = PayloadBudget::with_limit(1024 * 1024);
@@ -4964,6 +5484,7 @@ mod private_correctness_tests {
             )
             .expect("source fixture"),
             pretokenized: false,
+            native_protocol: None,
             endpoint_is_compact: false,
             audit_state: std::sync::Arc::new(
                 RequestAuditState::new(&AppType::Codex, session, budget.clone())
@@ -5459,6 +5980,10 @@ mod private_http_exit_tests {
             ),
             upstream_payload_owner: None,
             history_mapping: None,
+            native_history_digest: None,
+            native_protocol: None,
+            native_original: None,
+            native_error_safety: None,
             sse_evidence: std::sync::Mutex::new(None),
             pending_audit: PendingRequestAudit::empty(budget.clone())
                 .expect("audit summary fixture"),
@@ -5527,6 +6052,7 @@ mod private_production_activation_tests {
             &AppType::Codex,
             true,
             false,
+            false,
             &mut body,
             &HeaderMap::new(),
         )
@@ -5542,6 +6068,7 @@ mod private_production_activation_tests {
         let admission = admit_http_request(
             &gateway,
             &AppType::Codex,
+            false,
             false,
             false,
             &mut unsupported,
@@ -5560,6 +6087,7 @@ mod private_production_activation_tests {
                 &gateway,
                 &AppType::Codex,
                 true,
+                false,
                 false,
                 &mut ordinary,
                 &HeaderMap::new()
@@ -6233,6 +6761,7 @@ mod c3_early_inspection_tests {
             &gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut body,
             &headers,

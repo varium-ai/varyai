@@ -173,15 +173,18 @@ async fn reversible_http_native_json_tokenizes_upstream_and_restores_client() ->
 
 #[tokio::test]
 #[serial_test::serial]
-async fn reversible_http_unsupported_route_rejects_before_provider_selection() -> TestResult {
+async fn reversible_http_gateway_chat_rejects_before_provider_selection() -> TestResult {
     let _reset = RuntimeReset((*runtime::get_security_runtime()).clone());
     runtime::set_security_runtime_for_test(Default::default());
     let request = http::Request::builder().method("POST").uri("/v1/chat/completions")
         .header("content-type", "application/json")
         .body(Body::from(json!({"model":"synthetic-model", "messages":[{"role":"user","content":FIXTURE_PHONE}]}).to_string()))?;
-    let response =
-        handlers::handle_chat_completions(State(state(Arc::new(Database::memory()?))), request)
-            .await;
+    let response = handlers::handle_chat_completions_with_ingress(
+        state(Arc::new(Database::memory()?)),
+        request,
+        crate::proxy::handler_context::RequestIngress::Gateway,
+    )
+    .await;
     let response =
         response.map_err(|_| "unsupported restoration route reached provider selection")?;
     assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
@@ -937,6 +940,7 @@ async fn reversible_http_actual_send_audit_is_request_action_not_restoration_suc
         &proxy_state.restoration_gateway,
         &crate::app_config::AppType::Codex,
         true,
+        false,
         false,
         &mut body,
         &headers,
@@ -1824,6 +1828,7 @@ async fn chat_enrichment_refusal_fixture(refusal: EnrichmentRefusal) -> TestResu
         &AppType::Codex,
         true,
         false,
+        false,
         &mut body,
         &Default::default(),
     )? {
@@ -2140,6 +2145,7 @@ async fn source_copy_forwarding_fixture(boundary: SourceBoundary) -> TestResult 
         &gateway,
         &AppType::Codex,
         true,
+        false,
         false,
         &mut body,
         &Default::default(),
@@ -2919,6 +2925,7 @@ async fn outbound_retention_fixture_with_prompt(tail: bool, prompt: Option<bool>
             &AppType::Codex,
             true,
             false,
+            false,
             body,
             &Default::default(),
         )? {
@@ -3306,6 +3313,7 @@ async fn guarded_namespace_capacity_refuses_actual_forward_before_send() -> Test
         &AppType::Codex,
         true,
         false,
+        false,
         &mut body,
         &Default::default(),
     )? {
@@ -3508,6 +3516,7 @@ async fn namespace_wire_lifecycle(participating: bool, namespace: bool) -> TestR
             &AppType::Codex,
             true,
             false,
+            false,
             &mut body,
             &Default::default(),
         )? {
@@ -3643,6 +3652,7 @@ async fn guarded_response_namespace_handler_producer_refuses_before_any_forwardi
         &gateway,
         &AppType::Codex,
         true,
+        false,
         false,
         &mut body,
         &Default::default(),
@@ -4014,6 +4024,7 @@ async fn guarded_response_namespace_json_rewrite_await_and_error_release() -> Te
             &gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut body,
             &Default::default(),
@@ -4577,6 +4588,7 @@ async fn p1_xai_original_frame_limits_budget_and_cancel() -> TestResult {
             &gateway,
             &crate::app_config::AppType::Codex,
             true,
+            false,
             false,
             &mut body,
             &headers,
@@ -5845,6 +5857,7 @@ async fn run_closure_resp7_xai_foreign_json_witness(pending: bool) -> TestResult
         &crate::app_config::AppType::Codex,
         true,
         false,
+        false,
         &mut body,
         &http::HeaderMap::new(),
     )? {
@@ -6165,6 +6178,7 @@ fn assert_history_literal_has_no_authority(
         gateway,
         &crate::app_config::AppType::Codex,
         true,
+        false,
         false,
         &mut body,
         &headers,
@@ -7191,6 +7205,7 @@ async fn official_duplicate_authorization_fixture(
             &AppType::Codex,
             true,
             compact,
+            false,
             &mut body,
             &headers,
         )? {
@@ -7433,15 +7448,25 @@ async fn core_failure_http_fixture(mode: &'static str) -> TestResult {
         http::StatusCode::INTERNAL_SERVER_ERROR,
         "core failure must use the generic server status; case={mode}"
     );
-    assert_eq!(
-        value.pointer("/error/code").and_then(Value::as_str),
-        Some("proxy_processing_failed"),
-        "core failure must use the generic client code; case={mode}"
+    let code = value.pointer("/error/code").and_then(Value::as_str);
+    assert!(
+        matches!(
+            code,
+            Some("proxy_processing_failed" | "dlp_restore_unsupported")
+        ),
+        "core failure must use a fixed client code; case={mode}"
     );
-    assert_eq!(
-        value.pointer("/error/message").and_then(Value::as_str),
-        Some("The local proxy could not process the request. Please retry."),
-        "core failure must not expose internal diagnostics; case={mode}"
+    let message = value
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message == "The local proxy could not process the request. Please retry."
+            || message
+                == "Reversible DLP cannot safely modify this request or response. Remove the signed or otherwise immutable content, or disable reversible DLP for this provider."
+            || message
+                == "This route or response framing is not supported by reversible DLP. Supported direct routes are /chat/completions, /v1/messages, generateContent and streamGenerateContent with alt=sse. Use one of them, or disable reversible DLP for this provider.",
+        "core failure must not expose internal diagnostics; case={mode}: {message}"
     );
     let text = std::str::from_utf8(&wire)?;
     assert!(
@@ -7449,7 +7474,6 @@ async fn core_failure_http_fixture(mode: &'static str) -> TestResult {
             && !text.contains("rredact-cn_phone-")
             && !text.contains("synthetic-core-credential")
             && !text.contains("dlp_")
-            && !text.contains("Reversible DLP")
     );
     assert_eq!(
         store.stats()?.entries,
@@ -7780,6 +7804,7 @@ async fn run_closure_task_counterexample(mode: &'static str) -> TestResult {
         &proxy_state.restoration_gateway,
         &crate::app_config::AppType::Codex,
         true,
+        false,
         false,
         &mut body,
         &headers,
@@ -8783,6 +8808,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         &AppType::Codex,
         true,
         false,
+        false,
         &mut token_only,
         &headers,
     )? {
@@ -8840,6 +8866,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         &AppType::Codex,
         true,
         false,
+        false,
         &mut with_call,
         &headers,
     )? {
@@ -8867,6 +8894,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         &gateway,
         &AppType::Codex,
         true,
+        false,
         false,
         &mut orphan,
         &headers,
@@ -8896,6 +8924,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         &AppType::Codex,
         true,
         false,
+        false,
         &mut json!({"input":reference}),
         &headers,
     )?;
@@ -8912,6 +8941,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         &gateway,
         &AppType::Codex,
         true,
+        false,
         false,
         &mut malformed,
         &headers,
@@ -8930,6 +8960,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         &gateway,
         &AppType::Codex,
         true,
+        false,
         false,
         &mut invalid_encoded,
         &headers,
@@ -8955,6 +8986,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         &AppType::Codex,
         true,
         false,
+        false,
         &mut invalid_history,
         &headers,
     )? {
@@ -8970,6 +9002,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         &gateway,
         &AppType::Codex,
         true,
+        false,
         false,
         &mut json!({"input":reference}),
         &headers,
@@ -8987,6 +9020,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
             &gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut source,
             &headers,
@@ -9074,6 +9108,7 @@ async fn reversible_context_checkpoints_are_fixed_and_preserve_refusals() -> Tes
         &gateway,
         &AppType::Codex,
         true,
+        false,
         false,
         &mut harmless,
         &headers,
@@ -9854,6 +9889,7 @@ mod text_fallback_http_tests {
                 &crate::app_config::AppType::Codex,
                 true,
                 false,
+                false,
                 &mut request_body,
                 &headers,
             )? {
@@ -10497,6 +10533,7 @@ async fn reversible_http_upstream_error_reads_bounded_body_without_fail_over() -
             &proxy_state.restoration_gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut body,
             &Default::default(),
@@ -11720,6 +11757,7 @@ async fn final_send_binding_http_fixture(
             &AppType::Codex,
             true,
             false,
+            false,
             &mut body,
             &headers,
         )
@@ -12258,6 +12296,7 @@ async fn delivered_chat_history_transport_boundary_fixture(
             &AppType::Codex,
             true,
             false,
+            false,
             &mut body,
             &headers,
         )
@@ -12727,6 +12766,7 @@ mod delivered_chat_history_reqwest_failover {
                 &AppType::Codex,
                 true,
                 false,
+                false,
                 &mut body,
                 &headers,
             )
@@ -12843,6 +12883,7 @@ mod delivered_chat_history_reqwest_failover {
                 &proxy_state.restoration_gateway,
                 &AppType::Codex,
                 true,
+                false,
                 false,
                 &mut body,
                 &headers,
@@ -14041,6 +14082,7 @@ async fn converter_warning_diagnostic_fixture(
             &gateway,
             &crate::app_config::AppType::Codex,
             true,
+            false,
             false,
             &mut body,
             &http::HeaderMap::new(),

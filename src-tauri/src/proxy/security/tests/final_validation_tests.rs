@@ -30,6 +30,7 @@ fn request_in_store(source: &Value, store: &DlpTokenStore) -> Result<DlpHttpRequ
         restore_rules: StoreVec::new(store.allocation_ledger()?, 4096),
         source_body: PayloadJson::try_from_value(source, budget.clone(), budget.limit())?,
         pretokenized: false,
+        native_protocol: None,
         endpoint_is_compact: false,
         audit_state: std::sync::Arc::new(RequestAuditState::new(
             &AppType::Codex,
@@ -1514,6 +1515,7 @@ async fn reasoning_history_admission_candidate_preserves_mandatory_budget() -> T
         &AppType::Codex,
         true,
         false,
+        false,
         &mut source,
         &headers,
     )?;
@@ -1602,6 +1604,7 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
             &AppType::Codex,
             true,
             false,
+            false,
             &mut source,
             &headers,
         )? {
@@ -1658,6 +1661,7 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
             &AppType::Codex,
             true,
             false,
+            false,
             &mut replay,
             &headers,
         )? {
@@ -1700,6 +1704,7 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
             &gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut uncompleted,
             &headers,
@@ -1759,6 +1764,7 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
                 &AppType::Codex,
                 true,
                 false,
+                false,
                 &mut candidate,
                 &headers,
             )? {
@@ -1791,6 +1797,7 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
                 &gateway,
                 &AppType::Codex,
                 true,
+                false,
                 false,
                 &mut candidate,
                 &headers,
@@ -1835,6 +1842,7 @@ async fn reasoning_history_roundtrip_admission_and_native_attempt() -> TestResul
             &gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut literal_sibling,
             &headers,
@@ -1963,6 +1971,7 @@ async fn check_history_http_isolation(
         &AppType::Codex,
         true,
         false,
+        false,
         &mut source,
         &headers,
     )? {
@@ -2020,6 +2029,7 @@ async fn check_history_http_isolation(
         &AppType::Codex,
         true,
         false,
+        false,
         &mut replay,
         &headers,
     )? {
@@ -2072,6 +2082,7 @@ async fn check_history_http_isolation(
                 &gateway,
                 &AppType::Codex,
                 true,
+                false,
                 false,
                 &mut candidate,
                 candidate_headers,
@@ -2155,6 +2166,7 @@ async fn check_history_http_isolation(
             &gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut candidate,
             &headers,
@@ -3173,6 +3185,7 @@ async fn check_synthetic_repeat_pii(
                 &gateway,
                 &AppType::Codex,
                 true,
+                false,
                 false,
                 &mut outbound,
                 &headers,

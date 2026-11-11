@@ -16,7 +16,8 @@ use super::{
         CODEX_PARSER_CONFIG, GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
     },
     handler_context::{
-        RequestContext, RequestIngress, RestorationOperation, RestorationRouteScope,
+        RequestContext, RequestIngress, RestorationFraming, RestorationOperation,
+        RestorationRouteScope,
     },
     protocol_bridge::Protocol,
     providers::{
@@ -252,7 +253,9 @@ async fn handle_messages_for_app(
         .and_then(|s| s.as_bool())
         .unwrap_or(false);
 
-    // 转发请求
+    let native_anthropic = dlp_request
+        .as_ref()
+        .is_some_and(|request| request.is_native_anthropic());
     let forwarder = ctx.create_forwarder(&state).with_dlp_request(dlp_request);
     let mut result = match forwarder
         .forward_with_retry(
@@ -272,6 +275,11 @@ async fn handle_messages_for_app(
                 ctx.provider = provider;
             }
             log_forward_error(&state, &ctx, is_stream, &err.error);
+            if native_anthropic {
+                if let ProxyError::DlpForward(error) = err.error {
+                    return Ok(error.into_app_response(&app_type));
+                }
+            }
             return Err(err.error);
         }
     };
@@ -323,13 +331,14 @@ async fn handle_messages_for_app(
         .await;
     }
 
-    // 通用响应处理（透传模式）
-    process_response(
+    // Observe the tokenized response before the single native restoration finalizer.
+    super::response_processor::process_native_response(
         response,
         &ctx,
         &state,
         &CLAUDE_PARSER_CONFIG,
         connection_guard,
+        result.dlp_attempt,
     )
     .await
 }
@@ -976,12 +985,13 @@ pub(crate) async fn handle_chat_completions_with_ingress(
     ctx.provider = result.provider;
     let response = result.response;
 
-    process_response(
+    super::response_processor::process_native_response(
         response,
         &ctx,
         &state,
         &OPENAI_PARSER_CONFIG,
         connection_guard,
+        result.dlp_attempt,
     )
     .await
 }
@@ -1291,6 +1301,7 @@ async fn handle_codex_standalone_passthrough(
     let dlp_request = match super::security::http_restoration::admit_http_request(
         &state.restoration_gateway,
         &AppType::Codex,
+        false,
         false,
         false,
         &mut body,
@@ -2898,20 +2909,30 @@ pub(crate) async fn handle_gemini_with_ingress(
             .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?
     };
 
+    // Handler-owned scope decides both admission and generation framing; `body.stream`
+    // is not a Gemini terminal signal and never selects SSE here.
+    let route_scope = RestorationRouteScope::gemini_endpoint(ingress, &method, &uri);
+    let mut dlp_request = None;
     if !body.is_null() {
-        let route_scope = RestorationRouteScope::gemini_endpoint(ingress, &method, &uri);
-        if let super::security::http_restoration::RestorationAdmission::Intercepted(response) =
-            super::security::http_restoration::admit_http_request_with_scope(
-                &state.restoration_gateway,
-                &AppType::Gemini,
-                route_scope,
-                &mut body,
-                &headers,
-            )?
-        {
-            return Ok(response);
+        match super::security::http_restoration::admit_http_request_with_scope(
+            &state.restoration_gateway,
+            &AppType::Gemini,
+            route_scope,
+            &mut body,
+            &headers,
+        )? {
+            super::security::http_restoration::RestorationAdmission::Passthrough => {}
+            super::security::http_restoration::RestorationAdmission::Intercepted(response) => {
+                return Ok(response)
+            }
+            super::security::http_restoration::RestorationAdmission::Admitted(request) => {
+                dlp_request = Some(request)
+            }
         }
     }
+    let native_gemini = dlp_request
+        .as_ref()
+        .is_some_and(|request| request.is_native_gemini());
 
     // Gemini 的模型名称在 URI 中
     let mut ctx = RequestContext::new(
@@ -2921,7 +2942,7 @@ pub(crate) async fn handle_gemini_with_ingress(
         AppType::Gemini,
         "Gemini",
         "gemini",
-        None,
+        dlp_request.as_deref(),
     )
     .await?
     .with_model_from_uri(&uri);
@@ -2932,12 +2953,9 @@ pub(crate) async fn handle_gemini_with_ingress(
         .map(|pq| pq.as_str())
         .unwrap_or(uri.path());
 
-    let is_stream = body
-        .get("stream")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let is_stream = matches!(route_scope.framing, RestorationFraming::Sse);
 
-    let forwarder = ctx.create_forwarder(&state);
+    let forwarder = ctx.create_forwarder(&state).with_dlp_request(dlp_request);
     let mut result = match forwarder
         .forward_with_retry(
             &AppType::Gemini,
@@ -2956,6 +2974,11 @@ pub(crate) async fn handle_gemini_with_ingress(
                 ctx.provider = provider;
             }
             log_forward_error(&state, &ctx, is_stream, &err.error);
+            if native_gemini {
+                if let ProxyError::DlpForward(error) = err.error {
+                    return Ok(error.into_app_response(&AppType::Gemini));
+                }
+            }
             return Err(err.error);
         }
     };
@@ -2966,12 +2989,14 @@ pub(crate) async fn handle_gemini_with_ingress(
     ctx.provider = result.provider;
     let response = result.response;
 
-    process_response(
+    // Observe the tokenized response before the single native restoration finalizer.
+    super::response_processor::process_native_response(
         response,
         &ctx,
         &state,
         &GEMINI_PARSER_CONFIG,
         connection_guard,
+        result.dlp_attempt,
     )
     .await
 }

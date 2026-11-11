@@ -601,14 +601,32 @@ pub(in crate::proxy::security) fn finalize_native_sse(
         .map_err(|_| RestoreError::RestoreFailed)?;
     let key = NativeSseFinalizationKey { _private: () };
     let budget = stage.budget();
-    proof.validate_restored(
-        stage.entity(),
-        stage.binding(),
-        attempt,
-        stage.client(),
-        stage.finalization_reader(&key, max)?,
-        &budget,
-    )?;
+    if stage.composed_chat_snapshots()
+        || matches!(
+            stage.client().protocol(),
+            crate::proxy::protocol_bridge::Protocol::Anthropic
+                | crate::proxy::protocol_bridge::Protocol::Gemini
+        )
+    {
+        proof.validate_restored_chat_snapshots(
+            stage.entity(),
+            stage.binding(),
+            attempt,
+            stage.client(),
+            stage.finalization_reader(&key, max)?,
+            &budget,
+            stage.delivered(),
+        )?;
+    } else {
+        proof.validate_restored(
+            stage.entity(),
+            stage.binding(),
+            attempt,
+            stage.client(),
+            stage.finalization_reader(&key, max)?,
+            &budget,
+        )?;
+    }
     let release = ReleaseIdentity::new(&budget, Some(attempt.clone()), stage.release_digest())?;
     let mut output_tokens = PayloadVec::new(budget).map_err(RestoreError::capacity)?;
     for token in stage.output_tokens() {

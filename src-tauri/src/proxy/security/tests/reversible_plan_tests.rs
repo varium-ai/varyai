@@ -198,7 +198,7 @@ fn protected_nonwritable_values_fail_but_audit_and_allow_do_not_mutate() {
             &[]
         )
         .err(),
-        Some(PlanError::Unsupported)
+        Some(PlanError::ImmutableContent)
     );
     let observed = [hit(0..3, Audit, Custom), hit(0..3, Allow, PrivateKey)];
     let result = plan_request(

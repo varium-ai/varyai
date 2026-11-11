@@ -66,6 +66,7 @@ impl ResponsesFixture {
             &AppType::Codex,
             true,
             compact,
+            false,
             body,
             &headers,
         )? {

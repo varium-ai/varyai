@@ -267,6 +267,7 @@ fn restoration_audit_http_pretokenized_and_history_wait_for_actual_attempt() -> 
         &AppType::Codex,
         true,
         false,
+        false,
         &mut body,
         &Default::default(),
     )? {

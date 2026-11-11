@@ -52,6 +52,10 @@ fn fixture(budget: &PayloadBudget, raw: &str) -> (DlpTokenStore, DlpPreparedAtte
         pending_audit: PendingRequestAudit::empty(budget.clone()).expect("pending audit"),
         upstream_payload_owner: None,
         history_mapping: None,
+        native_history_digest: None,
+        native_protocol: None,
+        native_original: None,
+        native_error_safety: None,
         sse_evidence: std::sync::Mutex::new(None),
     };
     (store, attempt, token)

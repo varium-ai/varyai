@@ -3014,6 +3014,7 @@ async fn closure_anthropic_witness_sequence(mode: &str) -> Result<(), Box<dyn st
         &crate::app_config::AppType::Codex,
         true,
         false,
+        false,
         &mut body,
         &http::HeaderMap::new(),
     )? {
@@ -3578,6 +3579,7 @@ async fn reversible_completion_chat_sse_and_json_permit_null_optional_delta_and_
             &crate::app_config::AppType::Codex,
             true,
             false,
+            false,
             &mut req_body,
             &http::HeaderMap::new(),
         )
@@ -3699,6 +3701,7 @@ async fn reversible_empty_tool_calls_restore_reasoning_and_authorize_tool_follow
                 &gateway,
                 &crate::app_config::AppType::Codex,
                 true,
+                false,
                 false,
                 &mut body,
                 &headers,
@@ -3868,6 +3871,7 @@ async fn reversible_empty_tool_calls_restore_reasoning_and_authorize_tool_follow
                     &gateway,
                     &crate::app_config::AppType::Codex,
                     true,
+                    false,
                     false,
                     &mut followup,
                     &headers,
@@ -6123,6 +6127,8 @@ async fn agent_internal_dlp_errors_use_generic_protocol_envelopes() {
     use axum::{body::to_bytes, http::StatusCode};
 
     const MESSAGE: &str = "The local proxy could not process the request. Please retry.";
+    // The generic family keeps its historical projection; a caused rejection is a
+    // separate, caller-actionable contract asserted below.
     let internal_errors = [
         DlpForwardError::ContextUnavailable,
         DlpForwardError::PolicyConflict,
@@ -6145,7 +6151,10 @@ async fn agent_internal_dlp_errors_use_generic_protocol_envelopes() {
             assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
             let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
             let text = std::str::from_utf8(&bytes).unwrap();
-            assert!(!text.contains("DLP") && !text.contains("dlp_"), "{text}");
+            assert!(
+                !text.contains("dlp_") && !text.contains("checkpoint"),
+                "{text}"
+            );
             let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             match app_type {
                 AppType::Gemini => {

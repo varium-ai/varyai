@@ -1,4 +1,4 @@
-//! Compile-only contract body, compiled separately inside each disabled lane.
+//! Compile-only contract body, compiled separately inside each native lane.
 //! Authority is supplied by callers; these functions are never executed by tests.
 #![allow(dead_code)]
 
@@ -134,21 +134,53 @@ fn abort_contract(input: LifecycleInputs<'_>) -> ProbeResult {
 }
 
 #[test]
-fn disabled_lane_contract_compiles_without_registration() {
+fn lane_contract_compiles_without_expanding_registration() {
     // Referencing the functions does not run them or construct their authority inputs.
     let _ = request_contract;
     let _ = finish_contract;
     let _ = abort_contract;
     let client = ClientProtocol::new(super::CONTRACT_PROTOCOL);
     let pair = ProtocolPair::new(client, UpstreamProtocol::new(super::CONTRACT_PROTOCOL));
+    use crate::proxy::protocol_bridge::Protocol;
+    use crate::proxy::security::protocol_adapters::{registration, Registration};
+    use crate::proxy::security::restoration_contract::Operation;
+    let expected = match (super::CONTRACT_PROTOCOL, super::CONTRACT_OPERATION) {
+        (Protocol::Chat, Operation::ChatCompletions) => Registration::NativeChat,
+        (Protocol::Anthropic, Operation::Messages) => Registration::NativeAnthropic,
+        (Protocol::Gemini, Operation::GenerateContent) => Registration::NativeGemini,
+        _ => Registration::Disabled,
+    };
     for framing in [Framing::Json, Framing::Sse] {
-        assert!(matches!(
-            crate::proxy::security::protocol_adapters::registration(
-                pair,
-                super::CONTRACT_OPERATION,
+        assert!(
+            registration(pair, super::CONTRACT_OPERATION, framing) == expected,
+            "contract_probe_unexpected_integrated_registration"
+        );
+        for upstream in [
+            Protocol::Chat,
+            Protocol::Anthropic,
+            Protocol::Gemini,
+            Protocol::Responses,
+        ] {
+            if upstream != super::CONTRACT_PROTOCOL {
+                let cross = ProtocolPair::new(client, UpstreamProtocol::new(upstream));
+                assert!(
+                    registration(cross, super::CONTRACT_OPERATION, framing)
+                        == Registration::Disabled,
+                    "contract_probe_expanded_cross_protocol_registration"
+                );
+            }
+        }
+        // M4 integration approves only these same-protocol cells; no other protocol moves.
+        assert!(
+            registration(
+                ProtocolPair::new(
+                    ClientProtocol::new(Protocol::Gemini),
+                    UpstreamProtocol::new(Protocol::Gemini),
+                ),
+                Operation::GenerateContent,
                 framing,
-            ),
-            crate::proxy::security::protocol_adapters::Registration::Disabled
-        ));
+            ) == Registration::NativeGemini,
+            "contract_probe_gemini_registration_mismatch"
+        );
     }
 }

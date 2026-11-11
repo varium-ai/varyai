@@ -1525,8 +1525,7 @@ impl RequestForwarder {
         // 映射成真实上游模型名，并且未知 route 要直接报错，不能使用默认模型兜底。
         // Declare before all moved forms of the independent mapping tree.
         let _mapping_payload_owner;
-        let guarded_model_mapping =
-            self.dlp_request.is_some() && !matches!(app_type, AppType::ClaudeDesktop);
+        let guarded_model_mapping = self.dlp_request.is_some();
         let mapped_body = if exact {
             _mapping_payload_owner = None;
             body.clone()
@@ -1534,9 +1533,13 @@ impl RequestForwarder {
             let request = self.dlp_request.as_ref().ok_or(ProxyError::DlpForward(
                 super::security::http_restoration::DlpForwardError::Unavailable,
             ))?;
-            let (mapped, owner) = request
-                .build_mapped_body(body, provider, !is_copilot && !codex_responses_to_anthropic)
-                .map_err(ProxyError::DlpForward)?;
+            let (mapped, owner) = if matches!(app_type, AppType::ClaudeDesktop) {
+                request.build_desktop_provider_mapped_body(body, provider)
+            } else {
+                request
+                    .build_mapped_body(body, provider, !is_copilot && !codex_responses_to_anthropic)
+                    .map_err(ProxyError::DlpForward)
+            }?;
             _mapping_payload_owner = Some(owner);
             mapped
         } else if matches!(app_type, AppType::ClaudeDesktop) {
@@ -1730,6 +1733,24 @@ impl RequestForwarder {
         };
         if !exact && adapter.name() == "Claude" {
             if let Some(api_format) = resolved_claude_api_format.as_deref() {
+                // Native Anthropic carriers are immutable: refuse before vendor
+                // normalization can strip signatures or replace redacted blocks.
+                let native_immutable = self
+                    .dlp_request
+                    .as_ref()
+                    .is_some_and(|request| request.is_native_anthropic())
+                    && super::providers::anthropic_vendor_normalization_would_rewrite_immutable(
+                        &mapped_body,
+                        provider,
+                        api_format,
+                    );
+                if native_immutable {
+                    return Err(ProxyError::DlpForward(
+                        super::security::http_restoration::DlpForwardError::RestoreUnsupportedFor(
+                            super::security::http_restoration::RestoreUnsupportedCause::ImmutableSignedUnit,
+                        ),
+                    ));
+                }
                 super::providers::normalize_anthropic_messages_for_provider(
                     &mut mapped_body,
                     provider,
@@ -2287,7 +2308,46 @@ impl RequestForwarder {
             Ok((filtered_body, history_mapping))
         };
 
-        let protocol = if codex_responses_to_chat {
+        let native_chat = self
+            .dlp_request
+            .as_ref()
+            .is_some_and(|request| request.is_native_chat());
+        if native_chat && !super::providers::codex_provider_uses_chat_completions(provider) {
+            return Err(ProxyError::DlpForward(
+                super::security::http_restoration::DlpForwardError::RestoreUnsupported,
+            ));
+        }
+        let native_anthropic = self
+            .dlp_request
+            .as_ref()
+            .is_some_and(|request| request.is_native_anthropic());
+        if native_anthropic
+            && (needs_transform
+                || resolved_claude_api_format.as_deref() != Some("anthropic")
+                || !matches!(app_type, AppType::Claude | AppType::ClaudeDesktop))
+        {
+            return Err(ProxyError::DlpForward(
+                super::security::http_restoration::DlpForwardError::RestoreUnsupported,
+            ));
+        }
+        let native_gemini = self
+            .dlp_request
+            .as_ref()
+            .is_some_and(|request| request.is_native_gemini());
+        if native_gemini
+            && (needs_transform
+                || resolved_claude_api_format.is_some()
+                || !matches!(app_type, AppType::Gemini))
+        {
+            return Err(ProxyError::DlpForward(
+                super::security::http_restoration::DlpForwardError::RestoreUnsupported,
+            ));
+        }
+        let protocol = if native_anthropic {
+            "anthropic"
+        } else if native_gemini {
+            "gemini_native"
+        } else if codex_responses_to_chat || native_chat {
             "openai_chat"
         } else if codex_responses_to_anthropic {
             "anthropic"
@@ -2941,6 +3001,17 @@ impl RequestForwarder {
             .dlp_request
             .as_ref()
             .and_then(|request| request.capture_error_credentials(&ordered_headers));
+
+        if let (Some(request), Some(attempt)) = (self.dlp_request.as_ref(), dlp_attempt.as_mut()) {
+            request
+                .prepare_native_error_safety(
+                    attempt,
+                    &provider.settings_config,
+                    &log_secrets,
+                    error_credentials.as_ref(),
+                )
+                .map_err(ProxyError::DlpForward)?;
+        }
 
         // The test-only transport is exhaustive: an installed fixture never reaches a socket.
         #[cfg(test)]
@@ -4947,8 +5018,15 @@ mod tests {
         // An active policy also guards requests with no current token mappings.
         for input in ["synthetic-sensitive-value", "synthetic-ordinary-value"] {
             let mut body = json!({"model":"synthetic-model", "input":input});
-            let RestorationAdmission::Admitted(request) =
-                admit_http_request(&gateway, &AppType::Codex, true, false, &mut body, &headers)?
+            let RestorationAdmission::Admitted(request) = admit_http_request(
+                &gateway,
+                &AppType::Codex,
+                true,
+                false,
+                false,
+                &mut body,
+                &headers,
+            )?
             else {
                 return Err("synthetic restoration request was not admitted".into());
             };
@@ -4987,6 +5065,7 @@ mod tests {
                 &RestorationGateway::new_default(),
                 &AppType::Codex,
                 true,
+                false,
                 false,
                 &mut body,
                 &headers,

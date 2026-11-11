@@ -19,6 +19,10 @@ pub(super) use native_response::{
     NativeSseObservation, NativeSseSnapshotSelection, NativeSseTextStream, StagedNativeJson,
     StagedNativeSse,
 };
+// Internal deterministic mechanics; not an adapter snapshot attestation API.
+pub(super) use native_response::{
+    compose_anthropic_snapshots, compose_chat_snapshots, compose_gemini_snapshots,
+};
 
 pub(super) use super::output_text_matching::restore_text;
 
@@ -58,6 +62,72 @@ impl RequestAuthority {
     ) -> Result<Self, TokenError> {
         Ok(Self {
             lease: store.admit_published_policy(app, session, policy_revision)?,
+            budget,
+        })
+    }
+
+    pub(super) fn admit_native_chat(
+        store: &DlpTokenStore,
+        app: &str,
+        session: Option<&str>,
+        policy_revision: u64,
+        budget: PayloadBudget,
+    ) -> Result<Self, TokenError> {
+        use super::restoration_contract::{ClientProtocol, ContinuityScope, IngressNamespace};
+        Ok(Self {
+            lease: store.admit_scoped_published_policy(
+                ContinuityScope::Native {
+                    client: ClientProtocol::new(crate::proxy::protocol_bridge::Protocol::Chat),
+                    ingress: IngressNamespace::Direct,
+                },
+                app,
+                session,
+                policy_revision,
+            )?,
+            budget,
+        })
+    }
+
+    pub(super) fn admit_native_gemini(
+        store: &DlpTokenStore,
+        app: &str,
+        session: Option<&str>,
+        policy_revision: u64,
+        budget: PayloadBudget,
+    ) -> Result<Self, TokenError> {
+        use super::restoration_contract::{ClientProtocol, ContinuityScope, IngressNamespace};
+        Ok(Self {
+            lease: store.admit_scoped_published_policy(
+                ContinuityScope::Native {
+                    client: ClientProtocol::new(crate::proxy::protocol_bridge::Protocol::Gemini),
+                    ingress: IngressNamespace::Direct,
+                },
+                app,
+                session,
+                policy_revision,
+            )?,
+            budget,
+        })
+    }
+
+    pub(super) fn admit_native_anthropic(
+        store: &DlpTokenStore,
+        app: &str,
+        session: Option<&str>,
+        policy_revision: u64,
+        budget: PayloadBudget,
+    ) -> Result<Self, TokenError> {
+        use super::restoration_contract::{ClientProtocol, ContinuityScope, IngressNamespace};
+        Ok(Self {
+            lease: store.admit_scoped_published_policy(
+                ContinuityScope::Native {
+                    client: ClientProtocol::new(crate::proxy::protocol_bridge::Protocol::Anthropic),
+                    ingress: IngressNamespace::Direct,
+                },
+                app,
+                session,
+                policy_revision,
+            )?,
             budget,
         })
     }

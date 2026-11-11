@@ -147,6 +147,7 @@ fn encoded_argument_business_fields_http_preserve_literal_continuation() -> Test
                 &AppType::Codex,
                 true,
                 false,
+                false,
                 &mut body,
                 &headers,
             )? {
@@ -198,6 +199,7 @@ fn placeholder_passthrough_request_tool_history_and_final_validation() -> TestRe
             &gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut body,
             &Default::default(),
@@ -406,6 +408,7 @@ fn placeholder_passthrough_request_previous_response_degrades_without_completion
         &AppType::Codex,
         true,
         false,
+        false,
         &mut body,
         &Default::default(),
     )? {
@@ -450,6 +453,7 @@ fn placeholder_passthrough_request_disabled_runtime_keeps_unknown_complete_liter
                 &gateway,
                 &AppType::Codex,
                 true,
+                false,
                 false,
                 &mut body,
                 &Default::default()
@@ -591,6 +595,7 @@ fn placeholder_passthrough_request_readable_mixed_history_degrades_without_tool_
             &gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut body,
             &headers,
@@ -751,8 +756,15 @@ fn message_projection_http_tool_history_retains_dependency_boundaries() -> TestR
             .ok_or("message_projection_missing")?;
         drop(projection);
         let original = body.clone();
-        let admission =
-            admit_http_request(&gateway, &AppType::Codex, true, false, &mut body, &headers);
+        let admission = admit_http_request(
+            &gateway,
+            &AppType::Codex,
+            true,
+            false,
+            false,
+            &mut body,
+            &headers,
+        );
         let request = match admission {
             Ok(RestorationAdmission::Admitted(request)) => request,
             _ if case != 0 => continue,
@@ -959,6 +971,7 @@ fn message_projection_recorded_call_http_degrades_unavailable_binding_and_comple
             &AppType::Codex,
             true,
             false,
+            false,
             &mut body,
             &headers,
         )? {
@@ -1081,8 +1094,15 @@ fn mixed_readable_continuation_http_degrades_unavailable_per_call_completion() -
             _ => {}
         }
         let original = body.clone();
-        let admission =
-            admit_http_request(&gateway, &AppType::Codex, true, false, &mut body, &headers);
+        let admission = admit_http_request(
+            &gateway,
+            &AppType::Codex,
+            true,
+            false,
+            false,
+            &mut body,
+            &headers,
+        );
         let request = match admission {
             Ok(RestorationAdmission::Admitted(request)) => request,
             _ if !must_admit => continue,
@@ -1205,6 +1225,7 @@ fn mixed_readable_continuation_cursor_degrades_unavailable_per_call_completion()
             &AppType::Codex,
             true,
             false,
+            false,
             &mut body,
             &headers,
         )? {
@@ -1299,6 +1320,7 @@ fn mixed_readable_continuation_selected_completion_survives_history_eviction() -
             &gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut body,
             &headers,
@@ -1408,11 +1430,18 @@ fn mixed_media_history_degrades_missing_completion_without_granting_authority() 
         {"role":"user", "content":"Synthetic continue"}
     ]});
     let original = body.clone();
-    let request =
-        match admit_http_request(&gateway, &AppType::Codex, true, false, &mut body, &headers)? {
-            RestorationAdmission::Admitted(request) => request,
-            _ => return Err("mixed_media_history_admission_failed".into()),
-        };
+    let request = match admit_http_request(
+        &gateway,
+        &AppType::Codex,
+        true,
+        false,
+        false,
+        &mut body,
+        &headers,
+    )? {
+        RestorationAdmission::Admitted(request) => request,
+        _ => return Err("mixed_media_history_admission_failed".into()),
+    };
     let transformed = std::cell::Cell::new(false);
     let attempt = request
         .prepare_attempt(

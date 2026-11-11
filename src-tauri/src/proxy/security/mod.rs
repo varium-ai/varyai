@@ -101,6 +101,15 @@ mod c5_native_sse_tests;
 #[path = "tests/history_provenance_tests.rs"]
 mod history_provenance_tests;
 #[cfg(test)]
+#[path = "tests/native_anthropic_http_tests.rs"]
+mod native_anthropic_http_tests;
+#[cfg(test)]
+#[path = "tests/native_chat_http_tests.rs"]
+mod native_chat_http_tests;
+#[cfg(test)]
+#[path = "tests/native_gemini_http_tests.rs"]
+mod native_gemini_http_tests;
+#[cfg(test)]
 #[path = "tests/native_route_scope_tests.rs"]
 mod native_route_scope_tests;
 #[cfg(test)]

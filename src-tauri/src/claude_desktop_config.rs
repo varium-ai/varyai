@@ -770,7 +770,91 @@ pub fn model_list_response(provider: &Provider) -> Result<Value, AppError> {
     }))
 }
 
-pub fn map_proxy_request_model(mut body: Value, provider: &Provider) -> Result<Value, AppError> {
+/// Conservative request-local reservation for the strict resolver and MiMo probe.
+/// Count borrowed inputs without materializing the route table or copying strings.
+pub(crate) fn proxy_request_model_scratch_bytes(
+    body: &Value,
+    provider: &Provider,
+) -> Option<usize> {
+    use std::mem::size_of;
+
+    let requested = body
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    // Includes the request copy, role checks and both localized error strings
+    // plus their rendered form. The fixed allowance covers static error text.
+    let mut bytes = requested.len().checked_mul(12)?.checked_add(1024)?;
+    if requested.is_empty() {
+        return Some(bytes);
+    }
+
+    // Cover the entries Vec and stable sort, the resolved Vec (including
+    // growth and stable sort), and the reserved-ID hash table (including
+    // control bytes and rehash overlap). The base also covers small capacities.
+    const ROUTE_SLOTS: usize =
+        4 * size_of::<(&String, &crate::provider::ClaudeDesktopModelRoute)>()
+            + 4 * size_of::<ResolvedModelRoute>()
+            + 8 * (size_of::<String>() + 1);
+    let repaired_id_bytes = DEFAULT_PROXY_ROUTES
+        .iter()
+        .map(|route| route.route_id.len())
+        .max()
+        .unwrap_or(0)
+        + "-r".len()
+        + usize::MAX.ilog10() as usize
+        + 1;
+    let mut max_model_bytes = 0;
+    if let Some(meta) = &provider.meta {
+        let routes = &meta.claude_desktop_model_routes;
+        bytes = bytes.checked_add(routes.len().checked_mul(ROUTE_SLOTS)?)?;
+        for (route_id, route) in routes {
+            let id_bytes = route_id.trim().len();
+            let model_bytes = route.model.trim().len();
+            // Reserved safe IDs are copied even when the model is empty;
+            // keep room for that copy and a simultaneous validation lowercase.
+            bytes = bytes.checked_add(id_bytes.checked_mul(2)?)?;
+            // A suffix-only request can legacy-select a whitespace key even
+            // though that entry is omitted from the resolved route table.
+            max_model_bytes = max_model_bytes.max(model_bytes);
+            if id_bytes == 0 || model_bytes == 0 {
+                continue;
+            }
+            let label_bytes = route
+                .label_override
+                .as_deref()
+                .map(str::trim)
+                .filter(|label| !label.is_empty())
+                .map_or(model_bytes, str::len);
+            // Reserved ID, resolved ID (possibly generated), model and label.
+            // Allow for format growth and the transient next repaired ID.
+            bytes = bytes
+                .checked_add(id_bytes)?
+                .checked_add(id_bytes.max(4 * repaired_id_bytes))?
+                .checked_add(model_bytes)?
+                .checked_add(label_bytes)?;
+        }
+    }
+
+    // The selected clone lives through the mapping copy. MiMo checks lowercase
+    // the model and at most one endpoint at a time.
+    bytes = bytes.checked_add(max_model_bytes)?;
+    if provider_uses_anthropic_messages_format(provider) {
+        let mimo_scratch = provider_mimo_endpoint_candidates(provider)
+            .into_iter()
+            .flatten()
+            .map(str::len)
+            .fold(max_model_bytes, usize::max);
+        bytes = bytes.checked_add(mimo_scratch)?;
+    }
+    Some(bytes)
+}
+
+pub(crate) fn proxy_request_upstream_model(
+    body: &Value,
+    provider: &Provider,
+) -> Result<String, AppError> {
     let requested_raw = body
         .get("model")
         .and_then(Value::as_str)
@@ -843,6 +927,11 @@ pub fn map_proxy_request_model(mut body: Value, provider: &Provider) -> Result<V
             )
         })?;
 
+    Ok(upstream_model)
+}
+
+pub fn map_proxy_request_model(mut body: Value, provider: &Provider) -> Result<Value, AppError> {
+    let upstream_model = proxy_request_upstream_model(&body, provider)?;
     body["model"] = json!(upstream_model);
     if should_normalize_mimo_anthropic_thinking_history(provider, &upstream_model) {
         normalize_mimo_anthropic_thinking_history(&mut body);
@@ -901,7 +990,7 @@ fn claude_role_keyword(model: &str) -> Option<&'static str> {
     }
 }
 
-fn should_normalize_mimo_anthropic_thinking_history(
+pub(crate) fn should_normalize_mimo_anthropic_thinking_history(
     provider: &Provider,
     upstream_model: &str,
 ) -> bool {
@@ -930,6 +1019,13 @@ fn provider_uses_anthropic_messages_format(provider: &Provider) -> bool {
 }
 
 fn provider_has_mimo_endpoint(provider: &Provider) -> bool {
+    provider_mimo_endpoint_candidates(provider)
+        .into_iter()
+        .flatten()
+        .any(is_mimo_identifier)
+}
+
+fn provider_mimo_endpoint_candidates(provider: &Provider) -> [Option<&str>; 4] {
     let settings = &provider.settings_config;
     [
         settings
@@ -940,9 +1036,6 @@ fn provider_has_mimo_endpoint(provider: &Provider) -> bool {
         settings.get("baseURL").and_then(Value::as_str),
         settings.get("apiEndpoint").and_then(Value::as_str),
     ]
-    .into_iter()
-    .flatten()
-    .any(is_mimo_identifier)
 }
 
 fn is_mimo_identifier(value: &str) -> bool {
@@ -950,7 +1043,7 @@ fn is_mimo_identifier(value: &str) -> bool {
     value.contains("mimo") || value.contains("xiaomimimo")
 }
 
-fn normalize_mimo_anthropic_thinking_history(body: &mut Value) {
+pub(crate) fn normalize_mimo_anthropic_thinking_history(body: &mut Value) {
     let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };

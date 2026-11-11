@@ -593,7 +593,7 @@ impl VerifiedJsonCompletion {
     }
 }
 
-fn json_digest(source: &Value) -> Result<[u8; 32], RestoreError> {
+pub(super) fn json_digest(source: &Value) -> Result<[u8; 32], RestoreError> {
     struct DigestWriter(Sha256);
     impl io::Write for DigestWriter {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -640,9 +640,14 @@ impl NativeVerifierContext {
         if let Some(error) = self.failed {
             return Err(error);
         }
-        // This primitive supports the native Chat fixture, not a registry grant.
-        if self.pair.client().protocol() != Protocol::Chat
-            || self.pair.upstream().protocol() != Protocol::Chat
+        // Native mechanics do not grant a registry or route capability.
+        let client = self.pair.client().protocol();
+        let upstream = self.pair.upstream().protocol();
+        if client != upstream
+            || !matches!(
+                client,
+                Protocol::Chat | Protocol::Anthropic | Protocol::Gemini
+            )
         {
             return Err(RestoreError::RestoreUnsupported);
         }
@@ -717,8 +722,15 @@ impl NativeJsonEvidence {
         raw: &str,
         actual: &AttemptProvenance,
         budget: &PayloadBudget,
+        client: ClientProtocol,
     ) -> Result<Self, RestoreError> {
-        let mut completion = JsonCompletion::new(JsonCompletionProtocol::ChatCompletions);
+        use crate::proxy::protocol_bridge::Protocol;
+        let mut completion = match client.protocol() {
+            Protocol::Chat => JsonCompletion::native_chat(),
+            Protocol::Anthropic => JsonCompletion::new(JsonCompletionProtocol::AnthropicMessages),
+            Protocol::Gemini => JsonCompletion::native_gemini(),
+            _ => return Err(RestoreError::RestoreUnsupported),
+        };
         completion.observe_raw_json(raw, budget);
         if completion.has_unsupported_carrier() {
             return Err(RestoreError::RestoreUnsupported);
@@ -781,7 +793,12 @@ impl NativeJsonVerifier {
             let bytes = consume_native_entity(source, &self.context.budget)?;
             let raw =
                 std::str::from_utf8(bytes.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
-            NativeJsonEvidence::observe(raw, actual, &self.context.budget)
+            NativeJsonEvidence::observe(
+                raw,
+                actual,
+                &self.context.budget,
+                self.context.pair.client(),
+            )
         });
         self.original = Some(self.context.record(result)?);
         Ok(())
@@ -807,7 +824,12 @@ impl NativeJsonVerifier {
             let bytes = serialize_native_json(owned.as_value(), &self.context.budget)?;
             let raw =
                 std::str::from_utf8(bytes.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
-            NativeJsonEvidence::observe(raw, actual, &self.context.budget)
+            NativeJsonEvidence::observe(
+                raw,
+                actual,
+                &self.context.budget,
+                self.context.pair.client(),
+            )
         });
         self.client = Some(self.context.record(result)?);
         Ok(())
@@ -869,12 +891,13 @@ impl VerifiedNativeJson {
     ) -> Result<(), RestoreError> {
         self.validate(source, binding, attempt, client)?;
         let raw = std::str::from_utf8(restored).map_err(|_| RestoreError::RestoreFailed)?;
-        NativeJsonEvidence::observe(raw, attempt, budget)?;
+        NativeJsonEvidence::observe(raw, attempt, budget, client)?;
         Ok(())
     }
 }
 
 struct NativeSseEvidence {
+    client: ClientProtocol,
     completion: SseCompletion,
     transport: CompletionTransport,
     done: bool,
@@ -887,11 +910,20 @@ impl NativeSseEvidence {
         source: R,
         actual: &AttemptProvenance,
         budget: &PayloadBudget,
+        client: ClientProtocol,
     ) -> Result<Self, RestoreError> {
+        use crate::proxy::protocol_bridge::Protocol;
+        let completion = match client.protocol() {
+            Protocol::Chat => SseCompletion::native_chat(),
+            Protocol::Anthropic => SseCompletion::anthropic(),
+            Protocol::Gemini => SseCompletion::gemini(),
+            _ => return Err(RestoreError::RestoreUnsupported),
+        };
         let bytes = consume_native_entity(source, budget)?;
         let raw = std::str::from_utf8(bytes.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
         let mut evidence = Self {
-            completion: SseCompletion::chat(),
+            client,
+            completion,
             transport: CompletionTransport::default(),
             done: false,
             source: framed_native_digest(b"native-sse-entity-v1\0", bytes.as_slice()),
@@ -934,7 +966,19 @@ impl NativeSseEvidence {
         let mut data = PayloadBuffer::new(budget.clone(), NATIVE_ENTITY_LIMIT)
             .map_err(|_| RestoreError::RestoreFailed)?;
         let mut count = 0usize;
+        let mut event_name = None;
         for line in block.lines() {
+            if let Some(value) = line
+                .strip_prefix("event:")
+                .or_else(|| (line == "event").then_some(""))
+            {
+                if event_name
+                    .replace(value.strip_prefix(' ').unwrap_or(value))
+                    .is_some()
+                {
+                    return Err(RestoreError::RestoreFailed);
+                }
+            }
             if let Some(value) = line
                 .strip_prefix("data:")
                 .or_else(|| (line == "data").then_some(""))
@@ -954,7 +998,8 @@ impl NativeSseEvidence {
             }
             let encoded =
                 std::str::from_utf8(data.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
-            if encoded.trim() == "[DONE]" {
+            use crate::proxy::protocol_bridge::Protocol;
+            if self.client.protocol() == Protocol::Chat && encoded.trim() == "[DONE]" {
                 self.completion
                     .observe(&CompletionObservation::ChatDone, budget);
                 self.done = true;
@@ -962,8 +1007,26 @@ impl NativeSseEvidence {
                 let parsed =
                     PayloadJson::try_from_str(encoded, budget.clone(), NATIVE_ENTITY_LIMIT)
                         .map_err(|_| RestoreError::RestoreFailed)?;
-                self.completion
-                    .observe(&CompletionObservation::ChatChunk(parsed.as_value()), budget);
+                if self.client.protocol() == Protocol::Anthropic
+                    && parsed.as_value().get("type").and_then(Value::as_str)
+                        == Some("message_delta")
+                    && parsed
+                        .as_value()
+                        .get("delta")
+                        .is_none_or(|delta| !delta.is_object())
+                {
+                    return Err(RestoreError::RestoreFailed);
+                }
+                let fact = match self.client.protocol() {
+                    Protocol::Chat => CompletionObservation::ChatChunk(parsed.as_value()),
+                    Protocol::Anthropic => CompletionObservation::AnthropicEvent {
+                        event_name,
+                        data: parsed.as_value(),
+                    },
+                    Protocol::Gemini => CompletionObservation::GeminiChunk(parsed.as_value()),
+                    _ => return Err(RestoreError::RestoreUnsupported),
+                };
+                self.completion.observe(&fact, budget);
             }
         }
         if self.completion.has_unsupported_carrier() {
@@ -973,7 +1036,15 @@ impl NativeSseEvidence {
     }
 
     fn check_completion(&self) -> Result<(), RestoreError> {
-        if self.done && self.completion.permits_completion() && self.transport.permits_completion()
+        let terminal_marker = match self.client.protocol() {
+            crate::proxy::protocol_bridge::Protocol::Chat => self.done,
+            crate::proxy::protocol_bridge::Protocol::Anthropic
+            | crate::proxy::protocol_bridge::Protocol::Gemini => true,
+            _ => false,
+        };
+        if terminal_marker
+            && self.completion.permits_completion()
+            && self.transport.permits_completion()
         {
             Ok(())
         } else {
@@ -1017,7 +1088,12 @@ impl NativeSseVerifier {
             if self.original.is_some() {
                 return Err(RestoreError::RestoreFailed);
             }
-            NativeSseEvidence::consume(source, actual, &self.context.budget)
+            NativeSseEvidence::consume(
+                source,
+                actual,
+                &self.context.budget,
+                self.context.pair.client(),
+            )
         });
         self.original = Some(self.context.record(result)?);
         Ok(())
@@ -1033,7 +1109,12 @@ impl NativeSseVerifier {
             if self.client.is_some() {
                 return Err(RestoreError::RestoreFailed);
             }
-            NativeSseEvidence::consume(source, actual, &self.context.budget)
+            NativeSseEvidence::consume(
+                source,
+                actual,
+                &self.context.budget,
+                self.context.pair.client(),
+            )
         });
         self.client = Some(self.context.record(result)?);
         Ok(())
@@ -1086,7 +1167,118 @@ impl VerifiedNativeSse {
         budget: &PayloadBudget,
     ) -> Result<(), RestoreError> {
         self.validate(source, binding, attempt, client)?;
-        NativeSseEvidence::consume(restored, attempt, budget)?;
+        NativeSseEvidence::consume(restored, attempt, budget, client)?;
+        Ok(())
+    }
+    /// Consume exact final wire and independently derive the complete ordered history.
+    /// The expected value can only be the sealed stage's internally composed snapshot.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::proxy::security) fn validate_restored_chat_snapshots<R: io::Read>(
+        self,
+        source: &[u8],
+        binding: &ActualAttemptBinding,
+        attempt: &AttemptProvenance,
+        client: ClientProtocol,
+        restored: R,
+        budget: &PayloadBudget,
+        expected: &Value,
+    ) -> Result<(), RestoreError> {
+        use super::super::{
+            payload_metadata::PayloadVec,
+            restoration_core::{
+                compose_anthropic_snapshots, compose_chat_snapshots, compose_gemini_snapshots,
+            },
+        };
+        self.validate(source, binding, attempt, client)?;
+        let bytes = consume_native_entity(restored, budget)?;
+        NativeSseEvidence::consume(io::Cursor::new(bytes.as_slice()), attempt, budget, client)?;
+        let raw = std::str::from_utf8(bytes.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
+        let mut sources = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
+        let mut data = PayloadBuffer::new(budget.clone(), NATIVE_ENTITY_LIMIT)
+            .map_err(RestoreError::capacity)?;
+        let mut lines = 0usize;
+        for line in raw.lines() {
+            if line.is_empty() {
+                if lines != 0 {
+                    let encoded = std::str::from_utf8(data.as_slice())
+                        .map_err(|_| RestoreError::RestoreFailed)?;
+                    if encoded.trim() != "[DONE]" {
+                        if sources.len() >= 1024 {
+                            return Err(RestoreError::RestoreFailed);
+                        }
+                        sources
+                            .push(
+                                PayloadJson::try_from_str(encoded, budget.clone(), budget.limit())
+                                    .map_err(RestoreError::capacity)?,
+                            )
+                            .map_err(RestoreError::capacity)?;
+                    }
+                }
+                data = PayloadBuffer::new(budget.clone(), NATIVE_ENTITY_LIMIT)
+                    .map_err(RestoreError::capacity)?;
+                lines = 0;
+            } else if let Some(value) = line
+                .strip_prefix("data:")
+                .or_else(|| (line == "data").then_some(""))
+            {
+                if lines != 0 {
+                    data.append(b"\n").map_err(RestoreError::capacity)?;
+                }
+                data.append(value.strip_prefix(' ').unwrap_or(value).as_bytes())
+                    .map_err(RestoreError::capacity)?;
+                lines += 1;
+            }
+        }
+        // Keep the historical entry name for existing Chat callers; only this
+        // HTTP-owned, proof-consuming boundary dispatches native snapshot composition.
+        use crate::proxy::protocol_bridge::Protocol;
+        let mut nodes = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
+        let actual = match client.protocol() {
+            Protocol::Chat => {
+                for source in sources.as_slice() {
+                    for choice in source
+                        .as_value()
+                        .get("choices")
+                        .and_then(Value::as_array)
+                        .ok_or(RestoreError::RestoreFailed)?
+                    {
+                        if nodes.len() >= 128 {
+                            return Err(RestoreError::RestoreFailed);
+                        }
+                        nodes.push(choice).map_err(RestoreError::capacity)?;
+                    }
+                }
+                compose_chat_snapshots(nodes.as_slice(), budget)?
+            }
+            Protocol::Anthropic => {
+                for source in sources.as_slice() {
+                    nodes
+                        .push(source.as_value())
+                        .map_err(RestoreError::capacity)?;
+                }
+                compose_anthropic_snapshots(nodes.as_slice(), budget)?
+            }
+            Protocol::Gemini => {
+                for source in sources.as_slice() {
+                    if let Some(candidates) = source.as_value().get("candidates") {
+                        for candidate in candidates.as_array().ok_or(RestoreError::RestoreFailed)? {
+                            if nodes.len() >= 1024 {
+                                return Err(RestoreError::RestoreFailed);
+                            }
+                            nodes.push(candidate).map_err(RestoreError::capacity)?;
+                        }
+                    }
+                }
+                compose_gemini_snapshots(nodes.as_slice(), budget)?
+            }
+            _ => return Err(RestoreError::RestoreUnsupported),
+        };
+        // Serialize both through charged owners: equality must include key order.
+        let actual_wire = serialize_native_json(actual.as_value(), budget)?;
+        let expected_wire = serialize_native_json(expected, budget)?;
+        if actual_wire.as_slice() != expected_wire.as_slice() {
+            return Err(RestoreError::RestoreFailed);
+        }
         Ok(())
     }
 }
@@ -1843,10 +2035,14 @@ mod c5_native_completion_tests {
                     fixture.binding.clone(),
                     fixture.budget.clone(),
                 );
-                assert!(matches!(
-                    json_verifier.consume_upstream_json(Cursor::new(&json), &fixture.attempt),
-                    Err(RestoreError::RestoreUnsupported)
-                ));
+                let json_result =
+                    json_verifier.consume_upstream_json(Cursor::new(&json), &fixture.attempt);
+                if matches!(client, Protocol::Anthropic | Protocol::Gemini) && client == upstream {
+                    // Native JSON mechanics are approved, but a Chat body is not native proof.
+                    assert!(matches!(json_result, Err(RestoreError::RestoreFailed)));
+                } else {
+                    assert!(matches!(json_result, Err(RestoreError::RestoreUnsupported)));
+                }
                 assert!(json_verifier.finish().is_err());
                 let mut sse_verifier = NativeSseVerifier::new(
                     pair(client, upstream),
@@ -1854,10 +2050,14 @@ mod c5_native_completion_tests {
                     fixture.binding.clone(),
                     fixture.budget.clone(),
                 );
-                assert!(matches!(
-                    sse_verifier.consume_upstream_sse(Cursor::new(&sse), &fixture.attempt),
-                    Err(RestoreError::RestoreUnsupported)
-                ));
+                let sse_result =
+                    sse_verifier.consume_upstream_sse(Cursor::new(&sse), &fixture.attempt);
+                if matches!(client, Protocol::Anthropic | Protocol::Gemini) && client == upstream {
+                    // Native SSE mechanics are approved, but Chat wire is not native proof.
+                    assert!(matches!(sse_result, Err(RestoreError::RestoreFailed)));
+                } else {
+                    assert!(matches!(sse_result, Err(RestoreError::RestoreUnsupported)));
+                }
                 assert!(sse_verifier.finish().is_err());
             }
         }

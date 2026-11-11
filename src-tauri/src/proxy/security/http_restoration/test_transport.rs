@@ -23,9 +23,32 @@ use super::{
     VerifiedNativeJson, VerifiedNativeSse,
 };
 
+/// Preserve the original Chat/Chat fixture API for existing shared tests.
+pub(in crate::proxy::security) async fn native_json_proof(
+    attempt: &AttemptProvenance,
+    binding: &ActualAttemptBinding,
+    budget: &PayloadBudget,
+    original: Bytes,
+    pre_restoration_client: &Value,
+) -> Result<VerifiedNativeJson, RestoreError> {
+    native_json_proof_for_pair(
+        ProtocolPair::new(
+            ClientProtocol::new(Protocol::Chat),
+            UpstreamProtocol::new(Protocol::Chat),
+        ),
+        attempt,
+        binding,
+        budget,
+        original,
+        pre_restoration_client,
+    )
+    .await
+}
+
 /// Consume synthetic original bytes through an async Stream, including actual EOF.
 /// Keep the actual attempt independent of the selected binding for rejection tests.
-pub(in crate::proxy::security) async fn native_json_proof(
+pub(in crate::proxy::security) async fn native_json_proof_for_pair(
+    pair: ProtocolPair,
     attempt: &AttemptProvenance,
     binding: &ActualAttemptBinding,
     budget: &PayloadBudget,
@@ -48,17 +71,9 @@ pub(in crate::proxy::security) async fn native_json_proof(
         }
         Poll::Ready(chunk.map(Ok::<Bytes, io::Error>))
     });
-    let proof = NativeCompletionDriver::new(
-        ProtocolPair::new(
-            ClientProtocol::new(Protocol::Chat),
-            UpstreamProtocol::new(Protocol::Chat),
-        ),
-        attempt.clone(),
-        binding.clone(),
-        budget.clone(),
-    )
-    .consume_json(source, attempt, pre_restoration_client, attempt)
-    .await?;
+    let proof = NativeCompletionDriver::new(pair, attempt.clone(), binding.clone(), budget.clone())
+        .consume_json(source, attempt, pre_restoration_client, attempt)
+        .await?;
     assert_eq!(
         eof_polls.get(),
         1,
@@ -67,11 +82,34 @@ pub(in crate::proxy::security) async fn native_json_proof(
     Ok(proof)
 }
 
+/// Preserve the original Chat/Chat fixture API for existing shared tests.
+pub(in crate::proxy::security) async fn native_sse_proof(
+    attempt: &AttemptProvenance,
+    binding: &ActualAttemptBinding,
+    budget: &PayloadBudget,
+    original: Bytes,
+    pre_restoration_client: Bytes,
+) -> Result<VerifiedNativeSse, RestoreError> {
+    native_sse_proof_for_pair(
+        ProtocolPair::new(
+            ClientProtocol::new(Protocol::Chat),
+            UpstreamProtocol::new(Protocol::Chat),
+        ),
+        attempt,
+        binding,
+        budget,
+        original,
+        pre_restoration_client,
+    )
+    .await
+}
+
 /// Consume independent synthetic SSE entities through the real async driver.
 /// Each source yields chunks and Pending/wake before reaching actual None EOF.
 /// This does not prove live-tee liveness, per-yield delivery, or publication.
 /// Keep the actual attempt independent of the selected binding for rejection tests.
-pub(in crate::proxy::security) async fn native_sse_proof(
+pub(in crate::proxy::security) async fn native_sse_proof_for_pair(
+    pair: ProtocolPair,
     attempt: &AttemptProvenance,
     binding: &ActualAttemptBinding,
     budget: &PayloadBudget,
@@ -122,17 +160,9 @@ pub(in crate::proxy::security) async fn native_sse_proof(
         Poll::Ready(chunk.map(Ok::<Bytes, io::Error>))
     });
 
-    let proof = NativeCompletionDriver::new(
-        ProtocolPair::new(
-            ClientProtocol::new(Protocol::Chat),
-            UpstreamProtocol::new(Protocol::Chat),
-        ),
-        attempt.clone(),
-        binding.clone(),
-        budget.clone(),
-    )
-    .consume_sse(original_source, attempt, client_source, attempt)
-    .await?;
+    let proof = NativeCompletionDriver::new(pair, attempt.clone(), binding.clone(), budget.clone())
+        .consume_sse(original_source, attempt, client_source, attempt)
+        .await?;
     assert_eq!(
         original_eof_polls.get(),
         1,

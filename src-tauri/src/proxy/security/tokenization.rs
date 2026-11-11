@@ -2654,6 +2654,21 @@ impl DlpRequestLease {
         Ok(slot)
     }
 
+    /// HTTP transcript orchestration checks publication order without minting a handle.
+    pub(super) fn native_delivered_serial(
+        &self,
+        binding: &super::completed_context::ActualAttemptBinding,
+        client: super::restoration_contract::ClientProtocol,
+        handle: &super::completed_context::CompletedContextHandle,
+    ) -> Result<u64, TokenError> {
+        let state = self.store.lock()?;
+        let ns = state
+            .namespaces
+            .get(&self.namespace)
+            .ok_or(TokenError::ContextUnavailable)?;
+        Ok(self.native_import_slot(ns, binding, client, handle)?.serial)
+    }
+
     /// Stage a complete ledger-backed authority replacement, then revalidate and commit once.
     /// This grants neither Responses cursor authority nor native result/call pairing.
     pub(super) fn import_native_completed_context_extracted(

@@ -1,6 +1,9 @@
-//! Disabled lane slot; native behavior is gated on CORE-1 and lane acceptance.
-mod history;
+//! Disabled native lane; AN1 exposes request inspection without route or history authority.
+pub(in crate::proxy::security) mod history;
 mod request;
-mod response;
+pub(in crate::proxy::security) mod response;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(in crate::proxy::security) use request::observe_request;
