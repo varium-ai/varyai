@@ -21,7 +21,10 @@ vi.mock("@/lib/api/workbuddy-checkin", () => ({
   },
 }));
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, options?: { day?: string }) =>
+      options?.day ? `${key}: ${options.day}` : key,
+  }),
 }));
 vi.mock("@/lib/api/settings", () => ({
   settingsApi: { openExternal: vi.fn() },
@@ -48,6 +51,7 @@ function mount() {
   fireEvent.click(
     screen.getByRole("button", { name: "workbuddy.checkin.title" }),
   );
+  fireEvent.click(screen.getByRole("button", { name: "dailyCheckin.manage" }));
 }
 
 beforeEach(() => {
@@ -95,7 +99,9 @@ describe("WorkBuddy daily check-in", () => {
       screen.getByText(/workbuddy.checkin.outcomes.credentials_unavailable/),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "agentRewards.checkedIn" }),
+      screen.getByRole("button", {
+        name: /^dailyCheckin\.(todayReward|todayChecked|claimedReward|claimed)$/,
+      }),
     ).toBeDisabled();
     expect(screen.getByRole("switch")).toBeDisabled();
     expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
@@ -258,10 +264,17 @@ describe("WorkBuddy daily check-in", () => {
     expect(workbuddyCheckinApi.checkIn).toHaveBeenCalledWith(
       "switched-native-account",
     );
-    expect(screen.getByText("workbuddy.checkin.reward")).toBeInTheDocument();
+    expect(screen.getByText("dailyCheckin.todayReward")).toBeInTheDocument();
     expect(screen.getByText("workbuddy.checkin.delayed")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "agentRewards.checkedIn" }),
+      screen
+        .getAllByRole("listitem")
+        .filter((day) => day.dataset.state === "complete"),
+    ).toHaveLength(3);
+    expect(
+      screen.getByRole("button", {
+        name: /^dailyCheckin\.(todayReward|todayChecked|claimedReward|claimed)$/,
+      }),
     ).toBeDisabled();
   });
 
@@ -364,7 +377,7 @@ describe("WorkBuddy daily check-in", () => {
       await screen.findByText("workbuddy.checkin.outcomes.own_app_required"),
     ).toBeInTheDocument();
     expect(
-      screen.queryByText("workbuddy.checkin.reward"),
+      screen.queryByText("dailyCheckin.todayReward"),
     ).not.toBeInTheDocument();
   });
 
@@ -396,7 +409,7 @@ it.each(["claimed", "already_checked"] as const)(
     });
     mount();
     const completed = await screen.findByRole("button", {
-      name: "agentRewards.checkedIn",
+      name: /^dailyCheckin\.(todayReward|todayChecked|claimedReward|claimed)$/,
     });
     expect(completed).toBeDisabled();
     fireEvent.click(completed);
@@ -416,3 +429,17 @@ it.each(["claimed", "already_checked"] as const)(
     expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
   },
 );
+
+it("displays the computer's local date instead of the Beijing service day", async () => {
+  const localDate = vi
+    .spyOn(Date.prototype, "toLocaleDateString")
+    .mockReturnValue("local-calendar-date");
+  try {
+    mount();
+    expect(await screen.findByText("local-calendar-date")).toBeInTheDocument();
+    expect(localDate).toHaveBeenCalledWith();
+    expect(screen.queryByText(/2026-11-02/)).not.toBeInTheDocument();
+  } finally {
+    localDate.mockRestore();
+  }
+});

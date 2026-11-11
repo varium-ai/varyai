@@ -407,7 +407,12 @@ fn captures_every_provider_capable_agent_instead_of_only_the_original_three() {
     let state = support::create_test_state().unwrap();
     // WorkBuddy AI uses shared connection profiles, covered by the shared-catalog lifecycle test.
     let apps: Vec<_> = AppType::all()
-        .filter(|app| *app != AppType::DoubaoWork)
+        .filter(|app| {
+            !matches!(
+                app,
+                AppType::DoubaoWork | AppType::Cursor | AppType::CursorCli | AppType::T3Code
+            )
+        })
         .collect();
     for app in &apps {
         let config = if *app == AppType::Codex {
@@ -1209,7 +1214,7 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
                 .unwrap();
             let request: serde_json::Value = serde_json::from_str(&line).unwrap();
             let result=match request["op"].as_str().unwrap(){
-            "health"=>json!({"ready":true,"enabled":false,"revision":11,"modelVerification":1,"startingModel":1,"modelReplacement":true}),
+            "health"=>json!({"ready":true,"enabled":false,"revision":18,"modelVerification":1,"startingModel":1,"modelReplacement":true}),
             "list"=>json!(server_models.lock().unwrap().iter().map(|(id,c)|json!({"id":id,"name":c["models"][0]["model"],"displayName":format!("VaryAI/{id}/{}",c["models"][0]["model"].as_str().unwrap()),"baseUrl":c["baseUrl"]})).collect::<Vec<_>>()),
             "replace"=>{
                 let mut models = server_models.lock().unwrap();
@@ -1236,7 +1241,12 @@ fn trae_profiles_deliver_when_connected_without_binding_preview_to_runtime() {
     impl Drop for Stop {
         fn drop(&mut self) {
             self.0.store(false, Ordering::Relaxed);
-            self.1.take().unwrap().join().unwrap();
+            if let Some(worker) = self.1.take() {
+                let result = worker.join();
+                if !std::thread::panicking() {
+                    assert!(result.is_ok(), "synthetic bridge worker failed");
+                }
+            }
         }
     }
     let _stop = Stop(running, Some(worker));
@@ -1395,7 +1405,13 @@ fn supported_file_based_agents_apply_as_one_bundle_and_undo_together() {
         .filter(|app| {
             !matches!(
                 app,
-                AppType::DoubaoWork | AppType::Trae | AppType::TraeIntl | AppType::WorkBuddyAi
+                AppType::DoubaoWork
+                    | AppType::Cursor
+                    | AppType::CursorCli
+                    | AppType::T3Code
+                    | AppType::Trae
+                    | AppType::TraeIntl
+                    | AppType::WorkBuddyAi
             )
         })
         .filter(|app| *app != AppType::ClaudeDesktop || cfg!(any(target_os = "macos", windows)))
@@ -1403,7 +1419,7 @@ fn supported_file_based_agents_apply_as_one_bundle_and_undo_together() {
     assert!(apps.contains(&AppType::DeepSeekHarness));
     assert_eq!(
         apps.len(),
-        AppType::all().count() - 4 - usize::from(!cfg!(any(target_os = "macos", windows)))
+        AppType::all().count() - 7 - usize::from(!cfg!(any(target_os = "macos", windows)))
     );
     if apps.contains(&AppType::ClaudeDesktop) {
         let mut official = Provider::with_id(
@@ -1684,7 +1700,12 @@ fn later_custom_suppliers_can_be_captured_without_changing_old_profiles_or_copyi
 #[test]
 fn missing_profile_suppliers_are_skipped_for_every_agent_without_guessing_a_replacement() {
     let _guard = test_guard();
-    for app in AppType::all().filter(|app| *app != AppType::DoubaoWork) {
+    for app in AppType::all().filter(|app| {
+        !matches!(
+            app,
+            AppType::DoubaoWork | AppType::Cursor | AppType::CursorCli | AppType::T3Code
+        )
+    }) {
         for missing_secondary in [false, true] {
             let state = seed();
             let working = if app == AppType::Claude {

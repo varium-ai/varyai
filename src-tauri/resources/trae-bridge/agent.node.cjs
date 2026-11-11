@@ -355,13 +355,24 @@ test("Agent model operations use the native authenticated client without swallow
   const fields = { ak: "test-only", model_name: "model" };
   await service.addCustomModel(fields);
   await service.updateCustomModel(fields);
+  await service.refreshModelList();
   assert.deepEqual(
     calls.map((c) => c.method),
-    ["model_list", "add_custom_model", "update_custom_model"],
+    [
+      "model_list",
+      "add_custom_model",
+      "update_custom_model",
+      "model_list_by_function",
+    ],
   );
   assert.equal(calls[1].data, fields);
+  assert.deepEqual(calls[3].data, {
+    functions: ["builder"],
+    force_refresh: true,
+  });
   fail = true;
   await assert.rejects(service.getModelList(), /model_list_unavailable/);
+  await assert.rejects(service.refreshModelList(), /model_list_unavailable/);
 });
 test("passive connection accepts only the random local browser endpoint and never launches TRAE", async () => {
   const { connectEndpoint } = require("./agent.cjs");
@@ -493,7 +504,7 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
       legacyAudits++;
       throw Error("older helper is disabled");
     },
-    __varyaiTraeAuditV11(payload) {
+    __varyaiTraeAuditV18(payload) {
       audits++;
       const { id, value } = JSON.parse(payload);
       value.body.messages[0].content[0].text = "[REDACTED]";
@@ -506,7 +517,7 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
   assert.equal(released, 1);
   assert.equal(context.__varyaiTraeNativeBridge.revision, 2);
   assert.equal(context.__varyaiTraeNativeBridge.modelVerification, 1);
-  assert.equal(context.__varyaiTraeNativeBridge.hookRevision, 11);
+  assert.equal(context.__varyaiTraeNativeBridge.hookRevision, 18);
   assert.equal(context.__varyaiTraeNativeBridge.startingModel, 1);
   const current = context.__varyaiTraeNativeBridge;
   assert.equal(typeof current.bridge.replace, "function");
@@ -537,10 +548,11 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
   assert.equal(audits, 1);
   assert.equal(legacyAudits, 0);
   assert.equal(current.bridge.enabled, true);
+  const newerRevision = current.hookRevision + 1;
   const newer = {
     ...current,
-    hookRevision: 12,
-    auditBinding: "__varyaiTraeAuditV12",
+    hookRevision: newerRevision,
+    auditBinding: `__varyaiTraeAuditV${newerRevision}`,
   };
   context.__varyaiTraeNativeBridge = newer;
   await vm.runInNewContext(bootstrapSource(), context);

@@ -15,7 +15,10 @@ vi.mock("@/lib/api/doubao-checkin", () => ({
   },
 }));
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, options?: { day?: string }) =>
+      options?.day ? `${key}: ${options.day}` : key,
+  }),
 }));
 const initial: DoubaoCheckinStatus = {
   connected: true,
@@ -59,6 +62,7 @@ function mount() {
   fireEvent.click(
     screen.getByRole("button", { name: "doubaowork.checkin.title" }),
   );
+  fireEvent.click(screen.getByRole("button", { name: "dailyCheckin.manage" }));
 }
 beforeEach(() => {
   vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue(initial);
@@ -77,7 +81,9 @@ it("shows confirmed daily records without a current native account and disables 
     screen.getByText(/doubaowork.checkin.outcomes.connection_required/),
   ).toBeInTheDocument();
   expect(
-    screen.getByRole("button", { name: "agentRewards.checkedIn" }),
+    screen.getByRole("button", {
+      name: /^dailyCheckin\.(todayReward|todayChecked|claimedReward|claimed)$/,
+    }),
   ).toBeDisabled();
   expect(screen.getByRole("switch")).toBeDisabled();
   expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
@@ -154,9 +160,14 @@ it("claims only the selected account and displays a confirmed result", async () 
   await screen.findByText("doubaowork.checkin.outcomes.claimed");
   expect(doubaoCheckinApi.checkIn).toHaveBeenCalledWith("account-a");
   expect(button).toBeDisabled();
-  expect(screen.getByText("doubaowork.checkin.reward")).toBeVisible();
-  expect(screen.getByText("doubaowork.checkin.streak")).toBeVisible();
+  expect(screen.getByText("dailyCheckin.todayReward")).toBeVisible();
+  expect(screen.getByText("dailyCheckin.days")).toBeVisible();
   expect(screen.getByText("doubaowork.checkin.totalDays")).toBeVisible();
+  expect(
+    screen
+      .getAllByRole("listitem")
+      .filter((day) => day.dataset.state === "complete"),
+  ).toHaveLength(4);
 });
 
 it("refreshes a previously completed reward without claiming or switching accounts", async () => {
@@ -180,17 +191,15 @@ it("refreshes a previously completed reward without claiming or switching accoun
     screen.getByRole("button", { name: "doubaowork.checkin.reload" }),
   );
   await screen.findByText("doubaowork.checkin.outcomes.already_checked");
-  expect(screen.getByText("doubaowork.checkin.reward")).toBeVisible();
-  expect(screen.getByText("doubaowork.checkin.streak")).toBeVisible();
+  expect(screen.getByText("dailyCheckin.todayReward")).toBeVisible();
+  expect(screen.getByText("dailyCheckin.days")).toBeVisible();
   fireEvent.change(screen.getByRole("combobox"), {
     target: { value: "account-b" },
   });
   expect(
-    screen.queryByText("doubaowork.checkin.reward"),
+    screen.queryByText("dailyCheckin.todayReward"),
   ).not.toBeInTheDocument();
-  expect(
-    screen.queryByText("doubaowork.checkin.streak"),
-  ).not.toBeInTheDocument();
+  expect(screen.queryByText("dailyCheckin.days")).not.toBeInTheDocument();
   expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
 });
 
@@ -203,7 +212,7 @@ it.each(["claimed", "already_checked"] as const)(
     });
     mount();
     const completed = await screen.findByRole("button", {
-      name: "agentRewards.checkedIn",
+      name: /^dailyCheckin\.(todayReward|todayChecked|claimedReward|claimed)$/,
     });
     expect(completed).toBeDisabled();
     fireEvent.click(completed);
@@ -223,3 +232,17 @@ it.each(["claimed", "already_checked"] as const)(
     expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
   },
 );
+
+it("displays the computer's local date instead of the Beijing service day", async () => {
+  const localDate = vi
+    .spyOn(Date.prototype, "toLocaleDateString")
+    .mockReturnValue("local-calendar-date");
+  try {
+    mount();
+    expect(await screen.findByText("local-calendar-date")).toBeInTheDocument();
+    expect(localDate).toHaveBeenCalledWith();
+    expect(screen.queryByText(/2026-11-03/)).not.toBeInTheDocument();
+  } finally {
+    localDate.mockRestore();
+  }
+});

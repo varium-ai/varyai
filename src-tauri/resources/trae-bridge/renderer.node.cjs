@@ -66,11 +66,75 @@ function encryptedFixture() {
   f.service.updateCustomModel = async (row) => {
     const index = f.models.findIndex((m) => m.custom_model_id === row.id);
     if (row.action === "delete") f.models.splice(index, 1);
-    else Object.assign(f.models[index], nativeRow(row));
+    else {
+      assert.ok(
+        !("provider" in row) && !("model_name" in row) && !("is_custom" in row),
+      );
+      const existing = f.models[index];
+      Object.assign(
+        existing,
+        nativeRow({
+          ...existing,
+          model_name: existing.name.slice(existing.provider.length + 2),
+          ...row,
+        }),
+      );
+    }
     return { code: 0 };
   };
   return f;
 }
+
+for (const ownership of ["legacy-label", "stored-id"]) {
+  for (const [description, change] of [
+    ["missing provider", (row) => delete row.provider],
+    ["missing model name", (row) => delete row.model_name],
+    [
+      "changed provider",
+      (row) => (row.provider = "custom_anthropic_compatible"),
+    ],
+    ["changed model name", (row) => (row.model_name = "different-model")],
+  ]) {
+    test(`${ownership} rejects ${description} before mutating native models`, async () => {
+      const f = fixture();
+      const config = {
+        protocol: "openai",
+        baseUrl: "https://example.invalid/v1",
+        apiKey: "synthetic-key",
+        models: [{ model: "example-model" }],
+      };
+      const bridge = createBridge(f.service, async () => ({}));
+      if (ownership === "stored-id") {
+        await bridge.apply("p1", "Example", config);
+      } else {
+        f.models.push({
+          custom_model_id: "legacy",
+          display_name: "VaryAI/p1/example-model",
+          provider: "custom_openai_compatible",
+          model_name: "example-model",
+        });
+      }
+      change(f.models[0]);
+      const before = structuredClone(f.models);
+      let mutations = 0;
+      for (const method of ["addCustomModel", "updateCustomModel"]) {
+        const original = f.service[method];
+        f.service[method] = async (...args) => {
+          mutations++;
+          return original(...args);
+        };
+      }
+      await assert.rejects(
+        bridge.apply("p1", "Example", config),
+        /^Error: model_identity_changed$/,
+      );
+      assert.equal(mutations, 0);
+      assert.deepEqual(f.models, before);
+      assert.equal(await bridge.matches("p1", config), false);
+    });
+  }
+}
+
 test("shared delivery verifies encrypted native credentials across reloads and rejects external changes", async () => {
   const f = encryptedFixture();
   const config = {
@@ -220,38 +284,44 @@ test("starting selection resolves only an exact owned native model and propagate
   );
 });
 test("shared delivery recovers missing ownership only for its exact native route and readable label", async () => {
-  const f = encryptedFixture();
-  const id = "shared_catalog_connection";
-  const config = {
-    protocol: "openai",
-    baseUrl: "http://127.0.0.1:1/connections/trae/v1",
-    apiKey: "synthetic-local-credential",
-    models: [{ model: "supplier/model-a" }, { model: "supplier/model-b" }],
-  };
-  const bridge = createBridge(f.service, async () => ({}));
-  await bridge.apply(id, "Vary AI", config);
-  const nativeIds = f.models.map((m) => m.custom_model_id);
-  stores.get(f.service).setItem(`varyai.trae.models.${id}`, "[]");
-  f.models.push({
-    custom_model_id: "manual",
-    name: "custom_openai_compatible//manual",
-    display_name: "Manual",
-    provider: "custom_openai_compatible",
-    base_url: `${config.baseUrl}/chat/completions`,
-    ak: "manual-sealed-value",
-  });
-  await createBridge(f.service, async () => ({})).apply(id, "Vary AI", config);
-  assert.deepEqual(
-    f.models.slice(0, 2).map((m) => m.custom_model_id),
-    nativeIds,
-  );
-  assert.equal(f.models.length, 3);
-  assert.equal(await bridge.matches(id, config), true);
-  await bridge.remove(id);
-  assert.deepEqual(
-    f.models.map((m) => m.custom_model_id),
-    ["manual"],
-  );
+  for (const app of ["trae", "trae-intl"]) {
+    const f = encryptedFixture();
+    const id = "shared_catalog_connection";
+    const config = {
+      protocol: "openai",
+      baseUrl: `http://127.0.0.1:1/connections/${app}/v1`,
+      apiKey: "synthetic-local-credential",
+      models: [{ model: "supplier/model-a" }, { model: "supplier/model-b" }],
+    };
+    const bridge = createBridge(f.service, async () => ({}));
+    await bridge.apply(id, "Vary AI", config);
+    const nativeIds = f.models.map((m) => m.custom_model_id);
+    stores.get(f.service).setItem(`varyai.trae.models.${id}`, "[]");
+    f.models.push({
+      custom_model_id: "manual",
+      name: "custom_openai_compatible//manual",
+      display_name: "Manual",
+      provider: "custom_openai_compatible",
+      base_url: `${config.baseUrl}/chat/completions`,
+      ak: "manual-sealed-value",
+    });
+    await createBridge(f.service, async () => ({})).apply(
+      id,
+      "Vary AI",
+      config,
+    );
+    assert.deepEqual(
+      f.models.slice(0, 2).map((m) => m.custom_model_id),
+      nativeIds,
+    );
+    assert.equal(f.models.length, 3);
+    assert.equal(await bridge.matches(id, config), true);
+    await bridge.remove(id);
+    assert.deepEqual(
+      f.models.map((m) => m.custom_model_id),
+      ["manual"],
+    );
+  }
 });
 test("shared ownership recovery refuses unrelated or ambiguous native models", async () => {
   for (const change of [
@@ -708,6 +778,7 @@ test("native model cache is refreshed before matching and after writes across of
   // A previous interrupted write exists in native storage but not in its cached list.
   f.models.push({
     custom_model_id: "legacy",
+    provider: "custom_openai_compatible",
     model_name: "model-0",
     display_name: "VaryAI/p1/model-0",
   });
@@ -877,8 +948,18 @@ test("readable labels migrate existing owned models and survive provider renames
     .digest("hex")
     .slice(0, 20);
   f.models.push(
-    { custom_model_id: "legacy", display_name: `VaryAI/${id}/${model}` },
-    { custom_model_id: "hashed", display_name: `VaryAI/${id}/${digest}` },
+    {
+      custom_model_id: "legacy",
+      display_name: `VaryAI/${id}/${model}`,
+      provider: "custom_openai_compatible",
+      model_name: model,
+    },
+    {
+      custom_model_id: "hashed",
+      display_name: `VaryAI/${id}/${digest}`,
+      provider: "custom_openai_compatible",
+      model_name: longModel,
+    },
     { custom_model_id: "user", display_name: "User model", ak: "private" },
   );
   const config = {

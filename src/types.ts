@@ -317,6 +317,9 @@ export interface VisibleApps {
   qwen?: boolean;
   zcode?: boolean;
   "deepseek-harness"?: boolean;
+  cursor?: boolean;
+  "cursor-cli"?: boolean;
+  t3code?: boolean;
 }
 
 // WebDAV 同步状态

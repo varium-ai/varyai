@@ -10,7 +10,6 @@ use std::path::PathBuf;
 pub(crate) enum State {
     #[cfg(any(target_os = "macos", target_os = "windows", test))]
     Stopped,
-    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     Current,
     RestartRequired,
     #[cfg(any(target_os = "macos", target_os = "windows", test))]
@@ -110,6 +109,33 @@ fn selected_bundle_ids(app: &str) -> Result<&'static [&'static str], String> {
     }
 }
 
+/// Resolve the verified running copy, rather than another installation with the same name.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn running_executable(app: &str) -> Result<Option<std::path::PathBuf>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let instances = macos::Native { app }.instances()?;
+        let Some(first) = instances.first() else {
+            return Ok(None);
+        };
+        if instances
+            .iter()
+            .any(|instance| instance.bundle != first.bundle)
+        {
+            return Err(CHANGED.into());
+        }
+        let executable = first.bundle.join("Contents/MacOS/Electron");
+        if !executable.is_file() || executable.is_symlink() {
+            return Err(CHANGED.into());
+        }
+        Ok(Some(executable))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        windows::running_executable(app)
+    }
+}
+
 pub(crate) fn state(app: &str, applied_ms: Option<i64>) -> Option<State> {
     if !supports_restart(app) {
         return None;
@@ -154,11 +180,22 @@ fn restart_with(
     applied_ms: Option<i64>,
     valid: impl Fn() -> bool,
 ) -> Result<(), String> {
+    restart_verified_with(runtime, applied_ms, valid, false)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn restart_verified_with(
+    runtime: &impl Runtime,
+    applied_ms: Option<i64>,
+    valid: impl Fn() -> bool,
+    allow_current: bool,
+) -> Result<(), String> {
     if !valid() {
         return Err(super::CONFLICT.into());
     }
     let instances = runtime.instances()?;
-    if assess(&instances, applied_ms) != State::RestartRequired
+    let state = assess(&instances, applied_ms);
+    if (state != State::RestartRequired && !(allow_current && state == State::Current))
         || instances
             .iter()
             .any(|instance| instance.launched_ms.is_none())
@@ -203,7 +240,13 @@ pub(crate) fn restart(
         {
             return open_installed(app, valid);
         }
-        restart_with(&macos::Native { app }, applied_ms, valid)
+        if app == "codex" {
+            // An explicit desktop restart is also valid for a current ChatGPT
+            // instance; process and configuration identity are still rechecked.
+            restart_verified_with(&macos::Native { app }, applied_ms, valid, true)
+        } else {
+            restart_with(&macos::Native { app }, applied_ms, valid)
+        }
     }
     #[cfg(target_os = "windows")]
     {
@@ -479,6 +522,18 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirmed_chatgpt_restart_reopens_a_current_app_without_reloading_a_cli() {
+        let running = vec![instance(Some(3000))];
+        let runtime = FakeRuntime::new(vec![running.clone(), running, vec![]]);
+        assert_eq!(
+            restart_verified_with(&runtime, Some(2000), || true, true),
+            Ok(())
+        );
+        assert!(runtime.events.borrow().contains(&"quit"));
+        assert!(runtime.events.borrow().contains(&"open"));
+    }
 
     fn instance(launched_ms: Option<i64>) -> Instance {
         Instance {

@@ -4,6 +4,7 @@ use crate::{config::atomic_write_private, provider::Provider, proxy::intent::Men
 use serde::{Deserialize, Serialize};
 
 const ID: &str = "shared_catalog_connection";
+const MODEL_REJECTED: &str = "agentConnections.nativeModelRejected";
 #[derive(Serialize, Deserialize)]
 pub(super) struct Outbox {
     enabled: bool,
@@ -16,6 +17,8 @@ pub(super) struct Outbox {
     selection_pending: bool,
     #[serde(default)]
     configuration_changed: bool,
+    #[serde(default)]
+    model_write_failed: bool,
 }
 impl Manager {
     pub(crate) fn bridge_for(
@@ -117,15 +120,16 @@ impl TraeBridge<'_> {
         Ok(Status {
             app: self.edition.app().into(),
             enabled,
-            configured: enabled
-                && delivered
-                && !configuration_changed
-                && !outbox.as_ref().is_some_and(|o| o.selection_pending),
+            configured: enabled && delivered && !configuration_changed,
             recovery_pending: outbox
                 .as_ref()
                 .is_some_and(|o| !delivered || o.selection_pending || configuration_changed),
-            recovery_reason: if configuration_changed {
+            recovery_reason: if outbox.as_ref().is_some_and(|o| o.model_write_failed) {
+                Some(RecoveryReason::BridgeModelRejected)
+            } else if configuration_changed {
                 Some(RecoveryReason::ConfigurationChanged)
+            } else if delivered && outbox.as_ref().is_some_and(|o| o.selection_pending) {
+                Some(RecoveryReason::BridgeSelectionPending)
             } else {
                 outbox
                     .as_ref()
@@ -205,6 +209,7 @@ impl TraeBridge<'_> {
             delivered,
             selection_pending: enabled && selected.is_some(),
             configuration_changed,
+            model_write_failed: false,
             model: selected,
         })
     }
@@ -212,6 +217,7 @@ impl TraeBridge<'_> {
         let mut outbox = self.bridge_load()?.ok_or(CONFLICT)?;
         outbox.delivered = false;
         outbox.configuration_changed = false;
+        outbox.model_write_failed = false;
         outbox.selection_pending = outbox.model.is_some();
         self.bridge_save(&outbox)
     }
@@ -225,7 +231,22 @@ impl TraeBridge<'_> {
             menu,
             origin,
             suspend,
-            |provider| self.client().apply(provider).map_err(|_| FAILED.into()),
+            |provider| {
+                self.client().apply(provider).map_err(|error| {
+                    if matches!(
+                        error,
+                        crate::error::AppError::Localized {
+                            key: "agents.trae_model_configuration"
+                                | "agents.trae_recovery_unavailable",
+                            ..
+                        }
+                    ) {
+                        MODEL_REJECTED.into()
+                    } else {
+                        FAILED.into()
+                    }
+                })
+            },
             || {
                 self.client().remove(ID).map_err(|_| FAILED)?;
                 self.client().restore().map_err(|_| FAILED.into())
@@ -299,10 +320,10 @@ impl TraeBridge<'_> {
             }
             if outbox.selection_pending {
                 self.bridge_save(&outbox)?;
-                if let Some(model) = &outbox.model {
-                    select(model)?;
-                }
-                outbox.selection_pending = false;
+                outbox.selection_pending = outbox
+                    .model
+                    .as_ref()
+                    .is_some_and(|model| select(model).is_err());
                 self.bridge_save(&outbox)?;
             }
             return Ok(Some(Receipt {
@@ -322,14 +343,21 @@ impl TraeBridge<'_> {
         outbox.provider = Some(provider.clone());
         outbox.delivered = false;
         self.bridge_save(&outbox)?;
-        apply(&provider)?;
-        if outbox.selection_pending {
-            if let Some(model) = &outbox.model {
-                select(model)?;
-            }
-            outbox.selection_pending = false;
+        if let Err(error) = apply(&provider) {
+            outbox.model_write_failed = error == MODEL_REJECTED;
+            self.bridge_save(&outbox)?;
+            return Err(error);
         }
+        outbox.model_write_failed = false;
+        // Catalog delivery remains usable when a native chat window cannot yet save its default.
         outbox.delivered = true;
+        self.bridge_save(&outbox)?;
+        if outbox.selection_pending {
+            outbox.selection_pending = outbox
+                .model
+                .as_ref()
+                .is_some_and(|model| select(model).is_err());
+        }
         self.bridge_save(&outbox)?;
         Ok(Some(Receipt {
             app: self.edition.app().into(),
@@ -473,9 +501,13 @@ mod tests {
                 || Ok(()),
                 |_| Err(FAILED.into()),
                 |_| Some(true),
-            )
-            .is_err());
-        assert!(!manager.bridge_status()?.configured);
+            )?
+            .is_some());
+        assert!(manager.bridge_status()?.configured);
+        assert!(matches!(
+            manager.bridge_status()?.recovery_reason,
+            Some(RecoveryReason::BridgeSelectionPending)
+        ));
         assert!(manager.bridge_status()?.recovery_pending);
         manager.bridge_sync_with(
             Some(&menu),

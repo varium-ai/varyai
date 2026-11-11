@@ -61,6 +61,15 @@ pub(crate) enum Part {
         call_id: String,
         parts: Vec<Part>,
     },
+    ToolSearchCall {
+        id: String,
+        arguments: Value,
+        native: Value,
+    },
+    ToolSearchResult {
+        call_id: String,
+        native: Value,
+    },
     ToolResult {
         call_id: String,
         name: Option<String>,
@@ -100,6 +109,7 @@ pub(crate) enum ToolChoice {
     Auto,
     None,
     Required,
+    ToolSearch,
     Named(String),
     Namespaced {
         namespace: String,

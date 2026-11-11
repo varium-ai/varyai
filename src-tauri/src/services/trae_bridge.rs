@@ -10,8 +10,20 @@ use std::io::{BufRead, BufReader, Write};
 use std::{path::PathBuf, sync::Mutex, time::Duration};
 pub(crate) const ENABLED_KEY: &str = "trae_audit_enabled";
 pub(crate) const CONSENT_KEY: &str = "trae_local_connection_consent";
-const HELPER_REVISION: u64 = 11;
+const HELPER_REVISION: u64 = 18;
 static AUDIT_TOKEN: Mutex<Option<String>> = Mutex::new(None);
+static CHINA_HELPER_START: Mutex<()> = Mutex::new(());
+static INTERNATIONAL_HELPER_START: Mutex<()> = Mutex::new(());
+fn command_timeout(command: &Value) -> Duration {
+    if matches!(
+        command["op"].as_str(),
+        Some("apply" | "replace" | "remove" | "select" | "matches")
+    ) {
+        Duration::from_secs(330)
+    } else {
+        Duration::from_secs(20)
+    }
+}
 fn unavailable() -> AppError {
     AppError::localized(
         "agents.trae_bridge",
@@ -31,7 +43,7 @@ fn request_socket(path: &std::path::Path, command: &Value) -> Result<Value, AppE
     }
     let mut stream = UnixStream::connect(path).map_err(|_| unavailable())?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(20)))
+        .set_read_timeout(Some(command_timeout(command)))
         .map_err(|_| unavailable())?;
     stream
         .set_write_timeout(Some(Duration::from_secs(5)))
@@ -120,7 +132,7 @@ fn request_socket(path: &std::path::Path, command: &Value) -> Result<Value, AppE
         .build()
         .map_err(|_| unavailable())?;
     let response = runtime.block_on(async {
-        tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::time::timeout(command_timeout(command), async {
             let mut client = loop {
                 match tokio::net::windows::named_pipe::ClientOptions::new().open(pipe) {
                     Ok(client) => break client,
@@ -457,6 +469,11 @@ fn ensure_ready() -> Result<(), AppError> {
     ensure_ready_for(shared::Edition::China)
 }
 fn ensure_ready_for(edition: shared::Edition) -> Result<(), AppError> {
+    let starter = match edition {
+        shared::Edition::China => &CHINA_HELPER_START,
+        shared::Edition::International => &INTERNATIONAL_HELPER_START,
+    };
+    let _guard = starter.lock().map_err(|_| unavailable())?;
     let client = shared::Client(edition);
     if let Ok(health) = client.request(&json!({"op":"health"})) {
         if health["revision"] == HELPER_REVISION
@@ -495,7 +512,7 @@ fn ensure_ready_for(edition: shared::Edition) -> Result<(), AppError> {
                         .all(|c| c.is_ascii_alphanumeric() || c == '-')
             })
             .ok_or_else(unavailable)?;
-        let executable = client.installed_executable()?;
+        let executable = client.connection_executable()?;
         let dir = client.directory()?;
         let script = install_runtime(&dir)?;
         let mut command = std::process::Command::new(executable);

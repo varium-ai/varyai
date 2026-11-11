@@ -56,6 +56,7 @@ struct Pending {
 enum Action {
     None,
     Restart(Vec<Instance>),
+    RestartApplication(Vec<Instance>),
     Recovered,
     TimedOut,
 }
@@ -249,6 +250,9 @@ impl Monitor {
                 }
                 pending.last_attempt = targets.clone();
                 pending.deadline.get_or_insert(now.saturating_add(20));
+                if targets.iter().any(|target| pending.manual.contains(target)) {
+                    return Action::RestartApplication(targets);
+                }
                 return Action::Restart(targets);
             }
         }
@@ -481,6 +485,7 @@ pub(crate) fn start(
     manager: std::sync::Weak<super::intent_routing::client::Manager>,
     locks: crate::proxy::switch_lock::SwitchLockManager,
     requests: std::sync::Arc<crate::proxy::client_activity::Activity>,
+    desktop: std::sync::Arc<super::agent_connections::Manager>,
 ) -> Worker {
     let control = std::sync::Arc::new(std::sync::Mutex::new(Control {
         state: ReloadState::Stopped,
@@ -532,9 +537,11 @@ pub(crate) fn start(
                     // cannot queue a second refresh against an outdated UI sample.
                     control.state = monitor.snapshot();
                 }
+                let restart_application = matches!(&action, Action::RestartApplication(_));
                 match action {
-                    Action::Restart(targets) => {
+                    Action::Restart(targets) | Action::RestartApplication(targets) => {
                         let client = manager.clone();
+                        let desktop = desktop.clone();
                         let final_requests = requests.clone();
                         let result = tokio::task::spawn_blocking(move || {
                             let home = config.parent().ok_or(())?;
@@ -554,6 +561,14 @@ pub(crate) fn start(
                                 || activity::busy(home, since).unwrap_or(true)
                             {
                                 return Ok(None);
+                            }
+                            if restart_application {
+                                let running = platform::instances(home)?;
+                                if !targets.iter().all(|target| running.contains(target)) {
+                                    return Ok(None);
+                                }
+                                desktop.restart_codex_desktop().map_err(|_| ())?;
+                                return Ok(Some(Vec::new()));
                             }
                             let failed = terminate_targets(&targets, |target| {
                                 platform::terminate(target, home)

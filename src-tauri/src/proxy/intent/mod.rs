@@ -736,7 +736,8 @@ impl Bindings {
                 if matches!(
                     item["type"].as_str(),
                     Some("function_call_output" | "function_call")
-                ) {
+                ) && !super::providers::codex_chat_common::is_unsolicited_page_context(item)
+                {
                     merge(
                         self.calls
                             .get(&continuation::hash(
@@ -2928,6 +2929,8 @@ fn completed_tool_history(projection: &Value) -> bool {
     for item in items {
         match item["type"].as_str() {
             Some("message") => {}
+            Some("function_call_output")
+                if super::providers::codex_chat_common::is_unsolicited_page_context(item) => {}
             Some("function_call") => {
                 let Some(id) = item["call_id"]
                     .as_str()

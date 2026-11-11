@@ -406,7 +406,16 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(workbuddyCheckinApi.accounts).mockResolvedValue({
     accounts: [],
-  } as unknown as Awaited<ReturnType<typeof workbuddyCheckinApi.accounts>>);
+    nativeStatus: {
+      autoEnabled: false,
+      day: "2026-11-11",
+      outcome: "credentials_unavailable",
+      checkedAt: null,
+      credit: null,
+      streak: null,
+      creditDelayed: false,
+    },
+  });
   vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue({
     connected: false,
     accounts: [],
@@ -599,6 +608,87 @@ describe("Agent connections", () => {
       expect(agentConnectionsApi.authorizeModelControl).toHaveBeenCalledWith(
         app,
         true,
+      );
+      await waitFor(() => expect(dialog).not.toBeInTheDocument());
+      expect(
+        screen.queryByRole("dialog", {
+          name: "agentConnections.restartTitle",
+        }),
+      ).not.toBeInTheDocument();
+      expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["workbuddy", "workbuddy-ai", "qoder"] as const)(
+    "saves an authorized %s model without opening restart confirmation",
+    async (app) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      });
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app,
+          enabled: true,
+          configured: true,
+          recoveryPending: false,
+          restartRequired: false,
+          model: "vary-auto/previous",
+        },
+      ]);
+      vi.mocked(agentConnectionsApi.modelControl).mockResolvedValue({
+        authorized: true,
+        ready: false,
+        pending: true,
+      });
+      vi.mocked(agentConnectionsApi.models).mockResolvedValue([
+        {
+          id: "vary-auto/previous",
+          name: "Previous group",
+          contextWindow: 1000000,
+        },
+        {
+          id: "vary-auto/shared",
+          name: "Shared group",
+          contextWindow: 1000000,
+        },
+        {
+          id: "relay/alternative",
+          name: "Alternative model",
+          contextWindow: 128000,
+        },
+      ]);
+      mount();
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      const trigger = within(row).getByRole("button", {
+        name: `agentConnections.model apps.${app}`,
+      });
+      await waitFor(() => expect(trigger).toBeEnabled());
+      fireEvent.click(trigger);
+      fireEvent.click(
+        await screen.findByRole("radio", { name: /Previous group/ }),
+      );
+      await waitFor(() =>
+        expect(trigger).toHaveAttribute("aria-expanded", "false"),
+      );
+      expect(agentConnectionsApi.set).not.toHaveBeenCalled();
+      fireEvent.click(trigger);
+      fireEvent.click(
+        await screen.findByRole("radio", { name: /Shared group/ }),
+      );
+      await waitFor(() =>
+        expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+          app,
+          true,
+          "vary-auto/shared",
+        ),
+      );
+      await waitFor(() =>
+        expect(trigger).toHaveAttribute("aria-expanded", "false"),
+      );
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+      fireEvent.click(
+        within(row).getByRole("button", { name: "agentConnections.restart" }),
       );
       expect(
         await screen.findByRole("dialog", {
@@ -808,6 +898,10 @@ describe("Agent connections", () => {
         name: `agentRewards.autoLabel apps.${app}`,
       });
       expect(trigger).toBeEnabled();
+      expect(trigger).toHaveAttribute("data-complete", String(allComplete));
+      expect(trigger).toHaveTextContent(
+        allComplete ? "dailyCheckin.todayChecked" : "agentRewards.autoLabel",
+      );
       fireEvent.click(trigger);
       expect(trigger).toHaveAttribute("aria-expanded", "true");
       expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
@@ -895,7 +989,7 @@ describe("Agent connections", () => {
       fireEvent.click(trigger);
       expect(trigger).toHaveAttribute("aria-expanded", "true");
       const claim = await within(row).findByRole("button", {
-        name: "agentRewards.checkedIn",
+        name: /^dailyCheckin\.(todayReward|todayChecked|claimedReward|claimed)$/,
       });
       expect(claim).toBeDisabled();
       fireEvent.click(claim);
@@ -1038,6 +1132,8 @@ describe("Agent connections", () => {
       const trigger = await within(row).findByRole("button", {
         name: `agentRewards.autoLabel apps.${app}`,
       });
+      expect(trigger).toHaveTextContent("dailyCheckin.title");
+      if (!compact) expect(trigger.closest(".mp-agent-name")).not.toBeNull();
       expect(trigger).toHaveTextContent("agentRewards.autoLabel");
       expect(trigger).toHaveAttribute("aria-expanded", "false");
       fireEvent.click(trigger);
@@ -3324,6 +3420,68 @@ describe("Agent connections", () => {
       }),
     ).toBeEnabled();
   });
+  it("keeps Cursor CLI on its native model choices without a gateway switch", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      "cursor-cli": true,
+    });
+    vi.mocked(agentConnectionsApi.nativeModels).mockResolvedValue([
+      { app: "cursor-cli", available: true, model: "native-example" },
+    ]);
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.cursor-cli" });
+    expect(within(row).queryByRole("switch")).not.toBeInTheDocument();
+    expect(
+      within(row).getByText("agentConnections.cursorCliHint"),
+    ).toBeInTheDocument();
+    const picker = within(row).getByRole("button", {
+      name: "agentConnections.model apps.cursor-cli",
+    });
+    await waitFor(() => expect(picker).toBeEnabled());
+    fireEvent.click(picker);
+    expect(
+      screen.queryByRole("radio", { name: /Shared group/ }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      await screen.findByRole("radio", { name: /agentConnections.cursorAuto/ }),
+    );
+    await waitFor(() =>
+      expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+        "cursor-cli",
+        true,
+        "auto",
+      ),
+    );
+  });
+  it.each(["cursor", "t3code"])(
+    "connects %s to a shared model with its setup boundary visible",
+    async (app) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      });
+      mount();
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      expect(
+        within(row).getByText(
+          `agentConnections.${app === "cursor" ? "cursorLocalHint" : "t3codeHint"}`,
+        ),
+      ).toBeInTheDocument();
+      const picker = within(row).getByRole("button", {
+        name: `agentConnections.model apps.${app}`,
+      });
+      await waitFor(() => expect(picker).toBeEnabled());
+      fireEvent.click(picker);
+      fireEvent.click(
+        await screen.findByRole("radio", { name: /Shared group/ }),
+      );
+      await waitFor(() =>
+        expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+          app,
+          true,
+          "vary-auto/shared",
+        ),
+      );
+    },
+  );
   it.each([false, true])(
     "selects the DeepSeek Harness starting model when connected is %s",
     async (enabled) => {

@@ -161,6 +161,9 @@ pub(crate) fn build_provider_from_request(
         | AppType::DeepSeekHarness
         | AppType::Trae
         | AppType::TraeIntl
+        | AppType::Cursor
+        | AppType::CursorCli
+        | AppType::T3Code
         | AppType::DoubaoWork => {
             return Err(AppError::InvalidInput(
                 "Native model configurations must be added from their application page".into(),

@@ -203,7 +203,18 @@ fn restart_processes(
     applied_ms: Option<i64>,
     valid: impl Fn() -> bool,
 ) -> Result<(), String> {
-    if freshness(&processes, applied_ms) != State::RestartRequired {
+    restart_verified_processes(runtime, processes, applied_ms, valid, false)
+}
+
+fn restart_verified_processes(
+    runtime: &impl Runtime,
+    processes: Vec<Process>,
+    applied_ms: Option<i64>,
+    valid: impl Fn() -> bool,
+    allow_current: bool,
+) -> Result<(), String> {
+    let state = freshness(&processes, applied_ms);
+    if state != State::RestartRequired && !(allow_current && state == State::Current) {
         return Err(CHANGED.into());
     }
     let main = main_process(&processes)?;
@@ -267,6 +278,16 @@ pub(super) fn supported(app: &str) -> bool {
     }
 }
 #[cfg(target_os = "windows")]
+pub(super) fn running_executable(app: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let processes = native::Native { app }.processes()?;
+    if processes.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(std::path::PathBuf::from(
+        main_process(&processes)?.image.clone(),
+    )))
+}
+#[cfg(target_os = "windows")]
 pub(super) fn state(app: &str, applied_ms: Option<i64>) -> State {
     if !supported(app) {
         return State::Unsupported;
@@ -289,12 +310,29 @@ pub(super) fn restart(
     if super::super::model_control::authorized(app) && state(app, applied_ms) == State::Stopped {
         return native::open_model_control(app, valid);
     }
-    restart_with(&native::Native { app }, applied_ms, valid)
+    let runtime = native::Native { app };
+    if app == "codex" {
+        let processes = runtime.processes()?;
+        restart_verified_processes(&runtime, processes, applied_ms, valid, true)
+    } else {
+        restart_with(&runtime, applied_ms, valid)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirmed_chatgpt_restart_reopens_a_current_windows_app() {
+        let processes = vec![process()];
+        let runtime = Fake::new(vec![processes.clone(), vec![]], Closed::Exited);
+        assert_eq!(
+            restart_verified_processes(&runtime, processes, Some(0), || true, true),
+            Ok(())
+        );
+        assert!(runtime.events.borrow().contains(&"launch"));
+    }
     use std::{cell::RefCell, collections::VecDeque};
     #[test]
     fn qoder_windows_identity_rejects_other_install_roots_and_other_products() {

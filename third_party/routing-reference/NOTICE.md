@@ -8,6 +8,14 @@ attribution.
 
 ## Pinned source revisions
 
+- `745d209dcf5f4d9b7feee416e1848e33502834e6`: Cursor CLI model selection,
+  Private Inference environment integration and model capability discovery,
+  reviewed in `internal/agent/agents.go`, `cursorlocal.go`,
+  `cursorlocal_env_darwin.go`, `cursorlocal_env_windows.go` and
+  `internal/gateway/gateway.go`. T3 Code's provider-instance integration was
+  reviewed in `internal/agent/t3code.go`. VaryAI retains its own ownership
+  receipts and gives T3 Code a separate Codex home.
+
 - `7c0a103eb1c4975343456ad4906b21f01fa741f5`: Codex native/managed picker
   merging and translated deferred-tool handling, reviewed in
   `internal/provider/codex_models.go` (`CodexListedBeside`),
@@ -259,3 +267,12 @@ behavior in Rust and React with four runtime languages, bounded gateway health
 probes, sanitized diagnostic addresses, and its existing ownership-checked
 configuration recovery. The diagnostic does not copy the reference's claim that
 every turn returns HTTP 502. The Magpie MIT notice and license listed above apply.
+
+Provider duplicate-form behavior was additionally reviewed at Magpie revision
+`6d15f63d52146fcadccef30c9777e45051bcd11c`, in
+`internal/gui/assets/app.js` (`duplicateProvider`, `drawEditor` and the model
+picker selection path). Vary opens the saved provider's copy directly in its Add
+form and closes a single-model picker when its current value is clicked without
+rewriting that value. The existing Vary storage identity and revision checks are
+preserved. User-requested removal of manual model entry, bulk testing, model
+preferences and the groups-only checkbox remains in effect.

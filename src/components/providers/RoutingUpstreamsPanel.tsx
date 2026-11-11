@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { fetchModelsForConfig, type FetchedModel } from "@/lib/api/model-fetch";
+import { toast } from "sonner";
 import { Plus, ChevronRight, Download } from "lucide-react";
 import { isImageGenerationModel } from "@/lib/providerModelKind";
 import {
@@ -30,6 +31,10 @@ import {
   type EditingState,
 } from "@/hooks/useWorkspaceEditing";
 import "./providers.css";
+import {
+  showProviderError,
+  type ProviderErrorHandler,
+} from "./providerErrorToast";
 import { ProviderListQuota } from "./ProviderListQuota";
 import { subscriptionProviders } from "@/config/subscriptionProviders";
 
@@ -90,7 +95,13 @@ export function RoutingUpstreamsPanel({
   const [confirmBulk, setConfirmBulk] = useState(false);
   const [deletingBulk, setDeletingBulk] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const report: ProviderErrorHandler = useCallback(
+    (operation, cause) => showProviderError(t, operation, cause),
+    [t],
+  );
+  useEffect(() => {
+    if (records.isError) report("loadProviders", records.error);
+  }, [records.isError, report]);
   const [adding, setAdding] = useState(startAdding);
   const [importing, setImporting] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
@@ -98,7 +109,6 @@ export function RoutingUpstreamsPanel({
   const [showOff, setShowOff] = useState(false);
   const [providerOrder, setProviderOrder] = useState(readProviderOrder);
   const [copyFrom, setCopyFrom] = useState<ProviderCopySource>();
-  const [duplicating, setDuplicating] = useState(false);
   const [probing, setProbing] = useState(false);
   const [startReauth, setStartReauth] = useState(false);
   const [editorPreset, setEditorPreset] = useState<GlobalProviderPreset | null>(
@@ -136,6 +146,11 @@ export function RoutingUpstreamsPanel({
   const listFocusPending = useRef(false);
   const returnToProvider = useRef<string | null>(null);
   const focusPending = useRef(false);
+  const editorKey = draft?.revision
+    ? (loadedRecord?.id ?? draft.id)
+    : `new-${copyFrom?.id ?? "custom"}`;
+  const activeEditor = useRef({ key: editorKey, open: editorOpen });
+  activeEditor.current = { key: editorKey, open: editorOpen };
   function openAddPage() {
     listScroll.current = page.current?.closest("main")?.scrollTop ?? 0;
     setSelected(null);
@@ -158,7 +173,13 @@ export function RoutingUpstreamsPanel({
       addTrigger.current?.focus({ preventScroll: true });
     }
   }, [adding, draft, busy, importBusy]);
-  function returnFocus() {
+  function returnFocus(closingEditorKey: string) {
+    // Replaced dialogs finish focus cleanup after the new draft has opened.
+    if (
+      activeEditor.current.open ||
+      activeEditor.current.key !== closingEditorKey
+    )
+      return;
     focusPending.current = true;
     setStartReauth(false);
     setDraft(null);
@@ -276,7 +297,6 @@ export function RoutingUpstreamsPanel({
         : "";
     setModels(nextModels);
     setApiKey("");
-    setError(null);
     initial.current = JSON.stringify({
       draft: value,
       models: nextModels,
@@ -344,27 +364,11 @@ export function RoutingUpstreamsPanel({
       ].map((key) => client.invalidateQueries({ queryKey: [key] })),
     );
   }
-  function report(cause: unknown) {
-    const code =
-      typeof cause === "string" ? cause.replace(/^routingUpstreams\./, "") : "";
-    setError(
-      [
-        "invalid",
-        "conflict",
-        "limit",
-        "referenced",
-        "sourceUnavailable",
-      ].includes(code)
-        ? `modelProviders.${code}`
-        : "modelProviders.failed",
-    );
-  }
   async function save(event: React.FormEvent, stagedModels?: unknown[]) {
     event.preventDefault();
     if (!draft) return;
     if (draft.source.kind === "codex") {
       setBusy(true);
-      setError(null);
       try {
         if (draft.codex)
           await routingUpstreamsApi.saveCodex(
@@ -377,7 +381,7 @@ export function RoutingUpstreamsPanel({
         await refresh();
         if (adding) closeAddPage();
       } catch (cause) {
-        report(cause);
+        report("save", cause);
       } finally {
         setBusy(false);
       }
@@ -385,14 +389,13 @@ export function RoutingUpstreamsPanel({
     }
     if (draft.source.kind === "subscription") {
       setBusy(true);
-      setError(null);
       try {
         await routingUpstreamsApi.save({ ...draft, name: draft.name.trim() });
         setEditorOpen(false);
         await refresh();
         if (adding) closeAddPage();
       } catch (cause) {
-        report(cause);
+        report("save", cause);
       } finally {
         setBusy(false);
       }
@@ -402,16 +405,15 @@ export function RoutingUpstreamsPanel({
     try {
       raw = stagedModels ?? JSON.parse(models);
     } catch {
-      setError("modelProviders.invalidModels");
+      report("save", "invalidModels");
       return;
     }
     if (!Array.isArray(raw)) {
-      setError("modelProviders.invalidModels");
+      report("save", "invalidModels");
       return;
     }
     const parsed: unknown[] = raw;
     setBusy(true);
-    setError(null);
     try {
       const { apiKey: _storedKey, ...source } = draft.source;
       const value = {
@@ -458,7 +460,7 @@ export function RoutingUpstreamsPanel({
       await refresh();
       if (adding) closeAddPage();
     } catch (cause) {
-      report(cause);
+      report("save", cause);
     } finally {
       setBusy(false);
     }
@@ -514,7 +516,6 @@ export function RoutingUpstreamsPanel({
   }
   async function probe(model: string) {
     if (!draft || draft.source.kind !== "api") throw new Error("unavailable");
-    setError(null);
     if (!apiKey) {
       const saved = savedCredentialSource();
       return routingUpstreamsApi.probe(saved.id, saved.revision, model);
@@ -535,11 +536,6 @@ export function RoutingUpstreamsPanel({
       (record) => record.id === (loadedRecord?.id ?? draft.id),
     );
     if (!saved) return;
-    if (JSON.stringify({ draft, models, apiKey }) !== initial.current) {
-      setDuplicating(true);
-      setDiscard(true);
-      return;
-    }
     stageDuplicate(saved);
   }
   function stageDuplicate(saved: RoutingUpstream) {
@@ -561,7 +557,6 @@ export function RoutingUpstreamsPanel({
       models: nextModels,
       apiKey: "",
     });
-    setDuplicating(false);
   }
   async function fetchDraftModels(): Promise<FetchedModel[]> {
     if (!draft || draft.source.kind !== "api") return [];
@@ -593,7 +588,6 @@ export function RoutingUpstreamsPanel({
   async function discover() {
     if (!draft || draft.source.kind !== "api") return [];
     setBusy(true);
-    setError(null);
     try {
       const found = await fetchDraftModels();
       setDiscovered(found);
@@ -602,8 +596,8 @@ export function RoutingUpstreamsPanel({
         source: { ...draft.source, catalog: found.map(modelRow) },
       });
       return found;
-    } catch {
-      setError("modelProviders.failed");
+    } catch (cause) {
+      report("fetchModels", cause);
       return [];
     } finally {
       setBusy(false);
@@ -611,12 +605,11 @@ export function RoutingUpstreamsPanel({
   }
   async function toggle(record: RoutingUpstream, enabled: boolean) {
     setBusy(true);
-    setError(null);
     try {
       await routingUpstreamsApi.save({ ...record, enabled });
       await refresh();
     } catch (cause) {
-      report(cause);
+      report("toggle", cause);
     } finally {
       setBusy(false);
     }
@@ -631,11 +624,10 @@ export function RoutingUpstreamsPanel({
       (record) => record.id === (loadedRecord?.id ?? draft.id),
     );
     if (!saved || saved.revision !== draft.revision) {
-      report("routingUpstreams.conflict");
+      report("toggle", "routingUpstreams.conflict");
       return;
     }
     setBusy(true);
-    setError(null);
     try {
       const result = await routingUpstreamsApi.save({ ...saved, enabled });
       setLoadedRecord((current) =>
@@ -655,7 +647,7 @@ export function RoutingUpstreamsPanel({
       initial.current = JSON.stringify(baseline);
       await refresh();
     } catch (cause) {
-      report(cause);
+      report("toggle", cause);
     } finally {
       setBusy(false);
     }
@@ -728,7 +720,6 @@ export function RoutingUpstreamsPanel({
   async function removeSelected() {
     if (deletingBulk || !selected?.size || !records.data) return;
     setDeletingBulk(true);
-    setError(null);
     const removed = new Set<string>();
     try {
       for (const record of records.data.filter((record) =>
@@ -738,7 +729,7 @@ export function RoutingUpstreamsPanel({
         removed.add(record.id);
       }
     } catch (cause) {
-      report(cause);
+      report("remove", cause);
     } finally {
       setConfirmBulk(false);
       setSelected((previous) => {
@@ -760,7 +751,6 @@ export function RoutingUpstreamsPanel({
       edit(record, undefined, reauth);
       return;
     }
-    setError(null);
     setBusy(true);
     try {
       const value = await routingUpstreamsApi.editor(
@@ -771,7 +761,7 @@ export function RoutingUpstreamsPanel({
         throw new Error("unavailable");
       edit(value, undefined, reauth);
     } catch (cause) {
-      report(cause);
+      report("load", cause);
     } finally {
       setBusy(false);
     }
@@ -928,12 +918,8 @@ export function RoutingUpstreamsPanel({
               labelKey="onboarding.copyForAgent"
               className="pv-import-trigger"
               size="sm"
-              onCopied={() =>
-                setError((current) =>
-                  current === "onboarding.copyFailed" ? null : current,
-                )
-              }
-              onCopyFailed={() => setError("onboarding.copyFailed")}
+              onCopied={() => toast.dismiss("provider-error-copy")}
+              onCopyFailed={() => report("copy")}
             />
             <Button
               variant="outline"
@@ -1010,12 +996,6 @@ export function RoutingUpstreamsPanel({
             {t(selected ? "common.cancel" : "modelProviders.manage")}
           </button>
         </div>
-      )}
-      {records.isError && <p role="alert">{t("modelProviders.failed")}</p>}
-      {error && !draft && (
-        <p role="alert" className="mb-4 text-sm text-destructive">
-          {t(error)}
-        </p>
       )}
       {!adding &&
         (records.isPending ? (
@@ -1142,7 +1122,7 @@ export function RoutingUpstreamsPanel({
                 edit(created);
                 setAdding(false);
               } catch (cause) {
-                report(cause);
+                report("create", cause);
               } finally {
                 setBusy(false);
               }
@@ -1158,14 +1138,11 @@ export function RoutingUpstreamsPanel({
       />
       {draft && (
         <ProviderEditorDialog
-          key={
-            draft.revision
-              ? (loadedRecord?.id ?? draft.id)
-              : `new-${copyFrom?.id ?? "custom"}`
-          }
+          key={editorKey}
           open={editorOpen}
           draft={draft}
           originalId={loadedRecord?.id ?? draft.id}
+          copySourceName={copyFrom ? loadedRecord?.name : undefined}
           another={
             !!copyFrom ||
             (!!draft.presetId &&
@@ -1177,7 +1154,6 @@ export function RoutingUpstreamsPanel({
           discovered={discovered}
           apiKey={apiKey}
           busy={busy}
-          error={error}
           icon={upstreamIcon(draft)}
           region={region}
           regions={presetRegions}
@@ -1196,12 +1172,11 @@ export function RoutingUpstreamsPanel({
           onSave={save}
           onClose={closeEditor}
           onDelete={() => {
-            setError(null);
             setDeleting({ ...draft, id: loadedRecord?.id ?? draft.id });
           }}
           onDuplicate={duplicate}
-          onReturnFocus={returnFocus}
-          onError={() => setError("modelProviders.failed")}
+          onReturnFocus={() => returnFocus(editorKey)}
+          onError={report}
           nestedOpen={discard || !!deleting}
           onProbingChange={setProbing}
           canDuplicate={draft.source.kind === "api"}
@@ -1216,21 +1191,10 @@ export function RoutingUpstreamsPanel({
         title={t("providerFlow.discardTitle")}
         message={t("providerFlow.discardHint")}
         confirmText={t("providerFlow.discard")}
-        onCancel={() => {
-          setDiscard(false);
-          setDuplicating(false);
-        }}
+        onCancel={() => setDiscard(false)}
         onConfirm={() => {
           setDiscard(false);
-          if (duplicating && draft) {
-            const saved = records.data?.find(
-              (record) => record.id === (loadedRecord?.id ?? draft.id),
-            );
-            if (saved) stageDuplicate(saved);
-          } else {
-            setEditorOpen(false);
-          }
-          setDuplicating(false);
+          setEditorOpen(false);
         }}
       />
       <ConfirmDialog
@@ -1264,7 +1228,7 @@ export function RoutingUpstreamsPanel({
               }
               await refresh();
             })
-            .catch(report)
+            .catch((cause) => report("remove", cause))
             .finally(() => {
               setDeleting(null);
               setBusy(false);

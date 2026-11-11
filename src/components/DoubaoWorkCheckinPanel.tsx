@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { CheckCircle2, ChevronDown } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -8,6 +8,11 @@ import {
 } from "@/lib/api/doubao-checkin";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import {
+  CheckinAccountTools,
+  CheckinNotice,
+  CheckinProgress,
+} from "./CheckinProgress";
 import "./daily-checkin.css";
 
 const queryKey = ["doubaoCheckin"];
@@ -75,8 +80,66 @@ export function DoubaoWorkCheckinPanel({
         className="mp-checkin-body"
       >
         <div className="mp-checkin-intro">
-          <p>{t("doubaowork.checkin.description")}</p>
           <div className="mp-checkin-actions">
+            <Button
+              variant="outline"
+              size="sm"
+              className="mp-checkin-button mp-checkin-primary"
+              data-complete={hasReward}
+              disabled={!canClaim || busy || query.isError}
+              onClick={() => {
+                auto.reset();
+                if (selected) claim.mutate(selected.id);
+              }}
+            >
+              {hasReward && <CheckCircle2 size={15} aria-hidden="true" />}
+              {hasReward
+                ? t(
+                    selected?.credit != null
+                      ? "dailyCheckin.todayReward"
+                      : "dailyCheckin.todayChecked",
+                    { credit: selected?.credit },
+                  )
+                : t(
+                    claim.isPending
+                      ? "doubaowork.checkin.checking"
+                      : selected && !selected.current
+                        ? "doubaowork.checkin.switchAndCheckin"
+                        : "doubaowork.checkin.checkNow",
+                  )}
+            </Button>
+          </div>
+        </div>
+        <div className="mp-checkin-accounts">
+          <div className="mp-checkin-field">
+            <label htmlFor={accountId}>{t("doubaowork.checkin.account")}</label>
+            <select
+              id={accountId}
+              value={selected?.id ?? ""}
+              disabled={busy || !query.data?.accounts.length}
+              onChange={(event) => {
+                setSelectedId(event.target.value);
+                claim.reset();
+                auto.reset();
+              }}
+            >
+              {!selected && (
+                <option value="">
+                  {t("doubaowork.checkin.selectAccount")}
+                </option>
+              )}
+              {query.data?.accounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.label}
+                  {account.current
+                    ? ` (${t("doubaowork.checkin.currentAccount")})`
+                    : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+          <CheckinAccountTools>
+            <p>{t("doubaowork.checkin.description")}</p>
             <Button
               variant="ghost"
               size="sm"
@@ -86,52 +149,7 @@ export function DoubaoWorkCheckinPanel({
             >
               {t("doubaowork.checkin.reload")}
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="mp-checkin-button mp-checkin-primary"
-              disabled={!canClaim || busy || query.isError}
-              onClick={() => {
-                auto.reset();
-                if (selected) claim.mutate(selected.id);
-              }}
-            >
-              {t(
-                claim.isPending
-                  ? "doubaowork.checkin.checking"
-                  : hasReward
-                    ? "agentRewards.checkedIn"
-                    : selected && !selected.current
-                      ? "doubaowork.checkin.switchAndCheckin"
-                      : "doubaowork.checkin.checkNow",
-              )}
-            </Button>
-          </div>
-        </div>
-        <div className="mp-checkin-field">
-          <label htmlFor={accountId}>{t("doubaowork.checkin.account")}</label>
-          <select
-            id={accountId}
-            value={selected?.id ?? ""}
-            disabled={busy || !query.data?.accounts.length}
-            onChange={(event) => {
-              setSelectedId(event.target.value);
-              claim.reset();
-              auto.reset();
-            }}
-          >
-            {!selected && (
-              <option value="">{t("doubaowork.checkin.selectAccount")}</option>
-            )}
-            {query.data?.accounts.map((account) => (
-              <option key={account.id} value={account.id}>
-                {account.label}
-                {account.current
-                  ? ` (${t("doubaowork.checkin.currentAccount")})`
-                  : ""}
-              </option>
-            ))}
-          </select>
+          </CheckinAccountTools>
         </div>
         {selected && !selected.current && canClaim && (
           <p className="mp-checkin-muted">
@@ -143,7 +161,11 @@ export function DoubaoWorkCheckinPanel({
             {t("doubaowork.checkin.loadFailed")}
           </p>
         ) : query.data ? (
-          <div role="status" className="mp-checkin-status">
+          <div
+            role="status"
+            className="mp-checkin-status"
+            data-complete={hasReward}
+          >
             <p className="mp-checkin-outcome" data-complete={hasReward}>
               {t(
                 `doubaowork.checkin.outcomes.${selected?.outcome ?? query.data.outcome}`,
@@ -155,38 +177,20 @@ export function DoubaoWorkCheckinPanel({
                 {t(`doubaowork.checkin.outcomes.${query.data.outcome}`)}
               </p>
             )}
-            {hasReward && (
-              <div className="mp-checkin-rewards">
-                {selected.credit != null && (
-                  <p>
-                    {t("doubaowork.checkin.reward", {
-                      credit: selected.credit,
-                    })}
-                  </p>
-                )}
-                {selected.streak != null && (
-                  <p>
-                    {t("doubaowork.checkin.streak", { count: selected.streak })}
-                  </p>
-                )}
-                {selected.totalDays != null && (
-                  <p>
-                    {t("doubaowork.checkin.totalDays", {
-                      count: selected.totalDays,
-                    })}
-                  </p>
-                )}
-              </div>
+            {hasReward && selected.totalDays != null && (
+              <p className="mp-checkin-muted">
+                {t("doubaowork.checkin.totalDays", {
+                  count: selected.totalDays,
+                })}
+              </p>
             )}
-            <p className="mp-checkin-muted">
-              {t("doubaowork.checkin.day", { day: query.data.day })}
-            </p>
           </div>
         ) : (
           <p role="status" className="mp-checkin-muted">
             {t("common.loading")}
           </p>
         )}
+        <CheckinProgress streak={selected?.streak} />
         <div className="mp-checkin-auto">
           <div>
             <label htmlFor={autoId}>{t("doubaowork.checkin.autoLabel")}</label>
@@ -214,6 +218,7 @@ export function DoubaoWorkCheckinPanel({
             {t("doubaowork.checkin.operationFailed")}
           </p>
         )}
+        <CheckinNotice />
       </div>
     </section>
   );

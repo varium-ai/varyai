@@ -17,6 +17,9 @@ export type DirectoryAppId = Exclude<
   | "qwen"
   | "zcode"
   | "deepseek-harness"
+  | "cursor"
+  | "cursor-cli"
+  | "t3code"
 >;
 type AppDirectoryKey =
   | "claude"

@@ -47,6 +47,8 @@ Backend retention, access and deletion rules depend on the operator of the confi
 
 The updater contacts the feed configured in [`tauri.conf.json`](../src-tauri/tauri.conf.json). Installation is a separate user-triggered action in [`AppUpdateDialog.tsx`](../src/components/AppUpdateDialog.tsx). Statistics consent does not control update checks or user-configured provider traffic.
 
+The update notice displays Markdown notes supplied by the updater feed. If an older feed omits them or contains only the former release-page placeholder, the visible notice requests the exact target version from `https://api.github.com/repos/varium-ai/varyai/releases/tags/`. This request has an eight-second timeout, omits credentials and the referrer, and does not attach account details or local configuration. Failure to load these optional notes does not block installation. Notes do not execute embedded HTML or load remote images; their links open in the external browser only when clicked.
+
 [`tauri.no-updater.conf.json`](../src-tauri/tauri.no-updater.conf.json) disables updater artifact generation. Combined with `--no-bundle`, the README build command compiles without release bundles or updater artifacts; it does not remove the updater plugin or disable runtime update checks. Fork distributors should review [release distribution and update compatibility](guides/release-distribution.md).
 
 ## Client integrations

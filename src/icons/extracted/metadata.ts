@@ -536,6 +536,13 @@ export const iconMetadata: Record<string, IconMetadata> = {
     keywords: ["trae"],
     defaultColor: "currentColor",
   },
+  "trae-intl": {
+    name: "trae-intl",
+    displayName: "TRAE International",
+    category: "ai-provider",
+    keywords: ["trae", "international"],
+    defaultColor: "currentColor",
+  },
   "kimi-code": {
     name: "kimi-code",
     displayName: "Kimi Code",

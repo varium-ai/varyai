@@ -18,4 +18,7 @@ export type AppId =
   | "kimi"
   | "qwen"
   | "zcode"
-  | "deepseek-harness";
+  | "deepseek-harness"
+  | "cursor"
+  | "cursor-cli"
+  | "t3code";

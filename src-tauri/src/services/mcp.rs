@@ -155,6 +155,9 @@ impl McpService {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => {}
         }
         Ok(())
@@ -202,6 +205,9 @@ impl McpService {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => {}
         }
         Ok(())
@@ -261,6 +267,9 @@ impl McpService {
                 | AppType::DeepSeekHarness
                 | AppType::Trae
                 | AppType::TraeIntl
+                | AppType::Cursor
+                | AppType::CursorCli
+                | AppType::T3Code
                 | AppType::DoubaoWork
         ) {
             return Ok(());

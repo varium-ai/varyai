@@ -11,6 +11,9 @@ const agentIcons = [
   ["kimi", "kimi-code"],
   ["qwen", "qwen-code"],
   ["zcode", "zcode"],
+  ["cursor", "cursor"],
+  ["cursor-cli", "cursor"],
+  ["t3code", "t3code"],
 ] as const;
 
 describe("official agent icons", () => {

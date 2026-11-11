@@ -6,6 +6,21 @@ const THINK_CLOSE_TAG: &str = "</think>";
 const LONG_THINK_OPEN_TAG: &str = "<thinking>";
 const LONG_THINK_CLOSE_TAG: &str = "</thinking>";
 
+pub(crate) fn is_unsolicited_page_context(item: &Value) -> bool {
+    let name = item["name"].as_str().unwrap_or_default();
+    item["type"] == "function_call_output"
+        && item["namespace"] == "agent"
+        && item.get("call_id").is_none_or(Value::is_null)
+        && (name == "codex_apps_open_page"
+            || name
+                .strip_prefix("codex_apps_selected_page_part_")
+                .and_then(|part| part.split_once("_of_"))
+                .and_then(|(part, total)| {
+                    Some((part.parse::<usize>().ok()?, total.parse::<usize>().ok()?))
+                })
+                .is_some_and(|(part, total)| part > 0 && part <= total))
+}
+
 pub(crate) fn allows_long_thinking_tags(config: Option<&CodexChatReasoningConfig>) -> bool {
     config.and_then(|config| config.output_format.as_deref()) == Some("thinking_tags")
 }

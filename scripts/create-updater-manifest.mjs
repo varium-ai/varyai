@@ -54,6 +54,8 @@ export function buildUpdaterManifest({
   platforms = ["macos", "windows", "linux"],
   targets: selectedTargets,
   windowsInstallers = {},
+  notes,
+  notesFile,
 }) {
   if (
     Object.entries(windowsInstallers).some(
@@ -91,6 +93,20 @@ export function buildUpdaterManifest({
     );
   }
 
+  if (notes !== undefined && notesFile !== undefined) {
+    throw new Error("Supply either notes or notesFile, not both");
+  }
+  const stagedNotes =
+    notesFile ?? path.join(releaseAssetsDir, "release-notes.md");
+  const releaseNotes =
+    notes ??
+    (notesFile || existsSync(stagedNotes)
+      ? readFileSync(stagedNotes, "utf8")
+      : "");
+  if (typeof releaseNotes !== "string") {
+    throw new Error("Release notes must be Markdown text");
+  }
+
   const targets = {};
   const artifact = (assetTemplate) =>
     updaterArtifact({
@@ -126,7 +142,7 @@ export function buildUpdaterManifest({
 
   return {
     version: tag.slice(1),
-    notes: "See the GitHub release page for release notes.",
+    notes: releaseNotes.trim(),
     pub_date: pubDate,
     platforms: targets,
   };
@@ -149,7 +165,7 @@ if (import.meta.url === invokedPath) {
 
   if (!tag || !repository) {
     throw new Error(
-      "Usage: node scripts/create-updater-manifest.mjs <assets-dir> <tag> <owner/repo> [macos,windows,linux]",
+      "Usage: node scripts/create-updater-manifest.mjs <assets-dir> <tag> <owner/repo> [macos,windows,linux] [notes-file]",
     );
   }
 
@@ -158,6 +174,7 @@ if (import.meta.url === invokedPath) {
     repository,
     tag,
     ...(process.argv[5] ? { platforms: process.argv[5].split(",") } : {}),
+    ...(process.argv[6] ? { notesFile: process.argv[6] } : {}),
   });
   console.log(`Created updater manifest: ${manifestPath}`);
 }

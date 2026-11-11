@@ -48,7 +48,6 @@ fn with_codex_reload(
     reload: Option<agent_connections::ReloadState>,
     desktop_state: Option<agent_connections::desktop::State>,
 ) -> Status {
-    status.desktop_state = desktop_state;
     let reload_restart = !status.recovery_pending
         && matches!(
             reload,
@@ -58,7 +57,13 @@ fn with_codex_reload(
             )
         );
     let desktop_restart = !status.recovery_pending
-        && desktop_state == Some(agent_connections::desktop::State::RestartRequired);
+        && (desktop_state == Some(agent_connections::desktop::State::RestartRequired)
+            || reload_restart && desktop_state == Some(agent_connections::desktop::State::Current));
+    status.desktop_state = if desktop_restart {
+        Some(agent_connections::desktop::State::RestartRequired)
+    } else {
+        desktop_state
+    };
     status.restart_required = reload_restart || desktop_restart;
     // Prefer a verified desktop-app restart over background app-server reload
     // when both are pending, so the UI offers one clear action.
@@ -123,6 +128,9 @@ pub(crate) async fn get_agent_connection(
     state: State<'_, AppState>,
     app: String,
 ) -> Result<Status, String> {
+    if app == "cursor-cli" {
+        return Ok(cursor_cli_status());
+    }
     if app == "doubaowork" {
         let (active, waiting) = state.proxy_service.doubaowork_connection_status();
         let manager = state.proxy_service.agent_connections.clone();
@@ -306,11 +314,40 @@ pub(crate) async fn list_agent_connections(
         native_compatibility: None,
         configuration_issue: None,
     });
+    statuses.push(cursor_cli_status());
     Ok(statuses)
 }
 #[cfg(test)]
 mod desktop_restart_tests {
     use super::*;
+
+    #[test]
+    fn stale_chatgpt_catalog_requests_a_full_application_restart() {
+        let status = Status {
+            app: "codex".into(),
+            enabled: true,
+            configured: true,
+            recovery_pending: false,
+            recovery_reason: None,
+            model: None,
+            restart_required: false,
+            reload_state: None,
+            desktop_state: None,
+            native_compatibility: None,
+            configuration_issue: None,
+        };
+        let status = with_codex_reload(
+            status,
+            Some(agent_connections::ReloadState::StaleCatalog),
+            Some(agent_connections::desktop::State::Current),
+        );
+        assert!(status.restart_required);
+        assert_eq!(
+            status.desktop_state,
+            Some(agent_connections::desktop::State::RestartRequired)
+        );
+        assert_eq!(status.reload_state, None);
+    }
 
     #[test]
     fn confirmation_is_required_for_every_app_and_only_verified_desktops_are_selected() {
@@ -430,8 +467,13 @@ pub(crate) async fn restart_agent_connection(
         if status.configuration_issue.is_some() || status.recovery_pending {
             return Err(agent_connections::CONFLICT.into());
         }
-        let desktop_restart =
-            desktop_state == Some(agent_connections::desktop::State::RestartRequired);
+        let desktop_restart = matches!(
+            desktop_state,
+            Some(
+                agent_connections::desktop::State::RestartRequired
+                    | agent_connections::desktop::State::Current
+            )
+        );
         let reload_restart = matches!(
             reload,
             Some(
@@ -595,6 +637,17 @@ pub(crate) async fn set_agent_connection(
     enabled: bool,
     model: Option<String>,
 ) -> Result<(), String> {
+    if app == "cursor-cli" {
+        if !enabled {
+            return Err(FAILED.into());
+        }
+        let _guard = state.proxy_service.lock_switch_for_app(&app).await;
+        return tokio::task::spawn_blocking(move || {
+            agent_connections::cursor::set_native_model(model.as_deref().ok_or(FAILED)?)
+        })
+        .await
+        .map_err(|_| FAILED)?;
+    }
     if app == "doubaowork" {
         return super::proxy::set_proxy_takeover_for_app(app_handle, state, app, enabled).await;
     }
@@ -872,6 +925,57 @@ mod tests {
             },
         })?;
         Ok(AppState::new(db))
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn cursor_and_t3code_connect_refresh_and_disconnect_through_the_public_service(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let _home = IsolatedHome::new()?;
+        let state = upgrade_state().await?;
+        for app in ["cursor", "t3code"] {
+            assert!(
+                !state
+                    .proxy_service
+                    .legacy_agent_connection_active(app)
+                    .await?
+            );
+            set_native_connection(&state, app.into(), true, None).await?;
+            assert!(
+                state
+                    .proxy_service
+                    .agent_connections
+                    .status(app)?
+                    .configured
+            );
+            assert!(state.proxy_service.intent_runtime.connections.active(app));
+            state.proxy_service.sync_shared_agent_catalog(app).await;
+            assert!(
+                state
+                    .proxy_service
+                    .agent_connections
+                    .status(app)?
+                    .configured
+            );
+            assert!(state.proxy_service.intent_runtime.connections.active(app));
+            let status = state.proxy_service.get_takeover_status().await?;
+            assert!(if app == "cursor" {
+                status.cursor
+            } else {
+                status.t3code
+            });
+            set_native_connection(&state, app.into(), false, None).await?;
+            assert!(
+                !state
+                    .proxy_service
+                    .agent_connections
+                    .status(app)?
+                    .configured
+            );
+            assert!(!state.proxy_service.intent_runtime.connections.active(app));
+        }
+        state.proxy_service.stop().await?;
+        Ok(())
     }
 
     #[tokio::test]
@@ -1515,5 +1619,21 @@ mod tests {
         }
         state.proxy_service.stop().await?;
         Ok(())
+    }
+}
+
+fn cursor_cli_status() -> Status {
+    Status {
+        app: "cursor-cli".into(),
+        enabled: false,
+        configured: false,
+        recovery_pending: false,
+        recovery_reason: None,
+        model: None,
+        restart_required: false,
+        reload_state: None,
+        desktop_state: None,
+        native_compatibility: None,
+        configuration_issue: None,
     }
 }

@@ -104,6 +104,15 @@ impl Client {
         }
         Ok(executable)
     }
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    pub(super) fn connection_executable(self) -> Result<PathBuf, AppError> {
+        match super::super::agent_connections::desktop::running_executable(self.0.app())
+            .map_err(|_| unavailable())?
+        {
+            Some(executable) => Ok(executable),
+            None => self.installed_executable(),
+        }
+    }
     pub(super) fn request(self, command: &Value) -> Result<Value, AppError> {
         request_in(&self.directory()?, command, false)
     }

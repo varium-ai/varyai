@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { CheckCircle2, ChevronDown } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -10,6 +10,11 @@ import {
 import { settingsApi } from "@/lib/api/settings";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import {
+  CheckinAccountTools,
+  CheckinNotice,
+  CheckinProgress,
+} from "./CheckinProgress";
 import "./daily-checkin.css";
 
 export function AgentRewardsPanel({
@@ -124,21 +129,12 @@ export function AgentRewardsPanel({
         className="mp-checkin-body"
       >
         <div className="mp-checkin-intro">
-          <p>{t(`agentRewards.descriptions.${app}`)}</p>
           <div className="mp-checkin-actions">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="mp-checkin-button mp-checkin-quiet"
-              disabled={busy || query.isFetching}
-              onClick={() => void query.refetch()}
-            >
-              {t("agentRewards.refresh")}
-            </Button>
             <Button
               variant="outline"
               size="sm"
               className="mp-checkin-button mp-checkin-primary"
+              data-complete={complete}
               disabled={
                 busy ||
                 query.isFetching ||
@@ -151,15 +147,25 @@ export function AgentRewardsPanel({
                 if (data?.accountId) claim.mutate(data.accountId);
               }}
             >
-              {t(
-                claim.isPending
-                  ? "agentRewards.claiming"
-                  : complete
-                    ? "agentRewards.checkedIn"
-                    : app === "zcode" && data?.outcome === "own_app_required"
-                      ? "agentRewards.verificationRequired"
-                      : "agentRewards.claim",
-              )}
+              {complete && <CheckCircle2 size={15} aria-hidden="true" />}
+              {complete
+                ? t(
+                    app === "zcode"
+                      ? data?.credit != null
+                        ? "dailyCheckin.claimedReward"
+                        : "dailyCheckin.claimed"
+                      : data?.credit != null
+                        ? "dailyCheckin.todayReward"
+                        : "dailyCheckin.todayChecked",
+                    { credit: data?.credit },
+                  )
+                : t(
+                    claim.isPending
+                      ? "agentRewards.claiming"
+                      : app === "zcode" && data?.outcome === "own_app_required"
+                        ? "agentRewards.verificationRequired"
+                        : "agentRewards.claim",
+                  )}
             </Button>
           </div>
         </div>
@@ -177,42 +183,54 @@ export function AgentRewardsPanel({
               </option>
             </select>
           </div>
-          {app === "qoder" && (
-            <>
-              {data?.nativeAvailable &&
-                (data.source !== "native" || !data.accountId) && (
+          <CheckinAccountTools>
+            <p>{t(`agentRewards.descriptions.${app}`)}</p>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mp-checkin-button mp-checkin-quiet"
+              disabled={busy || query.isFetching}
+              onClick={() => void query.refetch()}
+            >
+              {t("agentRewards.refresh")}
+            </Button>
+            {app === "qoder" && (
+              <>
+                {data?.nativeAvailable &&
+                  (data.source !== "native" || !data.accountId) && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mp-checkin-button"
+                      disabled={busy || query.isFetching}
+                      onClick={() => native.mutate()}
+                    >
+                      {t("agentRewards.readNative")}
+                    </Button>
+                  )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mp-checkin-button"
+                  disabled={busy}
+                  onClick={() => authorize.mutate()}
+                >
+                  {t("agentRewards.authorize")}
+                </Button>
+                {browserAccountId && (
                   <Button
-                    variant="outline"
+                    variant="ghost"
                     size="sm"
-                    className="mp-checkin-button"
-                    disabled={busy || query.isFetching}
-                    onClick={() => native.mutate()}
+                    className="mp-checkin-button mp-checkin-quiet"
+                    disabled={busy}
+                    onClick={() => forget.mutate(browserAccountId)}
                   >
-                    {t("agentRewards.readNative")}
+                    {t("agentRewards.forget")}
                   </Button>
                 )}
-              <Button
-                variant="outline"
-                size="sm"
-                className="mp-checkin-button"
-                disabled={busy}
-                onClick={() => authorize.mutate()}
-              >
-                {t("agentRewards.authorize")}
-              </Button>
-              {browserAccountId && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="mp-checkin-button mp-checkin-quiet"
-                  disabled={busy}
-                  onClick={() => forget.mutate(browserAccountId)}
-                >
-                  {t("agentRewards.forget")}
-                </Button>
-              )}
-            </>
-          )}
+              </>
+            )}
+          </CheckinAccountTools>
         </div>
         {app === "qoder" && data?.source && data.accountId && (
           <p className="mp-checkin-muted">
@@ -251,7 +269,11 @@ export function AgentRewardsPanel({
             {t("agentRewards.operationFailed")}
           </p>
         ) : data ? (
-          <div role="status" className="mp-checkin-status">
+          <div
+            role="status"
+            className="mp-checkin-status"
+            data-complete={complete}
+          >
             <p className="mp-checkin-outcome" data-complete={complete}>
               {t(
                 app === "zcode" && data?.outcome === "own_app_required"
@@ -265,13 +287,8 @@ export function AgentRewardsPanel({
                 {t(`agentRewards.outcomes.${data.outcome}`)}
               </p>
             )}
-            {data.credit != null && (
-              <p>
-                {t(
-                  complete ? "agentRewards.reward" : "agentRewards.available",
-                  { credit: data.credit },
-                )}
-              </p>
+            {!complete && data.credit != null && (
+              <p>{t("agentRewards.available", { credit: data.credit })}</p>
             )}
             {data.checkedAt != null && (
               <p className="mp-checkin-muted">
@@ -286,6 +303,7 @@ export function AgentRewardsPanel({
             {t("common.loading")}
           </p>
         )}
+        <CheckinProgress streak={null} />
         <div className="mp-checkin-auto">
           <div>
             <label htmlFor={autoId}>{t("agentRewards.autoLabel")}</label>
@@ -316,6 +334,7 @@ export function AgentRewardsPanel({
             {t("agentRewards.operationFailed")}
           </p>
         )}
+        <CheckinNotice />
       </div>
     </section>
   );
