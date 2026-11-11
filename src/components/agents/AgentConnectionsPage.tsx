@@ -364,7 +364,7 @@ export function AgentConnectionsPage({
         setModelControlRequest({ app, model });
         return;
       }
-      if (await apply(app, true, model)) setRestarting(app);
+      await apply(app, true, model);
       return;
     }
     await apply(app, true, model);
@@ -378,7 +378,6 @@ export function AgentConnectionsPage({
       await agentConnectionsApi.authorizeModelControl(app, true);
       if (await apply(app, true, model)) {
         setModelControlRequest(null);
-        setRestarting(app);
       }
     } catch {
       setError("agentConnections.modelControlUnavailable");

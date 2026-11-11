@@ -600,6 +600,62 @@ describe("Agent connections", () => {
         app,
         true,
       );
+      await waitFor(() => expect(dialog).not.toBeInTheDocument());
+      expect(
+        screen.queryByRole("dialog", {
+          name: "agentConnections.restartTitle",
+        }),
+      ).not.toBeInTheDocument();
+      expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["workbuddy", "workbuddy-ai", "qoder"] as const)(
+    "saves an authorized %s model without opening restart confirmation",
+    async (app) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      });
+      vi.mocked(agentConnectionsApi.list).mockResolvedValue([
+        {
+          app,
+          enabled: true,
+          configured: true,
+          recoveryPending: false,
+          restartRequired: false,
+          model: "vary-auto/shared",
+        },
+      ]);
+      vi.mocked(agentConnectionsApi.modelControl).mockResolvedValue({
+        authorized: true,
+        ready: false,
+        pending: true,
+      });
+      mount();
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      const trigger = within(row).getByRole("button", {
+        name: `agentConnections.model apps.${app}`,
+      });
+      await waitFor(() => expect(trigger).toBeEnabled());
+      fireEvent.click(trigger);
+      fireEvent.click(
+        await screen.findByRole("radio", { name: /Shared group/ }),
+      );
+      await waitFor(() =>
+        expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+          app,
+          true,
+          "vary-auto/shared",
+        ),
+      );
+      await waitFor(() =>
+        expect(trigger).toHaveAttribute("aria-expanded", "false"),
+      );
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(agentConnectionsApi.restart).not.toHaveBeenCalled();
+      fireEvent.click(
+        within(row).getByRole("button", { name: "agentConnections.restart" }),
+      );
       expect(
         await screen.findByRole("dialog", {
           name: "agentConnections.restartTitle",
