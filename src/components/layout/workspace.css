@@ -236,7 +236,20 @@
   color: inherit;
 }
 .workspace-settings {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  margin-top: 0;
+}
+.workspace-settings-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
   margin-top: auto;
+}
+.workspace-update-badge {
+  flex: none;
 }
 .workspace-footer {
   display: flex;
@@ -872,6 +885,20 @@ html:has(.vary-workspace) .tray-profile-menu {
   .workspace-brand > span,
   .workspace-nav-item > span {
     display: none;
+  }
+  .workspace-settings-row {
+    justify-content: center;
+  }
+  .workspace-settings-row .workspace-settings {
+    flex: none;
+    width: 28px;
+  }
+  .workspace-update-badge {
+    position: absolute;
+    right: -4px;
+    bottom: 20px;
+    width: 26px;
+    height: 26px;
   }
   .vary-agents,
   .vary-routing,

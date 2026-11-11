@@ -13,7 +13,6 @@ import { SecurityCenterPage } from "@/components/security/SecurityCenterPage";
 import { StatisticsPage } from "@/components/statistics/StatisticsPage";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
-import { UpdateBadge } from "@/components/UpdateBadge";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
 import { APP_IDS } from "@/config/appConfig";
 import { agentConnectionsApi } from "@/lib/api/agentConnections";
@@ -176,7 +175,6 @@ export default function App() {
                   : "workspaceNav.gatewayStopped",
             )}
           </span>
-          <UpdateBadge />
         </div>
       </footer>
       <FirstRunNoticeDialog
