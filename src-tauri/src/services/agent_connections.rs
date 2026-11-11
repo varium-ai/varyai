@@ -236,6 +236,8 @@ pub(crate) enum ReloadState {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RecoveryReason {
     BridgePending,
+    BridgeModelRejected,
+    BridgeSelectionPending,
     ConfigurationChanged,
     ConnectionInactive,
     Orphaned,

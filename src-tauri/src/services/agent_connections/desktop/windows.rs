@@ -267,6 +267,16 @@ pub(super) fn supported(app: &str) -> bool {
     }
 }
 #[cfg(target_os = "windows")]
+pub(super) fn running_executable(app: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let processes = native::Native { app }.processes()?;
+    if processes.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(std::path::PathBuf::from(
+        main_process(&processes)?.image.clone(),
+    )))
+}
+#[cfg(target_os = "windows")]
 pub(super) fn state(app: &str, applied_ms: Option<i64>) -> State {
     if !supported(app) {
         return State::Unsupported;

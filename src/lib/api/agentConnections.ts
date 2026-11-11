@@ -10,6 +10,8 @@ export interface AgentConnection {
     | "connection_inactive"
     | "orphaned"
     | "bridge_pending"
+    | "bridge_model_rejected"
+    | "bridge_selection_pending"
     | null;
   model: string | null;
   restartRequired: boolean;

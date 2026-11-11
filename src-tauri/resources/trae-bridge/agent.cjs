@@ -9,9 +9,10 @@ const { createBridge, workbenchServices } = require("./renderer.cjs");
 const { createStartingModelAdapter } = require("./starting-model.cjs");
 const { createTraeRewards } = require("./rewards.cjs");
 const SLOT = "__varyaiTraeNativeBridge";
-const REVISION = 11;
+const REVISION = 18;
 // Keep the renderer API compatible so an older resident helper cannot replace the new hook.
 const RENDERER_REVISION = 2;
+const MODEL_OPERATION_TIMEOUT = 300_000;
 // Older helpers remain resident; their disabled audit callbacks must not receive new events.
 const AUDIT_BINDING = `__varyaiTraeAuditV${REVISION}`;
 function safeModelError(message) {
@@ -19,7 +20,15 @@ function safeModelError(message) {
     (/^model_(add|update|remove|restore)_failed(?::-?\d{1,16})?$/.test(
       message,
     ) ||
-      message === "model_recovery_unavailable")
+      [
+        "model_recovery_unavailable",
+        "model_apply_failed",
+        "model_identity_changed",
+        "model_list_unavailable",
+        "model_ownership_unavailable",
+        "starting_model_unavailable",
+        "unsupported_ide_version",
+      ].includes(message))
     ? message
     : "TRAE native bridge unavailable";
 }
@@ -84,13 +93,13 @@ class PipeClient {
     output.on("error", () => this.close());
     input.on("error", () => this.close());
   }
-  call(method, params = {}, sessionId) {
+  call(method, params = {}, sessionId, timeoutMs = 8000) {
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(Error("native_command_timeout"));
-      }, 8000);
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.input.write(
         JSON.stringify({
@@ -126,6 +135,13 @@ function nativeModelService(connection) {
     });
   return {
     _clientManagerService: { getClient: () => connection.getDefaultClient() },
+    async refreshModelList() {
+      const result = await request("model_list_by_function", {
+        functions: ["builder"],
+        force_refresh: true,
+      });
+      if (result.code !== 0) throw Error("model_list_unavailable");
+    },
     async getModelList() {
       const result = await request("model_list", {});
       if (result.code !== 0 || !Array.isArray(result.data?.model_list))
@@ -144,6 +160,8 @@ function bootstrapSource() {
       if(previous.hookRevision>${REVISION})return true;
       if(previous.hookRevision===${REVISION}&&previous.startingModel===1&&previous.modelVerification===1&&previous.auditBinding===${JSON.stringify(AUDIT_BINDING)})return true;
     }
+    await previous?.bridge?.idle?.();
+    if(globalThis.${SLOT}!==previous)return !!globalThis.${SLOT}?.bridge;
     await previous?.bridge?.disable();
     const solo=globalThis.__varyaiTraeSoloDI;
     let service,refresh,req;
@@ -151,7 +169,11 @@ function bootstrapSource() {
       const nativeModelService=${nativeModelService.toString()};
       service=nativeModelService(solo.resolve('IICubeAiChatConnectionService'));
       req=globalThis.__varyaiTraeSoloRequire;
-      refresh=()=>solo.resolve('iICubeModelManagementService').notifyModelChanges({source:'varyai'});
+      refresh=async()=>{
+        // The broadcast is asynchronous; fetch native state before recording credential proofs.
+        await service.refreshModelList();
+        solo.resolve('iICubeModelManagementService').notifyModelChanges({source:'varyai'});
+      };
     }else{
       const mod=await import(location.href.split('/out/')[0]+'/node_modules/@byted-icube/ai-modules-chat/dist/index.mjs');
       req=mod.__webpack_require__;
@@ -362,11 +384,12 @@ async function run(endpoint, directory) {
     expected = 0;
   const sessions = new Map(),
     targets = new Map();
-  const evaluate = async (sessionId, expression) => {
+  const evaluate = async (sessionId, expression, timeoutMs = 8000) => {
     const value = await pipe.call(
       "Runtime.evaluate",
       { expression, awaitPromise: true, returnByValue: true },
       sessionId,
+      timeoutMs,
     );
     if (value.exceptionDetails)
       throw Error(
@@ -382,6 +405,9 @@ async function run(endpoint, directory) {
     evaluate(
       sessionId,
       `globalThis.${SLOT}.bridge[${JSON.stringify(op)}](...${JSON.stringify(args)})`,
+      ["apply", "replace", "remove", "select", "matches"].includes(op)
+        ? MODEL_OPERATION_TIMEOUT
+        : 8000,
     );
   async function disable() {
     config = undefined;
@@ -595,6 +621,12 @@ async function run(endpoint, directory) {
       Promise.resolve()
         .then(() => {
           const command = JSON.parse(buffer.slice(0, end));
+          if (
+            ["apply", "replace", "remove", "select", "matches"].includes(
+              command.op,
+            )
+          )
+            socket.setTimeout(MODEL_OPERATION_TIMEOUT + 30_000);
           if (
             pipeAuth &&
             (typeof command.auth !== "string" ||
