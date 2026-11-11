@@ -632,7 +632,7 @@ describe("Agent connections", () => {
           configured: true,
           recoveryPending: false,
           restartRequired: false,
-          model: "vary-auto/shared",
+          model: "vary-auto/previous",
         },
       ]);
       vi.mocked(agentConnectionsApi.modelControl).mockResolvedValue({
@@ -640,6 +640,18 @@ describe("Agent connections", () => {
         ready: false,
         pending: true,
       });
+      vi.mocked(agentConnectionsApi.models).mockResolvedValue([
+        {
+          id: "vary-auto/previous",
+          name: "Previous group",
+          contextWindow: 1000000,
+        },
+        {
+          id: "vary-auto/shared",
+          name: "Shared group",
+          contextWindow: 1000000,
+        },
+      ]);
       mount();
       const row = await screen.findByRole("article", { name: `apps.${app}` });
       const trigger = within(row).getByRole("button", {
@@ -3395,6 +3407,68 @@ describe("Agent connections", () => {
       }),
     ).toBeEnabled();
   });
+  it("keeps Cursor CLI on its native model choices without a gateway switch", async () => {
+    vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+      "cursor-cli": true,
+    });
+    vi.mocked(agentConnectionsApi.nativeModels).mockResolvedValue([
+      { app: "cursor-cli", available: true, model: "native-example" },
+    ]);
+    mount();
+    const row = await screen.findByRole("article", { name: "apps.cursor-cli" });
+    expect(within(row).queryByRole("switch")).not.toBeInTheDocument();
+    expect(
+      within(row).getByText("agentConnections.cursorCliHint"),
+    ).toBeInTheDocument();
+    const picker = within(row).getByRole("button", {
+      name: "agentConnections.model apps.cursor-cli",
+    });
+    await waitFor(() => expect(picker).toBeEnabled());
+    fireEvent.click(picker);
+    expect(
+      screen.queryByRole("radio", { name: /Shared group/ }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      await screen.findByRole("radio", { name: /agentConnections.cursorAuto/ }),
+    );
+    await waitFor(() =>
+      expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+        "cursor-cli",
+        true,
+        "auto",
+      ),
+    );
+  });
+  it.each(["cursor", "t3code"])(
+    "connects %s to a shared model with its setup boundary visible",
+    async (app) => {
+      vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
+        [app]: true,
+      });
+      mount();
+      const row = await screen.findByRole("article", { name: `apps.${app}` });
+      expect(
+        within(row).getByText(
+          `agentConnections.${app === "cursor" ? "cursorLocalHint" : "t3codeHint"}`,
+        ),
+      ).toBeInTheDocument();
+      const picker = within(row).getByRole("button", {
+        name: `agentConnections.model apps.${app}`,
+      });
+      await waitFor(() => expect(picker).toBeEnabled());
+      fireEvent.click(picker);
+      fireEvent.click(
+        await screen.findByRole("radio", { name: /Shared group/ }),
+      );
+      await waitFor(() =>
+        expect(agentConnectionsApi.set).toHaveBeenCalledWith(
+          app,
+          true,
+          "vary-auto/shared",
+        ),
+      );
+    },
+  );
   it.each([false, true])(
     "selects the DeepSeek Harness starting model when connected is %s",
     async (enabled) => {

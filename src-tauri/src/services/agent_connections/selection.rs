@@ -19,6 +19,10 @@ fn paths(app: &str) -> &'static [&'static [&'static str]] {
         "qwen" => &[&["model", "name"]],
         "zcode" => &[&["config", "defaultModelSelection"]],
         "deepseek-harness" => &[&["selection"]],
+        "t3code" => &[
+            &["defaultModelSelection", "instanceId"],
+            &["defaultModelSelection", "model"],
+        ],
         _ => &[],
     }
 }
@@ -61,7 +65,9 @@ pub(super) fn adopt(receipt: &mut Receipt) -> Result<(), String> {
     }
     for index in 0..receipt.files.len() {
         let file = &receipt.files[index];
-        let live = file.format.parse(super::read(&file.path)?.as_deref())?;
+        let live = file
+            .format
+            .parse(file.format.read(&file.path)?.as_deref())?;
         let mut baseline = file.format.parse(file.original.as_deref())?;
         let mut installed = file.installed.clone();
         let mut changed = false;

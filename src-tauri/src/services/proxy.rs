@@ -463,6 +463,9 @@ impl ProxyService {
         let agent_connections = Arc::new(super::agent_connections::Manager {
             root: intent_receipt.with_file_name("agent-connections"),
         });
+        if super::agent_connections::cursor::resume_after_reboot(&agent_connections).is_err() {
+            log::warn!("Cursor environment could not be restored; reconnect is required");
+        }
         for app in super::agent_connections::APPS
             .iter()
             .filter(|app| **app != "codex")
@@ -1392,6 +1395,8 @@ impl ProxyService {
                     .db
                     .get_bool_flag(super::trae_bridge::CONSENT_KEY)
                     .unwrap_or(false),
+            cursor: self.is_running().await && self.intent_runtime.connections.active("cursor"),
+            t3code: self.is_running().await && self.intent_runtime.connections.active("t3code"),
             kimi: self.native_agent_active("kimi").await,
             qwen: self.native_agent_active("qwen").await,
             zcode: self.native_agent_active("zcode").await,
@@ -1449,7 +1454,8 @@ impl ProxyService {
                 .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
                 .map_err(|_| super::agent_connections::FAILED)?,
             // Desktop's shared adapter snapshots profiles rather than using legacy takeover.
-            "claude-desktop" | "opencode" | "openclaw" | "hermes" | "workbuddy-ai" => false,
+            "claude-desktop" | "opencode" | "openclaw" | "hermes" | "workbuddy-ai" | "cursor"
+            | "t3code" => false,
             _ => return Err(super::agent_connections::FAILED.into()),
         })
     }
@@ -6169,7 +6175,7 @@ mod tests {
                 let mut models = native_models.lock().unwrap();
                 let response = match request["op"].as_str().unwrap() {
                     "health" => {
-                        json!({"result":{"ready":true,"enabled":false,"revision":11,"modelVerification":1,"startingModel":1,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
+                        json!({"result":{"ready":true,"enabled":false,"revision":18,"modelVerification":1,"startingModel":1,"modelReplacement":native_capability.load(Ordering::Relaxed)}})
                     }
                     "list" => json!({"result":[]}),
                     "remove" => {
@@ -6200,7 +6206,12 @@ mod tests {
         impl Drop for Stop {
             fn drop(&mut self) {
                 self.0.store(false, Ordering::Relaxed);
-                self.1.take().unwrap().join().unwrap();
+                if let Some(worker) = self.1.take() {
+                    let result = worker.join();
+                    if !std::thread::panicking() {
+                        assert!(result.is_ok(), "synthetic bridge worker failed");
+                    }
+                }
             }
         }
         let _stop = Stop(run, Some(worker));

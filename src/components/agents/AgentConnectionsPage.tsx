@@ -95,6 +95,9 @@ const needsModelControl = (app: AppId | null) =>
   modelControlApps.some((known) => known === app);
 const isTrae = (app: AppId | null) => app === "trae" || app === "trae-intl";
 const websites: Record<AppId, string> = {
+  cursor: "https://cursor.com/",
+  "cursor-cli": "https://cursor.com/docs/cli/overview",
+  t3code: "https://t3.codes/",
   "claude-desktop": "https://claude.ai/download",
   claude: "https://code.claude.com/docs/en/overview",
   pi: "https://pi.dev/",
@@ -584,7 +587,7 @@ export function AgentConnectionsPage({
         {t("homeAudit.doubaoLaunch")}
       </Button>
     );
-    const status =
+    let status =
       connection.isPending || (enabled && gateway.isPending)
         ? "checking"
         : connection.isError
@@ -628,6 +631,8 @@ export function AgentConnectionsPage({
                             : "recovery"
                         : "gatewayStopped"
                     : "off";
+    if (app === "cursor-cli" && !connection.isPending && !connection.isError)
+      status = "nativeOnly";
     const bypassed = status === "recovery";
     const reapplyButton = state?.recoveryPending &&
       !["bridge_pending", "bridge_selection_pending"].includes(
@@ -817,6 +822,13 @@ export function AgentConnectionsPage({
               />
             )}
             {!compact && checkinTrigger}
+            {["cursor", "cursor-cli", "t3code"].includes(app) && (
+              <span className="mp-agent-note">
+                {t(
+                  `agentConnections.${app === "cursor" ? "cursorLocalHint" : app === "cursor-cli" ? "cursorCliHint" : "t3codeHint"}`,
+                )}
+              </span>
+            )}
             {app === "doubaowork" && (
               <span className="mp-agent-note">
                 {t("agentConnections.auditOnly")}
@@ -1064,7 +1076,19 @@ export function AgentConnectionsPage({
                               },
                             ]
                           : []),
-                        ...(catalog.isError ? [] : (catalog.data ?? [])).filter(
+                        ...(app === "cursor-cli"
+                          ? [
+                              {
+                                id: "auto",
+                                name: t("agentConnections.cursorAuto"),
+                                source: "native" as const,
+                                logo: "cursor",
+                              },
+                            ]
+                          : catalog.isError
+                            ? []
+                            : (catalog.data ?? [])
+                        ).filter(
                           (model) =>
                             app !== "claude-desktop" ||
                             (!!desktopVisibility.data &&
@@ -1107,29 +1131,32 @@ export function AgentConnectionsPage({
                     )}
                   </>
                 )}
-                {(!catalog.data?.length || catalog.isError) && (
-                  <p className="mt-3 text-xs text-muted-foreground">
-                    {t("agentConnections.noModels")}
-                  </p>
-                )}
+                {app !== "cursor-cli" &&
+                  (!catalog.data?.length || catalog.isError) && (
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      {t("agentConnections.noModels")}
+                    </p>
+                  )}
               </ModelPickerPopoverContent>
             </Popover>
           )}
-          <Switch
-            className="mp-switch"
-            aria-label={t(`apps.${app}`)}
-            checked={enabled}
-            aria-busy={connection.isPending || !!operations[app]}
-            disabled={
-              rowBusy(app) ||
-              connection.isPending ||
-              connection.isError ||
-              (catalog.isPending && !enabled && app !== "doubaowork")
-            }
-            onCheckedChange={(checked) =>
-              checked ? connect(app) : setDisconnecting(app)
-            }
-          />
+          {app !== "cursor-cli" && (
+            <Switch
+              className="mp-switch"
+              aria-label={t(`apps.${app}`)}
+              checked={enabled}
+              aria-busy={connection.isPending || !!operations[app]}
+              disabled={
+                rowBusy(app) ||
+                connection.isPending ||
+                connection.isError ||
+                (catalog.isPending && !enabled && app !== "doubaowork")
+              }
+              onCheckedChange={(checked) =>
+                checked ? connect(app) : setDisconnecting(app)
+              }
+            />
+          )}
         </div>
         {compact && expanded === app && (
           <div

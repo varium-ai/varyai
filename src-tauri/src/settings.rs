@@ -68,6 +68,12 @@ pub struct VisibleApps {
     pub trae_intl: bool,
     #[serde(default)]
     pub doubaowork: bool,
+    #[serde(default)]
+    pub cursor: bool,
+    #[serde(default, rename = "cursor-cli")]
+    pub cursor_cli: bool,
+    #[serde(default)]
+    pub t3code: bool,
 }
 
 impl Default for VisibleApps {
@@ -92,6 +98,9 @@ impl Default for VisibleApps {
             trae: false,
             trae_intl: false,
             doubaowork: false,
+            cursor: false,
+            cursor_cli: false,
+            t3code: false,
         }
     }
 }
@@ -118,6 +127,9 @@ impl VisibleApps {
             AppType::DeepSeekHarness => self.deepseek_harness,
             AppType::Trae => self.trae,
             AppType::TraeIntl => self.trae_intl,
+            AppType::Cursor => self.cursor,
+            AppType::CursorCli => self.cursor_cli,
+            AppType::T3Code => self.t3code,
             AppType::DoubaoWork => self.doubaowork,
         }
     }
@@ -1069,6 +1081,9 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
         | AppType::DeepSeekHarness
         | AppType::Trae
         | AppType::TraeIntl
+        | AppType::Cursor
+        | AppType::CursorCli
+        | AppType::T3Code
         | AppType::DoubaoWork => None,
     }
 }
@@ -1098,6 +1113,9 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         | AppType::DeepSeekHarness
         | AppType::Trae
         | AppType::TraeIntl
+        | AppType::Cursor
+        | AppType::CursorCli
+        | AppType::T3Code
         | AppType::DoubaoWork => {}
     })
 }

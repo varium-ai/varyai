@@ -148,6 +148,9 @@ impl ConfigService {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => {
                 // Pi owns its shared models/settings documents; this legacy
                 // single-provider live-sync path must not rewrite them.

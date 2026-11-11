@@ -1317,7 +1317,10 @@
     "kimi": "Kimi Code",
     "qwen": "Qwen Code",
     "zcode": "ZCode",
-    "deepseek-harness": "DeepSeek Harness"
+    "deepseek-harness": "DeepSeek Harness",
+    "cursor": "Cursor Private Inference",
+    "cursor-cli": "Cursor CLI",
+    "t3code": "T3 Code"
   },
   "pi": {
     "empty": {
@@ -4995,6 +4998,11 @@
     "sameAsHint": "自動探索群組及補全缺少的模型資訊時，將此模型視為填寫的模型。傳給供應商的模型 ID 保持原樣。"
   },
   "agentConnections": {
+    "cursorLocalHint": "需要 Cursor Private Inference。連線後請完全退出並重新開啟；Cursor 內已儲存的閘道設定優先於此處的環境預設值。",
+    "cursorCliHint": "管理 Cursor 原生模型選擇，CLI 請求仍透過 Cursor 服務。",
+    "cursorAuto": "Auto · Cursor 原生",
+    "t3codeHint": "使用獨立的 VaryAI Codex 執行個體，請在 T3 Code 中使用該執行個體開始新對話。",
+
     "desktopStartingModelHint": "用戶端重新載入設定後，用於新聊天和新任務。請選擇可見模型；既有對話保留各自的模型選擇。",
     "modelControlHint": "儲存本機新對話的預設模型後，需透過 Vary AI 重新啟動用戶端才能套用。既有對話與遠端執行設定保留各自的選擇。",
     "modelControlTitle": "允許管理 {{app}} 的預設模型？",
@@ -5095,6 +5103,7 @@
     "sessionHint": "接入已設定。請在工具中開啟新對話，並選擇 Vary 提供的模型。",
     "verifyHint": "在工具裡傳送一則訊息，再到「資料統計」確認請求是否經過 Vary。設定完成不代表上游模型已驗證可用。",
     "states": {
+      "nativeOnly": "原生模型",
       "codexProxyBlocked": "本機閘道經代理存取失敗 · 診斷結果",
       "checking": "偵測中…",
       "provider_missing": "缺少供應商定義 · 等待修復",

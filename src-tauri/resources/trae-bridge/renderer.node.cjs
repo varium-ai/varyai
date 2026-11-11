@@ -84,6 +84,57 @@ function encryptedFixture() {
   };
   return f;
 }
+
+for (const ownership of ["legacy-label", "stored-id"]) {
+  for (const [description, change] of [
+    ["missing provider", (row) => delete row.provider],
+    ["missing model name", (row) => delete row.model_name],
+    [
+      "changed provider",
+      (row) => (row.provider = "custom_anthropic_compatible"),
+    ],
+    ["changed model name", (row) => (row.model_name = "different-model")],
+  ]) {
+    test(`${ownership} rejects ${description} before mutating native models`, async () => {
+      const f = fixture();
+      const config = {
+        protocol: "openai",
+        baseUrl: "https://example.invalid/v1",
+        apiKey: "synthetic-key",
+        models: [{ model: "example-model" }],
+      };
+      const bridge = createBridge(f.service, async () => ({}));
+      if (ownership === "stored-id") {
+        await bridge.apply("p1", "Example", config);
+      } else {
+        f.models.push({
+          custom_model_id: "legacy",
+          display_name: "VaryAI/p1/example-model",
+          provider: "custom_openai_compatible",
+          model_name: "example-model",
+        });
+      }
+      change(f.models[0]);
+      const before = structuredClone(f.models);
+      let mutations = 0;
+      for (const method of ["addCustomModel", "updateCustomModel"]) {
+        const original = f.service[method];
+        f.service[method] = async (...args) => {
+          mutations++;
+          return original(...args);
+        };
+      }
+      await assert.rejects(
+        bridge.apply("p1", "Example", config),
+        /^Error: model_identity_changed$/,
+      );
+      assert.equal(mutations, 0);
+      assert.deepEqual(f.models, before);
+      assert.equal(await bridge.matches("p1", config), false);
+    });
+  }
+}
+
 test("shared delivery verifies encrypted native credentials across reloads and rejects external changes", async () => {
   const f = encryptedFixture();
   const config = {
@@ -727,6 +778,7 @@ test("native model cache is refreshed before matching and after writes across of
   // A previous interrupted write exists in native storage but not in its cached list.
   f.models.push({
     custom_model_id: "legacy",
+    provider: "custom_openai_compatible",
     model_name: "model-0",
     display_name: "VaryAI/p1/model-0",
   });
@@ -896,8 +948,18 @@ test("readable labels migrate existing owned models and survive provider renames
     .digest("hex")
     .slice(0, 20);
   f.models.push(
-    { custom_model_id: "legacy", display_name: `VaryAI/${id}/${model}` },
-    { custom_model_id: "hashed", display_name: `VaryAI/${id}/${digest}` },
+    {
+      custom_model_id: "legacy",
+      display_name: `VaryAI/${id}/${model}`,
+      provider: "custom_openai_compatible",
+      model_name: model,
+    },
+    {
+      custom_model_id: "hashed",
+      display_name: `VaryAI/${id}/${digest}`,
+      provider: "custom_openai_compatible",
+      model_name: longModel,
+    },
     { custom_model_id: "user", display_name: "User model", ak: "private" },
   );
   const config = {

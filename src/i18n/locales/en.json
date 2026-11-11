@@ -1390,7 +1390,10 @@
     "kimi": "Kimi Code",
     "qwen": "Qwen Code",
     "zcode": "ZCode",
-    "deepseek-harness": "DeepSeek Harness"
+    "deepseek-harness": "DeepSeek Harness",
+    "cursor": "Cursor Private Inference",
+    "cursor-cli": "Cursor CLI",
+    "t3code": "T3 Code"
   },
   "pi": {
     "empty": {
@@ -5070,6 +5073,11 @@
     "sameAsHint": "Treat this model as the specified model when finding groups and filling missing catalog facts. The upstream model ID stays unchanged."
   },
   "agentConnections": {
+    "cursorLocalHint": "Requires Cursor Private Inference. Quit and reopen after connecting. A gateway saved in Cursor takes priority over these environment defaults.",
+    "cursorCliHint": "Manages Cursor’s native model selection. CLI requests continue through Cursor’s service.",
+    "cursorAuto": "Auto · Cursor native",
+    "t3codeHint": "Uses a separate VaryAI Codex instance. Start new threads with this instance in T3 Code.",
+
     "desktopStartingModelHint": "Used for new Desktop chats and tasks after the client reloads its configuration. Choose a visible model; existing conversations keep their own choices.",
     "modelControlHint": "Save a default for new local chats, then restart the client through Vary AI to apply it. Existing conversations and remote runtime profiles retain their choices.",
     "modelControlTitle": "Allow default-model control for {{app}}?",
@@ -5170,6 +5178,7 @@
     "sessionHint": "Connection configured. Start a new session in this tool and choose a model from Vary’s shared catalog.",
     "verifyHint": "Send a message in the tool, then check Statistics to verify that requests reach Vary. A configured connection alone does not verify an upstream model.",
     "states": {
+      "nativeOnly": "Native models",
       "codexProxyBlocked": "Local gateway blocked via proxy · diagnostic",
       "checking": "Checking…",
       "provider_missing": "Provider definition missing · waiting for repair",

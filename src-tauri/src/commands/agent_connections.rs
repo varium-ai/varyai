@@ -128,6 +128,9 @@ pub(crate) async fn get_agent_connection(
     state: State<'_, AppState>,
     app: String,
 ) -> Result<Status, String> {
+    if app == "cursor-cli" {
+        return Ok(cursor_cli_status());
+    }
     if app == "doubaowork" {
         let (active, waiting) = state.proxy_service.doubaowork_connection_status();
         let manager = state.proxy_service.agent_connections.clone();
@@ -311,6 +314,7 @@ pub(crate) async fn list_agent_connections(
         native_compatibility: None,
         configuration_issue: None,
     });
+    statuses.push(cursor_cli_status());
     Ok(statuses)
 }
 #[cfg(test)]
@@ -633,6 +637,17 @@ pub(crate) async fn set_agent_connection(
     enabled: bool,
     model: Option<String>,
 ) -> Result<(), String> {
+    if app == "cursor-cli" {
+        if !enabled {
+            return Err(FAILED.into());
+        }
+        let _guard = state.proxy_service.lock_switch_for_app(&app).await;
+        return tokio::task::spawn_blocking(move || {
+            agent_connections::cursor::set_native_model(model.as_deref().ok_or(FAILED)?)
+        })
+        .await
+        .map_err(|_| FAILED)?;
+    }
     if app == "doubaowork" {
         return super::proxy::set_proxy_takeover_for_app(app_handle, state, app, enabled).await;
     }
@@ -910,6 +925,57 @@ mod tests {
             },
         })?;
         Ok(AppState::new(db))
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn cursor_and_t3code_connect_refresh_and_disconnect_through_the_public_service(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let _home = IsolatedHome::new()?;
+        let state = upgrade_state().await?;
+        for app in ["cursor", "t3code"] {
+            assert!(
+                !state
+                    .proxy_service
+                    .legacy_agent_connection_active(app)
+                    .await?
+            );
+            set_native_connection(&state, app.into(), true, None).await?;
+            assert!(
+                state
+                    .proxy_service
+                    .agent_connections
+                    .status(app)?
+                    .configured
+            );
+            assert!(state.proxy_service.intent_runtime.connections.active(app));
+            state.proxy_service.sync_shared_agent_catalog(app).await;
+            assert!(
+                state
+                    .proxy_service
+                    .agent_connections
+                    .status(app)?
+                    .configured
+            );
+            assert!(state.proxy_service.intent_runtime.connections.active(app));
+            let status = state.proxy_service.get_takeover_status().await?;
+            assert!(if app == "cursor" {
+                status.cursor
+            } else {
+                status.t3code
+            });
+            set_native_connection(&state, app.into(), false, None).await?;
+            assert!(
+                !state
+                    .proxy_service
+                    .agent_connections
+                    .status(app)?
+                    .configured
+            );
+            assert!(!state.proxy_service.intent_runtime.connections.active(app));
+        }
+        state.proxy_service.stop().await?;
+        Ok(())
     }
 
     #[tokio::test]
@@ -1553,5 +1619,21 @@ mod tests {
         }
         state.proxy_service.stop().await?;
         Ok(())
+    }
+}
+
+fn cursor_cli_status() -> Status {
+    Status {
+        app: "cursor-cli".into(),
+        enabled: false,
+        configured: false,
+        recovery_pending: false,
+        recovery_reason: None,
+        model: None,
+        restart_required: false,
+        reload_state: None,
+        desktop_state: None,
+        native_compatibility: None,
+        configuration_issue: None,
     }
 }

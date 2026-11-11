@@ -291,6 +291,9 @@ const UnifiedSkillsPanel = React.forwardRef<
       app === "kimi" ||
       app === "qwen" ||
       app === "zcode" ||
+      app === "cursor" ||
+      app === "cursor-cli" ||
+      app === "t3code" ||
       app === "deepseek-harness"
     )
       return;

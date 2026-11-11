@@ -68,6 +68,17 @@ pub async fn get_config_status(
     app: String,
 ) -> Result<ConfigStatus, String> {
     match AppType::from_str(&app).map_err(|e| e.to_string())? {
+        app @ (AppType::Cursor | AppType::CursorCli | AppType::T3Code) => {
+            let path = additional_agent_config(&app)?;
+            Ok(ConfigStatus {
+                exists: path.exists(),
+                path: path
+                    .parent()
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned(),
+            })
+        }
         AppType::DoubaoWork => {
             let path = dirs::home_dir()
                 .ok_or("Home directory unavailable")?
@@ -210,6 +221,10 @@ pub async fn get_claude_code_config_path() -> Result<String, String> {
 #[tauri::command]
 pub async fn get_config_dir(app: String) -> Result<String, String> {
     let dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
+        app @ (AppType::Cursor | AppType::CursorCli | AppType::T3Code) => {
+            let path = additional_agent_config(&app)?;
+            path.parent().unwrap_or(&path).to_path_buf()
+        }
         AppType::DoubaoWork => return Err("Doubao Work has no managed configuration file".into()),
         AppType::TraeIntl => dirs::home_dir()
             .ok_or("Home directory unavailable")?
@@ -245,6 +260,10 @@ pub async fn get_config_dir(app: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn open_config_folder(handle: AppHandle, app: String) -> Result<bool, String> {
     let config_dir = match AppType::from_str(&app).map_err(|e| e.to_string())? {
+        app @ (AppType::Cursor | AppType::CursorCli | AppType::T3Code) => {
+            let path = additional_agent_config(&app)?;
+            path.parent().unwrap_or(&path).to_path_buf()
+        }
         AppType::DoubaoWork => return Err("Doubao Work has no managed configuration file".into()),
         AppType::TraeIntl => dirs::home_dir()
             .ok_or("Home directory unavailable")?
@@ -528,4 +547,14 @@ pub async fn extract_common_config_snippet(
 
     crate::services::provider::ProviderService::extract_common_config_snippet(&state, app)
         .map_err(|e| e.to_string())
+}
+
+fn additional_agent_config(app: &AppType) -> Result<std::path::PathBuf, String> {
+    use crate::services::agent_connections::{cursor, t3code};
+    match app {
+        AppType::T3Code => Ok(t3code::settings_path()),
+        AppType::CursorCli => Ok(cursor::cli_path()),
+        AppType::Cursor => Ok(crate::config::get_home_dir().join(".cursor/cli-config.json")),
+        _ => Err("Unsupported agent configuration".into()),
+    }
 }
