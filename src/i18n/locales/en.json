@@ -6019,5 +6019,25 @@
     "accountFailed": "Sign-in finished, but the connection could not be saved. Please retry.",
     "codexHint": "Your browser may display Codex during ChatGPT sign-in. This is expected.",
     "finishFailed": "Could not save setup completion. Please retry; your saved connections will be kept."
+  },
+  "dailyCheckin": {
+    "title": "Check-in rewards",
+    "streak": "Consecutive check-ins",
+    "days": "{{count}} days",
+    "days_one": "{{count}} day",
+    "days_other": "{{count}} days",
+    "noData": "No data available",
+    "progress": "7-day check-in progress",
+    "progressHint": "Based on the consecutive check-ins reported by the service. Individual daily history is unavailable.",
+    "day": "Day {{count}}",
+    "complete": "Completed",
+    "pending": "Not reached",
+    "unknown": "Unknown",
+    "notice": "Available for supported Agents. Rewards are issued by the official service.",
+    "manage": "Manage accounts",
+    "todayReward": "Claimed today +{{credit}}",
+    "todayChecked": "Checked in today",
+    "claimedReward": "Claimed +{{credit}}",
+    "claimed": "Claimed"
   }
 }

@@ -48,7 +48,6 @@ fn with_codex_reload(
     reload: Option<agent_connections::ReloadState>,
     desktop_state: Option<agent_connections::desktop::State>,
 ) -> Status {
-    status.desktop_state = desktop_state;
     let reload_restart = !status.recovery_pending
         && matches!(
             reload,
@@ -58,7 +57,13 @@ fn with_codex_reload(
             )
         );
     let desktop_restart = !status.recovery_pending
-        && desktop_state == Some(agent_connections::desktop::State::RestartRequired);
+        && (desktop_state == Some(agent_connections::desktop::State::RestartRequired)
+            || reload_restart && desktop_state == Some(agent_connections::desktop::State::Current));
+    status.desktop_state = if desktop_restart {
+        Some(agent_connections::desktop::State::RestartRequired)
+    } else {
+        desktop_state
+    };
     status.restart_required = reload_restart || desktop_restart;
     // Prefer a verified desktop-app restart over background app-server reload
     // when both are pending, so the UI offers one clear action.
@@ -313,6 +318,34 @@ mod desktop_restart_tests {
     use super::*;
 
     #[test]
+    fn stale_chatgpt_catalog_requests_a_full_application_restart() {
+        let status = Status {
+            app: "codex".into(),
+            enabled: true,
+            configured: true,
+            recovery_pending: false,
+            recovery_reason: None,
+            model: None,
+            restart_required: false,
+            reload_state: None,
+            desktop_state: None,
+            native_compatibility: None,
+            configuration_issue: None,
+        };
+        let status = with_codex_reload(
+            status,
+            Some(agent_connections::ReloadState::StaleCatalog),
+            Some(agent_connections::desktop::State::Current),
+        );
+        assert!(status.restart_required);
+        assert_eq!(
+            status.desktop_state,
+            Some(agent_connections::desktop::State::RestartRequired)
+        );
+        assert_eq!(status.reload_state, None);
+    }
+
+    #[test]
     fn confirmation_is_required_for_every_app_and_only_verified_desktops_are_selected() {
         for app in [
             "claude-desktop",
@@ -430,8 +463,13 @@ pub(crate) async fn restart_agent_connection(
         if status.configuration_issue.is_some() || status.recovery_pending {
             return Err(agent_connections::CONFLICT.into());
         }
-        let desktop_restart =
-            desktop_state == Some(agent_connections::desktop::State::RestartRequired);
+        let desktop_restart = matches!(
+            desktop_state,
+            Some(
+                agent_connections::desktop::State::RestartRequired
+                    | agent_connections::desktop::State::Current
+            )
+        );
         let reload_restart = matches!(
             reload,
             Some(

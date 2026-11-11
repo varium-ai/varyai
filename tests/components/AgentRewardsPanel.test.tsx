@@ -46,6 +46,7 @@ function mount(app: "qoder" | "trae" | "zcode" = "qoder") {
     </QueryClientProvider>,
   );
   fireEvent.click(screen.getByRole("button", { name: "agentRewards.title" }));
+  fireEvent.click(screen.getByRole("button", { name: "dailyCheckin.manage" }));
   return client;
 }
 beforeEach(() => {
@@ -75,7 +76,9 @@ it("keeps the saved completion visible alongside a disconnected client warning",
     screen.getByText(/agentRewards.outcomes.connection_required/),
   ).toBeInTheDocument();
   expect(
-    screen.getByRole("button", { name: "agentRewards.checkedIn" }),
+    screen.getByRole("button", {
+      name: /^dailyCheckin\.(todayReward|todayChecked|claimedReward|claimed)$/,
+    }),
   ).toBeDisabled();
   expect(screen.getByRole("switch")).toBeDisabled();
   expect(agentRewardsApi.claim).not.toHaveBeenCalled();
@@ -95,7 +98,9 @@ it("refreshes without claiming and passes the current account identity to an exp
     initial.accountId,
   );
   expect(
-    screen.getByRole("button", { name: "agentRewards.checkedIn" }),
+    screen.getByRole("button", {
+      name: /^dailyCheckin\.(todayReward|todayChecked|claimedReward|claimed)$/,
+    }),
   ).toBeDisabled();
 });
 it.each(["inactive", "ineligible", "connection_required"] as const)(
@@ -274,9 +279,20 @@ it.each(
     });
     mount(app);
     const completed = await screen.findByRole("button", {
-      name: "agentRewards.checkedIn",
+      name: /^dailyCheckin\.(todayReward|todayChecked|claimedReward|claimed)$/,
     });
     expect(completed).toBeDisabled();
+    expect(completed).toHaveTextContent(
+      app === "zcode"
+        ? "dailyCheckin.claimedReward"
+        : "dailyCheckin.todayReward",
+    );
+    expect(screen.getByText("dailyCheckin.noData")).toBeVisible();
+    expect(
+      screen
+        .getAllByRole("listitem")
+        .every((day) => day.dataset.state === "unknown"),
+    ).toBe(true);
     fireEvent.click(completed);
     expect(agentRewardsApi.claim).not.toHaveBeenCalled();
     vi.mocked(agentRewardsApi.status).mockResolvedValue({ ...initial, app });

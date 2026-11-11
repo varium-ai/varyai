@@ -1023,6 +1023,12 @@ impl ProxyService {
     /// 设置 AppHandle（在应用初始化时调用）
     pub fn set_app_handle(&self, handle: tauri::AppHandle) {
         self.qoder.set_app_handle(handle.clone());
+        futures::executor::block_on(async {
+            *self.app_handle.write().await = Some(handle);
+        });
+    }
+
+    pub(crate) fn start_codex_app_server_worker(&self) {
         #[cfg(any(target_os = "macos", windows))]
         if let Ok(mut worker) = self.codex_app_server_worker.lock() {
             if worker.is_none() {
@@ -1030,12 +1036,10 @@ impl ProxyService {
                     Arc::downgrade(&self.intent_client),
                     self.switch_locks.clone(),
                     self.intent_runtime.codex_activity.clone(),
+                    self.agent_connections.clone(),
                 ));
             }
         }
-        futures::executor::block_on(async {
-            *self.app_handle.write().await = Some(handle);
-        });
     }
 
     pub(crate) fn codex_reload_state(&self) -> Option<super::agent_connections::ReloadState> {
@@ -6979,7 +6983,8 @@ mod tests {
             },
         })
         .expect("global provider");
-        let service = ProxyService::new(db.clone());
+        let state = crate::store::AppState::new(db.clone());
+        let service = &state.proxy_service;
         let original = r#"{"env":{"USER_SETTING":"keep"},"theme":"light"}"#;
         let path = crate::config::get_claude_settings_path();
         std::fs::create_dir_all(path.parent().expect("parent")).expect("directory");
@@ -7086,8 +7091,7 @@ mod tests {
         );
         let changed = r#"{"env":{"USER_SETTING":"new"},"theme":"dark"}"#;
         std::fs::write(&path, changed).expect("edit while suspended");
-        service.start().await.expect("restart");
-        service.sync_shared_agent_catalogs().await;
+        crate::restore_proxy_state_on_startup(&state).await;
         assert!(
             service
                 .agent_connections
@@ -7317,6 +7321,37 @@ mod tests {
         ));
         service.native_checkpoint_key = dir.path().join("checkpoint.key");
         (dir, service, config)
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn disconnected_codex_identity_does_not_enable_routing_on_startup(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let _home = TempHome::new();
+        crate::settings::reload_settings()?;
+        let db = Arc::new(Database::memory()?);
+        use_ephemeral_proxy_port(&db).await;
+        let state = crate::store::AppState::new(db);
+        let service = &state.proxy_service;
+        let config = service.intent_client.config_path();
+        std::fs::create_dir_all(config.parent().ok_or("fixture parent")?)?;
+        std::fs::write(config, "model='original'\n")?;
+        let info = service.start().await?;
+        service
+            .activate_codex_groups(
+                synthetic_codex_menu(),
+                format!("http://127.0.0.1:{}/intent/v1", info.port),
+            )
+            .await?;
+        service.agent_connections.set_codex_intent(None, true)?;
+        service.disconnect_codex_agent().await?;
+        service.agent_connections.set_codex_intent(None, false)?;
+        service.stop().await?;
+        crate::restore_proxy_state_on_startup(&state).await;
+        assert!(!service.is_running().await);
+        assert!(!service.intent_runtime.menu_active());
+        assert!(!service.intent_client.status()?.enabled);
+        Ok(())
     }
 
     fn native_lifecycle_auth(user: &str, token: &str) -> Value {

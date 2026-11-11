@@ -6017,5 +6017,23 @@
     "accountFailed": "登录已完成，但连接保存失败，请重试。",
     "codexHint": "浏览器里可能会显示 Codex，这是正常的。",
     "finishFailed": "引导完成状态保存失败，请重试；已保存的连接会保留。"
+  },
+  "dailyCheckin": {
+    "title": "签到福利",
+    "streak": "连续签到",
+    "days": "{{count}} 天",
+    "noData": "暂无数据",
+    "progress": "最近 7 天签到进度",
+    "progressHint": "根据官方返回的连续签到天数展示，暂不提供逐日历史记录。",
+    "day": "第 {{count}} 天",
+    "complete": "已完成",
+    "pending": "未达成",
+    "unknown": "未知",
+    "notice": "仅支持部分 Agent，奖励由官方发放",
+    "manage": "管理账号",
+    "todayReward": "今日已领 +{{credit}}",
+    "todayChecked": "今日已签到",
+    "claimedReward": "已领取 +{{credit}}",
+    "claimed": "已领取"
   }
 }

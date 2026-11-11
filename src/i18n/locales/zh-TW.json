@@ -5944,5 +5944,23 @@
     "accountFailed": "登入已完成，但連線儲存失敗，請重試。",
     "codexHint": "瀏覽器可能會顯示 Codex，這是正常的。",
     "finishFailed": "無法儲存引導完成狀態，請重試；已儲存的連線會保留。"
+  },
+  "dailyCheckin": {
+    "title": "簽到福利",
+    "streak": "連續簽到",
+    "days": "{{count}} 天",
+    "noData": "暫無資料",
+    "progress": "最近 7 天簽到進度",
+    "progressHint": "根據官方回傳的連續簽到天數顯示，暫不提供逐日歷史記錄。",
+    "day": "第 {{count}} 天",
+    "complete": "已完成",
+    "pending": "未達成",
+    "unknown": "未知",
+    "notice": "僅支援部分 Agent，獎勵由官方發放",
+    "manage": "管理帳號",
+    "todayReward": "今日已領 +{{credit}}",
+    "todayChecked": "今日已簽到",
+    "claimedReward": "已領取 +{{credit}}",
+    "claimed": "已領取"
   }
 }

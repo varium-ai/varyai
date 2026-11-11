@@ -406,7 +406,16 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(workbuddyCheckinApi.accounts).mockResolvedValue({
     accounts: [],
-  } as unknown as Awaited<ReturnType<typeof workbuddyCheckinApi.accounts>>);
+    nativeStatus: {
+      autoEnabled: false,
+      day: "2026-11-11",
+      outcome: "credentials_unavailable",
+      checkedAt: null,
+      credit: null,
+      streak: null,
+      creditDelayed: false,
+    },
+  });
   vi.mocked(doubaoCheckinApi.accounts).mockResolvedValue({
     connected: false,
     accounts: [],
@@ -864,6 +873,10 @@ describe("Agent connections", () => {
         name: `agentRewards.autoLabel apps.${app}`,
       });
       expect(trigger).toBeEnabled();
+      expect(trigger).toHaveAttribute("data-complete", String(allComplete));
+      expect(trigger).toHaveTextContent(
+        allComplete ? "dailyCheckin.todayChecked" : "agentRewards.autoLabel",
+      );
       fireEvent.click(trigger);
       expect(trigger).toHaveAttribute("aria-expanded", "true");
       expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
@@ -951,7 +964,7 @@ describe("Agent connections", () => {
       fireEvent.click(trigger);
       expect(trigger).toHaveAttribute("aria-expanded", "true");
       const claim = await within(row).findByRole("button", {
-        name: "agentRewards.checkedIn",
+        name: /^dailyCheckin\.(todayReward|todayChecked|claimedReward|claimed)$/,
       });
       expect(claim).toBeDisabled();
       fireEvent.click(claim);
@@ -1094,6 +1107,8 @@ describe("Agent connections", () => {
       const trigger = await within(row).findByRole("button", {
         name: `agentRewards.autoLabel apps.${app}`,
       });
+      expect(trigger).toHaveTextContent("dailyCheckin.title");
+      if (!compact) expect(trigger.closest(".mp-agent-name")).not.toBeNull();
       expect(trigger).toHaveTextContent("agentRewards.autoLabel");
       expect(trigger).toHaveAttribute("aria-expanded", "false");
       fireEvent.click(trigger);

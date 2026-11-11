@@ -17,6 +17,8 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import {
+  CheckCircle2,
+  Gift,
   ChevronRight,
   ExternalLink,
   RefreshCw,
@@ -705,6 +707,75 @@ export function AgentConnectionsPage({
         </ModelPickerPopoverContent>
       </Popover>
     ) : null;
+    const checkinStatuses =
+      app === "workbuddy"
+        ? workbuddyCheckin.data?.accounts.length
+          ? workbuddyCheckin.data.accounts.map((account) => account.status)
+          : workbuddyCheckin.data
+            ? [workbuddyCheckin.data.nativeStatus]
+            : []
+        : app === "doubaowork"
+          ? (doubaoCheckin.data?.accounts ?? [])
+          : hasAgentRewards(app) && rewards[rewardApps.indexOf(app)]?.data
+            ? [rewards[rewardApps.indexOf(app)].data!]
+            : [];
+    const checkinComplete =
+      checkinStatuses.length > 0 &&
+      checkinStatuses.every((status) =>
+        ["claimed", "already_checked"].includes(
+          ("savedOutcome" in status ? status.savedOutcome : null) ??
+            status.outcome,
+        ),
+      );
+    const checkinCredit =
+      checkinComplete &&
+      checkinStatuses.every((status) => status.credit != null)
+        ? checkinStatuses.reduce((sum, status) => sum + (status.credit ?? 0), 0)
+        : null;
+    const checkinTrigger = (app === "workbuddy" ||
+      app === "doubaowork" ||
+      hasAgentRewards(app)) && (
+      <button
+        type="button"
+        className="mp-agent-start mp-agent-checkin-trigger"
+        data-complete={checkinComplete}
+        aria-label={`${checkinLabel(app)} ${name(app)}`}
+        aria-describedby={`${detailsId}-checkin-summary`}
+        aria-expanded={checkinApp === app}
+        aria-controls={`${detailsId}-checkin`}
+        onClick={() => {
+          setOpenedCheckins((previous) =>
+            previous.includes(app) ? previous : [...previous, app],
+          );
+          setCheckinApp((previous) => (previous === app ? null : app));
+        }}
+      >
+        {checkinComplete ? (
+          <CheckCircle2 size={14} aria-hidden="true" />
+        ) : (
+          <Gift size={14} aria-hidden="true" />
+        )}
+        <span id={`${detailsId}-checkin-summary`}>
+          {t("dailyCheckin.title")} ·{" "}
+          {checkinComplete
+            ? t(
+                app === "zcode"
+                  ? checkinCredit != null
+                    ? "dailyCheckin.claimedReward"
+                    : "dailyCheckin.claimed"
+                  : checkinCredit != null
+                    ? "dailyCheckin.todayReward"
+                    : "dailyCheckin.todayChecked",
+                { credit: checkinCredit },
+              )
+            : checkinLabel(app)}
+        </span>
+        {checkinComplete && (
+          <span className="sr-only">{checkinLabel(app)}</span>
+        )}
+        <ChevronDown size={11} aria-hidden="true" />
+      </button>
+    );
     return (
       <SortableAgentRow
         key={app}
@@ -745,6 +816,7 @@ export function AgentConnectionsPage({
                 disabled={rowBusy(app)}
               />
             )}
+            {!compact && checkinTrigger}
             {app === "doubaowork" && (
               <span className="mp-agent-note">
                 {t("agentConnections.auditOnly")}
@@ -851,26 +923,7 @@ export function AgentConnectionsPage({
           className={compact ? "mp-agent-panel-controls" : "contents"}
           hidden={compact && expanded !== app}
         >
-          {(app === "workbuddy" ||
-            app === "doubaowork" ||
-            hasAgentRewards(app)) && (
-            <button
-              type="button"
-              className="mp-agent-start mp-agent-checkin-trigger"
-              aria-label={`${checkinLabel(app)} ${name(app)}`}
-              aria-expanded={checkinApp === app}
-              aria-controls={`${detailsId}-checkin`}
-              onClick={() => {
-                setOpenedCheckins((previous) =>
-                  previous.includes(app) ? previous : [...previous, app],
-                );
-                setCheckinApp((previous) => (previous === app ? null : app));
-              }}
-            >
-              {checkinLabel(app)}
-              <ChevronDown size={11} aria-hidden="true" />
-            </button>
-          )}
+          {compact && checkinTrigger}
           {app === "doubaowork" && (
             <span
               className="mp-agent-start"

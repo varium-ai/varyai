@@ -5943,5 +5943,23 @@
     "accountFailed": "ログインは完了しましたが、接続を保存できませんでした。再試行してください。",
     "codexHint": "ChatGPT のログイン中にブラウザーに Codex と表示される場合があります。正常な動作です。",
     "finishFailed": "セットアップの完了状態を保存できませんでした。再試行してください。保存済みの接続は保持されます。"
+  },
+  "dailyCheckin": {
+    "title": "チェックイン特典",
+    "streak": "連続チェックイン",
+    "days": "{{count}} 日",
+    "noData": "データなし",
+    "progress": "7 日間のチェックイン状況",
+    "progressHint": "公式サービスの連続チェックイン日数に基づく表示です。日別の履歴は提供されていません。",
+    "day": "{{count}} 日目",
+    "complete": "完了",
+    "pending": "未達成",
+    "unknown": "不明",
+    "notice": "対応する Agent のみ利用可能です。特典は公式サービスから付与されます。",
+    "manage": "アカウント管理",
+    "todayReward": "本日受取済み +{{credit}}",
+    "todayChecked": "本日チェックイン済み",
+    "claimedReward": "受取済み +{{credit}}",
+    "claimed": "受取済み"
   }
 }

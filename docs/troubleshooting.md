@@ -203,7 +203,17 @@ Claude Desktop and WorkBuddy can retain the model catalog they read when startin
 
 The restart action also remains available after disconnecting while a running copy still holds the previous connection. VaryAI keeps only a private timestamp and file fingerprints for this check, and refuses the action after an external edit or replacement process invalidates it. Configuration repair, restart and successful upstream inference are separate states. A configured row still needs a message in the tool and a corresponding request in Statistics for validation.
 
+The Codex connection belongs to the ChatGPT desktop app in the reported installation. This ChatGPT build uses the `com.openai.codex` bundle identifier. A confirmed manual restart closes and reopens the verified running application bundle, including `ChatGPT.app`, rather than launching a terminal CLI or only replacing its internal service. A current application can still be explicitly restarted; launch age alone does not invalidate the user's confirmed request. Configuration and process identity checks still reject an unsafe or replaced target. Automatic route-change handling remains separate from this manual whole-application restart.
+
 For unsupported or unidentified installations, fully quit and reopen the tool yourself. CLI tools read changes in a new process or session. TRAE uses its own acknowledged bridge delivery and cleanup; follow its pending-bridge guidance and use **Apply again** to retry delivery. A pending bridge alone is not evidence that restarting would fix it.
+
+## Agent requests fail after quitting and reopening VaryAI
+
+Closing the window with **Minimize to tray on close** enabled leaves the gateway running. Completely quitting VaryAI stops forwarding. Requests interrupted by shutdown must be retried; reopening VaryAI cannot resume a partially received response stream.
+
+Startup resumes saved shared Agent connections, including connections suspended during normal exit and the international TRAE bridge. Codex retains its private local connection credential, historical model-name mappings and published catalogs across shutdown. After VaryAI reopens, an already running Codex session can send its next request without restarting Codex. New sessions can also use the restored connection. Deleted models, invalid upstream login and externally changed configuration still require their usual recovery actions.
+
+Explicitly switching Codex routing off restores the previous native configuration and rejects requests using the inactive local route. It does not change the provider already loaded by a running conversation. Explicitly switching routing on again restores the saved local identity and historical model mappings, allowing the old conversation to make a new request. The saved identity alone never enables forwarding or causes a disconnected tool to reconnect at startup. While routing is off, a new session can use the restored provider only if Codex loads that configuration and the provider is usable.
 
 ## WorkBuddy reports an unsupported cross-protocol field
 
@@ -242,6 +252,14 @@ Inspect the relevant status code and sanitized logs. Current logs use `~/.varyai
 For a generic Gemini `INVALID_ARGUMENT`, compare the `GeminiRequestShape` entries for the affected clients. These entries record message and function counts, parameter formats, and output-token ranges without model names, prompts, tool names, schemas, or argument values. The summary helps identify request differences; it does not establish which field the upstream rejected.
 
 ### Codex native request decoding and body limits
+
+If switching a Codex/ChatGPT desktop conversation to a Chat, Anthropic or Gemini
+upstream returns `routing_conversion_unsupported` even before the model replies,
+check that the build supports desktop page-context notifications as well as tool
+search. Desktop can include `agent.codex_apps_*` outputs without a tool-call ID
+even when no Page is selected. Older converters reject these notifications as
+malformed tool results. Compatible builds retain their content as user-level
+context and preserve normal tool-call validation.
 
 The native Codex `/backend-api/codex/responses` and `/backend-api/codex/responses/compact` endpoints allow both the received request body and each decompression stage up to 200 MiB (209,715,200 bytes), matching the general proxy ingress budget. Earlier native ingress used an additional 8 MiB (8,388,608-byte) limit that could reject ordinary screenshot-heavy conversations and their compaction requests. Screenshots and accumulated tool output can increase the serialized conversation size even when the latest user message is short. Earlier builds also returned HTTP 400 with only `routing_invalid_encoding` for unsupported encodings, damaged compressed data, and decompression output exceeding the old limit. That historical error alone cannot establish which condition occurred. The local byte limit is separate from the client's token-based context budget and does not trigger automatic compaction; upstream providers may impose their own limits.
 

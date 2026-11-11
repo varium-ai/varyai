@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { CheckCircle2, ChevronDown } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -10,6 +10,11 @@ import {
 import { settingsApi } from "@/lib/api/settings";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import {
+  CheckinAccountTools,
+  CheckinNotice,
+  CheckinProgress,
+} from "./CheckinProgress";
 import "./daily-checkin.css";
 
 const queryKey = ["workbuddyCheckin", "accounts"];
@@ -134,34 +139,31 @@ export function WorkBuddyCheckinPanel({
         className="mp-checkin-body"
       >
         <div className="mp-checkin-intro">
-          <p>{t("workbuddy.checkin.description")}</p>
           <div className="mp-checkin-actions">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="mp-checkin-button mp-checkin-quiet"
-              disabled={busy || status.isFetching}
-              onClick={() => void status.refetch()}
-            >
-              {t("workbuddy.checkin.reload")}
-            </Button>
             <Button
               variant="outline"
               size="sm"
               className="mp-checkin-button mp-checkin-primary"
+              data-complete={hasReward}
               disabled={!canClaim || busy || status.isError}
               onClick={() => {
                 auto.reset();
                 if (selected) claim.mutate(selected.id);
               }}
             >
-              {t(
-                claim.isPending
-                  ? "workbuddy.checkin.checking"
-                  : hasReward
-                    ? "agentRewards.checkedIn"
-                    : "workbuddy.checkin.checkNow",
-              )}
+              {hasReward && <CheckCircle2 size={15} aria-hidden="true" />}
+              {hasReward
+                ? t(
+                    data?.credit != null
+                      ? "dailyCheckin.todayReward"
+                      : "dailyCheckin.todayChecked",
+                    { credit: data?.credit },
+                  )
+                : t(
+                    claim.isPending
+                      ? "workbuddy.checkin.checking"
+                      : "workbuddy.checkin.checkNow",
+                  )}
             </Button>
           </div>
         </div>
@@ -199,26 +201,38 @@ export function WorkBuddyCheckinPanel({
               ))}
             </select>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="mp-checkin-button"
-            disabled={busy || !!loginId}
-            onClick={() => add.mutate()}
-          >
-            {t("workbuddy.checkin.addAccount")}
-          </Button>
-          {selected?.source === "browser" && (
+          <CheckinAccountTools>
+            <p>{t("workbuddy.checkin.description")}</p>
             <Button
               variant="ghost"
               size="sm"
               className="mp-checkin-button mp-checkin-quiet"
-              disabled={busy}
-              onClick={() => remove.mutate(selected.id)}
+              disabled={busy || status.isFetching}
+              onClick={() => void status.refetch()}
             >
-              {t("workbuddy.checkin.removeAccount")}
+              {t("workbuddy.checkin.reload")}
             </Button>
-          )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="mp-checkin-button"
+              disabled={busy || !!loginId}
+              onClick={() => add.mutate()}
+            >
+              {t("workbuddy.checkin.addAccount")}
+            </Button>
+            {selected?.source === "browser" && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="mp-checkin-button mp-checkin-quiet"
+                disabled={busy}
+                onClick={() => remove.mutate(selected.id)}
+              >
+                {t("workbuddy.checkin.removeAccount")}
+              </Button>
+            )}
+          </CheckinAccountTools>
         </div>
         {loginId && (
           <div className="mp-checkin-actions">
@@ -245,7 +259,11 @@ export function WorkBuddyCheckinPanel({
             {t("workbuddy.checkin.loadFailed")}
           </p>
         ) : data ? (
-          <div role="status" className="mp-checkin-status">
+          <div
+            role="status"
+            className="mp-checkin-status"
+            data-complete={hasReward}
+          >
             <p className="mp-checkin-outcome" data-complete={hasReward}>
               {t(`workbuddy.checkin.outcomes.${outcome}`)}
             </p>
@@ -255,34 +273,19 @@ export function WorkBuddyCheckinPanel({
                 {t(`workbuddy.checkin.outcomes.${data.outcome}`)}
               </p>
             )}
-            {hasReward && (
-              <div className="mp-checkin-rewards">
-                {data.credit !== null && (
-                  <p>
-                    {t("workbuddy.checkin.reward", { credit: data.credit })}
-                  </p>
-                )}
-                {data.streak !== null && (
-                  <p>{t("workbuddy.checkin.streak", { count: data.streak })}</p>
-                )}
-              </div>
-            )}
+
             {hasReward && data.creditDelayed && (
               <p className="mp-checkin-muted">
                 {t("workbuddy.checkin.delayed")}
               </p>
             )}
-            <p className="mp-checkin-muted">
-              {t("workbuddy.checkin.day", {
-                day: new Date().toLocaleDateString(),
-              })}
-            </p>
           </div>
         ) : (
           <p role="status" className="mp-checkin-muted">
             {t("common.loading")}
           </p>
         )}
+        <CheckinProgress streak={data?.streak} />
         <div className="mp-checkin-auto">
           <div>
             <label htmlFor={toggleId}>{t("workbuddy.checkin.autoLabel")}</label>
@@ -312,6 +315,7 @@ export function WorkBuddyCheckinPanel({
             {t("workbuddy.checkin.operationFailed")}
           </p>
         )}
+        <CheckinNotice />
       </div>
     </section>
   );
