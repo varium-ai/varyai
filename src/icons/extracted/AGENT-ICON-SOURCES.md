@@ -1,6 +1,6 @@
 # Client icon sources
 
-The following icons identify the corresponding clients. Their colors and shapes come from the listed client assets; they do not indicate affiliation or endorsement. Images are rendered at 128 by 128 pixels.
+The following icons identify the corresponding clients. Their colors and shapes come from the listed client assets; they do not indicate affiliation or endorsement. Native client extracts use 128 by 128 pixels; official web assets retain their original resolution.
 
 | File             | Recorded source                                                                                                                               |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -8,6 +8,7 @@ The following icons identify the corresponding clients. Their colors and shapes 
 | `qoder.png`      | Qoder CN 0.4.8, `Contents/Resources/icon.icns`                                                                                                |
 | `doubaowork.png` | Doubao Work 2.32.14, `Contents/Resources/app.icns`                                                                                            |
 | `trae.png`       | TRAE CN 3.4.4, `Contents/Resources/Trae CN.icns`                                                                                              |
+| `trae-intl.png` | [TRAE International website favicon](https://lf16-web-neutral.traecdn.ai/obj/trae-ai-static/trae_website/favicon.png), linked by [trae.ai](https://www.trae.ai/); 48 by 48 pixels, retrieved 2026-11-11 |
 | `kimi-code.png`  | Kimi Code 1.1.0, `Contents/Resources/icon.icns`                                                                                               |
 | `zcode.png`      | ZCode 3.15.3, `Contents/Resources/icon.icns`                                                                                                  |
 | `qwen-code.png`  | [Qwen Code extension icon](https://github.com/QwenLM/qwen-code/blob/main/packages/vscode-ide-companion/assets/icon.png), retrieved 2026-10-19 |

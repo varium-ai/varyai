@@ -31,7 +31,7 @@ export const APP_ICON_NAME: Record<AppId, string> = {
   qoder: "qoder",
   doubaowork: "doubaowork",
   trae: "trae",
-  "trae-intl": "trae",
+  "trae-intl": "trae-intl",
   kimi: "kimi-code",
   qwen: "qwen-code",
   zcode: "zcode",
@@ -334,7 +334,7 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
     label: "TRAE International",
     icon: (
       <ProviderIcon
-        icon={APP_ICON_NAME.trae}
+        icon={APP_ICON_NAME["trae-intl"]}
         name="TRAE International"
         size={14}
       />
