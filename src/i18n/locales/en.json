@@ -4351,7 +4351,7 @@
       "autoHint": "Applies only to this account. While VaryAI is open, enabled accounts are checked separately each day.",
       "reward": "Credits: {{credit}}",
       "streak": "Consecutive days: {{count}}",
-      "day": "Beijing date: {{day}}",
+      "day": "Local date: {{day}}",
       "delayed": "WorkBuddy accepted the claim; credits may arrive later.",
       "loadFailed": "Could not read the local check-in status. Reload before trying again.",
       "operationFailed": "Could not complete or save the check-in operation. Reload and try again.",
@@ -5876,7 +5876,7 @@
       "reward": "Credits: {{credit}}",
       "streak": "Consecutive days: {{count}}",
       "totalDays": "Total check-in days: {{count}}",
-      "day": "Beijing date: {{day}}",
+      "day": "Local date: {{day}}",
       "outcomes": {
         "not_checked": "This account has not been checked today.",
         "claimed": "Daily reward claimed. View reward details in Doubao Work.",

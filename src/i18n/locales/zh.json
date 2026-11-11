@@ -4351,7 +4351,7 @@
       "autoHint": "仅对此账号生效。VaryAI 运行期间，会分别为已开启的账号自动签到。",
       "reward": "领取额度：{{credit}}",
       "streak": "连续签到：{{count}} 天",
-      "day": "北京时间日期：{{day}}",
+      "day": "本地日期：{{day}}",
       "delayed": "WorkBuddy 已受理签到，奖励额度可能延迟到账。",
       "loadFailed": "无法读取本机签到状态，请重新加载后重试。",
       "operationFailed": "无法完成或保存签到操作，请重新加载后重试。",
@@ -5874,7 +5874,7 @@
       "reward": "领取额度：{{credit}}",
       "streak": "连续签到：{{count}} 天",
       "totalDays": "累计签到：{{count}} 天",
-      "day": "北京时间：{{day}}",
+      "day": "本地日期：{{day}}",
       "outcomes": {
         "not_checked": "此账号今日尚未查询签到状态。",
         "claimed": "签到奖励领取成功，具体奖励请在豆包 Work 中查看。",

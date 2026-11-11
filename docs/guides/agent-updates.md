@@ -1,7 +1,11 @@
 # Agent updates
 
 The Tools/Agent page starts one background task per selected CLI when **Update
-all** is pressed. Independent native updaters can run together. Commands that may
+all** is pressed. Individual **Update** clicks also start independently: checking
+or updating one Agent leaves other Agents' update buttons available. Each Agent
+is reserved before preflight, so repeated clicks cannot start the same update
+twice. Concurrent starts share the progress counts and retain every result.
+Independent native updaters can run together. Commands that may
 write shared package-manager state, including installer fallbacks and uncertain
 targets, wait for a shared writer slot. A slow native updater does not hold that
 slot or delay other tools.

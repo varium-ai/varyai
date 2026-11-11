@@ -63,7 +63,7 @@ export function AgentVersionTag({
   const appVersion =
     app !== "codex" && desktop?.source === "desktop" ? desktop.version : null;
   if (!cliVersion && !appVersion) return null;
-  const updating = updates.active.includes(app) && !updates.installing;
+  const updating = updates.active.includes(app);
   return (
     <div className="mp-agent-cli">
       {cliVersion && (
@@ -78,7 +78,12 @@ export function AgentVersionTag({
           type="button"
           className="mp-agent-update"
           title={appVersion ? t("agentUpdates.appHint") : undefined}
-          disabled={disabled || updates.busy}
+          disabled={
+            disabled ||
+            updates.isBusy(app) ||
+            !!updates.installTarget ||
+            !!updates.installing
+          }
           aria-busy={updating}
           onClick={() => void updates.start([app])}
         >

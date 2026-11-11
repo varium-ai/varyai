@@ -4278,7 +4278,7 @@
       "autoHint": "僅對此帳號生效。VaryAI 執行期間，會分別為已開啟的帳號自動簽到。",
       "reward": "領取額度：{{credit}}",
       "streak": "連續簽到：{{count}} 天",
-      "day": "北京時間日期：{{day}}",
+      "day": "本機日期：{{day}}",
       "delayed": "WorkBuddy 已受理簽到，獎勵額度可能延遲入帳。",
       "loadFailed": "無法讀取本機簽到狀態，請重新載入後重試。",
       "operationFailed": "無法完成或儲存簽到操作，請重新載入後重試。",
@@ -5801,7 +5801,7 @@
       "reward": "領取額度：{{credit}}",
       "streak": "連續簽到：{{count}} 天",
       "totalDays": "累計簽到：{{count}} 天",
-      "day": "北京時間：{{day}}",
+      "day": "本機日期：{{day}}",
       "outcomes": {
         "not_checked": "此帳號今日尚未查詢簽到狀態。",
         "claimed": "簽到獎勵領取成功，詳細獎勵請在豆包 Work 中查看。",

@@ -15,7 +15,10 @@ vi.mock("@/lib/api/doubao-checkin", () => ({
   },
 }));
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, options?: { day?: string }) =>
+      options?.day ? `${key}: ${options.day}` : key,
+  }),
 }));
 const initial: DoubaoCheckinStatus = {
   connected: true,
@@ -223,3 +226,19 @@ it.each(["claimed", "already_checked"] as const)(
     expect(doubaoCheckinApi.checkIn).not.toHaveBeenCalled();
   },
 );
+
+it("displays the computer's local date instead of the Beijing service day", async () => {
+  const localDate = vi
+    .spyOn(Date.prototype, "toLocaleDateString")
+    .mockReturnValue("local-calendar-date");
+  try {
+    mount();
+    expect(
+      await screen.findByText("doubaowork.checkin.day: local-calendar-date"),
+    ).toBeInTheDocument();
+    expect(localDate).toHaveBeenCalledWith();
+    expect(screen.queryByText(/2026-11-03/)).not.toBeInTheDocument();
+  } finally {
+    localDate.mockRestore();
+  }
+});

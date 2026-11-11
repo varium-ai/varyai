@@ -21,7 +21,10 @@ vi.mock("@/lib/api/workbuddy-checkin", () => ({
   },
 }));
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, options?: { day?: string }) =>
+      options?.day ? `${key}: ${options.day}` : key,
+  }),
 }));
 vi.mock("@/lib/api/settings", () => ({
   settingsApi: { openExternal: vi.fn() },
@@ -416,3 +419,19 @@ it.each(["claimed", "already_checked"] as const)(
     expect(workbuddyCheckinApi.checkIn).not.toHaveBeenCalled();
   },
 );
+
+it("displays the computer's local date instead of the Beijing service day", async () => {
+  const localDate = vi
+    .spyOn(Date.prototype, "toLocaleDateString")
+    .mockReturnValue("local-calendar-date");
+  try {
+    mount();
+    expect(
+      await screen.findByText("workbuddy.checkin.day: local-calendar-date"),
+    ).toBeInTheDocument();
+    expect(localDate).toHaveBeenCalledWith();
+    expect(screen.queryByText(/2026-11-02/)).not.toBeInTheDocument();
+  } finally {
+    localDate.mockRestore();
+  }
+});

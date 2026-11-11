@@ -273,7 +273,9 @@ export function WorkBuddyCheckinPanel({
               </p>
             )}
             <p className="mp-checkin-muted">
-              {t("workbuddy.checkin.day", { day: data.day })}
+              {t("workbuddy.checkin.day", {
+                day: new Date().toLocaleDateString(),
+              })}
             </p>
           </div>
         ) : (
