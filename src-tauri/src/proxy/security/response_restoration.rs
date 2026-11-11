@@ -100,8 +100,34 @@ impl RestoreError {
         }
     }
 
+    /// A real local resource limit, not a restoration limitation. The proxy could not
+    /// hold the payload, so it must refuse instead of forwarding bytes it could not
+    /// inspect; every other failure degrades to the already-redacted upstream answer.
+    pub(super) fn is_resource_exhaustion(self) -> bool {
+        matches!(self, Self::FailedBecause(RestoreReason::RestoreCapacity))
+    }
+
     pub(super) fn capacity(_: TokenError) -> Self {
         Self::FailedBecause(RestoreReason::RestoreCapacity)
+    }
+
+    /// Contract violations are shape failures; only the resource variant carries a real
+    /// local limit that has to survive projection.
+    pub(super) fn contract(error: super::restoration_contract::ContractError) -> Self {
+        match error {
+            super::restoration_contract::ContractError::Resource(token) => Self::scan_error(token),
+            _ => Self::RestoreFailed,
+        }
+    }
+
+    /// Reconstruction and encoding are not pure allocation sites: a generic
+    /// unavailability there is a step failure, and only an explicit capacity denial is
+    /// a real local limit.
+    pub(super) fn step(error: TokenError) -> Self {
+        match error {
+            TokenError::CapacityExceeded => Self::capacity(error),
+            _ => Self::RestoreFailed,
+        }
     }
 
     pub(super) fn scan_error(error: TokenError) -> Self {
@@ -419,17 +445,17 @@ fn apply_text_replacements(
     replacements: &TextReplacements<'_>,
     budget: &PayloadBudget,
 ) -> Result<PayloadJson, RestoreError> {
-    let mut edits = PayloadVec::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+    let mut edits = PayloadVec::new(budget.clone()).map_err(RestoreError::scan_error)?;
     for (target, text) in replacements.as_slice() {
         edits
             .push(JsonStringReplacement {
                 target,
                 text: text.as_str(),
             })
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
     }
     PayloadJson::try_with_replacements(source, edits.as_slice(), budget.clone(), budget.limit())
-        .map_err(|_| RestoreError::RestoreFailed)
+        .map_err(RestoreError::step)
 }
 
 pub(super) fn serialize_json_with_budget(
@@ -471,7 +497,7 @@ pub(super) fn serialize_json_with_budget(
     let mut counter = CountWriter { len: 0, limit };
     serde_json::to_writer(&mut counter, value).map_err(|_| RestoreError::RestoreFailed)?;
     let buf = PayloadBuffer::with_capacity(counter.len, budget.clone(), limit)
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::step)?;
     let mut writer = BufWriter { buf };
     serde_json::to_writer(&mut writer, value).map_err(|_| RestoreError::RestoreFailed)?;
     Ok(writer.buf)
@@ -921,7 +947,7 @@ pub(super) fn stage_json_response<'a>(
             "http://127.0.0.1:1/responses",
             None,
         )
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     let original = super::restoration_contract::OriginalResponseObservation::json(
         response,
         UpstreamProtocol::new(crate::proxy::protocol_bridge::Protocol::Responses),
@@ -972,7 +998,7 @@ fn copy_string_edits<'a>(
                     target: raw,
                     text: b,
                 })
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::scan_error)?;
         }
         (Value::Object(a), Value::Object(b)) => {
             for (key, value) in a {
@@ -1455,7 +1481,7 @@ fn permits_xai_argument_normalization(
         true,
         budget,
     )
-    .map_err(|_| RestoreError::RestoreFailed)
+    .map_err(RestoreError::scan_error)
 }
 
 fn same_argument_json(raw: &Value, snapshot: &Value) -> bool {
@@ -1495,9 +1521,9 @@ fn arguments_match_mode(
     budget: &PayloadBudget,
 ) -> Result<bool, RestoreError> {
     let raw = PayloadJson::try_from_str(raw_deltas, budget.clone(), budget.limit())
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     let final_value = PayloadJson::try_from_str(snapshot, budget.clone(), budget.limit())
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     if !raw.as_value().is_object() || !final_value.as_value().is_object() {
         return Ok(false);
     }
@@ -1513,7 +1539,7 @@ fn arguments_match_mode(
             snapshot,
             budget,
         )
-        .map_err(|_| RestoreError::RestoreFailed),
+        .map_err(RestoreError::scan_error),
         ArgumentNormalizationMode::XaiWholeFloat => {
             permits_xai_argument_normalization(raw_deltas, snapshot, budget)
         }
@@ -1540,8 +1566,8 @@ struct OriginalArgumentTrack {
 impl OriginalXaiArguments {
     pub(super) fn new(budget: PayloadBudget) -> Result<Self, RestoreError> {
         Ok(Self {
-            tracks: PayloadVec::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?,
-            snapshots: PayloadVec::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?,
+            tracks: PayloadVec::new(budget.clone()).map_err(RestoreError::scan_error)?,
+            snapshots: PayloadVec::new(budget.clone()).map_err(RestoreError::scan_error)?,
             completed_output: None,
             budget,
         })
@@ -1624,7 +1650,7 @@ impl OriginalXaiArguments {
                     self.budget.clone(),
                     self.budget.limit(),
                 )
-                .map_err(|_| RestoreError::RestoreFailed)?,
+                .map_err(RestoreError::scan_error)?,
             );
             return Ok(());
         }
@@ -1646,10 +1672,10 @@ impl OriginalXaiArguments {
             }
             let snapshot =
                 PayloadJson::try_from_value(data, self.budget.clone(), self.budget.limit())
-                    .map_err(|_| RestoreError::RestoreFailed)?;
+                    .map_err(RestoreError::scan_error)?;
             self.snapshots
                 .push(snapshot)
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::scan_error)?;
         }
         let output_index = data
             .get("output_index")
@@ -1670,13 +1696,11 @@ impl OriginalXaiArguments {
                     output_index,
                     item_id: None,
                     deltas: PayloadBuffer::new(self.budget.clone(), MAX_ARGUMENT_BYTES)
-                        .map_err(|_| RestoreError::RestoreFailed)?,
+                        .map_err(RestoreError::scan_error)?,
                     saw_deltas: false,
                     done_seen: false,
                 };
-                self.tracks
-                    .push(track)
-                    .map_err(|_| RestoreError::RestoreFailed)?;
+                self.tracks.push(track).map_err(RestoreError::scan_error)?;
                 self.tracks.len() - 1
             }
         };
@@ -1701,7 +1725,7 @@ impl OriginalXaiArguments {
             if track.item_id.is_none() {
                 track.item_id = Some(
                     PayloadText::try_from_str(id, self.budget.clone(), MAX_FRAME_BYTES)
-                        .map_err(|_| RestoreError::RestoreFailed)?,
+                        .map_err(RestoreError::scan_error)?,
                 );
             }
         }
@@ -1716,7 +1740,7 @@ impl OriginalXaiArguments {
             track
                 .deltas
                 .append(delta.as_bytes())
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::scan_error)?;
             track.saw_deltas = true;
         } else if kind == "response.function_call_arguments.done" {
             if track.done_seen {
@@ -1931,10 +1955,9 @@ impl SseRestorationState {
             lifecycle: Some(lifecycle),
             finished_inspection: None,
             deferred_events,
-            raw_snapshots: PayloadVec::new(budget.clone())
-                .map_err(|_| RestoreError::RestoreFailed)?,
-            text_parts: PayloadVec::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?,
-            tool_items: PayloadVec::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?,
+            raw_snapshots: PayloadVec::new(budget.clone()).map_err(RestoreError::scan_error)?,
+            text_parts: PayloadVec::new(budget.clone()).map_err(RestoreError::scan_error)?,
+            tool_items: PayloadVec::new(budget.clone()).map_err(RestoreError::scan_error)?,
             completed_seen: false,
             finalized: false,
             failed: None,
@@ -2291,13 +2314,13 @@ impl SseRestorationState {
                 is_custom,
                 saw_deltas: false,
                 raw_deltas: PayloadBuffer::new(self.budget.clone(), MAX_ARGUMENT_BYTES)
-                    .map_err(|_| RestoreError::RestoreFailed)?,
+                    .map_err(RestoreError::scan_error)?,
                 raw_done: None,
                 raw_item_done: None,
                 restored_payload: None,
                 payload_replaced: false,
             })
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
         self.tool_items
             .get_mut(idx)
             .ok_or(RestoreError::RestoreFailed)
@@ -2310,7 +2333,7 @@ impl SseRestorationState {
         raw_bytes_len: usize,
     ) -> Result<(), RestoreError> {
         let name = PayloadText::try_from_str(event_name, self.budget.clone(), 256)
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
         self.owner_mut()?.hold_native(
             BufferedSseEvent {
                 event_name: name,
@@ -2388,7 +2411,7 @@ impl SseRestorationState {
         }
         let mut data_buf =
             PayloadBuffer::with_capacity(data_bytes, self.budget.clone(), MAX_FRAME_BYTES)
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::scan_error)?;
         let mut first = true;
         for line in block.lines() {
             let trimmed = line.trim_start();
@@ -2397,14 +2420,12 @@ impl SseRestorationState {
                 .or_else(|| (trimmed == "data").then_some(""))
             {
                 if !first {
-                    data_buf
-                        .append(b"\n")
-                        .map_err(|_| RestoreError::RestoreFailed)?;
+                    data_buf.append(b"\n").map_err(RestoreError::scan_error)?;
                 }
                 first = false;
                 data_buf
                     .append(val.strip_prefix(' ').unwrap_or(val).as_bytes())
-                    .map_err(|_| RestoreError::RestoreFailed)?;
+                    .map_err(RestoreError::scan_error)?;
             }
         }
         let data_str =
@@ -2416,7 +2437,7 @@ impl SseRestorationState {
             return Err(RestoreError::RestoreFailed);
         }
         let parsed = PayloadJson::try_from_str(data_str, self.budget.clone(), self.budget.limit())
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
         self.failure_stage = RestoreStage::SseEvent;
         let data = parsed.as_value();
         // This copy outlives the borrow when parsed moves into a held event.
@@ -2518,7 +2539,7 @@ impl SseRestorationState {
                     None => {
                         track.item_id = Some(
                             PayloadText::try_from_str(id, budget, 256)
-                                .map_err(|_| RestoreError::RestoreFailed)?,
+                                .map_err(RestoreError::scan_error)?,
                         )
                     }
                     _ => {}
@@ -2572,9 +2593,9 @@ impl SseRestorationState {
             self.raw_snapshots
                 .push(
                     PayloadJson::try_from_value(data, self.budget.clone(), self.budget.limit())
-                        .map_err(|_| RestoreError::RestoreFailed)?,
+                        .map_err(RestoreError::scan_error)?,
                 )
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::scan_error)?;
         }
 
         // Pre-barrier streaming path for ordinary text/reasoning events.
@@ -2588,7 +2609,7 @@ impl SseRestorationState {
             self.flush_ordinary_tail(evt, data)?;
         }
         let mut replacements =
-            PayloadVec::new(self.budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+            PayloadVec::new(self.budget.clone()).map_err(RestoreError::scan_error)?;
         self.failure_stage = RestoreStage::SseEvent;
         self.handle_pre_barrier_event(evt, data, &mut replacements)?;
         let rewritten = apply_text_replacements(data, &replacements, &self.budget)?;
@@ -2604,7 +2625,7 @@ impl SseRestorationState {
         }
         if self.deferred_events.len() != 0 || has_short_tail {
             let mut edits =
-                PayloadVec::new(self.budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+                PayloadVec::new(self.budget.clone()).map_err(RestoreError::scan_error)?;
             copy_string_edits(data, rewritten.as_value(), &mut edits)?;
             let restored = PayloadJson::try_with_replacements(
                 data,
@@ -2612,19 +2633,19 @@ impl SseRestorationState {
                 self.budget.clone(),
                 self.budget.limit(),
             )
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
             // Keep both versions charged: raw events are needed if a tool starts before resolution.
             self.deferred_events
                 .push(
                     BufferedSseEvent {
                         event_name: PayloadText::try_from_str(evt, self.budget.clone(), 256)
-                            .map_err(|_| RestoreError::RestoreFailed)?,
+                            .map_err(RestoreError::scan_error)?,
                         data: parsed,
                         prepared: Some(restored),
                     },
                     block.len(),
                 )
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::scan_error)?;
             if has_short_tail {
                 return Ok(Vec::new());
             }
@@ -2660,14 +2681,14 @@ fn encode_sse_frame(
         .and_then(|n| n.checked_add(2))
         .ok_or(RestoreError::RestoreFailed)?;
     let mut frame = PayloadBuffer::with_capacity(total_len, budget.clone(), MAX_FRAME_BYTES * 2)
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     frame
         .append(b"event: ")
         .and_then(|_| frame.append(event_name.as_bytes()))
         .and_then(|_| frame.append(b"\ndata: "))
         .and_then(|_| frame.append(json_buf.as_slice()))
         .and_then(|_| frame.append(b"\n\n"))
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     Ok(Bytes::from_owner(ChargedSseBytes(frame)))
 }
 
@@ -2751,8 +2772,7 @@ impl SseRestorationState {
     }
 
     fn flush_deferred_text(&mut self) -> Result<Vec<Bytes>, RestoreError> {
-        let mut emitted =
-            PayloadVec::new(self.budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+        let mut emitted = PayloadVec::new(self.budget.clone()).map_err(RestoreError::scan_error)?;
         let mut frames = Vec::new();
         for event in self.deferred_events.units() {
             let evt = event.event_name.as_str();
@@ -2776,7 +2796,7 @@ impl SseRestorationState {
                 let text = if emitted.as_slice().contains(&key) {
                     ""
                 } else {
-                    emitted.push(key).map_err(|_| RestoreError::RestoreFailed)?;
+                    emitted.push(key).map_err(RestoreError::scan_error)?;
                     std::str::from_utf8(
                         track
                             .restored_deltas
@@ -2795,7 +2815,7 @@ impl SseRestorationState {
                     self.budget.clone(),
                     self.budget.limit(),
                 )
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::scan_error)?;
                 frames.push(encode_sse_frame(evt, replay.as_value(), &self.budget)?);
             } else {
                 frames.push(encode_sse_frame(evt, data, &self.budget)?);
@@ -2849,7 +2869,7 @@ impl SseRestorationState {
                 track
                     .raw_deltas
                     .append(delta.as_bytes())
-                    .map_err(|_| RestoreError::RestoreFailed)?;
+                    .map_err(RestoreError::scan_error)?;
             }
             "response.function_call_arguments.done" | "response.custom_tool_call_input.done" => {
                 let is_custom = evt == "response.custom_tool_call_input.done";
@@ -2865,7 +2885,7 @@ impl SseRestorationState {
                 }
                 track.raw_done = Some(
                     PayloadText::try_from_str(text, budget, MAX_ARGUMENT_BYTES)
-                        .map_err(|_| RestoreError::RestoreFailed)?,
+                        .map_err(RestoreError::scan_error)?,
                 );
             }
             "response.output_item.added" => {
@@ -2905,7 +2925,7 @@ impl SseRestorationState {
                         }
                         track.raw_item_done = Some(
                             PayloadText::try_from_str(args, budget, MAX_ARGUMENT_BYTES)
-                                .map_err(|_| RestoreError::RestoreFailed)?,
+                                .map_err(RestoreError::scan_error)?,
                         );
                     }
                     Some("custom_tool_call") => {
@@ -2925,7 +2945,7 @@ impl SseRestorationState {
                         }
                         track.raw_item_done = Some(
                             PayloadText::try_from_str(input, budget, MAX_ARGUMENT_BYTES)
-                                .map_err(|_| RestoreError::RestoreFailed)?,
+                                .map_err(RestoreError::scan_error)?,
                         );
                     }
                     _ => {}
@@ -3203,7 +3223,7 @@ impl SseRestorationState {
             self.budget.clone(),
             self.budget.limit(),
         )
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
         let response_val = response_owner.as_value();
         let output_arr = response_val
             .get("output")
@@ -3496,9 +3516,9 @@ impl SseRestorationState {
             inspection,
         )?;
         let mut emitted_tool_delta =
-            PayloadVec::new(self.budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+            PayloadVec::new(self.budget.clone()).map_err(RestoreError::scan_error)?;
         let mut emitted_text_delta =
-            PayloadVec::new(self.budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+            PayloadVec::new(self.budget.clone()).map_err(RestoreError::scan_error)?;
         let metadata = self
             .held_events()
             .len()
@@ -3524,7 +3544,7 @@ impl SseRestorationState {
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
             let mut edits =
-                PayloadVec::new(self.budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+                PayloadVec::new(self.budget.clone()).map_err(RestoreError::scan_error)?;
             match evt {
                 "response.completed" => {
                     copy_string_edits(
@@ -3563,7 +3583,7 @@ impl SseRestorationState {
                             } else {
                                 emitted_tool_delta
                                     .push(out_idx)
-                                    .map_err(|_| RestoreError::RestoreFailed)?;
+                                    .map_err(RestoreError::scan_error)?;
                                 restored.as_str()
                             }
                         } else {
@@ -3574,7 +3594,7 @@ impl SseRestorationState {
                                 target: data.get(key).ok_or(RestoreError::RestoreFailed)?,
                                 text,
                             })
-                            .map_err(|_| RestoreError::RestoreFailed)?;
+                            .map_err(RestoreError::scan_error)?;
                     }
                 }
                 "response.output_text.delta"
@@ -3636,7 +3656,7 @@ impl SseRestorationState {
                         } else {
                             emitted_text_delta
                                 .push(key_tuple)
-                                .map_err(|_| RestoreError::RestoreFailed)?;
+                                .map_err(RestoreError::scan_error)?;
                             restored
                                 .as_str()
                                 .get(track.released_deltas_len..)
@@ -3656,7 +3676,7 @@ impl SseRestorationState {
                     if !(evt.ends_with(".added") && target.as_str() == Some("")) {
                         edits
                             .push(JsonStringReplacement { target, text })
-                            .map_err(|_| RestoreError::RestoreFailed)?;
+                            .map_err(RestoreError::scan_error)?;
                     }
                 }
                 "response.output_item.done" | "response.output_item.added" => {
@@ -3689,7 +3709,7 @@ impl SseRestorationState {
                 self.budget.clone(),
                 self.budget.limit(),
             )
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
             check_restored_event(evt, replay.as_value(), &self.lease)?;
             out_frames.push(encode_sse_frame(evt, replay.as_value(), &self.budget)?);
         }
@@ -3911,7 +3931,7 @@ impl InitializedTextProjectionStream {
                 "http://127.0.0.1:1/responses",
                 None,
             )
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
         let mut raw =
             SseRestorationState::new(lease, binding, budget, ArgumentNormalizationMode::Exact)?;
         raw.owner_mut()?.hold_all()?;

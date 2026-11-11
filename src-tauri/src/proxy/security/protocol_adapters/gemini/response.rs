@@ -35,7 +35,7 @@ pub(in crate::proxy::security) fn stage_json<'native>(
 ) -> Result<StagedNativeJson<'native>, RestoreError> {
     lease
         .require_native_attempt_binding(client(), binding)
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     let object = source.as_object().ok_or(RestoreError::RestoreFailed)?;
     if object.get("error").is_some_and(|error| !error.is_null())
         || source
@@ -49,7 +49,7 @@ pub(in crate::proxy::security) fn stage_json<'native>(
         .get("candidates")
         .and_then(Value::as_array)
         .ok_or(RestoreError::RestoreFailed)?;
-    let mut sites = TextSites::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+    let mut sites = TextSites::new(budget.clone()).map_err(RestoreError::contract)?;
     let mut policies = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
     let mut delivered = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
     for (position, candidate) in candidates.iter().enumerate() {
@@ -97,7 +97,7 @@ pub(in crate::proxy::security) fn stage_json<'native>(
             if let Some(text) = part.get("text").filter(|text| text.is_string()) {
                 sites
                     .observe(text, SourceClass::HistoricalText, constraint)
-                    .map_err(|_| RestoreError::RestoreFailed)?;
+                    .map_err(RestoreError::contract)?;
                 policies
                     .push(TextPolicy::Output)
                     .map_err(RestoreError::capacity)?;
@@ -154,7 +154,7 @@ fn observe_argument_leaves<'native>(
         Value::String(_) => {
             sites
                 .observe(value, SourceClass::ToolArguments, constraint)
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::contract)?;
             policies
                 .push(TextPolicy::ToolArguments)
                 .map_err(RestoreError::capacity)?;
@@ -210,7 +210,7 @@ pub(in crate::proxy::security) fn finalize_sse(
     };
     lease
         .require_native_attempt_binding(client(), binding)
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     if entity.len() > max.min(1024 * 1024) {
         return Err(RestoreError::capacity(TokenError::CapacityExceeded));
     }
@@ -266,7 +266,7 @@ pub(in crate::proxy::security) fn finalize_sse(
     let mut remaining_work = 4 * 1024 * 1024;
     for (frame_index, (raw, source)) in parsed.as_slice().iter().enumerate() {
         let source = source.as_value();
-        let mut sites = TextSites::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+        let mut sites = TextSites::new(budget.clone()).map_err(RestoreError::contract)?;
         let mut policies = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
         if let Some(candidates) = source.get("candidates") {
             let candidates = candidates
@@ -305,7 +305,7 @@ pub(in crate::proxy::security) fn finalize_sse(
                         if let Some(text) = part.get("text") {
                             sites
                                 .observe(text, SourceClass::HistoricalText, constraint)
-                                .map_err(|_| RestoreError::RestoreFailed)?;
+                                .map_err(RestoreError::contract)?;
                             policies
                                 .push(
                                     if part.get("thought").and_then(Value::as_bool) == Some(true) {

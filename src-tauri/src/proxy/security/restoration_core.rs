@@ -302,11 +302,10 @@ impl StreamTextState {
         Ok(Self {
             saw_deltas: false,
             raw_deltas: PayloadBuffer::new(budget.clone(), limit)
-                .map_err(|_| RestoreError::RestoreFailed)?,
+                .map_err(RestoreError::scan_error)?,
             restored_deltas: PayloadBuffer::new(budget.clone(), limit)
-                .map_err(|_| RestoreError::RestoreFailed)?,
-            pending_tail: PayloadBuffer::new(budget, 64)
-                .map_err(|_| RestoreError::RestoreFailed)?,
+                .map_err(RestoreError::scan_error)?,
+            pending_tail: PayloadBuffer::new(budget, 64).map_err(RestoreError::scan_error)?,
             raw_done: None,
             restored_done: None,
             released_deltas_len: 0,
@@ -332,14 +331,14 @@ impl StreamTextState {
             .checked_add(delta.len())
             .ok_or(RestoreError::RestoreFailed)?;
         let mut combined = PayloadBuffer::with_capacity(length, budget, limit)
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
         combined
             .append(self.pending_tail.as_slice())
             .and_then(|_| combined.append(delta.as_bytes()))
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
         self.raw_deltas
             .append(delta.as_bytes())
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
         self.saw_deltas = true;
         Ok((combined, self.pending_tail.len()))
     }
@@ -352,13 +351,13 @@ impl StreamTextState {
     ) -> Result<(), super::response_restoration::RestoreError> {
         use super::{payload_buffer::PayloadBuffer, response_restoration::RestoreError};
         let mut next_tail = PayloadBuffer::with_capacity(tail.len(), budget, 64)
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
         next_tail
             .append(tail.as_bytes())
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
         self.restored_deltas
             .append(restored.as_bytes())
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
         self.pending_tail = next_tail;
         Ok(())
     }
@@ -563,9 +562,9 @@ impl StreamTextState {
             return Err(RestoreError::RestoreFailed);
         }
         let raw_done = PayloadText::try_from_str(raw, budget.clone(), limit)
-            .map_err(|_| RestoreError::RestoreFailed)?;
-        let restored_done = PayloadText::try_from_str(restored, budget, limit)
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
+        let restored_done =
+            PayloadText::try_from_str(restored, budget, limit).map_err(RestoreError::scan_error)?;
         self.raw_done = Some(raw_done);
         self.restored_done = Some(restored_done);
         Ok(self.saw_deltas)

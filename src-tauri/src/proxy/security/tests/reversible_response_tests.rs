@@ -1373,9 +1373,13 @@ mod barrier_regressions {
                 "capacity denial must occur after a replay snapshot was rebuilt"
             );
             if exhaust_replay {
+                // The exhaustion is a real local limit, so it keeps its own projection
+                // instead of collapsing into an anonymous restoration failure.
                 assert_eq!(
                     result,
-                    Err(RestoreError::RestoreFailed),
+                    Err(RestoreError::FailedBecause(
+                        super::super::restore_diagnostics::RestoreReason::RestoreCapacity
+                    )),
                     "no partial tool replay may escape"
                 );
                 assert!(
@@ -1385,7 +1389,9 @@ mod barrier_regressions {
                 drop(pressure.borrow_mut().take());
                 assert_eq!(
                     state.finalize_and_flush(true),
-                    Err(RestoreError::RestoreFailed),
+                    Err(RestoreError::FailedBecause(
+                        super::super::restore_diagnostics::RestoreReason::RestoreCapacity
+                    )),
                     "capacity recovery cannot release a failed barrier"
                 );
                 assert!(!cursor_exists(&lease, &binding));

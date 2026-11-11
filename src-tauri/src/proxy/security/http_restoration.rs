@@ -387,24 +387,6 @@ pub(crate) enum RestorationAdmission {
 pub(super) const CLIENT_PROCESSING_ERROR_MESSAGE: &str =
     "The local proxy could not process the request. Please retry.";
 
-/// Proven reasons an already-received upstream answer cannot be turned into a valid
-/// client response. Only used where the code can actually establish the cause.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RestoreFailureCause {
-    /// The answer carried local placeholders that strict restoration rejected.
-    UnrestorablePlaceholders,
-}
-
-impl RestoreFailureCause {
-    pub(crate) const fn client_message(self) -> &'static str {
-        match self {
-            Self::UnrestorablePlaceholders => {
-                "The upstream response contained local DLP placeholders that could not be restored safely. Retry the request; if it persists, disable reversible DLP for this provider."
-            }
-        }
-    }
-}
-
 /// Structural reasons a supported request cannot use reversible DLP. These are
 /// user-actionable categories only: never a rule name, matched value or internal label.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -430,8 +412,6 @@ impl RestoreUnsupportedCause {
 pub(super) const CLIENT_PROCESSING_ERROR_CODE: &str = "proxy_processing_failed";
 /// Client-visible code for a route or framing that reversible DLP does not support.
 pub(super) const CLIENT_UNSUPPORTED_ENDPOINT_CODE: &str = "dlp_restore_unsupported";
-/// Client-visible code when a received upstream answer could not be restored.
-pub(super) const CLIENT_RESTORE_FAILED_CODE: &str = "dlp_restore_failed";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DlpForwardError {
     ContextUnavailable,
@@ -445,7 +425,6 @@ pub(crate) enum DlpForwardError {
     Blocked,
     RestoreFailed,
     RestoreFailedAt(super::restore_diagnostics::RestoreStage),
-    RestoreFailedFor(RestoreFailureCause),
     /// Status-only upstream refusal; its untrusted body is never retained or decoded.
     UpstreamStatus(StatusCode),
 }
@@ -502,9 +481,7 @@ impl DlpForwardError {
     pub(crate) fn status_code(self) -> StatusCode {
         match self {
             Self::UpstreamStatus(status) => status,
-            Self::RestoreFailed | Self::RestoreFailedAt(_) | Self::RestoreFailedFor(_) => {
-                StatusCode::BAD_GATEWAY
-            }
+            Self::RestoreFailed | Self::RestoreFailedAt(_) => StatusCode::BAD_GATEWAY,
             Self::ContextUnavailable
             | Self::PolicyConflict
             | Self::RestoreUnsupported
@@ -520,9 +497,7 @@ impl DlpForwardError {
     pub(crate) fn error_type(self) -> &'static str {
         match self {
             Self::UpstreamStatus(_) => "upstream_error",
-            Self::RestoreFailed | Self::RestoreFailedAt(_) | Self::RestoreFailedFor(_) => {
-                "server_error"
-            }
+            Self::RestoreFailed | Self::RestoreFailedAt(_) => "server_error",
             Self::ContextUnavailable
             | Self::PolicyConflict
             | Self::RestoreUnsupported
@@ -536,9 +511,7 @@ impl DlpForwardError {
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::UpstreamStatus(_) => "upstream_error",
-            Self::RestoreFailed | Self::RestoreFailedAt(_) | Self::RestoreFailedFor(_) => {
-                "dlp_restore_failed"
-            }
+            Self::RestoreFailed | Self::RestoreFailedAt(_) => "dlp_restore_failed",
             Self::ContextUnavailable => "dlp_context_unavailable",
             Self::PolicyConflict => "dlp_policy_conflict",
             Self::RestoreUnsupported | Self::RestoreUnsupportedFor(_) => "dlp_restore_unsupported",
@@ -565,7 +538,6 @@ impl DlpForwardError {
                 "Reversible DLP tokenization is not supported for this endpoint or carrier."
             }
             Self::RestoreUnsupportedFor(cause) => cause.client_message(),
-            Self::RestoreFailedFor(cause) => cause.client_message(),
             Self::RedactionFailed => "Reversible DLP request preparation failed.",
             Self::Unavailable => "Reversible DLP service is temporarily unavailable.",
             Self::CapacityExceeded => "Reversible DLP capacity limit exceeded.",
@@ -579,8 +551,6 @@ impl DlpForwardError {
             Self::UpstreamStatus(status) => status,
             // A caused rejection is caller-actionable and nothing was sent upstream.
             Self::Blocked | Self::RestoreUnsupportedFor(_) => StatusCode::BAD_REQUEST,
-            // The upstream answered; the failure is producing a valid client response.
-            Self::RestoreFailedFor(_) => StatusCode::BAD_GATEWAY,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -598,17 +568,15 @@ impl DlpForwardError {
             Self::UpstreamStatus(_) => "upstream_error",
             Self::Blocked => "dlp_blocked",
             Self::RestoreUnsupportedFor(_) => CLIENT_UNSUPPORTED_ENDPOINT_CODE,
-            Self::RestoreFailedFor(_) => CLIENT_RESTORE_FAILED_CODE,
             _ => CLIENT_PROCESSING_ERROR_CODE,
         }
     }
 
     pub(crate) fn client_message(self) -> &'static str {
         match self {
-            Self::UpstreamStatus(_)
-            | Self::Blocked
-            | Self::RestoreUnsupportedFor(_)
-            | Self::RestoreFailedFor(_) => self.message(),
+            Self::UpstreamStatus(_) | Self::Blocked | Self::RestoreUnsupportedFor(_) => {
+                self.message()
+            }
             // The generic family keeps its historical projection so legacy paths are
             // unaffected; only an explicit cause produces actionable text.
             Self::RestoreUnsupported => CLIENT_PROCESSING_ERROR_MESSAGE,
@@ -3340,7 +3308,7 @@ impl DlpPreparedAttempt {
             }
         }
         CompletionWitness::from_verified_completion(self.json_completion.permits_completion())
-            .map_err(|_| RestoreError::RestoreFailed)
+            .map_err(RestoreError::scan_error)
     }
 
     /// Only the actual xAI SSE branch requests original-byte evidence.
@@ -3522,13 +3490,11 @@ impl DlpPreparedAttempt {
                 budget.clone(),
                 crate::proxy::hyper_client::MAX_RESPONSE_BODY_BYTES,
             )
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
             let mut stream = body.into_data_stream();
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.map_err(|_| RestoreError::RestoreFailed)?;
-                input
-                    .append(&chunk)
-                    .map_err(|_| RestoreError::RestoreFailed)?;
+                input.append(&chunk).map_err(RestoreError::scan_error)?;
             }
             let raw =
                 std::str::from_utf8(input.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
@@ -3546,7 +3512,7 @@ impl DlpPreparedAttempt {
             }
             stage = RestoreStage::JsonRestore;
             let parsed = PayloadJson::try_from_str(raw, budget.clone(), budget.limit())
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::scan_error)?;
             stage = RestoreStage::CompletionEvidence;
             let pair = self.response_protocol_pair()?;
             let (proof, inspection) = self.json_completion.finish(
@@ -3785,7 +3751,7 @@ impl UpstreamSseEvidenceTracker {
             observe_original(block)?;
             self.observe(&CompletionObservation::RawFrame(block));
             let mut data = PayloadBuffer::new(budget.clone(), 1024 * 1024)
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::scan_error)?;
             let mut event = None;
             let mut count = 0usize;
             for line in block.lines() {
@@ -3796,12 +3762,11 @@ impl UpstreamSseEvidenceTracker {
                     .or_else(|| (line == "data").then_some(""))
                 {
                     if count != 0 {
-                        data.append(b"\n")
-                            .map_err(|_| RestoreError::RestoreFailed)?;
+                        data.append(b"\n").map_err(RestoreError::scan_error)?;
                     }
                     count += 1;
                     data.append(value.strip_prefix(' ').unwrap_or(value).as_bytes())
-                        .map_err(|_| RestoreError::RestoreFailed)?;
+                        .map_err(RestoreError::scan_error)?;
                 }
             }
             if count == 0 {
@@ -3813,7 +3778,7 @@ impl UpstreamSseEvidenceTracker {
                 self.observe(&CompletionObservation::ChatDone);
             } else {
                 let parsed = PayloadJson::try_from_str(raw, budget.clone(), budget.limit())
-                    .map_err(|_| RestoreError::RestoreFailed)?;
+                    .map_err(RestoreError::scan_error)?;
                 match protocol {
                     JsonCompletionProtocol::ChatCompletions => {
                         self.observe(&CompletionObservation::ChatChunk(parsed.as_value()))
@@ -4097,7 +4062,7 @@ where
                 while offset < chunk.len() {
                     let end = chunk[offset..].iter().position(|byte| *byte == b'\n')
                         .map_or(chunk.len(), |pos| offset + pos + 1);
-                    frame.append(&chunk[offset..end]).map_err(|_| RestoreError::RestoreFailed)?;
+                    frame.append(&chunk[offset..end]).map_err(RestoreError::scan_error)?;
                     offset = end;
                     if chunk[end - 1] != b'\n' { continue; }
                     let line = &frame.as_slice()[line_start..];

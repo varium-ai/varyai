@@ -155,7 +155,7 @@ impl<T> ResponseLifecycle<T> {
         // Optional completed-history eligibility is unrelated to current restoration.
         lease
             .require_current_attempt_binding(pair.client(), &binding)
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
         let charge = std::mem::size_of::<Reservation>()
             .checked_add(2 * std::mem::size_of::<usize>())
             .ok_or_else(|| RestoreError::capacity(TokenError::CapacityExceeded))?;

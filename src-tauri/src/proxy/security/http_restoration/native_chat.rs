@@ -1121,6 +1121,25 @@ async fn collect_client(body: Body, budget: &PayloadBudget) -> Result<PayloadBuf
     Ok(output)
 }
 
+/// Protocols whose SSE clients are known to accept one fixed terminal error frame.
+fn is_framed_error_protocol(protocol: Option<Protocol>) -> bool {
+    matches!(protocol, Some(Protocol::Anthropic) | Some(Protocol::Gemini))
+}
+
+/// Fixed terminal error frame for a real failure after SSE headers were sent. It carries
+/// the generic processing code and no cause: the caller must not receive a fabricated
+/// DLP reason, and the failing stage stays in sanitized diagnostics.
+fn fixed_sse_error_frame(protocol: Option<Protocol>) -> &'static [u8] {
+    match protocol {
+        Some(Protocol::Gemini) => {
+            b"data: {\"error\":{\"code\":502,\"message\":\"The local proxy could not process the request. Please retry.\",\"status\":\"UNAVAILABLE\"}}\n\n"
+        }
+        _ => {
+            b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"code\":\"proxy_processing_failed\",\"message\":\"The local proxy could not process the request. Please retry.\"}}\n\n"
+        }
+    }
+}
+
 impl DlpPreparedAttempt {
     pub(crate) fn is_native_chat(&self) -> bool {
         self.native_protocol == Some(Protocol::Chat)
@@ -1138,11 +1157,8 @@ impl DlpPreparedAttempt {
         &mut self,
         body: Body,
         sse: bool,
-        cause: &mut Option<RestoreFailureCause>,
-    ) -> Result<std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>>, RestoreError>
-    {
+    ) -> Result<NativeDelivery, RestoreError> {
         let client = collect_client(body, &self.budget).await?;
-        let placeholders = entity_contains_token_marker(client.as_slice(), sse);
         let capture = self
             .native_original
             .take()
@@ -1155,6 +1171,9 @@ impl DlpPreparedAttempt {
                 Ok(bytes_with_owner(client, capture))
             })));
         }
+        // Without a local placeholder the forwarded body already equals the restored
+        // one, so a restoration failure there changes nothing for the caller.
+        let recoverable = !entity_contains_token_marker(client.as_slice(), sse);
         let ready = capture
             .0
             .lock()
@@ -1162,7 +1181,10 @@ impl DlpPreparedAttempt {
             .ready
             .take()
             .ok_or(RestoreError::RestoreFailed)?;
-        let outcome: Result<NativeDelivery, RestoreError> = match (sse, ready) {
+        // Verification decides whether the answer may be forwarded and stays strict:
+        // an answer this path cannot confirm is a real failure of the answer itself.
+        // Only the restoration step that follows it degrades.
+        match (sse, ready) {
             // Only reachable if the client copy diverged from the captured upstream
             // body; return the captured answer rather than a fabricated error.
             (_, OriginalReady::Verbatim(original)) => Ok(Box::pin(futures::stream::once(async {
@@ -1186,7 +1208,7 @@ impl DlpPreparedAttempt {
                     }
                     _ => return Err(RestoreError::RestoreUnsupported),
                 };
-                match finalize(
+                let restored = finalize(
                     client.as_slice(),
                     &self.lease,
                     &self.binding,
@@ -1194,118 +1216,99 @@ impl DlpPreparedAttempt {
                     &self.provenance,
                     proof,
                     ENTITY_LIMIT,
-                ) {
-                    Ok(delivery) => Ok(delivery.into_delivery_stream()),
-                    Err(_) if self.is_native_anthropic() => {
-                        // No delivery was issued. This fixed frame needs no payload budget.
-                        let stage = RestoreStage::ResponseProcessing;
-                        super::super::restore_diagnostics::log_failure(
-                            DlpForwardError::RestoreFailedAt(stage).code(),
-                            stage,
-                        );
-                        let frame = Bytes::from_static(b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"code\":\"proxy_processing_failed\",\"message\":\"The local proxy could not process the request. Please retry.\"}}\n\n");
-                        Ok(Box::pin(futures::stream::once(async { Ok(frame) })))
-                    }
-                    Err(_) if self.is_native_gemini() => {
-                        let stage = RestoreStage::ResponseProcessing;
-                        super::super::restore_diagnostics::log_failure(
-                            DlpForwardError::RestoreFailedAt(stage).code(),
-                            stage,
-                        );
-                        let frame = Self::native_sse_failure_frame(
-                            self.native_protocol,
-                            Some(RestoreFailureCause::UnrestorablePlaceholders),
-                        )
-                        .ok_or(RestoreError::RestoreUnsupported)?;
-                        Ok(Box::pin(futures::stream::once(async {
-                            Ok(Bytes::from_static(frame))
-                        })))
-                    }
-                    Err(error) => Err(error),
-                }
+                )
+                .map(|delivery| delivery.into_delivery_stream());
+                Self::degrade_restoration(restored, client, recoverable, self.native_protocol, sse)
             }
             (false, OriginalReady::Json(mut verifier, original)) => {
-                let outcome = (|| -> Result<_, RestoreError> {
-                    let text = std::str::from_utf8(client.as_slice())
-                        .map_err(|_| RestoreError::RestoreFailed)?;
-                    let parsed = PayloadJson::try_from_str(text, self.budget.clone(), ENTITY_LIMIT)
-                        .map_err(RestoreError::capacity)?;
-                    verifier.observe_client_json(parsed.as_value(), &self.provenance)?;
-                    let proof = verifier.finish()?;
-                    let stage_fn = match self.native_protocol {
-                        Some(Protocol::Chat) => chat::response::stage_json,
-                        Some(Protocol::Anthropic) => {
-                            super::super::protocol_adapters::anthropic::response::stage_json
-                        }
-                        Some(Protocol::Gemini) => {
-                            super::super::protocol_adapters::gemini::response::stage_json
-                        }
-                        _ => return Err(RestoreError::RestoreUnsupported),
-                    };
-                    let stage = stage_fn(
-                        parsed.as_value(),
-                        &self.lease,
-                        &self.binding,
-                        self.budget.clone(),
-                        &self.provenance,
-                    )?;
-                    let delivery = super::super::response_restoration::finalize_native_json(
-                        stage,
-                        &self.lease,
-                        proof,
-                        &self.provenance,
-                        bytes_with_owner(original, capture),
-                        ENTITY_LIMIT,
-                    )?;
-                    Ok(delivery.into_delivery_stream())
-                })();
-                outcome
+                let text = std::str::from_utf8(client.as_slice())
+                    .map_err(|_| RestoreError::RestoreFailed)?;
+                let parsed = PayloadJson::try_from_str(text, self.budget.clone(), ENTITY_LIMIT)
+                    .map_err(RestoreError::capacity)?;
+                verifier.observe_client_json(parsed.as_value(), &self.provenance)?;
+                let proof = verifier.finish()?;
+                let stage_fn = match self.native_protocol {
+                    Some(Protocol::Chat) => chat::response::stage_json,
+                    Some(Protocol::Anthropic) => {
+                        super::super::protocol_adapters::anthropic::response::stage_json
+                    }
+                    Some(Protocol::Gemini) => {
+                        super::super::protocol_adapters::gemini::response::stage_json
+                    }
+                    _ => return Err(RestoreError::RestoreUnsupported),
+                };
+                let stage = stage_fn(
+                    parsed.as_value(),
+                    &self.lease,
+                    &self.binding,
+                    self.budget.clone(),
+                    &self.provenance,
+                )?;
+                let restored = super::super::response_restoration::finalize_native_json(
+                    stage,
+                    &self.lease,
+                    proof,
+                    &self.provenance,
+                    bytes_with_owner(original, capture),
+                    ENTITY_LIMIT,
+                )
+                .map(|delivery| delivery.into_delivery_stream());
+                Self::degrade_restoration(restored, client, recoverable, self.native_protocol, sse)
             }
             _ => Err(RestoreError::RestoreFailed),
-        };
-        if outcome.is_err() && placeholders && !matches!(self.native_protocol, Some(Protocol::Chat))
-        {
-            // Only claim this cause when the answer really carried placeholders.
-            *cause = Some(RestoreFailureCause::UnrestorablePlaceholders);
-        }
-        outcome
-    }
-
-    /// Fixed Gemini SSE failure envelope. Same client message as the JSON error and
-    /// no payload ownership: failure delivery never restores or publishes anything.
-    fn native_sse_failure_frame(
-        protocol: Option<Protocol>,
-        cause: Option<RestoreFailureCause>,
-    ) -> Option<&'static [u8]> {
-        let _ = cause;
-        match protocol {
-            // 502 with a specific code: the upstream answered, local restoration failed.
-            Some(Protocol::Gemini) => Some(
-                b"data: {\"error\":{\"code\":502,\"message\":\"The upstream response contained local DLP placeholders that could not be restored safely. Retry the request; if it persists, disable reversible DLP for this provider.\",\"status\":\"UNAVAILABLE\"}}\n\n",
-            ),
-            // Chat and Anthropic keep their accepted M2/M3 failure delivery: the body
-            // stream fails and the client sees a transport error, never a silent
-            // success. Only Gemini's local terminal failure uses a fixed frame.
-            _ => None,
         }
     }
 
-    fn native_restore_error_response(
+    /// Keep an answer the proxy already verified usable. Restoration is an enhancement,
+    /// never a gate: when the upstream body carries no local placeholder, forwarding it
+    /// unchanged delivers exactly what restoration would have delivered. Nothing is
+    /// published and no client capability is granted here.
+    ///
+    /// A body that does carry placeholders cannot take that path, because forwarding it
+    /// would hand the caller unresolved local markers. Such an answer was verified, so a
+    /// streaming Anthropic or Gemini client still receives one fixed error frame instead
+    /// of a silently cut stream; every other carrier keeps the real failure.
+    fn degrade_restoration(
+        restored: Result<NativeDelivery, RestoreError>,
+        client: PayloadBuffer,
+        recoverable: bool,
         protocol: Option<Protocol>,
-        cause: Option<RestoreFailureCause>,
-    ) -> Response {
-        // A proven cause replaces the anonymous projection with a specific code and an
-        // actionable message; the status stays server-class because the upstream already
-        // answered and only local restoration failed.
-        if let Some(cause) = cause {
-            let app = match protocol {
-                Some(Protocol::Anthropic) => AppType::Claude,
-                Some(Protocol::Gemini) => AppType::Gemini,
-                _ => AppType::Codex,
-            };
-            return DlpForwardError::RestoreFailedFor(cause).into_app_response(&app);
+        sse: bool,
+    ) -> Result<NativeDelivery, RestoreError> {
+        match restored {
+            Ok(delivery) => Ok(delivery),
+            Err(error) if error.is_resource_exhaustion() => Err(error),
+            Err(_) if recoverable => {
+                let stage = RestoreStage::ResponseProcessing;
+                super::super::restore_diagnostics::log_failure(
+                    DlpForwardError::RestoreFailedAt(stage).code(),
+                    stage,
+                );
+                Ok(Box::pin(futures::stream::once(async move {
+                    Ok(bytes_with_owner(client, ()))
+                })))
+            }
+            Err(_) if sse && is_framed_error_protocol(protocol) => {
+                let stage = RestoreStage::ResponseProcessing;
+                super::super::restore_diagnostics::log_failure(
+                    DlpForwardError::RestoreFailedAt(stage).code(),
+                    stage,
+                );
+                Ok(Box::pin(futures::stream::once(async move {
+                    Ok(Bytes::from_static(fixed_sse_error_frame(protocol)))
+                })))
+            }
+            Err(error) => Err(error),
         }
-        if protocol == Some(Protocol::Anthropic) {
+    }
+
+    /// Protocol-shaped error for a real failure of the answer itself: a non-success
+    /// upstream status, an unverifiable body, or a verified answer that cannot be turned
+    /// into a valid client response. The native protocols report server-class status
+    /// because the upstream already answered; the client projection stays generic, with
+    /// no fabricated DLP cause.
+    fn native_restore_error_response(protocol: Option<Protocol>) -> Response {
+        let mut response = if protocol == Some(Protocol::Anthropic) {
             DlpForwardError::RestoreFailedAt(RestoreStage::ResponseProcessing)
                 .into_app_response(&AppType::Claude)
         } else if protocol == Some(Protocol::Gemini) {
@@ -1316,7 +1319,11 @@ impl DlpPreparedAttempt {
                 RestoreError::RestoreFailed,
                 RestoreStage::ResponseProcessing,
             )
+        };
+        if matches!(protocol, Some(Protocol::Anthropic) | Some(Protocol::Gemini)) {
+            *response.status_mut() = StatusCode::BAD_GATEWAY;
         }
+        response
     }
 
     pub(crate) async fn restore_native_chat_http_response(
@@ -1330,9 +1337,8 @@ impl DlpPreparedAttempt {
                 .get(header::CONTENT_ENCODING)
                 .is_some_and(|value| value != "identity")
         {
-            // Non-success status or a non-identity body encoding keeps the existing
-            // protocol-specific projection.
-            return Self::native_restore_error_response(self.native_protocol, None);
+            // A real failure of the answer itself keeps the protocol projection.
+            return Self::native_restore_error_response(self.native_protocol);
         }
         let sse = parts
             .headers
@@ -1341,38 +1347,31 @@ impl DlpPreparedAttempt {
             .is_some_and(|value| value.contains("text/event-stream"));
         clear_entity_headers(&mut parts.headers);
         if sse {
-            let native_protocol = self.native_protocol;
+            // Restoration problems degrade inside finalize; only a transport failure of
+            // the client body itself ends this stream early.
+            // Nothing has been yielded yet, so an answer that never verified can still
+            // end with one fixed error frame on a native Anthropic or Gemini stream
+            // instead of a silently broken one. A verified answer that cannot be
+            // restored already produced its own delivery.
+            let protocol = self.native_protocol;
             let stream = async_stream::try_stream! {
-                let mut cause = None;
-                let mut delivery = match self.finalize_native_chat_body(body, true, &mut cause).await {
-                    Ok(delivery) => delivery,
-                    Err(_) => match Self::native_sse_failure_frame(native_protocol, cause) {
-                        // Failure delivery is a fixed frame, never a silent broken stream.
-                        Some(frame) => {
-                            let stage = RestoreStage::ResponseProcessing;
-                            super::super::restore_diagnostics::log_failure(
-                                DlpForwardError::RestoreFailedAt(stage).code(),
-                                stage,
-                            );
-                            yield Bytes::from_static(frame);
-                            return;
-                        }
-                        None => Err(io::Error::other("Response stream failed."))?,
-                    },
-                };
-                while let Some(chunk) = delivery.next().await { yield chunk?; }
+                match self.finalize_native_chat_body(body, true).await {
+                    Ok(mut delivery) => {
+                        while let Some(chunk) = delivery.next().await { yield chunk?; }
+                    }
+                    Err(_) if is_framed_error_protocol(protocol) => {
+                        yield Bytes::from_static(fixed_sse_error_frame(protocol));
+                    }
+                    Err(_) => Err(io::Error::other("Response stream failed."))?,
+                }
             };
             let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>> =
                 Box::pin(stream);
             Response::from_parts(parts, Body::from_stream(stream))
         } else {
-            let mut cause = None;
-            match self
-                .finalize_native_chat_body(body, false, &mut cause)
-                .await
-            {
+            match self.finalize_native_chat_body(body, false).await {
                 Ok(delivery) => Response::from_parts(parts, Body::from_stream(delivery)),
-                Err(_) => Self::native_restore_error_response(self.native_protocol, cause),
+                Err(_) => Self::native_restore_error_response(self.native_protocol),
             }
         }
     }

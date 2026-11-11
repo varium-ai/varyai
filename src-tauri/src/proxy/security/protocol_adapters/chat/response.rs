@@ -43,7 +43,7 @@ fn observe_text<'native>(
                 },
                 EditConstraint::Editable,
             )
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::contract)?;
         policies.push(policy).map_err(RestoreError::capacity)?;
     }
     Ok(())
@@ -100,7 +100,7 @@ pub(in crate::proxy::security) fn stage_json<'native>(
 ) -> Result<StagedNativeJson<'native>, RestoreError> {
     lease
         .require_native_attempt_binding(client(), binding)
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     // Reuse native strict validation without granting transport or release authority.
     let encoded = serialize_json_with_budget(source, &budget, 1024 * 1024)?;
     let mut completion = JsonCompletion::native_chat();
@@ -119,7 +119,7 @@ pub(in crate::proxy::security) fn stage_json<'native>(
         .get("choices")
         .and_then(Value::as_array)
         .ok_or(RestoreError::RestoreFailed)?;
-    let mut sites = TextSites::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+    let mut sites = TextSites::new(budget.clone()).map_err(RestoreError::contract)?;
     let mut policies = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
     let mut delivered = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
     for choice in choices {
@@ -179,7 +179,7 @@ fn observe_fragment<'native>(
             },
             EditConstraint::Editable,
         )
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::contract)?;
     let index = match groups
         .as_slice()
         .iter()
@@ -228,7 +228,7 @@ pub(in crate::proxy::security) fn finalize_sse(
     };
     lease
         .require_native_attempt_binding(client(), binding)
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     if entity.len() > max.min(1024 * 1024) {
         return Err(RestoreError::capacity(TokenError::CapacityExceeded));
     }
@@ -286,7 +286,7 @@ pub(in crate::proxy::security) fn finalize_sse(
     let mut groups = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
     let mut site_count = 0usize;
     for (frame_index, (raw, source)) in parsed.as_slice().iter().enumerate() {
-        let mut sites = TextSites::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+        let mut sites = TextSites::new(budget.clone()).map_err(RestoreError::contract)?;
         if let Some(source) = source {
             let choices = source
                 .as_value()

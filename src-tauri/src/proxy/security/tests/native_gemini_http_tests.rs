@@ -547,8 +547,8 @@ async fn m4_gemini_sse_incomplete_terminal_returns_fixed_error_frame() -> TestRe
     let fixture = GeminiFixture::new(Mode::MaxTokens).await?;
     let (status, wire) = collect_body(fixture.send(SSE_ROUTE, &generate_body()).await?).await?;
     assert!(status == StatusCode::OK, "m4_gemini_sse_status_changed");
-    // Still a single fixed frame, but it now carries a specific code and cause rather
-    // than a generic processing failure.
+    // Still exactly one fixed frame. It carries the generic processing failure with no
+    // fabricated DLP cause; the failing stage stays in sanitized diagnostics.
     let frame = std::str::from_utf8(&wire).map_err(|_| "m4_gemini_sse_garbled")?;
     assert!(
         frame.starts_with("data: {") && frame.ends_with("\n\n"),
@@ -556,9 +556,8 @@ async fn m4_gemini_sse_incomplete_terminal_returns_fixed_error_frame() -> TestRe
     );
     assert!(
         frame.contains("\"code\":502")
-            && frame.contains("local DLP placeholders that could not be restored safely")
-            && frame.contains("disable reversible DLP for this provider")
-            && !frame.contains("proxy_processing_failed")
+            && frame.contains("The local proxy could not process the request. Please retry.")
+            && frame.contains("\"status\":\"UNAVAILABLE\"")
             && !frame.contains(CONTACT),
         "m4_gemini_sse_incomplete_terminal_not_actionable: {frame}"
     );

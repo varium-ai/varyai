@@ -314,7 +314,7 @@ fn observe_native_block(
     native.observe(&raw, budget);
     transport.observe(&raw);
     let mut data =
-        PayloadBuffer::new(budget.clone(), 1024 * 1024).map_err(|_| RestoreError::RestoreFailed)?;
+        PayloadBuffer::new(budget.clone(), 1024 * 1024).map_err(RestoreError::scan_error)?;
     let mut event_name = "";
     let mut count = 0usize;
     for line in block.lines() {
@@ -325,19 +325,18 @@ fn observe_native_block(
             .or_else(|| (line == "data").then_some(""))
         {
             if count != 0 {
-                data.append(b"\n")
-                    .map_err(|_| RestoreError::RestoreFailed)?;
+                data.append(b"\n").map_err(RestoreError::scan_error)?;
             }
             count += 1;
             data.append(value.strip_prefix(' ').unwrap_or(value).as_bytes())
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::scan_error)?;
         }
     }
     if count != 0 {
         let raw = std::str::from_utf8(data.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
         if raw.trim() != "[DONE]" {
             let parsed = PayloadJson::try_from_str(raw, budget.clone(), budget.limit())
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::scan_error)?;
             if let Some(arguments) = original_arguments.as_mut() {
                 arguments.observe(parsed.as_value())?;
             }
@@ -739,7 +738,7 @@ impl NativeJsonEvidence {
             return Err(RestoreError::RestoreFailed);
         }
         let parsed = PayloadJson::try_from_str(raw, budget.clone(), NATIVE_ENTITY_LIMIT)
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
         let mut transport = CompletionTransport::default();
         transport.observe_fully_read_json();
         Ok(Self {
@@ -820,7 +819,7 @@ impl NativeJsonVerifier {
                 self.context.budget.clone(),
                 NATIVE_ENTITY_LIMIT,
             )
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
             let bytes = serialize_native_json(owned.as_value(), &self.context.budget)?;
             let raw =
                 std::str::from_utf8(bytes.as_slice()).map_err(|_| RestoreError::RestoreFailed)?;
@@ -964,7 +963,7 @@ impl NativeSseEvidence {
         self.completion.observe(&raw, budget);
         self.transport.observe(&raw);
         let mut data = PayloadBuffer::new(budget.clone(), NATIVE_ENTITY_LIMIT)
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
         let mut count = 0usize;
         let mut event_name = None;
         for line in block.lines() {
@@ -984,12 +983,11 @@ impl NativeSseEvidence {
                 .or_else(|| (line == "data").then_some(""))
             {
                 if count != 0 {
-                    data.append(b"\n")
-                        .map_err(|_| RestoreError::RestoreFailed)?;
+                    data.append(b"\n").map_err(RestoreError::scan_error)?;
                 }
                 count += 1;
                 data.append(value.strip_prefix(' ').unwrap_or(value).as_bytes())
-                    .map_err(|_| RestoreError::RestoreFailed)?;
+                    .map_err(RestoreError::scan_error)?;
             }
         }
         if count != 0 {
@@ -1006,7 +1004,7 @@ impl NativeSseEvidence {
             } else {
                 let parsed =
                     PayloadJson::try_from_str(encoded, budget.clone(), NATIVE_ENTITY_LIMIT)
-                        .map_err(|_| RestoreError::RestoreFailed)?;
+                        .map_err(RestoreError::scan_error)?;
                 if self.client.protocol() == Protocol::Anthropic
                     && parsed.as_value().get("type").and_then(Value::as_str)
                         == Some("message_delta")
@@ -1288,12 +1286,10 @@ fn consume_native_entity<R: io::Read>(
     budget: &PayloadBudget,
 ) -> Result<PayloadBuffer, RestoreError> {
     // Account for the bounded read scratch as well as all retained entity copies.
-    let _scratch_charge = budget
-        .reserve(4096)
-        .map_err(|_| RestoreError::RestoreFailed)?;
+    let _scratch_charge = budget.reserve(4096).map_err(RestoreError::scan_error)?;
     let mut scratch = [0u8; 4096];
     let mut bytes = PayloadBuffer::new(budget.clone(), NATIVE_ENTITY_LIMIT)
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     loop {
         // Interrupted/cancellation is a failure, never a retry or fabricated EOF.
         let count = source
@@ -1303,9 +1299,7 @@ fn consume_native_entity<R: io::Read>(
             return Ok(bytes);
         }
         let chunk = scratch.get(..count).ok_or(RestoreError::RestoreFailed)?;
-        bytes
-            .append(chunk)
-            .map_err(|_| RestoreError::RestoreFailed)?;
+        bytes.append(chunk).map_err(RestoreError::scan_error)?;
     }
 }
 
@@ -1343,7 +1337,7 @@ fn serialize_native_json(
     serde_json::to_writer(&mut size, source).map_err(|_| RestoreError::RestoreFailed)?;
     let mut writer = BufferWriter(
         PayloadBuffer::with_capacity(size.0, budget.clone(), NATIVE_ENTITY_LIMIT)
-            .map_err(|_| RestoreError::RestoreFailed)?,
+            .map_err(RestoreError::scan_error)?,
     );
     serde_json::to_writer(&mut writer, source).map_err(|_| RestoreError::RestoreFailed)?;
     Ok(writer.0)

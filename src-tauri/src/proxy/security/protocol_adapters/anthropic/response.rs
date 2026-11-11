@@ -48,7 +48,7 @@ fn observe_tool_input<'native>(
         Value::String(_) => {
             sites
                 .observe(native, SourceClass::ToolArguments, EditConstraint::Editable)
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::contract)?;
             policies
                 .push(TextPolicy::ToolArguments)
                 .map_err(RestoreError::capacity)?;
@@ -78,7 +78,7 @@ pub(in crate::proxy::security) fn stage_json<'native>(
 ) -> Result<StagedNativeJson<'native>, RestoreError> {
     lease
         .require_native_attempt_binding(client(), binding)
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     // Reuse native strict validation without granting transport or release authority.
     let encoded = serialize_json_with_budget(source, &budget, 1024 * 1024)?;
     let mut completion = JsonCompletion::new(JsonCompletionProtocol::AnthropicMessages);
@@ -97,7 +97,7 @@ pub(in crate::proxy::security) fn stage_json<'native>(
         .get("content")
         .and_then(Value::as_array)
         .ok_or(RestoreError::RestoreFailed)?;
-    let mut sites = TextSites::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+    let mut sites = TextSites::new(budget.clone()).map_err(RestoreError::contract)?;
     let mut policies = PayloadVec::new(budget.clone()).map_err(RestoreError::capacity)?;
     let mut remaining_work = 4 * 1024 * 1024;
     for block in content {
@@ -106,7 +106,7 @@ pub(in crate::proxy::security) fn stage_json<'native>(
                 if let Some(text) = block.get("text").filter(|text| text.is_string()) {
                     sites
                         .observe(text, SourceClass::HistoricalText, EditConstraint::Editable)
-                        .map_err(|_| RestoreError::RestoreFailed)?;
+                        .map_err(RestoreError::contract)?;
                     policies
                         .push(TextPolicy::Output)
                         .map_err(RestoreError::capacity)?;
@@ -120,7 +120,7 @@ pub(in crate::proxy::security) fn stage_json<'native>(
                             SourceClass::HistoricalText,
                             EditConstraint::Immutable,
                         )
-                        .map_err(|_| RestoreError::RestoreFailed)?;
+                        .map_err(RestoreError::contract)?;
                     policies
                         .push(TextPolicy::Reasoning)
                         .map_err(RestoreError::capacity)?;
@@ -202,7 +202,7 @@ fn observe_sse_fragment<'native>(
     };
     sites
         .observe(node, source, constraint)
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::contract)?;
     let position = match groups
         .as_slice()
         .iter()
@@ -311,7 +311,7 @@ pub(in crate::proxy::security) fn finalize_sse(
     };
     lease
         .require_native_attempt_binding(client(), binding)
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     if entity.len() > max.min(1024 * 1024) {
         return Err(RestoreError::capacity(TokenError::CapacityExceeded));
     }
@@ -371,7 +371,7 @@ pub(in crate::proxy::security) fn finalize_sse(
     let mut remaining_work = 4 * 1024 * 1024;
     let mut site_count = 0usize;
     for (frame_index, (raw, source)) in parsed.as_slice().iter().enumerate() {
-        let mut sites = TextSites::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+        let mut sites = TextSites::new(budget.clone()).map_err(RestoreError::contract)?;
         if let Some(source) = source {
             let source = source.as_value();
             snapshots

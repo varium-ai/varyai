@@ -150,16 +150,14 @@ where
     S: Stream<Item = Result<Bytes, io::Error>>,
 {
     let mut bytes = PayloadBuffer::new(budget.clone(), NATIVE_DRIVER_ENTITY_LIMIT)
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     futures::pin_mut!(source);
     while let Some(chunk) = source.next().await {
         // No retries or further polls on any error, including Interrupted.
         let chunk = chunk.map_err(|_| RestoreError::RestoreFailed)?;
         // Append checks the entity ceiling and charges before allocation/copy.
         // The transport item is dropped before the next asynchronous poll.
-        bytes
-            .append(&chunk)
-            .map_err(|_| RestoreError::RestoreFailed)?;
+        bytes.append(&chunk).map_err(RestoreError::scan_error)?;
     }
     Ok(bytes)
 }

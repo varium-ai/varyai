@@ -588,11 +588,15 @@ async fn m3_anthropic_error_after_message_stop_is_rejected_without_publication()
     let _transport = crate::proxy::forwarder::final_send_binding_test_support::install(|_, _| {});
     let fixture = HttpFixture::new(ReplyMode::ErrorAfterTerminal).await?;
     let body = json!({"model":"synthetic-m3-model","max_tokens":64,"stream":true,"messages":[{"role":"user","content":CONTACT}]});
-    let (_, wire, failed) = collect_wire(fixture.send(&body).await?).await?;
+    let (status, wire, failed) = collect_wire(fixture.send(&body).await?).await?;
+    // The answer is still refused, but nothing was yielded before the failure, so the
+    // client gets one fixed error frame instead of a silently broken stream. The
+    // completion that preceded the upstream error must never reach it.
     assert!(
-        failed && wire.is_empty(),
-        "m3_post_terminal_error_released_completion"
+        status == StatusCode::OK && !failed,
+        "m3_post_terminal_error_broke_stream"
     );
+    assert_native_local_sse_error(&wire)?;
     let counts = super::tokenization::publication_test_support::counts(&fixture.runtime.store)?;
     assert!(
         (counts.0, counts.1, counts.2) == (0, 0, 0),
@@ -610,9 +614,9 @@ async fn m3_anthropic_local_finalizer_failure_uses_native_error_and_never_edits_
     let body = json!({"model":"synthetic-m3-model","max_tokens":64,"stream":false,
         "messages":[{"role":"user","content":CONTACT}]});
     let (status, wire, failed) = collect_wire(fixture.send(&body).await?).await?;
-    // The upstream already answered, so the status stays server-class; what changed is
-    // that the client now gets a specific code and an actionable cause instead of a
-    // generic processing failure.
+    // The upstream already answered and the answer carries a local placeholder inside a
+    // signed block, so it cannot be delivered: the status is server-class and the client
+    // projection stays the generic processing failure with no fabricated DLP cause.
     assert!(
         status == StatusCode::BAD_GATEWAY && !failed,
         "m3_immutable_output_was_not_safely_rejected: {status}"
@@ -623,9 +627,9 @@ async fn m3_anthropic_local_finalizer_failure_uses_native_error_and_never_edits_
         "m3_local_finalizer_error_not_anthropic_native"
     );
     assert!(
-        error["error"]["code"] == "dlp_restore_failed"
+        error["error"]["code"] == "proxy_processing_failed"
             && error["error"]["message"]
-                == "The upstream response contained local DLP placeholders that could not be restored safely. Retry the request; if it persists, disable reversible DLP for this provider."
+                == "The local proxy could not process the request. Please retry."
             && error["error"].get("param").is_none(),
         "m3_local_finalizer_error_code_or_shape_changed: {text}",
         text = std::str::from_utf8(&wire)?
@@ -1570,13 +1574,14 @@ async fn anthropic_original_eof_boundary(streaming: bool, read_error: bool) -> T
             );
             if read_error {
                 fixture.script.release_error.notify_one();
-                assert!(
-                    matches!(
-                        tokio::time::timeout(DEADLINE, &mut next).await?,
-                        Some(Err(_))
-                    ),
-                    "m3_sse_read_error_became_successful_eof"
-                );
+                match tokio::time::timeout(DEADLINE, &mut next).await? {
+                    // A read error may never become a successful end of the stream.
+                    Some(Err(_)) => {}
+                    // Nothing was yielded before the failure, so one fixed error frame
+                    // may end it; that still withholds the completion content.
+                    Some(Ok(frame)) => assert_native_local_sse_error(frame.as_ref())?,
+                    None => return Err("m3_sse_read_error_became_silent_eof".into()),
+                }
             }
         }
         drop(body);

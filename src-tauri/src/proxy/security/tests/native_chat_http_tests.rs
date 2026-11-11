@@ -1734,7 +1734,7 @@ async fn m2_chat_http_each_payload_buffer_capacity_failure_is_atomic_and_refunde
             assert!(fired.get(), "m2_capacity_sweep_injection_not_reached");
             assert!(
                 !status.is_success() || failed,
-                "m2_capacity_sweep_failure_ignored"
+                "m2_capacity_sweep_failure_ignored fail_at={fail_at} allocations={allocations} status={status} failed={failed}"
             );
             assert_private_body_absent(&wire);
             fixture.assert_no_publication()?;
@@ -2072,7 +2072,7 @@ async fn m2_chat_layered_decode_each_capacity_failure_is_atomic_and_refunded() -
         assert!(fired.get(), "m2_layered_sweep_injection_not_reached");
         assert!(
             !status.is_success() || failed,
-            "m2_layered_capacity_failure_ignored"
+            "m2_layered_capacity_failure_ignored fail_at={fail_at} allocations={allocations} status={status} failed={failed}"
         );
         assert_private_body_absent(&wire);
         fixture.assert_no_publication()?;

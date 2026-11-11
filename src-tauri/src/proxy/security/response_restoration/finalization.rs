@@ -193,7 +193,7 @@ impl StagedJsonResponse<'_> {
                 .activate(DeliveryResume {
                     release: permit.release,
                 })
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::scan_error)?;
         }
         Ok((self.restored, encoded))
     }
@@ -210,7 +210,7 @@ pub(super) fn activate_fixture(pending: PendingPublication) -> Result<(), Restor
     pending
         .activate_fixture()
         .map(|_| ())
-        .map_err(|_| RestoreError::RestoreFailed)
+        .map_err(RestoreError::scan_error)
 }
 #[cfg(test)]
 pub(super) fn publish_fixture(
@@ -254,14 +254,14 @@ pub(super) fn prepare_snapshot(
         .and_then(Value::as_str)
         .filter(|id| valid_external_id(id))
         .ok_or(RestoreError::RestoreFailed)?;
-    let mut tokens = PayloadVec::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+    let mut tokens = PayloadVec::new(budget.clone()).map_err(RestoreError::scan_error)?;
     for token in output_tokens {
         tokens
             .push(token.as_str())
-            .map_err(|_| RestoreError::RestoreFailed)?;
+            .map_err(RestoreError::scan_error)?;
     }
-    let mut calls = PayloadVec::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
-    let mut opaques = PayloadVec::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+    let mut calls = PayloadVec::new(budget.clone()).map_err(RestoreError::scan_error)?;
+    let mut opaques = PayloadVec::new(budget.clone()).map_err(RestoreError::scan_error)?;
     for item in response
         .get("output")
         .and_then(Value::as_array)
@@ -274,7 +274,7 @@ pub(super) fn prepare_snapshot(
         if matches!(kind, "function_call" | "custom_tool_call") {
             calls
                 .push(completed_call_spec(item)?)
-                .map_err(|_| RestoreError::RestoreFailed)?;
+                .map_err(RestoreError::scan_error)?;
         }
         for field in ["encrypted_content", "encrypted_reasoning"] {
             if let Some(text) = item
@@ -282,13 +282,11 @@ pub(super) fn prepare_snapshot(
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty())
             {
-                opaques
-                    .push(text)
-                    .map_err(|_| RestoreError::RestoreFailed)?;
+                opaques.push(text).map_err(RestoreError::scan_error)?;
             }
         }
     }
-    let mut delivered = PayloadVec::new(budget.clone()).map_err(|_| RestoreError::RestoreFailed)?;
+    let mut delivered = PayloadVec::new(budget.clone()).map_err(RestoreError::scan_error)?;
     for (index, item) in delivery
         .response
         .get("output")
@@ -304,9 +302,7 @@ pub(super) fn prepare_snapshot(
             continue;
         }
         let spec = completed_call_spec(item)?;
-        delivered
-            .push(spec)
-            .map_err(|_| RestoreError::RestoreFailed)?;
+        delivered.push(spec).map_err(RestoreError::scan_error)?;
         if let Some(track) = delivery
             .tracks
             .iter()
@@ -352,7 +348,7 @@ pub(super) fn prepare_snapshot(
             {
                 delivered
                     .push(CompletedCallSpec { payload, ..spec })
-                    .map_err(|_| RestoreError::RestoreFailed)?;
+                    .map_err(RestoreError::scan_error)?;
             }
         }
     }
@@ -370,7 +366,7 @@ pub(super) fn prepare_snapshot(
     lease
         .prepare_publication(spec)
         .map(Some)
-        .map_err(|_| RestoreError::RestoreFailed)
+        .map_err(RestoreError::scan_error)
 }
 
 /// Native snapshot specifications can only be issued by consuming finalization.
@@ -427,16 +423,16 @@ pub(in crate::proxy::security) fn finalize_native_json(
 ) -> Result<FinalizedNativeJson, RestoreError> {
     lease
         .require_native_attempt_binding(stage.client(), stage.binding())
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     let prepared = prepare_native_json_spec(stage, proof, attempt, original, max)?;
     let pending = lease
         .prepare_native_publication(prepared.spec()?)
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     pending
         .activate(DeliveryResume {
             release: prepared.release.clone(),
         })
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     Ok(FinalizedNativeJson {
         wire: prepared.wire,
     })
@@ -598,7 +594,7 @@ pub(in crate::proxy::security) fn finalize_native_sse(
     stage.check_lifecycle_attempt(attempt)?;
     lease
         .require_native_attempt_binding(stage.client(), stage.binding())
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     let key = NativeSseFinalizationKey { _private: () };
     let budget = stage.budget();
     if stage.composed_chat_snapshots()
@@ -643,7 +639,7 @@ pub(in crate::proxy::security) fn finalize_native_sse(
     };
     let pending = lease
         .prepare_native_publication(spec)
-        .map_err(|_| RestoreError::RestoreFailed)?;
+        .map_err(RestoreError::scan_error)?;
     // Transfer charged encodings by value; metadata allocation failure drops the slot.
     let reversed = stage.into_finalization_frames(&key)?;
     Ok(FinalizedNativeSse {
