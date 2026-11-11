@@ -2,7 +2,9 @@
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
+#[cfg(test)]
 const START: &str = "# BEGIN VaryAI model providers\n";
+#[cfg(test)]
 const END: &str = "# END VaryAI model providers\n";
 const PLUGIN: &str = "@deepseek-ai/dsh-llm-pi-ai";
 const FAILED: &str = "agentConnections.failed";
@@ -17,25 +19,6 @@ pub(crate) fn config_path() -> PathBuf {
         .join("profiles/desktop/cordis.patch.yml")
 }
 
-fn sections(text: &str) -> Result<(&str, &str, &str), String> {
-    match (text.find(START), text.find(END)) {
-        (None, None) => Ok((text, "", "")),
-        (Some(start), Some(end))
-            if start < end
-                && (start == 0 || text.as_bytes()[start - 1] == b'\n')
-                && text.matches(START).count() == 1
-                && text.matches(END).count() == 1 =>
-        {
-            Ok((
-                &text[..start],
-                &text[start + START.len()..end],
-                &text[end + END.len()..],
-            ))
-        }
-        _ => Err(FAILED.into()),
-    }
-}
-
 fn array(text: &str) -> Result<Vec<Value>, String> {
     let value: Value = serde_yaml::from_str(text).map_err(|_| FAILED)?;
     if value.is_null() {
@@ -47,106 +30,135 @@ fn array(text: &str) -> Result<Vec<Value>, String> {
 fn foreign_conflict(value: &Value, id: &str) -> bool {
     match value {
         Value::Object(values) => {
-            value["id"] == key(id)
-                || value
-                    .pointer("/config/providers")
-                    .and_then(Value::as_object)
-                    .is_some_and(|providers| providers.contains_key(&format!("varyai-{id}")))
-                || values.values().any(|value| foreign_conflict(value, id))
+            value["id"] == key(id) || values.values().any(|value| foreign_conflict(value, id))
         }
         Value::Array(values) => values.iter().any(|value| foreign_conflict(value, id)),
         _ => false,
     }
 }
 
-fn provider_config(patches: &Value) -> Value {
-    if patches["id"] == "llm-pi-ai" && patches["config"].is_object() {
-        return patches["config"].clone();
-    }
-    match patches {
-        Value::Array(items) => items
-            .iter()
-            .rev()
-            .map(provider_config)
-            .find(|v| !v.is_null()),
-        Value::Object(items) => items
-            .values()
-            .rev()
-            .map(provider_config)
-            .find(|v| !v.is_null()),
-        _ => None,
-    }
-    .unwrap_or(Value::Null)
-}
-
-pub(crate) fn parse(text: &str) -> Result<Value, String> {
-    let (before, managed, after) = sections(text)?;
-    let patches = array(&format!("{before}{after}"))?;
+/// Read Cordis entries as Harness saves them; comments are not configuration.
+fn parse_entries(entries: Vec<Value>) -> Result<Value, String> {
+    let mut patches = Vec::new();
     let mut providers = serde_json::Map::new();
     let mut selection = Vec::new();
     let mut legacy = false;
-    let mut mounted = false;
-    let base_config = provider_config(&json!(patches));
-    for entry in array(managed)? {
-        if entry["id"] == "agent-default-model" {
-            if !selection.is_empty() || !valid_selection(&entry["config"]) {
-                return Err(FAILED.into());
+    for mut entry in entries {
+        if entry["id"] == "agent-default-model" && entry["config"].is_object() {
+            selection = vec![json!({"id":"agent-default-model","config":entry["config"]})];
+            entry.as_object_mut().ok_or(FAILED)?.remove("config");
+            if entry.as_object().is_some_and(|row| row.len() == 1) {
+                continue;
             }
-            selection.push(entry);
-            continue;
         }
         if entry["id"] == "llm-pi-ai" {
-            if !providers.is_empty() || entry["name"] != PLUGIN {
+            if entry.get("name").is_some_and(|name| name != PLUGIN)
+                && entry
+                    .pointer("/config/providers")
+                    .and_then(Value::as_object)
+                    .is_some_and(|providers| providers.keys().any(|key| key.starts_with("varyai-")))
+            {
                 return Err(FAILED.into());
             }
-            mounted = true;
-            let mut config = entry["config"].clone();
-            let routes = config["providers"].as_object_mut().ok_or(FAILED)?;
-            let ids = routes
-                .keys()
-                .filter(|id| id.starts_with("varyai-"))
-                .cloned()
-                .collect::<Vec<_>>();
-            if ids.is_empty() {
-                return Err(FAILED.into());
+            if let Some(routes) = entry
+                .pointer_mut("/config/providers")
+                .and_then(Value::as_object_mut)
+            {
+                let ids = routes
+                    .keys()
+                    .filter(|id| id.starts_with("varyai-"))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let managed = !ids.is_empty();
+                for route in ids {
+                    let profile = routes.remove(&route).ok_or(FAILED)?;
+                    let id = key(route.trim_start_matches("varyai-"));
+                    if providers
+                        .insert(
+                            id.clone(),
+                            json!({"id":id,"name":PLUGIN,"config":{"providers":{route:profile}}}),
+                        )
+                        .is_some()
+                    {
+                        return Err(FAILED.into());
+                    }
+                }
+                if managed {
+                    if routes.is_empty() {
+                        entry["config"]
+                            .as_object_mut()
+                            .ok_or(FAILED)?
+                            .remove("providers");
+                    }
+                    if entry["config"]
+                        .as_object()
+                        .is_some_and(|config| config.is_empty())
+                    {
+                        entry.as_object_mut().ok_or(FAILED)?.remove("config");
+                    }
+                    // Older VaryAI versions appended a copy of the native adapter.
+                    // Keep its original row when the remaining config is identical.
+                    if patches.iter().rev().any(|row: &Value| {
+                        row["id"] == "llm-pi-ai" && row["config"] == entry["config"]
+                    }) || (entry.get("config").is_none()
+                        && entry.as_object().is_some_and(|row| {
+                            row.keys().all(|key| matches!(key.as_str(), "id" | "name"))
+                        }))
+                    {
+                        continue;
+                    }
+                }
             }
-            for route in ids {
-                let profile = routes.remove(&route).ok_or(FAILED)?;
-                let id = key(route.trim_start_matches("varyai-"));
-                providers.insert(
-                    id.clone(),
-                    json!({"id":id,"name":PLUGIN,"config":{"providers":{route:profile}}}),
-                );
+        }
+        if let Some(children) = entry.get("insert").and_then(Value::as_array) {
+            let mut kept = Vec::new();
+            for child in children {
+                if child["id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("varyai-provider-"))
+                    && child["name"] == PLUGIN
+                {
+                    let id = child["id"].as_str().ok_or(FAILED)?;
+                    if providers.insert(id.into(), child.clone()).is_some() {
+                        return Err(FAILED.into());
+                    }
+                    legacy = true;
+                } else {
+                    kept.push(child.clone());
+                }
             }
-            let mut base = if base_config.is_null() {
-                json!({})
-            } else {
-                base_config.clone()
-            };
-            if base.get("providers").is_none() {
-                base["providers"] = json!({});
+            if kept.len() != children.len() {
+                if kept.is_empty() {
+                    continue;
+                }
+                entry["insert"] = json!(kept);
             }
-            if config != base {
-                return Err(FAILED.into());
+        }
+        if entry["id"] == "llm-pi-ai" && entry.get("name").is_none_or(|name| name == PLUGIN) {
+            if entry
+                .pointer("/config/providers")
+                .and_then(Value::as_object)
+                .is_some_and(|routes| routes.is_empty())
+            {
+                entry["config"]
+                    .as_object_mut()
+                    .ok_or(FAILED)?
+                    .remove("providers");
             }
-            continue;
+            if entry["config"]
+                .as_object()
+                .is_some_and(|config| config.is_empty())
+            {
+                entry.as_object_mut().ok_or(FAILED)?.remove("config");
+            }
+            if entry
+                .as_object()
+                .is_some_and(|row| row.keys().all(|key| matches!(key.as_str(), "id" | "name")))
+            {
+                continue;
+            }
         }
-        if mounted {
-            return Err(FAILED.into());
-        }
-        legacy = true;
-        let children = entry["insert"].as_array().ok_or(FAILED)?;
-        if children.len() != 1 || entry.as_object().is_none_or(|entry| entry.len() != 1) {
-            return Err(FAILED.into());
-        }
-        let child = &children[0];
-        let id = child["id"]
-            .as_str()
-            .filter(|id| id.starts_with("varyai-provider-"))
-            .ok_or(FAILED)?;
-        if child["name"] != PLUGIN || providers.insert(id.into(), child.clone()).is_some() {
-            return Err(FAILED.into());
-        }
+        patches.push(entry);
     }
     let patches = json!(patches);
     if providers
@@ -155,59 +167,32 @@ pub(crate) fn parse(text: &str) -> Result<Value, String> {
     {
         return Err(FAILED.into());
     }
-    if !selection.is_empty() && !foreign_selection(&json!(array(after)?)).is_null() {
-        return Err(FAILED.into());
-    }
     Ok(
         json!({"patches":patches,"providers":providers,"selection":selection,"legacyProviders":legacy}),
     )
 }
 
-pub(crate) fn encode(source: &str, next: &Value) -> Result<String, String> {
-    let original = parse(source)?;
-    if original == *next {
-        return Ok(source.into());
-    }
-    let (before, _, after) = sections(source)?;
-    let foreign = if original["patches"] == next["patches"] {
-        format!("{before}{after}")
-    } else {
-        serde_yaml::to_string(&next["patches"]).map_err(|_| FAILED)?
-    };
-    let empty = serde_json::Map::new();
-    let providers = match next.get("providers") {
-        Some(value) => value.as_object().ok_or(FAILED)?,
-        None => &empty,
-    };
-    let selection = next
-        .get("selection")
-        .map(|value| value.as_array().ok_or(FAILED))
-        .transpose()?;
-    if providers.is_empty() && selection.is_none_or(Vec::is_empty) {
-        return if array(&foreign)?.is_empty() && !foreign.lines().any(|line| line.trim() == "[]") {
-            Ok(format!(
-                "{foreign}{}[]\n",
-                if foreign.is_empty() || foreign.ends_with('\n') {
-                    ""
-                } else {
-                    "\n"
-                }
-            ))
+pub(crate) fn parse(text: &str) -> Result<Value, String> {
+    parse_entries(array(text)?)
+}
+
+/// Normalize receipts written before structural Cordis editing.
+pub(crate) fn normalize(value: &Value) -> Result<Value, String> {
+    let mut entries = value["patches"].as_array().cloned().ok_or(FAILED)?;
+    for provider in value["providers"].as_object().ok_or(FAILED)?.values() {
+        if value["legacyProviders"] == true {
+            entries.push(json!({"insert":[provider]}));
         } else {
-            Ok(foreign)
-        };
+            entries.push(json!({"id":"llm-pi-ai","name":PLUGIN,"config":provider["config"]}));
+        }
     }
-    // An explicit empty YAML list cannot be followed by block sequence entries.
-    let foreign = if array(&foreign)?.is_empty() {
-        foreign
-            .lines()
-            .filter(|line| line.trim().is_empty() || line.trim_start().starts_with('#'))
-            .map(|line| format!("{line}\n"))
-            .collect()
-    } else {
-        foreign
-    };
-    let mut entries = Vec::new();
+    entries.extend(value["selection"].as_array().cloned().unwrap_or_default());
+    parse_entries(entries)
+}
+
+fn entries(next: &Value) -> Result<Vec<Value>, String> {
+    let mut entries = next["patches"].as_array().cloned().ok_or(FAILED)?;
+    let providers = next["providers"].as_object().ok_or(FAILED)?;
     if next["legacyProviders"] == true {
         entries.extend(
             providers
@@ -215,14 +200,22 @@ pub(crate) fn encode(source: &str, next: &Value) -> Result<String, String> {
                 .map(|provider| json!({"insert":[provider]})),
         );
     } else if !providers.is_empty() {
-        let mut config = provider_config(&next["patches"]);
-        if config.is_null() {
-            config = json!({});
+        let index = entries
+            .iter()
+            .rposition(|row| row["id"] == "llm-pi-ai" && row["config"].is_object())
+            .or_else(|| entries.iter().rposition(|row| row["id"] == "llm-pi-ai"));
+        let index = index.unwrap_or_else(|| {
+            entries.push(json!({"id":"llm-pi-ai","name":PLUGIN}));
+            entries.len() - 1
+        });
+        let row = &mut entries[index];
+        if row.get("config").is_none() {
+            row["config"] = json!({});
         }
-        if config.get("providers").is_none() {
-            config["providers"] = json!({});
+        if row["config"].get("providers").is_none() {
+            row["config"]["providers"] = json!({});
         }
-        let routes = config["providers"].as_object_mut().ok_or(FAILED)?;
+        let routes = row["config"]["providers"].as_object_mut().ok_or(FAILED)?;
         for provider in providers.values() {
             for (id, profile) in provider["config"]["providers"].as_object().ok_or(FAILED)? {
                 if routes.insert(id.clone(), profile.clone()).is_some() {
@@ -230,21 +223,83 @@ pub(crate) fn encode(source: &str, next: &Value) -> Result<String, String> {
                 }
             }
         }
-        entries.push(json!({"id":"llm-pi-ai","name":PLUGIN,"config":config}));
     }
-    entries.extend(selection.into_iter().flatten().cloned());
-    let text = format!(
-        "{}{}{}{}{}",
-        foreign,
-        if foreign.is_empty() || foreign.ends_with('\n') {
-            ""
+    if let Some(selection) = next["selection"].as_array().and_then(|rows| rows.last()) {
+        if let Some(row) = entries
+            .iter_mut()
+            .rev()
+            .find(|row| row["id"] == "agent-default-model")
+        {
+            row["config"] = selection["config"].clone();
         } else {
-            "\n"
-        },
-        START,
-        serde_yaml::to_string(&entries).map_err(|_| FAILED)?,
-        END
-    );
+            entries.push(selection.clone());
+        }
+    }
+    Ok(entries)
+}
+
+/// Retain unchanged foreign rows and comments while editing native entry configs.
+fn render(source: &str, entries: &[Value]) -> Result<String, String> {
+    let mut starts = Vec::new();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        if line.starts_with("- ") {
+            starts.push(offset);
+        }
+        offset += line.len();
+    }
+    let old = array(source)?;
+    if old.len() != starts.len() {
+        return serde_yaml::to_string(entries).map_err(|_| FAILED.into());
+    }
+    let head = &source[..starts.first().copied().unwrap_or(source.len())];
+    let clean_comments = |text: &str| -> String {
+        text.split_inclusive('\n')
+            .filter(|line| {
+                !matches!(
+                    line.trim_end(),
+                    "# BEGIN VaryAI model providers" | "# END VaryAI model providers"
+                )
+            })
+            .collect()
+    };
+    let mut text = if old.is_empty() {
+        head.lines()
+            .filter(|line| line.trim().is_empty() || line.trim_start().starts_with('#'))
+            .map(|line| format!("{line}\n"))
+            .collect()
+    } else {
+        clean_comments(head)
+    };
+    let mut used = vec![false; old.len()];
+    for entry in entries {
+        if let Some(index) = old
+            .iter()
+            .enumerate()
+            .position(|(index, row)| !used[index] && row == entry)
+        {
+            used[index] = true;
+            text.push_str(&clean_comments(
+                &source[starts[index]..starts.get(index + 1).copied().unwrap_or(source.len())],
+            ));
+            if !text.ends_with('\n') {
+                text.push('\n');
+            }
+        } else {
+            text.push_str(&serde_yaml::to_string(&vec![entry]).map_err(|_| FAILED)?);
+        }
+    }
+    if entries.is_empty() {
+        text.push_str("[]\n");
+    }
+    Ok(text)
+}
+
+pub(crate) fn encode(source: &str, next: &Value) -> Result<String, String> {
+    if parse(source)? == *next {
+        return Ok(source.into());
+    }
+    let text = render(source, &entries(next)?)?;
     if parse(&text)? != *next {
         return Err(FAILED.into());
     }
@@ -418,9 +473,261 @@ pub(crate) fn candidates(value: &Value) -> Vec<(String, String, Vec<String>)> {
     result
 }
 
+/// Native protocol, timeout and compatibility controls do not change route ownership.
+pub(crate) fn adopt(installed: &Value, live: &Value) -> Value {
+    let mut adopted = installed.clone();
+    let Some(providers) = installed["providers"].as_object() else {
+        return adopted;
+    };
+    for (id, entry) in providers {
+        let Some(routes) = entry["config"]["providers"].as_object() else {
+            continue;
+        };
+        for (route, old) in routes {
+            let Some(current) = live["providers"][id]["config"]["providers"].get(route) else {
+                continue;
+            };
+            let same_gateway = old["baseURL"]
+                .as_str()
+                .zip(current["baseURL"].as_str())
+                .is_some_and(|(old, cur)| {
+                    old.trim_end_matches('/').trim_end_matches("/v1")
+                        == cur.trim_end_matches('/').trim_end_matches("/v1")
+                });
+            let known_api = matches!(
+                current["api"].as_str(),
+                Some("openai-completions" | "openai-responses" | "anthropic-messages")
+            );
+            let auth_matches = old["headers"].as_object().is_some_and(|headers| {
+                headers
+                    .iter()
+                    .all(|(name, value)| current["headers"].get(name) == Some(value))
+            });
+            if !same_gateway || !known_api || !auth_matches {
+                continue;
+            }
+            let mut core = current.clone();
+            for field in ["api", "baseURL", "headers", "streamIdleTimeoutMs"] {
+                match old.get(field) {
+                    Some(value) => core[field] = value.clone(),
+                    None => {
+                        if let Some(map) = core.as_object_mut() {
+                            map.remove(field);
+                        }
+                    }
+                }
+            }
+            if let (Some(models), Some(prior)) =
+                (core["models"].as_array_mut(), old["models"].as_array())
+            {
+                for model in models {
+                    if let Some(old_model) = prior.iter().find(|row| row["id"] == model["id"]) {
+                        match old_model.get("compat") {
+                            Some(compat) => model["compat"] = compat.clone(),
+                            None => {
+                                if let Some(map) = model.as_object_mut() {
+                                    map.remove("compat");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // New optional route settings belong to the client, not the catalog.
+            if let Some(map) = core.as_object_mut() {
+                map.retain(|key, _| old.get(key).is_some());
+            }
+            if core == *old {
+                adopted["providers"][id]["config"]["providers"][route] = current.clone();
+            }
+        }
+    }
+    adopted
+}
+
+fn adaptive_with_effort(model: &str) -> bool {
+    static GLM: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
+    GLM.get_or_init(|| regex::Regex::new(r"(?i)glm-5\.[23](?:$|[-.:/\[])").ok())
+        .as_ref()
+        .is_some_and(|pattern| pattern.is_match(model))
+}
+
+/// Match Magpie's per-protocol provider routes and preserve native compatibility choices.
+pub(crate) fn project(
+    value: &mut Value,
+    catalog: &[super::agent_connections::Model],
+    base: &str,
+    token: &str,
+    selected: &str,
+) -> Result<(), String> {
+    let mut selected_route = None;
+    for (suffix, native_api, label) in [
+        ("", "openai-completions", "Vary AI"),
+        ("-responses", "openai-responses", "Vary AI · Responses"),
+        ("-anthropic", "anthropic-messages", "Vary AI · Anthropic"),
+    ] {
+        let id = format!("shared-catalog{suffix}");
+        let route = format!("varyai-{id}");
+        let old = value["providers"][key(&id)]["config"]["providers"][&route].clone();
+        if !old.is_null() && old["headers"]["Authorization"] != format!("Bearer {token}") {
+            return Err(FAILED.into());
+        }
+        let models = catalog
+            .iter()
+            .filter(|model| model.api == native_api)
+            .collect::<Vec<_>>();
+        if models.is_empty() {
+            value["providers"]
+                .as_object_mut()
+                .ok_or(FAILED)?
+                .remove(&key(&id));
+            continue;
+        }
+        let api = old["api"]
+            .as_str()
+            .filter(|api| {
+                matches!(
+                    *api,
+                    "openai-completions" | "openai-responses" | "anthropic-messages"
+                )
+            })
+            .unwrap_or(native_api);
+        let mut profile = if old.is_object() {
+            old.clone()
+        } else {
+            json!({})
+        };
+        profile["displayName"] = json!(label);
+        profile["api"] = json!(api);
+        profile["baseURL"] = json!(if api == "anthropic-messages" {
+            base.to_owned()
+        } else {
+            format!("{base}/v1")
+        });
+        if profile.get("headers").is_none() {
+            profile["headers"] = json!({});
+        }
+        profile["headers"]["Authorization"] = json!(format!("Bearer {token}"));
+        if profile.get("streamIdleTimeoutMs").is_none() {
+            profile["streamIdleTimeoutMs"] = json!(600_000);
+        }
+        profile["models"] = json!(models.iter().map(|model| {
+            let mut row = json!({"id":model.id,"name":model.name,"input":if model.images {vec!["text","image"]} else {vec!["text"]}});
+            if let Some(window) = model.context_window { row["contextWindow"] = json!(window); }
+            if let Some(output) = model.output_tokens {
+                let ceiling = model.context_window.map(|window|(window/4).max((window/2).saturating_sub(65536)).max(1));
+                row["maxTokens"] = json!(ceiling.map_or(output,|limit|output.min(limit)));
+            }
+            let levels = model.reasoning_levels.iter().filter_map(|level|match level.as_str() {
+                "none"|"off" => Some(("off".to_owned(),json!(level))),
+                "ultra" => Some(("max".to_owned(),json!(level))),
+                "minimal"|"low"|"medium"|"high"|"xhigh"|"max" => Some((level.clone(),json!(level))),
+                _ => None,
+            }).collect::<serde_json::Map<_,_>>();
+            if levels.keys().any(|level|level!="off") { row["reasoningEfforts"] = json!(levels); }
+            if old["api"] == api {
+                if let Some(previous) = old["models"].as_array().into_iter().flatten().find(|row|row["id"]==model.id) {
+                    if let Some(compat) = previous.get("compat") { row["compat"] = compat.clone(); }
+                }
+            }
+            if api == "openai-responses" { row["compat"]["supportsStrictMode"] = json!(true); }
+            if api == "anthropic-messages" {
+                let native = model.native_model.as_deref().unwrap_or(&model.id);
+                let adaptive_effort = adaptive_with_effort(native);
+                if crate::proxy::thinking_optimizer::uses_adaptive_thinking(native) || adaptive_effort {
+                    row["compat"]["forceAdaptiveThinking"] = json!(true);
+                }
+            }
+            row
+        }).collect::<Vec<_>>());
+        value["providers"][key(&id)] =
+            json!({"id":key(&id),"name":PLUGIN,"config":{"providers":{route.clone():profile}}});
+        if models.iter().any(|model| model.id == selected) {
+            selected_route = Some(route);
+        }
+    }
+    value["legacyProviders"] = json!(false);
+    set_selection(
+        value,
+        &json!({"provider":selected_route.ok_or(FAILED)?,"model":selected}),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_native_adapter_templates_accept_routes_and_restore() -> Result<(), String> {
+        for source in [
+            "- id: llm-pi-ai\n  config: {providers: {}}\n",
+            "- id: llm-pi-ai\n  name: '@deepseek-ai/dsh-llm-pi-ai'\n  config: {}\n",
+            "- id: llm-pi-ai\n  disabled: false\n  config: {providers: {}}\n",
+        ] {
+            let mut doc = parse(source)?;
+            let before = doc.clone();
+            let config = json!({"baseUrl":"http://127.0.0.1:1/v1","protocol":"openai","apiKey":"synthetic-only","models":[{"model":"shared-model"}]});
+            apply(&mut doc, "shared-catalog", "Vary AI", &config)?;
+            let encoded = encode(source, &doc)?;
+            assert_eq!(parse(&encoded)?, doc);
+            remove(&mut doc, "shared-catalog", &config)?;
+            assert_eq!(parse(&encode(&encoded, &doc)?)?, before);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn harness_saves_do_not_depend_on_comment_markers() -> Result<(), String> {
+        let source = "# Native profile\n- id: llm-pi-ai\n  config:\n    providers:\n      native:\n        baseURL: https://synthetic.invalid/v1\n        models: [{id: native-model}]\n- id: agent-default-model\n  config: {provider: native, model: native-model}\n";
+        let config = json!({"baseUrl":"http://127.0.0.1:1/v1","protocol":"openai","apiKey":"synthetic-only","models":[{"model":"shared-model"}]});
+        let mut doc = parse(source)?;
+        apply(&mut doc, "shared-catalog", "Vary AI", &config)?;
+        let text = encode(source, &doc)?;
+        let saved = text.replace(START, "").replace(END, "");
+        assert_eq!(parse(&saved)?, doc);
+        for saved in [text.replace(START, ""), text.replace(END, "")] {
+            assert_eq!(parse(&saved)?, doc);
+        }
+        let entries = array(&text)?;
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|row| row["id"] == "llm-pi-ai")
+                .count(),
+            1
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|row| row["id"] == "agent-default-model")
+                .count(),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn client_saved_foreign_providers_and_native_choices_survive_sync() -> Result<(), String> {
+        let source = "- id: llm-pi-ai\n  name: '@deepseek-ai/dsh-llm-pi-ai'\n  config:\n    providers:\n      native:\n        baseURL: https://synthetic.invalid/v1\n        models: [{id: native-model}]\n      varyai-shared-catalog:\n        api: openai-completions\n        baseURL: http://127.0.0.1:1/v1\n        headers: {Authorization: Bearer synthetic-only}\n        models: [{id: shared-model}]\n- id: agent-default-model\n  config: {provider: native, model: native-model, reasoningEffort: high}\n";
+        let mut doc = parse(source)?;
+        assert_eq!(doc["providers"].as_object().ok_or(FAILED)?.len(), 1);
+        let choice = selection(&doc);
+        let config = json!({"baseUrl":"http://127.0.0.1:1/v1","protocol":"openai","apiKey":"synthetic-only","models":[{"model":"shared-model"},{"model":"new-model"}]});
+        apply(&mut doc, "shared-catalog", "Vary AI", &config)?;
+        set_selection(&mut doc, &choice)?;
+        let text = encode(source, &doc)?;
+        let parsed = parse(&text)?;
+        assert_eq!(selection(&parsed), choice);
+        assert_eq!(
+            parsed["patches"][0]["config"]["providers"]["native"]["models"][0]["id"],
+            "native-model"
+        );
+        remove(&mut doc, "shared-catalog", &config)?;
+        let restored = parse(&encode(&text, &doc)?)?;
+        assert_eq!(selection(&restored), choice);
+        assert!(restored["providers"].as_object().ok_or(FAILED)?.is_empty());
+        Ok(())
+    }
 
     #[test]
     #[serial_test::serial]
@@ -573,7 +880,7 @@ mod tests {
     #[test]
     fn managed_plugins_preserve_foreign_patches_comments_and_private_account_stores(
     ) -> Result<(), String> {
-        let source = "# Keep this comment.\n- id: another-plugin\n  config:\n    enabled: true\n";
+        let source = "# Keep this comment.\n- id: another-plugin\n  config:\n    enabled: true\n    note: |\n      # BEGIN VaryAI model providers\n      synthetic fixture\n";
         let mut doc = parse(source)?;
         let original = doc.clone();
         apply(
@@ -610,8 +917,8 @@ mod tests {
         assert_eq!(parse(&text)?, doc);
         assert!(text.starts_with("# Profile\n"));
         assert!(parse("providers: {}\n").is_err());
-        assert!(parse(START).is_err());
-        assert!(parse(&format!("{START}- insert: []\n{END}")).is_err());
+        assert!(parse(START).is_ok());
+        assert!(parse(&format!("{START}- insert: []\n{END}")).is_ok());
         assert_eq!(candidates(&doc).len(), 1);
         Ok(())
     }

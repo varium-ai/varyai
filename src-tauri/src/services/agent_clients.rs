@@ -114,6 +114,7 @@ pub(crate) struct Document {
     source: String,
     existed: bool,
     cordis: bool,
+    jsonc: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Route {
@@ -145,6 +146,11 @@ impl Document {
                 serde_json::to_value(value).map_err(|_| invalid())?,
                 Some(doc),
             )
+        } else if app == "qwen" {
+            (
+                super::agent_connections::jsonc::parse(text).map_err(|_| invalid())?,
+                None,
+            )
         } else {
             (
                 serde_json::from_str::<Value>(text).map_err(|_| invalid())?,
@@ -161,6 +167,7 @@ impl Document {
             source: text.into(),
             existed: true,
             cordis: app == "deepseek-harness",
+            jsonc: app == "qwen",
         })
     }
     pub fn read(app: &str, path: &Path) -> Result<Self, AppError> {
@@ -187,6 +194,14 @@ impl Document {
         if self.cordis {
             return super::deepseek_harness::encode(&self.source, &self.value)
                 .map_err(|_| invalid());
+        }
+        if self.jsonc {
+            return super::agent_connections::jsonc::encode(
+                &self.source,
+                &self.original,
+                &self.value,
+            )
+            .map_err(|_| invalid());
         }
         if let Some(mut toml) = self.toml.clone() {
             patch_toml(toml.as_item_mut(), &self.original, &self.value)?;
@@ -535,6 +550,7 @@ impl Document {
                 let protocol = match config["protocol"].as_str() {
                     Some("anthropic") => "anthropic",
                     Some("openai-responses") => "openai_responses",
+                    _ if id == "shared-catalog" => "kimi",
                     _ => "openai",
                 };
                 object(&mut self.value["providers"], provider_name)?;
@@ -624,6 +640,9 @@ impl Document {
                 entries.extend(models.iter().map(|m| {
                     let mut model = json!({"id":m["model"],"name":m.get("displayName").unwrap_or(&m["model"]),"baseUrl":config["baseUrl"],"envKey":env});
                     if config["protocol"] == "openai-responses" { model["wireApi"] = json!("responses"); }
+                    if let Some(window) = m["contextWindow"].as_u64().filter(|window|*window>0) {
+                        model["generationConfig"] = json!({"contextWindowSize":window});
+                    }
                     model
                 }));
                 self.value["modelProviders"][protocol] = Value::Array(entries);

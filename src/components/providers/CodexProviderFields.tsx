@@ -71,6 +71,34 @@ export function CodexProviderFields({
     loginWay === "browser" && browser
       ? browser.completion
       : auth.loginCompletion;
+  async function discover(accountOverride?: string) {
+    const account = accountOverride ?? policy.accounts[0];
+    if (!account) return;
+    setFetching(true);
+    setCatalogStatus(null);
+    try {
+      const models = await routingUpstreamsApi.codexModels(
+        draft.id,
+        draft.revision,
+        account,
+      );
+      setCatalogs((old) => ({ ...old, [account]: models }));
+      setCatalogStatus(models.length ? null : "empty");
+      await Promise.all(
+        [
+          "intent-routing-groups",
+          "intent-routing-providers",
+          "agent-model-catalog",
+          "routing-catalog-discovery",
+        ].map((key) => client.invalidateQueries({ queryKey: [key] })),
+      );
+    } catch {
+      setCatalogStatus("failed");
+      onError();
+    } finally {
+      setFetching(false);
+    }
+  }
   useEffect(
     () => () => {
       loginActionGeneration.current += 1;
@@ -131,12 +159,13 @@ export function CodexProviderFields({
       });
     }
     setManaging(false);
-    autoFetched.current.delete(accountId);
+    autoFetched.current.add(accountId);
     setCatalogs((old) => {
       const next = { ...old };
       delete next[accountId];
       return next;
     });
+    void discover(accountId);
     void client.resetQueries({ queryKey: ["codex-provider-quota", accountId] });
     for (const key of [
       "routing-upstreams",
@@ -313,34 +342,6 @@ export function CodexProviderFields({
             ? policy.models
             : [...policy.models, all.get(id) ?? { model: id }],
     });
-  }
-  async function discover() {
-    if (!policy.accounts.length) return;
-    const account = policy.accounts[0];
-    setFetching(true);
-    setCatalogStatus(null);
-    try {
-      const models = await routingUpstreamsApi.codexModels(
-        draft.id,
-        draft.revision,
-        account,
-      );
-      setCatalogs((old) => ({ ...old, [account]: models }));
-      setCatalogStatus(models.length ? null : "empty");
-      await Promise.all(
-        [
-          "intent-routing-groups",
-          "intent-routing-providers",
-          "agent-model-catalog",
-          "routing-catalog-discovery",
-        ].map((key) => client.invalidateQueries({ queryKey: [key] })),
-      );
-    } catch {
-      setCatalogStatus("failed");
-      onError();
-    } finally {
-      setFetching(false);
-    }
   }
   const firstAccount = policy.accounts[0];
   const accountReady = rows.some((row) => row.id === firstAccount && row.ready);

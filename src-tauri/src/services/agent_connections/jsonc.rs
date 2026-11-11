@@ -13,7 +13,7 @@ fn trivia(kind: &TokType) -> bool {
     )
 }
 
-pub(super) fn parse(source: &str) -> Result<Value, String> {
+pub(crate) fn parse(source: &str) -> Result<Value, String> {
     let tokens = tokenize_rt_str(source).map_err(|_| FAILED)?.tok_spans;
     let mut json = String::with_capacity(source.len());
     for (index, (start, kind, end)) in tokens.iter().enumerate() {
@@ -45,7 +45,7 @@ pub(super) fn parse(source: &str) -> Result<Value, String> {
     serde_json::from_str(&json).map_err(|_| FAILED.into())
 }
 
-pub(super) fn encode(source: &str, before: &Value, after: &Value) -> Result<String, String> {
+pub(crate) fn encode(source: &str, before: &Value, after: &Value) -> Result<String, String> {
     let mut shallow = after.clone();
     for (key, value) in after.as_object().ok_or(FAILED)? {
         if value.is_object() && before.get(key).is_some_and(Value::is_object) {

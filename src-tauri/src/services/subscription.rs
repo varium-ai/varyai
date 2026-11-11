@@ -601,29 +601,90 @@ type CodexCredentials = (
     Option<String>,
 );
 
-/// 读取 Codex OAuth 凭据
-///
-/// 按优先级尝试以下来源：
-/// 1. macOS Keychain (service: "Codex Auth")
-/// 2. 凭据文件 ~/.codex/auth.json
-///
-/// 仅 auth_mode == "chatgpt" (OAuth) 时有效，API key 模式不支持用量查询。
-fn read_codex_credentials() -> CodexCredentials {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(result) = read_codex_credentials_from_keychain() {
-            return result;
-        }
-    }
-
-    read_codex_credentials_from_file()
+/// Read the credential store selected by Codex, following Magpie's readCodexLogin.
+/// File mode never consults the keychain; auto alone may fall back to the file.
+fn read_codex_credentials() -> Result<CodexCredentials, String> {
+    let config =
+        std::fs::read_to_string(crate::codex_config::get_codex_config_path()).unwrap_or_default();
+    read_codex_credentials_for_store(
+        &config,
+        cfg!(target_os = "macos"),
+        cfg!(windows),
+        read_codex_credentials_from_file,
+        || {
+            #[cfg(target_os = "macos")]
+            {
+                read_codex_credentials_from_keychain()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                None
+            }
+        },
+    )
 }
 
-/// 从 macOS Keychain 读取 Codex 凭据
+fn read_codex_credentials_for_store(
+    config: &str,
+    keychain_supported: bool,
+    secret_storage_default: bool,
+    file: impl FnOnce() -> CodexCredentials,
+    keychain: impl FnOnce() -> Option<CodexCredentials>,
+) -> Result<CodexCredentials, String> {
+    use crate::codex_config::{codex_config_auth_store_mode, CodexAuthStoreMode};
+    let secrets = config
+        .parse::<toml_edit::DocumentMut>()
+        .ok()
+        .and_then(|doc| doc.get("features")?.get("secret_auth_storage")?.as_bool())
+        .unwrap_or(secret_storage_default);
+    match codex_config_auth_store_mode(config) {
+        // Magpie falls back to auth.json when it cannot read the store setting.
+        CodexAuthStoreMode::File | CodexAuthStoreMode::Unknown => Ok(file()),
+        CodexAuthStoreMode::Auto => {
+            if keychain_supported && !secrets {
+                if let Some(credentials) = keychain() {
+                    return Ok(credentials);
+                }
+            }
+            Ok(file())
+        }
+        CodexAuthStoreMode::Keyring => {
+            if keychain_supported && !secrets {
+                if let Some(credentials) = keychain() {
+                    return Ok(credentials);
+                }
+            }
+            Err("Codex credential store unavailable".into())
+        }
+        CodexAuthStoreMode::Ephemeral => Err("Codex credential store unavailable".into()),
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn codex_keychain_account(home: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    let canonical = home.canonicalize().unwrap_or_else(|_| home.to_owned());
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(canonical.to_string_lossy().as_bytes())
+    );
+    format!("cli|{}", &digest[..16])
+}
+
+/// Codex keys its macOS keychain item by the canonical credential home.
 #[cfg(target_os = "macos")]
 fn read_codex_credentials_from_keychain() -> Option<CodexCredentials> {
+    let auth = crate::codex_config::get_codex_auth_path();
+    let account = codex_keychain_account(auth.parent()?);
     let output = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", "Codex Auth", "-w"])
+        .args([
+            "find-generic-password",
+            "-s",
+            "Codex Auth",
+            "-a",
+            &account,
+            "-w",
+        ])
         .output()
         .ok()?;
 
@@ -677,8 +738,8 @@ fn parse_codex_credentials_json(content: &str) -> CodexCredentials {
         }
     };
 
-    // 仅 OAuth 模式有用量数据
-    if auth.auth_mode.as_deref() != Some("chatgpt") {
+    // Magpie accepts token records without a mode marker, excluding explicit API-key mode.
+    if auth.auth_mode.as_deref() == Some("apikey") {
         return (
             None,
             None,
@@ -1444,7 +1505,10 @@ pub async fn get_subscription_quota(tool: &str) -> Result<SubscriptionQuota, Str
             }
         }
         "codex" => {
-            let (token, account_id, status, message) = read_codex_credentials();
+            let (token, account_id, status, message) =
+                tokio::task::spawn_blocking(read_codex_credentials)
+                    .await
+                    .map_err(|_| "Codex credential store unavailable".to_string())??;
 
             match status {
                 CredentialStatus::NotFound => Ok(SubscriptionQuota::not_found("codex")),
@@ -1538,6 +1602,180 @@ fn now_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_login_tokens_do_not_require_an_auth_mode_marker() {
+        for mode in [None, Some("chatgpt"), Some("chatgptAuthTokens")] {
+            let mut auth = serde_json::json!({"tokens": {
+                "access_token": "synthetic-access", "account_id": "synthetic-workspace"
+            }});
+            if let Some(mode) = mode {
+                auth["auth_mode"] = serde_json::json!(mode);
+            }
+            let (token, _, status, _) = parse_codex_credentials_json(&auth.to_string());
+            assert!(matches!(status, CredentialStatus::Valid));
+            assert_eq!(token.as_deref(), Some("synthetic-access"));
+        }
+        let (_, _, status, _) = parse_codex_credentials_json(
+            r#"{"auth_mode":"apikey","tokens":{"access_token":"synthetic-access"}}"#,
+        );
+        assert!(matches!(status, CredentialStatus::NotFound));
+    }
+
+    #[test]
+    fn codex_file_store_ignores_an_unrelated_legacy_keychain_login() {
+        for config in ["", "cli_auth_credentials_store = \"file\"\n"] {
+            let (token, workspace, status, _) = read_codex_credentials_for_store(
+                config,
+                true,
+                false,
+                || parse_codex_credentials_json(r#"{"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-new-file","account_id":"synthetic-file-workspace"}}"#),
+                || panic!("File mode must never ask the keychain"),
+            ).expect("synthetic file login");
+            assert!(matches!(status, CredentialStatus::Valid));
+            assert_eq!(token.as_deref(), Some("synthetic-new-file"));
+            assert_eq!(workspace.as_deref(), Some("synthetic-file-workspace"));
+        }
+    }
+
+    fn synthetic_codex_credentials(source: &str) -> CodexCredentials {
+        (
+            Some(source.into()),
+            Some("synthetic-workspace".into()),
+            CredentialStatus::Valid,
+            None,
+        )
+    }
+
+    #[test]
+    fn codex_auto_store_prefers_its_keychain_and_falls_back_to_file() {
+        let config = "cli_auth_credentials_store = \"auto\"\n";
+        let credentials = read_codex_credentials_for_store(
+            config,
+            true,
+            false,
+            || panic!("Available keychain login must win in auto mode"),
+            || Some(synthetic_codex_credentials("synthetic-keychain")),
+        )
+        .expect("synthetic keychain login");
+        assert_eq!(credentials.0.as_deref(), Some("synthetic-keychain"));
+        for supported in [false, true] {
+            let credentials = read_codex_credentials_for_store(
+                config,
+                supported,
+                false,
+                || synthetic_codex_credentials("synthetic-file"),
+                || None,
+            )
+            .expect("synthetic fallback login");
+            assert_eq!(credentials.0.as_deref(), Some("synthetic-file"));
+        }
+    }
+
+    #[test]
+    fn codex_keyring_and_ephemeral_never_fall_back_to_a_stale_file() {
+        let keyring = "cli_auth_credentials_store = \"keyring\"\n";
+        let credentials = read_codex_credentials_for_store(
+            keyring,
+            true,
+            false,
+            || panic!("Keyring must never consult auth.json"),
+            || Some(synthetic_codex_credentials("synthetic-keychain")),
+        )
+        .expect("synthetic keychain login");
+        assert_eq!(credentials.0.as_deref(), Some("synthetic-keychain"));
+        for (config, supported, secrets) in [
+            (keyring, true, false),
+            (keyring, false, false),
+            (keyring, true, true),
+            ("cli_auth_credentials_store = \"ephemeral\"\n", true, false),
+        ] {
+            let result = read_codex_credentials_for_store(
+                config,
+                supported,
+                secrets,
+                || panic!("Unavailable stores must never use auth.json"),
+                || None,
+            );
+            assert!(result.is_err());
+        }
+    }
+
+    #[test]
+    fn codex_encrypted_auto_store_uses_the_file_fallback_on_windows_and_macos() {
+        for (config, supported, secrets) in [
+            ("cli_auth_credentials_store = \"auto\"\n", false, true),
+            (
+                "cli_auth_credentials_store = \"auto\"\n[features]\nsecret_auth_storage = true\n",
+                true,
+                false,
+            ),
+            ("cli_auth_credentials_store = \"auto\"\n", true, true),
+        ] {
+            let credentials = read_codex_credentials_for_store(
+                config,
+                supported,
+                secrets,
+                || synthetic_codex_credentials("synthetic-file"),
+                || panic!("Encrypted storage must never read the legacy keychain"),
+            )
+            .expect("synthetic file fallback");
+            assert_eq!(credentials.0.as_deref(), Some("synthetic-file"));
+        }
+        let credentials = read_codex_credentials_for_store(
+            "cli_auth_credentials_store = \"auto\"\n[features]\nsecret_auth_storage = false\n",
+            true,
+            true,
+            || panic!("Explicitly disabled encrypted storage uses the keychain"),
+            || Some(synthetic_codex_credentials("synthetic-keychain")),
+        )
+        .expect("synthetic keychain login");
+        assert_eq!(credentials.0.as_deref(), Some("synthetic-keychain"));
+    }
+
+    #[test]
+    fn codex_unreadable_store_setting_uses_magpies_file_fallback() {
+        for config in [
+            "cli_auth_credentials_store = \"future\"\n",
+            "cli_auth_credentials_store = [",
+        ] {
+            let credentials = read_codex_credentials_for_store(
+                config,
+                true,
+                false,
+                || synthetic_codex_credentials("synthetic-file"),
+                || panic!("Unreadable settings use the file"),
+            )
+            .expect("synthetic file fallback");
+            assert_eq!(credentials.0.as_deref(), Some("synthetic-file"));
+        }
+    }
+
+    #[test]
+    fn codex_keychain_item_is_scoped_to_its_canonical_home() {
+        assert_eq!(
+            codex_keychain_account(std::path::Path::new("synthetic-codex-home-not-created")),
+            "cli|042bdf4924875699",
+        );
+        let temp = tempfile::tempdir().expect("synthetic home");
+        let home = temp
+            .path()
+            .canonicalize()
+            .expect("canonical synthetic home");
+        assert_ne!(
+            codex_keychain_account(&home),
+            codex_keychain_account(&home.join("another"))
+        );
+        #[cfg(unix)]
+        {
+            let alias = temp.path().join("alias");
+            std::os::unix::fs::symlink(&home, &alias).expect("synthetic alias");
+            assert_eq!(
+                codex_keychain_account(&home),
+                codex_keychain_account(&alias)
+            );
+        }
+    }
 
     #[test]
     fn codex_allowance_http_denials_do_not_all_mean_expired_sign_in() {

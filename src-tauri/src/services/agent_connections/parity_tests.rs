@@ -11,6 +11,8 @@ fn installed_opencode_accepts_generated_jsonc() -> Result<(), Box<dyn std::error
         "{ // retained\n \"$schema\":\"https://opencode.ai/config.json\",\n}",
     )?;
     let model = Model {
+        api: "openai-completions",
+        native_model: None,
         id: "synthetic".into(),
         name: "Synthetic".into(),
         context_window: Some(272000),
@@ -89,6 +91,39 @@ async fn parity_native_projection_preserves_stable_ids_picker_and_jsonc(
         None,
     )
     .await?;
+    let fixture = menu
+        .groups
+        .values()
+        .next()
+        .and_then(|session| session.targets.first())
+        .ok_or("fixture target")?;
+    let mut chat = fixture.clone();
+    chat.upstream
+        .as_mut()
+        .ok_or("fixture provider")?
+        .meta
+        .get_or_insert_with(Default::default)
+        .api_format = Some("openai_chat".into());
+    let mut responses = chat.clone();
+    responses
+        .upstream
+        .as_mut()
+        .ok_or("fixture provider")?
+        .meta
+        .as_mut()
+        .ok_or("fixture metadata")?
+        .api_format = Some("openai_responses".into());
+    assert_eq!(
+        preferred_api([&responses, &responses].into_iter()),
+        "openai-responses"
+    );
+    assert_eq!(
+        preferred_api([&chat, &responses].into_iter()),
+        "openai-completions"
+    );
+    let mut official = chat.clone();
+    official.official = true;
+    assert_eq!(preferred_api([&official].into_iter()), "openai-responses");
     let selected = menu.default_model.as_deref().ok_or("fixture default")?;
     let claude_path = crate::config::get_claude_settings_path();
     fs::create_dir_all(claude_path.parent().ok_or("parent")?)?;

@@ -127,6 +127,8 @@ mod tests {
             (None, None, Value::Null),
         ] {
             let model = Model {
+                api: "openai-completions",
+                native_model: None,
                 id: "synthetic".into(),
                 name: "Synthetic".into(),
                 context_window,
@@ -150,6 +152,8 @@ mod tests {
             crate::services::intent_routing::effort::Capability::parse(&json!({"output":32768}));
         assert_eq!(capability.output_tokens, Some(32768));
         let model = Model {
+            api: "openai-completions",
+            native_model: None,
             output_tokens: Some(32768),
             cost: Some(json!({"input":1,"output":2,"cacheRead":0.1,"cacheWrite":1.25})),
             id: "synthetic".into(),
@@ -177,6 +181,8 @@ mod tests {
     #[test]
     fn parity_opencode_publishes_image_modalities() {
         let model = Model {
+            api: "openai-completions",
+            native_model: None,
             output_tokens: None,
             cost: None,
             id: "vary-provider/synthetic".into(),
@@ -199,6 +205,8 @@ mod tests {
     #[test]
     fn native_agents_receive_only_their_supported_reasoning_fields() {
         let model = Model {
+            api: "openai-completions",
+            native_model: None,
             output_tokens: None,
             cost: None,
             id: "vary-provider/test".into(),
@@ -245,6 +253,8 @@ mod tests {
     #[test]
     fn toggle_only_models_do_not_acquire_fabricated_levels() {
         let model = Model {
+            api: "openai-completions",
+            native_model: None,
             output_tokens: None,
             cost: None,
             id: "synthetic".into(),
