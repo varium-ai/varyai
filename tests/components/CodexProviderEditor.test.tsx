@@ -870,6 +870,9 @@ it("refreshes repaired credentials and model observations without discarding uns
     },
   };
   vi.mocked(routingUpstreamsApi.editor).mockResolvedValue(draftEditor as never);
+  vi.mocked(routingUpstreamsApi.codexModels).mockResolvedValue([
+    { model: "repaired-model" },
+  ]);
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -895,6 +898,13 @@ it("refreshes repaired credentials and model observations without discarding uns
   );
   await waitFor(() =>
     expect(routingUpstreamsApi.codexQuota).toHaveBeenCalledWith("managed"),
+  );
+  await waitFor(() =>
+    expect(routingUpstreamsApi.codexModels).toHaveBeenCalledWith(
+      "fixture",
+      2,
+      "managed",
+    ),
   );
   expect(invalidate).toHaveBeenCalledWith({ queryKey: ["routing-upstreams"] });
   expect(screen.queryByText("codexOauth.reauthBadge")).not.toBeInTheDocument();

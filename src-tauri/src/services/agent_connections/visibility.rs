@@ -138,6 +138,8 @@ mod tests {
             order: vec!["second".into(), "first".into()],
         };
         let catalog = ["first", "hidden", "second"].map(|id| Model {
+            api: "openai-completions",
+            native_model: None,
             id: id.into(),
             name: id.into(),
             group: String::new(),

@@ -3,6 +3,8 @@ use crate::services::agent_connections::Model;
 
 fn model(window: Option<u64>) -> Model {
     Model {
+        api: "openai-completions",
+        native_model: None,
         id: "synthetic/model".into(),
         name: "Synthetic model".into(),
         context_window: window,

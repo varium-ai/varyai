@@ -2,6 +2,26 @@
 
 Use synthetic examples when reporting a problem. Logs, provider configuration, client authentication files and database backups may contain credentials or private prompts. Review and redact them before sharing.
 
+## ChatGPT asks for sign-in immediately after browser authorization
+
+A native account can display its email and plan while an allowance query reports
+that its credentials are unavailable. Earlier VaryAI backends read the native
+account from Codex's file but queried allowances using a service-only macOS
+keychain lookup first. An older keychain item could override the new file login.
+
+The corrected allowance reader follows Magpie's Codex credential-store selection.
+The default and explicit `cli_auth_credentials_store = "file"` use `auth.json`
+without consulting the keychain. `auto` and `keyring` use the keychain item for
+the canonical Codex home when that store is supported; only `auto` falls back to
+the file. Legacy OAuth token records do not require an `auth_mode` marker.
+
+Use the corrected backend before retrying the allowance refresh. Source edits do
+not update an already running backend. Repeated browser authorization, deleting
+authentication files, or clearing the keychain does not fix a backend that reads
+the wrong store. A remaining network or upstream failure needs separate evidence;
+a plan badge alone does not establish allowance or inference success. See the
+[credential-store regression record](qa/2026-11-10-codex-credential-store-magpie.md).
+
 ## OpenCode rejects its configuration after connecting
 
 OpenCode reads JSON or JSONC, not JSON5. A projection that adds

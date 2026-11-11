@@ -45,6 +45,8 @@ impl Fixture {
 
     fn receipt_with_token(&self, token: &str) -> Result<Receipt, String> {
         let model = Model {
+            api: "openai-completions",
+            native_model: None,
             output_tokens: None,
             cost: None,
             icon: None,

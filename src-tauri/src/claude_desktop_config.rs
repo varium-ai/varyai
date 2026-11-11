@@ -1636,6 +1636,8 @@ mod tests {
         .map(|path| Ok((path.clone(), fs::read(path).map_err(|_| "fixture")?)))
         .collect::<Result<Vec<_>, String>>()?;
         let model = Model {
+            api: "openai-completions",
+            native_model: None,
             output_tokens: None,
             cost: None,
             icon: None,

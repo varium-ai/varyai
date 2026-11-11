@@ -514,6 +514,7 @@ export function OnboardingWizard({
                   <Input
                     id="onboarding-key"
                     type={showApiKey ? "text" : "password"}
+                    placeholder={t("onboarding.keyPlaceholder")}
                     autoComplete="off"
                     spellCheck={false}
                     value={apiKey}

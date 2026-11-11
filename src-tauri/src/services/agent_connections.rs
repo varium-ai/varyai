@@ -4,7 +4,7 @@ mod claude_policy;
 pub(crate) mod desktop;
 pub(crate) mod desktop_config;
 mod document;
-mod jsonc;
+pub(crate) mod jsonc;
 pub(crate) mod model_control;
 pub(crate) mod native;
 #[cfg(test)]
@@ -48,6 +48,10 @@ pub(crate) const APPS: &[&str] = &[
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Model {
+    #[serde(skip)]
+    pub api: &'static str,
+    #[serde(skip)]
+    pub native_model: Option<String>,
     pub output_tokens: Option<u64>,
     pub cost: Option<Value>,
     pub id: String,
@@ -62,6 +66,43 @@ pub(crate) struct Model {
     pub images: bool,
     pub icon: Option<String>,
 }
+fn preferred_api<'a>(
+    targets: impl Iterator<Item = &'a crate::proxy::intent::Target>,
+) -> &'static str {
+    let mut protocols = targets.map(|target| {
+        if target.official {
+            return "openai-responses";
+        }
+        target
+            .upstream
+            .as_ref()
+            .and_then(|provider| {
+                provider
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.api_format.as_deref())
+                    .or_else(|| {
+                        provider
+                            .settings_config
+                            .get("apiFormat")
+                            .and_then(Value::as_str)
+                    })
+            })
+            .map(|api| match api {
+                "openai_responses" | "responses" => "openai-responses",
+                "anthropic" | "anthropic_messages" => "anthropic-messages",
+                _ => "openai-completions",
+            })
+            .unwrap_or("openai-completions")
+    });
+    let first = protocols.next().unwrap_or("openai-completions");
+    if protocols.all(|api| api == first) {
+        first
+    } else {
+        "openai-completions"
+    }
+}
+
 pub(crate) fn models(menu: &Menu) -> Vec<Model> {
     let mut models = menu
         .models
@@ -77,6 +118,15 @@ pub(crate) fn models(menu: &Menu) -> Vec<Model> {
                 &mut published,
             );
             Some(Model {
+                api: preferred_api(session.menu_targets()),
+                native_model: {
+                    let mut targets = session.menu_targets();
+                    targets.next().and_then(|first| {
+                        targets
+                            .all(|target| target.model == first.model)
+                            .then(|| first.model.clone())
+                    })
+                },
                 output_tokens: session
                     .menu_targets()
                     .map(|target| target.effort.output_tokens)
@@ -148,7 +198,16 @@ fn output_limit(model: &Model) -> Option<u64> {
 }
 
 pub(crate) fn pi_model(model: &Model) -> Value {
-    let mut row = json!({"id":model.id,"name":model.name,"api":"openai-completions","input":if model.images { vec!["text", "image"] } else { vec!["text"] },"reasoning":model.reasoning || model.reasoning_levels.iter().any(|level| level != "none")});
+    let mut row = json!({"id":model.id,"name":model.name,"api":model.api,"input":if model.images { vec!["text", "image"] } else { vec!["text"] },"reasoning":model.reasoning || model.reasoning_levels.iter().any(|level| level != "none")});
+    if model.api == "openai-responses" {
+        row["compat"] = json!({"supportsStrictMode":true});
+    } else if model.api == "anthropic-messages"
+        && crate::proxy::thinking_optimizer::uses_adaptive_thinking(
+            model.native_model.as_deref().unwrap_or(&model.id),
+        )
+    {
+        row["compat"] = json!({"forceAdaptiveThinking":true});
+    }
     if let Some(context) = model.context_window {
         row["contextWindow"] = json!(context);
     }
@@ -683,6 +742,26 @@ impl Manager {
         let mut receipt: Receipt = serde_json::from_str(&text).map_err(|_| FAILED)?;
         if receipt.app != app || receipt.files.is_empty() {
             return Err(FAILED.into());
+        }
+        for file in &mut receipt.files {
+            if matches!(file.format, Format::Cordis) {
+                file.installed = super::deepseek_harness::normalize(&file.installed)?;
+                if let Ok(live) = file.format.parse(read(&file.path)?.as_deref()) {
+                    file.installed = super::deepseek_harness::adopt(&file.installed, &live);
+                }
+                file.previous = file
+                    .previous
+                    .as_ref()
+                    .map(super::deepseek_harness::normalize)
+                    .transpose()?;
+            }
+        }
+        if app == "qwen" {
+            for file in &mut receipt.files {
+                if matches!(file.format, Format::Json) {
+                    file.format = Format::Jsonc;
+                }
+            }
         }
         if app == "opencode" {
             for file in &mut receipt.files {
@@ -1328,7 +1407,11 @@ fn build_with_token(
         "pi" => {
             let (catalog, selected) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
             receipt.files.push(FileEdit::prepare(crate::pi_config::get_pi_models_path().map_err(|_| FAILED)?, |value| {
-                let models = catalog.iter().map(pi_model).collect::<Vec<_>>();
+                let models = catalog.iter().map(|model| {
+                    let mut row = pi_model(model);
+                    if model.api == "anthropic-messages" { row["baseUrl"] = json!(base); }
+                    row
+                }).collect::<Vec<_>>();
                 put(value, &["providers".into(), "varyai".into()], Some(json!({"baseUrl":format!("{base}/v1"),"apiKey":token,"api":"openai-completions","models":models})))
             })?);
             receipt.files.push(FileEdit::prepare(crate::pi_config::get_pi_settings_path().map_err(|_| FAILED)?, |value| {
