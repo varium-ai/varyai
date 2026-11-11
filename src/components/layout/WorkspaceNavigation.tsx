@@ -9,6 +9,7 @@ import {
   Settings,
 } from "lucide-react";
 import appIcon from "@/assets/icons/app-icon.png";
+import { UpdateBadge } from "@/components/UpdateBadge";
 export type WorkspaceView =
   | "agents"
   | "routing"
@@ -123,16 +124,19 @@ export function WorkspaceNavigation({
           </button>
         ))}
       </nav>
-      <button
-        aria-label={t("workspaceNav.settings")}
-        aria-current={view === "settings" ? "page" : undefined}
-        title={t("workspaceNav.settings")}
-        className="workspace-nav-item workspace-settings"
-        onClick={() => onSelect("settings")}
-      >
-        <Settings aria-hidden="true" strokeWidth={1.75} />
-        <span>{t("workspaceNav.settings")}</span>
-      </button>
+      <div className="workspace-settings-row">
+        <button
+          aria-label={t("workspaceNav.settings")}
+          aria-current={view === "settings" ? "page" : undefined}
+          title={t("workspaceNav.settings")}
+          className="workspace-nav-item workspace-settings"
+          onClick={() => onSelect("settings")}
+        >
+          <Settings aria-hidden="true" strokeWidth={1.75} />
+          <span>{t("workspaceNav.settings")}</span>
+        </button>
+        <UpdateBadge className="workspace-update-badge" />
+      </div>
     </aside>
   );
 }
