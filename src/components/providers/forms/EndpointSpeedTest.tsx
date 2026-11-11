@@ -29,6 +29,9 @@ const ENDPOINT_TIMEOUT_SECS: Record<AppId, number> = {
   qwen: 5,
   zcode: 5,
   "deepseek-harness": 5,
+  cursor: 5,
+  "cursor-cli": 5,
+  t3code: 5,
 };
 
 interface TestResult {

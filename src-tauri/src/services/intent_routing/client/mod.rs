@@ -22,6 +22,8 @@ mod alias_tests;
 mod mode_tests;
 #[cfg(test)]
 mod parity_tests;
+#[cfg(test)]
+mod restart_tests;
 
 const PROVIDER: &str = "varyai";
 const FIELDS: &[&str] = &[
@@ -102,6 +104,13 @@ struct NativeOwnership {
 #[derive(Serialize, Deserialize)]
 struct ConfigSnapshot {
     text: Option<String>,
+}
+#[derive(Serialize, Deserialize)]
+struct ConnectionIdentity {
+    config: PathBuf,
+    token: String,
+    model_map: BTreeMap<String, String>,
+    catalogs: Vec<PathBuf>,
 }
 fn valid_native_url(value: &str) -> bool {
     let Some(authority) = value
@@ -471,6 +480,66 @@ impl Manager {
         }
         Ok(Some(receipt))
     }
+    fn connection_identity(&self) -> Result<Option<ConnectionIdentity>, String> {
+        let Some(text) = read(&self.receipt.with_extension("identity.json"))? else {
+            return Ok(None);
+        };
+        let identity: ConnectionIdentity = serde_json::from_str(&text).map_err(|_| FAILED)?;
+        if identity.config != self.config
+            || identity.token.is_empty()
+            || identity.token.len() > 256
+            || !identity
+                .token
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || identity.model_map.len() > 16384
+            || identity.catalogs.len() > 64
+            || identity
+                .catalogs
+                .iter()
+                .any(|path| !self.owns_catalog_path(path))
+        {
+            return Err(CONFLICT.into());
+        }
+        Ok(Some(identity))
+    }
+    fn owns_catalog_path(&self, path: &Path) -> bool {
+        path.parent() == self.receipt.parent()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("vary-routing-catalog-") && name.ends_with(".json")
+                })
+    }
+    fn remember_connection_identity(&self, receipt: &Receipt) -> Result<bool, String> {
+        let installed: toml::Value = receipt.installed.parse().map_err(|_| FAILED)?;
+        let Some(token) = installed
+            .get("model_providers")
+            .and_then(|providers| providers.get(PROVIDER))
+            .and_then(|provider| provider.get("experimental_bearer_token"))
+            .and_then(toml::Value::as_str)
+        else {
+            return Ok(false);
+        };
+        let identity = ConnectionIdentity {
+            config: self.config.clone(),
+            token: token.into(),
+            model_map: receipt.model_map.clone(),
+            catalogs: receipt
+                .catalogs
+                .iter()
+                .filter(|path| self.owns_catalog_path(path))
+                .cloned()
+                .collect(),
+        };
+        crate::config::atomic_write_private(
+            &self.receipt.with_extension("identity.json"),
+            &serde_json::to_vec(&identity).map_err(|_| FAILED)?,
+        )
+        .map_err(|_| FAILED)?;
+        Ok(true)
+    }
     pub fn status(&self) -> Result<Status, String> {
         let receipt = self.load()?;
         let live = self.runtime.menu_active();
@@ -639,7 +708,7 @@ impl Manager {
 
     fn activate_menu_with_intent(
         &self,
-        menu: Arc<crate::proxy::intent::Menu>,
+        mut menu: Arc<crate::proxy::intent::Menu>,
         base: &str,
         native_url: Option<&str>,
         intent: ApplyIntent,
@@ -647,6 +716,13 @@ impl Manager {
     ) -> Result<(), String> {
         if selected.is_some_and(|alias| !menu.groups.contains_key(alias)) {
             return Err("agentConnections.noModels".into());
+        }
+        // A saved identity authorizes nothing by itself. Only explicit activation
+        // or saved connection intent can publish this credential into a fresh runtime.
+        if !self.runtime.menu_active() {
+            if let Some(identity) = self.connection_identity()? {
+                Arc::make_mut(&mut menu).token = identity.token;
+            }
         }
         let mut groups = menu
             .groups
@@ -819,10 +895,12 @@ impl Manager {
         } else {
             catalog(groups, &Default::default(), chosen, &Default::default())?
         };
+        let identity = self.connection_identity()?;
         let mut model_map = old
             .as_ref()
             .or(superseded.as_ref())
             .map(|receipt| receipt.model_map.clone())
+            .or_else(|| identity.as_ref().map(|identity| identity.model_map.clone()))
             .unwrap_or_default();
         let aliases = aliases::project(&mut projection, &mut model_map)?;
         let first_alias = aliases.first().ok_or("agentConnections.noModels")?;
@@ -843,7 +921,12 @@ impl Manager {
             // Background refresh must never acquire receiptless configuration.
             self.backup_orphan(current.as_deref().ok_or(CONFLICT)?)?;
         }
-        let reusable = old.as_ref().and_then(|r| r.catalogs.last()).filter(|path| {
+        let mut catalogs = old
+            .as_ref()
+            .map(|r| r.catalogs.clone())
+            .or_else(|| identity.map(|identity| identity.catalogs))
+            .unwrap_or_default();
+        let reusable = catalogs.last().filter(|path| {
             path.parent() == self.receipt.parent()
                 && read(path)
                     .ok()
@@ -854,7 +937,7 @@ impl Manager {
         let catalog_path = if let Some(path) = reusable {
             path.clone()
         } else {
-            if old.as_ref().is_some_and(|r| r.catalogs.len() >= 64) {
+            if catalogs.len() >= 64 {
                 return Err("intentRouting.limit".into());
             }
             let path = self.receipt.parent().ok_or(FAILED)?.join(format!(
@@ -932,7 +1015,6 @@ impl Manager {
         }
         let table = doc["model_providers"].as_table_like_mut().ok_or(CONFLICT)?;
         table.insert(PROVIDER, toml_edit::Item::Table(provider));
-        let mut catalogs = old.as_ref().map(|r| r.catalogs.clone()).unwrap_or_default();
         if new_catalog {
             catalogs.push(catalog_path);
         }
@@ -1087,17 +1169,15 @@ impl Manager {
         };
         replace_checked(&self.config, current.as_deref(), restored.as_deref())?;
         self.runtime.clear_menu();
+        // Preserve cached client credentials, aliases and catalog paths while
+        // forwarding stays revoked, including across an explicit off/on cycle.
+        let retained_identity = self.remember_connection_identity(&receipt)?;
         if receipt.thread_sync_pending {
             return Ok(());
         }
         fs::remove_file(&self.receipt).map_err(|_| FAILED)?;
         for path in receipt.catalogs {
-            if path.parent() == self.receipt.parent()
-                && path
-                    .file_name()
-                    .and_then(|v| v.to_str())
-                    .is_some_and(|v| v.starts_with("vary-routing-catalog-") && v.ends_with(".json"))
-            {
+            if !retained_identity && self.owns_catalog_path(&path) {
                 let _ = fs::remove_file(path);
             }
         }

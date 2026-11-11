@@ -347,6 +347,9 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
             .into_iter()
             .filter_map(|model| {
                 let mut entry = menu.groups.get(&model.id)?.model_entry(&model.id);
+                if app == "cursor" {
+                    entry = crate::services::agent_connections::cursor::model_entry(&model, entry);
+                }
                 if app == "claude-desktop" {
                     let wire = crate::claude_desktop_config::shared_model_wire(&model);
                     if connection.model_map.get(&wire) != Some(&model.id) {

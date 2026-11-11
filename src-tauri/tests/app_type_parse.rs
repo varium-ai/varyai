@@ -28,3 +28,11 @@ fn parse_unknown_app_returns_localized_error_message() {
     assert!(msg.contains("可选值") || msg.contains("Allowed"));
     assert!(msg.contains("unknown"));
 }
+
+#[test]
+fn t3code_is_an_agent_without_legacy_mcp_or_skill_support() {
+    let app = AppType::from_str(" T3Code ").expect("T3 Code agent");
+    assert_eq!(app.as_str(), "t3code");
+    assert!(AppType::all().any(|candidate| candidate == app));
+    assert!(!app.supports_local_proxy());
+}

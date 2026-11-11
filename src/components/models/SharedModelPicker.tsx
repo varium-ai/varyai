@@ -73,6 +73,7 @@ export function SharedModelPicker({
   models,
   selected,
   onPick,
+  onDismiss,
   multiple = false,
   disabled = false,
   readOnly = false,
@@ -90,6 +91,7 @@ export function SharedModelPicker({
   models: ModelChoice[];
   selected: string[];
   onPick?: (id: string) => void;
+  onDismiss?: () => void;
   multiple?: boolean;
   disabled?: boolean;
   readOnly?: boolean;
@@ -574,8 +576,10 @@ export function SharedModelPicker({
                                 readOnly
                                   ? undefined
                                   : () => {
-                                      if (!multiple && !visibility && visible)
+                                      if (!multiple && !visibility && visible) {
+                                        onDismiss?.();
                                         return;
+                                      }
                                       if (visibility && visible)
                                         setKept(
                                           (old) => new Set([...old, model.id]),

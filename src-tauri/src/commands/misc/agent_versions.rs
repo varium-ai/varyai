@@ -12,6 +12,9 @@ const AGENTS: &[&str] = &[
     "kimi",
     "zcode",
     "deepseek-harness",
+    "cursor",
+    "cursor-cli",
+    "t3code",
 ];
 
 #[derive(Debug, serde::Serialize)]
@@ -50,7 +53,12 @@ fn detect_in(
     } else {
         agent_desktop_bundles(app)
     };
-    let cli_supported = matches!(app, "workbuddy" | "kimi" | "qwen");
+    let cli_supported = matches!(app, "workbuddy" | "kimi" | "qwen" | "cursor-cli");
+    let tool = if app == "cursor-cli" {
+        "cursor-agent"
+    } else {
+        app
+    };
     let mut result = AgentVersion {
         supported: cli_supported || (desktop_supported && !bundles.is_empty()),
         installed: false,
@@ -68,7 +76,7 @@ fn detect_in(
     }
     if cli_supported {
         for dir in cli_dirs {
-            if let Some(path) = tool_executable_candidates(app, dir)
+            if let Some(path) = tool_executable_candidates(tool, dir)
                 .into_iter()
                 .find(|path| path.is_file())
             {
@@ -133,13 +141,19 @@ pub(super) async fn get_versions() -> Result<HashMap<String, AgentVersion>, Stri
             let info = detect_in(
                 app,
                 &roots,
-                &build_tool_search_paths(app),
+                &build_tool_search_paths(if app == "cursor-cli" {
+                    "cursor-agent"
+                } else {
+                    app
+                }),
                 cfg!(target_os = "macos"),
             );
             #[cfg(target_os = "windows")]
             let info = {
                 let mut info = info;
-                if crate::services::trae_bridge::shared::Edition::parse(app).is_some() {
+                if crate::services::trae_bridge::shared::Edition::parse(app).is_some()
+                    || matches!(app, "cursor" | "t3code")
+                {
                     info.supported = true;
                     info.installed = is_agent_installed(app);
                     info.source = info.installed.then_some("desktop");

@@ -37,6 +37,8 @@ pub fn supports_binding(app: &str) -> bool {
             | "qwen"
             | "zcode"
             | "deepseek-harness"
+            | "cursor"
+            | "t3code"
     )
 }
 

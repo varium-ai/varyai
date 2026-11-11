@@ -1324,6 +1324,9 @@ pub fn run() {
                 if let Err(code) = state.proxy_service.restore_pi_routing().await {
                     log::warn!("[Pi] startup restoration failed: {code}");
                 }
+                // Observe the restored configuration as the initial baseline;
+                // startup cleanup is not a live client route change.
+                state.proxy_service.start_codex_app_server_worker();
 
                 // TRAE may be closed at startup or recreate its chat windows later.
                 let trae_proxy = state.proxy_service.clone();
@@ -2296,6 +2299,17 @@ async fn enabled_proxy_apps_on_startup(db: &database::Database) -> Vec<&'static 
     apps
 }
 
+fn shared_connections_need_resume(manager: &services::agent_connections::Manager) -> bool {
+    manager.bridge_enabled()
+        || manager
+            .bridge_for(services::trae_bridge::shared::Edition::International)
+            .bridge_enabled()
+        || crate::services::agent_connections::APPS
+            .iter()
+            .filter(|app| **app != "codex")
+            .any(|app| manager.load(app).is_ok_and(|receipt| receipt.is_some()))
+}
+
 async fn restore_proxy_state_on_startup(state: &store::AppState) {
     if !claude_desktop_config::routing_enabled(&state.db).unwrap_or(false) {
         if let Err(error) = claude_desktop_config::suspend_routing(&state.db) {
@@ -2303,15 +2317,9 @@ async fn restore_proxy_state_on_startup(state: &store::AppState) {
         }
     }
     let manager = state.proxy_service.agent_connections.clone();
-    let shared = tokio::task::spawn_blocking(move || {
-        manager.bridge_enabled()
-            || crate::services::agent_connections::APPS
-                .iter()
-                .filter(|app| **app != "codex")
-                .any(|app| manager.status(app).is_ok_and(|status| status.enabled))
-    })
-    .await
-    .unwrap_or(false);
+    let shared = tokio::task::spawn_blocking(move || shared_connections_need_resume(&manager))
+        .await
+        .unwrap_or(false);
     if shared {
         if state.proxy_service.start().await.is_ok() {
             state.proxy_service.sync_shared_agent_catalogs().await;
@@ -2819,6 +2827,24 @@ mod tests {
         db.set_setting(crate::services::workbuddy_proxy::ENABLED_KEY, "true")
             .expect("enable");
         assert_eq!(enabled_proxy_apps_on_startup(&db).await, vec!["workbuddy"]);
+    }
+    #[test]
+    fn startup_restore_includes_international_shared_bridge_without_domestic_bridge(
+    ) -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|_| "fixture directory")?;
+        let manager = crate::services::agent_connections::Manager {
+            root: dir.path().into(),
+        };
+        assert!(!super::shared_connections_need_resume(&manager));
+        manager
+            .bridge_for(crate::services::trae_bridge::shared::Edition::International)
+            .bridge_select(true)?;
+        assert!(super::shared_connections_need_resume(&manager));
+        manager
+            .bridge_for(crate::services::trae_bridge::shared::Edition::International)
+            .bridge_select(false)?;
+        assert!(!super::shared_connections_need_resume(&manager));
+        Ok(())
     }
     #[test]
     fn startup_skips_unselected_and_missing_agents() {

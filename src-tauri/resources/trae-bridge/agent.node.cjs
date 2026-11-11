@@ -548,10 +548,11 @@ test("bootstrap replaces an older resident bridge and keeps the current bridge o
   assert.equal(audits, 1);
   assert.equal(legacyAudits, 0);
   assert.equal(current.bridge.enabled, true);
+  const newerRevision = current.hookRevision + 1;
   const newer = {
     ...current,
-    hookRevision: 12,
-    auditBinding: "__varyaiTraeAuditV12",
+    hookRevision: newerRevision,
+    auditBinding: `__varyaiTraeAuditV${newerRevision}`,
   };
   context.__varyaiTraeNativeBridge = newer;
   await vm.runInNewContext(bootstrapSource(), context);

@@ -135,6 +135,10 @@ pub struct ProxyTakeoverStatus {
     #[serde(default, rename = "deepseek-harness")]
     pub deepseek_harness: bool,
     #[serde(default)]
+    pub cursor: bool,
+    #[serde(default)]
+    pub t3code: bool,
+    #[serde(default)]
     pub trae: bool,
     #[serde(default, rename = "trae-intl")]
     pub trae_intl: bool,
@@ -175,6 +179,8 @@ impl ProxyTakeoverStatus {
             || self.kimi
             || self.qwen
             || self.zcode
+            || self.cursor
+            || self.t3code
             || self.deepseek_harness
             || self.pi
             || self.trae

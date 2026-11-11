@@ -278,30 +278,37 @@ it("supports selecting and clearing all discovered subscription models", async (
   ).toHaveStyle({ visibility: "hidden" });
 });
 
-it("adds an exact manual subscription model ID without duplicating it", () => {
+it("keeps manual model entry removed and preserves exact discovered subscription IDs", async () => {
+  vi.mocked(copilotGetModelsForAccount).mockResolvedValue([
+    {
+      id: "exact-model",
+      name: "Exact model",
+      vendor: "fixture",
+      model_picker_enabled: true,
+    },
+  ]);
   mount();
-  const input = screen.getByRole("textbox", {
-    name: "providerEditor.addModelId",
-  });
-  fireEvent.change(input, { target: { value: "  exact-model  " } });
+  expect(
+    screen.queryByRole("textbox", { name: "providerEditor.addModelId" }),
+  ).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "providerEditor.addModel" }),
+  ).toBeNull();
+  fireEvent.click(screen.getByRole("radio", { name: "fixture-user" }));
   fireEvent.click(
-    screen.getByRole("button", { name: "providerEditor.addModel" }),
+    screen.getByRole("button", { name: "codexProvider.fetchModels" }),
   );
+  const model = await screen.findByRole("button", { name: "Exact model" });
+  fireEvent.click(model);
+  fireEvent.click(model);
+  fireEvent.click(model);
   expect(onChange).toHaveBeenLastCalledWith(
     expect.objectContaining({
       source: expect.objectContaining({
-        models: [{ model: "exact-model" }],
+        models: [expect.objectContaining({ model: "exact-model" })],
         mode: "picked",
       }),
     }),
-  );
-  expect(input).toHaveValue("");
-  fireEvent.change(input, { target: { value: "exact-model" } });
-  fireEvent.click(
-    screen.getByRole("button", { name: "providerEditor.addModel" }),
-  );
-  expect(screen.getAllByRole("button", { name: "exact-model" })).toHaveLength(
-    1,
   );
 });
 it("automatically starts re-login once when opened from a row re-login action", () => {

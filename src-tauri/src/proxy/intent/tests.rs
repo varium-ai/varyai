@@ -1,4 +1,21 @@
 use super::*;
+
+#[test]
+fn page_context_does_not_claim_a_tool_continuation() {
+    let bindings = Bindings::default();
+    let context = json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","output":"Synthetic page"});
+    assert_eq!(
+        bindings.resolve(&json!({"input":[context]}), None),
+        Ok(None)
+    );
+    for item in [
+        json!({"type":"function_call_output","output":"Synthetic result"}),
+        json!({"type":"function_call_output","namespace":"other","name":"codex_apps_open_page","output":"Synthetic result"}),
+        json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","call_id":"unknown-call","output":"Synthetic result"}),
+    ] {
+        assert!(bindings.resolve(&json!({"input":[item]}), None).is_err());
+    }
+}
 use serde_json::json;
 
 #[tokio::test]

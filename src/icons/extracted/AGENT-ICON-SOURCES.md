@@ -14,3 +14,8 @@ The following icons identify the corresponding clients. Their colors and shapes 
 | `qwen-code.png`  | [Qwen Code extension icon](https://github.com/QwenLM/qwen-code/blob/main/packages/vscode-ide-companion/assets/icon.png), retrieved 2026-10-19 |
 
 Client icon names are mapped through `APP_ICON_NAME` in `src/config/appConfig.tsx`. Existing model-provider icons remain separate. Source identification does not replace review of the applicable distribution permissions or trademark terms.
+
+`cursor.png` is the native 128 by 128 pixel application mark extracted from
+Cursor 3.16.17, `Contents/Resources/Cursor.icns`, on 2026-11-11.
+`t3code.svg` is T3 Code's unmodified official production logo; its pinned source
+and MIT notice are recorded in `third_party/t3code/NOTICE.md`.

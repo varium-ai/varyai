@@ -318,6 +318,9 @@ fn openai_choice(value: &Value) -> Result<ToolChoice, ProxyError> {
         Some(_) => Err(invalid("Invalid tool choice")),
         None => {
             object(value)?;
+            if value["type"] == "tool_search" {
+                return Ok(ToolChoice::ToolSearch);
+            }
             if value["type"] == "custom" {
                 return Ok(ToolChoice::Custom {
                     name: required_string(value, "name")?,
@@ -499,6 +502,28 @@ fn reasoning_options(value: &Value, reasoning: &mut Reasoning) -> Result<(), Pro
     }
     Ok(())
 }
+fn responses_tools(value: &Value, request: &mut Request, loaded: bool) -> Result<(), ProxyError> {
+    for tool in array(value)? {
+        object(tool)?;
+        let kind = required_string(tool, "type")?;
+        let tool = if kind == "function" {
+            let mut function = function(tool, "parameters")?;
+            function.native = Some(tool.clone());
+            function
+        } else {
+            native_tool(tool, &kind)?
+        };
+        if !loaded
+            || !request
+                .tools
+                .iter()
+                .any(|existing| existing.kind == tool.kind && existing.name == tool.name)
+        {
+            request.tools.push(tool);
+        }
+    }
+    Ok(())
+}
 fn responses(body: &Value, request: &mut Request) -> Result<(), ProxyError> {
     common_openai(body, request)?;
     request.max_tokens = unsigned(body, "max_output_tokens")?;
@@ -524,17 +549,7 @@ fn responses(body: &Value, request: &mut Request) -> Result<(), ProxyError> {
         request.tool_choice = Some(openai_choice(value)?);
     }
     if let Some(tools) = field(body, "tools") {
-        for tool in array(tools)? {
-            object(tool)?;
-            let kind = required_string(tool, "type")?;
-            if kind == "function" {
-                let mut function = function(tool, "parameters")?;
-                function.native = Some(tool.clone());
-                request.tools.push(function);
-            } else {
-                request.tools.push(native_tool(tool, &kind)?);
-            }
-        }
+        responses_tools(tools, request, false)?;
     }
     let input = &body["input"];
     if let Some(value) = input.as_str() {
@@ -584,15 +599,45 @@ fn responses(body: &Value, request: &mut Request) -> Result<(), ProxyError> {
                     parts: vec![part],
                 });
             }
-            "function_call_output" => request.messages.push(Message {
-                role: "tool".into(),
-                parts: vec![Part::ToolResult {
-                    call_id: required_string(item, "call_id")?,
-                    name: None,
-                    parts: chat_content(&item["output"])?,
-                    is_error: false,
-                }],
-            }),
+            "function_call_output"
+                if field(item, "call_id").is_none()
+                    && item["namespace"] == "agent"
+                    && item["name"]
+                        .as_str()
+                        .is_some_and(|name| name.starts_with("codex_apps_")) =>
+            {
+                // Desktop context notifications have no matching model-issued call.
+                // Keep their provenance without promoting tool content to instructions.
+                let name = required_string(item, "name")?;
+                let mut parts = vec![text(&format!("Tool context (agent.{name}):"))];
+                parts.extend(chat_content(&item["output"])?);
+                request.messages.push(Message {
+                    role: "user".into(),
+                    parts,
+                });
+            }
+            "function_call_output" => {
+                let name = item["name"].as_str().unwrap_or_default();
+                if crate::proxy::providers::codex_chat_common::is_unsolicited_page_context(item) {
+                    // Desktop page context is unsolicited data, not a tool invocation.
+                    let mut parts = vec![text(&format!("Tool context (agent.{name}):"))];
+                    parts.extend(chat_content(&item["output"])?);
+                    request.messages.push(Message {
+                        role: "user".into(),
+                        parts,
+                    });
+                } else {
+                    request.messages.push(Message {
+                        role: "tool".into(),
+                        parts: vec![Part::ToolResult {
+                            call_id: required_string(item, "call_id")?,
+                            name: None,
+                            parts: chat_content(&item["output"])?,
+                            is_error: false,
+                        }],
+                    });
+                }
+            }
             "reasoning" => {
                 let mut value = String::new();
                 if let Some(summary) = field(item, "summary") {
@@ -650,8 +695,35 @@ fn responses(body: &Value, request: &mut Request) -> Result<(), ProxyError> {
                     parts: chat_content(&item["output"])?,
                 }],
             }),
-            "tool_search_call" | "tool_search_output" => {
-                return Err(invalid("Unsupported native tool item across protocols"))
+            "tool_search_call" => {
+                request.messages.push(Message {
+                    role: "assistant".into(),
+                    parts: vec![Part::ToolSearchCall {
+                        id: string(item, "call_id")?
+                            .or(string(item, "id")?)
+                            .filter(|id| !id.is_empty())
+                            .ok_or_else(|| invalid("Missing tool call ID"))?,
+                        arguments: arguments(item.get("arguments"), true)?,
+                        native: item.clone(),
+                    }],
+                });
+            }
+            "tool_search_output" => {
+                if let Some(tools) = field(item, "tools") {
+                    responses_tools(tools, request, true)?;
+                }
+                request.messages.push(Message {
+                    role: "tool".into(),
+                    parts: vec![Part::ToolSearchResult {
+                        call_id: required_string(item, "call_id")?,
+                        native: item.clone(),
+                    }],
+                });
+            }
+            "additional_tools" => {
+                if let Some(tools) = field(item, "tools") {
+                    responses_tools(tools, request, true)?;
+                }
             }
             _ => {}
         }
@@ -1078,6 +1150,57 @@ fn gemini(body: &Value, request: &mut Request) -> Result<(), ProxyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_page_context_outputs_do_not_require_a_tool_call() {
+        for call_id in [None, Some(Value::Null)] {
+            let mut context = json!({"type":"function_call_output","id":"synthetic-context-item","namespace":"agent","name":"codex_apps_open_page","output":"Synthetic page context"});
+            if let Some(call_id) = call_id {
+                context["call_id"] = call_id;
+            }
+            let parsed = request(
+                Protocol::Responses,
+                &json!({"model":"synthetic","input":[context,
+                    {"type":"function_call_output","namespace":"agent","name":"codex_apps_selected_page_part_1_of_1","output":"Synthetic selection"}
+                ]}),
+                "/v1/responses",
+            ).unwrap();
+            assert_eq!(parsed.messages.len(), 2);
+            assert!(parsed.messages.iter().all(|message| message.role == "user"));
+            assert!(parsed.messages[0]
+                .parts
+                .contains(&text("Synthetic page context")));
+            assert!(parsed.messages[1]
+                .parts
+                .contains(&text("Synthetic selection")));
+            assert!(parsed.messages[0]
+                .parts
+                .contains(&text("Tool context (agent.codex_apps_open_page):")));
+        }
+    }
+
+    #[test]
+    fn codex_page_context_does_not_relax_regular_tool_result_ids() {
+        for item in [
+            json!({"type":"function_call_output","output":"Synthetic result"}),
+            json!({"type":"function_call_output","namespace":"synthetic","name":"codex_apps_open_page","output":"Synthetic result"}),
+            json!({"type":"function_call_output","namespace":"agent","name":"synthetic_tool","output":"Synthetic result"}),
+            json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","call_id":"","output":"Synthetic result"}),
+        ] {
+            assert!(request(
+                Protocol::Responses,
+                &json!({"model":"synthetic","input":[item]}),
+                "/v1/responses"
+            )
+            .is_err());
+        }
+        let parsed = request(Protocol::Responses, &json!({"model":"synthetic","input":[
+            {"type":"function_call_output","namespace":"agent","name":"codex_apps_open_page","call_id":"synthetic-call","output":"Synthetic result"}
+        ]}), "/v1/responses").unwrap();
+        assert!(
+            matches!(&parsed.messages[0].parts[0], Part::ToolResult { call_id, .. } if call_id == "synthetic-call")
+        );
+    }
 
     #[test]
     fn assistant_history_annotations_and_host_bookkeeping_do_not_enter_ir() {

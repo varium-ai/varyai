@@ -51,8 +51,21 @@ object key. Client bookkeeping such as WorkBuddy's assistant IDs, model labels,
 usage records and text annotations therefore cannot invalidate a supported text
 or tool request. Malformed known values and content that cannot be represented
 still produce static errors without including the original data.
-Unresolved Responses item references and tool-search history require their
-specialized continuity support; the general IR does not invent missing items.
+Unresolved Responses item references still require their specialized continuity
+support; the general IR does not invent missing items. Client-executed Responses
+tool discovery is represented explicitly: Chat, Anthropic and Gemini builders
+expose the existing `tool_search` function contract, retain call/result IDs and
+load returned namespace declarations for subsequent turns. The Responses renderer
+uses the original tool context to restore tool-search and namespaced calls in
+both JSON and SSE replies. Native Responses items retain their original form;
+server-executed discovery is not relabeled as a client function.
+
+Codex desktop also injects page context as `function_call_output` items in the
+`agent` namespace with a `codex_apps_` name and no `call_id`. These are context
+notifications, not replies to model-issued calls. Cross-protocol readers retain
+their source label and content as user-level context without inventing a tool
+call or elevating the content to system instructions. Ordinary tool results
+still require a nonempty call ID. Native Responses forwarding remains unchanged.
 
 ## Streaming and verification
 

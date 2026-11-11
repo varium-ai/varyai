@@ -1245,6 +1245,10 @@
     "aboutHint": "View version information and update status.",
     "portableMode": "Portable mode: updates require manual download.",
     "updateAvailable": "New version available: {{version}}",
+    "updateCurrentVersion": "Installed version v{{version}}",
+    "restartToUpdate": "Restart to update",
+    "updateRestartHint": "The app will restart after installing the update.",
+    "releaseNotesUnavailable": "Release notes are not available yet. You can open the release page to see the details.",
     "updateDialogDescription": "Vary AI {{version}} is ready. The app will restart after the update is installed.",
     "updateLater": "Remind Me Later",
     "downloadUpdate": "Go to Downloads",
@@ -1390,7 +1394,10 @@
     "kimi": "Kimi Code",
     "qwen": "Qwen Code",
     "zcode": "ZCode",
-    "deepseek-harness": "DeepSeek Harness"
+    "deepseek-harness": "DeepSeek Harness",
+    "cursor": "Cursor Private Inference",
+    "cursor-cli": "Cursor CLI",
+    "t3code": "T3 Code"
   },
   "pi": {
     "empty": {
@@ -5046,6 +5053,22 @@
     "limit": "The provider or model limit was reached.",
     "referenced": "A saved route still uses this provider. Update that route first.",
     "sourceUnavailable": "The imported source is unavailable. Check its saved credentials.",
+    "errors": {
+      "loadProviders": "Could not load providers. Refresh the page and try again.",
+      "load": "Could not open this provider. Refresh the page and try again.",
+      "create": "Could not prepare the Codex provider. Try again.",
+      "save": "Could not save this provider. Your changes are still in the form; try again.",
+      "toggle": "Could not change the provider status. Try again.",
+      "remove": "Could not delete the provider. Refresh the page and try again.",
+      "fetchModels": "Could not fetch models. Check the account or API credentials and network, then try again.",
+      "testModels": "Could not complete the model test. Check the credentials, API address and network, then try again.",
+      "importAccount": "Could not import the account. Check that the account file is readable and valid, then try again.",
+      "account": "Could not update account information. Check the account status and try again.",
+      "signIn": "Could not update the account sign-in. Sign in again with the account you selected.",
+      "openWebsite": "Could not open the website. Try again or open it in your browser.",
+      "invalid": "The configuration is incomplete or invalid. Check the fields and try again.",
+      "invalidAccountFile": "The account file is invalid or missing sign-in data. Select a valid Codex account JSON file."
+    },
     "failed": "Could not update the provider catalog. Refresh and try again.",
     "modelId": "Model ID",
     "contextWindow": "Context window (tokens)",
@@ -5070,6 +5093,11 @@
     "sameAsHint": "Treat this model as the specified model when finding groups and filling missing catalog facts. The upstream model ID stays unchanged."
   },
   "agentConnections": {
+    "cursorLocalHint": "Requires Cursor Private Inference. Quit and reopen after connecting. A gateway saved in Cursor takes priority over these environment defaults.",
+    "cursorCliHint": "Manages Cursor’s native model selection. CLI requests continue through Cursor’s service.",
+    "cursorAuto": "Auto · Cursor native",
+    "t3codeHint": "Uses a separate VaryAI Codex instance. Start new threads with this instance in T3 Code.",
+
     "desktopStartingModelHint": "Used for new Desktop chats and tasks after the client reloads its configuration. Choose a visible model; existing conversations keep their own choices.",
     "modelControlHint": "Save a default for new local chats, then restart the client through Vary AI to apply it. Existing conversations and remote runtime profiles retain their choices.",
     "modelControlTitle": "Allow default-model control for {{app}}?",
@@ -5159,6 +5187,8 @@
     "moreHint": "Install missing CLIs here, or open the official website for desktop tools. Installation does not connect a tool to Vary.",
     "website": "Official website",
     "rescan": "Check installations",
+    "rescanSuccess": "Tool installation check complete",
+    "rescanFailed": "Tool installation check failed. Try again.",
     "emptyTitle": "No tools detected yet",
     "browseTools": "Browse tools",
     "empty": "Install a CLI or desktop tool, then check again. Installation does not connect it to Vary.",
@@ -5170,6 +5200,7 @@
     "sessionHint": "Connection configured. Start a new session in this tool and choose a model from Vary’s shared catalog.",
     "verifyHint": "Send a message in the tool, then check Statistics to verify that requests reach Vary. A configured connection alone does not verify an upstream model.",
     "states": {
+      "nativeOnly": "Native models",
       "codexProxyBlocked": "Local gateway blocked via proxy · diagnostic",
       "checking": "Checking…",
       "provider_missing": "Provider definition missing · waiting for repair",
@@ -5599,10 +5630,11 @@
     "selected": "Selected only",
     "selectAll": "Select all",
     "selectNone": "Select none",
-    "noModels": "No models selected. Fetch the provider catalog or add a model ID.",
+    "noModels": "No models selected. Fetch the provider catalog.",
     "addModelId": "Add model ID…",
     "addModel": "Add model",
     "duplicate": "Duplicate",
+    "copyTitle": "Copy of {{name}}",
     "copyName": "{{name}} copy",
     "testHint": "Send small inference requests on each API for up to {{count}} selected models, a few at a time.",
     "importedConnectionHint": "Edits here update the shared provider. The original Agent configuration is kept.",
@@ -5775,7 +5807,7 @@
     "hint_best": "Serve the newest model in each family.",
     "hint_usage": "Keep this provider for usage checks; offer no models to agents.",
     "optionalModels": "Model IDs, comma separated · e.g. gpt-5.5, claude-sonnet-5",
-    "optionalHint": "Optional: fetch models to pick from the vendor list, or type IDs. With none picked, the list is fetched after saving.",
+    "optionalHint": "Optional: fetch models to pick from the vendor list. With none picked, the list is fetched after saving.",
     "pickedCount": "{{count}} of {{total}} picked",
     "showOther": "Show {{count}} others",
     "more": "Advanced"
@@ -6020,5 +6052,25 @@
     "accountFailed": "Sign-in finished, but the connection could not be saved. Please retry.",
     "codexHint": "Your browser may display Codex during ChatGPT sign-in. This is expected.",
     "finishFailed": "Could not save setup completion. Please retry; your saved connections will be kept."
+  },
+  "dailyCheckin": {
+    "title": "Check-in rewards",
+    "streak": "Consecutive check-ins",
+    "days": "{{count}} days",
+    "days_one": "{{count}} day",
+    "days_other": "{{count}} days",
+    "noData": "No data available",
+    "progress": "7-day check-in progress",
+    "progressHint": "Based on the consecutive check-ins reported by the service. Individual daily history is unavailable.",
+    "day": "Day {{count}}",
+    "complete": "Completed",
+    "pending": "Not reached",
+    "unknown": "Unknown",
+    "notice": "Available for supported Agents. Rewards are issued by the official service.",
+    "manage": "Manage accounts",
+    "todayReward": "Claimed today +{{credit}}",
+    "todayChecked": "Checked in today",
+    "claimedReward": "Claimed +{{credit}}",
+    "claimed": "Claimed"
   }
 }

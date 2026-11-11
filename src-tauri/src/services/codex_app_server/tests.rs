@@ -538,7 +538,7 @@ fn manual_catalog_refresh_waits_for_idle_and_observes_replacement() {
     assert_eq!(m.observe([1; 32], old.clone(), true, 15), Action::None);
     assert_eq!(
         m.observe([1; 32], old.clone(), false, 16),
-        Action::Restart(old)
+        Action::RestartApplication(old)
     );
     assert_eq!(m.snapshot(), ReloadState::Restarting);
     assert_eq!(

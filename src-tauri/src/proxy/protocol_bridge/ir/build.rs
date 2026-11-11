@@ -11,18 +11,22 @@ pub(crate) fn request(r: &Request, target: Protocol) -> Result<Value, ProxyError
     let needs_portable = r
         .tools
         .iter()
-        .any(|t| matches!(t.kind.as_str(), "namespace" | "custom"))
+        .any(|t| matches!(t.kind.as_str(), "namespace" | "custom" | "tool_search"))
         || r.messages.iter().flat_map(|m| &m.parts).any(|p| {
             matches!(
                 p,
                 Part::NamespacedToolCall { .. }
                     | Part::CustomToolCall { .. }
                     | Part::CustomToolResult { .. }
+                    | Part::ToolSearchCall { .. }
+                    | Part::ToolSearchResult { .. }
             )
         })
         || matches!(
             r.tool_choice,
-            Some(ToolChoice::Namespaced { .. } | ToolChoice::Custom { .. })
+            Some(
+                ToolChoice::Namespaced { .. } | ToolChoice::Custom { .. } | ToolChoice::ToolSearch
+            )
         );
     let portable = if target != Protocol::Responses && needs_portable {
         Some(portable_request(r)?)
@@ -57,6 +61,23 @@ fn qualified_name(namespace: &str, name: &str) -> String {
 }
 fn portable_part(part: &Part) -> Part {
     match part {
+        Part::ToolSearchCall { id, arguments, .. } => Part::ToolCall {
+            id: id.clone(),
+            name: crate::proxy::providers::transform_codex_chat::TOOL_SEARCH_PROXY_NAME.into(),
+            arguments: arguments.clone(),
+            signature: None,
+        },
+        Part::ToolSearchResult { call_id, native } => Part::ToolResult {
+            call_id: call_id.clone(),
+            name: Some(
+                crate::proxy::providers::transform_codex_chat::TOOL_SEARCH_PROXY_NAME.into(),
+            ),
+            parts: vec![Part::Text {
+                text: native.to_string(),
+                signature: None,
+            }],
+            is_error: false,
+        },
         Part::NamespacedToolCall {
             id,
             namespace,
@@ -124,6 +145,21 @@ fn custom_function(native: &Value, namespace: Option<&str>) -> Result<Tool, Prox
 }
 fn portable_tool(tool: &Tool) -> Result<Vec<Tool>, ProxyError> {
     match tool.kind.as_str() {
+        "tool_search" => {
+            if !client_tool_search(tool.native.as_ref().ok_or_else(invalid)?) {
+                return Err(invalid());
+            }
+            Ok(vec![Tool {
+                kind: "function".into(),
+                native: None,
+                name: crate::proxy::providers::transform_codex_chat::TOOL_SEARCH_PROXY_NAME.into(),
+                description: crate::proxy::providers::transform_codex_chat::TOOL_SEARCH_DESCRIPTION
+                    .into(),
+                schema: crate::proxy::providers::transform_codex_chat::tool_search_parameters(),
+                strict: None,
+                deferred: false,
+            }])
+        }
         "custom" => Ok(vec![custom_function(
             tool.native.as_ref().ok_or_else(invalid)?,
             None,
@@ -174,7 +210,20 @@ fn portable_tool(tool: &Tool) -> Result<Vec<Tool>, ProxyError> {
         _ => Ok(vec![tool.clone()]),
     }
 }
+fn client_tool_search(native: &Value) -> bool {
+    native
+        .get("execution")
+        .filter(|value| !value.is_null())
+        .is_none_or(|value| value == "client")
+}
 fn portable_request(r: &Request) -> Result<Request, ProxyError> {
+    for part in r.messages.iter().flat_map(|message| &message.parts) {
+        if let Part::ToolSearchCall { native, .. } | Part::ToolSearchResult { native, .. } = part {
+            if !client_tool_search(native) {
+                return Err(invalid());
+            }
+        }
+    }
     let mut portable = r.clone();
     portable.system = r.system.iter().map(portable_part).collect();
     portable.messages = r
@@ -194,6 +243,9 @@ fn portable_request(r: &Request) -> Result<Request, ProxyError> {
         .flatten()
         .collect();
     portable.tool_choice = match &r.tool_choice {
+        Some(ToolChoice::ToolSearch) => Some(ToolChoice::Named(
+            crate::proxy::providers::transform_codex_chat::TOOL_SEARCH_PROXY_NAME.into(),
+        )),
         Some(ToolChoice::Namespaced { namespace, name }) => {
             Some(ToolChoice::Named(qualified_name(namespace, name)))
         }
@@ -407,6 +459,7 @@ fn push_gemini_turn(contents: &mut Vec<Value>, role: &str, parts: Vec<Value>, re
 }
 fn choice(r: &Request, target: Protocol) -> Option<Value> {
     r.tool_choice.as_ref().map(|choice| match (target, choice) {
+        (Protocol::Responses, ToolChoice::ToolSearch) => json!({"type":"tool_search"}),
         (Protocol::Responses, ToolChoice::Namespaced { namespace, name }) => {
             json!({"type":"function","namespace":namespace,"name":name})
         }
@@ -458,7 +511,8 @@ fn openai_parts(
             Part::Search { query, hits, .. } => out.push(json!({"type":if responses {"input_text"} else {"text"},"text":format!("{query}\n{}",json!(hits))})),
             Part::ToolReference { name } => out.push(json!({"type":if responses {"input_text"} else {"text"},"text":format!("Tool available: {name}")})),
             Part::Thinking { .. } | Part::ToolCall { .. } | Part::ToolResult { .. }
-            | Part::NamespacedToolCall{..} | Part::CustomToolCall{..} | Part::CustomToolResult{..} => {}
+            | Part::NamespacedToolCall{..} | Part::CustomToolCall{..} | Part::CustomToolResult{..}
+            | Part::ToolSearchCall{..} | Part::ToolSearchResult{..} => {}
         }
     }
     Ok(out)
@@ -599,6 +653,9 @@ fn responses(r: &Request) -> Result<Value, ProxyError> {
         let mut pending = Vec::new();
         for p in &m.parts {
             let item = match p {
+                Part::ToolSearchCall { native, .. } | Part::ToolSearchResult { native, .. } => {
+                    Some(native.clone())
+                }
                 Part::ToolCall {
                     id,
                     name,
@@ -767,7 +824,8 @@ fn anthropic_parts(parts: &[Part]) -> Result<Vec<Value>, ProxyError> {
             }
             Part::ToolReference{name}=>out.push(json!({"type":"tool_reference","tool_name":name})),
             Part::Search{query,hits,..}=>out.push(json!({"type":"text","text":format!("{query}\n{}",json!(hits))})),
-            Part::NamespacedToolCall{..}|Part::CustomToolCall{..}|Part::CustomToolResult{..}=>return Err(invalid()),
+            Part::NamespacedToolCall{..}|Part::CustomToolCall{..}|Part::CustomToolResult{..}
+            |Part::ToolSearchCall{..}|Part::ToolSearchResult{..}=>return Err(invalid()),
         }
     }
     Ok(out)
@@ -958,7 +1016,9 @@ fn gemini_parts(parts: &[Part]) -> Result<Vec<Value>, ProxyError> {
             Part::ToolReference { name } => json!({"text":format!("Tool available: {name}")}),
             Part::NamespacedToolCall { .. }
             | Part::CustomToolCall { .. }
-            | Part::CustomToolResult { .. } => return Err(invalid()),
+            | Part::CustomToolResult { .. }
+            | Part::ToolSearchCall { .. }
+            | Part::ToolSearchResult { .. } => return Err(invalid()),
         };
         // Google's signatures are opaque; values are only carried, never synthesized.
         if block.is_null() {
@@ -1073,7 +1133,9 @@ fn gemini(r: &Request) -> Result<Value, ProxyError> {
             ToolChoice::None => json!({"mode":"NONE"}),
             ToolChoice::Required => json!({"mode":"ANY"}),
             ToolChoice::Named(name) => json!({"mode":"ANY","allowedFunctionNames":[name]}),
-            ToolChoice::Namespaced { .. } | ToolChoice::Custom { .. } => return Err(invalid()),
+            ToolChoice::Namespaced { .. } | ToolChoice::Custom { .. } | ToolChoice::ToolSearch => {
+                return Err(invalid())
+            }
         };
     }
     if let Some(v) = &r.native.safety_settings {
@@ -1559,6 +1621,74 @@ mod tests {
                 .contains("c3ludGhldGlj"));
         }
     }
+    #[test]
+    fn responses_client_tool_search_supports_initial_and_loaded_tool_turns() {
+        let declaration = json!({"type":"tool_search","execution":"client"});
+        let call = json!({"type":"tool_search_call","id":"search-item","call_id":"search-call","execution":"client","status":"completed","arguments":{"query":"synthetic lookup","limit":2}});
+        let result = json!({"type":"tool_search_output","call_id":"search-call","execution":"client","status":"completed","tools":[{"type":"namespace","name":"synthetic_ns","tools":[{"type":"function","name":"lookup","description":"Synthetic lookup","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}]}]});
+        for history in [false, true] {
+            let mut source = json!({"model":"synthetic","tools":[declaration],"tool_choice":{"type":"tool_search"},"input":[{"role":"user","content":"Synthetic request"}]});
+            if history {
+                source["input"]
+                    .as_array_mut()
+                    .unwrap()
+                    .extend([call.clone(), result.clone()]);
+            }
+            let parsed =
+                super::super::parse::request(Protocol::Responses, &source, "/v1/responses")
+                    .unwrap();
+            let native = request(&parsed, Protocol::Responses).unwrap();
+            assert_eq!(native["tools"][0], declaration);
+            assert_eq!(native["tool_choice"], source["tool_choice"]);
+            if history {
+                assert_eq!(native["input"][1], call);
+                assert_eq!(native["input"][2], result);
+            }
+            for target in [Protocol::Chat, Protocol::Anthropic, Protocol::Gemini] {
+                let built = request(&parsed, target).unwrap();
+                let portable = super::super::parse::request(
+                    target,
+                    &built,
+                    "/v1beta/models/synthetic:generateContent",
+                )
+                .unwrap();
+                let search = portable
+                    .tools
+                    .iter()
+                    .find(|tool| tool.name == "tool_search")
+                    .unwrap();
+                assert_eq!(search.schema["properties"]["query"]["type"], "string");
+                assert_eq!(search.schema["required"], json!(["query"]));
+                assert_eq!(
+                    portable.tool_choice,
+                    Some(ToolChoice::Named("tool_search".into()))
+                );
+                if history {
+                    assert!(portable
+                        .tools
+                        .iter()
+                        .any(|tool| tool.name == "synthetic_ns__lookup"));
+                    assert!(portable.messages.iter().flat_map(|message| &message.parts).any(|part| matches!(part, Part::ToolCall { id, name, arguments, .. } if id=="search-call" && name=="tool_search" && arguments==&call["arguments"])));
+                    assert!(portable.messages.iter().flat_map(|message| &message.parts).any(|part| matches!(part, Part::ToolResult { call_id, parts, .. } if call_id=="search-call" && text(parts).contains("synthetic_ns"))));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn server_tool_search_cannot_be_relabelled_as_a_client_function() {
+        let source = json!({"model":"synthetic","input":"Synthetic request","tools":[{"type":"tool_search","execution":"server"}]});
+        let parsed =
+            super::super::parse::request(Protocol::Responses, &source, "/v1/responses").unwrap();
+        assert_eq!(
+            request(&parsed, Protocol::Responses).unwrap()["tools"],
+            source["tools"]
+        );
+        for target in [Protocol::Chat, Protocol::Anthropic, Protocol::Gemini] {
+            assert!(request(&parsed, target).is_err());
+        }
+    }
+
     #[test]
     fn namespaced_and_custom_tools_keep_native_identity_and_portable_wrappers() {
         let raw = "*** Begin Synthetic Patch\n+  preserve spacing\n*** End Synthetic Patch\n";

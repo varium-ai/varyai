@@ -353,7 +353,25 @@ it("keeps existing model preferences when sign-in renews the already bound accou
     screen.getByRole("button", { name: "manual-fixture" }),
   ).toHaveAttribute("aria-pressed", "true");
   expect(
-    screen.getByRole("checkbox", { name: "codexProvider.groupsOnly" }),
-  ).toBeChecked();
+    screen.queryByRole("checkbox", { name: "codexProvider.groupsOnly" }),
+  ).toBeNull();
   expect(routing.save).not.toHaveBeenCalled();
+  fireEvent.click(
+    within(
+      screen
+        .getByRole("dialog", { name: "My Antigravity" })
+        .querySelector(".pv-editor-foot") as HTMLElement,
+    ).getByRole("button", { name: "common.save" }),
+  );
+  await waitFor(() =>
+    expect(routing.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: expect.objectContaining({
+          accountId: account.id,
+          groupsOnly: true,
+          models: [{ model: "manual-fixture" }],
+        }),
+      }),
+    ),
+  );
 });

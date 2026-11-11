@@ -12,12 +12,12 @@ import { useCodexOauth } from "./forms/hooks/useCodexOauth";
 import { CodexLoginPanel } from "./CodexLoginPanel";
 import { isImageGenerationModel } from "@/lib/providerModelKind";
 import { ProviderImageModels } from "./ProviderImageModels";
-import { ProviderModelPreferences } from "./ProviderModelPreferences";
 import { settingsApi } from "@/lib/api/settings";
 import { copyText } from "@/lib/clipboard";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useRoutingRowDrag } from "@/hooks/useRoutingRowDrag";
 import { SubscriptionAccountActions } from "./SubscriptionAccountActions";
+import type { ProviderErrorHandler } from "./providerErrorToast";
 import { SubscriptionModelChip } from "./SubscriptionModelChip";
 
 export function CodexProviderFields({
@@ -36,7 +36,7 @@ export function CodexProviderFields({
   startReauth?: boolean;
   onReauthStarted?: () => void;
   onChange: (value: RoutingUpstream) => void;
-  onError: () => void;
+  onError: ProviderErrorHandler;
   onBusyChange: (value: boolean) => void;
 }) {
   const { t, i18n } = useTranslation();
@@ -51,12 +51,9 @@ export function CodexProviderFields({
   });
   const catalog = catalogs[policy.accounts[0]] ?? [];
   const [fetching, setFetching] = useState(false);
-  const [catalogStatus, setCatalogStatus] = useState<"empty" | "failed" | null>(
-    null,
-  );
+  const [catalogFailed, setCatalogFailed] = useState(false);
   const autoFetched = useRef(new Set<string>());
   const [importing, setImporting] = useState(false);
-  const [typed, setTyped] = useState("");
   const [filter, setFilter] = useState("");
   const [managing, setManaging] = useState(false);
   const [loginWay, setLoginWay] = useState<"browser" | "device">("browser");
@@ -75,7 +72,7 @@ export function CodexProviderFields({
     const account = accountOverride ?? policy.accounts[0];
     if (!account) return;
     setFetching(true);
-    setCatalogStatus(null);
+    setCatalogFailed(false);
     try {
       const models = await routingUpstreamsApi.codexModels(
         draft.id,
@@ -83,7 +80,6 @@ export function CodexProviderFields({
         account,
       );
       setCatalogs((old) => ({ ...old, [account]: models }));
-      setCatalogStatus(models.length ? null : "empty");
       await Promise.all(
         [
           "intent-routing-groups",
@@ -92,9 +88,9 @@ export function CodexProviderFields({
           "routing-catalog-discovery",
         ].map((key) => client.invalidateQueries({ queryKey: [key] })),
       );
-    } catch {
-      setCatalogStatus("failed");
-      onError();
+    } catch (cause) {
+      setCatalogFailed(true);
+      onError("fetchModels", cause);
     } finally {
       setFetching(false);
     }
@@ -176,11 +172,7 @@ export function CodexProviderFields({
       void client.invalidateQueries({ queryKey: [key] });
     }
   }, [completion, managing, client, draft, editor, policy, onChange]);
-  const [testing, setTesting] = useState(false);
-  const [tests, setTests] = useState<
-    Record<string, { ok: boolean; elapsedMs: number }>
-  >({});
-  const working = fetching || importing || testing;
+  const working = fetching || importing;
   const authenticating = auth.isAddingAccount || !!browser?.isPending;
   useEffect(() => {
     onBusyChange(working);
@@ -318,14 +310,6 @@ export function CodexProviderFields({
       .toLocaleLowerCase()
       .includes(term);
   const shown = chatModels.filter(matches);
-  const preferences = (
-    policy.mode === "picked"
-      ? policy.models
-      : catalog.map((row) => ({
-          ...row,
-          ...policy.models.find((p) => p.model === row.model),
-        }))
-  ).filter((row) => !isImageGenerationModel(row));
   function update(next: Partial<CodexProviderSettings>) {
     onChange({
       ...draft,
@@ -368,37 +352,10 @@ export function CodexProviderFields({
       if (typeof path !== "string") return;
       await routingUpstreamsApi.importCodexAccount(path);
       await auth.refetchStatus();
-    } catch {
-      onError();
+    } catch (cause) {
+      onError("importAccount", cause);
     } finally {
       setImporting(false);
-    }
-  }
-  async function testModels() {
-    const account = policy.accounts[0];
-    if (!account) return;
-    setTesting(true);
-    setTests({});
-    try {
-      for (const row of (policy.mode === "picked"
-        ? policy.models
-        : catalog.slice(0, 24)
-      )
-        .filter((row) => !isImageGenerationModel(row))
-        .slice(0, 30)) {
-        const model = String(row.model);
-        const result = await routingUpstreamsApi.testCodexModel(
-          draft.id,
-          draft.revision,
-          account,
-          model,
-        );
-        setTests((old) => ({ ...old, [model]: result }));
-      }
-    } catch {
-      onError();
-    } finally {
-      setTesting(false);
     }
   }
   function move(id: string, offset: number) {
@@ -751,16 +708,14 @@ export function CodexProviderFields({
       <div className="pv-field">
         <span className="pv-field-label">{t("codexProvider.models")}</span>
         <div className="pv-models">
-          {!catalog.length && (
+          {!catalog.length && (!catalogFailed || !accountReady) && (
             <p className="pv-hint" role="status">
               {t(
                 fetching
                   ? "codexProvider.catalogLoading"
                   : !accountReady
                     ? "codexProvider.catalogLoginRequired"
-                    : catalogStatus === "failed"
-                      ? "codexProvider.catalogFailed"
-                      : "codexProvider.catalogEmpty",
+                    : "codexProvider.catalogEmpty",
               )}
             </p>
           )}
@@ -813,16 +768,6 @@ export function CodexProviderFields({
             {shown.map((row) => (
               <SubscriptionModelChip
                 key={String(row.model)}
-                title={
-                  tests[String(row.model)]
-                    ? t(
-                        tests[String(row.model)].ok
-                          ? "codexProvider.testPassed"
-                          : "codexProvider.testFailed",
-                        { ms: tests[String(row.model)].elapsedMs },
-                      )
-                    : undefined
-                }
                 selected={
                   selected.has(String(row.model)) && policy.mode === "picked"
                 }
@@ -839,28 +784,6 @@ export function CodexProviderFields({
           </div>
           <div className="pv-model-footer">
             <div className="pv-add-model">
-              <input
-                aria-label={t("providerEditor.addModelId")}
-                placeholder={t("providerEditor.addModelId")}
-                value={typed}
-                disabled={locked}
-                onChange={(event) => setTyped(event.target.value)}
-              />
-              <button
-                type="button"
-                disabled={locked || !typed.trim() || selected.size >= 256}
-                onClick={() => {
-                  const id = typed.trim();
-                  if (!selected.has(id))
-                    update({
-                      mode: "picked",
-                      models: [...policy.models, { model: id }],
-                    });
-                  setTyped("");
-                }}
-              >
-                {t("providerEditor.addModel")}
-              </button>
               <button
                 type="button"
                 disabled={locked || !policy.accounts.length}
@@ -870,56 +793,8 @@ export function CodexProviderFields({
                   ? t("common.loading")
                   : t("codexProvider.fetchModels")}
               </button>
-              <button
-                type="button"
-                disabled={
-                  locked ||
-                  !policy.accounts.length ||
-                  !shown.length ||
-                  policy.mode === "usage"
-                }
-                title={t("codexProvider.testHint")}
-                onClick={() => void testModels()}
-              >
-                {testing ? t("common.loading") : t("codexProvider.testModels")}
-              </button>
             </div>
-            {!!Object.keys(tests).length && (
-              <div className="cx-tests" role="status">
-                {Object.entries(tests).map(([model, result]) => (
-                  <p key={model}>
-                    <code>{model}</code>{" "}
-                    {t(
-                      result.ok
-                        ? "codexProvider.testPassed"
-                        : "codexProvider.testFailed",
-                      { ms: result.elapsedMs },
-                    )}
-                  </p>
-                ))}
-              </div>
-            )}
-            <ProviderModelPreferences
-              models={preferences}
-              disabled={locked}
-              onChange={(models) =>
-                update({
-                  models: [...models, ...imagePicks] as Array<
-                    Record<string, unknown>
-                  >,
-                })
-              }
-            />
           </div>
-          <label className="cx-check pv-groups-only">
-            <input
-              type="checkbox"
-              checked={policy.groupsOnly}
-              disabled={locked}
-              onChange={(event) => update({ groupsOnly: event.target.checked })}
-            />
-            {t("codexProvider.groupsOnly")}
-          </label>
           <p className="pv-hint">{t(`codexProvider.${policy.mode}Hint`)}</p>
         </div>
       </div>

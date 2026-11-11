@@ -3842,6 +3842,8 @@ fn agent_desktop_bundles(app: &str) -> &'static [&'static str] {
         "zcode" => &["ZCode.app"],
         "kimi" => &["Kimi Code.app"],
         "deepseek-harness" => &["DeepSeek Harness.app"],
+        "cursor" => &["Cursor Private Inference.app", "Cursor.app"],
+        "t3code" => &["T3 Code.app", "T3 Code (Alpha).app"],
         _ => &[],
     }
 }
@@ -3854,6 +3856,7 @@ fn agent_installed_in(app: &str, desktop_roots: &[PathBuf], cli_dirs: &[PathBuf]
         "claude" | "codex" | "gemini" | "workbuddy" | "kimi" | "qwen" | "opencode" | "pi"
         | "openclaw" | "hermes" => app,
         "grokbuild" => "grok",
+        "cursor-cli" => "cursor-agent",
         _ => return false,
     };
     cli_dirs.iter().any(|dir| {
@@ -3875,7 +3878,15 @@ pub(crate) fn is_agent_installed(app: &str) -> bool {
             .installed_executable()
             .is_ok();
     }
-    let tool = if app == "grokbuild" { "grok" } else { app };
+    #[cfg(target_os = "windows")]
+    if matches!(app, "cursor" | "t3code") {
+        return desktop_apps::windows_executable(app).is_some();
+    }
+    let tool = match app {
+        "grokbuild" => "grok",
+        "cursor-cli" => "cursor-agent",
+        _ => app,
+    };
     desktop_apps::find(app).is_some()
         || agent_installed_in(app, &[], &build_tool_search_paths(tool))
 }
@@ -3901,6 +3912,35 @@ pub async fn get_agent_versions() -> Result<HashMap<String, AgentVersion>, Strin
 mod agent_installation_tests {
     use super::*;
 
+    #[test]
+    fn cursor_cli_presence_is_independent_of_the_editor() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join("Cursor.app"))?;
+        assert!(!agent_installed_in(
+            "cursor-cli",
+            &[dir.path().to_path_buf()],
+            &[]
+        ));
+        let binary = dir.path().join(if cfg!(windows) {
+            "cursor-agent.exe"
+        } else {
+            "cursor-agent"
+        });
+        std::fs::write(binary, "synthetic presence fixture")?;
+        assert!(agent_installed_in(
+            "cursor-cli",
+            &[],
+            &[dir.path().to_path_buf()]
+        ));
+        std::fs::create_dir(dir.path().join("T3 Code.app"))?;
+        assert!(agent_installed_in(
+            "t3code",
+            &[dir.path().to_path_buf()],
+            &[]
+        ));
+        Ok(())
+    }
     #[test]
     fn all_installable_cli_agents_are_detected_without_running_them() {
         let root = tempfile::tempdir().unwrap();

@@ -1,6 +1,7 @@
 import { Fragment, useId, useRef, useState } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import {
   closestCenter,
   DndContext,
@@ -17,6 +18,8 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import {
+  CheckCircle2,
+  Gift,
   ChevronRight,
   ExternalLink,
   RefreshCw,
@@ -93,6 +96,9 @@ const needsModelControl = (app: AppId | null) =>
   modelControlApps.some((known) => known === app);
 const isTrae = (app: AppId | null) => app === "trae" || app === "trae-intl";
 const websites: Record<AppId, string> = {
+  cursor: "https://cursor.com/",
+  "cursor-cli": "https://cursor.com/docs/cli/overview",
+  t3code: "https://t3.codes/",
   "claude-desktop": "https://claude.ai/download",
   claude: "https://code.claude.com/docs/en/overview",
   pi: "https://pi.dev/",
@@ -281,15 +287,20 @@ export function AgentConnectionsPage({
       return next;
     });
   }
-  function rescanInstallations() {
-    void Promise.all(
-      [
-        "agent-installations",
-        "agent-cli-version",
-        "agent-native-models",
-        "agent-desktop-versions",
-      ].map((key) => client.invalidateQueries({ queryKey: [key] })),
-    );
+  async function rescanInstallations() {
+    try {
+      await Promise.all(
+        [
+          "agent-installations",
+          "agent-cli-version",
+          "agent-native-models",
+          "agent-desktop-versions",
+        ].map((key) => client.invalidateQueries({ queryKey: [key] })),
+      );
+      toast.success(t("agentConnections.rescanSuccess"));
+    } catch {
+      toast.error(t("agentConnections.rescanFailed"));
+    }
   }
   function browseTools() {
     const details = moreTools.current;
@@ -582,7 +593,7 @@ export function AgentConnectionsPage({
         {t("homeAudit.doubaoLaunch")}
       </Button>
     );
-    const status =
+    let status =
       connection.isPending || (enabled && gateway.isPending)
         ? "checking"
         : connection.isError
@@ -626,6 +637,8 @@ export function AgentConnectionsPage({
                             : "recovery"
                         : "gatewayStopped"
                     : "off";
+    if (app === "cursor-cli" && !connection.isPending && !connection.isError)
+      status = "nativeOnly";
     const bypassed = status === "recovery";
     const reapplyButton = state?.recoveryPending &&
       !["bridge_pending", "bridge_selection_pending"].includes(
@@ -705,6 +718,75 @@ export function AgentConnectionsPage({
         </ModelPickerPopoverContent>
       </Popover>
     ) : null;
+    const checkinStatuses =
+      app === "workbuddy"
+        ? workbuddyCheckin.data?.accounts.length
+          ? workbuddyCheckin.data.accounts.map((account) => account.status)
+          : workbuddyCheckin.data
+            ? [workbuddyCheckin.data.nativeStatus]
+            : []
+        : app === "doubaowork"
+          ? (doubaoCheckin.data?.accounts ?? [])
+          : hasAgentRewards(app) && rewards[rewardApps.indexOf(app)]?.data
+            ? [rewards[rewardApps.indexOf(app)].data!]
+            : [];
+    const checkinComplete =
+      checkinStatuses.length > 0 &&
+      checkinStatuses.every((status) =>
+        ["claimed", "already_checked"].includes(
+          ("savedOutcome" in status ? status.savedOutcome : null) ??
+            status.outcome,
+        ),
+      );
+    const checkinCredit =
+      checkinComplete &&
+      checkinStatuses.every((status) => status.credit != null)
+        ? checkinStatuses.reduce((sum, status) => sum + (status.credit ?? 0), 0)
+        : null;
+    const checkinTrigger = (app === "workbuddy" ||
+      app === "doubaowork" ||
+      hasAgentRewards(app)) && (
+      <button
+        type="button"
+        className="mp-agent-start mp-agent-checkin-trigger"
+        data-complete={checkinComplete}
+        aria-label={`${checkinLabel(app)} ${name(app)}`}
+        aria-describedby={`${detailsId}-checkin-summary`}
+        aria-expanded={checkinApp === app}
+        aria-controls={`${detailsId}-checkin`}
+        onClick={() => {
+          setOpenedCheckins((previous) =>
+            previous.includes(app) ? previous : [...previous, app],
+          );
+          setCheckinApp((previous) => (previous === app ? null : app));
+        }}
+      >
+        {checkinComplete ? (
+          <CheckCircle2 size={14} aria-hidden="true" />
+        ) : (
+          <Gift size={14} aria-hidden="true" />
+        )}
+        <span id={`${detailsId}-checkin-summary`}>
+          {t("dailyCheckin.title")} ·{" "}
+          {checkinComplete
+            ? t(
+                app === "zcode"
+                  ? checkinCredit != null
+                    ? "dailyCheckin.claimedReward"
+                    : "dailyCheckin.claimed"
+                  : checkinCredit != null
+                    ? "dailyCheckin.todayReward"
+                    : "dailyCheckin.todayChecked",
+                { credit: checkinCredit },
+              )
+            : checkinLabel(app)}
+        </span>
+        {checkinComplete && (
+          <span className="sr-only">{checkinLabel(app)}</span>
+        )}
+        <ChevronDown size={11} aria-hidden="true" />
+      </button>
+    );
     return (
       <SortableAgentRow
         key={app}
@@ -744,6 +826,14 @@ export function AgentConnectionsPage({
                 updates={updates}
                 disabled={rowBusy(app)}
               />
+            )}
+            {!compact && checkinTrigger}
+            {["cursor", "cursor-cli", "t3code"].includes(app) && (
+              <span className="mp-agent-note">
+                {t(
+                  `agentConnections.${app === "cursor" ? "cursorLocalHint" : app === "cursor-cli" ? "cursorCliHint" : "t3codeHint"}`,
+                )}
+              </span>
             )}
             {app === "doubaowork" && (
               <span className="mp-agent-note">
@@ -851,26 +941,7 @@ export function AgentConnectionsPage({
           className={compact ? "mp-agent-panel-controls" : "contents"}
           hidden={compact && expanded !== app}
         >
-          {(app === "workbuddy" ||
-            app === "doubaowork" ||
-            hasAgentRewards(app)) && (
-            <button
-              type="button"
-              className="mp-agent-start mp-agent-checkin-trigger"
-              aria-label={`${checkinLabel(app)} ${name(app)}`}
-              aria-expanded={checkinApp === app}
-              aria-controls={`${detailsId}-checkin`}
-              onClick={() => {
-                setOpenedCheckins((previous) =>
-                  previous.includes(app) ? previous : [...previous, app],
-                );
-                setCheckinApp((previous) => (previous === app ? null : app));
-              }}
-            >
-              {checkinLabel(app)}
-              <ChevronDown size={11} aria-hidden="true" />
-            </button>
-          )}
+          {compact && checkinTrigger}
           {app === "doubaowork" && (
             <span
               className="mp-agent-start"
@@ -1011,7 +1082,19 @@ export function AgentConnectionsPage({
                               },
                             ]
                           : []),
-                        ...(catalog.isError ? [] : (catalog.data ?? [])).filter(
+                        ...(app === "cursor-cli"
+                          ? [
+                              {
+                                id: "auto",
+                                name: t("agentConnections.cursorAuto"),
+                                source: "native" as const,
+                                logo: "cursor",
+                              },
+                            ]
+                          : catalog.isError
+                            ? []
+                            : (catalog.data ?? [])
+                        ).filter(
                           (model) =>
                             app !== "claude-desktop" ||
                             (!!desktopVisibility.data &&
@@ -1029,6 +1112,7 @@ export function AgentConnectionsPage({
                             : []
                       }
                       onPick={(model) => void pickModel(app, model)}
+                      onDismiss={() => setPicking(null)}
                       onDisconnect={
                         enabled || orphaned || inactiveCodexIntent
                           ? () => {
@@ -1054,29 +1138,32 @@ export function AgentConnectionsPage({
                     )}
                   </>
                 )}
-                {(!catalog.data?.length || catalog.isError) && (
-                  <p className="mt-3 text-xs text-muted-foreground">
-                    {t("agentConnections.noModels")}
-                  </p>
-                )}
+                {app !== "cursor-cli" &&
+                  (!catalog.data?.length || catalog.isError) && (
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      {t("agentConnections.noModels")}
+                    </p>
+                  )}
               </ModelPickerPopoverContent>
             </Popover>
           )}
-          <Switch
-            className="mp-switch"
-            aria-label={t(`apps.${app}`)}
-            checked={enabled}
-            aria-busy={connection.isPending || !!operations[app]}
-            disabled={
-              rowBusy(app) ||
-              connection.isPending ||
-              connection.isError ||
-              (catalog.isPending && !enabled && app !== "doubaowork")
-            }
-            onCheckedChange={(checked) =>
-              checked ? connect(app) : setDisconnecting(app)
-            }
-          />
+          {app !== "cursor-cli" && (
+            <Switch
+              className="mp-switch"
+              aria-label={t(`apps.${app}`)}
+              checked={enabled}
+              aria-busy={connection.isPending || !!operations[app]}
+              disabled={
+                rowBusy(app) ||
+                connection.isPending ||
+                connection.isError ||
+                (catalog.isPending && !enabled && app !== "doubaowork")
+              }
+              onCheckedChange={(checked) =>
+                checked ? connect(app) : setDisconnecting(app)
+              }
+            />
+          )}
         </div>
         {compact && expanded === app && (
           <div

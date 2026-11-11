@@ -220,6 +220,9 @@ impl Provider {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork => (
                 str_at(settings.get("baseUrl")),
                 str_at(settings.get("apiKey")),

@@ -22,6 +22,9 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
+            | AppType::Cursor
+            | AppType::CursorCli
+            | AppType::T3Code
             | AppType::DoubaoWork
     ) {
         return Err(AppError::localized(
@@ -50,6 +53,9 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         | AppType::DeepSeekHarness
         | AppType::Trae
         | AppType::TraeIntl
+        | AppType::Cursor
+        | AppType::CursorCli
+        | AppType::T3Code
         | AppType::DoubaoWork => {
             unreachable!("handled above")
         }
@@ -72,6 +78,9 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         | AppType::DeepSeekHarness
         | AppType::Trae
         | AppType::TraeIntl
+        | AppType::Cursor
+        | AppType::CursorCli
+        | AppType::T3Code
         | AppType::DoubaoWork => {
             unreachable!("handled above")
         }

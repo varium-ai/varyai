@@ -54,6 +54,12 @@ fn request(protocol: Protocol, streaming: bool, history: bool) -> Value {
     if protocol != Protocol::Gemini {
         value["stream"] = json!(streaming);
     }
+    if protocol == Protocol::Responses {
+        value["input"].as_array_mut().unwrap().extend([
+            json!({"type":"function_call_output","id":"synthetic-page-context","namespace":"agent","name":"codex_apps_open_page","output":format!("Synthetic page context {SENSITIVE}")}),
+            json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_selected_page_part_1_of_1","output":"Synthetic page selection"}),
+        ]);
+    }
     if history {
         match protocol {
             Protocol::Chat => value["messages"].as_array_mut().unwrap().extend([
@@ -121,6 +127,7 @@ impl Drop for ResetSecurity {
 }
 
 fn runtime(base: &str, target: Protocol) -> Arc<Runtime> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let group: RoutingGroup = serde_json::from_value(json!({"id":"ir-wire-fixture","name":"Synthetic IR fixture","revision":0,"client":"codex","enabled":true,"members":[{"id":"only","providerId":"fixture-source","modelId":MODEL}],"defaultMemberId":"only","fallbackMemberIds":[],"intentRecognitionEnabled":false,"classifierTarget":null,"classificationBudgetMs":2000,"rules":[],"levels":[],"affinity":"strict"})).unwrap();
     let mut provider = Provider::with_id(
         "fixture-source".into(),
@@ -335,6 +342,14 @@ async fn all_twelve_ir_edges_forward_native_wires_after_security_inspection(
                         .json(&request(input, client_stream, history))
                         .send()
                         .await?;
+                    if !response.status().is_success() {
+                        let status = response.status();
+                        let failure: Value = response.json().await?;
+                        panic!(
+                            "edge {input:?}->{output:?}, history={history}: HTTP {status}, code={}",
+                            failure["error"]["code"]
+                        );
+                    }
                     assert_eq!(
                         response.status(),
                         http::StatusCode::OK,
@@ -345,6 +360,15 @@ async fn all_twelve_ir_edges_forward_native_wires_after_security_inspection(
                         tokio::time::timeout(Duration::from_secs(2), rx.recv())
                             .await?
                             .ok_or("missing native request")?;
+                    if input == Protocol::Responses {
+                        assert!(!body.to_string().contains(SENSITIVE));
+                        let parsed = parse::request(output, &body, &uri.to_string())?;
+                        for context in ["Synthetic page context", "Synthetic page selection"] {
+                            assert!(parsed.messages.iter().any(|message| message.role == "user"
+                                && message.parts.iter().any(|part| matches!(part, Part::Text { text, .. } if text.contains(context)))));
+                        }
+                        assert!(!body.to_string().contains("synthetic-page-context"));
+                    }
                     if history {
                         verify_wire(output, client_stream, &uri, &headers, &body);
                     }
@@ -372,8 +396,146 @@ async fn all_twelve_ir_edges_forward_native_wires_after_security_inspection(
 }
 
 #[tokio::test]
+#[serial_test::serial]
+async fn codex_tool_search_and_loaded_tools_round_trip_through_a_chat_model(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _security = ResetSecurity((*crate::proxy::security::get_security_runtime()).clone());
+    set_security_runtime_for_test(SecurityRuntimeConfig {
+        custom_rules: vec![CompiledCustomRule {
+            id: "synthetic-tool-search".into(),
+            name: "Synthetic marker".into(),
+            rule_type: "keyword".into(),
+            pattern: SENSITIVE.into(),
+            regex: None,
+            risk_level: RiskLevel::Medium,
+            action: AuditAction::Redact,
+            enabled: true,
+        }],
+        ..Default::default()
+    });
+    for streaming in [false, true] {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let turns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let upstream = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/*path", post(move |OriginalUri(uri): OriginalUri, headers: HeaderMap, Json(body): Json<Value>| {
+                let tx = tx.clone();
+                let turn = turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move {
+                    let _ = tx.send((uri, headers, body)).await;
+                    let message = match turn {
+                        0 => json!({"role":"assistant","content":null,"tool_calls":[{"id":"search-call","type":"function","function":{"name":"tool_search","arguments":"{\"query\":\"synthetic lookup\",\"limit\":2}"}}]}),
+                        1 => json!({"role":"assistant","content":null,"tool_calls":[{"id":"lookup-call","type":"function","function":{"name":"synthetic_ns__lookup","arguments":"{\"query\":\"synthetic\"}"}}]}),
+                        _ => json!({"role":"assistant","content":"Synthetic completion"}),
+                    };
+                    Json(json!({"id":"synthetic-chat-reply","model":MODEL,"choices":[{"index":0,"message":message,"finish_reason":if turn < 2 {"tool_calls"} else {"stop"}}]}))
+                }
+            }))).await
+        });
+        let runtime = runtime(&format!("http://{address}"), Protocol::Chat);
+        runtime.set_menu(runtime.global_snapshot()?.ok_or("missing global menu")?)?;
+        let server = ProxyServer::new(
+            ProxyConfig {
+                listen_port: 0,
+                ..Default::default()
+            },
+            Arc::new(Database::memory()?),
+            None,
+        )
+        .with_intent_runtime(runtime);
+        let ingress = server.start().await?;
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let mut input = vec![
+            json!({"role":"user","content":SENSITIVE}),
+            json!({"type":"function_call_output","id":"synthetic-page-context","namespace":"agent","name":"codex_apps_open_page","output":"Synthetic page context"}),
+            json!({"type":"function_call_output","namespace":"agent","name":"codex_apps_selected_page_part_1_of_1","output":"Synthetic page selection"}),
+        ];
+        for turn in 0..3 {
+            let response = client.post(format!("http://127.0.0.1:{}/intent/v1/responses", ingress.port))
+                .bearer_auth("synthetic-menu")
+                .header("session-id", "synthetic-tool-search-session")
+                .json(&json!({"model":"vary-auto/ir-wire-fixture","stream":streaming,"tools":[{"type":"tool_search","execution":"client"}],"input":input}))
+                .send().await?;
+            assert_eq!(
+                response.status(),
+                http::StatusCode::OK,
+                "turn {turn}, stream={streaming}"
+            );
+            let bytes = response.bytes().await?;
+            let (uri, headers, wire) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await?
+                .ok_or("missing Chat request")?;
+            assert!(uri.path().ends_with("/chat/completions"));
+            assert_eq!(headers["authorization"], format!("Bearer {SOURCE_KEY}"));
+            assert_eq!(wire["model"], MODEL);
+            assert!(!wire.to_string().contains(SENSITIVE));
+            let inspected = parse::request(Protocol::Chat, &wire, "/v1/chat/completions")?;
+            assert!(inspected.messages.iter().any(|message| message.role == "user"
+                && message.parts.iter().any(|part| matches!(part, Part::Text { text, .. } if text.contains("Synthetic page context")))));
+            assert!(wire["tools"]
+                .as_array()
+                .ok_or("missing Chat tools")?
+                .iter()
+                .any(|tool| tool["function"]["name"] == "tool_search"));
+            let rendered = if streaming {
+                let chunk = bytes.clone();
+                stream::collect(
+                    Box::pin(futures::stream::once(async move { Ok(chunk) })),
+                    Protocol::Responses,
+                )
+                .await?
+            } else {
+                reply::parse(Protocol::Responses, &serde_json::from_slice(&bytes)?)?
+            };
+            match turn {
+                0 => {
+                    assert!(String::from_utf8_lossy(&bytes).contains("tool_search_call"));
+                    assert!(rendered.parts.iter().any(|part| matches!(part, Part::ToolCall { id, name, .. } if id == "search-call" && name == "tool_search")));
+                    input.extend([
+                        json!({"type":"tool_search_call","call_id":"search-call","execution":"client","status":"completed","arguments":{"query":"synthetic lookup","limit":2}}),
+                        json!({"type":"tool_search_output","call_id":"search-call","execution":"client","status":"completed","tools":[{"type":"namespace","name":"synthetic_ns","tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}]}]}),
+                    ]);
+                }
+                1 => {
+                    assert!(wire["tools"]
+                        .as_array()
+                        .ok_or("missing loaded tools")?
+                        .iter()
+                        .any(|tool| tool["function"]["name"] == "synthetic_ns__lookup"));
+                    assert!(wire["messages"]
+                        .as_array()
+                        .ok_or("missing search history")?
+                        .iter()
+                        .any(|message| message["role"] == "tool"
+                            && message["tool_call_id"] == "search-call"));
+                    assert!(rendered.parts.iter().any(|part| matches!(part, Part::NamespacedToolCall { id, namespace, name, .. } if id == "lookup-call" && namespace == "synthetic_ns" && name == "lookup")));
+                    input.extend([
+                        json!({"type":"function_call","call_id":"lookup-call","namespace":"synthetic_ns","name":"lookup","arguments":"{\"query\":\"synthetic\"}"}),
+                        json!({"type":"function_call_output","call_id":"lookup-call","output":"Synthetic lookup result"}),
+                    ]);
+                }
+                _ => {
+                    assert!(wire["messages"]
+                        .as_array()
+                        .ok_or("missing lookup history")?
+                        .iter()
+                        .any(|message| message["role"] == "tool"
+                            && message["tool_call_id"] == "lookup-call"));
+                    assert!(rendered.parts.iter().any(|part| matches!(part, Part::Text { text, .. } if text == "Synthetic completion")));
+                }
+            }
+        }
+        server.stop().await?;
+        upstream.abort();
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn classic_ir_routes_map_models_once_and_preserve_tool_keys_after_overrides(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     use crate::{
         app_config::AppType,
         proxy::{

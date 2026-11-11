@@ -51,7 +51,6 @@ it.each([
           discovered={[]}
           apiKey=""
           busy={false}
-          error={null}
           region="global"
           regions={[]}
           onDraftChange={vi.fn()}

@@ -1171,6 +1171,10 @@
     "aboutHint": "檢視版本資訊與更新狀態。",
     "portableMode": "目前為可攜版，更新需手動下載。",
     "updateAvailable": "檢測到新版本：{{version}}",
+    "updateCurrentVersion": "目前版本 v{{version}}",
+    "restartToUpdate": "重新啟動以更新",
+    "updateRestartHint": "更新完成後，應用程式將自動重新啟動。",
+    "releaseNotesUnavailable": "尚未提供更新內容，可前往該版本發佈頁面查看詳情。",
     "updateDialogDescription": "Vary AI {{version}} 已準備就緒。安裝更新後，應用程式將重新啟動。",
     "updateLater": "稍後提醒",
     "downloadUpdate": "前往下載",
@@ -1317,7 +1321,10 @@
     "kimi": "Kimi Code",
     "qwen": "Qwen Code",
     "zcode": "ZCode",
-    "deepseek-harness": "DeepSeek Harness"
+    "deepseek-harness": "DeepSeek Harness",
+    "cursor": "Cursor Private Inference",
+    "cursor-cli": "Cursor CLI",
+    "t3code": "T3 Code"
   },
   "pi": {
     "empty": {
@@ -4971,6 +4978,22 @@
     "limit": "已達到供應商或模型數量上限。",
     "referenced": "既有路由正在使用此供應商，請先調整路由。",
     "sourceUnavailable": "匯入來源無法使用，請檢查已儲存的憑證。",
+    "errors": {
+      "loadProviders": "載入供應商清單失敗，請重新整理頁面後重試。",
+      "load": "開啟供應商設定失敗，請重新整理頁面後重試。",
+      "create": "建立 Codex 供應商設定失敗，請重試。",
+      "save": "儲存供應商失敗，變更已保留在表單中，請重試。",
+      "toggle": "變更供應商啟用狀態失敗，請重試。",
+      "remove": "刪除供應商失敗，請重新整理頁面後重試。",
+      "fetchModels": "取得模型清單失敗，請檢查帳號登入狀態或 API 憑證及網路後重試。",
+      "testModels": "模型測試未能完成，請檢查憑證、API 位址及網路後重試。",
+      "importAccount": "匯入帳號失敗，請確認帳號檔案可讀取且格式正確後重試。",
+      "account": "更新帳號資訊失敗，請檢查帳號狀態後重試。",
+      "signIn": "更新帳號登入狀態失敗，請使用所選帳號重新登入。",
+      "openWebsite": "開啟網站失敗，請重試或在瀏覽器中手動開啟。",
+      "invalid": "設定不完整或格式不正確，請檢查後重試。",
+      "invalidAccountFile": "帳號檔案格式不正確或缺少登入資訊，請選擇有效的 Codex 帳號 JSON 檔案。"
+    },
     "failed": "無法更新供應商目錄，請重新整理後重試。",
     "modelId": "模型 ID",
     "contextWindow": "上下文視窗（token）",
@@ -4995,6 +5018,11 @@
     "sameAsHint": "自動探索群組及補全缺少的模型資訊時，將此模型視為填寫的模型。傳給供應商的模型 ID 保持原樣。"
   },
   "agentConnections": {
+    "cursorLocalHint": "需要 Cursor Private Inference。連線後請完全退出並重新開啟；Cursor 內已儲存的閘道設定優先於此處的環境預設值。",
+    "cursorCliHint": "管理 Cursor 原生模型選擇，CLI 請求仍透過 Cursor 服務。",
+    "cursorAuto": "Auto · Cursor 原生",
+    "t3codeHint": "使用獨立的 VaryAI Codex 執行個體，請在 T3 Code 中使用該執行個體開始新對話。",
+
     "desktopStartingModelHint": "用戶端重新載入設定後，用於新聊天和新任務。請選擇可見模型；既有對話保留各自的模型選擇。",
     "modelControlHint": "儲存本機新對話的預設模型後，需透過 Vary AI 重新啟動用戶端才能套用。既有對話與遠端執行設定保留各自的選擇。",
     "modelControlTitle": "允許管理 {{app}} 的預設模型？",
@@ -5084,6 +5112,8 @@
     "moreHint": "未安裝的 CLI 可在這裡快速安裝；桌面工具前往官網安裝。安裝不會自動接入 Vary。",
     "website": "前往官網",
     "rescan": "重新偵測安裝",
+    "rescanSuccess": "工具安裝偵測完成",
+    "rescanFailed": "工具安裝偵測失敗，請重試",
     "emptyTitle": "尚未偵測到工具",
     "browseTools": "瀏覽可用工具",
     "empty": "安裝 CLI 或桌面工具後，點擊重新偵測。安裝不會自動接入 Vary。",
@@ -5095,6 +5125,7 @@
     "sessionHint": "接入已設定。請在工具中開啟新對話，並選擇 Vary 提供的模型。",
     "verifyHint": "在工具裡傳送一則訊息，再到「資料統計」確認請求是否經過 Vary。設定完成不代表上游模型已驗證可用。",
     "states": {
+      "nativeOnly": "原生模型",
       "codexProxyBlocked": "本機閘道經代理存取失敗 · 診斷結果",
       "checking": "偵測中…",
       "provider_missing": "缺少供應商定義 · 等待修復",
@@ -5524,10 +5555,11 @@
     "selected": "僅所選",
     "selectAll": "全選",
     "selectNone": "全不選",
-    "noModels": "尚未選取模型。請取得供應商清單或新增模型 ID。",
+    "noModels": "尚未選取模型。請取得供應商清單。",
     "addModelId": "新增模型 ID…",
     "addModel": "新增模型",
     "duplicate": "複製",
+    "copyTitle": "{{name}} 的副本",
     "copyName": "{{name}} 副本",
     "testHint": "向各協定傳送小型推論請求，最多偵測 {{count}} 個已選模型，每次偵測幾個。",
     "importedConnectionHint": "這裡的修改套用至共用供應商，原 Agent 設定會保留。",
@@ -5700,7 +5732,7 @@
     "hint_best": "每個模型系列只提供最新的模型。",
     "hint_usage": "僅保留用量查詢，不向 Agent 提供模型。",
     "optionalModels": "模型 ID，逗號分隔 · 例如 gpt-5.5, claude-sonnet-5",
-    "optionalHint": "選填：取得供應商模型清單後勾選，或直接填寫模型 ID。未選擇時，儲存後取得清單。",
+    "optionalHint": "選填：取得供應商模型清單後勾選。未選擇時，儲存後取得清單。",
     "pickedCount": "已選 {{count}} / {{total}}",
     "showOther": "顯示其餘 {{count}} 個",
     "more": "進階"
@@ -5945,5 +5977,23 @@
     "accountFailed": "登入已完成，但連線儲存失敗，請重試。",
     "codexHint": "瀏覽器可能會顯示 Codex，這是正常的。",
     "finishFailed": "無法儲存引導完成狀態，請重試；已儲存的連線會保留。"
+  },
+  "dailyCheckin": {
+    "title": "簽到福利",
+    "streak": "連續簽到",
+    "days": "{{count}} 天",
+    "noData": "暫無資料",
+    "progress": "最近 7 天簽到進度",
+    "progressHint": "根據官方回傳的連續簽到天數顯示，暫不提供逐日歷史記錄。",
+    "day": "第 {{count}} 天",
+    "complete": "已完成",
+    "pending": "未達成",
+    "unknown": "未知",
+    "notice": "僅支援部分 Agent，獎勵由官方發放",
+    "manage": "管理帳號",
+    "todayReward": "今日已領 +{{credit}}",
+    "todayChecked": "今日已簽到",
+    "claimedReward": "已領取 +{{credit}}",
+    "claimed": "已領取"
   }
 }

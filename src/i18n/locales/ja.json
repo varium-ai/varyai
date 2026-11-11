@@ -1171,6 +1171,10 @@
     "aboutHint": "バージョン情報と更新状況を表示します。",
     "portableMode": "ポータブルモード: 更新は手動ダウンロードが必要です。",
     "updateAvailable": "新しいバージョンがあります: {{version}}",
+    "updateCurrentVersion": "現在のバージョン v{{version}}",
+    "restartToUpdate": "再起動して更新",
+    "updateRestartHint": "更新のインストール後にアプリが再起動します。",
+    "releaseNotesUnavailable": "更新内容はまだ公開されていません。リリースページで詳細を確認できます。",
     "updateDialogDescription": "Vary AI {{version}} を利用できます。更新のインストール後、アプリが再起動します。",
     "updateLater": "後で通知",
     "downloadUpdate": "ダウンロードページを開く",
@@ -1316,7 +1320,10 @@
     "kimi": "Kimi Code",
     "qwen": "Qwen Code",
     "zcode": "ZCode",
-    "deepseek-harness": "DeepSeek Harness"
+    "deepseek-harness": "DeepSeek Harness",
+    "cursor": "Cursor Private Inference",
+    "cursor-cli": "Cursor CLI",
+    "t3code": "T3 Code"
   },
   "pi": {
     "empty": {
@@ -4970,6 +4977,22 @@
     "limit": "登録数の上限に達しました。",
     "referenced": "保存済みルートが使用しています。先にルートを更新してください。",
     "sourceUnavailable": "インポート元を使用できません。保存済み認証情報を確認してください。",
+    "errors": {
+      "loadProviders": "プロバイダー一覧を読み込めませんでした。ページを更新して再試行してください。",
+      "load": "プロバイダー設定を開けませんでした。ページを更新して再試行してください。",
+      "create": "Codex プロバイダー設定を作成できませんでした。再試行してください。",
+      "save": "プロバイダーを保存できませんでした。変更内容はフォームに保持されています。再試行してください。",
+      "toggle": "プロバイダーの有効状態を変更できませんでした。再試行してください。",
+      "remove": "プロバイダーを削除できませんでした。ページを更新して再試行してください。",
+      "fetchModels": "モデル一覧を取得できませんでした。ログイン状態または API 認証情報とネットワークを確認して再試行してください。",
+      "testModels": "モデルのテストを完了できませんでした。認証情報、API アドレス、ネットワークを確認して再試行してください。",
+      "importAccount": "アカウントをインポートできませんでした。アカウントファイルが読み取り可能で有効か確認して再試行してください。",
+      "account": "アカウント情報を更新できませんでした。アカウントの状態を確認して再試行してください。",
+      "signIn": "アカウントのログイン状態を更新できませんでした。選択したアカウントで再ログインしてください。",
+      "openWebsite": "ウェブサイトを開けませんでした。再試行するか、ブラウザーで開いてください。",
+      "invalid": "設定が不足しているか形式が無効です。項目を確認して再試行してください。",
+      "invalidAccountFile": "アカウントファイルが無効かログイン情報がありません。有効な Codex アカウント JSON ファイルを選択してください。"
+    },
     "failed": "カタログを更新できませんでした。再読み込みして再試行してください。",
     "modelId": "モデル ID",
     "contextWindow": "コンテキストウィンドウ（トークン）",
@@ -4994,6 +5017,11 @@
     "sameAsHint": "グループ検出と不足したカタログ情報の補完で、このモデルを指定したモデルとして扱います。送信するモデル ID は変わりません。"
   },
   "agentConnections": {
+    "cursorLocalHint": "Cursor Private Inference が必要です。接続後に完全に終了して再起動してください。Cursor に保存したゲートウェイ設定が環境の既定値より優先されます。",
+    "cursorCliHint": "Cursor のネイティブモデル選択を管理します。CLI リクエストは引き続き Cursor のサービスを使用します。",
+    "cursorAuto": "Auto · Cursor ネイティブ",
+    "t3codeHint": "独立した VaryAI Codex インスタンスを使用します。T3 Code でこのインスタンスを選び、新しいスレッドを開始してください。",
+
     "desktopStartingModelHint": "クライアントが設定を再読み込みした後、新しいチャットとタスクに使用します。表示中のモデルを選んでください。既存の会話の選択は保持されます。",
     "modelControlHint": "ローカルの新規チャットの既定モデルを保存し、Vary AI からクライアントを再起動して適用します。既存の会話とリモート実行環境の選択は保持されます。",
     "modelControlTitle": "{{app}} の既定モデルの管理を許可しますか？",
@@ -5083,6 +5111,8 @@
     "moreHint": "未インストールの CLI はここでインストールできます。デスクトップツールは公式サイトをご利用ください。インストールしても Vary には自動接続しません。",
     "website": "公式サイト",
     "rescan": "インストールを再確認",
+    "rescanSuccess": "ツールのインストール確認が完了しました",
+    "rescanFailed": "ツールのインストール確認に失敗しました。再試行してください。",
     "emptyTitle": "ツールがまだ検出されていません",
     "browseTools": "利用可能なツールを見る",
     "empty": "CLI またはデスクトップツールをインストールしてから、再検出してください。インストールだけでは Vary に接続されません。",
@@ -5094,6 +5124,7 @@
     "sessionHint": "接続設定が完了しました。新しいセッションを開始して Vary のモデルを選択してください。",
     "verifyHint": "ツールからメッセージを送信し、統計で Vary を経由したリクエストを確認してください。設定の完了だけでは上流モデルの動作確認にはなりません。",
     "states": {
+      "nativeOnly": "ネイティブモデル",
       "codexProxyBlocked": "プロキシ経由のローカル確認に失敗 · 診断結果",
       "checking": "確認中…",
       "provider_missing": "プロバイダー定義がありません · 修復待ち",
@@ -5523,10 +5554,11 @@
     "selected": "選択済みのみ",
     "selectAll": "すべて選択",
     "selectNone": "すべて解除",
-    "noModels": "モデル未選択。一覧を取得するか、モデル ID を追加してください。",
+    "noModels": "モデル未選択。一覧を取得してください。",
     "addModelId": "モデル ID を追加…",
     "addModel": "モデルを追加",
     "duplicate": "複製",
+    "copyTitle": "{{name}} のコピー",
     "copyName": "{{name}} のコピー",
     "testHint": "各 API に小さな推論リクエストを送り、選択モデルを最大 {{count}} 件、数件ずつテストします。",
     "importedConnectionHint": "ここでの変更は共有プロバイダーに適用されます。元の Agent 設定は保持されます。",
@@ -5699,7 +5731,7 @@
     "hint_best": "各モデル系列の最新モデルを提供します。",
     "hint_usage": "使用量の確認のみ。Agentにはモデルを提供しません。",
     "optionalModels": "モデル ID、カンマ区切り · 例：gpt-5.5, claude-sonnet-5",
-    "optionalHint": "任意：一覧を取得して選択するか、IDを入力します。未選択の場合は保存後に一覧を取得します。",
+    "optionalHint": "任意：一覧を取得して選択します。未選択の場合は保存後に一覧を取得します。",
     "pickedCount": "{{total}}件中{{count}}件を選択",
     "showOther": "残り{{count}}件を表示",
     "more": "詳細"
@@ -5944,5 +5976,23 @@
     "accountFailed": "ログインは完了しましたが、接続を保存できませんでした。再試行してください。",
     "codexHint": "ChatGPT のログイン中にブラウザーに Codex と表示される場合があります。正常な動作です。",
     "finishFailed": "セットアップの完了状態を保存できませんでした。再試行してください。保存済みの接続は保持されます。"
+  },
+  "dailyCheckin": {
+    "title": "チェックイン特典",
+    "streak": "連続チェックイン",
+    "days": "{{count}} 日",
+    "noData": "データなし",
+    "progress": "7 日間のチェックイン状況",
+    "progressHint": "公式サービスの連続チェックイン日数に基づく表示です。日別の履歴は提供されていません。",
+    "day": "{{count}} 日目",
+    "complete": "完了",
+    "pending": "未達成",
+    "unknown": "不明",
+    "notice": "対応する Agent のみ利用可能です。特典は公式サービスから付与されます。",
+    "manage": "アカウント管理",
+    "todayReward": "本日受取済み +{{credit}}",
+    "todayChecked": "本日チェックイン済み",
+    "claimedReward": "受取済み +{{credit}}",
+    "claimed": "受取済み"
   }
 }

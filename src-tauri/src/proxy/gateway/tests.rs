@@ -432,7 +432,14 @@ fn catalog_covers_every_agent_without_returning_credentials(
         .agents
         .iter()
         .any(|a| a.id == "trae-intl" && a.local_routing));
-    assert_eq!(value.agents.iter().filter(|a| !a.local_routing).count(), 1);
+    assert!(value
+        .agents
+        .iter()
+        .any(|a| a.id == "cursor-cli" && !a.local_routing));
+    for app in ["cursor", "t3code"] {
+        assert!(value.agents.iter().any(|a| a.id == app && a.local_routing));
+    }
+    assert_eq!(value.agents.iter().filter(|a| !a.local_routing).count(), 2);
     Ok(())
 }
 

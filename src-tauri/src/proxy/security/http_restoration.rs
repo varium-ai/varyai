@@ -925,6 +925,10 @@ fn extract_request_history(
                     })?;
                 }
                 Some("function_call_output" | "custom_tool_call_output") => {
+                    if crate::proxy::providers::codex_chat_common::is_unsolicited_page_context(item)
+                    {
+                        continue;
+                    }
                     let call_id = obj
                         .get("call_id")
                         .and_then(Value::as_str)
