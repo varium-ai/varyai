@@ -96,14 +96,9 @@ async fn model_identities_preserve_legacy_choices_and_survive_display_label_chan
             second,
         );
         assert_eq!(upgraded.model_map.get(name), Some(second));
+        assert!(name.contains("Zeta"), "{app} unreadable model");
         if matches!(app, "gemini" | "t3code") {
-            assert_eq!(
-                &name, second,
-                "stable native identity must not use a display label"
-            );
             assert!(name.is_ascii() && !name.contains(char::is_whitespace));
-        } else {
-            assert!(name.contains("Zeta"), "{app} unreadable model");
         }
         if app == "gemini" {
             assert_eq!(upgraded.model_map.get(&legacy), Some(second));

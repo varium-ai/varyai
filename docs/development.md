@@ -85,11 +85,19 @@ Claude Desktop fixtures use `Library/Application Support` on macOS and separate
 Windows, all under the temporary test home. Linux must assert that Desktop
 projection is rejected while retaining the portable client coverage.
 
+Gemini and T3 Code publish readable ASCII model aliases. Refreshes retain an
+existing readable alias when its display label changes, and keep historical
+identities addressable so existing model selections and sessions can continue.
+
 The Qoder TLS listener owns its accepted connection tasks and cancels and joins
-them during shutdown. Its certificate test keeps both an immediate same-address
-rebind assertion and pending TLS handshakes to verify that stopping the listener
-releases active sockets. The test uses an isolated certificate and never installs
-system trust.
+them during shutdown. `stop()` waits for the listener task to finish; a timeout
+must not detach it and report completion while it still owns sockets. A portable
+regression delays listener cleanup past the former three-second deadline and checks
+an immediate same-address rebind. It leaves the listener unconnected so Windows
+connection reuse restrictions do not obscure the shutdown check. The macOS
+certificate test also keeps an immediate rebind assertion and checks that pending
+TLS handshakes close. It uses an isolated certificate and never installs system
+trust.
 
 ## Toolchain dependency review
 
