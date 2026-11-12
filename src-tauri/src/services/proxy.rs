@@ -463,9 +463,6 @@ impl ProxyService {
         let agent_connections = Arc::new(super::agent_connections::Manager {
             root: intent_receipt.with_file_name("agent-connections"),
         });
-        if super::agent_connections::cursor::resume_after_reboot(&agent_connections).is_err() {
-            log::warn!("Cursor environment could not be restored; reconnect is required");
-        }
         for app in super::agent_connections::APPS
             .iter()
             .filter(|app| **app != "codex")
@@ -1395,7 +1392,6 @@ impl ProxyService {
                     .db
                     .get_bool_flag(super::trae_bridge::CONSENT_KEY)
                     .unwrap_or(false),
-            cursor: self.is_running().await && self.intent_runtime.connections.active("cursor"),
             t3code: self.is_running().await && self.intent_runtime.connections.active("t3code"),
             kimi: self.native_agent_active("kimi").await,
             qwen: self.native_agent_active("qwen").await,
@@ -1454,8 +1450,9 @@ impl ProxyService {
                 .get_bool_flag(super::qoder_proxy::ENABLED_KEY)
                 .map_err(|_| super::agent_connections::FAILED)?,
             // Desktop's shared adapter snapshots profiles rather than using legacy takeover.
-            "claude-desktop" | "opencode" | "openclaw" | "hermes" | "workbuddy-ai" | "cursor"
-            | "t3code" => false,
+            "claude-desktop" | "opencode" | "openclaw" | "hermes" | "workbuddy-ai" | "t3code" => {
+                false
+            }
             _ => return Err(super::agent_connections::FAILED.into()),
         })
     }

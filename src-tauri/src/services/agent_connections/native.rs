@@ -14,7 +14,6 @@ const STARTING_MODEL_APPS: &[&str] = &[
     "qwen",
     "zcode",
     "deepseek-harness",
-    "cursor-cli",
     "t3code",
 ];
 
@@ -64,7 +63,6 @@ fn selection(app: &str) -> Result<Option<String>, String> {
         );
     }
     let path = match app {
-        "cursor-cli" => super::cursor::cli_path(),
         "t3code" => super::t3code::settings_path(),
         "claude" => crate::config::get_claude_settings_path(),
         "codex" => crate::codex_config::get_codex_config_path(),
@@ -161,7 +159,6 @@ fn read_selection(app: &str, path: &Path) -> Result<Option<String>, String> {
         return Err(FAILED.into());
     }
     match app {
-        "cursor-cli" => model_string(value.pointer("/model/modelId")),
         "t3code" => model_string(value.pointer("/defaultModelSelection/model")),
         "claude-desktop" => model_string(value.pointer("/inferenceModels/0/name")),
         "deepseek-harness" => {
@@ -264,7 +261,6 @@ mod tests {
             ("qwen", r#"{"model":{"name":"GPT Example · Test provider · VaryAI"}}"#, "GPT Example · Test provider · VaryAI"),
             ("zcode", r#"{"config":{"defaultModelSelection":{"modelId":"native-zcode"}}}"#, "native-zcode"),
             ("zcode", r#"{"config":{"defaultModelSelection":{"modelId":"GPT Example · Test provider · VaryAI"}}}"#, "GPT Example · Test provider · VaryAI"),
-            ("cursor-cli", r#"{"model":{"modelId":"native-cursor"}}"#, "native-cursor"),
             ("t3code", r#"{"defaultModelSelection":{"instanceId":"personal","model":"native-t3"}}"#, "native-t3"),
             ("deepseek-harness", "- id: agent-default-model\n  config:\n    provider: deepseek-official\n    model: native-deepseek\n", "native-deepseek"),
         ] {

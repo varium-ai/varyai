@@ -357,16 +357,3 @@ it("keeps existing model preferences when sign-in renews the already bound accou
   ).toBeChecked();
   expect(routing.save).not.toHaveBeenCalled();
 });
-it("starts Cursor subscription login without offering unsupported proxy or callback inputs", async () => {
-  mount();
-  fireEvent.click(screen.getByRole("button", { name: "Cursor" }));
-  await waitFor(() =>
-    expect(native.start).toHaveBeenCalledWith("cursor", undefined),
-  );
-  expect(
-    screen.queryByRole("combobox", { name: "codexBrowser.proxy" }),
-  ).toBeNull();
-  expect(
-    screen.queryByRole("textbox", { name: "codexBrowser.callbackUrl" }),
-  ).toBeNull();
-});

@@ -1472,7 +1472,6 @@ pub fn run() {
             tray_panel::tray_panel_quit,
             commands::list_agent_connections,
             commands::get_agent_connection,
-            commands::get_cursor_installation,
             commands::diagnose_codex_proxy,
             commands::get_agent_native_model,
             commands::get_agent_model_control,

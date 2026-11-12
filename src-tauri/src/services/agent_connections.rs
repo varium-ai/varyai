@@ -1,7 +1,6 @@
 //! Agents consume a shared catalog. Receipts own only explicitly changed fields.
 mod bridge;
 mod claude_policy;
-pub(crate) mod cursor;
 pub(crate) mod desktop;
 pub(crate) mod desktop_config;
 mod document;
@@ -47,7 +46,6 @@ pub(crate) const APPS: &[&str] = &[
     "zcode",
     "deepseek-harness",
     "t3code",
-    "cursor",
 ];
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -422,7 +420,7 @@ impl FileEdit {
         allow_array: bool,
         update: impl FnOnce(&mut Value) -> Result<(), String>,
     ) -> Result<Self, String> {
-        let original = format.read(&path)?;
+        let original = read(&path)?;
         let before = format.parse(original.as_deref())?;
         if !allow_array && !before.is_object() {
             return Err(FAILED.into());
@@ -461,9 +459,7 @@ impl FileEdit {
         self
     }
     fn intact(&self) -> Result<bool, String> {
-        let live = self
-            .format
-            .parse(self.format.read(&self.path)?.as_deref())?;
+        let live = self.format.parse(read(&self.path)?.as_deref())?;
         if let Some(kind) = self.desktop {
             return desktop_config::intact(self, &live, kind);
         }
@@ -476,9 +472,7 @@ impl FileEdit {
         if let Some(kind) = self.desktop {
             return desktop_config::restoration(self, kind, false).map(|_| true);
         }
-        let live = self
-            .format
-            .parse(self.format.read(&self.path)?.as_deref())?;
+        let live = self.format.parse(read(&self.path)?.as_deref())?;
         let original = self.format.parse(self.original.as_deref())?;
         Ok(self.fields.iter().all(|field| {
             at(&live, field) == at(&self.installed, field)
@@ -500,13 +494,13 @@ impl FileEdit {
         if self.format.parse(self.original.as_deref())? == self.installed
             && !self.needs_jsonc_repair()
         {
-            return self.format.replace_checked(
+            return replace_checked(
                 &self.path,
                 self.original.as_deref(),
                 self.original.as_deref(),
             );
         }
-        self.format.replace_checked(
+        replace_checked(
             &self.path,
             self.original.as_deref(),
             Some(
@@ -523,7 +517,7 @@ impl FileEdit {
         if let Some(kind) = self.desktop {
             return desktop_config::restoration(self, kind, keep_changed)?.write();
         }
-        let text = self.format.read(&self.path)?;
+        let text = read(&self.path)?;
         let mut live = self.format.parse(text.as_deref())?;
         let original = self.format.parse(self.original.as_deref())?;
         // An already restored projection must not reformat later user edits.
@@ -581,8 +575,7 @@ impl FileEdit {
         } else {
             Some(self.format.encode(text.as_deref(), &live)?)
         };
-        self.format
-            .replace_checked(&self.path, text.as_deref(), restored.as_deref())?;
+        replace_checked(&self.path, text.as_deref(), restored.as_deref())?;
         Ok(())
     }
 }
@@ -1076,8 +1069,7 @@ impl Manager {
         let receipt = self.load(app)?.ok_or(CONFLICT)?;
         // Explicit reapplication retains external edits as the next connection's baseline.
         for file in &receipt.files {
-            file.format
-                .parse(file.format.read(&file.path)?.as_deref())?;
+            file.format.parse(read(&file.path)?.as_deref())?;
             if let Some(kind) = file.desktop {
                 desktop_config::restoration(file, kind, true)?;
             }
@@ -1312,13 +1304,6 @@ fn build_with_token(
     };
     match app {
         "t3code" => t3code::project(&t3code::settings_path(), &crate::services::intent_routing::client::menu_catalog(menu, "")?, &base, &mut receipt)?,
-        "cursor" => {
-            receipt.files.push(FileEdit::prepare_format(crate::config::get_home_dir().join(".cursor/varyai-environment.json"), Format::CursorEnvironment, |value| {
-                value["CURSOR_LOCAL_AGENT_BASE_URL"] = json!(format!("{base}/v1"));
-                value["CURSOR_LOCAL_AGENT_API_KEY"] = json!(token);
-                Ok(())
-            })?);
-        }
         "claude" => {
             let (catalog, selected) = projections::named_catalog(&catalog, selected, &mut receipt.model_map);
             receipt.files.push(FileEdit::prepare(crate::config::get_claude_settings_path(), |value| {

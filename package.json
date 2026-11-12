@@ -20,7 +20,6 @@
     "test:unit": "vitest run",
     "test:dev": "node --test scripts/tests/dev.node.mjs",
     "test:macos-dmg": "node --test scripts/tests/macos-dmg.node.mjs",
-    "test:cursor-subscription": "node --test src-tauri/resources/cursor-subscription/protocol.node.test.mjs src-tauri/resources/cursor-subscription/worker.node.test.mjs",
     "test:trae-bridge": "node --test src-tauri/resources/trae-bridge/*.node.cjs",
     "test:model-default": "node --test src-tauri/resources/model-default/*.node.cjs",
     "test:workbuddy-checkin-auth": "node --test src-tauri/resources/workbuddy-checkin-auth.node.cjs",

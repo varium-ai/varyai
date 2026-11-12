@@ -175,7 +175,6 @@ async fn query_kimi(api_key: &str) -> Result<SubscriptionQuota, String> {
                     0.0
                 };
                 tiers.push(QuotaTier {
-                    display: None,
                     name: "five_hour".to_string(),
                     utilization,
                     resets_at,
@@ -199,7 +198,6 @@ async fn query_kimi(api_key: &str) -> Result<SubscriptionQuota, String> {
             0.0
         };
         tiers.push(QuotaTier {
-            display: None,
             name: "weekly_limit".to_string(),
             utilization,
             resets_at,
@@ -304,7 +302,6 @@ fn parse_zhipu_token_tiers(data: &serde_json::Value) -> Vec<QuotaTier> {
     for (name, slot) in [(TIER_FIVE_HOUR, five_hour), (TIER_WEEKLY_LIMIT, weekly)] {
         if let Some((_, percentage, resets_at)) = slot {
             tiers.push(QuotaTier {
-                display: None,
                 name: name.to_string(),
                 utilization: percentage,
                 resets_at,
@@ -591,7 +588,6 @@ async fn query_zenmux(base_url: &str, api_key: &str) -> Result<SubscriptionQuota
         let used_usd = q5h.get("used_value_usd").and_then(parse_f64);
         let max_usd = q5h.get("max_value_usd").and_then(parse_f64);
         tiers.push(QuotaTier {
-            display: None,
             name: "five_hour".to_string(),
             utilization: usage_pct * 100.0,
             resets_at,
@@ -613,7 +609,6 @@ async fn query_zenmux(base_url: &str, api_key: &str) -> Result<SubscriptionQuota
         let used_usd = q7d.get("used_value_usd").and_then(parse_f64);
         let max_usd = q7d.get("max_value_usd").and_then(parse_f64);
         tiers.push(QuotaTier {
-            display: None,
             name: "weekly_limit".to_string(),
             utilization: usage_pct * 100.0,
             resets_at,
@@ -690,7 +685,6 @@ fn parse_minimax_tiers(body: &serde_json::Value) -> Vec<QuotaTier> {
             .and_then(|v| v.as_i64())
             .and_then(millis_to_iso8601);
         tiers.push(QuotaTier {
-            display: None,
             name: TIER_FIVE_HOUR.to_string(),
             utilization: 100.0 - remain_pct,
             resets_at,
@@ -710,7 +704,6 @@ fn parse_minimax_tiers(body: &serde_json::Value) -> Vec<QuotaTier> {
                 .and_then(|v| v.as_i64())
                 .and_then(millis_to_iso8601);
             tiers.push(QuotaTier {
-                display: None,
                 name: TIER_WEEKLY_LIMIT.to_string(),
                 utilization: 100.0 - remain_pct,
                 resets_at,
@@ -762,7 +755,6 @@ fn parse_opencode_go_tiers(body: &serde_json::Value) -> Vec<QuotaTier> {
             None
         };
         tiers.push(QuotaTier {
-            display: None,
             name: tier_name.to_string(),
             utilization: percent,
             resets_at,
@@ -1151,7 +1143,6 @@ fn parse_afp_tiers(result: &serde_json::Value) -> Vec<QuotaTier> {
         let utilization = used / quota * 100.0;
         let resets_at = win.get("ResetTime").and_then(extract_reset_time);
         tiers.push(QuotaTier {
-            display: None,
             name: name.to_string(),
             utilization,
             resets_at,
@@ -1211,7 +1202,6 @@ fn parse_coding_plan_tiers(result: &serde_json::Value) -> Vec<QuotaTier> {
             .or_else(|| item.get("ResetTimestamp"))
             .and_then(extract_reset_time);
         tiers.push(QuotaTier {
-            display: None,
             name: name.to_string(),
             utilization,
             resets_at,

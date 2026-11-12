@@ -508,9 +508,6 @@ impl Decoder {
                 if u.get("cache_creation_input_tokens").is_some() {
                     self.usage.cache_write = next.cache_write;
                 }
-                if next.deferred.is_some() {
-                    self.usage.deferred = next.deferred;
-                }
                 e.push(Event::Usage(self.usage.clone()));
                 if let Some(s) = v["delta"]["stop_reason"].as_str() {
                     self.finished = true;

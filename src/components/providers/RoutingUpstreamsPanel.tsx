@@ -783,7 +783,6 @@ export function RoutingUpstreamsPanel({
         ? record.source.kind === "codex"
           ? "ChatGPT"
           : {
-              cursor: "Cursor",
               github_copilot: "GitHub Copilot",
               xai_oauth: "Grok",
               claude: "Claude",

@@ -1391,8 +1391,6 @@
     "qwen": "Qwen Code",
     "zcode": "ZCode",
     "deepseek-harness": "DeepSeek Harness",
-    "cursor": "Cursor",
-    "cursor-cli": "Cursor CLI",
     "t3code": "T3 Code"
   },
   "pi": {
@@ -5073,13 +5071,6 @@
     "sameAsHint": "Treat this model as the specified model when finding groups and filling missing catalog facts. The upstream model ID stays unchanged."
   },
   "agentConnections": {
-    "cursorCloudHint": "A single entry for Cursor desktop and CLI. Standard Cursor uses Cursor’s cloud service; a public HTTPS gateway is required to use VaryAI models. CLI Auto affects only cursor-agent.",
-    "cursorCliAuto": "Cursor CLI: select Auto",
-    "cursorLocalHint": "Requires Cursor Private Inference. Quit and reopen after connecting. A gateway saved in Cursor takes priority over these environment defaults.",
-    "cursorCliHint": "Manages Cursor’s native model selection. CLI requests continue through Cursor’s service.",
-    "cursorAuto": "Auto · Cursor native",
-    "t3codeHint": "Uses a separate VaryAI Codex instance. Start new threads with this instance in T3 Code.",
-
     "desktopStartingModelHint": "Used for new Desktop chats and tasks after the client reloads its configuration. Choose a visible model; existing conversations keep their own choices.",
     "modelControlHint": "Save a default for new local chats, then restart the client through Vary AI to apply it. Existing conversations and remote runtime profiles retain their choices.",
     "modelControlTitle": "Allow default-model control for {{app}}?",
@@ -5180,7 +5171,6 @@
     "sessionHint": "Connection configured. Start a new session in this tool and choose a model from Vary’s shared catalog.",
     "verifyHint": "Send a message in the tool, then check Statistics to verify that requests reach Vary. A configured connection alone does not verify an upstream model.",
     "states": {
-      "nativeOnly": "Native models",
       "codexProxyBlocked": "Local gateway blocked via proxy · diagnostic",
       "checking": "Checking…",
       "provider_missing": "Provider definition missing · waiting for repair",
@@ -5920,9 +5910,6 @@
     "openLogin": "Open sign-in page"
   },
   "nativeSubscription": {
-    "hint_cursor": "Uses your Cursor subscription and its account model catalog. Sign in in the browser, import a local Cursor CLI login, or import account JSON. Node.js 20.19 or later is required.",
-    "cursorRuntime": "Install Node.js 20.19 or later and restart VaryAI to use Cursor subscriptions.",
-    "cursorProxyUnsupported": "Cursor subscription sign-in does not support a custom proxy.",
     "callbackInvalid": "The callback URL does not match this sign-in. Copy the complete final address from your browser.",
     "proxyInvalid": "Enter an HTTP, HTTPS or SOCKS proxy URL.",
     "authorizationUrl": "Authorization URL",

@@ -38,7 +38,6 @@ import _traeIntl from "./trae-intl.png";
 import _kimi_code from "./kimi-code.png";
 import _qwen_code from "./qwen-code.png";
 import _zcode from "./zcode.png";
-import _cursor from "./cursor.png";
 import _t3code from "./t3code.svg";
 import _together from "./provider-together-color.svg?url";
 import _fireworks from "./provider-fireworks-color.svg?url";
@@ -173,7 +172,6 @@ export const iconUrls: Record<string, string> = {
   "kimi-code": _kimi_code,
   "qwen-code": _qwen_code,
   zcode: _zcode,
-  cursor: _cursor,
   t3code: _t3code,
 };
 

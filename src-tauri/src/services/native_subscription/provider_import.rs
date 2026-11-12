@@ -25,9 +25,6 @@ pub(crate) fn parse(
     row: &Value,
 ) -> Result<ImportedAccount, String> {
     supported(provider)?;
-    if provider == SubscriptionProvider::Cursor {
-        return Err(INVALID.into());
-    }
     let auth = &row["auth"];
     let mut account = Account {
         id: String::new(),

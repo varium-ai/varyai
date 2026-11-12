@@ -74,9 +74,7 @@ function readAgentOrder(): AppId[] {
       localStorage.getItem(orderStorageKey) ?? "null",
     );
     if (Array.isArray(saved)) {
-      const known = saved
-        .map((app) => (app === "cursor-cli" ? "cursor" : app))
-        .filter((app): app is AppId => APP_IDS.includes(app));
+      const known = saved.filter((app): app is AppId => APP_IDS.includes(app));
       return [...new Set([...known, ...APP_IDS])];
     }
   } catch {
@@ -97,8 +95,6 @@ const needsModelControl = (app: AppId | null) =>
   modelControlApps.some((known) => known === app);
 const isTrae = (app: AppId | null) => app === "trae" || app === "trae-intl";
 const websites: Record<AppId, string> = {
-  cursor: "https://cursor.com/",
-  "cursor-cli": "https://cursor.com/docs/cli/overview",
   t3code: "https://t3.codes/",
   "claude-desktop": "https://claude.ai/download",
   claude: "https://code.claude.com/docs/en/overview",
@@ -147,20 +143,6 @@ export function AgentConnectionsPage({
     isPending: connections.some((query) => query.isPending),
   };
   const installations = useAgentInstallations();
-  const cursorInstallation = useQuery({
-    queryKey: ["cursor-installation"],
-    queryFn: agentConnectionsApi.cursorInstallation,
-    enabled: !!(
-      installations.data?.cursor || installations.data?.["cursor-cli"]
-    ),
-    refetchInterval: 30_000,
-  });
-  const cursorLocal =
-    !cursorInstallation.isError &&
-    cursorInstallation.data?.desktop === "private-inference";
-  const cursorCli =
-    !cursorInstallation.isError && cursorInstallation.data?.cli === true;
-
   const workbuddyCheckin = useQuery({
     queryKey: ["workbuddyCheckin", "accounts"],
     queryFn: workbuddyCheckinApi.accounts,
@@ -226,20 +208,11 @@ export function AgentConnectionsPage({
   });
   const nativeModels = useQueries({
     queries: APP_IDS.map((app) => ({
-      queryKey: [
-        "agent-native-models",
-        app,
-        ...(app === "cursor" ? [cursorLocal, cursorCli] : []),
-      ],
+      queryKey: ["agent-native-models", app],
       queryFn: () =>
-        nativePicker(app) ||
-        needsModelControl(app) ||
-        isTrae(app) ||
-        (app === "cursor" && !cursorCli)
+        nativePicker(app) || needsModelControl(app) || isTrae(app)
           ? Promise.resolve({ app, model: null, available: false })
-          : agentConnectionsApi.nativeModel(
-              app === "cursor" ? "cursor-cli" : app,
-            ),
+          : agentConnectionsApi.nativeModel(app),
       refetchInterval: 5000,
     })),
   });
@@ -314,7 +287,6 @@ export function AgentConnectionsPage({
   function rescanInstallations() {
     void Promise.all(
       [
-        "cursor-installation",
         "agent-installations",
         "agent-cli-version",
         "agent-native-models",
@@ -361,14 +333,11 @@ export function AgentConnectionsPage({
     app: AppId,
     enabled: boolean,
     model = selected || catalog.data?.[0]?.id || null,
-    target: AppId = app === "cursor" && !cursorLocal && enabled
-      ? "cursor-cli"
-      : app,
   ) {
     if (!beginOperation(app, enabled ? "connecting" : "disconnecting")) return;
     setError(null);
     try {
-      await agentConnectionsApi.set(target, enabled, enabled ? model : null);
+      await agentConnectionsApi.set(app, enabled, enabled ? model : null);
       setSetup((current) => (current === app ? null : current));
       setPicking((current) => (current === app ? null : current));
       setDisconnecting((current) => (current === app ? null : current));
@@ -549,8 +518,6 @@ export function AgentConnectionsPage({
   function row(app: AppId) {
     const connection = connections[APP_IDS.indexOf(app)];
     const state = connection.data;
-    const showModelPicker =
-      !nativePicker(app) && (app !== "cursor" || cursorLocal || cursorCli);
     const nativeQuery = nativeModels[APP_IDS.indexOf(app)];
     const enabled = !!state?.enabled;
     const orphaned = app === "codex" && state?.recoveryReason === "orphaned";
@@ -588,10 +555,7 @@ export function AgentConnectionsPage({
       (!state.recoveryPending ||
         (isTrae(app) && state.recoveryReason === "bridge_pending"));
     const native = nativeQuery.data;
-    const nativeAvailable =
-      native?.available &&
-      !nativeQuery.isError &&
-      !(app === "cursor" && cursorLocal);
+    const nativeAvailable = native?.available && !nativeQuery.isError;
     const nativeModel =
       app === "opencode"
         ? native?.model?.replace(/^[^/]+\//, "")
@@ -621,7 +585,7 @@ export function AgentConnectionsPage({
         {t("homeAudit.doubaoLaunch")}
       </Button>
     );
-    let status =
+    const status =
       connection.isPending || (enabled && gateway.isPending)
         ? "checking"
         : connection.isError
@@ -665,21 +629,8 @@ export function AgentConnectionsPage({
                             : "recovery"
                         : "gatewayStopped"
                     : "off";
-    if (
-      app === "cursor" &&
-      !cursorLocal &&
-      !connection.isPending &&
-      !connection.isError
-    ) {
-      status = cursorInstallation.isError
-        ? "unavailable"
-        : cursorInstallation.isPending
-          ? "checking"
-          : "nativeOnly";
-    }
     const bypassed = status === "recovery";
-    const reapplyButton = (app !== "cursor" || cursorLocal) &&
-      state?.recoveryPending &&
+    const reapplyButton = state?.recoveryPending &&
       !["bridge_pending", "bridge_selection_pending"].includes(
         state.recoveryReason ?? "",
       ) &&
@@ -867,13 +818,6 @@ export function AgentConnectionsPage({
               />
             )}
             {!compact && checkinTrigger}
-            {["cursor", "t3code"].includes(app) && (
-              <span className="mp-agent-note">
-                {t(
-                  `agentConnections.${app === "cursor" ? (cursorLocal ? "cursorLocalHint" : "cursorCloudHint") : "t3codeHint"}`,
-                )}
-              </span>
-            )}
             {app === "doubaowork" && (
               <span className="mp-agent-note">
                 {t("agentConnections.auditOnly")}
@@ -991,22 +935,7 @@ export function AgentConnectionsPage({
               <span>{t("agentConnections.officialModels")}</span>
             </span>
           )}
-          {app === "cursor" && !cursorLocal && !cursorCli && (
-            <span className="mp-agent-start" role="note">
-              {t("agentConnections.officialModels")}
-            </span>
-          )}
-          {app === "cursor" && cursorLocal && cursorCli && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={rowBusy(app)}
-              onClick={() => void apply(app, true, "auto", "cursor-cli")}
-            >
-              {t("agentConnections.cursorCliAuto")}
-            </Button>
-          )}
-          {showModelPicker && (
+          {!nativePicker(app) && (
             <Popover
               open={picking === app}
               onOpenChange={(open) => {
@@ -1136,19 +1065,7 @@ export function AgentConnectionsPage({
                               },
                             ]
                           : []),
-                        ...(app === "cursor" && !cursorLocal
-                          ? [
-                              {
-                                id: "auto",
-                                name: t("agentConnections.cursorAuto"),
-                                source: "native" as const,
-                                logo: "cursor",
-                              },
-                            ]
-                          : catalog.isError
-                            ? []
-                            : (catalog.data ?? [])
-                        ).filter(
+                        ...(catalog.isError ? [] : (catalog.data ?? [])).filter(
                           (model) =>
                             app !== "claude-desktop" ||
                             (!!desktopVisibility.data &&
@@ -1191,32 +1108,29 @@ export function AgentConnectionsPage({
                     )}
                   </>
                 )}
-                {(app !== "cursor" || cursorLocal) &&
-                  (!catalog.data?.length || catalog.isError) && (
-                    <p className="mt-3 text-xs text-muted-foreground">
-                      {t("agentConnections.noModels")}
-                    </p>
-                  )}
+                {(!catalog.data?.length || catalog.isError) && (
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    {t("agentConnections.noModels")}
+                  </p>
+                )}
               </ModelPickerPopoverContent>
             </Popover>
           )}
-          {(app !== "cursor" || cursorLocal || enabled) && (
-            <Switch
-              className="mp-switch"
-              aria-label={t(`apps.${app}`)}
-              checked={enabled}
-              aria-busy={connection.isPending || !!operations[app]}
-              disabled={
-                rowBusy(app) ||
-                connection.isPending ||
-                connection.isError ||
-                (catalog.isPending && !enabled && app !== "doubaowork")
-              }
-              onCheckedChange={(checked) =>
-                checked ? connect(app) : setDisconnecting(app)
-              }
-            />
-          )}
+          <Switch
+            className="mp-switch"
+            aria-label={t(`apps.${app}`)}
+            checked={enabled}
+            aria-busy={connection.isPending || !!operations[app]}
+            disabled={
+              rowBusy(app) ||
+              connection.isPending ||
+              connection.isError ||
+              (catalog.isPending && !enabled && app !== "doubaowork")
+            }
+            onCheckedChange={(checked) =>
+              checked ? connect(app) : setDisconnecting(app)
+            }
+          />
         </div>
         {compact && expanded === app && (
           <div

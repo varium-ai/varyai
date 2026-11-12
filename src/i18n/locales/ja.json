@@ -1317,8 +1317,6 @@
     "qwen": "Qwen Code",
     "zcode": "ZCode",
     "deepseek-harness": "DeepSeek Harness",
-    "cursor": "Cursor",
-    "cursor-cli": "Cursor CLI",
     "t3code": "T3 Code"
   },
   "pi": {
@@ -4997,13 +4995,6 @@
     "sameAsHint": "グループ検出と不足したカタログ情報の補完で、このモデルを指定したモデルとして扱います。送信するモデル ID は変わりません。"
   },
   "agentConnections": {
-    "cursorCloudHint": "Cursor デスクトップと CLI をまとめて管理します。通常版 Cursor はクラウド経由のため、VaryAI モデルには公開 HTTPS ゲートウェイが必要です。CLI Auto は cursor-agent のみを変更します。",
-    "cursorCliAuto": "Cursor CLI：Auto に設定",
-    "cursorLocalHint": "Cursor Private Inference が必要です。接続後に完全に終了して再起動してください。Cursor に保存したゲートウェイ設定が環境の既定値より優先されます。",
-    "cursorCliHint": "Cursor のネイティブモデル選択を管理します。CLI リクエストは引き続き Cursor のサービスを使用します。",
-    "cursorAuto": "Auto · Cursor ネイティブ",
-    "t3codeHint": "独立した VaryAI Codex インスタンスを使用します。T3 Code でこのインスタンスを選び、新しいスレッドを開始してください。",
-
     "desktopStartingModelHint": "クライアントが設定を再読み込みした後、新しいチャットとタスクに使用します。表示中のモデルを選んでください。既存の会話の選択は保持されます。",
     "modelControlHint": "ローカルの新規チャットの既定モデルを保存し、Vary AI からクライアントを再起動して適用します。既存の会話とリモート実行環境の選択は保持されます。",
     "modelControlTitle": "{{app}} の既定モデルの管理を許可しますか？",
@@ -5104,7 +5095,6 @@
     "sessionHint": "接続設定が完了しました。新しいセッションを開始して Vary のモデルを選択してください。",
     "verifyHint": "ツールからメッセージを送信し、統計で Vary を経由したリクエストを確認してください。設定の完了だけでは上流モデルの動作確認にはなりません。",
     "states": {
-      "nativeOnly": "ネイティブモデル",
       "codexProxyBlocked": "プロキシ経由のローカル確認に失敗 · 診断結果",
       "checking": "確認中…",
       "provider_missing": "プロバイダー定義がありません · 修復待ち",
@@ -5844,9 +5834,6 @@
     "openLogin": "ログインページを開く"
   },
   "nativeSubscription": {
-    "hint_cursor": "Cursor サブスクリプションとアカウントで利用可能なモデルを使用します。ブラウザーでのログイン、ローカル Cursor CLI のログイン、アカウント JSON のインポートに対応します。Node.js 20.19 以降が必要です。",
-    "cursorRuntime": "Cursor サブスクリプションを使用するには Node.js 20.19 以降をインストールし、VaryAI を再起動してください。",
-    "cursorProxyUnsupported": "Cursor サブスクリプションのログインはカスタムプロキシに対応していません。",
     "callbackInvalid": "コールバック URL がこのログインと一致しません。ブラウザーから最後のアドレス全体をコピーしてください。",
     "proxyInvalid": "HTTP、HTTPS、または SOCKS プロキシ URL を入力してください。",
     "authorizationUrl": "認証 URL",

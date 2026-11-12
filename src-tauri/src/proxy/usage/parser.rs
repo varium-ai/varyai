@@ -100,27 +100,6 @@ impl TokenUsage {
 }
 
 impl TokenUsage {
-    // The main wire counts describe this context; only persistence adds prior steps.
-    fn with_deferred(mut self, usage: &Value, includes_cache: bool) -> Self {
-        if let Some(deferred) = usage.get("varyai_deferred").filter(|v| v.is_object()) {
-            let count =
-                |field: &str| deferred[field].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32;
-            let read = openai_cache_read_tokens(deferred);
-            let write = openai_cache_write_tokens(deferred);
-            let prompt = count("prompt_tokens");
-            self.input_tokens = self.input_tokens.saturating_add(if includes_cache {
-                prompt
-            } else {
-                prompt.saturating_sub(read).saturating_sub(write)
-            });
-            self.output_tokens = self
-                .output_tokens
-                .saturating_add(count("completion_tokens"));
-            self.cache_read_tokens = self.cache_read_tokens.saturating_add(read);
-            self.cache_creation_tokens = self.cache_creation_tokens.saturating_add(write);
-        }
-        self
-    }
     /// 从 Claude API 非流式响应解析
     pub fn from_claude_response(body: &Value) -> Option<Self> {
         let usage = body.get("usage")?;
@@ -131,23 +110,20 @@ impl TokenUsage {
             .map(|s| s.to_string());
         let message_id = response_id(body, "id");
 
-        Some(
-            Self {
-                input_tokens: usage.get("input_tokens")?.as_u64()? as u32,
-                output_tokens: usage.get("output_tokens")?.as_u64()? as u32,
-                cache_read_tokens: usage
-                    .get("cache_read_input_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32,
-                cache_creation_tokens: usage
-                    .get("cache_creation_input_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32,
-                model,
-                message_id,
-            }
-            .with_deferred(usage, false),
-        )
+        Some(Self {
+            input_tokens: usage.get("input_tokens")?.as_u64()? as u32,
+            output_tokens: usage.get("output_tokens")?.as_u64()? as u32,
+            cache_read_tokens: usage
+                .get("cache_read_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+            cache_creation_tokens: usage
+                .get("cache_creation_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+            model,
+            message_id,
+        })
     }
 
     /// 从 Claude API 流式响应解析
@@ -260,14 +236,6 @@ impl TokenUsage {
         // （input==0 && output==0 但 cache_read>0）是真实的 cache-read 计费，必须保留。
         // Gemini→Anthropic 路径在 input 改为 fresh(promptTokenCount - cachedContentTokenCount)
         // 后尤其会出现这种全缓存场景；旧 gate 会把它当成"无 usage"丢弃。
-        if let Some(deferred) = events
-            .iter()
-            .rev()
-            .filter_map(|event| event.get("usage"))
-            .find(|usage| usage.get("varyai_deferred").is_some())
-        {
-            usage = usage.with_deferred(deferred, false);
-        }
         if usage.has_billable_tokens() {
             usage.model = model;
             usage.message_id = message_id;
@@ -306,17 +274,14 @@ impl TokenUsage {
         let cached_tokens = openai_cache_read_tokens(usage);
         let cache_write_tokens = openai_cache_write_tokens(usage);
 
-        Some(
-            Self {
-                input_tokens: input_tokens? as u32,
-                output_tokens: output_tokens? as u32,
-                cache_read_tokens: cached_tokens,
-                cache_creation_tokens: cache_write_tokens,
-                model,
-                message_id: response_id(body, "id"),
-            }
-            .with_deferred(usage, true),
-        )
+        Some(Self {
+            input_tokens: input_tokens? as u32,
+            output_tokens: output_tokens? as u32,
+            cache_read_tokens: cached_tokens,
+            cache_creation_tokens: cache_write_tokens,
+            model,
+            message_id: response_id(body, "id"),
+        })
     }
 
     /// 智能 Codex 响应解析 - 自动检测 OpenAI 或 Codex 格式
@@ -396,17 +361,14 @@ impl TokenUsage {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        Some(
-            Self {
-                input_tokens: prompt_tokens as u32,
-                output_tokens: completion_tokens as u32,
-                cache_read_tokens: cached_tokens,
-                cache_creation_tokens: cache_write_tokens,
-                model,
-                message_id: response_id(body, "id"),
-            }
-            .with_deferred(usage, true),
-        )
+        Some(Self {
+            input_tokens: prompt_tokens as u32,
+            output_tokens: completion_tokens as u32,
+            cache_read_tokens: cached_tokens,
+            cache_creation_tokens: cache_write_tokens,
+            model,
+            message_id: response_id(body, "id"),
+        })
     }
 
     /// 从 OpenAI Chat Completions API 流式响应解析
@@ -446,23 +408,17 @@ impl TokenUsage {
         // 这包含了 candidatesTokenCount + thoughtsTokenCount
         let output_tokens = total_tokens.saturating_sub(prompt_tokens);
 
-        Some(
-            Self {
-                input_tokens: prompt_tokens,
-                output_tokens,
-                cache_read_tokens: usage
-                    .get("cachedContentTokenCount")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32,
-                cache_creation_tokens: usage["varyai_cache_write_tokens"]
-                    .as_u64()
-                    .unwrap_or(0)
-                    .min(u32::MAX as u64) as u32,
-                model,
-                message_id: response_id(body, "responseId"),
-            }
-            .with_deferred(usage, true),
-        )
+        Some(Self {
+            input_tokens: prompt_tokens,
+            output_tokens,
+            cache_read_tokens: usage
+                .get("cachedContentTokenCount")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+            cache_creation_tokens: 0,
+            model,
+            message_id: response_id(body, "responseId"),
+        })
     }
 
     /// 从 Gemini API 流式响应解析
@@ -471,7 +427,6 @@ impl TokenUsage {
         let mut total_input = 0u32;
         let mut total_tokens = 0u32;
         let mut total_cache_read = 0u32;
-        let mut total_cache_write = 0u32;
         let mut model: Option<String> = None;
         let mut message_id: Option<String> = None;
 
@@ -489,10 +444,6 @@ impl TokenUsage {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0) as u32;
 
-                total_cache_write = usage["varyai_cache_write_tokens"]
-                    .as_u64()
-                    .unwrap_or(0)
-                    .min(u32::MAX as u64) as u32;
                 // 缓存读取 tokens
                 total_cache_read = usage
                     .get("cachedContentTokenCount")
@@ -514,24 +465,18 @@ impl TokenUsage {
         // 输出 tokens = 总 tokens - 输入 tokens
         let total_output = total_tokens.saturating_sub(total_input);
 
-        let usage = Self {
-            input_tokens: total_input,
-            output_tokens: total_output,
-            cache_read_tokens: total_cache_read,
-            cache_creation_tokens: total_cache_write,
-            model,
-            message_id,
+        if total_input > 0 || total_output > 0 {
+            Some(Self {
+                input_tokens: total_input,
+                output_tokens: total_output,
+                cache_read_tokens: total_cache_read,
+                cache_creation_tokens: 0,
+                model,
+                message_id,
+            })
+        } else {
+            None
         }
-        .with_deferred(
-            chunks
-                .iter()
-                .rev()
-                .filter_map(|chunk| chunk.get("usageMetadata"))
-                .find(|usage| usage.get("varyai_deferred").is_some())
-                .unwrap_or(&Value::Null),
-            true,
-        );
-        usage.has_billable_tokens().then_some(usage)
     }
 }
 

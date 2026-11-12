@@ -12,8 +12,6 @@ const AGENTS: &[&str] = &[
     "kimi",
     "zcode",
     "deepseek-harness",
-    "cursor",
-    "cursor-cli",
     "t3code",
 ];
 
@@ -53,12 +51,7 @@ fn detect_in(
     } else {
         agent_desktop_bundles(app)
     };
-    let cli_supported = matches!(app, "workbuddy" | "kimi" | "qwen" | "cursor" | "cursor-cli");
-    let tool = if matches!(app, "cursor" | "cursor-cli") {
-        "cursor-agent"
-    } else {
-        app
-    };
+    let cli_supported = matches!(app, "workbuddy" | "kimi" | "qwen");
     let mut result = AgentVersion {
         supported: cli_supported || (desktop_supported && !bundles.is_empty()),
         installed: false,
@@ -76,7 +69,7 @@ fn detect_in(
     }
     if cli_supported {
         for dir in cli_dirs {
-            if let Some(path) = tool_executable_candidates(tool, dir)
+            if let Some(path) = tool_executable_candidates(app, dir)
                 .into_iter()
                 .find(|path| path.is_file())
             {
@@ -141,24 +134,18 @@ pub(super) async fn get_versions() -> Result<HashMap<String, AgentVersion>, Stri
             let info = detect_in(
                 app,
                 &roots,
-                &build_tool_search_paths(if matches!(app, "cursor" | "cursor-cli") {
-                    "cursor-agent"
-                } else {
-                    app
-                }),
+                &build_tool_search_paths(app),
                 cfg!(target_os = "macos"),
             );
             #[cfg(target_os = "windows")]
             let info = {
                 let mut info = info;
                 if crate::services::trae_bridge::shared::Edition::parse(app).is_some()
-                    || matches!(app, "cursor" | "t3code")
+                    || app == "t3code"
                 {
                     info.supported = true;
-                    if app != "cursor" || desktop_apps::windows_executable(app).is_some() {
-                        info.installed = is_agent_installed(app);
-                        info.source = info.installed.then_some("desktop");
-                    }
+                    info.installed = is_agent_installed(app);
+                    info.source = info.installed.then_some("desktop");
                 }
                 info
             };
@@ -184,22 +171,6 @@ pub(super) async fn get_versions() -> Result<HashMap<String, AgentVersion>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn unified_cursor_finds_a_cli_only_installation() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let bin = dir.path().join(if cfg!(windows) {
-            "cursor-agent.exe"
-        } else {
-            "cursor-agent"
-        });
-        std::fs::write(bin, b"synthetic presence fixture")?;
-        let info = detect_in("cursor", &[], &[dir.path().to_path_buf()], false);
-        assert!(info.supported && info.installed);
-        assert_eq!(info.source, Some("cli"));
-        assert!(info.version.is_none());
-        Ok(())
-    }
 
     #[test]
     #[cfg(target_os = "macos")]

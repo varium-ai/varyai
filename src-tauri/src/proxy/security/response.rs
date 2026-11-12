@@ -46,8 +46,6 @@ pub fn build_blocked_response(app_type: &AppType, reason: &str) -> Result<Respon
         | AppType::DeepSeekHarness
         | AppType::Trae
         | AppType::TraeIntl
-        | AppType::Cursor
-        | AppType::CursorCli
         | AppType::T3Code
         | AppType::DoubaoWork => {
             json!({

@@ -579,8 +579,6 @@ impl SkillService {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
-            | AppType::Cursor
-            | AppType::CursorCli
             | AppType::T3Code
             | AppType::DoubaoWork => {
                 return Err(anyhow!(
@@ -652,8 +650,6 @@ impl SkillService {
             | AppType::DeepSeekHarness
             | AppType::Trae
             | AppType::TraeIntl
-            | AppType::Cursor
-            | AppType::CursorCli
             | AppType::T3Code
             | AppType::DoubaoWork => {
                 return Err(anyhow!(
@@ -728,8 +724,6 @@ impl SkillService {
                     | AppType::DeepSeekHarness
                     | AppType::Trae
                     | AppType::TraeIntl
-                    | AppType::Cursor
-                    | AppType::CursorCli
                     | AppType::T3Code
                     | AppType::DoubaoWork
             )
@@ -1098,8 +1092,6 @@ impl SkillService {
                                 | AppType::DeepSeekHarness
                                 | AppType::Trae
                                 | AppType::TraeIntl
-                                | AppType::Cursor
-                                | AppType::CursorCli
                                 | AppType::T3Code
                                 | AppType::DoubaoWork
                         )
@@ -1754,8 +1746,6 @@ impl SkillService {
                     | AppType::DeepSeekHarness
                     | AppType::Trae
                     | AppType::TraeIntl
-                    | AppType::Cursor
-                    | AppType::CursorCli
                     | AppType::T3Code
                     | AppType::DoubaoWork
             )
@@ -1972,8 +1962,6 @@ impl SkillService {
                     | AppType::DeepSeekHarness
                     | AppType::Trae
                     | AppType::TraeIntl
-                    | AppType::Cursor
-                    | AppType::CursorCli
                     | AppType::T3Code
                     | AppType::DoubaoWork
             )
@@ -2060,8 +2048,6 @@ impl SkillService {
                     | AppType::DeepSeekHarness
                     | AppType::Trae
                     | AppType::TraeIntl
-                    | AppType::Cursor
-                    | AppType::CursorCli
                     | AppType::T3Code
                     | AppType::DoubaoWork
             )
@@ -2593,8 +2579,6 @@ impl SkillService {
                 | AppType::DeepSeekHarness
                 | AppType::Trae
                 | AppType::TraeIntl
-                | AppType::Cursor
-                | AppType::CursorCli
                 | AppType::T3Code
                 | AppType::DoubaoWork
         ) {
@@ -3619,8 +3603,6 @@ impl SkillService {
                     | AppType::DeepSeekHarness
                     | AppType::Trae
                     | AppType::TraeIntl
-                    | AppType::Cursor
-                    | AppType::CursorCli
                     | AppType::T3Code
                     | AppType::DoubaoWork
             )
@@ -4374,8 +4356,6 @@ pub fn migrate_skills_to_ssot(db: &Arc<Database>) -> Result<usize> {
                 | AppType::DeepSeekHarness
                 | AppType::Trae
                 | AppType::TraeIntl
-                | AppType::Cursor
-                | AppType::CursorCli
                 | AppType::T3Code
                 | AppType::DoubaoWork
         )

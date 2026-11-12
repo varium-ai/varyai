@@ -12,7 +12,6 @@ fn ids(app: &str) -> &'static [&'static str] {
         "qoder" => &["com.qodercn.app"],
         "doubaowork" => &["com.work.pc.doubao"],
         "deepseek-harness" => &["com.deepseek.dsh"],
-        "cursor" | "cursor-private-inference" => &["com.todesktop.230313mzl4w4u92"],
         "t3code" => &["com.t3tools.t3code"],
         _ => &[],
     }
@@ -69,11 +68,6 @@ pub(super) fn find_in(app: &str, roots: &[PathBuf]) -> Option<PathBuf> {
 }
 
 fn matches(app: &str, path: &Path, named: bool) -> bool {
-    if app == "cursor-private-inference"
-        && !cursor_local_product(&path.join("Contents/Resources/app/product.json"))
-    {
-        return false;
-    }
     let Ok(resolved) = path.canonicalize() else {
         return false;
     };
@@ -435,96 +429,26 @@ mod tests {
     }
 }
 
-fn cursor_local_product(path: &Path) -> bool {
-    std::fs::read(path)
-        .ok()
-        .filter(|bytes| bytes.len() <= 1024 * 1024)
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .is_some_and(|value| value["nameShort"] == "Cursor Private Inference")
-}
-
 #[cfg(target_os = "windows")]
 pub(super) fn windows_executable(app: &str) -> Option<PathBuf> {
+    if app != "t3code" {
+        return None;
+    }
     let roots = [
         std::env::var_os("LOCALAPPDATA").map(|root| PathBuf::from(root).join("Programs")),
         std::env::var_os("ProgramFiles").map(PathBuf::from),
     ];
-    windows_executable_in(app, &roots.into_iter().flatten().collect::<Vec<_>>())
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn windows_executable_in(app: &str, roots: &[PathBuf]) -> Option<PathBuf> {
-    for root in roots {
-        let entries: &[(&str, &str)] = match app {
-            "cursor" | "cursor-private-inference" => &[
-                ("cursor", "Cursor.exe"),
-                ("cursor-private-inference", "Cursor.exe"),
-                ("cursor-private", "Cursor.exe"),
-                ("cursor-private-inference", "Cursor Private Inference.exe"),
-            ],
-            "t3code" => &[
-                ("T3 Code", "T3 Code.exe"),
-                ("T3 Code (Alpha)", "T3 Code (Alpha).exe"),
-                ("t3code", "T3 Code.exe"),
-            ],
-            _ => return None,
-        };
-        for (folder, executable) in entries {
-            let directory = root.join(folder);
-            let path = directory.join(executable);
-            if path.is_file()
-                && (app != "cursor-private-inference"
-                    || cursor_local_product(&directory.join("resources/app/product.json")))
-            {
+    for root in roots.into_iter().flatten() {
+        for (folder, executable) in [
+            ("T3 Code", "T3 Code.exe"),
+            ("T3 Code (Alpha)", "T3 Code (Alpha).exe"),
+            ("t3code", "T3 Code.exe"),
+        ] {
+            let path = root.join(folder).join(executable);
+            if path.is_file() {
                 return Some(path);
             }
         }
     }
     None
-}
-
-#[cfg(test)]
-mod additional_agent_tests {
-    use super::*;
-    #[test]
-    fn windows_cursor_detection_keeps_ordinary_and_private_capabilities_distinct(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let installed = dir.path().join("cursor");
-        let resources = installed.join("resources/app");
-        std::fs::create_dir_all(&resources)?;
-        std::fs::write(installed.join("Cursor.exe"), b"synthetic presence fixture")?;
-        std::fs::write(resources.join("product.json"), r#"{"nameShort":"Cursor"}"#)?;
-        let roots = [dir.path().to_path_buf()];
-        assert!(windows_executable_in("cursor", &roots).is_some());
-        assert!(windows_executable_in("cursor-private-inference", &roots).is_none());
-        std::fs::write(
-            resources.join("product.json"),
-            r#"{"nameShort":"Cursor Private Inference"}"#,
-        )?;
-        assert!(windows_executable_in("cursor", &roots).is_some());
-        assert!(windows_executable_in("cursor-private-inference", &roots).is_some());
-        std::fs::write(resources.join("product.json"), b"invalid fixture")?;
-        assert!(windows_executable_in("cursor", &roots).is_some());
-        assert!(windows_executable_in("cursor-private-inference", &roots).is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn cursor_private_inference_requires_product_identity_not_the_regular_bundle(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let root = dir.path().join("Cursor.app/Contents/Resources/app");
-        std::fs::create_dir_all(&root)?;
-        std::fs::write(root.join("product.json"), r#"{"nameShort":"Cursor"}"#)?;
-        assert!(find_in("cursor", &[dir.path().to_path_buf()]).is_some());
-        assert!(find_in("cursor-private-inference", &[dir.path().to_path_buf()]).is_none());
-        std::fs::write(
-            root.join("product.json"),
-            r#"{"nameShort":"Cursor Private Inference"}"#,
-        )?;
-        assert!(find_in("cursor", &[dir.path().to_path_buf()]).is_some());
-        assert!(find_in("cursor-private-inference", &[dir.path().to_path_buf()]).is_some());
-        Ok(())
-    }
 }

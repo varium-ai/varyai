@@ -155,7 +155,6 @@ pub(crate) fn billing(body: &Value, tool: &str) -> Option<SubscriptionQuota> {
         _ => "credits",
     };
     let mut tiers = vec![QuotaTier {
-        display: None,
         name: name.into(),
         utilization: percent.clamp(0.0, 100.0),
         resets_at: resets_at.clone(),
@@ -169,7 +168,6 @@ pub(crate) fn billing(body: &Value, tool: &str) -> Option<SubscriptionQuota> {
         .filter(|(used, cap)| used.is_finite() && cap.is_finite() && *used >= 0.0 && *cap > 0.0)
     {
         tiers.push(QuotaTier {
-            display: None,
             name: "on_demand".into(),
             utilization: (100.0 * used / cap).clamp(0.0, 100.0),
             resets_at,

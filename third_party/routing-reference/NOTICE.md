@@ -8,13 +8,9 @@ attribution.
 
 ## Pinned source revisions
 
-- `745d209dcf5f4d9b7feee416e1848e33502834e6`: Cursor CLI model selection,
-  Private Inference environment integration and model capability discovery,
-  reviewed in `internal/agent/agents.go`, `cursorlocal.go`,
-  `cursorlocal_env_darwin.go`, `cursorlocal_env_windows.go` and
-  `internal/gateway/gateway.go`. T3 Code's provider-instance integration was
-  reviewed in `internal/agent/t3code.go`. VaryAI retains its own ownership
-  receipts and gives T3 Code a separate Codex home.
+- `745d209dcf5f4d9b7feee416e1848e33502834e6`: T3 Code's provider-instance
+  integration, reviewed in `internal/agent/t3code.go`. VaryAI retains its own
+  ownership receipts and gives T3 Code a separate Codex home.
 
 - `7c0a103eb1c4975343456ad4906b21f01fa741f5`: Codex native/managed picker
   merging and translated deferred-tool handling, reviewed in

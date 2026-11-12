@@ -15,7 +15,6 @@ beforeEach(() => vi.clearAllMocks());
 
 it.each([
   ["claude", "https://claude.ai"],
-  ["cursor", "https://cursor.com"],
   ["chatgpt_api", "https://chatgpt.com"],
   ["github_copilot", "https://github.com"],
   ["gemini_cli", "https://geminicli.com"],

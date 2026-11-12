@@ -29,7 +29,6 @@ export type UpstreamSource =
       provider:
         | "github_copilot"
         | "xai_oauth"
-        | "cursor"
         | "claude"
         | "chatgpt_api"
         | "gemini_cli"

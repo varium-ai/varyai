@@ -26,9 +26,6 @@ pub enum CredentialStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaTier {
-    /// Provider text for observed monetary or unbounded usage, instead of a percentage.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display: Option<String>,
     /// 窗口标识：five_hour, seven_day, seven_day_fable, seven_day_opus 等
     pub name: String,
     /// 使用百分比 0–100
@@ -469,7 +466,6 @@ pub(crate) fn parse_claude_quota(body: &serde_json::Value) -> SubscriptionQuota 
             if let Ok(w) = serde_json::from_value::<ApiUsageWindow>(window.clone()) {
                 if let Some(util) = w.utilization {
                     tiers.push(QuotaTier {
-                        display: None,
                         name: tier_name.to_string(),
                         utilization: util,
                         resets_at: w.resets_at,
@@ -490,7 +486,6 @@ pub(crate) fn parse_claude_quota(body: &serde_json::Value) -> SubscriptionQuota 
             if let Ok(w) = serde_json::from_value::<ApiUsageWindow>(value.clone()) {
                 if let Some(util) = w.utilization {
                     tiers.push(QuotaTier {
-                        display: None,
                         name: key.clone(),
                         utilization: util,
                         resets_at: w.resets_at,
@@ -537,7 +532,6 @@ pub(crate) fn parse_claude_quota(body: &serde_json::Value) -> SubscriptionQuota 
             // 与 Claude Code 一致：不按 is_active 过滤。0% / resets_at:null
             // 也可能是有效的模型额度；不存在的额度由接口省略。
             let tier = QuotaTier {
-                display: None,
                 name: tier_name.to_string(),
                 utilization: window.percent,
                 resets_at: window.resets_at,
@@ -901,7 +895,6 @@ pub(crate) async fn query_codex_quota_with_client(
         {
             if let Some(used) = window.used_percent {
                 tiers.push(QuotaTier {
-                    display: None,
                     name: window
                         .limit_window_seconds
                         .map(window_seconds_to_tier_name)
@@ -1388,7 +1381,6 @@ async fn query_gemini_quota(access_token: &str) -> Result<SubscriptionQuota, Str
     let mut tiers: Vec<QuotaTier> = category_map
         .into_iter()
         .map(|(name, (remaining, reset_time))| QuotaTier {
-            display: None,
             name,
             utilization: (1.0 - remaining) * 100.0,
             resets_at: reset_time,

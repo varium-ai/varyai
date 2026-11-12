@@ -49,7 +49,6 @@ vi.mock("@/lib/trayPanel", () => ({
 
 vi.mock("@/lib/api/agentConnections", () => ({
   agentConnectionsApi: {
-    cursorInstallation: vi.fn(async () => ({ desktop: "standard", cli: true })),
     nativeModels: vi.fn(async () => []),
     nativeModel: vi.fn(async (app: string) => ({
       app,
@@ -1139,34 +1138,4 @@ describe("Agent versions and updates", () => {
     ).toBeInTheDocument();
     expect(settingsApi.runToolLifecycleAction).not.toHaveBeenCalled();
   });
-});
-
-it("shows Cursor App and CLI versions within one Agent entry", async () => {
-  vi.mocked(proxyApi.getAgentInstallations).mockResolvedValue({
-    cursor: true,
-    "cursor-cli": true,
-  });
-  vi.mocked(settingsApi.getAgentVersions).mockResolvedValue({
-    cursor: {
-      supported: true,
-      installed: true,
-      version: "3.2.1",
-      latest_version: null,
-      source: "desktop",
-    },
-    "cursor-cli": {
-      supported: true,
-      installed: true,
-      version: "1.2.3",
-      latest_version: null,
-      source: "cli",
-    },
-  });
-  mount();
-  const row = await screen.findByRole("article", { name: "apps.cursor" });
-  expect(await within(row).findByText("App 3.2.1")).toBeInTheDocument();
-  expect(within(row).getByText("CLI 1.2.3")).toBeInTheDocument();
-  expect(
-    screen.queryByRole("article", { name: "apps.cursor-cli" }),
-  ).not.toBeInTheDocument();
 });

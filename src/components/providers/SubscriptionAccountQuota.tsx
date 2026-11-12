@@ -243,26 +243,23 @@ export function SubscriptionAccountQuota({
                 {group.tiers.map(({ tier, label }, index) => (
                   <div className="cx-quota-item" key={`${tier.name}-${index}`}>
                     <span className="cx-quota-label">{label}</span>
-                    {!tier.display && (
-                      <span className="cx-meter">
-                        <i
-                          style={{
-                            width: `${Math.max(0, Math.min(100, 100 - tier.utilization))}%`,
-                          }}
-                        />
-                      </span>
-                    )}
+                    <span className="cx-meter">
+                      <i
+                        style={{
+                          width: `${Math.max(0, Math.min(100, 100 - tier.utilization))}%`,
+                        }}
+                      />
+                    </span>
                     <b>
-                      {tier.display ??
-                        t("codexProvider.remaining", {
-                          n: Math.max(
-                            0,
-                            Math.min(
-                              100,
-                              Math.round((100 - tier.utilization) * 10) / 10,
-                            ),
+                      {t("codexProvider.remaining", {
+                        n: Math.max(
+                          0,
+                          Math.min(
+                            100,
+                            Math.round((100 - tier.utilization) * 10) / 10,
                           ),
-                        })}
+                        ),
+                      })}
                     </b>
                     {tier.resetsAt &&
                       Number.isFinite(Date.parse(tier.resetsAt)) && (

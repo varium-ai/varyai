@@ -19,6 +19,4 @@ export type AppId =
   | "qwen"
   | "zcode"
   | "deepseek-harness"
-  | "cursor"
-  | "cursor-cli"
   | "t3code";

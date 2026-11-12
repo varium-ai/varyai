@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 export type NativeSubscriptionProvider =
-  | "cursor"
   | "claude"
   | "chatgpt_api"
   | "gemini_cli"

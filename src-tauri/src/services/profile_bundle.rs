@@ -261,10 +261,7 @@ fn scopes(apps: &[String]) -> Result<Vec<AppType>, AppError> {
     let mut result = Vec::new();
     for candidate in AppType::all() {
         if apps.iter().any(|app| app == candidate.as_str()) {
-            if matches!(
-                candidate,
-                AppType::DoubaoWork | AppType::Cursor | AppType::CursorCli | AppType::T3Code
-            ) {
+            if matches!(candidate, AppType::DoubaoWork | AppType::T3Code) {
                 return Err(error("nativeLoginOnly"));
             }
             result.push(candidate);
@@ -834,10 +831,8 @@ pub struct ProfileAgent {
 pub fn agents(state: &AppState) -> Result<Vec<ProfileAgent>, AppError> {
     AppType::all()
         .map(|app| {
-            let supported = !matches!(
-                app,
-                AppType::DoubaoWork | AppType::Cursor | AppType::CursorCli | AppType::T3Code
-            ) && !(cfg!(target_os = "linux") && app == AppType::ClaudeDesktop);
+            let supported = !matches!(app, AppType::DoubaoWork | AppType::T3Code)
+                && !(cfg!(target_os = "linux") && app == AppType::ClaudeDesktop);
             let available = supported
                 && (shared::available(state, &app)?
                     || !state.db.get_all_providers(app.as_str())?.is_empty());

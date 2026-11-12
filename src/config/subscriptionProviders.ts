@@ -1,12 +1,5 @@
 export const subscriptionProviders = [
   {
-    id: "cursor",
-    website: "https://cursor.com",
-    name: "Cursor",
-    icon: "cursor",
-    aliases: "cursor subscription agent",
-  },
-  {
     id: "claude",
     website: "https://claude.ai",
     name: "Claude",

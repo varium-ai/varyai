@@ -407,12 +407,7 @@ fn captures_every_provider_capable_agent_instead_of_only_the_original_three() {
     let state = support::create_test_state().unwrap();
     // WorkBuddy AI uses shared connection profiles, covered by the shared-catalog lifecycle test.
     let apps: Vec<_> = AppType::all()
-        .filter(|app| {
-            !matches!(
-                app,
-                AppType::DoubaoWork | AppType::Cursor | AppType::CursorCli | AppType::T3Code
-            )
-        })
+        .filter(|app| !matches!(app, AppType::DoubaoWork | AppType::T3Code))
         .collect();
     for app in &apps {
         let config = if *app == AppType::Codex {
@@ -1406,8 +1401,6 @@ fn supported_file_based_agents_apply_as_one_bundle_and_undo_together() {
             !matches!(
                 app,
                 AppType::DoubaoWork
-                    | AppType::Cursor
-                    | AppType::CursorCli
                     | AppType::T3Code
                     | AppType::Trae
                     | AppType::TraeIntl
@@ -1419,7 +1412,7 @@ fn supported_file_based_agents_apply_as_one_bundle_and_undo_together() {
     assert!(apps.contains(&AppType::DeepSeekHarness));
     assert_eq!(
         apps.len(),
-        AppType::all().count() - 7 - usize::from(!cfg!(any(target_os = "macos", windows)))
+        AppType::all().count() - 5 - usize::from(!cfg!(any(target_os = "macos", windows)))
     );
     if apps.contains(&AppType::ClaudeDesktop) {
         let mut official = Provider::with_id(
@@ -1700,12 +1693,7 @@ fn later_custom_suppliers_can_be_captured_without_changing_old_profiles_or_copyi
 #[test]
 fn missing_profile_suppliers_are_skipped_for_every_agent_without_guessing_a_replacement() {
     let _guard = test_guard();
-    for app in AppType::all().filter(|app| {
-        !matches!(
-            app,
-            AppType::DoubaoWork | AppType::Cursor | AppType::CursorCli | AppType::T3Code
-        )
-    }) {
+    for app in AppType::all().filter(|app| !matches!(app, AppType::DoubaoWork | AppType::T3Code)) {
         for missing_secondary in [false, true] {
             let state = seed();
             let working = if app == AppType::Claude {

@@ -250,19 +250,13 @@ function NativeSignIn({
           );
       }}
       onSubmit={
-        provider !== "claude" && provider !== "cursor"
-          ? (value) => void login.submit(value)
-          : undefined
+        provider !== "claude" ? (value) => void login.submit(value) : undefined
       }
-      onProxy={
-        provider === "cursor"
-          ? undefined
-          : (value) => {
-              setProxy(value);
-              setActionError(undefined);
-              void login.start(undefined, value);
-            }
-      }
+      onProxy={(value) => {
+        setProxy(value);
+        setActionError(undefined);
+        void login.start(undefined, value);
+      }}
       onRetry={
         login.error ? () => void login.start(undefined, proxy) : undefined
       }
