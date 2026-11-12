@@ -510,12 +510,12 @@ fn client() -> Result<reqwest::Client, String> {
         {
             return Err("test origin not configured".to_owned());
         }
-        return reqwest::Client::builder()
+        reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .connect_timeout(Duration::from_secs(5))
             .build()
-            .map_err(|_| "client unavailable".to_owned());
+            .map_err(|_| "client unavailable".to_owned())
     }
     #[cfg(not(test))]
     super::super::http_client::get_forwarding_without_redirects()

@@ -314,7 +314,7 @@ mod tests {
             event.policy_version as u64
         );
         assert_eq!(
-            persist_events_for_generation(&db, &[event.clone()], generation).unwrap(),
+            persist_events_for_generation(&db, std::slice::from_ref(&event), generation).unwrap(),
             0
         );
         assert_eq!(

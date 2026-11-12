@@ -1406,6 +1406,7 @@ mod text_fallback_context_tests {
             &AppType::Codex,
             true,
             false,
+            false,
             &mut history,
             &headers,
         )? {
@@ -1693,6 +1694,7 @@ async fn output_text_exact_request_side_literals_preserve_independent_pii_detect
             &AppType::Codex,
             true,
             false,
+            false,
             &mut body,
             &headers,
         )? {
@@ -1770,6 +1772,7 @@ async fn reference_format_legacy_request_literals_preserve_disabled_and_admitted
                 &AppType::Codex,
                 true,
                 false,
+                false,
                 &mut source,
                 &Default::default(),
             ) {
@@ -1811,6 +1814,7 @@ async fn reference_format_legacy_request_literals_preserve_disabled_and_admitted
                 &gateway,
                 &AppType::Codex,
                 true,
+                false,
                 false,
                 &mut source,
                 &Default::default(),
@@ -1919,6 +1923,7 @@ fn reference_format_escaped_admission_uses_shared_budget_and_releases_parse_owne
                 &AppType::Codex,
                 true,
                 false,
+                false,
                 &mut body,
                 &Default::default()
             ),
@@ -1939,6 +1944,7 @@ fn reference_format_escaped_admission_uses_shared_budget_and_releases_parse_owne
                 &gateway,
                 &AppType::Codex,
                 true,
+                false,
                 false,
                 &mut body,
                 &Default::default()
@@ -1964,6 +1970,7 @@ fn reference_format_escaped_admission_uses_shared_budget_and_releases_parse_owne
             &gateway,
             &AppType::Codex,
             true,
+            false,
             false,
             &mut source,
             &Default::default(),

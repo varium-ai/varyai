@@ -887,7 +887,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let argv = dir.path().join("argv.json");
         let original = "{ // keep my preferences\n \"disable-hardware-acceleration\": true\n}";
-        std::fs::write(&argv, &original).unwrap();
+        std::fs::write(&argv, original).unwrap();
         prepare_connection(dir.path(), &argv).unwrap();
         prepare_connection(dir.path(), &argv).unwrap();
         let value: Value = json5::from_str(&std::fs::read_to_string(&argv).unwrap()).unwrap();

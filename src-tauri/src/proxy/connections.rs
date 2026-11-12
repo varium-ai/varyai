@@ -112,62 +112,6 @@ impl Connections {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::services::agent_connections::Receipt;
-
-    #[test]
-    fn desktop_alias_upgrade_preserves_existing_conversation_names() -> Result<(), String> {
-        let alias = "synthetic-provider/first";
-        let current = crate::claude_desktop_config::shared_model_name(alias);
-        let plain = crate::claude_desktop_config::shared_plain_model_name(alias);
-        let reasoning = crate::claude_desktop_config::shared_reasoning_model_name(alias);
-        use sha2::{Digest, Sha256};
-        let legacy = format!("claude-vary-{:x}", Sha256::digest(alias.as_bytes()));
-        assert_ne!(legacy, current);
-        let connections = Connections::default();
-        for wire in [&current, &legacy, &reasoning, &plain] {
-            connections.install(&Receipt {
-                app: "claude-desktop".into(),
-                token: concat!("synthetic", "-local-token").into(),
-                model: alias.into(),
-                model_map: BTreeMap::from([(wire.clone(), alias.into())]),
-                visible_models: Some(vec![]),
-                files: vec![],
-                suspended: false,
-                applied_at_ms: None,
-            })?;
-            let connection = connections
-                .get("claude-desktop", concat!("synthetic", "-local-token"))
-                .ok_or("missing fixture connection")?;
-            for id in [&current, &legacy, &reasoning, &plain] {
-                assert_eq!(connection.resolve(&format!("{id}[1m]")), alias);
-            }
-            assert_eq!(
-                connection.model_map.get(&reasoning).map(String::as_str),
-                Some(alias)
-            );
-            assert_eq!(
-                connection.model_map.get(&current).map(String::as_str),
-                Some(alias)
-            );
-            assert_eq!(
-                connection.model_map.get(&legacy).map(String::as_str),
-                Some(alias)
-            );
-            assert_eq!(
-                connection.model_map.get(&plain).map(String::as_str),
-                Some(alias)
-            );
-        }
-        assert!(connections
-            .get("claude-desktop", "wrong-local-token")
-            .is_none());
-        Ok(())
-    }
-}
-
 fn error(status: StatusCode, code: &'static str) -> Response {
     (status, Json(json!({"error":{"code":code,"message":code}}))).into_response()
 }
@@ -581,6 +525,62 @@ pub(crate) async fn handle(State(state): State<ProxyState>, request: Request) ->
             super::gateway::meter_response(response, state.db, grant, endpoint != "/v1/messages")
         }
         _ => response,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::agent_connections::Receipt;
+
+    #[test]
+    fn desktop_alias_upgrade_preserves_existing_conversation_names() -> Result<(), String> {
+        let alias = "synthetic-provider/first";
+        let current = crate::claude_desktop_config::shared_model_name(alias);
+        let plain = crate::claude_desktop_config::shared_plain_model_name(alias);
+        let reasoning = crate::claude_desktop_config::shared_reasoning_model_name(alias);
+        use sha2::{Digest, Sha256};
+        let legacy = format!("claude-vary-{:x}", Sha256::digest(alias.as_bytes()));
+        assert_ne!(legacy, current);
+        let connections = Connections::default();
+        for wire in [&current, &legacy, &reasoning, &plain] {
+            connections.install(&Receipt {
+                app: "claude-desktop".into(),
+                token: concat!("synthetic", "-local-token").into(),
+                model: alias.into(),
+                model_map: BTreeMap::from([(wire.clone(), alias.into())]),
+                visible_models: Some(vec![]),
+                files: vec![],
+                suspended: false,
+                applied_at_ms: None,
+            })?;
+            let connection = connections
+                .get("claude-desktop", concat!("synthetic", "-local-token"))
+                .ok_or("missing fixture connection")?;
+            for id in [&current, &legacy, &reasoning, &plain] {
+                assert_eq!(connection.resolve(&format!("{id}[1m]")), alias);
+            }
+            assert_eq!(
+                connection.model_map.get(&reasoning).map(String::as_str),
+                Some(alias)
+            );
+            assert_eq!(
+                connection.model_map.get(&current).map(String::as_str),
+                Some(alias)
+            );
+            assert_eq!(
+                connection.model_map.get(&legacy).map(String::as_str),
+                Some(alias)
+            );
+            assert_eq!(
+                connection.model_map.get(&plain).map(String::as_str),
+                Some(alias)
+            );
+        }
+        assert!(connections
+            .get("claude-desktop", "wrong-local-token")
+            .is_none());
+        Ok(())
     }
 }
 

@@ -618,7 +618,7 @@ fn transaction_owner_exact_peak_and_difference_one_are_independent() -> Result<(
     let live_plan = 4 * size_of::<PlannedField>() + 4 * size_of::<PlannedSpan>();
     let scratch = 4 * size_of::<[u8; 10]>()
         + 4 * size_of::<Option<super::token_store_owners::SharedAllocation<()>>>()
-        + 8 * size_of::<usize>()
+        + usize::BITS as usize
         + PHONE_REFERENCE_LEN
         + 4 * size_of::<PayloadText>();
     let peak =
@@ -704,7 +704,7 @@ fn transaction_store_scratch_is_live_under_original_request_budget() -> Result<(
     let retained = PHONE_REFERENCE_LEN + 4 * size_of::<PayloadText>();
     let scratch = 4 * size_of::<[u8; 10]>()
         + 4 * size_of::<Option<super::token_store_owners::SharedAllocation<()>>>()
-        + 8 * size_of::<usize>()
+        + usize::BITS as usize
         + PHONE_REFERENCE_LEN
         + 4 * size_of::<PayloadText>();
     let peak = 4 * size_of::<PlannedField>()

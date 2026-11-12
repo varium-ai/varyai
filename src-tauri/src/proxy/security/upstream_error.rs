@@ -127,6 +127,55 @@ pub(super) struct ErrorSafetyContext<'a> {
     pub(super) budget: PayloadBudget,
 }
 
+/// Prepared, budget-owned secrets for a later native error; never completion authority.
+/// Only policy metadata is cloned; all private patterns retain their original charges.
+pub(super) struct NativeErrorSafety {
+    runtime: SecurityRuntimeConfig,
+    patterns: PayloadVec<PayloadText>,
+    pattern_bytes: usize,
+    nodes: usize,
+    work: Work,
+    budget: PayloadBudget,
+}
+impl NativeErrorSafety {
+    pub(super) fn prepare(context: ErrorSafetyContext<'_>) -> Result<Self, TokenError> {
+        let safety = Safety::build(&context)?;
+        Ok(Self {
+            runtime: context.runtime.clone(),
+            patterns: safety.patterns,
+            pattern_bytes: safety.pattern_bytes,
+            nodes: safety.nodes,
+            work: safety.work,
+            budget: context.budget.clone(),
+        })
+    }
+    pub(super) fn sanitize(self, value: &Value) -> Result<PayloadBuffer, TokenError> {
+        let context = ErrorSafetyContext {
+            runtime: &self.runtime,
+            request: &Value::Null,
+            provider: &Value::Null,
+            credentials: &[],
+            sent_credentials: None,
+            budget: self.budget.clone(),
+        };
+        let safety = Safety {
+            context: &context,
+            patterns: self.patterns,
+            pattern_bytes: self.pattern_bytes,
+            nodes: self.nodes,
+            work: self.work,
+        };
+        encode_checked(
+            &CheckedValue {
+                value,
+                safety: &safety,
+                depth: 0,
+            },
+            &self.budget,
+        )
+    }
+}
+
 // Shared across fields and both serialization passes, not reset per string.
 struct Work(AtomicUsize);
 impl Work {

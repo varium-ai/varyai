@@ -146,18 +146,19 @@ async fn saved(
         &json!({"input":"synthetic"}),
         Some(store.clone()),
     )?;
-    let mut bindings = state.bindings.lock().unwrap();
-    if let Some(name) = name {
-        bindings.bind_session(name, 1);
+    {
+        let mut bindings = state.bindings.lock().unwrap();
+        if let Some(name) = name {
+            bindings.bind_session(name, 1);
+        }
+        bindings.observe(
+            &json!({"id":"response-b","output":[
+                {"type":"function_call","call_id":"call-b"},
+                {"type":"reasoning","id":"item-b","encrypted_content":"opaque-b"}
+            ]}),
+            1,
+        );
     }
-    bindings.observe(
-        &json!({"id":"response-b","output":[
-            {"type":"function_call","call_id":"call-b"},
-            {"type":"reasoning","id":"item-b","encrypted_content":"opaque-b"}
-        ]}),
-        1,
-    );
-    drop(bindings);
     store.flush().await?;
     Ok(())
 }

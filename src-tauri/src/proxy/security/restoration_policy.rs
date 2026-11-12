@@ -192,6 +192,49 @@ impl DlpPolicyGate {
     }
 }
 
+impl DlpPolicyGate {
+    /// Swap the published snapshot in one write lock, leaving admission open throughout.
+    ///
+    /// `begin_update` deliberately closes admission because a caller cannot prove that a
+    /// failed persistence call did not commit. A synthetic install has no persistence to
+    /// fail, so opening that gap would only let parallel readers observe an `Unavailable`
+    /// state that nothing can fix.
+    pub(super) fn install_synthetic(
+        &self,
+        runtime: Arc<SecurityRuntimeConfig>,
+        policy: RestorationPolicy,
+    ) -> Result<(), TokenError> {
+        let _writer = match self.writer.lock() {
+            Ok(writer) => writer,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        self.replace_published(runtime, policy)
+    }
+
+    fn replace_published(
+        &self,
+        runtime: Arc<SecurityRuntimeConfig>,
+        policy: RestorationPolicy,
+    ) -> Result<(), TokenError> {
+        let mut state = self.state.write().map_err(|_| TokenError::Unavailable)?;
+        let revision = match &state.published {
+            Some(previous) if previous.policy == policy => previous.revision,
+            Some(previous) => previous
+                .revision
+                .checked_add(1)
+                .ok_or(TokenError::Unavailable)?,
+            None => 1,
+        };
+        state.published = Some(PublishedPolicy {
+            runtime,
+            policy,
+            revision,
+        });
+        state.available = true;
+        Ok(())
+    }
+}
+
 impl DlpPolicyUpdate<'_> {
     /// Only for deriving runtime metadata during a serialized publication. This
     /// does not admit requests while the gate is closed.
@@ -213,25 +256,7 @@ impl DlpPolicyUpdate<'_> {
         runtime: Arc<SecurityRuntimeConfig>,
         policy: RestorationPolicy,
     ) -> Result<(), TokenError> {
-        let mut state = self
-            .gate
-            .state
-            .write()
-            .map_err(|_| TokenError::Unavailable)?;
-        let revision = match &state.published {
-            Some(previous) if previous.policy == policy => previous.revision,
-            Some(previous) => previous
-                .revision
-                .checked_add(1)
-                .ok_or(TokenError::Unavailable)?,
-            None => 1,
-        };
-        state.published = Some(PublishedPolicy {
-            runtime,
-            policy,
-            revision,
-        });
-        state.available = true;
-        Ok(())
+        // The writer guard in `self` already serializes this publication.
+        self.gate.replace_published(runtime, policy)
     }
 }

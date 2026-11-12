@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 fn plan_request(
     fields: &[super::request_plan::PlanField<'_>],
     historical_plaintexts: &[&str],
@@ -198,7 +200,7 @@ fn protected_nonwritable_values_fail_but_audit_and_allow_do_not_mutate() {
             &[]
         )
         .err(),
-        Some(PlanError::Unsupported)
+        Some(PlanError::ImmutableContent)
     );
     let observed = [hit(0..3, Audit, Custom), hit(0..3, Allow, PrivateKey)];
     let result = plan_request(
@@ -214,7 +216,7 @@ fn protected_nonwritable_values_fail_but_audit_and_allow_do_not_mutate() {
 
 #[test]
 fn invalid_utf8_boundaries_empty_and_out_of_range_spans_fail_closed() {
-    for range in [1..3, 0..0, 0..99, 5..2] {
+    for range in [1..3, 0..0, 0..99, Range { start: 5, end: 2 }] {
         let matches = [hit(range, Restore, Custom)];
         assert_eq!(
             plan_request(

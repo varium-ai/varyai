@@ -44,6 +44,8 @@ pub(super) enum PlanError {
     Token(TokenError),
     Blocked,
     PolicyConflict,
+    /// Signed or otherwise immutable content that a mandatory edit would have to change.
+    ImmutableContent,
     Unsupported,
 }
 
@@ -109,7 +111,8 @@ pub(super) fn plan_request_with_budget(
             }
         }
         if !field.writable && !ordered.as_slice().is_empty() {
-            return Err(PlanError::Unsupported);
+            // Only signed/immutable carriers are planned unwritable, so the cause is exact.
+            return Err(PlanError::ImmutableContent);
         }
         ordered.sort_unstable_by(|left, right| {
             (left.range.start, left.range.end).cmp(&(right.range.start, right.range.end))

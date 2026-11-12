@@ -1404,7 +1404,6 @@ async fn live_session_forwards_exact_models_and_pins_tools_without_current_provi
                 ("vary-provider/direct".into(), direct),
             ]),
         }))
-        .ok()
         .expect("menu");
     assert_eq!(
         runtime.menu_efforts("menu-token").expect("capabilities")["development"],

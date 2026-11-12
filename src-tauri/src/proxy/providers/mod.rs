@@ -52,11 +52,10 @@ pub const XAI_API_BASE_URL: &str = "https://api.x.ai/v1";
 pub use adapter::ProviderAdapter;
 pub use auth::{AuthInfo, AuthStrategy};
 pub use claude::{
-    claude_api_format_needs_transform, get_claude_api_format,
-    normalize_anthropic_messages_for_provider, transform_claude_request_for_api_format,
-    ClaudeAdapter,
+    anthropic_vendor_normalization_would_rewrite_immutable, claude_api_format_needs_transform,
+    get_claude_api_format, normalize_anthropic_messages_for_provider,
+    transform_claude_request_for_api_format, ClaudeAdapter,
 };
-pub(crate) use codex::has_explicit_codex_third_party_upstream;
 pub use codex::CodexAdapter;
 pub use codex::{
     apply_codex_chat_upstream_model, apply_codex_upstream_model, codex_provider_upstream_model,
@@ -64,6 +63,9 @@ pub use codex::{
     provider_needs_responses_namespace_flatten, resolve_codex_catalog_tool_profile,
     resolve_codex_chat_reasoning_config, should_convert_codex_responses_to_anthropic,
     should_convert_codex_responses_to_chat,
+};
+pub(crate) use codex::{
+    codex_provider_uses_chat_completions, has_explicit_codex_third_party_upstream,
 };
 pub use gemini::GeminiAdapter;
 

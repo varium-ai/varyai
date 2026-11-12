@@ -1373,9 +1373,13 @@ mod barrier_regressions {
                 "capacity denial must occur after a replay snapshot was rebuilt"
             );
             if exhaust_replay {
+                // The exhaustion is a real local limit, so it keeps its own projection
+                // instead of collapsing into an anonymous restoration failure.
                 assert_eq!(
                     result,
-                    Err(RestoreError::RestoreFailed),
+                    Err(RestoreError::FailedBecause(
+                        super::super::restore_diagnostics::RestoreReason::RestoreCapacity
+                    )),
                     "no partial tool replay may escape"
                 );
                 assert!(
@@ -1385,7 +1389,9 @@ mod barrier_regressions {
                 drop(pressure.borrow_mut().take());
                 assert_eq!(
                     state.finalize_and_flush(true),
-                    Err(RestoreError::RestoreFailed),
+                    Err(RestoreError::FailedBecause(
+                        super::super::restore_diagnostics::RestoreReason::RestoreCapacity
+                    )),
                     "capacity recovery cannot release a failed barrier"
                 );
                 assert!(!cursor_exists(&lease, &binding));
@@ -2658,13 +2664,112 @@ fn reasoning_pair_frame(event: Value) -> String {
     )
 }
 
+#[test]
+fn c3_reasoning_pair_provenance_first_frame_shared_and_foreign(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use super::{
+        restoration_contract::{ClientProtocol, ProtocolPair, UpstreamProtocol},
+        restoration_core::{AttemptProvenance, SseEvidenceRequirement},
+    };
+    use crate::proxy::protocol_bridge::Protocol;
+    for foreign in [false, true] {
+        let (lease, binding, budget) = reference_format_strict_fixture()?;
+        let attempt = AttemptProvenance::new(&budget)?;
+        let observed_attempt = if foreign {
+            AttemptProvenance::new(&budget)?
+        } else {
+            attempt.clone()
+        };
+        assert_eq!(
+            attempt.matches(&observed_attempt),
+            !foreign,
+            "c3_reasoning_provenance_fixture_identity_invalid"
+        );
+        let mut state = SseRestorationState::new_bound(
+            lease,
+            binding,
+            budget.clone(),
+            ArgumentNormalizationMode::Exact,
+            ProtocolPair::new(
+                ClientProtocol::new(Protocol::Responses),
+                UpstreamProtocol::new(Protocol::Responses),
+            ),
+            attempt.clone(),
+        )
+        .map_err(|_| "c3_reasoning_provenance_state_failed")?;
+        state.require_original_evidence(SseEvidenceRequirement::new(
+            observed_attempt,
+            None,
+            ArgumentNormalizationMode::Exact,
+        ));
+        // No converter, content parser or completion verifier is involved in this check.
+        let first = state.observe_native_input("event: response.created\ndata: {}\n\n");
+        assert_eq!(
+            first.is_ok(),
+            !foreign,
+            "c3_reasoning_provenance_first_frame_mismatch"
+        );
+        if foreign {
+            state.require_original_evidence(SseEvidenceRequirement::new(
+                attempt.clone(),
+                None,
+                ArgumentNormalizationMode::Exact,
+            ));
+            assert!(
+                state
+                    .observe_native_input("event: response.created\ndata: {}\n\n")
+                    .is_err(),
+                "c3_reasoning_provenance_foreign_failure_not_sticky"
+            );
+        }
+        drop(state);
+        drop(attempt);
+        assert_eq!(
+            budget.used(),
+            0,
+            "c3_reasoning_provenance_owner_charge_leaked"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn c3_reasoning_pair_provenance_helper_reaches_completion() {
+    let delivered =
+        reasoning_pair_delivered(reasoning_pair_events("Synthetic reasoning control", 9)).await;
+    assert!(
+        delivered.contains("event: response.completed\n")
+            && !delivered.contains("event: response.failed\n"),
+        "c3_reasoning_provenance_helper_rejected_valid_original"
+    );
+}
+
 async fn reasoning_pair_delivered(events: Vec<Value>) -> String {
     use super::http_restoration::wrap_sse_stream_with_restoration;
     use bytes::Bytes;
     use futures::{stream, StreamExt};
     let (lease, binding, budget) = reference_format_strict_fixture().expect("synthetic fixture");
-    let state = SseRestorationState::new(lease, binding, budget, ArgumentNormalizationMode::Exact)
-        .expect("synthetic restorer");
+    let provenance = super::restoration_core::AttemptProvenance::new(&budget)
+        .expect("synthetic attempt identity");
+    use super::restoration_contract::{ClientProtocol, ProtocolPair, UpstreamProtocol};
+    use crate::proxy::protocol_bridge::Protocol;
+    let mut state = SseRestorationState::new_bound(
+        lease,
+        binding,
+        budget,
+        ArgumentNormalizationMode::Exact,
+        ProtocolPair::new(
+            ClientProtocol::new(Protocol::Responses),
+            UpstreamProtocol::new(Protocol::Responses),
+        ),
+        provenance.clone(),
+    )
+    .expect("synthetic restorer");
+    state.require_original_evidence(super::restoration_core::SseEvidenceRequirement::new(
+        provenance,
+        None,
+        ArgumentNormalizationMode::Exact,
+    ));
     let upstream = stream::iter(
         events
             .into_iter()

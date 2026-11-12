@@ -627,7 +627,7 @@ fn chatgpt_connection_preserves_openai_provider_and_remote_catalog(
             assert!(manager.status()?.configuration_owned);
         }
         manager.restore()?;
-        tests::assert_restored_config(&manager, &original);
+        tests::assert_restored_config(&manager, original);
     }
     Ok(())
 }

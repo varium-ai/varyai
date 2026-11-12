@@ -453,7 +453,7 @@ fn all_supported_categories_are_recognized_without_granting_authority() -> Resul
         Mixed,
     ] {
         let token = make_token(&test_key(), "fixture", category)?;
-        assert!(scan_token_references(&token)? == [0..token.len()]);
+        assert!(scan_token_references(&token)? == std::slice::from_ref(&(0..token.len())));
         assert!(matches!(
             lease.resolve(&token),
             Err(TokenError::ContextUnavailable)

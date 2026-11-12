@@ -901,12 +901,23 @@ mod tests {
     async fn collects_fragmented_multiline_sse_without_duplicate_final_text() {
         let mut final_response = completed("Synthetic summary.");
         final_response["usage"] = json!({"input_tokens": 9, "output_tokens": 3});
-        let stream = format!("{}{}{}{}{}data: [DONE]\n\n",
-            event(json!({"type": "response.created", "response": {"object": "response", "status": "in_progress", "output": []}})),
-            event(json!({"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "Synthetic "})),
-            event(json!({"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "summary."})),
-            event(json!({"type": "response.output_text.done", "output_index": 0, "content_index": 0, "text": "Synthetic summary."})),
-            format!("event: response.completed\ndata: {{\"type\":\"response.completed\",\ndata: \"response\":{final_response}}}\n\n"));
+        let completed = format!("event: response.completed\ndata: {{\"type\":\"response.completed\",\ndata: \"response\":{final_response}}}\n\n");
+        let stream = format!(
+            "{}{}{}{}{}data: [DONE]\n\n",
+            event(
+                json!({"type": "response.created", "response": {"object": "response", "status": "in_progress", "output": []}})
+            ),
+            event(
+                json!({"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "Synthetic "})
+            ),
+            event(
+                json!({"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "summary."})
+            ),
+            event(
+                json!({"type": "response.output_text.done", "output_index": 0, "content_index": 0, "text": "Synthetic summary."})
+            ),
+            completed
+        );
         let stream = stream.replace('\n', "\r\n");
         let pieces: Vec<_> = stream
             .as_bytes()
